@@ -161,3 +161,40 @@ comparators. They do not define compatibility requirements for this library.
   create its own caller-facing pending URL, propagate the downstream
   interaction, finish the downstream operation, and deliver the original
   result. A client method alone is not claimed as that vertical.
+
+### Local-action permission and mission audit
+
+- **Status: immediate and PS-deferred permission plus mission-bound audit are
+  implemented vertically.**
+- The agent signs permission and audit request bodies with its agent token.
+  The PS verifies the HTTP signature, content digest, agent token, proof replay,
+  mission approver, exact retained mission hash, active status, and mission
+  ownership before policy or custody changes.
+- Permission works with or without a mission. Deployment policy receives the
+  verified agent, a defensive request copy, and—when present—the exact approved
+  mission bytes, approved tools, capabilities, and prior ordered mission log.
+  Immediate grants and denials use the draft response shape.
+- A permission policy can require user interaction. The pending URL is random,
+  same-origin, signed-poll only, and bound to the initiating agent and key. The
+  interaction code is correlation only; a separate trusted host call evaluates
+  policy. The journey proves another agent's poll refusal, early-approval
+  refusal, terminal grant and denial, one-shot delivery, and refusal when a
+  mission terminates after approval but before delivery.
+- Mission-bound permission requests and terminal responses are separate
+  immutable ordered entries. Audit requires a mission and appends the exact
+  signed request before returning `201 Created`. Snapshot callers receive
+  defensive copies, so mutations cannot alter retained custody.
+- The host can perform the two-state termination transition defined by the
+  draft's mission-management boundary. Later permission and audit requests
+  return `mission_terminated` with `mission_status=terminated`.
+- The earlier Go implementation supplied useful request shapes, signed
+  endpoints, and JSONL log precedent, but accepted arbitrary mission
+  references without proving they were retained, active, or owned by the
+  signing agent. The BEAM implementation explicitly left this area open. The
+  standalone path keeps the useful shapes and closes those authorization
+  gaps; neither comparator defines its package boundary.
+- The reference custody is currently in memory. Durable mission/pending
+  storage, agent-requested completion through the interaction endpoint,
+  token/interaction/clarification entries in the same mission log, and a
+  general recorder for missionless permission requests remain open. No new
+  protocol feedback was found; existing workspace feedback was not re-raised.

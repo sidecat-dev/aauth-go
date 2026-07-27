@@ -99,6 +99,24 @@ type PendingAccessAuthorization struct {
 	requestedScope []string
 }
 
+// PermissionAuthorization is either a terminal permission decision or a
+// signed-poll continuation at the person server.
+type PermissionAuthorization struct {
+	Decision *aauth.PermissionResponse
+	Pending  *PendingPermissionAuthorization
+}
+
+// PendingPermissionAuthorization retains a same-origin permission continuation.
+type PendingPermissionAuthorization struct {
+	ID           string
+	PersonServer string
+	Location     string
+	RetryAfter   time.Duration
+	NotBefore    time.Time
+	Status       string
+	Requirement  *aauth.Requirement
+}
+
 func NewAgent(config AgentConfig) (*Agent, error) {
 	if err := aauth.ValidateAgentIdentifier(config.Identifier); err != nil {
 		return nil, err
@@ -171,6 +189,230 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 		return approved, errors.New("reference: approved mission body does not match agent or approver")
 	}
 	return approved, nil
+}
+
+// RequestPermission asks a person server to govern a local action. The result
+// is shaped for either an immediate decision or the draft's deferred form.
+func (agent *Agent) RequestPermission(
+	ctx context.Context,
+	endpoint string,
+	input aauth.PermissionRequest,
+) (PermissionAuthorization, error) {
+	var authorization PermissionAuthorization
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return authorization, err
+	}
+	if err := input.Validate(); err != nil {
+		return authorization, err
+	}
+	personServer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return authorization, err
+	}
+	if input.Mission != nil && input.Mission.Approver != personServer {
+		return authorization, errors.New("reference: permission mission approver does not match person-server endpoint")
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return authorization, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return authorization, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return authorization, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return authorization, err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK:
+		var decision aauth.PermissionResponse
+		if err := decodeJSONBytes(io.LimitReader(response.Body, maxJSONBody+1), &decision); err != nil {
+			return authorization, err
+		}
+		if err := decision.Validate(); err != nil {
+			return authorization, err
+		}
+		authorization.Decision = &decision
+		return authorization, nil
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			return authorization, err
+		}
+		pendingServer, err := endpointIdentifier(deferred.Location)
+		if err != nil {
+			return authorization, err
+		}
+		if pendingServer != personServer {
+			return authorization, errors.New("reference: pending permission moved to another person server")
+		}
+		parsed, err := url.Parse(deferred.Location)
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Pending = &PendingPermissionAuthorization{
+			ID:           path.Base(parsed.Path),
+			PersonServer: personServer,
+			Location:     deferred.Location,
+			RetryAfter:   deferred.RetryAfter,
+			NotBefore:    agent.clock.Now().Add(deferred.RetryAfter),
+			Status:       deferred.Status,
+			Requirement:  deferred.Requirement,
+		}
+		return authorization, nil
+	default:
+		return authorization, responseError(response)
+	}
+}
+
+// PollPermission makes one signed GET to a pending person-server permission
+// request and returns either a refreshed continuation or a terminal decision.
+func (agent *Agent) PollPermission(
+	ctx context.Context,
+	pending *PendingPermissionAuthorization,
+) (PermissionAuthorization, error) {
+	var authorization PermissionAuthorization
+	if pending == nil {
+		return authorization, errors.New("reference: pending permission is required")
+	}
+	if agent.clock.Now().Before(pending.NotBefore) {
+		return authorization, errors.New("reference: pending permission is not ready to poll")
+	}
+	if err := aauth.ValidatePollingEndpoint(pending.Location); err != nil {
+		return authorization, err
+	}
+	personServer, err := endpointIdentifier(pending.Location)
+	if err != nil {
+		return authorization, err
+	}
+	if personServer != pending.PersonServer {
+		return authorization, errors.New("reference: pending permission does not apply to its endpoint")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.Location, nil)
+	if err != nil {
+		return authorization, err
+	}
+	request.Header.Set("Prefer", "wait=0")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return authorization, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return authorization, err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK:
+		var decision aauth.PermissionResponse
+		if err := decodeJSONBytes(io.LimitReader(response.Body, maxJSONBody+1), &decision); err != nil {
+			return authorization, err
+		}
+		if err := decision.Validate(); err != nil {
+			return authorization, err
+		}
+		authorization.Decision = &decision
+		return authorization, nil
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			return authorization, err
+		}
+		next, err := newPendingPermissionAuthorization(
+			pending.PersonServer,
+			deferred,
+			agent.clock.Now(),
+		)
+		if err != nil {
+			return authorization, err
+		}
+		*pending = next
+		authorization.Pending = pending
+		return authorization, nil
+	default:
+		responseErr := responseError(response)
+		updatePollingBackoff(
+			response,
+			&pending.RetryAfter,
+			&pending.NotBefore,
+			agent.clock.Now(),
+		)
+		return authorization, responseErr
+	}
+}
+
+func newPendingPermissionAuthorization(
+	personServer string,
+	deferred aauth.DeferredResponse,
+	now time.Time,
+) (PendingPermissionAuthorization, error) {
+	locationServer, err := endpointIdentifier(deferred.Location)
+	if err != nil {
+		return PendingPermissionAuthorization{}, err
+	}
+	if locationServer != personServer {
+		return PendingPermissionAuthorization{}, errors.New("reference: pending permission moved to another person server")
+	}
+	parsed, err := url.Parse(deferred.Location)
+	if err != nil {
+		return PendingPermissionAuthorization{}, err
+	}
+	return PendingPermissionAuthorization{
+		ID:           path.Base(parsed.Path),
+		PersonServer: personServer,
+		Location:     deferred.Location,
+		RetryAfter:   deferred.RetryAfter,
+		NotBefore:    now.Add(deferred.RetryAfter),
+		Status:       deferred.Status,
+		Requirement:  deferred.Requirement,
+	}, nil
+}
+
+// RecordAudit submits one signed mission-bound completed-action record.
+func (agent *Agent) RecordAudit(
+	ctx context.Context,
+	endpoint string,
+	input aauth.AuditRequest,
+) error {
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return err
+	}
+	if err := input.Validate(); err != nil {
+		return err
+	}
+	personServer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return err
+	}
+	if input.Mission.Approver != personServer {
+		return errors.New("reference: audit mission approver does not match person-server endpoint")
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		return responseError(response)
+	}
+	return nil
 }
 
 func (agent *Agent) Authorize(

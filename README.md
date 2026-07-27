@@ -76,6 +76,16 @@ as evidence, obtains a downstream token bound to its own key, and the person
 server verifies issuer trust, upstream audience, mission continuity, and the
 delegation chain before issuing the downstream grant.
 
+The person server also implements the local-action governance path intended
+for Sidecat use. An agent can make a signed permission request with or without
+a mission and receive an immediate grant/denial or an ownership-bound deferred
+interaction. Mission-bound permission requests, terminal decisions, and signed
+audit submissions enter an ordered append-only mission log. Host policy sees
+the exact approved mission bytes, approved tools, and a defensive copy of the
+prior log. A host-owned termination transition permanently refuses later
+permission and audit use, including a deferred grant approved before
+termination but not yet delivered.
+
 Run the current qualification:
 
 ```sh
@@ -85,7 +95,10 @@ go vet ./...
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
 Four-party call chaining, interaction relay/callback and clarification flows,
+agent-requested mission completion, durable external mission/pending storage,
 R3, Events, Bootstrap, and the remaining Signature-Key schemes still require
-implementation and qualification.
+implementation and qualification. The reference server's current mission log
+is process-local; callers receive defensive snapshots, but restart durability
+must be supplied before production deployment.
 
 No upstream contribution or repository is implied by this local project.

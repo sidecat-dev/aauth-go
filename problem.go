@@ -20,6 +20,8 @@ type ProblemError struct {
 	Code     PollingErrorCode
 	Detail   string
 	Instance string
+	// MissionStatus is present on mission_terminated responses.
+	MissionStatus string
 }
 
 func (problem *ProblemError) Error() string {
@@ -49,12 +51,13 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 		return nil, errors.New("aauth: problem response is too large")
 	}
 	var wire struct {
-		Type     string           `json:"type"`
-		Title    string           `json:"title"`
-		Status   int              `json:"status"`
-		Code     PollingErrorCode `json:"error"`
-		Detail   string           `json:"detail"`
-		Instance string           `json:"instance"`
+		Type          string           `json:"type"`
+		Title         string           `json:"title"`
+		Status        int              `json:"status"`
+		Code          PollingErrorCode `json:"error"`
+		Detail        string           `json:"detail"`
+		Instance      string           `json:"instance"`
+		MissionStatus string           `json:"mission_status"`
 	}
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return nil, fmt.Errorf("aauth: decode problem response: %w", err)
@@ -68,12 +71,16 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 	if wire.Status == 0 {
 		wire.Status = response.StatusCode
 	}
+	if wire.Code == "mission_terminated" && wire.MissionStatus != "terminated" {
+		return nil, errors.New("aauth: mission_terminated problem must report terminated mission_status")
+	}
 	return &ProblemError{
-		Type:     wire.Type,
-		Title:    wire.Title,
-		Status:   wire.Status,
-		Code:     wire.Code,
-		Detail:   wire.Detail,
-		Instance: wire.Instance,
+		Type:          wire.Type,
+		Title:         wire.Title,
+		Status:        wire.Status,
+		Code:          wire.Code,
+		Detail:        wire.Detail,
+		Instance:      wire.Instance,
+		MissionStatus: wire.MissionStatus,
 	}, nil
 }

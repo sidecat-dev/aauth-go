@@ -55,6 +55,11 @@ func TestDecodeProblemResponseRejectsInvalidWireValue(t *testing.T) {
 			contentType: "application/problem+json",
 			body:        `{"status":400,"error":"denied"}`,
 		},
+		{
+			name:        "mission termination without status",
+			contentType: "application/problem+json",
+			body:        `{"status":403,"error":"mission_terminated"}`,
+		},
 	}
 	for _, test := range tests {
 		test := test
