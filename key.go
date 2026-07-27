@@ -1,0 +1,156 @@
+package aauth
+
+import (
+	"context"
+	"crypto"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+)
+
+var rawURL = base64.RawURLEncoding
+
+// JWK is the public JSON Web Key representation used by AAuth confirmation
+// claims and key sets. Ed25519 is the mandatory implementation profile.
+type JWK struct {
+	Kty string `json:"kty"`
+	Crv string `json:"crv,omitempty"`
+	X   string `json:"x,omitempty"`
+	Alg string `json:"alg,omitempty"`
+	Kid string `json:"kid,omitempty"`
+	Use string `json:"use,omitempty"`
+}
+
+// PublicKey validates and decodes the JWK.
+func (key JWK) PublicKey() (crypto.PublicKey, error) {
+	if key.Kty != "OKP" || key.Crv != "Ed25519" {
+		return nil, fmt.Errorf("aauth: unsupported JWK key type %q/%q", key.Kty, key.Crv)
+	}
+	decoded, err := rawURL.DecodeString(key.X)
+	if err != nil {
+		return nil, fmt.Errorf("aauth: decode JWK x: %w", err)
+	}
+	if len(decoded) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("aauth: Ed25519 JWK x has %d bytes, want %d", len(decoded), ed25519.PublicKeySize)
+	}
+	if key.Alg != "" && key.Alg != "EdDSA" {
+		return nil, fmt.Errorf("aauth: Ed25519 JWK alg is %q, want EdDSA", key.Alg)
+	}
+	return ed25519.PublicKey(decoded), nil
+}
+
+// Thumbprint returns the RFC 7638 SHA-256 JWK thumbprint.
+func (key JWK) Thumbprint() (string, error) {
+	if _, err := key.PublicKey(); err != nil {
+		return "", err
+	}
+	canonical, err := json.Marshal(struct {
+		Crv string `json:"crv"`
+		Kty string `json:"kty"`
+		X   string `json:"x"`
+	}{
+		Crv: key.Crv,
+		Kty: key.Kty,
+		X:   key.X,
+	})
+	if err != nil {
+		return "", fmt.Errorf("aauth: marshal JWK thumbprint input: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return rawURL.EncodeToString(digest[:]), nil
+}
+
+// Equal reports whether two JWKs identify the same public key.
+func (key JWK) Equal(other JWK) bool {
+	left, leftErr := key.Thumbprint()
+	right, rightErr := other.Thumbprint()
+	return leftErr == nil && rightErr == nil && left == right
+}
+
+// SigningKey holds a private protocol signing key. Its concrete signer remains
+// private so callers can later provide other crypto.Signer implementations
+// without exposing private key bytes through protocol values.
+type SigningKey struct {
+	id     string
+	signer crypto.Signer
+	public JWK
+}
+
+// NewEd25519SigningKey constructs the mandatory Ed25519 profile.
+func NewEd25519SigningKey(id string, privateKey ed25519.PrivateKey) (SigningKey, error) {
+	if id == "" {
+		return SigningKey{}, errors.New("aauth: signing key id is required")
+	}
+	if len(privateKey) != ed25519.PrivateKeySize {
+		return SigningKey{}, fmt.Errorf("aauth: Ed25519 private key has %d bytes, want %d", len(privateKey), ed25519.PrivateKeySize)
+	}
+	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return SigningKey{}, errors.New("aauth: Ed25519 private key did not expose an Ed25519 public key")
+	}
+	return SigningKey{
+		id:     id,
+		signer: privateKey,
+		public: JWK{
+			Kty: "OKP",
+			Crv: "Ed25519",
+			X:   rawURL.EncodeToString(publicKey),
+			Alg: "EdDSA",
+			Kid: id,
+			Use: "sig",
+		},
+	}, nil
+}
+
+// ID returns the public key identifier used in JWT headers and JWKS lookup.
+func (key SigningKey) ID() string {
+	return key.id
+}
+
+// PublicJWK returns a copy of the public confirmation key.
+func (key SigningKey) PublicJWK() JWK {
+	return key.public
+}
+
+func (key SigningKey) sign(message []byte) ([]byte, error) {
+	if key.signer == nil {
+		return nil, errors.New("aauth: signing key is not initialized")
+	}
+	signature, err := key.signer.Sign(rand.Reader, message, crypto.Hash(0))
+	if err != nil {
+		return nil, fmt.Errorf("aauth: sign: %w", err)
+	}
+	return signature, nil
+}
+
+// KeyResolver resolves an issuer key after the token's issuer, discovery
+// document, and key id have been structurally validated.
+type KeyResolver interface {
+	ResolveKey(ctx context.Context, issuer, discoveryDocument, keyID string) (JWK, error)
+}
+
+// StaticKeyResolver is an explicit in-memory trust source useful for embedded
+// deployments, deterministic qualification, and callers that own discovery.
+type StaticKeyResolver map[string]map[string]JWK
+
+func (resolver StaticKeyResolver) ResolveKey(_ context.Context, issuer, _ string, keyID string) (JWK, error) {
+	issuerKeys, ok := resolver[issuer]
+	if !ok {
+		return JWK{}, fmt.Errorf("aauth: issuer %q is not trusted", issuer)
+	}
+	key, ok := issuerKeys[keyID]
+	if !ok {
+		return JWK{}, fmt.Errorf("aauth: issuer %q has no key %q", issuer, keyID)
+	}
+	if key.Kid != "" && key.Kid != keyID {
+		return JWK{}, fmt.Errorf("aauth: resolved key id %q does not match requested %q", key.Kid, keyID)
+	}
+	if _, err := key.PublicKey(); err != nil {
+		return JWK{}, err
+	}
+	return key, nil
+}
