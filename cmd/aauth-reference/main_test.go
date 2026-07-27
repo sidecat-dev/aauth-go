@@ -65,7 +65,7 @@ func TestPersonProcessServesDurableGovernanceOverTLS(t *testing.T) {
 		"https://ap.example",
 		apKey,
 		aauth.AgentTokenRequest{
-			Agent:        "aauth:sidecat@ap.example",
+			Agent:        "aauth:operator@ap.example",
 			PersonServer: "https://person.example",
 			PublicKey:    agentKey.PublicJWK(),
 			Lifetime:     2 * time.Hour,
@@ -357,7 +357,7 @@ func processTestAgent(
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier: "aauth:sidecat@ap.example",
+		Identifier: "aauth:operator@ap.example",
 		SigningKey: key, AgentToken: token, KeyResolver: resolver,
 		HTTPClient: client, Clock: aauth.SystemClock{},
 	})
@@ -502,6 +502,8 @@ func TestUsagePreservesVerbObjectGrammar(t *testing.T) {
 	code := run([]string{"person", "serve"}, &stdout, &stderr)
 	if code != 2 || stdout.Len() != 0 ||
 		!strings.Contains(stderr.String(), "aauth-reference serve person") ||
+		!strings.Contains(stderr.String(), "aauth-reference diagnose person") ||
+		!strings.Contains(stderr.String(), "aauth-reference demo person") ||
 		!strings.Contains(stderr.String(), "aauth-reference verify coverage") {
 		t.Fatalf(
 			"retired grammar exit/stdout/stderr = %d/%q/%q",

@@ -115,6 +115,29 @@ Ed25519 public identity. Hosts such as Sidecat can therefore sign through an
 operating-system key store, HSM, encrypted value service, or another protected
 adapter without giving the AAuth package private-key bytes.
 
+## Installing and proving the reference program
+
+Install the standalone program with the ordinary Go toolchain:
+
+```sh
+go install gitlab.com/sidecat-dev/aauth-go/cmd/aauth-reference@latest
+```
+
+The program has no Sidecat or BEAM dependency. Immediately prove the installed
+binary's protected profile, TLS process boundary, mission approval,
+mission-bound permission, outcome audit, default denial, durable governance,
+and process-restart recovery with:
+
+```sh
+aauth-reference demo person
+```
+
+The demonstration creates an ephemeral `0700` workspace, launches
+`aauth-reference serve person` as a separate process twice against the same
+protected governance file, and removes the workspace when it finishes. Success
+is one bounded `aauth.reference.person-demo.v0` JSON record. It never prints
+the ephemeral keys or custody paths.
+
 ## Running a person server
 
 The module includes one deliberately small deployment program:
@@ -171,6 +194,20 @@ scopes are default-deny against `allowed_scopes`. Startup emits one bounded
 JSON readiness line containing the schema, AAuth identifier, and bound address.
 SIGINT or SIGTERM performs a bounded graceful shutdown. Errors do not echo
 profile contents or private keys.
+
+Before startup, compose and validate the exact same protected signer, current
+TLS identity, trust map, policy, and governance snapshot without binding the
+listener:
+
+```sh
+aauth-reference diagnose person --profile /absolute/path/person.json
+```
+
+Success emits one bounded `aauth.reference.person-diagnostic.v0` JSON record
+with public identity, certificate validity, policy counts, and whether durable
+governance is new or loaded. It omits private keys and all custody paths.
+Corrupt retained governance, an expired certificate, an unsafe file, or an
+invalid trust or policy boundary fails before the server can run.
 
 The process qualification builds the actual binary, connects a real agent over
 certificate-verified HTTPS, creates and uses a mission, records audit evidence,

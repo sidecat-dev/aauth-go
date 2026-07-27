@@ -53,17 +53,27 @@ func main() {
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
-	if len(args) >= 2 && args[0] == "verify" && args[1] == "coverage" {
-		return runCoverageVerification(args[2:], stdout, stderr)
+	if len(args) >= 2 {
+		switch {
+		case args[0] == "verify" && args[1] == "coverage":
+			return runCoverageVerification(args[2:], stdout, stderr)
+		case args[0] == "diagnose" && args[1] == "person":
+			return runPersonDiagnosis(args[2:], stdout, stderr)
+		case args[0] == "demo" && args[1] == "person":
+			return runPersonDemo(args[2:], stdout, stderr)
+		case args[0] == "serve" && args[1] == "person":
+			return runPersonServer(args[2:], stdout, stderr)
+		}
 	}
-	if len(args) < 2 || args[0] != "serve" || args[1] != "person" {
-		writeUsage(stderr)
-		return 2
-	}
+	writeUsage(stderr)
+	return 2
+}
+
+func runPersonServer(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("serve person", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	profilePath := flags.String("profile", "", "protected person-server profile")
-	if err := flags.Parse(args[2:]); err != nil ||
+	if err := flags.Parse(args); err != nil ||
 		flags.NArg() != 0 ||
 		strings.TrimSpace(*profilePath) != *profilePath ||
 		*profilePath == "" {
@@ -80,6 +90,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  aauth-reference serve person --profile FILE")
+	fmt.Fprintln(writer, "  aauth-reference diagnose person --profile FILE")
+	fmt.Fprintln(writer, "  aauth-reference demo person")
 	fmt.Fprintln(
 		writer,
 		"  aauth-reference verify coverage --source-dir DIR [--repo DIR]",
@@ -173,6 +185,8 @@ type personDeployment struct {
 	server    *reference.PersonServer
 	tlsConfig *tls.Config
 	signer    *protectedSigner
+	publicKey aauth.JWK
+	tlsLeaf   *x509.Certificate
 }
 
 func servePerson(profilePath string, stdout io.Writer, stderr io.Writer) error {
@@ -291,7 +305,12 @@ func loadPersonDeployment(profilePath string) (*personDeployment, error) {
 		_ = signer.Close()
 		return nil, errors.New("TLS identity is invalid")
 	}
-	if err := validateTLSIdentity(profile.Identifier, certificate); err != nil {
+	tlsLeaf, err := validateTLSIdentity(
+		profile.Identifier,
+		certificate,
+		time.Now(),
+	)
+	if err != nil {
 		_ = signer.Close()
 		return nil, err
 	}
@@ -392,29 +411,35 @@ func loadPersonDeployment(profilePath string) (*personDeployment, error) {
 			MinVersion:   tls.VersionTLS13,
 			Certificates: []tls.Certificate{certificate},
 		},
-		signer: signer,
+		signer:    signer,
+		publicKey: signingKey.PublicJWK(),
+		tlsLeaf:   tlsLeaf,
 	}, nil
 }
 
 func validateTLSIdentity(
 	identifier string,
 	certificate tls.Certificate,
-) error {
+	now time.Time,
+) (*x509.Certificate, error) {
 	if len(certificate.Certificate) == 0 {
-		return errors.New("TLS certificate chain is empty")
+		return nil, errors.New("TLS certificate chain is empty")
 	}
 	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
 	if err != nil {
-		return errors.New("TLS leaf certificate is invalid")
+		return nil, errors.New("TLS leaf certificate is invalid")
 	}
 	parsed, err := url.Parse(identifier)
 	if err != nil {
-		return errors.New("profile identifier is invalid")
+		return nil, errors.New("profile identifier is invalid")
 	}
 	if err := leaf.VerifyHostname(parsed.Hostname()); err != nil {
-		return errors.New("TLS certificate does not cover profile identifier")
+		return nil, errors.New("TLS certificate does not cover profile identifier")
 	}
-	return nil
+	if now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) {
+		return nil, errors.New("TLS certificate is not currently valid")
+	}
+	return leaf, nil
 }
 
 func (deployment *personDeployment) close() {
