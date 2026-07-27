@@ -339,3 +339,30 @@ comparators. They do not define compatibility requirements for this library.
   JSON policy into a general policy language or claim production key
   provisioning, service supervision, multi-writer state, or full AAuth
   conformance.
+
+### Maintained source coverage
+
+- **Status: the implementation's supported profile is bound to pinned source
+  bytes, a complete source-section inventory, and executable Go evidence.**
+- The manifest pins the current local core, Signature-Key, R3, Events,
+  Bootstrap, and interoperability-profile sources by exact revision, filename,
+  format, and SHA-256. The generated inventory records all 465 headings, so a
+  newly added, removed, retitled, or reparented section is a review event
+  instead of disappearing outside the checklist.
+- Claims are deliberately section-specific. Fifty-two selected behaviors are
+  exercised, eighteen broader sections are explicitly partial, twenty-six
+  protocol areas are explicitly unsupported, and the remaining sections stay
+  unclaimed. An exercised label binds only the adjacent written claim to its
+  named test; it is not a full-section or full-draft conformance assertion.
+- The embedded contract and `SOURCE-COVERAGE.md` are checked for exact
+  agreement during `go test ./...`. Evidence verification parses the named Go
+  files and rejects missing test functions. Source verification rehashes the
+  maintained inputs and reconstructs their full section inventory.
+- `aauth-reference verify coverage --source-dir DIR --repo DIR` exposes the
+  same checks as a bounded standalone command and emits a machine-readable
+  success record. The internal generator is the intentional update path; no
+  source refresh or claim change can silently rewrite the pinned manifest.
+- This mechanism creates an honest maintained-current-source loop without
+  importing an upstream repository, making an upstream commitment, or
+  pretending unimplemented R3, Events, Bootstrap, Signature-Key schemes, or
+  other core behaviors are supported.

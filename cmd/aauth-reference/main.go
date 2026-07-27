@@ -30,6 +30,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/sourcecoverage"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
@@ -44,6 +45,7 @@ const (
 	personWriteTimeout       = 30 * time.Second
 	personIdleTimeout        = 60 * time.Second
 	personMaximumHeaderBytes = 64 << 10
+	coverageVerifiedFormat   = "aauth.source-coverage-verification.v0"
 )
 
 func main() {
@@ -51,6 +53,9 @@ func main() {
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) >= 2 && args[0] == "verify" && args[1] == "coverage" {
+		return runCoverageVerification(args[2:], stdout, stderr)
+	}
 	if len(args) < 2 || args[0] != "serve" || args[1] != "person" {
 		writeUsage(stderr)
 		return 2
@@ -75,6 +80,71 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  aauth-reference serve person --profile FILE")
+	fmt.Fprintln(
+		writer,
+		"  aauth-reference verify coverage --source-dir DIR [--repo DIR]",
+	)
+}
+
+type coverageVerification struct {
+	Schema       string `json:"schema"`
+	Profile      string `json:"profile"`
+	SourceCount  int    `json:"source_count"`
+	SectionCount int    `json:"section_count"`
+	Status       string `json:"status"`
+}
+
+func runCoverageVerification(
+	args []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	flags := flag.NewFlagSet("verify coverage", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	sourceDir := flags.String("source-dir", "", "directory containing pinned sources")
+	repoDir := flags.String("repo", ".", "aauth-go repository root")
+	if err := flags.Parse(args); err != nil ||
+		flags.NArg() != 0 ||
+		strings.TrimSpace(*sourceDir) != *sourceDir ||
+		*sourceDir == "" ||
+		strings.TrimSpace(*repoDir) != *repoDir ||
+		*repoDir == "" {
+		writeUsage(stderr)
+		return 2
+	}
+	bundle, err := sourcecoverage.Embedded()
+	if err != nil {
+		fmt.Fprintln(stderr, "aauth-reference: embedded coverage data is invalid")
+		return 1
+	}
+	if err := bundle.VerifySources(*sourceDir); err != nil {
+		fmt.Fprintln(stderr, "aauth-reference: pinned sources do not verify")
+		return 1
+	}
+	if err := bundle.VerifyEvidence(*repoDir); err != nil {
+		fmt.Fprintln(stderr, "aauth-reference: implementation evidence does not verify")
+		return 1
+	}
+	sectionCount := 0
+	for _, source := range bundle.Inventory.Sources {
+		sectionCount += len(source.Sections)
+	}
+	body, err := json.Marshal(coverageVerification{
+		Schema:       coverageVerifiedFormat,
+		Profile:      bundle.Manifest.Profile,
+		SourceCount:  len(bundle.Manifest.Sources),
+		SectionCount: sectionCount,
+		Status:       "verified",
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "aauth-reference: encode coverage result")
+		return 1
+	}
+	if _, err := fmt.Fprintln(stdout, string(body)); err != nil {
+		fmt.Fprintln(stderr, "aauth-reference: publish coverage result")
+		return 1
+	}
+	return 0
 }
 
 type personProfile struct {

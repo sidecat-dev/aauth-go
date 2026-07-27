@@ -501,13 +501,36 @@ func TestUsagePreservesVerbObjectGrammar(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"person", "serve"}, &stdout, &stderr)
 	if code != 2 || stdout.Len() != 0 ||
-		!strings.Contains(stderr.String(), "aauth-reference serve person") {
+		!strings.Contains(stderr.String(), "aauth-reference serve person") ||
+		!strings.Contains(stderr.String(), "aauth-reference verify coverage") {
 		t.Fatalf(
 			"retired grammar exit/stdout/stderr = %d/%q/%q",
 			code,
 			stdout.String(),
 			stderr.String(),
 		)
+	}
+}
+
+func TestCoverageVerificationRejectsMissingPinnedSources(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{
+			"verify",
+			"coverage",
+			"--source-dir",
+			t.TempDir(),
+			"--repo",
+			filepath.Join("..", ".."),
+		},
+		&stdout,
+		&stderr,
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("coverage verification exit/stdout = %d/%q", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "pinned sources do not verify") {
+		t.Fatalf("coverage verification error = %q", stderr.String())
 	}
 }
 

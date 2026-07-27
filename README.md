@@ -177,6 +177,41 @@ certificate-verified HTTPS, creates and uses a mission, records audit evidence,
 refuses an unlisted action, restarts the process, and proves the same mission
 and durable governance remain usable.
 
+## Verifying maintained source coverage
+
+The repository carries a generated [source coverage report](SOURCE-COVERAGE.md)
+and the machine-readable manifest and section inventory that produce it. The
+manifest pins the exact bytes and revisions of the six maintained source
+documents. Each positive claim names a Go test; explicit omissions remain
+unsupported or unclaimed instead of being inferred from nearby work.
+
+Given a directory containing the pinned source filenames, verify the source
+digests, complete heading inventory, evidence test names, and embedded coverage
+contract with:
+
+```sh
+go run ./cmd/aauth-reference verify coverage \
+  --source-dir /absolute/path/to/pinned-aauth-sources \
+  --repo .
+```
+
+The command succeeds with one bounded JSON record. It fails closed if source
+bytes or section structure drift, if a named test disappears, or if the
+embedded manifest and inventory are invalid. To intentionally update the
+coverage data after reviewing newer sources or changing claims, regenerate the
+inventory and report:
+
+```sh
+go run ./internal/sourcecoverage/cmd/generate \
+  --source-dir /absolute/path/to/pinned-aauth-sources \
+  --repo .
+```
+
+`go test ./...` independently proves that the checked-in report exactly
+matches the embedded contract and that every named evidence test still exists.
+This is maintained implementation coverage, not a full-conformance
+certification and not an upstream submission.
+
 Run the current qualification:
 
 ```sh

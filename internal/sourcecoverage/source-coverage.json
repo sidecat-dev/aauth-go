@@ -1,0 +1,1082 @@
+{
+  "schema": "aauth.source-coverage.v0",
+  "profile": "AAuth Go maintained supported profile",
+  "sources": [
+    {
+      "id": "core",
+      "revision": "draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660",
+      "filename": "draft-hardt-oauth-aauth-protocol.md",
+      "format": "markdown",
+      "sha256": "2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1"
+    },
+    {
+      "id": "signature-key",
+      "revision": "draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1",
+      "filename": "http-signature-keys.html",
+      "format": "html",
+      "sha256": "e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf"
+    },
+    {
+      "id": "r3",
+      "revision": "draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660",
+      "filename": "draft-hardt-aauth-r3.md",
+      "format": "markdown",
+      "sha256": "752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c"
+    },
+    {
+      "id": "events",
+      "revision": "draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660",
+      "filename": "draft-hardt-aauth-events.md",
+      "format": "markdown",
+      "sha256": "987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37"
+    },
+    {
+      "id": "bootstrap",
+      "revision": "draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660",
+      "filename": "draft-hardt-aauth-bootstrap.md",
+      "format": "markdown",
+      "sha256": "27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355"
+    },
+    {
+      "id": "interop-profile",
+      "revision": "interop-demo-profile at AAuth b414033d4c81224034b5b419216ae06706ede660",
+      "filename": "interop-demo-profile.md",
+      "format": "markdown",
+      "sha256": "a9eb24420b2c0a4176833a67e1ce8c55c007e65d567bcd3f076426cba8643cca"
+    }
+  ],
+  "annotations": [
+    {
+      "source": "core",
+      "section": "overview-resource-managed",
+      "status": "exercised",
+      "claim": "The supported profile implements proof-bound resource-managed access, opaque credential rotation, and protected operation enforcement.",
+      "evidence": [
+        {
+          "file": "access_journey_test.go",
+          "test": "TestResourceManagedAAuthAccessIsProofBound"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "protocol-overview/resource-access-modes/ps-asserted-access-three-party",
+      "status": "exercised",
+      "claim": "The supported profile executes agent-provider identity, mission approval, resource-token exchange, person-server authorization, and protected resource access.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "protocol-overview/resource-access-modes/federated-access-four-party",
+      "status": "exercised",
+      "claim": "The supported profile executes person-server to access-server federation with independent trust and policy boundaries.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-creation-overview",
+      "status": "exercised",
+      "claim": "Mission proposal, approval, exact approved-byte retention, and mission digest agreement are executable.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        },
+        {
+          "file": "mission_test.go",
+          "test": "TestMissionS256MatchesCrossImplementationGoldenVector"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-completion-overview",
+      "status": "partial",
+      "claim": "Completion proposal, clarification, acceptance, termination, restart, and replay handling are implemented; other interaction actions remain open.",
+      "evidence": [
+        {
+          "file": "mission_completion_journey_test.go",
+          "test": "TestMissionCompletionClarificationAndAcceptanceSurviveRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "agent-tokens/agent-token-structure",
+      "status": "exercised",
+      "claim": "The selected Ed25519-bound agent-token claim profile is minted and consumed on the three-party path.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "agent-tokens/agent-token-usage",
+      "status": "exercised",
+      "claim": "Agent tokens are presented through Signature-Key and bound to the signing key during live authorization requests.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "agent-tokens/agent-token-verification",
+      "status": "exercised",
+      "claim": "Issuer trust, JWT validity, confirmation-key binding, and request proof are verified before the supported endpoints proceed.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestSignedRequestRejectsConfirmationKeySubstitution"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/authorization-endpoint-request",
+      "status": "exercised",
+      "claim": "The supported resource authorization request is signed, mission-bound when applicable, and handled by a real resource endpoint.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/authorization-endpoint-responses/response-with-resource-token",
+      "status": "exercised",
+      "claim": "A successful supported authorization response returns a proof-bound resource token used in the next protocol step.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/resource-token/resource-token-structure",
+      "status": "exercised",
+      "claim": "The selected resource-token claim profile is minted and carried across the person-server exchange.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/resource-token/resource-token-verification",
+      "status": "exercised",
+      "claim": "Resource-token issuer, audience, mission, agent, request-key, lifetime, and scope bindings are verified in the supported flow.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/resource-token/resource-challenge-verification",
+      "status": "exercised",
+      "claim": "The client verifies the resource challenge and issuer relationship before adopting the resource token.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "requirement-agent-token",
+      "status": "exercised",
+      "claim": "The supported client parses an agent-token requirement and obtains a token before retrying authorization.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "requirement-auth-token",
+      "status": "exercised",
+      "claim": "The supported client follows an auth-token requirement through the person server before protected access.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "ps-token-endpoint/agent-token-request",
+      "status": "exercised",
+      "claim": "A signed supported agent-token request reaches the person-server token endpoint with resource and mission context.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "ps-token-endpoint/ps-response",
+      "status": "partial",
+      "claim": "Immediate success, denial, and deferred person-server responses are handled; the full draft response family is not implemented.",
+      "evidence": [
+        {
+          "file": "deferred_person_server_journey_test.go",
+          "test": "TestPersonServerDeferredAuthorizationVertical"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-initiated-interaction",
+      "status": "partial",
+      "claim": "Resource-hosted deferred approval is implemented with separate trusted decision authority; the broader interaction family remains incomplete.",
+      "evidence": [
+        {
+          "file": "deferred_access_journey_test.go",
+          "test": "TestResourceManagedDeferredInteractionVertical"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "person-server/user-interaction",
+      "status": "partial",
+      "claim": "The person server supports trusted approval, rejection, clarification, expiry, and durable terminal delivery for selected interaction types.",
+      "evidence": [
+        {
+          "file": "mission_completion_journey_test.go",
+          "test": "TestMissionCompletionClarificationAndAcceptanceSurviveRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "permission-endpoint/permission-request",
+      "status": "exercised",
+      "claim": "Signed mission-bound and missionless permission requests reach host policy with exact structured input.",
+      "evidence": [
+        {
+          "file": "governance_journey_test.go",
+          "test": "TestMissionPermissionAndAuditVertical"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "permission-endpoint/permission-response",
+      "status": "exercised",
+      "claim": "Immediate and deferred permission decisions are validated, retained, and returned through the supported person-server profile.",
+      "evidence": [
+        {
+          "file": "governance_restart_test.go",
+          "test": "TestPersonServerGovernanceSurvivesRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "audit-endpoint/audit-request",
+      "status": "exercised",
+      "claim": "Signed audit requests are validated against mission ownership and action history before append.",
+      "evidence": [
+        {
+          "file": "governance_journey_test.go",
+          "test": "TestMissionPermissionAndAuditVertical"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "audit-endpoint/audit-response",
+      "status": "exercised",
+      "claim": "Successful audit acceptance is durably committed before the supported response is exposed.",
+      "evidence": [
+        {
+          "file": "governance_restart_test.go",
+          "test": "TestPersonServerGovernanceSurvivesRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "interaction-endpoint/interaction-request",
+      "status": "partial",
+      "claim": "Completion and clarification-response interaction requests are signed, ownership-bound, and durable; other draft actions are open.",
+      "evidence": [
+        {
+          "file": "mission_completion_journey_test.go",
+          "test": "TestMissionCompletionClarificationAndAcceptanceSurviveRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "interaction-response-poll-authority",
+      "status": "partial",
+      "claim": "Type-specific completion and question response shapes plus durable polling are implemented for the selected interaction profile.",
+      "evidence": [
+        {
+          "file": "reference/interaction_test.go",
+          "test": "TestDecodeInteractionAuthorizationUsesTypeSpecificSuccessShape"
+        },
+        {
+          "file": "mission_completion_journey_test.go",
+          "test": "TestMissionCompletionClarificationAndAcceptanceSurviveRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-creation",
+      "status": "exercised",
+      "claim": "A proposed mission is signed, policy-evaluated, assigned a durable identifier, and returned with exact approved bytes.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-approval",
+      "status": "exercised",
+      "claim": "The supported person-server policy approves or rejects mission content and retains the approved mission as authorization context.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-log",
+      "status": "partial",
+      "claim": "Permission, audit, clarification, completion, termination, proofs, and terminal responses are ordered and durable; other draft event families are open.",
+      "evidence": [
+        {
+          "file": "governance_restart_test.go",
+          "test": "TestPersonServerGovernanceSurvivesRestart"
+        },
+        {
+          "file": "mission_completion_journey_test.go",
+          "test": "TestMissionCompletionClarificationAndAcceptanceSurviveRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-completion",
+      "status": "partial",
+      "claim": "The selected completion path supports clarification and atomic acceptance plus termination, but not every interaction action.",
+      "evidence": [
+        {
+          "file": "mission_completion_journey_test.go",
+          "test": "TestMissionCompletionClarificationAndAcceptanceSurviveRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "missions/aauth-mission-request-header",
+      "status": "exercised",
+      "claim": "The mission header is encoded, presented, covered by the request signature, and rejected if added outside that proof.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestSignedRequestRejectsMissionAddedOutsideCoveredComponents"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "access-server-federation",
+      "status": "exercised",
+      "claim": "The resource, person server, and access server execute the supported federation path across distinct trust and policy boundaries.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "as-token-endpoint/ps-to-as-token-request",
+      "status": "exercised",
+      "claim": "The person server signs a supported access-server token request with its discoverable server identity.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "as-token-endpoint/as-response",
+      "status": "partial",
+      "claim": "Immediate and deferred access-server outcomes are relayed and verified; the complete draft response surface is not implemented.",
+      "evidence": [
+        {
+          "file": "deferred_four_party_journey_test.go",
+          "test": "TestAccessServerDeferredAuthorizationThroughPersonServer"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "as-token-endpoint/auth-token-delivery",
+      "status": "exercised",
+      "claim": "The person server verifies the access-server result before delivering the auth token to the agent.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-structure",
+      "status": "exercised",
+      "claim": "The selected auth-token profile carries issuer, audience, agent, key, mission, scope, and lifetime bindings.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-usage",
+      "status": "exercised",
+      "claim": "The auth token is presented in Signature-Key and authorizes only the proof-bound protected request.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-verification/jwt-trust-verification",
+      "status": "exercised",
+      "claim": "The resource verifies admitted issuer trust and the supported JWT claims before applying authorization.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestAuthTokenRejectsWrongAudienceAtResourceBoundary"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-verification/request-context-binding",
+      "status": "exercised",
+      "claim": "Audience, request authority, confirmation key, and signed HTTP context are enforced at the resource boundary.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestAuthTokenRejectsWrongAudienceAtResourceBoundary"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-token-response-verification",
+      "status": "exercised",
+      "claim": "The supported client verifies a returned auth token before presenting it to the resource.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "upstream-token-verification",
+      "status": "exercised",
+      "claim": "A downstream call verifies the upstream token as evidence while binding new authority to the intermediary's own key.",
+      "evidence": [
+        {
+          "file": "call_chaining_journey_test.go",
+          "test": "TestResourceExtendsAuthorizationToDownstreamResource"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "call-chaining",
+      "status": "partial",
+      "claim": "Three-party downstream call chaining is implemented; four-party chaining and general interaction chaining remain open.",
+      "evidence": [
+        {
+          "file": "call_chaining_journey_test.go",
+          "test": "TestResourceExtendsAuthorizationToDownstreamResource"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "interaction-chaining",
+      "status": "unsupported",
+      "claim": "General chained interaction relay is not implemented."
+    },
+    {
+      "source": "core",
+      "section": "sub-agents/sub-agent-identity",
+      "status": "exercised",
+      "claim": "The supported parent-mediated flow binds a sub-agent identity and confirmation key while retaining the parent actor.",
+      "evidence": [
+        {
+          "file": "subagent_journey_test.go",
+          "test": "TestParentMediatesSubagentAuthorization"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "sub-agents/single-level-depth",
+      "status": "exercised",
+      "claim": "The person server permits one delegation level and refuses deeper sub-agent chains.",
+      "evidence": [
+        {
+          "file": "subagent_journey_test.go",
+          "test": "TestParentMediatesSubagentAuthorization"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "sub-agents/parent-mediated-authorization",
+      "status": "exercised",
+      "claim": "The parent obtains and polls authority for a sub-agent, while the sub-agent cannot call the person server directly.",
+      "evidence": [
+        {
+          "file": "subagent_journey_test.go",
+          "test": "TestParentMediatesSubagentAuthorization"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "third-party-login",
+      "status": "unsupported",
+      "claim": "Third-party login is not implemented."
+    },
+    {
+      "source": "core",
+      "section": "requirement-responses/aauth-requirement-header-structure",
+      "status": "exercised",
+      "claim": "The supported requirement header is parsed and serialized as a structured field with strict wire-value validation.",
+      "evidence": [
+        {
+          "file": "requirement_test.go",
+          "test": "TestInteractionRequirementStructuredFieldRoundTrip"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "requirement-responses/interaction-required",
+      "status": "partial",
+      "claim": "Interaction requirements are represented for resource, person-server, access-server, and completion continuations; not every type is implemented.",
+      "evidence": [
+        {
+          "file": "deferred_person_server_journey_test.go",
+          "test": "TestPersonServerDeferredAuthorizationVertical"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "requirement-responses/approval-pending",
+      "status": "exercised",
+      "claim": "Approval-pending requirements drive signed polling with enforced retry cadence in the supported flows.",
+      "evidence": [
+        {
+          "file": "deferred_client_test.go",
+          "test": "TestAgentEnforcesRetryAfterAndSlowDown"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "deferred-responses/initial-request",
+      "status": "exercised",
+      "claim": "A supported initial request can return a protected continuation and interaction requirement.",
+      "evidence": [
+        {
+          "file": "deferred_person_server_journey_test.go",
+          "test": "TestPersonServerDeferredAuthorizationVertical"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "deferred-responses/pending-response",
+      "status": "exercised",
+      "claim": "Pending and slowdown responses carry validated retry information and do not expose terminal authority.",
+      "evidence": [
+        {
+          "file": "deferred_client_test.go",
+          "test": "TestAgentEnforcesRetryAfterAndSlowDown"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "deferred-responses/polling-with-get",
+      "status": "exercised",
+      "claim": "The supported client performs same-origin signed GET polling with the initiating identity and proof key.",
+      "evidence": [
+        {
+          "file": "deferred_test.go",
+          "test": "TestParseDeferredResponseAllowsSameOriginPollingQuery"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "deferred-responses/deferred-response-state-machine",
+      "status": "partial",
+      "claim": "Pending, slowdown, success, denial, expiry, one-shot terminal delivery, and replay refusal are exercised; not every endpoint persists this state across restart.",
+      "evidence": [
+        {
+          "file": "deferred_person_server_journey_test.go",
+          "test": "TestPersonServerDeferredAuthorizationVertical"
+        },
+        {
+          "file": "governance_restart_test.go",
+          "test": "TestPersonServerGovernanceSurvivesRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "token-revocation",
+      "status": "unsupported",
+      "claim": "Token revocation is not implemented."
+    },
+    {
+      "source": "core",
+      "section": "error-response-format",
+      "status": "partial",
+      "claim": "The supported problem response fields and wire validation are implemented; endpoint-specific error coverage is incomplete.",
+      "evidence": [
+        {
+          "file": "problem_test.go",
+          "test": "TestDecodeProblemResponseRejectsInvalidWireValue"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "http-message-signatures-profile",
+      "status": "partial",
+      "claim": "The selected Ed25519 request-signing profile is implemented with two Signature-Key schemes; algorithms and schemes outside that profile are open.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestSignedRequestRejectsBodyMutation"
+        },
+        {
+          "file": "http_signature_jwks_test.go",
+          "test": "TestJWKSURIRequestIdentitySignsAndVerifies"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "covered-components",
+      "status": "exercised",
+      "claim": "Method, authority, path, Signature-Key, applicable authorization and mission fields, and body digest are required in the supported profile.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestSignedRequestRejectsMissionAddedOutsideCoveredComponents"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "verification",
+      "status": "exercised",
+      "claim": "Server verification checks component coverage, digest, freshness, credential and key binding, signature, and replay identity.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestSignedRequestRejectsBodyMutation"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "freshness-and-replay",
+      "status": "exercised",
+      "claim": "The supported endpoints enforce a bounded signature window and reject exact proof replay.",
+      "evidence": [
+        {
+          "file": "governance_restart_test.go",
+          "test": "TestPersonServerGovernanceSurvivesRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "jwks-discovery",
+      "status": "exercised",
+      "claim": "Admitted metadata-to-JWKS discovery, bounded caching, refresh throttling, and same-key-id rotation recovery are executable.",
+      "evidence": [
+        {
+          "file": "discovery_test.go",
+          "test": "TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache"
+        },
+        {
+          "file": "discovery_test.go",
+          "test": "TestTokenVerificationRefreshesSameKidAfterSignatureFailure"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "identifiers-and-discovery",
+      "status": "partial",
+      "claim": "Canonical HTTPS server identifiers and selected metadata discovery documents are implemented; the complete identifier and metadata surface is not.",
+      "evidence": [
+        {
+          "file": "discovery_test.go",
+          "test": "TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "metadata-documents",
+      "status": "partial",
+      "claim": "The reference provider, person server, resource, and access server publish the metadata needed by supported journeys.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "security-considerations/tls-requirements",
+      "status": "exercised",
+      "claim": "The runnable person-server profile enforces TLS 1.3 and a certificate covering its HTTPS identifier.",
+      "evidence": [
+        {
+          "file": "cmd/aauth-reference/main_test.go",
+          "test": "TestPersonProcessServesDurableGovernanceOverTLS"
+        }
+      ]
+    },
+    {
+      "source": "signature-key",
+      "section": "name-signature-key-http-request-",
+      "status": "partial",
+      "claim": "Signature-Key parsing, signing, and proof binding are implemented for jwt and jwks_uri; other schemes and multiple signatures are not.",
+      "evidence": [
+        {
+          "file": "http_signature_jwks_test.go",
+          "test": "TestJWKSURIRequestIdentitySignsAndVerifies"
+        },
+        {
+          "file": "request_security_test.go",
+          "test": "TestSignedRequestRejectsConfirmationKeySubstitution"
+        }
+      ]
+    },
+    {
+      "source": "signature-key",
+      "section": "name-label-consistency",
+      "status": "exercised",
+      "claim": "The supported single sig label is bound consistently across Signature-Key, Signature-Input, and Signature.",
+      "evidence": [
+        {
+          "file": "http_signature_jwks_test.go",
+          "test": "TestJWKSURIRequestRejectsKeyReferenceSubstitution"
+        }
+      ]
+    },
+    {
+      "source": "signature-key",
+      "section": "name-header-web-key-hwk",
+      "status": "unsupported",
+      "claim": "The hwk scheme is not implemented."
+    },
+    {
+      "source": "signature-key",
+      "section": "name-jkt-jwt-self-issued-key-del",
+      "status": "unsupported",
+      "claim": "The jkt-jwt scheme is not implemented."
+    },
+    {
+      "source": "signature-key",
+      "section": "name-jwks-uri-discovery-jwks_uri",
+      "status": "exercised",
+      "claim": "The supported server identity uses id, discovery-document, and key-id parameters with admitted two-hop metadata and JWKS resolution.",
+      "evidence": [
+        {
+          "file": "http_signature_jwks_test.go",
+          "test": "TestJWKSURIRequestIdentitySignsAndVerifies"
+        },
+        {
+          "file": "discovery_test.go",
+          "test": "TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache"
+        }
+      ]
+    },
+    {
+      "source": "signature-key",
+      "section": "name-jwt-confirmation-key-jwt",
+      "status": "partial",
+      "claim": "AAuth agent and auth JWTs supply the confirmation key for the supported signed-request profile; arbitrary JWT profiles are not accepted.",
+      "evidence": [
+        {
+          "file": "request_security_test.go",
+          "test": "TestSignedRequestRejectsConfirmationKeySubstitution"
+        }
+      ]
+    },
+    {
+      "source": "signature-key",
+      "section": "name-self-issued-jwt-self-jwt",
+      "status": "unsupported",
+      "claim": "The self-jwt scheme is not implemented."
+    },
+    {
+      "source": "signature-key",
+      "section": "name-x509-certificates-x509",
+      "status": "unsupported",
+      "claim": "The x509 scheme is not implemented."
+    },
+    {
+      "source": "signature-key",
+      "section": "name-accept-signature-sigkey-par",
+      "status": "unsupported",
+      "claim": "Accept-Signature sigkey negotiation is not implemented."
+    },
+    {
+      "source": "signature-key",
+      "section": "name-signature-error-http-respon",
+      "status": "unsupported",
+      "claim": "The Signature-Error response header is not implemented."
+    },
+    {
+      "source": "signature-key",
+      "section": "name-signature-key-integrity",
+      "status": "exercised",
+      "claim": "Signature-Key is a mandatory covered component, so changing the selected key reference invalidates the HTTP signature.",
+      "evidence": [
+        {
+          "file": "http_signature_jwks_test.go",
+          "test": "TestJWKSURIRequestRejectsKeyReferenceSubstitution"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "authorization-endpoint-extensions",
+      "status": "unsupported",
+      "claim": "R3 authorization-endpoint extensions are not implemented."
+    },
+    {
+      "source": "r3",
+      "section": "r3-document",
+      "status": "unsupported",
+      "claim": "R3 documents and content addressing are not implemented."
+    },
+    {
+      "source": "r3",
+      "section": "r3-processing",
+      "status": "unsupported",
+      "claim": "R3 processing and caching are not implemented."
+    },
+    {
+      "source": "r3",
+      "section": "auth-token-extensions",
+      "status": "unsupported",
+      "claim": "R3 auth-token extensions and resource enforcement are not implemented."
+    },
+    {
+      "source": "r3",
+      "section": "per-call-proposals",
+      "status": "unsupported",
+      "claim": "R3 per-call proposals are not implemented."
+    },
+    {
+      "source": "events",
+      "section": "protocol-overview",
+      "status": "unsupported",
+      "claim": "The AAuth Events protocol is not implemented."
+    },
+    {
+      "source": "events",
+      "section": "subscribe-token",
+      "status": "unsupported",
+      "claim": "Subscribe tokens are not implemented."
+    },
+    {
+      "source": "events",
+      "section": "subscription-registration",
+      "status": "unsupported",
+      "claim": "Event subscription registration is not implemented."
+    },
+    {
+      "source": "events",
+      "section": "event-token",
+      "status": "unsupported",
+      "claim": "Event tokens are not implemented."
+    },
+    {
+      "source": "events",
+      "section": "event-delivery",
+      "status": "unsupported",
+      "claim": "Resource-to-agent-provider event delivery is not implemented."
+    },
+    {
+      "source": "events",
+      "section": "ap-to-agent",
+      "status": "unsupported",
+      "claim": "Agent-provider-to-agent event delivery is not implemented."
+    },
+    {
+      "source": "events",
+      "section": "event-discovery",
+      "status": "unsupported",
+      "claim": "AAuth event discovery is not implemented."
+    },
+    {
+      "source": "bootstrap",
+      "section": "per-platform-keys",
+      "status": "unsupported",
+      "claim": "Platform-specific key enrollment and custody profiles are not implemented."
+    },
+    {
+      "source": "bootstrap",
+      "section": "optional-attestation",
+      "status": "unsupported",
+      "claim": "Platform attestation is not implemented."
+    },
+    {
+      "source": "bootstrap",
+      "section": "identifier-strategies",
+      "status": "unsupported",
+      "claim": "Bootstrap identifier-strategy negotiation is not implemented."
+    },
+    {
+      "source": "bootstrap",
+      "section": "refresh-patterns",
+      "status": "unsupported",
+      "claim": "Bootstrap token refresh patterns are not implemented."
+    },
+    {
+      "source": "bootstrap",
+      "section": "per-platform-enrollment-sketches",
+      "status": "unsupported",
+      "claim": "Per-platform enrollment flows are not implemented."
+    },
+    {
+      "source": "interop-profile",
+      "section": "aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response",
+      "status": "exercised",
+      "claim": "Mission approval and exact approved-mission response behavior execute through the reference person server.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "interop-profile",
+      "section": "aauth-interoperability-demo-profile/surface-2-aauth-mission-presentation-and-resource-token-echo",
+      "status": "exercised",
+      "claim": "The mission presentation, signed resource authorization request, and resource-token continuity surface is executable.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        }
+      ]
+    },
+    {
+      "source": "interop-profile",
+      "section": "aauth-interoperability-demo-profile/surface-3-resource-token-issuance-and-issuer-discovery",
+      "status": "exercised",
+      "claim": "Resource-token issuance and admitted issuer metadata plus JWKS discovery are executable.",
+      "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        },
+        {
+          "file": "discovery_test.go",
+          "test": "TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache"
+        }
+      ]
+    },
+    {
+      "source": "interop-profile",
+      "section": "aauth-interoperability-demo-profile/surface-4-auth-token-issuance-and-presentation",
+      "status": "exercised",
+      "claim": "Auth-token issuance, person-server verification, agent adoption, presentation, and resource enforcement are executable.",
+      "evidence": [
+        {
+          "file": "four_party_journey_test.go",
+          "test": "TestFourPartyPersonServerAccessServerJourney"
+        }
+      ]
+    },
+    {
+      "source": "interop-profile",
+      "section": "aauth-interoperability-demo-profile/surface-5-parent-mediated-sub-agent-token-handling",
+      "status": "exercised",
+      "claim": "Parent-mediated sub-agent token handling executes through authorization and protected resource access.",
+      "evidence": [
+        {
+          "file": "subagent_journey_test.go",
+          "test": "TestParentMediatesSubagentAuthorization"
+        }
+      ]
+    }
+  ]
+}
