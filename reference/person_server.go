@@ -27,6 +27,7 @@ type PersonServerConfig struct {
 	PermissionPolicy              aauth.PermissionPolicy
 	PermissionInteractionRequired func(context.Context, aauth.PermissionEvaluation) (bool, error)
 	GovernanceStore               GovernanceStore
+	CompletionReviewEnabled       bool
 	InteractionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	Random                        io.Reader
 	PendingLifetime               time.Duration
@@ -46,6 +47,7 @@ type PersonServer struct {
 	permissionPolicy              aauth.PermissionPolicy
 	permissionInteractionRequired func(context.Context, aauth.PermissionEvaluation) (bool, error)
 	governanceStore               GovernanceStore
+	completionReviewEnabled       bool
 	interactionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	random                        io.Reader
 	pendingLifetime               time.Duration
@@ -53,16 +55,18 @@ type PersonServer struct {
 	accessServerEndpoint          func(context.Context, string) (string, error)
 	trustedUpstreamIssuer         func(context.Context, string) error
 
-	mu                sync.RWMutex
-	missions          map[string]storedMission
-	randomMu          sync.Mutex
-	governanceReplays map[string]time.Time
-	permissionHistory []aauth.PermissionRecord
-	pendingMu         sync.Mutex
-	pending           map[string]*pendingPersonAuthorization
-	permissionPending map[string]pendingPersonPermission
-	replayMu          sync.Mutex
-	replayedProof     map[string]time.Time
+	mu                 sync.RWMutex
+	missions           map[string]storedMission
+	randomMu           sync.Mutex
+	governanceReplays  map[string]time.Time
+	permissionHistory  []aauth.PermissionRecord
+	interactionHistory []aauth.InteractionRecord
+	completionPending  map[string]pendingCompletion
+	pendingMu          sync.Mutex
+	pending            map[string]*pendingPersonAuthorization
+	permissionPending  map[string]pendingPersonPermission
+	replayMu           sync.Mutex
+	replayedProof      map[string]time.Time
 }
 
 type storedMission struct {
@@ -169,6 +173,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		permissionPolicy:              config.PermissionPolicy,
 		permissionInteractionRequired: config.PermissionInteractionRequired,
 		governanceStore:               config.GovernanceStore,
+		completionReviewEnabled:       config.CompletionReviewEnabled,
 		interactionRequired:           config.InteractionRequired,
 		random:                        random,
 		pendingLifetime:               pendingLifetime,
@@ -179,6 +184,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		governanceReplays:             make(map[string]time.Time),
 		pending:                       make(map[string]*pendingPersonAuthorization),
 		permissionPending:             make(map[string]pendingPersonPermission),
+		completionPending:             make(map[string]pendingCompletion),
 		replayedProof:                 make(map[string]time.Time),
 	}
 	if server.governanceStore != nil {
@@ -186,7 +192,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reference: load governance state: %w", err)
 		}
-		missions, permissions, pendingPermissions, replays, err := decodeGovernanceState(
+		missions, permissions, interactions, pendingPermissions, pendingCompletions, replays, err := decodeGovernanceState(
 			body,
 			server.identifier,
 		)
@@ -195,7 +201,9 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		}
 		server.missions = missions
 		server.permissionHistory = permissions
+		server.interactionHistory = interactions
 		server.permissionPending = pendingPermissions
+		server.completionPending = pendingCompletions
 		server.governanceReplays = replays
 	}
 	return server, nil
@@ -209,7 +217,9 @@ func (server *PersonServer) persistGovernanceLocked() error {
 		server.identifier,
 		server.missions,
 		server.permissionHistory,
+		server.interactionHistory,
 		server.permissionPending,
+		server.completionPending,
 		server.governanceReplays,
 	)
 	if err != nil {
@@ -236,7 +246,12 @@ func (server *PersonServer) Handler() http.Handler {
 	}
 	mux.HandleFunc("POST /audit", server.handleAudit)
 	mux.HandleFunc("GET /pending/{id}", server.handlePendingAuthorization)
-	mux.HandleFunc("GET /interaction/{id}", server.handleInteraction)
+	mux.HandleFunc("GET /interaction/{id}", server.handleAuthorizationInteraction)
+	if server.completionReviewEnabled {
+		mux.HandleFunc("POST /interaction", server.handleAgentInteraction)
+		mux.HandleFunc("GET /interaction/pending/{id}", server.handlePendingAgentInteraction)
+		mux.HandleFunc("POST /interaction/pending/{id}", server.handlePendingAgentInteraction)
+	}
 	mux.HandleFunc("GET /.well-known/aauth-person.json", server.handleMetadata)
 	mux.HandleFunc("GET /jwks", server.handleJWKS)
 	return mux
@@ -582,22 +597,22 @@ func (server *PersonServer) commitImmediatePermission(
 		previousMission = mission
 		mission.log = append(mission.log,
 			aauth.MissionLogEntry{
-				Sequence:   uint64(len(mission.log) + 1),
-				Kind:       aauth.MissionLogPermissionRequest,
-				RecordedAt: proof.VerifiedAt,
-				Agent:      agent,
+				Sequence:       uint64(len(mission.log) + 1),
+				Kind:           aauth.MissionLogPermissionRequest,
+				RecordedAt:     proof.VerifiedAt,
+				Agent:          agent,
 				RequestProofID: proof.ReplayKey,
-				Request:    append([]byte(nil), requestBody...),
-				Proof:      copyRequestProof(proof),
+				Request:        append([]byte(nil), requestBody...),
+				Proof:          copyRequestProof(proof),
 			},
 			aauth.MissionLogEntry{
-				Sequence:   uint64(len(mission.log) + 2),
-				Kind:       aauth.MissionLogPermissionDecision,
-				RecordedAt: decidedAt,
-				Agent:      agent,
-				DecidedBy:  decision.DecidedBy,
+				Sequence:       uint64(len(mission.log) + 2),
+				Kind:           aauth.MissionLogPermissionDecision,
+				RecordedAt:     decidedAt,
+				Agent:          agent,
+				DecidedBy:      decision.DecidedBy,
 				RequestProofID: proof.ReplayKey,
-				Response:   append([]byte(nil), responseBody...),
+				Response:       append([]byte(nil), responseBody...),
 			},
 		)
 		server.missions[input.Mission.S256] = mission
@@ -656,13 +671,13 @@ func (server *PersonServer) commitPendingPermissionRequest(
 		}
 		previousMission = mission
 		mission.log = append(mission.log, aauth.MissionLogEntry{
-			Sequence:   uint64(len(mission.log) + 1),
-			Kind:       aauth.MissionLogPermissionRequest,
-			RecordedAt: proof.VerifiedAt,
-			Agent:      pending.agent,
+			Sequence:       uint64(len(mission.log) + 1),
+			Kind:           aauth.MissionLogPermissionRequest,
+			RecordedAt:     proof.VerifiedAt,
+			Agent:          pending.agent,
 			RequestProofID: proof.ReplayKey,
-			Request:    append([]byte(nil), requestBody...),
-			Proof:      copyRequestProof(proof),
+			Request:        append([]byte(nil), requestBody...),
+			Proof:          copyRequestProof(proof),
 		})
 		server.missions[input.Mission.S256] = mission
 		missionChanged = true
@@ -982,13 +997,13 @@ func (server *PersonServer) commitPendingPermissionTerminalLocked(
 		} else {
 			originalMission = mission
 			mission.log = append(mission.log, aauth.MissionLogEntry{
-				Sequence:   uint64(len(mission.log) + 1),
-				Kind:       aauth.MissionLogPermissionDecision,
-				RecordedAt: server.clock.Now().UTC(),
-				Agent:      pending.agent,
-				DecidedBy:  pending.decision.DecidedBy,
+				Sequence:       uint64(len(mission.log) + 1),
+				Kind:           aauth.MissionLogPermissionDecision,
+				RecordedAt:     server.clock.Now().UTC(),
+				Agent:          pending.agent,
+				DecidedBy:      pending.decision.DecidedBy,
 				RequestProofID: pending.requestReplayKey,
-				Response:   append([]byte(nil), responseBody...),
+				Response:       append([]byte(nil), responseBody...),
 			})
 			server.missions[input.Mission.S256] = mission
 			missionChanged = true
@@ -1194,12 +1209,12 @@ func (server *PersonServer) handleAudit(
 		verified.Agent,
 		input.Mission,
 		aauth.MissionLogEntry{
-			Kind:       aauth.MissionLogAudit,
-			RecordedAt: server.clock.Now().UTC(),
-			Agent:      verified.Agent,
+			Kind:           aauth.MissionLogAudit,
+			RecordedAt:     server.clock.Now().UTC(),
+			Agent:          verified.Agent,
 			RequestProofID: verified.ReplayKey,
-			Request:    append([]byte(nil), body...),
-			Proof:      requestProof(request, verified, server.clock.Now()),
+			Request:        append([]byte(nil), body...),
+			Proof:          requestProof(request, verified, server.clock.Now()),
 		},
 		verified.ReplayKey,
 		verified.Created.Add(aauth.DefaultSignatureWindow),
@@ -2076,7 +2091,7 @@ func copyPendingFederation(
 	return &copied
 }
 
-func (server *PersonServer) handleInteraction(
+func (server *PersonServer) handleAuthorizationInteraction(
 	response http.ResponseWriter,
 	request *http.Request,
 ) {
@@ -2542,6 +2557,9 @@ func (server *PersonServer) handleMetadata(response http.ResponseWriter, _ *http
 	}
 	if server.permissionPolicy != nil {
 		metadata["permission_endpoint"] = server.identifier + "/permission"
+	}
+	if server.completionReviewEnabled {
+		metadata["interaction_endpoint"] = server.identifier + "/interaction"
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }

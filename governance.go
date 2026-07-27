@@ -109,26 +109,29 @@ const (
 type MissionLogKind string
 
 const (
-	MissionLogPermissionRequest  MissionLogKind = "permission_request"
-	MissionLogPermissionDecision MissionLogKind = "permission_decision"
-	MissionLogAudit              MissionLogKind = "audit"
-	MissionLogTermination        MissionLogKind = "termination"
+	MissionLogPermissionRequest   MissionLogKind = "permission_request"
+	MissionLogPermissionDecision  MissionLogKind = "permission_decision"
+	MissionLogAudit               MissionLogKind = "audit"
+	MissionLogInteractionRequest  MissionLogKind = "interaction_request"
+	MissionLogClarification       MissionLogKind = "clarification"
+	MissionLogInteractionResponse MissionLogKind = "interaction_response"
+	MissionLogTermination         MissionLogKind = "termination"
 )
 
 // MissionLogEntry retains the exact request body and, when applicable, the
 // terminal response body. Sequence is strictly increasing within one mission.
 type MissionLogEntry struct {
-	Sequence   uint64          `json:"sequence"`
-	Kind       MissionLogKind  `json:"kind"`
-	RecordedAt time.Time       `json:"recorded_at"`
-	Agent      string          `json:"agent"`
-	DecidedBy  string          `json:"decided_by,omitempty"`
+	Sequence   uint64         `json:"sequence"`
+	Kind       MissionLogKind `json:"kind"`
+	RecordedAt time.Time      `json:"recorded_at"`
+	Agent      string         `json:"agent"`
+	DecidedBy  string         `json:"decided_by,omitempty"`
 	// RequestProofID correlates a permission decision with the verified request
 	// proof that caused it. It is not an AAuth idempotency identifier.
 	RequestProofID string          `json:"request_proof_id,omitempty"`
-	Request    json.RawMessage `json:"request,omitempty"`
-	Response   json.RawMessage `json:"response,omitempty"`
-	Proof      *RequestProof   `json:"proof,omitempty"`
+	Request        json.RawMessage `json:"request,omitempty"`
+	Response       json.RawMessage `json:"response,omitempty"`
+	Proof          *RequestProof   `json:"proof,omitempty"`
 }
 
 // RequestProof archives the artifacts needed to attribute a request after the

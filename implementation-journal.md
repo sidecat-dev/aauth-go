@@ -253,3 +253,50 @@ comparators. They do not define compatibility requirements for this library.
   now have an ordered durable request/terminal-response record. Token/AS/resource
   pending state, agent-requested mission completion, and the remaining
   mission-log event families remain open.
+
+### Mission completion, clarification, and durable interaction custody
+
+- **Status: the mission-completion interaction is implemented vertically and
+  qualified across restart.**
+- The agent signs a `type=completion` request containing a Markdown summary and
+  exact mission reference. The PS admits it only for the signing agent's
+  retained active mission, binds the random continuation to that agent and
+  confirmation key, records the verified request proof and replay identity,
+  and returns a deferred approval requirement.
+- A trusted in-process host boundary can request clarification or accept
+  completion. Clarification questions and signed
+  `action=clarification_response` answers enter the same ordered mission log;
+  the five-round recommendation is enforced. An expired continuation refuses
+  both late agent answers and late host acceptance.
+- Acceptance records the terminal interaction response, decision actor, and
+  mission termination in one governance snapshot before it becomes visible.
+  Definite store failure rolls back initial proposal admission, host
+  clarification, signed clarification response, and terminal acceptance.
+  Publication uncertainty retains the candidate state under the same contract
+  as the other governance transitions; reconstruction proves the accepted
+  completion remains deliverable.
+- The snapshot now includes global interaction history and completion
+  continuations as well as mission-local entries. Loading revalidates exact
+  request bodies and digests, proof context, mission ownership, pending links,
+  state transitions, clarification rounds, terminal response kinds, and
+  cross-record relationships. A checksum-valid snapshot with a mismatched
+  interaction/pending link is refused.
+- The executable journey covers another agent/key being unable to poll or
+  answer, exact clarification replay refusal, restart before clarification,
+  restart before acceptance, a durable-save rollback, successful acceptance,
+  terminal delivery, expiry during polling, expiry before a clarification
+  answer, a five-round clarification limit, and fail-closed semantic
+  corruption. The type-aware client accepts the draft's empty `200 OK`
+  completion response and its `{"answer": ...}` question response shape.
+- **Protocol finding earned:** the required pending-URL lifecycle makes a lost
+  terminal response unrecoverable. The test durably accepts completion, lets
+  the server return the terminal `200`, drops it in the transport, and observes
+  the required `410 Gone` on the next signed poll. The agent cannot distinguish
+  that case from a terminal result consumed elsewhere and never learns whether
+  the mission completed. This is recorded as N7 in the reconciled workspace
+  feedback; no proposal has been sent upstream.
+- General interaction/payment relay, question delivery, updated-request and
+  cancel actions, callback chaining, and persistence for the token/AS/resource
+  pending families remain open. The completion implementation uses only the
+  standalone public package and reference package; Sidecat is an intended
+  consumer, not a dependency.

@@ -167,7 +167,9 @@ type governanceState struct {
 	PersonServer       string                        `json:"person_server"`
 	Missions           []governanceMission           `json:"missions"`
 	Permissions        []aauth.PermissionRecord      `json:"permissions"`
+	Interactions       []aauth.InteractionRecord     `json:"interactions"`
 	PendingPermissions []governancePendingPermission `json:"pending_permissions"`
+	PendingCompletions []governancePendingCompletion `json:"pending_completions"`
 	Replays            []governanceReplay            `json:"replays,omitempty"`
 }
 
@@ -208,11 +210,28 @@ type governancePermissionDecision struct {
 	DecidedBy  string           `json:"decided_by,omitempty"`
 }
 
+type governancePendingCompletion struct {
+	ID                     string          `json:"id"`
+	Agent                  string          `json:"agent"`
+	PollingAgentThumbprint string          `json:"polling_agent_thumbprint"`
+	ExpiresAt              string          `json:"expires_at"`
+	RequestReplayKey       string          `json:"request_replay_key"`
+	RequestBody            []byte          `json:"request_body"`
+	State                  completionState `json:"state"`
+	Clarification          string          `json:"clarification,omitempty"`
+	ClarificationRounds    int             `json:"clarification_rounds"`
+	DecidedBy              string          `json:"decided_by,omitempty"`
+	DecidedAt              string          `json:"decided_at,omitempty"`
+	ResponseBody           []byte          `json:"response_body,omitempty"`
+}
+
 func encodeGovernanceState(
 	personServer string,
 	missions map[string]storedMission,
 	permissions []aauth.PermissionRecord,
+	interactions []aauth.InteractionRecord,
 	pendingPermissions map[string]pendingPersonPermission,
+	pendingCompletions map[string]pendingCompletion,
 	replays map[string]time.Time,
 ) ([]byte, error) {
 	state := governanceState{
@@ -238,6 +257,7 @@ func encodeGovernanceState(
 		})
 	}
 	state.Permissions = copyPermissionHistory(permissions)
+	state.Interactions = copyInteractionHistory(interactions)
 	pendingIDs := make([]string, 0, len(pendingPermissions))
 	for id := range pendingPermissions {
 		pendingIDs = append(pendingIDs, id)
@@ -264,6 +284,35 @@ func encodeGovernanceState(
 					Reason:     pending.decision.Reason,
 					DecidedBy:  pending.decision.DecidedBy,
 				},
+			},
+		)
+	}
+	completionIDs := make([]string, 0, len(pendingCompletions))
+	for id := range pendingCompletions {
+		completionIDs = append(completionIDs, id)
+	}
+	sort.Strings(completionIDs)
+	for _, id := range completionIDs {
+		pending := pendingCompletions[id]
+		decidedAt := ""
+		if !pending.decidedAt.IsZero() {
+			decidedAt = pending.decidedAt.UTC().Format(time.RFC3339Nano)
+		}
+		state.PendingCompletions = append(
+			state.PendingCompletions,
+			governancePendingCompletion{
+				ID:                     pending.id,
+				Agent:                  pending.agent,
+				PollingAgentThumbprint: pending.pollingAgentThumbprint,
+				ExpiresAt:              pending.expiresAt.UTC().Format(time.RFC3339Nano),
+				RequestReplayKey:       pending.requestReplayKey,
+				RequestBody:            append([]byte(nil), pending.requestBody...),
+				State:                  pending.state,
+				Clarification:          pending.clarification,
+				ClarificationRounds:    pending.clarificationRounds,
+				DecidedBy:              pending.decidedBy,
+				DecidedAt:              decidedAt,
+				ResponseBody:           append([]byte(nil), pending.responseBody...),
 			},
 		)
 	}
@@ -300,52 +349,56 @@ func decodeGovernanceState(
 ) (
 	map[string]storedMission,
 	[]aauth.PermissionRecord,
+	[]aauth.InteractionRecord,
 	map[string]pendingPersonPermission,
+	map[string]pendingCompletion,
 	map[string]time.Time,
 	error,
 ) {
 	missions := make(map[string]storedMission)
 	var permissions []aauth.PermissionRecord
+	var interactions []aauth.InteractionRecord
 	pendingPermissions := make(map[string]pendingPersonPermission)
+	pendingCompletions := make(map[string]pendingCompletion)
 	replays := make(map[string]time.Time)
 	if body == nil {
-		return missions, permissions, pendingPermissions, replays, nil
+		return missions, permissions, interactions, pendingPermissions, pendingCompletions, replays, nil
 	}
 	if len(body) == 0 {
-		return nil, nil, nil, nil, errors.New("reference: governance state is empty")
+		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state is empty")
 	}
 	if len(body) > maxGovernanceStateBytes {
-		return nil, nil, nil, nil, errors.New("reference: governance state is too large")
+		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state is too large")
 	}
 	var envelope governanceEnvelope
 	if err := decodeJSONBytes(bytes.NewReader(body), &envelope); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("reference: decode governance envelope: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: decode governance envelope: %w", err)
 	}
 	if envelope.Schema != governanceEnvelopeSchema {
-		return nil, nil, nil, nil, errors.New("reference: governance envelope schema is unsupported")
+		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance envelope schema is unsupported")
 	}
 	expected, err := hex.DecodeString(envelope.StateSHA256)
 	if err != nil || len(expected) != sha256.Size {
-		return nil, nil, nil, nil, errors.New("reference: governance state digest is invalid")
+		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state digest is invalid")
 	}
 	actual := sha256.Sum256(envelope.State)
 	if !bytes.Equal(expected, actual[:]) {
-		return nil, nil, nil, nil, errors.New("reference: governance state digest does not match")
+		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state digest does not match")
 	}
 	var state governanceState
 	if err := decodeJSONBytes(bytes.NewReader(envelope.State), &state); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("reference: decode governance state: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: decode governance state: %w", err)
 	}
 	if state.Schema != governanceStateSchema || state.PersonServer != personServer {
-		return nil, nil, nil, nil, errors.New("reference: governance state does not belong to this person server")
+		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state does not belong to this person server")
 	}
 	for index, encoded := range state.Missions {
 		mission, err := decodeGovernanceMission(encoded, personServer)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("reference: governance mission %d: %w", index, err)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: governance mission %d: %w", index, err)
 		}
 		if _, duplicate := missions[mission.reference.S256]; duplicate {
-			return nil, nil, nil, nil, errors.New("reference: governance state contains duplicate missions")
+			return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state contains duplicate missions")
 		}
 		missions[mission.reference.S256] = mission
 	}
@@ -357,9 +410,21 @@ func decodeGovernanceState(
 			missions,
 		)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("reference: permission record %d: %w", index, err)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: permission record %d: %w", index, err)
 		}
 		permissions = append(permissions, record)
+	}
+	for index, encoded := range state.Interactions {
+		record, err := decodeGovernanceInteractionRecord(
+			encoded,
+			uint64(index+1),
+			personServer,
+			missions,
+		)
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: interaction record %d: %w", index, err)
+		}
+		interactions = append(interactions, record)
 	}
 	for index, encoded := range state.PendingPermissions {
 		pending, err := decodeGovernancePendingPermission(
@@ -369,36 +434,53 @@ func decodeGovernanceState(
 			permissions,
 		)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("reference: pending permission %d: %w", index, err)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: pending permission %d: %w", index, err)
 		}
 		if _, duplicate := pendingPermissions[pending.id]; duplicate {
-			return nil, nil, nil, nil, errors.New("reference: governance state contains duplicate pending permissions")
+			return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state contains duplicate pending permissions")
 		}
 		pendingPermissions[pending.id] = pending
+	}
+	for index, encoded := range state.PendingCompletions {
+		pending, err := decodeGovernancePendingCompletion(
+			encoded,
+			personServer,
+			missions,
+			interactions,
+		)
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: pending completion %d: %w", index, err)
+		}
+		if _, duplicate := pendingCompletions[pending.id]; duplicate {
+			return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state contains duplicate pending completions")
+		}
+		pendingCompletions[pending.id] = pending
 	}
 	for index, encoded := range state.Replays {
 		key, err := base64.RawURLEncoding.DecodeString(encoded.Key)
 		if err != nil || len(key) != sha256.Size {
-			return nil, nil, nil, nil, fmt.Errorf("reference: governance replay %d key is invalid", index)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: governance replay %d key is invalid", index)
 		}
 		expiresAt, err := time.Parse(time.RFC3339Nano, encoded.ExpiresAt)
 		if err != nil || expiresAt.IsZero() {
-			return nil, nil, nil, nil, fmt.Errorf("reference: governance replay %d expiry is invalid", index)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: governance replay %d expiry is invalid", index)
 		}
 		if _, duplicate := replays[encoded.Key]; duplicate {
-			return nil, nil, nil, nil, errors.New("reference: governance state contains duplicate replay proofs")
+			return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state contains duplicate replay proofs")
 		}
 		replays[encoded.Key] = expiresAt
 	}
 	if err := validateGovernanceRelationships(
 		missions,
 		permissions,
+		interactions,
 		pendingPermissions,
+		pendingCompletions,
 		replays,
 	); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
-	return missions, permissions, pendingPermissions, replays, nil
+	return missions, permissions, interactions, pendingPermissions, pendingCompletions, replays, nil
 }
 
 func decodeGovernanceMission(
@@ -658,7 +740,9 @@ func decodeGovernancePendingPermission(
 func validateGovernanceRelationships(
 	missions map[string]storedMission,
 	permissions []aauth.PermissionRecord,
+	interactions []aauth.InteractionRecord,
 	pendingPermissions map[string]pendingPersonPermission,
+	pendingCompletions map[string]pendingCompletion,
 	replays map[string]time.Time,
 ) error {
 	permissionProofs := make(map[string]aauth.PermissionRecord, len(permissions))
@@ -677,6 +761,25 @@ func validateGovernanceRelationships(
 		terminal := pending.state == pendingAuthorizationServed
 		if terminal != (len(record.Response) != 0) {
 			return errors.New("reference: pending permission terminal state does not match its request record")
+		}
+	}
+	interactionProofs := make(map[string]aauth.InteractionRecord, len(interactions))
+	for _, record := range interactions {
+		key := record.Proof.ReplayKey
+		if _, duplicate := interactionProofs[key]; duplicate {
+			return errors.New("reference: governance state contains duplicate interaction proofs")
+		}
+		interactionProofs[key] = record
+	}
+	for _, pending := range pendingCompletions {
+		record, exists := interactionProofs[pending.requestReplayKey]
+		if !exists || record.PendingID != pending.id {
+			return errors.New("reference: pending completion has no interaction record")
+		}
+		terminal := pending.state == completionAccepted ||
+			pending.state == completionServed
+		if terminal != (len(record.Response) != 0) {
+			return errors.New("reference: pending completion terminal state does not match its interaction record")
 		}
 	}
 	for _, mission := range missions {
@@ -708,6 +811,38 @@ func validateGovernanceRelationships(
 					}
 					if !matched {
 						return errors.New("reference: permission response does not match the mission log")
+					}
+				}
+			case aauth.MissionLogInteractionRequest:
+				record, exists := interactionProofs[entry.RequestProofID]
+				if !exists ||
+					record.Agent != mission.agent ||
+					!bytes.Equal(record.Request, entry.Request) {
+					return errors.New("reference: mission interaction request has no global interaction record")
+				}
+				if interactionRecordMission(record) != mission.reference {
+					return errors.New("reference: mission interaction request has the wrong mission")
+				}
+				if len(record.Response) != 0 {
+					kind, err := interactionResponseKind(record.Response)
+					if err != nil {
+						return err
+					}
+					if kind == "mission_terminated" &&
+						mission.status == aauth.MissionTerminated {
+						continue
+					}
+					matched := false
+					for _, decision := range mission.log[index+1:] {
+						if decision.Kind == aauth.MissionLogInteractionResponse &&
+							decision.RequestProofID == entry.RequestProofID &&
+							bytes.Equal(decision.Response, record.Response) {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						return errors.New("reference: interaction response does not match the mission log")
 					}
 				}
 			}
@@ -799,6 +934,81 @@ func validateMissionLogEntry(
 			"/audit",
 		); err != nil {
 			return err
+		}
+	case aauth.MissionLogInteractionRequest:
+		var request aauth.InteractionRequest
+		if err := decodeJSONBytes(bytes.NewReader(entry.Request), &request); err != nil {
+			return err
+		}
+		if err := request.Validate(); err != nil ||
+			request.Type != aauth.InteractionTypeCompletion ||
+			request.Mission == nil ||
+			*request.Mission != mission ||
+			len(entry.Response) != 0 ||
+			entry.Proof == nil ||
+			entry.RequestProofID != entry.Proof.ReplayKey {
+			return errors.New("interaction request log entry is invalid")
+		}
+		if err := validateStoredRequestProof(
+			entry.Proof,
+			entry.Request,
+			agent,
+			mission.Approver,
+			"/interaction",
+		); err != nil {
+			return err
+		}
+	case aauth.MissionLogClarification:
+		if len(entry.Request) != 0 {
+			var request aauth.ClarificationResponse
+			if err := decodeJSONBytes(bytes.NewReader(entry.Request), &request); err != nil {
+				return err
+			}
+			if request.Action != "clarification_response" ||
+				strings.TrimSpace(request.ClarificationResponse) == "" ||
+				len(entry.Response) != 0 ||
+				entry.DecidedBy != "" ||
+				entry.Proof == nil ||
+				entry.RequestProofID != entry.Proof.ReplayKey ||
+				!validPendingInteractionTarget(entry.Proof.Target) {
+				return errors.New("clarification response log entry is invalid")
+			}
+			if err := validateStoredRequestProof(
+				entry.Proof,
+				entry.Request,
+				agent,
+				mission.Approver,
+				entry.Proof.Target,
+			); err != nil {
+				return err
+			}
+			break
+		}
+		var response struct {
+			Clarification string `json:"clarification"`
+		}
+		if err := decodeJSONBytes(bytes.NewReader(entry.Response), &response); err != nil {
+			return err
+		}
+		if strings.TrimSpace(response.Clarification) == "" ||
+			entry.Proof != nil ||
+			!validReplayKey(entry.RequestProofID) ||
+			strings.TrimSpace(entry.DecidedBy) == "" {
+			return errors.New("clarification question log entry is invalid")
+		}
+	case aauth.MissionLogInteractionResponse:
+		if len(entry.Request) != 0 ||
+			len(entry.Response) == 0 ||
+			entry.Proof != nil ||
+			!validReplayKey(entry.RequestProofID) {
+			return errors.New("interaction response log entry is invalid")
+		}
+		kind, err := interactionResponseKind(entry.Response)
+		if err != nil {
+			return err
+		}
+		if kind == "completed" && strings.TrimSpace(entry.DecidedBy) == "" {
+			return errors.New("completion response log entry requires a decision actor")
 		}
 	case aauth.MissionLogTermination:
 		if len(entry.Request) != 0 ||

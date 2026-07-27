@@ -164,6 +164,16 @@ func TestParseDeferredResponseRejectsInvalidCustody(t *testing.T) {
 			},
 			body: `{"status":"pending"}`,
 		},
+		{
+			name: "overflowing clarification timeout",
+			headers: http.Header{
+				"Location":          {"/pending/request-123"},
+				"Retry-After":       {"0"},
+				"Cache-Control":     {"no-store"},
+				"Aauth-Requirement": {"requirement=clarification"},
+			},
+			body: `{"status":"pending","clarification":"Provide details.","timeout":9223372036854775807}`,
+		},
 	}
 	for _, test := range tests {
 		test := test

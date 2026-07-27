@@ -117,6 +117,31 @@ type PendingPermissionAuthorization struct {
 	Requirement  *aauth.Requirement
 }
 
+// InteractionAuthorization is either a terminal person-server interaction
+// result or a signed-poll continuation.
+type InteractionAuthorization struct {
+	Completed bool
+	Status    string
+	Answer    string
+	Pending   *PendingInteractionAuthorization
+}
+
+// PendingInteractionAuthorization retains an ownership-bound person-server
+// interaction continuation, including any clarification the agent must answer.
+type PendingInteractionAuthorization struct {
+	ID            string
+	Type          aauth.InteractionType
+	PersonServer  string
+	Location      string
+	RetryAfter    time.Duration
+	NotBefore     time.Time
+	Status        string
+	Requirement   *aauth.Requirement
+	Clarification string
+	Timeout       time.Duration
+	Options       []string
+}
+
 func NewAgent(config AgentConfig) (*Agent, error) {
 	if err := aauth.ValidateAgentIdentifier(config.Identifier); err != nil {
 		return nil, err
@@ -413,6 +438,255 @@ func (agent *Agent) RecordAudit(
 		return responseError(response)
 	}
 	return nil
+}
+
+// ProposeMissionCompletion submits the draft's completion interaction and
+// returns the person-server review continuation.
+func (agent *Agent) ProposeMissionCompletion(
+	ctx context.Context,
+	endpoint string,
+	mission aauth.MissionReference,
+	summary string,
+) (InteractionAuthorization, error) {
+	return agent.RequestInteraction(ctx, endpoint, aauth.InteractionRequest{
+		Type:    aauth.InteractionTypeCompletion,
+		Summary: summary,
+		Mission: &mission,
+	})
+}
+
+// RequestInteraction submits a signed person-server interaction request.
+func (agent *Agent) RequestInteraction(
+	ctx context.Context,
+	endpoint string,
+	input aauth.InteractionRequest,
+) (InteractionAuthorization, error) {
+	var authorization InteractionAuthorization
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return authorization, err
+	}
+	if err := input.Validate(); err != nil {
+		return authorization, err
+	}
+	personServer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return authorization, err
+	}
+	if input.Mission != nil && input.Mission.Approver != personServer {
+		return authorization, errors.New("reference: interaction mission approver does not match person-server endpoint")
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return authorization, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return authorization, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return authorization, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return authorization, err
+	}
+	defer response.Body.Close()
+	return decodeInteractionAuthorization(response, personServer, agent.clock.Now(), input.Type)
+}
+
+// PollInteraction makes one signed GET to a pending person-server interaction.
+func (agent *Agent) PollInteraction(
+	ctx context.Context,
+	pending *PendingInteractionAuthorization,
+) (InteractionAuthorization, error) {
+	var authorization InteractionAuthorization
+	if pending == nil {
+		return authorization, errors.New("reference: pending interaction is required")
+	}
+	if agent.clock.Now().Before(pending.NotBefore) {
+		return authorization, errors.New("reference: pending interaction is not ready to poll")
+	}
+	if err := aauth.ValidatePollingEndpoint(pending.Location); err != nil {
+		return authorization, err
+	}
+	personServer, err := endpointIdentifier(pending.Location)
+	if err != nil {
+		return authorization, err
+	}
+	if personServer != pending.PersonServer {
+		return authorization, errors.New("reference: pending interaction does not apply to its endpoint")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.Location, nil)
+	if err != nil {
+		return authorization, err
+	}
+	request.Header.Set("Prefer", "wait=0")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return authorization, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return authorization, err
+	}
+	defer response.Body.Close()
+	authorization, err = decodeInteractionAuthorization(
+		response,
+		pending.PersonServer,
+		agent.clock.Now(),
+		pending.Type,
+	)
+	if authorization.Pending != nil {
+		*pending = *authorization.Pending
+		authorization.Pending = pending
+	}
+	return authorization, err
+}
+
+// RespondToClarification posts one signed Markdown answer to a pending
+// interaction and updates the continuation returned by the person server.
+func (agent *Agent) RespondToClarification(
+	ctx context.Context,
+	pending *PendingInteractionAuthorization,
+	answer string,
+) error {
+	if pending == nil ||
+		pending.Requirement == nil ||
+		pending.Requirement.Type != aauth.RequirementClarification {
+		return errors.New("reference: pending interaction is not awaiting clarification")
+	}
+	body, err := json.Marshal(aauth.ClarificationResponse{
+		Action:                "clarification_response",
+		ClarificationResponse: answer,
+	})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		pending.Location,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	authorization, err := decodeInteractionAuthorization(
+		response,
+		pending.PersonServer,
+		agent.clock.Now(),
+		pending.Type,
+	)
+	if err != nil {
+		return err
+	}
+	if authorization.Pending == nil {
+		return errors.New("reference: clarification response unexpectedly terminated the interaction")
+	}
+	*pending = *authorization.Pending
+	return nil
+}
+
+func decodeInteractionAuthorization(
+	response *http.Response,
+	personServer string,
+	now time.Time,
+	interactionType aauth.InteractionType,
+) (InteractionAuthorization, error) {
+	var authorization InteractionAuthorization
+	switch response.StatusCode {
+	case http.StatusOK:
+		switch interactionType {
+		case aauth.InteractionTypeCompletion:
+			body, err := io.ReadAll(io.LimitReader(response.Body, maxJSONBody+1))
+			if err != nil {
+				return authorization, err
+			}
+			if len(body) > maxJSONBody {
+				return authorization, errors.New("reference: interaction response is too large")
+			}
+			if len(bytes.TrimSpace(body)) != 0 {
+				var terminal struct {
+					Status string `json:"status"`
+				}
+				if err := decodeJSONBytes(bytes.NewReader(body), &terminal); err != nil {
+					return authorization, err
+				}
+				if terminal.Status != "completed" {
+					return authorization, errors.New("reference: completion response status is invalid")
+				}
+			}
+			authorization.Completed = true
+			authorization.Status = "completed"
+		case aauth.InteractionTypeQuestion:
+			var terminal struct {
+				Answer *string `json:"answer"`
+			}
+			if err := decodeJSONBytes(io.LimitReader(response.Body, maxJSONBody+1), &terminal); err != nil {
+				return authorization, err
+			}
+			if terminal.Answer == nil {
+				return authorization, errors.New("reference: question response is missing its answer")
+			}
+			authorization.Answer = *terminal.Answer
+			authorization.Status = "answered"
+		case aauth.InteractionTypeInteraction, aauth.InteractionTypePayment:
+			var terminal struct {
+				Status string `json:"status"`
+			}
+			if err := decodeJSONBytes(io.LimitReader(response.Body, maxJSONBody+1), &terminal); err != nil {
+				return authorization, err
+			}
+			if terminal.Status == "" {
+				return authorization, errors.New("reference: relay response status is missing")
+			}
+			authorization.Status = terminal.Status
+		default:
+			return authorization, errors.New("reference: interaction type is invalid")
+		}
+		return authorization, nil
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			return authorization, err
+		}
+		pendingServer, err := endpointIdentifier(deferred.Location)
+		if err != nil {
+			return authorization, err
+		}
+		if pendingServer != personServer {
+			return authorization, errors.New("reference: pending interaction moved to another person server")
+		}
+		parsed, err := url.Parse(deferred.Location)
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Pending = &PendingInteractionAuthorization{
+			ID:            path.Base(parsed.Path),
+			Type:          interactionType,
+			PersonServer:  personServer,
+			Location:      deferred.Location,
+			RetryAfter:    deferred.RetryAfter,
+			NotBefore:     now.Add(deferred.RetryAfter),
+			Status:        deferred.Status,
+			Requirement:   deferred.Requirement,
+			Clarification: deferred.Clarification,
+			Timeout:       deferred.Timeout,
+			Options:       append([]string(nil), deferred.Options...),
+		}
+		return authorization, nil
+	default:
+		return authorization, responseError(response)
+	}
 }
 
 func (agent *Agent) Authorize(

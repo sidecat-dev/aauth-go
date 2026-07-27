@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const maxDeferredResponseBytes = 1 << 20
+const (
+	maxDeferredResponseBytes = 1 << 20
+	maxDurationSeconds       = int64((1<<63 - 1) / int64(time.Second))
+)
 
 type PollingErrorCode string
 
@@ -41,10 +44,13 @@ func GeneratePendingID(random io.Reader) (string, error) {
 
 // DeferredResponse is the validated continuation state from an AAuth 202.
 type DeferredResponse struct {
-	Location    string
-	RetryAfter  time.Duration
-	Status      string
-	Requirement *Requirement
+	Location      string
+	RetryAfter    time.Duration
+	Status        string
+	Requirement   *Requirement
+	Clarification string
+	Timeout       time.Duration
+	Options       []string
 }
 
 // ParseDeferredResponse validates an AAuth 202 response and consumes its JSON
@@ -99,7 +105,10 @@ func ParseDeferredResponse(response *http.Response) (DeferredResponse, error) {
 		return deferred, errors.New("aauth: deferred response is too large")
 	}
 	var result struct {
-		Status string `json:"status"`
+		Status        string   `json:"status"`
+		Clarification string   `json:"clarification"`
+		Timeout       int64    `json:"timeout"`
+		Options       []string `json:"options"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return deferred, fmt.Errorf("aauth: decode deferred response: %w", err)
@@ -110,11 +119,21 @@ func ParseDeferredResponse(response *http.Response) (DeferredResponse, error) {
 	if result.Status != "pending" && result.Status != "interacting" {
 		result.Status = "pending"
 	}
+	if result.Timeout < 0 || result.Timeout > maxDurationSeconds {
+		return deferred, errors.New("aauth: deferred clarification timeout is out of range")
+	}
+	if requirement != nil && requirement.Type == RequirementClarification &&
+		strings.TrimSpace(result.Clarification) == "" {
+		return deferred, errors.New("aauth: clarification requirement needs a question")
+	}
 	return DeferredResponse{
-		Location:    location.String(),
-		RetryAfter:  time.Duration(retrySeconds) * time.Second,
-		Status:      result.Status,
-		Requirement: requirement,
+		Location:      location.String(),
+		RetryAfter:    time.Duration(retrySeconds) * time.Second,
+		Status:        result.Status,
+		Requirement:   requirement,
+		Clarification: result.Clarification,
+		Timeout:       time.Duration(result.Timeout) * time.Second,
+		Options:       append([]string(nil), result.Options...),
 	}, nil
 }
 

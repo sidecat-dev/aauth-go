@@ -86,14 +86,26 @@ prior log. A host-owned termination transition permanently refuses later
 permission and audit use, including a deferred grant approved before
 termination but not yet delivered.
 
+An agent can also propose mission completion through the person server's
+published interaction endpoint. The proposal is signed, bound to the exact
+active mission and initiating key, and placed into a durable approval
+continuation. A trusted host may ask up to five clarification questions; the
+agent posts signed, self-describing Markdown answers and resumes polling. Host
+acceptance records the terminal interaction response and mission termination
+atomically before returning success. Pending review, clarification, expiry,
+acceptance, terminal delivery, replay proofs, and the complete ordered
+interaction/clarification log survive restart. The client accepts the draft's
+empty `200 OK` completion response as well as the reference server's optional
+`{"status":"completed"}` body.
+
 Governance custody can be injected through the small `GovernanceStore`
 interface. The included single-writer file adapter writes private `0600`
 checksum-bound snapshots by synced temporary-file replacement and refuses
 empty, malformed, cross-server, loosely-permissioned, or semantically
-inconsistent state. Approved missions, ordered logs, permission continuations,
-terminal tombstones, every permission request and terminal response, and active
-governance replay proofs survive restart. Mission-log request entries archive
-the verified signature headers, presented credential,
+inconsistent state. Approved missions, ordered logs, permission and completion
+continuations, terminal tombstones, every governed request and terminal
+response, and active governance replay proofs survive restart. Mission-log
+request entries archive the verified signature headers, presented credential,
 public-key snapshot, request target, timestamps, replay identity, and exact
 body. That material is sensitive evidence custody, not display data.
 
@@ -105,12 +117,13 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
-Four-party call chaining, interaction relay/callback and clarification flows,
-agent-requested mission completion, restart custody for token/AS/resource
-continuations, R3, Events, Bootstrap, and the remaining Signature-Key schemes
-still require implementation and qualification. Without a configured
-`GovernanceStore`, the reference person server deliberately remains
-process-local. The file adapter has a single-writer contract; a Sidecat or other
-host may implement the same standalone interface with its own durable store.
+Four-party call chaining, interaction/payment relay and callbacks, question
+delivery, updated-request/cancel clarification actions, restart custody for
+token/AS/resource continuations, R3, Events, Bootstrap, and the remaining
+Signature-Key schemes still require implementation and qualification. Without
+a configured `GovernanceStore`, the reference person server deliberately
+remains process-local. The file adapter has a single-writer contract; a Sidecat
+or other host may implement the same standalone interface with its own durable
+store.
 
 No upstream contribution or repository is implied by this local project.
