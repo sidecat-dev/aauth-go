@@ -138,3 +138,26 @@ comparators. They do not define compatibility requirements for this library.
 - Clarification/updated-request/cancel actions, resource-initiated callback
   chaining, PS interaction relay, durable pending storage, and four-party call
   chaining remain open.
+
+### Deferred delegation clients
+
+- **Status: parent-mediated sub-agent path implemented vertically; chained
+  client result implemented but propagation through an intermediary resource
+  remains open.**
+- `RequestSubagentTokenAuthorization` returns the same immediate-or-pending
+  result used by top-level agents. The parent signs both the initial PS request
+  and every poll, while the retained validation context requires the terminal
+  grant to remain bound to the sub-agent's identifier and key and to name the
+  parent in `act.agent`.
+- The executable journey covers an immediate sub-agent grant followed by a
+  deferred grant in the same real AP/agent/PS/resource system. Policy does not
+  run for the deferred request until trusted PS approval; the sub-agent then
+  uses the terminal token at the protected resource.
+- `RequestChainedTokenAuthorization` likewise preserves a `202` instead of
+  collapsing it into an error. The older immediate convenience methods remain
+  source-compatible and return an explicit instruction when a caller must use
+  the continuation API.
+- Full call-chaining deferral still requires the intermediary resource to
+  create its own caller-facing pending URL, propagate the downstream
+  interaction, finish the downstream operation, and deliver the original
+  result. A client method alone is not claimed as that vertical.

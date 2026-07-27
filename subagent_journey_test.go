@@ -1,6 +1,7 @@
 package aauth_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,6 +24,8 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 		"subagent-token",
 		"subagent-resource-token",
 		"subagent-auth-token",
+		"deferred-subagent-resource-token",
+		"deferred-subagent-auth-token",
 	)
 	apKey := testSigningKey(t, "ap-key")
 	psKey := testSigningKey(t, "ps-key")
@@ -81,22 +84,33 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 	}
 
 	var policyRequest aauth.AuthorizationRequest
+	var policyCalls int
+	var deferSubagent bool
 	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
 		Identifier:  "https://ps.example",
 		SigningKey:  psKey,
 		KeyResolver: keyResolver,
 		Clock:       clock,
 		NewID:       ids,
+		InteractionRequired: func(_ context.Context, request aauth.AuthorizationRequest) (bool, error) {
+			return deferSubagent && request.ParentAgent == "aauth:planner@ap.example", nil
+		},
 		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
 			return aauth.MissionDecision{Description: proposal.Description}, nil
 		},
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
+			policyCalls++
 			policyRequest = request
 			return aauth.AuthorizationDecision{
 				Subject: "pairwise-user-for-resource",
 				Scope:   request.Scope,
 			}, nil
 		},
+		Random: bytes.NewReader(bytes.Join([][]byte{
+			bytes.Repeat([]byte{4}, 16),
+			{0, 1, 2, 3, 4},
+		}, nil)),
+		PendingLifetime: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,5 +225,78 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 	}
 	if operationRequest.Agent != "aauth:planner+search1@ap.example" {
 		t.Fatalf("protected operation agent = %q", operationRequest.Agent)
+	}
+
+	deferSubagent = true
+	now = now.Add(time.Second)
+	deferredResourceGrant, err := subagent.RequestResourceToken(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"search.read"},
+		mission,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization, err := parent.RequestSubagentTokenAuthorization(
+		context.Background(),
+		"https://ps.example/token",
+		deferredResourceGrant,
+		subagentToken,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorization.Grant != nil || authorization.Pending == nil {
+		t.Fatalf("deferred sub-agent authorization = %#v", authorization)
+	}
+	pending := authorization.Pending
+	if policyCalls != 1 {
+		t.Fatalf("sub-agent policy ran before deferred approval; calls = %d", policyCalls)
+	}
+
+	interaction, err := gateway.Client().Get(
+		pending.Requirement.InteractionURL +
+			"?code=" + pending.Requirement.InteractionCode,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer interaction.Body.Close()
+	if interaction.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(interaction.Body)
+		t.Fatalf("deferred sub-agent interaction status = %d, body = %s", interaction.StatusCode, body)
+	}
+	if err := ps.ApproveAuthorization(context.Background(), pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	if policyCalls != 2 {
+		t.Fatalf("sub-agent policy calls after deferred approval = %d", policyCalls)
+	}
+
+	deferred, err := parent.PollTokenAuthorization(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferred.Grant == nil ||
+		deferred.Grant.Claims.Agent != "aauth:planner+search1@ap.example" ||
+		deferred.Grant.Claims.Actor == nil ||
+		deferred.Grant.Claims.Actor.Agent != "aauth:planner@ap.example" ||
+		!deferred.Grant.Claims.Confirmation.JWK.Equal(subagentKey.PublicJWK()) {
+		t.Fatalf("deferred sub-agent grant = %#v", deferred.Grant)
+	}
+	deferredResponse, err := subagent.DoAuthorized(
+		context.Background(),
+		http.MethodGet,
+		"https://resource.example/search",
+		*deferred.Grant,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deferredResponse.Body.Close()
+	if deferredResponse.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(deferredResponse.Body)
+		t.Fatalf("deferred sub-agent protected status = %d, body = %s", deferredResponse.StatusCode, body)
 	}
 }

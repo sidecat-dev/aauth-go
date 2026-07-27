@@ -52,7 +52,9 @@ recovery.
 Parent-mediated sub-agents also run through the complete resource-token,
 person-server, auth-token, and protected-operation path. The person server
 enforces single-level delegation and emits an auth token bound to the
-sub-agent's key with the parent in `act.agent`.
+sub-agent's key with the parent in `act.agent`. The parent can retain and poll
+a deferred PS continuation on the sub-agent's behalf; the sub-agent never gains
+authority to call or poll the PS directly.
 
 The four-party path is live as well: resources can target an access server,
 the person server applies user policy and signs the federated request with its

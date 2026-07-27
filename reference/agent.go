@@ -351,29 +351,53 @@ func (agent *Agent) AuthorizeSubagent(
 	resourceGrant ResourceGrant,
 	subagentToken string,
 ) (Grant, error) {
-	parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	authorization, err := agent.RequestSubagentTokenAuthorization(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		subagentToken,
+	)
 	if err != nil {
 		return Grant{}, err
 	}
+	if authorization.Grant == nil {
+		return Grant{}, errors.New("reference: sub-agent authorization is pending; use RequestSubagentTokenAuthorization and PollTokenAuthorization")
+	}
+	return *authorization.Grant, nil
+}
+
+// RequestSubagentTokenAuthorization lets a parent exchange a sub-agent's
+// resource token and receive either an immediate grant or a continuation the
+// parent polls with its own proof.
+func (agent *Agent) RequestSubagentTokenAuthorization(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	subagentToken string,
+) (TokenAuthorization, error) {
+	parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
 	if parentClaims.ParentAgent != "" {
-		return Grant{}, errors.New("reference: sub-agent cannot mediate another sub-agent")
+		return TokenAuthorization{}, errors.New("reference: sub-agent cannot mediate another sub-agent")
 	}
 	subagentClaims, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
 	if err != nil {
-		return Grant{}, err
+		return TokenAuthorization{}, err
 	}
 	if subagentClaims.ParentAgent != agent.identifier {
-		return Grant{}, errors.New("reference: sub-agent token does not name the signing parent")
+		return TokenAuthorization{}, errors.New("reference: sub-agent token does not name the signing parent")
 	}
 	subagentThumbprint, err := subagentClaims.Confirmation.JWK.Thumbprint()
 	if err != nil {
-		return Grant{}, err
+		return TokenAuthorization{}, err
 	}
 	if resourceGrant.Claims.Agent != subagentClaims.Subject ||
 		resourceGrant.Claims.AgentJKT != subagentThumbprint {
-		return Grant{}, errors.New("reference: resource token is not bound to the sub-agent")
+		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the sub-agent")
 	}
-	return agent.exchangeResourceToken(
+	return agent.requestTokenAuthorization(
 		ctx,
 		personServerEndpoint,
 		resourceGrant,
@@ -391,39 +415,63 @@ func (agent *Agent) ExchangeChainedResourceToken(
 	resourceGrant ResourceGrant,
 	upstreamToken string,
 ) (Grant, error) {
-	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	authorization, err := agent.RequestChainedTokenAuthorization(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		upstreamToken,
+	)
 	if err != nil {
 		return Grant{}, err
 	}
+	if authorization.Grant == nil {
+		return Grant{}, errors.New("reference: chained authorization is pending; use RequestChainedTokenAuthorization and PollTokenAuthorization")
+	}
+	return *authorization.Grant, nil
+}
+
+// RequestChainedTokenAuthorization exchanges a downstream resource token using
+// an upstream authorization and preserves a deferred continuation when the
+// person server needs more time.
+func (agent *Agent) RequestChainedTokenAuthorization(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	upstreamToken string,
+) (TokenAuthorization, error) {
+	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
 	if agentClaims.ParentAgent != "" {
-		return Grant{}, errors.New("reference: sub-agent cannot perform call chaining")
+		return TokenAuthorization{}, errors.New("reference: sub-agent cannot perform call chaining")
 	}
 	upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
 	if err != nil {
-		return Grant{}, err
+		return TokenAuthorization{}, err
 	}
 	if upstream.Audience != agentClaims.Issuer {
-		return Grant{}, errors.New("reference: upstream auth-token audience does not match intermediary issuer")
+		return TokenAuthorization{}, errors.New("reference: upstream auth-token audience does not match intermediary issuer")
 	}
 	personServerID, err := endpointIdentifier(personServerEndpoint)
 	if err != nil {
-		return Grant{}, err
+		return TokenAuthorization{}, err
 	}
 	if upstream.Mission != nil {
 		if upstream.Mission.Approver != personServerID {
-			return Grant{}, errors.New("reference: upstream mission routes to a different person server")
+			return TokenAuthorization{}, errors.New("reference: upstream mission routes to a different person server")
 		}
 	} else if upstream.Issuer != personServerID {
-		return Grant{}, errors.New("reference: upstream token without a mission routes to its issuer")
+		return TokenAuthorization{}, errors.New("reference: upstream token without a mission routes to its issuer")
 	}
 	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
-		return Grant{}, err
+		return TokenAuthorization{}, err
 	}
 	if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
-		return Grant{}, errors.New("reference: downstream resource token is not bound to the intermediary")
+		return TokenAuthorization{}, errors.New("reference: downstream resource token is not bound to the intermediary")
 	}
-	return agent.exchangeResourceToken(
+	return agent.requestTokenAuthorization(
 		ctx,
 		personServerEndpoint,
 		resourceGrant,
