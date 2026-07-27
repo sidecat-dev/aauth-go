@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 const maxJSONBody = 1 << 20
@@ -19,8 +23,12 @@ func decodeJSON(response http.ResponseWriter, request *http.Request, destination
 	if err := decoder.Decode(destination); err != nil {
 		return fmt.Errorf("decode JSON: %w", err)
 	}
-	if decoder.More() {
-		return errors.New("decode JSON: multiple values")
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("decode JSON: multiple values")
+		}
+		return fmt.Errorf("decode JSON trailing data: %w", err)
 	}
 	return nil
 }
@@ -78,13 +86,13 @@ func scopesContained(granted, requested []string) bool {
 }
 
 func endpointIdentifier(endpoint string) (string, error) {
-	for index := len(endpoint); index > 0; index-- {
-		if endpoint[index-1] == '/' && index > len("https://") {
-			identifier := strings.TrimSuffix(endpoint[:index-1], "/")
-			if strings.Count(identifier, "/") == 2 {
-				return identifier, nil
-			}
-		}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
 	}
-	return "", errors.New("endpoint does not contain a path")
+	identifier := parsed.Scheme + "://" + parsed.Host
+	if err := aauth.ValidateServerIdentifier(identifier); err != nil {
+		return "", err
+	}
+	return identifier, nil
 }

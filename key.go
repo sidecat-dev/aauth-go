@@ -133,6 +133,12 @@ type KeyResolver interface {
 	ResolveKey(ctx context.Context, issuer, discoveryDocument, keyID string) (JWK, error)
 }
 
+// KeyRefresher is implemented by resolvers that can deliberately re-check an
+// issuer after a same-kid signature failure.
+type KeyRefresher interface {
+	RefreshKey(ctx context.Context, issuer, discoveryDocument, keyID string) (JWK, error)
+}
+
 // StaticKeyResolver is an explicit in-memory trust source useful for embedded
 // deployments, deterministic qualification, and callers that own discovery.
 type StaticKeyResolver map[string]map[string]JWK

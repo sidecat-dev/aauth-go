@@ -80,6 +80,45 @@ func ValidateAgentIdentifier(identifier string) error {
 	return nil
 }
 
+// ValidateAgentRelationship enforces top-level and single-level sub-agent
+// naming alongside the authoritative parent_agent relationship.
+func ValidateAgentRelationship(agent, parent string) error {
+	agentLocal, agentDomain, err := agentIdentifierParts(agent)
+	if err != nil {
+		return err
+	}
+	if parent == "" {
+		if strings.Contains(agentLocal, "+") {
+			return errors.New("aauth: top-level agent local part must not contain +")
+		}
+		return nil
+	}
+	parentLocal, parentDomain, err := agentIdentifierParts(parent)
+	if err != nil {
+		return fmt.Errorf("aauth: parent agent: %w", err)
+	}
+	if strings.Contains(parentLocal, "+") {
+		return errors.New("aauth: a sub-agent cannot be the parent of another sub-agent")
+	}
+	if agentDomain != parentDomain {
+		return errors.New("aauth: sub-agent and parent must use the same domain")
+	}
+	discriminator := strings.TrimPrefix(agentLocal, parentLocal+"+")
+	if discriminator == agentLocal || discriminator == "" || strings.Contains(discriminator, "+") {
+		return errors.New("aauth: sub-agent local part must be parent local plus one non-empty discriminator")
+	}
+	return nil
+}
+
+func agentIdentifierParts(identifier string) (string, string, error) {
+	if err := ValidateAgentIdentifier(identifier); err != nil {
+		return "", "", err
+	}
+	value := strings.TrimPrefix(identifier, "aauth:")
+	local, domain, _ := strings.Cut(value, "@")
+	return local, domain, nil
+}
+
 func validateDomain(domain string) error {
 	if domain == "" || len(domain) > 253 || domain != strings.ToLower(domain) {
 		return errors.New("domain must be non-empty lowercase ASCII")

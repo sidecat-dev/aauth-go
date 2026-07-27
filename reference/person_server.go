@@ -152,12 +152,44 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	}
 	var input struct {
 		ResourceToken string `json:"resource_token"`
+		SubagentToken string `json:"subagent_token,omitempty"`
 		Justification string `json:"justification,omitempty"`
 	}
 	if err := decodeJSON(response, request, &input); err != nil || input.ResourceToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	if verified.AgentToken.ParentAgent != "" {
+		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request authorization directly"))
+		return
+	}
+
+	targetAgent := verified.Agent
+	targetKey := verified.PublicKey
+	parentAgent := ""
+	targetTokenExpiry := verified.AgentToken.ExpiresAt
+	if input.SubagentToken != "" {
+		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, server.keyResolver, server.clock)
+		if err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_subagent_token", err)
+			return
+		}
+		if subagent.ParentAgent == "" || subagent.ParentAgent != verified.Agent {
+			writeProblem(response, http.StatusForbidden, "invalid_subagent_token", errors.New("sub-agent token does not name the signing parent"))
+			return
+		}
+		if subagent.PersonServer != "" && subagent.PersonServer != server.identifier {
+			writeProblem(response, http.StatusForbidden, "invalid_subagent_token", errors.New("sub-agent token names a different person server"))
+			return
+		}
+		targetAgent = subagent.Subject
+		targetKey = subagent.Confirmation.JWK
+		parentAgent = verified.Agent
+		if subagent.ExpiresAt < targetTokenExpiry {
+			targetTokenExpiry = subagent.ExpiresAt
+		}
+	}
+
 	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
 	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
@@ -167,13 +199,13 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token audience does not match person server"))
 		return
 	}
-	if resourceToken.Agent != verified.Agent {
+	if resourceToken.Agent != targetAgent {
 		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token agent does not match requester"))
 		return
 	}
-	thumbprint, err := verified.PublicKey.Thumbprint()
+	thumbprint, err := targetKey.Thumbprint()
 	if err != nil || thumbprint != resourceToken.AgentJKT {
-		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token agent_jkt does not match request key"))
+		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token agent_jkt does not match authorized agent key"))
 		return
 	}
 
@@ -198,7 +230,8 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	}
 
 	decision, err := server.authorizationPolicy(request.Context(), aauth.AuthorizationRequest{
-		Agent:         verified.Agent,
+		Agent:         targetAgent,
+		ParentAgent:   parentAgent,
 		Resource:      resourceToken.Issuer,
 		Scope:         append([]string(nil), scopes...),
 		Mission:       resourceToken.Mission,
@@ -215,16 +248,21 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 
 	now := server.clock.Now()
 	expiresAt := now.Add(time.Hour).Unix()
-	if verified.AgentToken.ExpiresAt < expiresAt {
-		expiresAt = verified.AgentToken.ExpiresAt
+	if targetTokenExpiry < expiresAt {
+		expiresAt = targetTokenExpiry
+	}
+	var actor *aauth.Actor
+	if parentAgent != "" {
+		actor = &aauth.Actor{Agent: parentAgent}
 	}
 	authToken, err := aauth.MintAuthToken(server.signingKey, aauth.AuthTokenClaims{
 		Issuer:       server.identifier,
 		DWK:          aauth.PersonDiscoveryDocument,
 		Audience:     resourceToken.Issuer,
 		JTI:          server.newID(),
-		Agent:        verified.Agent,
-		Confirmation: aauth.Confirmation{JWK: verified.PublicKey},
+		Agent:        targetAgent,
+		Confirmation: aauth.Confirmation{JWK: targetKey},
+		Actor:        actor,
 		IssuedAt:     now.Unix(),
 		ExpiresAt:    expiresAt,
 		Subject:      decision.Subject,

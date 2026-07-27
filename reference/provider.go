@@ -2,6 +2,7 @@ package reference
 
 import (
 	"errors"
+	"net/http"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -51,4 +52,20 @@ func (provider *AgentProvider) IssueAgentToken(request aauth.AgentTokenRequest) 
 		provider.clock.Now(),
 		provider.newID(),
 	)
+}
+
+func (provider *AgentProvider) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/aauth-agent.json", func(response http.ResponseWriter, _ *http.Request) {
+		writeJSON(response, http.StatusOK, map[string]any{
+			"issuer":   provider.identifier,
+			"jwks_uri": provider.identifier + "/jwks",
+		})
+	})
+	mux.HandleFunc("GET /jwks", func(response http.ResponseWriter, _ *http.Request) {
+		writeJSON(response, http.StatusOK, map[string]any{
+			"keys": []aauth.JWK{provider.signingKey.PublicJWK()},
+		})
+	})
+	return mux
 }

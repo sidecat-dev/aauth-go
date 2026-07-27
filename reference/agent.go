@@ -37,6 +37,12 @@ type Grant struct {
 	Claims    aauth.AuthTokenClaims
 }
 
+type ResourceGrant struct {
+	Resource      string
+	ResourceToken string
+	Claims        aauth.ResourceTokenClaims
+}
+
 func NewAgent(config AgentConfig) (*Agent, error) {
 	if err := aauth.ValidateAgentIdentifier(config.Identifier); err != nil {
 		return nil, err
@@ -118,11 +124,31 @@ func (agent *Agent) Authorize(
 	scopes []string,
 	mission aauth.ApprovedMission,
 ) (Grant, error) {
-	var grant Grant
-	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
-		return grant, err
-	}
 	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+		return Grant{}, err
+	}
+	personServerID, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return Grant{}, err
+	}
+	if mission.Reference.Approver != personServerID {
+		return Grant{}, errors.New("reference: mission approver does not match person-server endpoint")
+	}
+	resourceGrant, err := agent.RequestResourceToken(ctx, resourceEndpoint, scopes, mission)
+	if err != nil {
+		return Grant{}, err
+	}
+	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
+}
+
+func (agent *Agent) RequestResourceToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	mission aauth.ApprovedMission,
+) (ResourceGrant, error) {
+	var grant ResourceGrant
+	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
 		return grant, err
 	}
 	if err := mission.ValidateExactBytes(); err != nil {
@@ -136,14 +162,6 @@ func (agent *Agent) Authorize(
 	if err != nil {
 		return grant, err
 	}
-	personServerID, err := endpointIdentifier(personServerEndpoint)
-	if err != nil {
-		return grant, err
-	}
-	if mission.Reference.Approver != personServerID {
-		return grant, errors.New("reference: mission approver does not match person-server endpoint")
-	}
-
 	resourceBody, err := json.Marshal(map[string]string{"scope": strings.Join(requestedScopes, " ")})
 	if err != nil {
 		return grant, err
@@ -183,49 +201,168 @@ func (agent *Agent) Authorize(
 	if err != nil {
 		return grant, err
 	}
-	if resourceClaims.Issuer != resourceID || resourceClaims.Audience != personServerID ||
+	if resourceClaims.Issuer != resourceID ||
 		resourceClaims.Agent != agent.identifier || resourceClaims.AgentJKT != agentThumbprint ||
 		resourceClaims.Mission == nil || *resourceClaims.Mission != mission.Reference {
 		return grant, errors.New("reference: resource token does not match the authorization request")
 	}
+	return ResourceGrant{
+		Resource:      resourceID,
+		ResourceToken: resourceResult.ResourceToken,
+		Claims:        resourceClaims,
+	}, nil
+}
 
-	tokenBody, err := json.Marshal(map[string]string{"resource_token": resourceResult.ResourceToken})
+func (agent *Agent) ExchangeResourceToken(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+) (Grant, error) {
+	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
 	if err != nil {
-		return grant, err
+		return Grant{}, err
+	}
+	if agentClaims.ParentAgent != "" {
+		return Grant{}, errors.New("reference: sub-agent cannot request authorization directly")
+	}
+	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
+	if err != nil {
+		return Grant{}, err
+	}
+	if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
+		return Grant{}, errors.New("reference: resource token is not bound to the requesting agent")
+	}
+	return agent.exchangeResourceToken(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		"",
+		agent.identifier,
+		agent.signingKey.PublicJWK(),
+		"",
+	)
+}
+
+func (agent *Agent) AuthorizeSubagent(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	subagentToken string,
+) (Grant, error) {
+	parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return Grant{}, err
+	}
+	if parentClaims.ParentAgent != "" {
+		return Grant{}, errors.New("reference: sub-agent cannot mediate another sub-agent")
+	}
+	subagentClaims, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return Grant{}, err
+	}
+	if subagentClaims.ParentAgent != agent.identifier {
+		return Grant{}, errors.New("reference: sub-agent token does not name the signing parent")
+	}
+	subagentThumbprint, err := subagentClaims.Confirmation.JWK.Thumbprint()
+	if err != nil {
+		return Grant{}, err
+	}
+	if resourceGrant.Claims.Agent != subagentClaims.Subject ||
+		resourceGrant.Claims.AgentJKT != subagentThumbprint {
+		return Grant{}, errors.New("reference: resource token is not bound to the sub-agent")
+	}
+	return agent.exchangeResourceToken(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		subagentToken,
+		subagentClaims.Subject,
+		subagentClaims.Confirmation.JWK,
+		agent.identifier,
+	)
+}
+
+func (agent *Agent) exchangeResourceToken(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	subagentToken string,
+	expectedAgent string,
+	expectedKey aauth.JWK,
+	expectedActor string,
+) (Grant, error) {
+	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+		return Grant{}, err
+	}
+	personServerID, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return Grant{}, err
+	}
+	if resourceGrant.Claims.Audience != personServerID {
+		return Grant{}, errors.New("reference: resource-token audience does not match person-server endpoint")
+	}
+	tokenInput := map[string]string{"resource_token": resourceGrant.ResourceToken}
+	if subagentToken != "" {
+		tokenInput["subagent_token"] = subagentToken
+	}
+	tokenBody, err := json.Marshal(tokenInput)
+	if err != nil {
+		return Grant{}, err
 	}
 	tokenRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, personServerEndpoint, bytes.NewReader(tokenBody))
 	if err != nil {
-		return grant, err
+		return Grant{}, err
 	}
 	tokenRequest.Header.Set("Content-Type", "application/json")
 	if err := aauth.SignRequest(tokenRequest, agent.signingKey, agent.agentToken, agent.clock); err != nil {
-		return grant, err
+		return Grant{}, err
 	}
 	tokenResponse, err := agent.httpClient.Do(tokenRequest)
 	if err != nil {
-		return grant, err
+		return Grant{}, err
 	}
 	defer tokenResponse.Body.Close()
 	if tokenResponse.StatusCode != http.StatusOK {
-		return grant, responseError(tokenResponse)
+		return Grant{}, responseError(tokenResponse)
 	}
 	var tokenResult struct {
 		AuthToken string `json:"auth_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(tokenResponse.Body, maxJSONBody)).Decode(&tokenResult); err != nil {
-		return grant, err
+		return Grant{}, err
 	}
 	authClaims, err := aauth.VerifyAuthToken(ctx, tokenResult.AuthToken, agent.keyResolver, agent.clock)
 	if err != nil {
-		return grant, err
+		return Grant{}, err
 	}
-	if authClaims.Issuer != personServerID || authClaims.Audience != resourceID ||
-		authClaims.Agent != agent.identifier || !authClaims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) ||
-		authClaims.Mission == nil || *authClaims.Mission != mission.Reference {
-		return grant, errors.New("reference: auth token does not match the authorization request")
+	requiredScopes, err := parseScopes(resourceGrant.Claims.Scope)
+	if err != nil {
+		return Grant{}, err
+	}
+	if authClaims.Issuer != personServerID ||
+		authClaims.Mission == nil ||
+		resourceGrant.Claims.Mission == nil ||
+		*authClaims.Mission != *resourceGrant.Claims.Mission {
+		return Grant{}, errors.New("reference: auth token does not match the resource token")
+	}
+	if err := aauth.ValidateAuthTokenContext(
+		authClaims,
+		resourceGrant.Resource,
+		expectedAgent,
+		expectedKey,
+		requiredScopes,
+	); err != nil {
+		return Grant{}, err
+	}
+	if expectedActor == "" {
+		if authClaims.Actor != nil {
+			return Grant{}, errors.New("reference: direct auth token unexpectedly contains an act chain")
+		}
+	} else if authClaims.Actor == nil || authClaims.Actor.Agent != expectedActor {
+		return Grant{}, errors.New("reference: sub-agent auth token does not name its parent in act.agent")
 	}
 	return Grant{
-		Resource:  resourceID,
+		Resource:  resourceGrant.Resource,
 		AuthToken: tokenResult.AuthToken,
 		Claims:    authClaims,
 	}, nil

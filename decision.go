@@ -5,6 +5,7 @@ import "context"
 // AuthorizationRequest is the verified input presented to deployment policy.
 type AuthorizationRequest struct {
 	Agent         string
+	ParentAgent   string
 	Resource      string
 	Scope         []string
 	Mission       *MissionReference

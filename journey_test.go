@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,17 +34,32 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 	resourceKey := testSigningKey(t, "resource-key")
 	agentKey := testSigningKey(t, "agent-key")
 
-	keys := aauth.StaticKeyResolver{
-		"https://ap.example":       {"ap-key": apKey.PublicJWK()},
-		"https://ps.example":       {"ps-key": psKey.PublicJWK()},
-		"https://resource.example": {"resource-key": resourceKey.PublicJWK()},
-	}
-
 	ap, err := reference.NewAgentProvider(reference.AgentProviderConfig{
 		Identifier: "https://ap.example",
 		SigningKey: apKey,
 		Clock:      clock,
 		NewID:      ids,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	discoveryClient := &http.Client{}
+	keyResolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+		Client: discoveryClient,
+		Clock:  clock,
+		Admit: func(_ context.Context, endpoint string) error {
+			for _, allowed := range []string{
+				"https://ap.example/",
+				"https://ps.example/",
+				"https://resource.example/",
+			} {
+				if strings.HasPrefix(endpoint, allowed) {
+					return nil
+				}
+			}
+			return fmt.Errorf("discovery endpoint is outside the test trust boundary: %s", endpoint)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +78,7 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
 		Identifier:  "https://ps.example",
 		SigningKey:  psKey,
-		KeyResolver: keys,
+		KeyResolver: keyResolver,
 		Clock:       clock,
 		NewID:       ids,
 		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
@@ -88,7 +104,7 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 		Identifier:   "https://resource.example",
 		PersonServer: "https://ps.example",
 		SigningKey:   resourceKey,
-		KeyResolver:  keys,
+		KeyResolver:  keyResolver,
 		Clock:        clock,
 		NewID:        ids,
 		Scopes:       []string{"documents.read"},
@@ -105,16 +121,18 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 	}
 
 	gateway := newLogicalGateway(t, map[string]http.Handler{
+		"ap.example":       ap.Handler(),
 		"ps.example":       ps.Handler(),
 		"resource.example": resource.Handler(),
 	})
 	defer gateway.Close()
+	discoveryClient.Transport = gateway.Client().Transport
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
 		Identifier:  "aauth:planner@ap.example",
 		SigningKey:  agentKey,
 		AgentToken:  agentToken,
-		KeyResolver: keys,
+		KeyResolver: keyResolver,
 		HTTPClient:  gateway.Client(),
 		Clock:       clock,
 	})

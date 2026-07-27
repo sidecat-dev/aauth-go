@@ -5,7 +5,7 @@ Sidecat. The protocol library has no Sidecat dependency. The `reference`
 package supplies deployable role handlers and an agent client over the public
 library.
 
-The first implemented vertical is the three-party mission flow:
+The implemented live vertical is the three-party mission flow:
 
 1. an agent provider issues an Ed25519-bound `aa-agent+jwt`;
 2. the agent signs a mission proposal to a person server;
@@ -19,6 +19,14 @@ The first implemented vertical is the three-party mission flow:
 
 HTTP request bodies use `Content-Digest`, all AAuth requests use the mandatory
 RFC 9421 components, and protected operations reject an exact proof replay.
+Issuer keys use admitted two-hop metadata/JWKS discovery with bounded reads,
+cache lifetimes, unknown-key refresh throttling, and same-`kid` rotation
+recovery.
+
+Parent-mediated sub-agents also run through the complete resource-token,
+person-server, auth-token, and protected-operation path. The person server
+enforces single-level delegation and emits an auth token bound to the
+sub-agent's key with the parent in `act.agent`.
 
 Run the current qualification:
 
@@ -28,8 +36,8 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
-Four-party access servers, sub-agents, call chaining, deferred interactions,
-R3, Events, Bootstrap, HTTP key discovery/caching, and the remaining
-Signature-Key schemes still require implementation and qualification.
+Four-party access servers, call chaining, deferred interactions, R3, Events,
+Bootstrap, and the remaining Signature-Key schemes still require
+implementation and qualification.
 
 No upstream contribution or repository is implied by this local project.

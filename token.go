@@ -110,6 +110,9 @@ func MintAgentToken(issuer string, key SigningKey, request AgentTokenRequest, no
 			return "", fmt.Errorf("aauth: agent-token parent: %w", err)
 		}
 	}
+	if err := ValidateAgentRelationship(request.Agent, request.ParentAgent); err != nil {
+		return "", fmt.Errorf("aauth: agent-token relationship: %w", err)
+	}
 	if _, err := request.PublicKey.PublicKey(); err != nil {
 		return "", fmt.Errorf("aauth: agent-token confirmation key: %w", err)
 	}
@@ -297,10 +300,22 @@ func verifyResolvedTokenKey(
 	if !ok {
 		return errors.New("aauth: resolved token key is not Ed25519")
 	}
-	if !ed25519.Verify(ed25519Key, []byte(signingInput), signature) {
-		return errors.New("aauth: token signature is invalid")
+	if ed25519.Verify(ed25519Key, []byte(signingInput), signature) {
+		return nil
 	}
-	return nil
+	if refresher, ok := resolver.(KeyRefresher); ok {
+		refreshed, refreshErr := refresher.RefreshKey(ctx, issuer, dwk, header.KeyID)
+		if refreshErr == nil {
+			refreshedPublic, publicErr := refreshed.PublicKey()
+			if publicErr == nil {
+				if refreshedEd25519, isEd25519 := refreshedPublic.(ed25519.PublicKey); isEd25519 &&
+					ed25519.Verify(refreshedEd25519, []byte(signingInput), signature) {
+					return nil
+				}
+			}
+		}
+	}
+	return errors.New("aauth: token signature is invalid")
 }
 
 func decodeToken(compact string) (TokenHeader, []byte, []byte, string, error) {
@@ -367,6 +382,9 @@ func validateAgentClaims(claims AgentTokenClaims, now time.Time) error {
 		if err := ValidateAgentIdentifier(claims.ParentAgent); err != nil {
 			return fmt.Errorf("aauth: agent-token parent_agent: %w", err)
 		}
+	}
+	if err := ValidateAgentRelationship(claims.Subject, claims.ParentAgent); err != nil {
+		return fmt.Errorf("aauth: agent-token relationship: %w", err)
 	}
 	return nil
 }
