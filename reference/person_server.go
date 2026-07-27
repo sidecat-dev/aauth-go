@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,29 +85,27 @@ type personAuthorizationContext struct {
 	resourceToken          aauth.ResourceTokenClaims
 }
 
-type pendingPersonAuthorizationState string
-
-const (
-	pendingPersonWaiting     pendingPersonAuthorizationState = "pending"
-	pendingPersonInteracting pendingPersonAuthorizationState = "interacting"
-	pendingPersonApproved    pendingPersonAuthorizationState = "approved"
-	pendingPersonRejected    pendingPersonAuthorizationState = "rejected"
-	pendingPersonExpired     pendingPersonAuthorizationState = "expired"
-	pendingPersonInvalidCode pendingPersonAuthorizationState = "invalid_code"
-	pendingPersonServed      pendingPersonAuthorizationState = "served"
-)
-
 type pendingPersonAuthorization struct {
-	id                 string
-	code               string
-	normalizedCode     string
-	codeConsumed       bool
-	failedCodeAttempts int
-	state              pendingPersonAuthorizationState
-	context            personAuthorizationContext
-	decision           aauth.AuthorizationDecision
-	pollingError       aauth.PollingErrorCode
-	expiresAt          time.Time
+	pendingInteraction
+	context           personAuthorizationContext
+	decision          aauth.AuthorizationDecision
+	federated         *pendingFederatedAuthorization
+	pollingFederation bool
+}
+
+type pendingFederatedAuthorization struct {
+	accessServer string
+	location     string
+	retryAfter   time.Duration
+	notBefore    time.Time
+	status       string
+	requirement  *aauth.Requirement
+}
+
+type accessServerExchange struct {
+	authToken string
+	claims    aauth.AuthTokenClaims
+	deferred  *aauth.DeferredResponse
 }
 
 func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
@@ -442,7 +439,7 @@ func (server *PersonServer) completeAuthorization(
 			writeProblem(response, http.StatusNotImplemented, "federation_failed", errors.New("four-party call chaining is not yet implemented"))
 			return
 		}
-		federatedToken, federatedClaims, err := server.exchangeWithAccessServer(
+		exchange, err := server.exchangeWithAccessServer(
 			ctx,
 			resourceToken.Audience,
 			authorizationContext.resourceTokenCompact,
@@ -458,9 +455,21 @@ func (server *PersonServer) completeAuthorization(
 			writeProblem(response, http.StatusBadGateway, "federation_failed", err)
 			return
 		}
+		if exchange.deferred != nil {
+			if err := server.beginFederatedAuthorization(
+				response,
+				authorizationContext,
+				decision,
+				resourceToken.Audience,
+				*exchange.deferred,
+			); err != nil {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			}
+			return
+		}
 		writeJSON(response, http.StatusOK, map[string]any{
-			"auth_token": federatedToken,
-			"expires_in": federatedClaims.ExpiresAt - now.Unix(),
+			"auth_token": exchange.authToken,
+			"expires_in": exchange.claims.ExpiresAt - now.Unix(),
 		})
 		return
 	}
@@ -506,17 +515,55 @@ func (server *PersonServer) beginPendingAuthorization(
 	response http.ResponseWriter,
 	authorizationContext personAuthorizationContext,
 ) error {
-	server.randomMu.Lock()
-	pendingID, err := aauth.GeneratePendingID(server.random)
-	var code string
-	if err == nil {
-		code, err = aauth.GenerateInteractionCode(server.random)
+	now := server.clock.Now()
+	expiresAt := now.Add(server.pendingLifetime)
+	for _, tokenExpiry := range []int64{
+		authorizationContext.targetTokenExpiresAt,
+		authorizationContext.resourceToken.ExpiresAt,
+	} {
+		candidate := time.Unix(tokenExpiry, 0)
+		if candidate.Before(expiresAt) {
+			expiresAt = candidate
+		}
 	}
+	if !expiresAt.After(now) {
+		return errors.New("reference: authorization credentials expire before interaction can begin")
+	}
+	server.randomMu.Lock()
+	interaction, err := newPendingInteraction(server.random, expiresAt)
 	server.randomMu.Unlock()
 	if err != nil {
 		return err
 	}
-	normalizedCode, err := aauth.NormalizeInteractionCode(code)
+	pending := &pendingPersonAuthorization{
+		pendingInteraction: interaction,
+		context:            copyPersonAuthorizationContext(authorizationContext),
+	}
+	server.pendingMu.Lock()
+	if _, exists := server.pending[interaction.id]; exists {
+		server.pendingMu.Unlock()
+		return errors.New("reference: pending identifier source returned a duplicate value")
+	}
+	server.pending[interaction.id] = pending
+	server.pendingMu.Unlock()
+	return server.writePendingAuthorization(
+		response,
+		interaction.id,
+		pendingAuthorizationWaiting,
+		interaction.code,
+	)
+}
+
+func (server *PersonServer) beginFederatedAuthorization(
+	response http.ResponseWriter,
+	authorizationContext personAuthorizationContext,
+	decision aauth.AuthorizationDecision,
+	accessServer string,
+	deferred aauth.DeferredResponse,
+) error {
+	server.randomMu.Lock()
+	pendingID, err := aauth.GeneratePendingID(server.random)
+	server.randomMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -532,15 +579,32 @@ func (server *PersonServer) beginPendingAuthorization(
 		}
 	}
 	if !expiresAt.After(now) {
-		return errors.New("reference: authorization credentials expire before interaction can begin")
+		return errors.New("reference: authorization credentials expire before federation can complete")
+	}
+	state := pendingAuthorizationWaiting
+	if deferred.Status == "interacting" {
+		state = pendingAuthorizationInteracting
+	}
+	federated := &pendingFederatedAuthorization{
+		accessServer: accessServer,
+		location:     deferred.Location,
+		retryAfter:   deferred.RetryAfter,
+		notBefore:    now.Add(deferred.RetryAfter),
+		status:       deferred.Status,
+		requirement:  copyRequirement(deferred.Requirement),
 	}
 	pending := &pendingPersonAuthorization{
-		id:             pendingID,
-		code:           code,
-		normalizedCode: normalizedCode,
-		state:          pendingPersonWaiting,
-		context:        copyPersonAuthorizationContext(authorizationContext),
-		expiresAt:      expiresAt,
+		pendingInteraction: pendingInteraction{
+			id:        pendingID,
+			state:     state,
+			expiresAt: expiresAt,
+		},
+		context: copyPersonAuthorizationContext(authorizationContext),
+		decision: aauth.AuthorizationDecision{
+			Subject: decision.Subject,
+			Scope:   append([]string(nil), decision.Scope...),
+		},
+		federated: federated,
 	}
 	server.pendingMu.Lock()
 	if _, exists := server.pending[pendingID]; exists {
@@ -549,7 +613,52 @@ func (server *PersonServer) beginPendingAuthorization(
 	}
 	server.pending[pendingID] = pending
 	server.pendingMu.Unlock()
-	return server.writePendingAuthorization(response, pendingID, pendingPersonWaiting, code)
+	return server.writeFederatedPendingAuthorization(response, pendingID, federated, now)
+}
+
+func copyRequirement(requirement *aauth.Requirement) *aauth.Requirement {
+	if requirement == nil {
+		return nil
+	}
+	copied := *requirement
+	return &copied
+}
+
+func (server *PersonServer) writeFederatedPendingAuthorization(
+	response http.ResponseWriter,
+	pendingID string,
+	federated *pendingFederatedAuthorization,
+	now time.Time,
+) error {
+	if federated == nil {
+		return errors.New("reference: federated pending authorization is required")
+	}
+	delay := federated.retryAfter
+	if federated.notBefore.After(now) {
+		delay = federated.notBefore.Sub(now)
+	}
+	response.Header().Set("Location", "/pending/"+pendingID)
+	response.Header().Set("Retry-After", fmt.Sprintf("%d", durationSecondsCeil(delay)))
+	if federated.requirement != nil {
+		requirement, err := aauth.FormatRequirementHeader(*federated.requirement)
+		if err != nil {
+			return err
+		}
+		response.Header().Set("AAuth-Requirement", requirement)
+	}
+	writeJSON(response, http.StatusAccepted, map[string]string{"status": federated.status})
+	return nil
+}
+
+func durationSecondsCeil(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	seconds := int64(duration / time.Second)
+	if duration%time.Second != 0 {
+		seconds++
+	}
+	return seconds
 }
 
 func copyPersonAuthorizationContext(
@@ -563,7 +672,7 @@ func copyPersonAuthorizationContext(
 func (server *PersonServer) writePendingAuthorization(
 	response http.ResponseWriter,
 	pendingID string,
-	state pendingPersonAuthorizationState,
+	state pendingAuthorizationState,
 	code string,
 ) error {
 	requirement, err := aauth.FormatRequirementHeader(aauth.Requirement{
@@ -593,11 +702,15 @@ func (server *PersonServer) ApproveAuthorization(ctx context.Context, pendingID 
 	}
 	now := server.clock.Now()
 	if !pending.expiresAt.After(now) {
-		pending.state = pendingPersonExpired
+		pending.state = pendingAuthorizationExpired
 		server.pendingMu.Unlock()
 		return errors.New("reference: pending authorization expired")
 	}
-	if pending.state != pendingPersonInteracting {
+	if pending.federated != nil {
+		server.pendingMu.Unlock()
+		return errors.New("reference: access-server authorization requires an access-server decision")
+	}
+	if pending.state != pendingAuthorizationInteracting {
 		server.pendingMu.Unlock()
 		return errors.New("reference: pending authorization is not awaiting a trusted decision")
 	}
@@ -614,18 +727,18 @@ func (server *PersonServer) ApproveAuthorization(ctx context.Context, pendingID 
 
 	server.pendingMu.Lock()
 	defer server.pendingMu.Unlock()
-	if pending.state != pendingPersonInteracting {
+	if pending.state != pendingAuthorizationInteracting {
 		return errors.New("reference: pending authorization changed while approval was evaluated")
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
-		pending.state = pendingPersonExpired
+		pending.state = pendingAuthorizationExpired
 		return errors.New("reference: pending authorization expired")
 	}
 	pending.decision = aauth.AuthorizationDecision{
 		Subject: decision.Subject,
 		Scope:   append([]string(nil), decision.Scope...),
 	}
-	pending.state = pendingPersonApproved
+	pending.state = pendingAuthorizationApproved
 	return nil
 }
 
@@ -646,14 +759,17 @@ func (server *PersonServer) RejectAuthorization(
 		return errors.New("reference: pending authorization does not exist")
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
-		pending.state = pendingPersonExpired
+		pending.state = pendingAuthorizationExpired
 		return errors.New("reference: pending authorization expired")
 	}
-	if pending.state != pendingPersonInteracting {
+	if pending.federated != nil {
+		return errors.New("reference: access-server authorization requires an access-server decision")
+	}
+	if pending.state != pendingAuthorizationInteracting {
 		return errors.New("reference: pending authorization is not awaiting a trusted decision")
 	}
 	pending.pollingError = code
-	pending.state = pendingPersonRejected
+	pending.state = pendingAuthorizationRejected
 	return nil
 }
 
@@ -693,14 +809,49 @@ func (server *PersonServer) handlePendingAuthorization(
 		writeProblem(response, http.StatusForbidden, "invalid_pending", errors.New("pending authorization belongs to a different agent key"))
 		return
 	}
-	if (pending.state == pendingPersonWaiting ||
-		pending.state == pendingPersonInteracting) &&
+	if (pending.state == pendingAuthorizationWaiting ||
+		pending.state == pendingAuthorizationInteracting) &&
 		!pending.expiresAt.After(server.clock.Now()) {
-		pending.state = pendingPersonExpired
+		pending.state = pendingAuthorizationExpired
 	}
 
 	switch pending.state {
-	case pendingPersonWaiting, pendingPersonInteracting:
+	case pendingAuthorizationWaiting, pendingAuthorizationInteracting:
+		if pending.federated != nil {
+			if pending.pollingFederation ||
+				server.clock.Now().Before(pending.federated.notBefore) {
+				id := pending.id
+				federated := copyPendingFederation(pending.federated)
+				server.pendingMu.Unlock()
+				if err := server.writeFederatedPendingAuthorization(
+					response,
+					id,
+					federated,
+					server.clock.Now(),
+				); err != nil {
+					writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				}
+				return
+			}
+			pending.pollingFederation = true
+			id := pending.id
+			federated := copyPendingFederation(pending.federated)
+			authorizationContext := copyPersonAuthorizationContext(pending.context)
+			decision := aauth.AuthorizationDecision{
+				Subject: pending.decision.Subject,
+				Scope:   append([]string(nil), pending.decision.Scope...),
+			}
+			server.pendingMu.Unlock()
+			server.pollFederatedAuthorization(
+				response,
+				request.Context(),
+				id,
+				federated,
+				authorizationContext,
+				decision,
+			)
+			return
+		}
 		id := pending.id
 		state := pending.state
 		code := pending.code
@@ -708,30 +859,30 @@ func (server *PersonServer) handlePendingAuthorization(
 		if err := server.writePendingAuthorization(response, id, state, code); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
-	case pendingPersonApproved:
+	case pendingAuthorizationApproved:
 		authorizationContext := copyPersonAuthorizationContext(pending.context)
 		decision := aauth.AuthorizationDecision{
 			Subject: pending.decision.Subject,
 			Scope:   append([]string(nil), pending.decision.Scope...),
 		}
-		pending.state = pendingPersonServed
+		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
 		server.completeAuthorization(response, request.Context(), authorizationContext, decision)
-	case pendingPersonExpired:
-		pending.state = pendingPersonServed
+	case pendingAuthorizationExpired:
+		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
 		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending authorization expired"))
-	case pendingPersonRejected:
+	case pendingAuthorizationRejected:
 		code := pending.pollingError
-		pending.state = pendingPersonServed
+		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
 		status := http.StatusForbidden
 		if code == aauth.PollingServerError {
 			status = http.StatusInternalServerError
 		}
 		writeProblem(response, status, string(code), errors.New("pending authorization was not approved"))
-	case pendingPersonInvalidCode:
-		pending.state = pendingPersonServed
+	case pendingAuthorizationInvalidCode:
+		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
 		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code validation failed"))
 	default:
@@ -740,19 +891,21 @@ func (server *PersonServer) handlePendingAuthorization(
 	}
 }
 
+func copyPendingFederation(
+	federated *pendingFederatedAuthorization,
+) *pendingFederatedAuthorization {
+	if federated == nil {
+		return nil
+	}
+	copied := *federated
+	copied.requirement = copyRequirement(federated.requirement)
+	return &copied
+}
+
 func (server *PersonServer) handleInteraction(
 	response http.ResponseWriter,
 	request *http.Request,
 ) {
-	codeValues, hasCode := request.URL.Query()["code"]
-	var normalizedCode string
-	var codeErr error
-	if !hasCode || len(codeValues) != 1 {
-		codeErr = errors.New("interaction requires exactly one code")
-	} else {
-		normalizedCode, codeErr = aauth.NormalizeInteractionCode(codeValues[0])
-	}
-
 	server.pendingMu.Lock()
 	pending, exists := server.pending[request.PathValue("id")]
 	if !exists {
@@ -761,33 +914,25 @@ func (server *PersonServer) handleInteraction(
 		return
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
-		pending.state = pendingPersonExpired
+		pending.state = pendingAuthorizationExpired
 		server.pendingMu.Unlock()
 		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending interaction expired"))
 		return
 	}
-	if pending.codeConsumed || pending.state != pendingPersonWaiting {
+	if pending.federated != nil {
 		server.pendingMu.Unlock()
-		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code is already consumed"))
+		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction is hosted by the access server"))
 		return
 	}
-	if codeErr != nil ||
-		subtle.ConstantTimeCompare([]byte(normalizedCode), []byte(pending.normalizedCode)) != 1 {
-		pending.failedCodeAttempts++
-		terminal := pending.failedCodeAttempts >= maxInteractionCodeAttempts
-		if terminal {
-			pending.state = pendingPersonInvalidCode
-		}
+	status, code, err := pending.correlate(
+		request.URL.Query()["code"],
+		server.clock.Now(),
+	)
+	if err != nil {
 		server.pendingMu.Unlock()
-		if terminal {
-			writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code attempt limit reached"))
-		} else {
-			writeProblem(response, http.StatusBadRequest, "invalid_code", errors.New("interaction code is invalid"))
-		}
+		writeProblem(response, status, code, err)
 		return
 	}
-	pending.codeConsumed = true
-	pending.state = pendingPersonInteracting
 	authorizationRequest := copyAuthorizationRequest(pending.context.request)
 	server.pendingMu.Unlock()
 
@@ -825,6 +970,226 @@ func validatePersonAuthorizationDecision(
 	return validateAuthorizationDecision(decision, requestedScope)
 }
 
+func (server *PersonServer) pollFederatedAuthorization(
+	responseWriter http.ResponseWriter,
+	ctx context.Context,
+	pendingID string,
+	federated *pendingFederatedAuthorization,
+	authorizationContext personAuthorizationContext,
+	personDecision aauth.AuthorizationDecision,
+) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, federated.location, nil)
+	if err != nil {
+		server.retryFederatedAuthorization(responseWriter, pendingID, federated, 5*time.Second)
+		return
+	}
+	request.Header.Set("Prefer", "wait=0")
+	if err := aauth.SignRequestWithJWKSURI(
+		request,
+		server.signingKey,
+		server.identifier,
+		aauth.PersonDiscoveryDocument,
+		server.clock,
+	); err != nil {
+		server.failFederatedAuthorization(responseWriter, pendingID, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	response, err := server.federationClient.Do(request)
+	if err != nil {
+		server.retryFederatedAuthorization(responseWriter, pendingID, federated, 5*time.Second)
+		return
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+	case http.StatusOK:
+		exchange, err := server.parseAccessServerGrant(
+			ctx,
+			response,
+			federated.accessServer,
+			authorizationContext.targetAgent,
+			authorizationContext.targetKey,
+			authorizationContext.parentAgent,
+			authorizationContext.resourceToken,
+			personDecision,
+		)
+		if err != nil {
+			server.failFederatedAuthorization(responseWriter, pendingID, http.StatusBadGateway, "federation_failed", err)
+			return
+		}
+		if !server.serveFederatedAuthorization(pendingID) {
+			server.writeFederatedTransitionFailure(responseWriter, pendingID)
+			return
+		}
+		writeJSON(responseWriter, http.StatusOK, map[string]any{
+			"auth_token": exchange.authToken,
+			"expires_in": exchange.claims.ExpiresAt - server.clock.Now().Unix(),
+		})
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			server.failFederatedAuthorization(responseWriter, pendingID, http.StatusBadGateway, "federation_failed", err)
+			return
+		}
+		if endpoint, endpointErr := endpointIdentifier(deferred.Location); endpointErr != nil ||
+			endpoint != federated.accessServer {
+			server.failFederatedAuthorization(
+				responseWriter,
+				pendingID,
+				http.StatusBadGateway,
+				"federation_failed",
+				errors.New("access-server pending continuation moved to another origin"),
+			)
+			return
+		}
+		next := &pendingFederatedAuthorization{
+			accessServer: federated.accessServer,
+			location:     deferred.Location,
+			retryAfter:   deferred.RetryAfter,
+			notBefore:    server.clock.Now().Add(deferred.RetryAfter),
+			status:       deferred.Status,
+			requirement:  copyRequirement(deferred.Requirement),
+		}
+		if !server.updateFederatedAuthorization(pendingID, next) {
+			server.writeFederatedTransitionFailure(responseWriter, pendingID)
+			return
+		}
+		if err := server.writeFederatedPendingAuthorization(
+			responseWriter,
+			pendingID,
+			next,
+			server.clock.Now(),
+		); err != nil {
+			server.failFederatedAuthorization(responseWriter, pendingID, http.StatusInternalServerError, "server_error", err)
+		}
+	case http.StatusTooManyRequests:
+		delay := federated.retryAfter + 5*time.Second
+		server.retryFederatedAuthorization(responseWriter, pendingID, federated, delay)
+	case http.StatusServiceUnavailable:
+		delay, err := responseRetryAfter(response.Header.Values("Retry-After"), server.clock.Now())
+		if err != nil {
+			delay = 5 * time.Second
+		}
+		server.retryFederatedAuthorization(responseWriter, pendingID, federated, delay)
+	default:
+		status := response.StatusCode
+		code := "federation_failed"
+		detail := errors.New("access server returned a terminal response")
+		if strings.HasPrefix(
+			strings.ToLower(response.Header.Get("Content-Type")),
+			"application/problem+json",
+		) {
+			problem, decodeErr := aauth.DecodeProblemResponse(response)
+			if decodeErr == nil {
+				code = string(problem.Code)
+				detail = errors.New(problem.Detail)
+			} else {
+				detail = decodeErr
+			}
+		}
+		server.failFederatedAuthorization(responseWriter, pendingID, status, code, detail)
+	}
+}
+
+func (server *PersonServer) retryFederatedAuthorization(
+	response http.ResponseWriter,
+	pendingID string,
+	federated *pendingFederatedAuthorization,
+	delay time.Duration,
+) {
+	next := copyPendingFederation(federated)
+	next.retryAfter = delay
+	next.notBefore = server.clock.Now().Add(delay)
+	if !server.updateFederatedAuthorization(pendingID, next) {
+		server.writeFederatedTransitionFailure(response, pendingID)
+		return
+	}
+	if err := server.writeFederatedPendingAuthorization(
+		response,
+		pendingID,
+		next,
+		server.clock.Now(),
+	); err != nil {
+		server.failFederatedAuthorization(response, pendingID, http.StatusInternalServerError, "server_error", err)
+	}
+}
+
+func (server *PersonServer) updateFederatedAuthorization(
+	pendingID string,
+	federated *pendingFederatedAuthorization,
+) bool {
+	server.pendingMu.Lock()
+	defer server.pendingMu.Unlock()
+	pending, exists := server.pending[pendingID]
+	if !exists || !pending.pollingFederation || pending.federated == nil ||
+		(pending.state != pendingAuthorizationWaiting && pending.state != pendingAuthorizationInteracting) {
+		return false
+	}
+	if !pending.expiresAt.After(server.clock.Now()) {
+		pending.pollingFederation = false
+		pending.state = pendingAuthorizationExpired
+		return false
+	}
+	pending.federated = copyPendingFederation(federated)
+	pending.pollingFederation = false
+	if federated.status == "interacting" {
+		pending.state = pendingAuthorizationInteracting
+	} else {
+		pending.state = pendingAuthorizationWaiting
+	}
+	return true
+}
+
+func (server *PersonServer) serveFederatedAuthorization(pendingID string) bool {
+	server.pendingMu.Lock()
+	defer server.pendingMu.Unlock()
+	pending, exists := server.pending[pendingID]
+	if !exists || !pending.pollingFederation || pending.federated == nil ||
+		(pending.state != pendingAuthorizationWaiting && pending.state != pendingAuthorizationInteracting) {
+		return false
+	}
+	if !pending.expiresAt.After(server.clock.Now()) {
+		pending.pollingFederation = false
+		pending.state = pendingAuthorizationExpired
+		return false
+	}
+	pending.pollingFederation = false
+	pending.state = pendingAuthorizationServed
+	return true
+}
+
+func (server *PersonServer) writeFederatedTransitionFailure(
+	response http.ResponseWriter,
+	pendingID string,
+) {
+	server.pendingMu.Lock()
+	pending, exists := server.pending[pendingID]
+	if exists && pending.state == pendingAuthorizationExpired {
+		pending.state = pendingAuthorizationServed
+		server.pendingMu.Unlock()
+		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending authorization expired"))
+		return
+	}
+	server.pendingMu.Unlock()
+	writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization changed during federation"))
+}
+
+func (server *PersonServer) failFederatedAuthorization(
+	response http.ResponseWriter,
+	pendingID string,
+	status int,
+	code string,
+	err error,
+) {
+	server.pendingMu.Lock()
+	if pending, exists := server.pending[pendingID]; exists {
+		pending.pollingFederation = false
+		pending.state = pendingAuthorizationServed
+	}
+	server.pendingMu.Unlock()
+	writeProblem(response, status, code, err)
+}
+
 func (server *PersonServer) exchangeWithAccessServer(
 	ctx context.Context,
 	accessServerIdentifier string,
@@ -836,21 +1201,21 @@ func (server *PersonServer) exchangeWithAccessServer(
 	parentAgent string,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
-) (string, aauth.AuthTokenClaims, error) {
-	var claims aauth.AuthTokenClaims
+) (accessServerExchange, error) {
+	var exchange accessServerExchange
 	endpoint, err := server.accessServerEndpoint(ctx, accessServerIdentifier)
 	if err != nil {
-		return "", claims, fmt.Errorf("resolve access-server endpoint: %w", err)
+		return exchange, fmt.Errorf("resolve access-server endpoint: %w", err)
 	}
 	if err := aauth.ValidateEndpoint(endpoint); err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	endpointIssuer, err := endpointIdentifier(endpoint)
 	if err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	if endpointIssuer != accessServerIdentifier {
-		return "", claims, errors.New("access-server endpoint origin does not match resource-token audience")
+		return exchange, errors.New("access-server endpoint origin does not match resource-token audience")
 	}
 	input := map[string]string{
 		"resource_token": resourceTokenCompact,
@@ -861,13 +1226,14 @@ func (server *PersonServer) exchangeWithAccessServer(
 	}
 	body, err := json.Marshal(input)
 	if err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Prefer", "wait=0")
 	if err := aauth.SignRequestWithJWKSURI(
 		request,
 		server.signingKey,
@@ -875,29 +1241,61 @@ func (server *PersonServer) exchangeWithAccessServer(
 		aauth.PersonDiscoveryDocument,
 		server.clock,
 	); err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	response, err := server.federationClient.Do(request)
 	if err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	switch response.StatusCode {
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			return exchange, err
+		}
+		exchange.deferred = &deferred
+		return exchange, nil
+	case http.StatusOK:
+		return server.parseAccessServerGrant(
+			ctx,
+			response,
+			accessServerIdentifier,
+			targetAgent,
+			targetKey,
+			parentAgent,
+			resourceToken,
+			personDecision,
+		)
+	default:
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
-		return "", claims, fmt.Errorf("access server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+		return exchange, fmt.Errorf("access server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
+}
+
+func (server *PersonServer) parseAccessServerGrant(
+	ctx context.Context,
+	response *http.Response,
+	accessServerIdentifier string,
+	targetAgent string,
+	targetKey aauth.JWK,
+	parentAgent string,
+	resourceToken aauth.ResourceTokenClaims,
+	personDecision aauth.AuthorizationDecision,
+) (accessServerExchange, error) {
+	var exchange accessServerExchange
 	var result struct {
 		AuthToken string `json:"auth_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
-		return "", claims, err
+		return exchange, err
 	}
-	claims, err = aauth.VerifyAuthToken(ctx, result.AuthToken, server.keyResolver, server.clock)
+	claims, err := aauth.VerifyAuthToken(ctx, result.AuthToken, server.keyResolver, server.clock)
 	if err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	if claims.Issuer != accessServerIdentifier || claims.DWK != aauth.AccessDiscoveryDocument {
-		return "", claims, errors.New("access-server auth token has the wrong issuer or discovery document")
+		return exchange, errors.New("access-server auth token has the wrong issuer or discovery document")
 	}
 	if err := aauth.ValidateAuthTokenContext(
 		claims,
@@ -906,28 +1304,30 @@ func (server *PersonServer) exchangeWithAccessServer(
 		targetKey,
 		nil,
 	); err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	grantedScopes, err := parseScopes(claims.Scope)
 	if err != nil {
-		return "", claims, err
+		return exchange, err
 	}
 	if !scopesContained(grantedScopes, personDecision.Scope) {
-		return "", claims, errors.New("access-server auth token exceeds the person-server grant")
+		return exchange, errors.New("access-server auth token exceeds the person-server grant")
 	}
 	if resourceToken.Mission != nil {
 		if claims.Mission == nil || *claims.Mission != *resourceToken.Mission {
-			return "", claims, errors.New("access-server auth token changed the mission reference")
+			return exchange, errors.New("access-server auth token changed the mission reference")
 		}
 	}
 	if parentAgent == "" {
 		if claims.Actor != nil {
-			return "", claims, errors.New("access-server auth token unexpectedly contains an act chain")
+			return exchange, errors.New("access-server auth token unexpectedly contains an act chain")
 		}
 	} else if claims.Actor == nil || claims.Actor.Agent != parentAgent {
-		return "", claims, errors.New("access-server auth token does not name the parent agent")
+		return exchange, errors.New("access-server auth token does not name the parent agent")
 	}
-	return result.AuthToken, claims, nil
+	exchange.authToken = result.AuthToken
+	exchange.claims = claims
+	return exchange, nil
 }
 
 func (server *PersonServer) handleMetadata(response http.ResponseWriter, _ *http.Request) {

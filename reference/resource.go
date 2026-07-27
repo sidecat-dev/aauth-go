@@ -3,7 +3,6 @@ package reference
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"errors"
 	"io"
 	"net/http"
@@ -62,33 +61,12 @@ type localAccessGrant struct {
 	expiresAt  time.Time
 }
 
-type pendingAuthorizationState string
-
-const (
-	pendingAuthorizationWaiting     pendingAuthorizationState = "pending"
-	pendingAuthorizationInteracting pendingAuthorizationState = "interacting"
-	pendingAuthorizationApproved    pendingAuthorizationState = "approved"
-	pendingAuthorizationRejected    pendingAuthorizationState = "rejected"
-	pendingAuthorizationExpired     pendingAuthorizationState = "expired"
-	pendingAuthorizationInvalidCode pendingAuthorizationState = "invalid_code"
-	pendingAuthorizationServed      pendingAuthorizationState = "served"
-)
-
-const maxInteractionCodeAttempts = 3
-
 type pendingAuthorization struct {
-	id                 string
-	code               string
-	normalizedCode     string
-	codeConsumed       bool
-	failedCodeAttempts int
-	state              pendingAuthorizationState
-	request            aauth.AuthorizationRequest
-	decision           aauth.AuthorizationDecision
-	pollingError       aauth.PollingErrorCode
-	agentThumbprint    string
-	agentExpiresAt     time.Time
-	expiresAt          time.Time
+	pendingInteraction
+	request         aauth.AuthorizationRequest
+	decision        aauth.AuthorizationDecision
+	agentThumbprint string
+	agentExpiresAt  time.Time
 }
 
 func NewResource(config ResourceConfig) (*Resource, error) {
@@ -339,45 +317,35 @@ func (resource *Resource) beginPendingAuthorization(
 	agentExpiresAt time.Time,
 	now time.Time,
 ) error {
-	resource.randomMu.Lock()
-	pendingID, err := aauth.GeneratePendingID(resource.random)
-	var code string
-	if err == nil {
-		code, err = aauth.GenerateInteractionCode(resource.random)
-		if err == nil {
-			normalizedCode, normalizeErr := aauth.NormalizeInteractionCode(code)
-			if normalizeErr != nil {
-				err = normalizeErr
-			} else {
-				expiresAt := now.Add(resource.pendingLifetime)
-				if agentExpiresAt.Before(expiresAt) {
-					expiresAt = agentExpiresAt
-				}
-				pending := &pendingAuthorization{
-					id:              pendingID,
-					code:            code,
-					normalizedCode:  normalizedCode,
-					state:           pendingAuthorizationWaiting,
-					request:         copyAuthorizationRequest(request),
-					agentThumbprint: thumbprint,
-					agentExpiresAt:  agentExpiresAt,
-					expiresAt:       expiresAt,
-				}
-				resource.pendingMu.Lock()
-				if _, exists := resource.pending[pendingID]; exists {
-					err = errors.New("pending identifier source returned a duplicate value")
-				} else {
-					resource.pending[pendingID] = pending
-				}
-				resource.pendingMu.Unlock()
-			}
-		}
+	expiresAt := now.Add(resource.pendingLifetime)
+	if agentExpiresAt.Before(expiresAt) {
+		expiresAt = agentExpiresAt
 	}
+	resource.randomMu.Lock()
+	interaction, err := newPendingInteraction(resource.random, expiresAt)
 	resource.randomMu.Unlock()
 	if err != nil {
 		return err
 	}
-	return resource.writePendingAuthorization(response, pendingID, pendingAuthorizationWaiting, code)
+	pending := &pendingAuthorization{
+		pendingInteraction: interaction,
+		request:            copyAuthorizationRequest(request),
+		agentThumbprint:    thumbprint,
+		agentExpiresAt:     agentExpiresAt,
+	}
+	resource.pendingMu.Lock()
+	if _, exists := resource.pending[interaction.id]; exists {
+		resource.pendingMu.Unlock()
+		return errors.New("pending identifier source returned a duplicate value")
+	}
+	resource.pending[interaction.id] = pending
+	resource.pendingMu.Unlock()
+	return resource.writePendingAuthorization(
+		response,
+		interaction.id,
+		pendingAuthorizationWaiting,
+		interaction.code,
+	)
 }
 
 func copyAuthorizationRequest(request aauth.AuthorizationRequest) aauth.AuthorizationRequest {
@@ -586,15 +554,6 @@ func (resource *Resource) handlePendingAuthorization(response http.ResponseWrite
 }
 
 func (resource *Resource) handleInteraction(response http.ResponseWriter, request *http.Request) {
-	codeValues, hasCode := request.URL.Query()["code"]
-	var normalizedCode string
-	var codeErr error
-	if !hasCode || len(codeValues) != 1 {
-		codeErr = errors.New("interaction requires exactly one code")
-	} else {
-		normalizedCode, codeErr = aauth.NormalizeInteractionCode(codeValues[0])
-	}
-
 	resource.pendingMu.Lock()
 	pending, exists := resource.pending[request.PathValue("id")]
 	if !exists {
@@ -602,34 +561,15 @@ func (resource *Resource) handleInteraction(response http.ResponseWriter, reques
 		writeProblem(response, http.StatusGone, "invalid_code", errors.New("pending interaction is unknown"))
 		return
 	}
-	if !pending.expiresAt.After(resource.clock.Now()) {
-		pending.state = pendingAuthorizationExpired
+	status, code, err := pending.correlate(
+		request.URL.Query()["code"],
+		resource.clock.Now(),
+	)
+	if err != nil {
 		resource.pendingMu.Unlock()
-		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending interaction expired"))
+		writeProblem(response, status, code, err)
 		return
 	}
-	if pending.codeConsumed || pending.state != pendingAuthorizationWaiting {
-		resource.pendingMu.Unlock()
-		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code is already consumed"))
-		return
-	}
-	if codeErr != nil ||
-		subtle.ConstantTimeCompare([]byte(normalizedCode), []byte(pending.normalizedCode)) != 1 {
-		pending.failedCodeAttempts++
-		terminal := pending.failedCodeAttempts >= maxInteractionCodeAttempts
-		if terminal {
-			pending.state = pendingAuthorizationInvalidCode
-		}
-		resource.pendingMu.Unlock()
-		if terminal {
-			writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code attempt limit reached"))
-		} else {
-			writeProblem(response, http.StatusBadRequest, "invalid_code", errors.New("interaction code is invalid"))
-		}
-		return
-	}
-	pending.codeConsumed = true
-	pending.state = pendingAuthorizationInteracting
 	authorizationRequest := copyAuthorizationRequest(pending.request)
 	resource.pendingMu.Unlock()
 

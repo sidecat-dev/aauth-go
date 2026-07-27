@@ -108,6 +108,33 @@ comparators. They do not define compatibility requirements for this library.
   `/home/jgay-automate/workspaces/sidecat-workspace/aauth/`. This tranche did
   not produce a new protocol finding; it implements the deferred rules already
   recorded there without re-raising reconciled feedback.
-- AS-hosted deferral, PS pass-through of AS requirements, clarification POST
-  actions, interaction relay/callback, and durable external pending-state
-  custody remain open.
+- Clarification POST actions, interaction relay/callback, and durable external
+  pending-state custody remain open.
+
+### Access-server deferred interaction through the person server
+
+- **Status: implemented and qualified for the four-party AS-hosted path.**
+- The AS verifies the PS's `jwks_uri` request proof, configured PS trust, agent
+  and optional sub-agent tokens, resource-token audience, agent/key binding,
+  mission approver, and scope before creating pending state. Its pending URL is
+  bound to the same PS identifier and signing-key thumbprint.
+- The AS interaction code is correlation only. AS deployment policy runs only
+  after code entry and a separate trusted AS approval; a PS approval method is
+  explicitly refused for AS-owned pending work.
+- The PS does not hand the AS pending URL to the agent. It creates a distinct
+  random PS continuation bound to the initiating agent/key, relays the AS
+  interaction requirement, and signs downstream polls with its own discovered
+  identity. A terminal AS auth token is accepted only after the existing
+  issuer, discovery document, audience, agent, key, scope, mission, and actor
+  checks pass.
+- The vertical exercises PS-to-AS `429` slowdown propagation without an early
+  downstream poll, unsigned AS-poll refusal, ownership-bound approval,
+  terminal success and protected use, denial, expiry, three-attempt
+  invalid-code failure, and one-shot terminal responses across the proxy.
+- The implementation uses the Signature-Key dependency's defined
+  `id`/`dwk`/`kid` `jwks_uri` parameters. The conflicting core-draft example is
+  already recorded as N2 in the reconciled workspace feedback; this is
+  corroborating implementation evidence, not a new finding.
+- Clarification/updated-request/cancel actions, resource-initiated callback
+  chaining, PS interaction relay, durable pending storage, and four-party call
+  chaining remain open.

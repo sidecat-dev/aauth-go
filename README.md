@@ -60,6 +60,14 @@ discoverable `jwks_uri` identity, the access server applies independent trust
 and resource policy, and both the person server and agent verify the returned
 proof-bound auth token before it reaches the resource.
 
+The access server may also defer for resource-owner interaction. It binds its
+pending state and signed polls to the initiating person-server identity and
+key. The person server retains a distinct agent-facing pending URL, relays the
+AS interaction requirement without exposing AS polling authority, polls the AS
+with its own key, and validates the terminal AS token before returning it to
+the agent. Slowdown, denial, expiry, invalid-code failure, and one-shot terminal
+delivery cross both continuation boundaries.
+
 Three-party call chaining is exercised through two real protected resources.
 The intermediary signs as its own agent, carries the upstream auth token only
 as evidence, obtains a downstream token bound to its own key, and the person
@@ -74,8 +82,8 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
-Four-party call chaining, deferred handling at AS endpoints, interaction
-relay/callback and clarification flows, R3, Events, Bootstrap, and the
-remaining Signature-Key schemes still require implementation and qualification.
+Four-party call chaining, interaction relay/callback and clarification flows,
+R3, Events, Bootstrap, and the remaining Signature-Key schemes still require
+implementation and qualification.
 
 No upstream contribution or repository is implied by this local project.
