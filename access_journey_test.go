@@ -137,7 +137,7 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	grant, err := agent.AuthorizeResourceManaged(
+	authorization, err := agent.RequestResourceManagedAccess(
 		context.Background(),
 		"https://resource.example/authorize",
 		[]string{"documents.read"},
@@ -145,6 +145,10 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if authorization.Grant == nil || authorization.Pending != nil {
+		t.Fatalf("immediate authorization = %#v", authorization)
+	}
+	grant := *authorization.Grant
 	if grant.Token != "opaque-access-token" {
 		t.Fatalf("access token = %q", grant.Token)
 	}

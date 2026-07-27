@@ -60,7 +60,7 @@ func TestAgentUsesGrantedScopeAndRotatedAAuthAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	grant, err := agent.AuthorizeResourceManaged(
+	authorization, err := agent.RequestResourceManagedAccess(
 		context.Background(),
 		"https://resource.example/authorize",
 		[]string{"documents.read", "documents.write"},
@@ -68,6 +68,10 @@ func TestAgentUsesGrantedScopeAndRotatedAAuthAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if authorization.Grant == nil || authorization.Pending != nil {
+		t.Fatalf("immediate authorization = %#v", authorization)
+	}
+	grant := *authorization.Grant
 	if strings.Join(grant.Scope, " ") != "documents.read" {
 		t.Fatalf("granted scope = %q", grant.Scope)
 	}

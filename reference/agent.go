@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -49,6 +52,25 @@ type AccessGrant struct {
 	Resource string
 	Token    string
 	Scope    []string
+}
+
+// AccessAuthorization is either a usable grant or a pending continuation.
+type AccessAuthorization struct {
+	Grant   *AccessGrant
+	Pending *PendingAccessAuthorization
+}
+
+// PendingAccessAuthorization carries the same-origin signed-poll continuation
+// for a resource-managed authorization.
+type PendingAccessAuthorization struct {
+	ID             string
+	Resource       string
+	Location       string
+	RetryAfter     time.Duration
+	NotBefore      time.Time
+	Status         string
+	Requirement    *aauth.Requirement
+	requestedScope []string
 }
 
 func NewAgent(config AgentConfig) (*Agent, error) {
@@ -494,41 +516,73 @@ func (agent *Agent) DoAuthorized(
 	return agent.httpClient.Do(request)
 }
 
-// AuthorizeResourceManaged asks a resource to apply its own authorization
-// policy and return an opaque, proof-bound AAuth-Access credential.
-func (agent *Agent) AuthorizeResourceManaged(
+// RequestResourceManagedAccess asks a resource to authorize immediately or
+// return a deferred continuation.
+func (agent *Agent) RequestResourceManagedAccess(
 	ctx context.Context,
 	resourceEndpoint string,
 	scopes []string,
-) (AccessGrant, error) {
-	var grant AccessGrant
+) (AccessAuthorization, error) {
+	var authorization AccessAuthorization
 	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
-		return grant, err
+		return authorization, err
 	}
 	requestedScopes, err := parseScopes(strings.Join(scopes, " "))
 	if err != nil {
-		return grant, err
+		return authorization, err
 	}
 	body, err := json.Marshal(map[string]string{"scope": strings.Join(requestedScopes, " ")})
 	if err != nil {
-		return grant, err
+		return authorization, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, resourceEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return grant, err
+		return authorization, err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Prefer", "wait=0")
 	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
-		return grant, err
+		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
 	if err != nil {
-		return grant, err
+		return authorization, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return grant, responseError(response)
+	resourceID, err := endpointIdentifier(resourceEndpoint)
+	if err != nil {
+		return authorization, err
 	}
+	switch response.StatusCode {
+	case http.StatusOK:
+		grant, err := parseAccessGrantResponse(response, resourceID, requestedScopes)
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Grant = &grant
+		return authorization, nil
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			return authorization, err
+		}
+		pending, err := newPendingAccessAuthorization(resourceID, requestedScopes, deferred, agent.clock.Now())
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Pending = &pending
+		return authorization, nil
+	default:
+		return authorization, responseError(response)
+	}
+}
+
+func parseAccessGrantResponse(
+	response *http.Response,
+	resourceID string,
+	requestedScopes []string,
+) (AccessGrant, error) {
+	var grant AccessGrant
 	values := response.Header.Values("AAuth-Access")
 	if len(values) != 1 {
 		return grant, errors.New("reference: resource did not return exactly one AAuth-Access credential")
@@ -557,15 +611,114 @@ func (agent *Agent) AuthorizeResourceManaged(
 	if result.Status != "authorized" || !scopesContained(grantedScopes, requestedScopes) {
 		return grant, errors.New("reference: authorization response contains an invalid status or scope")
 	}
-	resourceID, err := endpointIdentifier(resourceEndpoint)
-	if err != nil {
-		return grant, err
-	}
 	return AccessGrant{
 		Resource: resourceID,
 		Token:    values[0],
 		Scope:    append([]string(nil), grantedScopes...),
 	}, nil
+}
+
+func newPendingAccessAuthorization(
+	resourceID string,
+	requestedScope []string,
+	deferred aauth.DeferredResponse,
+	now time.Time,
+) (PendingAccessAuthorization, error) {
+	parsed, err := url.Parse(deferred.Location)
+	if err != nil {
+		return PendingAccessAuthorization{}, err
+	}
+	locationResource, err := endpointIdentifier(deferred.Location)
+	if err != nil {
+		return PendingAccessAuthorization{}, err
+	}
+	if locationResource != resourceID {
+		return PendingAccessAuthorization{}, errors.New("reference: pending authorization moved to another resource")
+	}
+	return PendingAccessAuthorization{
+		ID:             path.Base(parsed.Path),
+		Resource:       resourceID,
+		Location:       deferred.Location,
+		RetryAfter:     deferred.RetryAfter,
+		NotBefore:      now.Add(deferred.RetryAfter),
+		Status:         deferred.Status,
+		Requirement:    deferred.Requirement,
+		requestedScope: append([]string(nil), requestedScope...),
+	}, nil
+}
+
+// PollResourceManagedAccess makes one signed GET to a pending resource
+// authorization. It returns another pending continuation or the terminal grant.
+func (agent *Agent) PollResourceManagedAccess(
+	ctx context.Context,
+	pending *PendingAccessAuthorization,
+) (AccessAuthorization, error) {
+	var authorization AccessAuthorization
+	if pending == nil {
+		return authorization, errors.New("reference: pending access authorization is required")
+	}
+	if agent.clock.Now().Before(pending.NotBefore) {
+		return authorization, errors.New("reference: pending authorization is not ready to poll")
+	}
+	if err := aauth.ValidatePollingEndpoint(pending.Location); err != nil {
+		return authorization, err
+	}
+	resourceID, err := endpointIdentifier(pending.Location)
+	if err != nil {
+		return authorization, err
+	}
+	if resourceID != pending.Resource {
+		return authorization, errors.New("reference: pending authorization does not apply to its endpoint")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.Location, nil)
+	if err != nil {
+		return authorization, err
+	}
+	request.Header.Set("Prefer", "wait=0")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return authorization, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return authorization, err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK:
+		grant, err := parseAccessGrantResponse(response, pending.Resource, pending.requestedScope)
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Grant = &grant
+		return authorization, nil
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			return authorization, err
+		}
+		next, err := newPendingAccessAuthorization(
+			pending.Resource,
+			pending.requestedScope,
+			deferred,
+			agent.clock.Now(),
+		)
+		if err != nil {
+			return authorization, err
+		}
+		*pending = next
+		authorization.Pending = pending
+		return authorization, nil
+	default:
+		responseErr := responseError(response)
+		var problem *aauth.ProblemError
+		if response.StatusCode == http.StatusTooManyRequests &&
+			errors.As(responseErr, &problem) &&
+			problem.Code == aauth.PollingSlowDown {
+			pending.RetryAfter += 5 * time.Second
+			pending.NotBefore = agent.clock.Now().Add(pending.RetryAfter)
+		}
+		return authorization, responseErr
+	}
 }
 
 // DoWithAccess signs and sends a request using a resource-managed grant. The
@@ -622,6 +775,16 @@ func (agent *Agent) DoWithAccess(
 }
 
 func responseError(response *http.Response) error {
+	if strings.HasPrefix(
+		strings.ToLower(response.Header.Get("Content-Type")),
+		"application/problem+json",
+	) {
+		problem, err := aauth.DecodeProblemResponse(response)
+		if err != nil {
+			return err
+		}
+		return problem
+	}
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
 	return fmt.Errorf("reference: server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
 }

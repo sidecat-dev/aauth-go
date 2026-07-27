@@ -2,7 +2,10 @@ package reference
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,6 +24,9 @@ type ResourceConfig struct {
 	NewID               func() string
 	Scopes              []string
 	AuthorizationPolicy aauth.AuthorizationPolicy
+	InteractionRequired func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	Random              io.Reader
+	PendingLifetime     time.Duration
 	Operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
 }
 
@@ -34,7 +40,13 @@ type Resource struct {
 	newID               func() string
 	scopes              []string
 	authorizationPolicy aauth.AuthorizationPolicy
+	interactionRequired func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	random              io.Reader
+	pendingLifetime     time.Duration
 	operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
+	randomMu            sync.Mutex
+	pendingMu           sync.Mutex
+	pending             map[string]*pendingAuthorization
 	accessMu            sync.Mutex
 	access              map[string]localAccessGrant
 	replayMu            sync.Mutex
@@ -48,6 +60,35 @@ type localAccessGrant struct {
 	scope      []string
 	mission    *aauth.MissionReference
 	expiresAt  time.Time
+}
+
+type pendingAuthorizationState string
+
+const (
+	pendingAuthorizationWaiting     pendingAuthorizationState = "pending"
+	pendingAuthorizationInteracting pendingAuthorizationState = "interacting"
+	pendingAuthorizationApproved    pendingAuthorizationState = "approved"
+	pendingAuthorizationRejected    pendingAuthorizationState = "rejected"
+	pendingAuthorizationExpired     pendingAuthorizationState = "expired"
+	pendingAuthorizationInvalidCode pendingAuthorizationState = "invalid_code"
+	pendingAuthorizationServed      pendingAuthorizationState = "served"
+)
+
+const maxInteractionCodeAttempts = 3
+
+type pendingAuthorization struct {
+	id                 string
+	code               string
+	normalizedCode     string
+	codeConsumed       bool
+	failedCodeAttempts int
+	state              pendingAuthorizationState
+	request            aauth.AuthorizationRequest
+	decision           aauth.AuthorizationDecision
+	pollingError       aauth.PollingErrorCode
+	agentThumbprint    string
+	agentExpiresAt     time.Time
+	expiresAt          time.Time
 }
 
 func NewResource(config ResourceConfig) (*Resource, error) {
@@ -79,9 +120,23 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	if tokenAudience != "" && config.SigningKey.ID() == "" {
 		return nil, errors.New("reference: a resource that issues resource tokens requires a signing key")
 	}
+	if config.InteractionRequired != nil && config.AuthorizationPolicy == nil {
+		return nil, errors.New("reference: deferred resource authorization requires a local authorization policy")
+	}
 	if config.KeyResolver == nil || config.Clock == nil || config.NewID == nil ||
 		len(config.Scopes) == 0 || config.Operation == nil {
 		return nil, errors.New("reference: resource requires resolver, clock, id source, scopes, and operation")
+	}
+	pendingLifetime := config.PendingLifetime
+	if pendingLifetime == 0 {
+		pendingLifetime = 5 * time.Minute
+	}
+	if pendingLifetime < 0 {
+		return nil, errors.New("reference: pending lifetime must not be negative")
+	}
+	random := config.Random
+	if random == nil {
+		random = rand.Reader
 	}
 	if _, err := parseScopes(strings.Join(config.Scopes, " ")); err != nil {
 		return nil, err
@@ -96,7 +151,11 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		newID:               config.NewID,
 		scopes:              append([]string(nil), config.Scopes...),
 		authorizationPolicy: config.AuthorizationPolicy,
+		interactionRequired: config.InteractionRequired,
+		random:              random,
+		pendingLifetime:     pendingLifetime,
 		operation:           config.Operation,
+		pending:             make(map[string]*pendingAuthorization),
 		access:              make(map[string]localAccessGrant),
 		replayedProof:       make(map[string]time.Time),
 	}, nil
@@ -105,6 +164,8 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 func (resource *Resource) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /authorize", resource.handleAuthorize)
+	mux.HandleFunc("GET /pending/{id}", resource.handlePendingAuthorization)
+	mux.HandleFunc("GET /interaction/{id}", resource.handleInteraction)
 	mux.HandleFunc("GET /.well-known/aauth-resource.json", resource.handleMetadata)
 	mux.HandleFunc("GET /jwks", resource.handleJWKS)
 	mux.HandleFunc("/", resource.handleProtected)
@@ -122,6 +183,10 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	})
 	if err != nil {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		return
+	}
+	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
+		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
 		return
 	}
 	var input struct {
@@ -152,49 +217,47 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	}
 	now := resource.clock.Now()
 	if resource.authorizationPolicy != nil {
-		decision, err := resource.authorizationPolicy(request.Context(), aauth.AuthorizationRequest{
+		authorizationRequest := aauth.AuthorizationRequest{
 			Agent:    verified.Agent,
 			Resource: resource.identifier,
 			Scope:    append([]string(nil), scopes...),
 			Mission:  mission,
-		})
+		}
+		if resource.interactionRequired != nil {
+			required, err := resource.interactionRequired(request.Context(), authorizationRequest)
+			if err != nil {
+				writeProblem(response, http.StatusForbidden, "access_denied", err)
+				return
+			}
+			if required {
+				if err := resource.beginPendingAuthorization(
+					response,
+					authorizationRequest,
+					thumbprint,
+					time.Unix(verified.AgentToken.ExpiresAt, 0),
+					now,
+				); err != nil {
+					writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				}
+				return
+			}
+		}
+		decision, err := resource.authorizationPolicy(request.Context(), authorizationRequest)
 		if err != nil {
 			writeProblem(response, http.StatusForbidden, "access_denied", err)
 			return
 		}
-		if len(decision.Scope) == 0 || !scopesContained(decision.Scope, scopes) {
+		if err := validateAuthorizationDecision(decision, scopes); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("local authorization policy returned an invalid grant"))
-			return
-		}
-		accessToken := resource.newID()
-		if err := aauth.ValidateAccessToken(accessToken); err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
 		expiresAt := now.Add(time.Hour)
 		if agentExpiry := time.Unix(verified.AgentToken.ExpiresAt, 0); agentExpiry.Before(expiresAt) {
 			expiresAt = agentExpiry
 		}
-		resource.accessMu.Lock()
-		if _, exists := resource.access[accessToken]; exists {
-			resource.accessMu.Unlock()
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access token source returned a duplicate value"))
-			return
+		if err := resource.writeAccessGrant(response, authorizationRequest, decision, thumbprint, expiresAt); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
-		resource.access[accessToken] = localAccessGrant{
-			agent:      verified.Agent,
-			subject:    decision.Subject,
-			thumbprint: thumbprint,
-			scope:      append([]string(nil), decision.Scope...),
-			mission:    mission,
-			expiresAt:  expiresAt,
-		}
-		resource.accessMu.Unlock()
-		response.Header().Set("AAuth-Access", accessToken)
-		writeJSON(response, http.StatusOK, map[string]any{
-			"status": "authorized",
-			"scope":  strings.Join(decision.Scope, " "),
-		})
 		return
 	}
 
@@ -215,6 +278,358 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]string{"resource_token": token})
+}
+
+func validateAuthorizationDecision(decision aauth.AuthorizationDecision, requestedScope []string) error {
+	if len(decision.Scope) == 0 || !scopesContained(decision.Scope, requestedScope) {
+		return errors.New("authorization decision contains an invalid scope")
+	}
+	return nil
+}
+
+func (resource *Resource) writeAccessGrant(
+	response http.ResponseWriter,
+	request aauth.AuthorizationRequest,
+	decision aauth.AuthorizationDecision,
+	thumbprint string,
+	expiresAt time.Time,
+) error {
+	token, err := resource.storeAccessGrant(request, decision, thumbprint, expiresAt)
+	if err != nil {
+		return err
+	}
+	response.Header().Set("AAuth-Access", token)
+	writeJSON(response, http.StatusOK, map[string]any{
+		"status": "authorized",
+		"scope":  strings.Join(decision.Scope, " "),
+	})
+	return nil
+}
+
+func (resource *Resource) storeAccessGrant(
+	request aauth.AuthorizationRequest,
+	decision aauth.AuthorizationDecision,
+	thumbprint string,
+	expiresAt time.Time,
+) (string, error) {
+	accessToken := resource.newID()
+	if err := aauth.ValidateAccessToken(accessToken); err != nil {
+		return "", err
+	}
+	resource.accessMu.Lock()
+	defer resource.accessMu.Unlock()
+	if _, exists := resource.access[accessToken]; exists {
+		return "", errors.New("access token source returned a duplicate value")
+	}
+	resource.access[accessToken] = localAccessGrant{
+		agent:      request.Agent,
+		subject:    decision.Subject,
+		thumbprint: thumbprint,
+		scope:      append([]string(nil), decision.Scope...),
+		mission:    request.Mission,
+		expiresAt:  expiresAt,
+	}
+	return accessToken, nil
+}
+
+func (resource *Resource) beginPendingAuthorization(
+	response http.ResponseWriter,
+	request aauth.AuthorizationRequest,
+	thumbprint string,
+	agentExpiresAt time.Time,
+	now time.Time,
+) error {
+	resource.randomMu.Lock()
+	pendingID, err := aauth.GeneratePendingID(resource.random)
+	var code string
+	if err == nil {
+		code, err = aauth.GenerateInteractionCode(resource.random)
+		if err == nil {
+			normalizedCode, normalizeErr := aauth.NormalizeInteractionCode(code)
+			if normalizeErr != nil {
+				err = normalizeErr
+			} else {
+				expiresAt := now.Add(resource.pendingLifetime)
+				if agentExpiresAt.Before(expiresAt) {
+					expiresAt = agentExpiresAt
+				}
+				pending := &pendingAuthorization{
+					id:              pendingID,
+					code:            code,
+					normalizedCode:  normalizedCode,
+					state:           pendingAuthorizationWaiting,
+					request:         copyAuthorizationRequest(request),
+					agentThumbprint: thumbprint,
+					agentExpiresAt:  agentExpiresAt,
+					expiresAt:       expiresAt,
+				}
+				resource.pendingMu.Lock()
+				if _, exists := resource.pending[pendingID]; exists {
+					err = errors.New("pending identifier source returned a duplicate value")
+				} else {
+					resource.pending[pendingID] = pending
+				}
+				resource.pendingMu.Unlock()
+			}
+		}
+	}
+	resource.randomMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return resource.writePendingAuthorization(response, pendingID, pendingAuthorizationWaiting, code)
+}
+
+func copyAuthorizationRequest(request aauth.AuthorizationRequest) aauth.AuthorizationRequest {
+	copied := request
+	copied.Scope = append([]string(nil), request.Scope...)
+	if request.Mission != nil {
+		mission := *request.Mission
+		copied.Mission = &mission
+	}
+	return copied
+}
+
+func (resource *Resource) writePendingAuthorization(
+	response http.ResponseWriter,
+	pendingID string,
+	state pendingAuthorizationState,
+	code string,
+) error {
+	requirement, err := aauth.FormatRequirementHeader(aauth.Requirement{
+		Type:            aauth.RequirementInteraction,
+		InteractionURL:  resource.identifier + "/interaction/" + pendingID,
+		InteractionCode: code,
+	})
+	if err != nil {
+		return err
+	}
+	response.Header().Set("Location", "/pending/"+pendingID)
+	response.Header().Set("Retry-After", "0")
+	response.Header().Set("AAuth-Requirement", requirement)
+	writeJSON(response, http.StatusAccepted, map[string]string{"status": string(state)})
+	return nil
+}
+
+// ApproveAuthorization records a trusted approval for an interaction the user
+// has entered. The interaction code itself cannot call this method or supply
+// the grant; deployment policy is evaluated again at approval time.
+func (resource *Resource) ApproveAuthorization(ctx context.Context, pendingID string) error {
+	resource.pendingMu.Lock()
+	pending, exists := resource.pending[pendingID]
+	if !exists {
+		resource.pendingMu.Unlock()
+		return errors.New("reference: pending authorization does not exist")
+	}
+	now := resource.clock.Now()
+	if !pending.expiresAt.After(now) {
+		pending.state = pendingAuthorizationExpired
+		resource.pendingMu.Unlock()
+		return errors.New("reference: pending authorization expired")
+	}
+	if pending.state != pendingAuthorizationInteracting {
+		resource.pendingMu.Unlock()
+		return errors.New("reference: pending authorization is not awaiting a trusted decision")
+	}
+	request := copyAuthorizationRequest(pending.request)
+	resource.pendingMu.Unlock()
+
+	decision, err := resource.authorizationPolicy(ctx, request)
+	if err != nil {
+		return err
+	}
+	if err := validateAuthorizationDecision(decision, request.Scope); err != nil {
+		return err
+	}
+
+	resource.pendingMu.Lock()
+	defer resource.pendingMu.Unlock()
+	if pending.state != pendingAuthorizationInteracting {
+		return errors.New("reference: pending authorization changed while approval was evaluated")
+	}
+	if !pending.expiresAt.After(resource.clock.Now()) {
+		pending.state = pendingAuthorizationExpired
+		return errors.New("reference: pending authorization expired")
+	}
+	pending.decision = aauth.AuthorizationDecision{
+		Subject: decision.Subject,
+		Scope:   append([]string(nil), decision.Scope...),
+	}
+	pending.state = pendingAuthorizationApproved
+	return nil
+}
+
+// RejectAuthorization records a trusted terminal denial or abandonment. The
+// interaction code cannot invoke this authority boundary.
+func (resource *Resource) RejectAuthorization(
+	pendingID string,
+	code aauth.PollingErrorCode,
+) error {
+	if code != aauth.PollingDenied &&
+		code != aauth.PollingAbandoned &&
+		code != aauth.PollingServerError {
+		return errors.New("reference: unsupported authorization rejection code")
+	}
+	resource.pendingMu.Lock()
+	defer resource.pendingMu.Unlock()
+	pending, exists := resource.pending[pendingID]
+	if !exists {
+		return errors.New("reference: pending authorization does not exist")
+	}
+	if !pending.expiresAt.After(resource.clock.Now()) {
+		pending.state = pendingAuthorizationExpired
+		return errors.New("reference: pending authorization expired")
+	}
+	if pending.state != pendingAuthorizationInteracting {
+		return errors.New("reference: pending authorization is not awaiting a trusted decision")
+	}
+	pending.pollingError = code
+	pending.state = pendingAuthorizationRejected
+	return nil
+}
+
+func (resource *Resource) handlePendingAuthorization(response http.ResponseWriter, request *http.Request) {
+	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
+		AllowedCredentialTypes: []string{aauth.AgentTokenType},
+	})
+	if err != nil {
+		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		return
+	}
+	thumbprint, err := verified.PublicKey.Thumbprint()
+	if err != nil {
+		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		return
+	}
+
+	resource.pendingMu.Lock()
+	pending, exists := resource.pending[request.PathValue("id")]
+	if !exists {
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization is unknown"))
+		return
+	}
+	if pending.request.Agent != verified.Agent || pending.agentThumbprint != thumbprint {
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusForbidden, "invalid_pending", errors.New("pending authorization belongs to a different agent key"))
+		return
+	}
+	if (pending.state == pendingAuthorizationWaiting ||
+		pending.state == pendingAuthorizationInteracting) &&
+		!pending.expiresAt.After(resource.clock.Now()) {
+		pending.state = pendingAuthorizationExpired
+	}
+
+	switch pending.state {
+	case pendingAuthorizationWaiting, pendingAuthorizationInteracting:
+		id := pending.id
+		state := pending.state
+		code := pending.code
+		resource.pendingMu.Unlock()
+		if err := resource.writePendingAuthorization(response, id, state, code); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		}
+	case pendingAuthorizationApproved:
+		expiresAt := resource.clock.Now().Add(time.Hour)
+		if pending.agentExpiresAt.Before(expiresAt) {
+			expiresAt = pending.agentExpiresAt
+		}
+		token, err := resource.storeAccessGrant(
+			pending.request,
+			pending.decision,
+			pending.agentThumbprint,
+			expiresAt,
+		)
+		if err != nil {
+			resource.pendingMu.Unlock()
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		decision := pending.decision
+		pending.state = pendingAuthorizationServed
+		resource.pendingMu.Unlock()
+		response.Header().Set("AAuth-Access", token)
+		writeJSON(response, http.StatusOK, map[string]any{
+			"status": "authorized",
+			"scope":  strings.Join(decision.Scope, " "),
+		})
+	case pendingAuthorizationExpired:
+		pending.state = pendingAuthorizationServed
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending authorization expired"))
+	case pendingAuthorizationRejected:
+		code := pending.pollingError
+		pending.state = pendingAuthorizationServed
+		resource.pendingMu.Unlock()
+		status := http.StatusForbidden
+		if code == aauth.PollingServerError {
+			status = http.StatusInternalServerError
+		}
+		writeProblem(response, status, string(code), errors.New("pending authorization was not approved"))
+	case pendingAuthorizationInvalidCode:
+		pending.state = pendingAuthorizationServed
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code validation failed"))
+	default:
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization already returned a terminal response"))
+	}
+}
+
+func (resource *Resource) handleInteraction(response http.ResponseWriter, request *http.Request) {
+	codeValues, hasCode := request.URL.Query()["code"]
+	var normalizedCode string
+	var codeErr error
+	if !hasCode || len(codeValues) != 1 {
+		codeErr = errors.New("interaction requires exactly one code")
+	} else {
+		normalizedCode, codeErr = aauth.NormalizeInteractionCode(codeValues[0])
+	}
+
+	resource.pendingMu.Lock()
+	pending, exists := resource.pending[request.PathValue("id")]
+	if !exists {
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusGone, "invalid_code", errors.New("pending interaction is unknown"))
+		return
+	}
+	if !pending.expiresAt.After(resource.clock.Now()) {
+		pending.state = pendingAuthorizationExpired
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending interaction expired"))
+		return
+	}
+	if pending.codeConsumed || pending.state != pendingAuthorizationWaiting {
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code is already consumed"))
+		return
+	}
+	if codeErr != nil ||
+		subtle.ConstantTimeCompare([]byte(normalizedCode), []byte(pending.normalizedCode)) != 1 {
+		pending.failedCodeAttempts++
+		terminal := pending.failedCodeAttempts >= maxInteractionCodeAttempts
+		if terminal {
+			pending.state = pendingAuthorizationInvalidCode
+		}
+		resource.pendingMu.Unlock()
+		if terminal {
+			writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code attempt limit reached"))
+		} else {
+			writeProblem(response, http.StatusBadRequest, "invalid_code", errors.New("interaction code is invalid"))
+		}
+		return
+	}
+	pending.codeConsumed = true
+	pending.state = pendingAuthorizationInteracting
+	authorizationRequest := copyAuthorizationRequest(pending.request)
+	resource.pendingMu.Unlock()
+
+	writeJSON(response, http.StatusOK, map[string]any{
+		"status":   "interacting",
+		"agent":    authorizationRequest.Agent,
+		"resource": authorizationRequest.Resource,
+		"scope":    strings.Join(authorizationRequest.Scope, " "),
+	})
 }
 
 func (resource *Resource) handleProtected(response http.ResponseWriter, request *http.Request) {

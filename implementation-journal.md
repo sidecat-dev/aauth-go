@@ -55,3 +55,31 @@ comparators. They do not define compatibility requirements for this library.
   interoperability.
 - Four-party call chaining, generic deferred responses, R3, Events, Bootstrap,
   and remaining Signature-Key schemes are still open.
+
+### Resource-managed deferred interaction
+
+- **Status: implemented and qualified for the resource-hosted interaction
+  path.**
+- The resource returns a validated Structured Field
+  `requirement=interaction`, same-origin pending URL, `Retry-After`, and
+  `Cache-Control: no-store`. The agent performs signed GET polling, locally
+  enforces the polling interval, and adds five seconds after `429 slow_down`.
+- Pending URLs carry 128 random bits. Human codes carry the required 40 random
+  bits, use Crockford base32, accept case and `I`/`L`/`O` transcription aliases,
+  expire with the pending request, are single-use, and terminally fail after
+  three incorrect attempts.
+- A valid code only enters the interaction and exposes the request context. A
+  separate trusted application call approves or rejects it; approval reruns
+  resource policy. Polls and delivered grants remain bound to the initiating
+  agent and confirmation key.
+- Terminal success, user denial, expiry, invalid-code failure, and already-gone
+  continuations are one-shot. RFC 9457 responses are decoded into typed Go
+  errors.
+- The earlier Sidecat Go implementation supplied useful requirement and
+  interaction precedent but had known current-draft gaps: 32-bit hexadecimal
+  codes, development-only HTTP acceptance, `200` for still-pending polls, and
+  rejection of otherwise ignorable non-token extension parameters. This
+  implementation does not retain those behaviors.
+- Generic deferred handling at the PS and AS, callback redirects and their
+  terminal error mapping, interaction relay, clarification actions, `503`
+  retry behavior, and durable external pending-state custody remain open.

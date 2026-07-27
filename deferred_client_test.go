@@ -1,0 +1,108 @@
+package aauth_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/reference"
+)
+
+func TestAgentEnforcesRetryAfterAndSlowDown(t *testing.T) {
+	t.Parallel()
+
+	var polls int
+	gateway := newLogicalGateway(t, map[string]http.Handler{
+		"resource.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			switch {
+			case request.Method == http.MethodPost && request.URL.Path == "/authorize":
+				response.Header().Set("Location", "/pending/request-123")
+				response.Header().Set("Retry-After", "2")
+				response.Header().Set("Cache-Control", "no-store")
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(http.StatusAccepted)
+				_, _ = io.WriteString(response, `{"status":"pending"}`)
+			case request.Method == http.MethodGet && request.URL.Path == "/pending/request-123":
+				polls++
+				if polls == 1 {
+					response.Header().Set("Content-Type", "application/problem+json")
+					response.WriteHeader(http.StatusTooManyRequests)
+					_, _ = io.WriteString(response, `{"status":429,"error":"slow_down"}`)
+					return
+				}
+				response.Header().Set("AAuth-Access", "opaque-access-token")
+				response.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(response, `{"status":"authorized","scope":"documents.read"}`)
+			default:
+				http.NotFound(response, request)
+			}
+		}),
+	})
+	defer gateway.Close()
+
+	now := time.Date(2026, 7, 27, 13, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	agent, err := reference.NewAgent(reference.AgentConfig{
+		Identifier:  "aauth:reader@ap.example",
+		SigningKey:  testSigningKey(t, "agent-key"),
+		AgentToken:  "agent-token",
+		KeyResolver: aauth.StaticKeyResolver{},
+		HTTPClient:  gateway.Client(),
+		Clock:       clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authorization, err := agent.RequestResourceManagedAccess(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"documents.read"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := authorization.Pending
+	if pending == nil || pending.RetryAfter != 2*time.Second {
+		t.Fatalf("pending authorization = %#v", pending)
+	}
+	if _, err := agent.PollResourceManagedAccess(context.Background(), pending); err == nil {
+		t.Fatal("agent polled before Retry-After")
+	}
+	if polls != 0 {
+		t.Fatalf("early network polls = %d", polls)
+	}
+
+	now = now.Add(2 * time.Second)
+	if _, err := agent.PollResourceManagedAccess(context.Background(), pending); err == nil {
+		t.Fatal("slow_down poll succeeded")
+	} else {
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) || problem.Code != aauth.PollingSlowDown {
+			t.Fatalf("slow_down error = %#v", err)
+		}
+	}
+	if pending.RetryAfter != 7*time.Second ||
+		!pending.NotBefore.Equal(now.Add(7*time.Second)) {
+		t.Fatalf("slow_down pending state = %#v", pending)
+	}
+	if _, err := agent.PollResourceManagedAccess(context.Background(), pending); err == nil {
+		t.Fatal("agent ignored slow_down interval")
+	}
+	if polls != 1 {
+		t.Fatalf("network polls after local slow_down refusal = %d", polls)
+	}
+
+	now = now.Add(7 * time.Second)
+	approved, err := agent.PollResourceManagedAccess(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Grant == nil || approved.Grant.Token != "opaque-access-token" {
+		t.Fatalf("approved authorization = %#v", approved)
+	}
+}

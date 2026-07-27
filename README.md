@@ -14,6 +14,13 @@ as a covered component, adopts downscoped grants and rotated credentials, and
 the resource refuses unsigned, substituted, replayed, expired, or
 differently-keyed use before invoking the protected operation.
 
+That path can also defer for resource-hosted user interaction. Pending
+continuations use 128-bit random URLs, 40-bit Crockford codes, same-origin
+signed polling, enforced `Retry-After`/`slow_down`, bounded code attempts,
+single-use interaction entry, a separate trusted approval or rejection
+boundary, expiry, and one-shot terminal delivery. Merely presenting the
+interaction code cannot approve a grant.
+
 The three-party mission flow is also implemented end to end:
 
 1. an agent provider issues an Ed25519-bound `aa-agent+jwt`;
@@ -57,7 +64,8 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
-Four-party call chaining, deferred interactions, R3, Events, Bootstrap, and
+Four-party call chaining, deferred handling across PS and AS endpoints,
+interaction relay/callback and clarification flows, R3, Events, Bootstrap, and
 the remaining Signature-Key schemes still require implementation and
 qualification.
 

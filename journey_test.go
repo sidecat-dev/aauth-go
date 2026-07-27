@@ -276,7 +276,11 @@ func (transport *logicalTransport) RoundTrip(request *http.Request) (*http.Respo
 	cloned.URL.Scheme = transport.target.Scheme
 	cloned.URL.Host = transport.target.Host
 	cloned.Host = request.URL.Host
-	return transport.base.RoundTrip(cloned)
+	response, err := transport.base.RoundTrip(cloned)
+	if response != nil {
+		response.Request = request
+	}
+	return response, err
 }
 
 func TestLogicalGatewayPreservesSignedAuthority(t *testing.T) {
