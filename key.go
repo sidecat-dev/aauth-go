@@ -80,30 +80,51 @@ type SigningKey struct {
 	public JWK
 }
 
-// NewEd25519SigningKey constructs the mandatory Ed25519 profile.
-func NewEd25519SigningKey(id string, privateKey ed25519.PrivateKey) (SigningKey, error) {
+// NewSigningKey constructs the mandatory Ed25519 profile around a
+// caller-custodied crypto.Signer. The signer may keep its private material in
+// an operating-system key store, HSM, encrypted host store, or another
+// protected boundary; AAuth retains only the signing capability and public
+// key.
+func NewSigningKey(id string, signer crypto.Signer) (SigningKey, error) {
 	if id == "" {
 		return SigningKey{}, errors.New("aauth: signing key id is required")
 	}
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return SigningKey{}, fmt.Errorf("aauth: Ed25519 private key has %d bytes, want %d", len(privateKey), ed25519.PrivateKeySize)
+	if signer == nil {
+		return SigningKey{}, errors.New("aauth: signing key signer is required")
 	}
-	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	publicKey, ok := signer.Public().(ed25519.PublicKey)
 	if !ok {
-		return SigningKey{}, errors.New("aauth: Ed25519 private key did not expose an Ed25519 public key")
+		return SigningKey{}, errors.New("aauth: signer did not expose an Ed25519 public key")
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return SigningKey{}, fmt.Errorf(
+			"aauth: Ed25519 public key has %d bytes, want %d",
+			len(publicKey),
+			ed25519.PublicKeySize,
+		)
 	}
 	return SigningKey{
 		id:     id,
-		signer: privateKey,
+		signer: signer,
 		public: JWK{
 			Kty: "OKP",
 			Crv: "Ed25519",
-			X:   rawURL.EncodeToString(publicKey),
+			X:   rawURL.EncodeToString(append(ed25519.PublicKey(nil), publicKey...)),
 			Alg: "EdDSA",
 			Kid: id,
 			Use: "sig",
 		},
 	}, nil
+}
+
+// NewEd25519SigningKey constructs the mandatory Ed25519 profile from an
+// in-memory private key. Hosts with protected key custody should prefer
+// NewSigningKey.
+func NewEd25519SigningKey(id string, privateKey ed25519.PrivateKey) (SigningKey, error) {
+	if len(privateKey) != ed25519.PrivateKeySize {
+		return SigningKey{}, fmt.Errorf("aauth: Ed25519 private key has %d bytes, want %d", len(privateKey), ed25519.PrivateKeySize)
+	}
+	return NewSigningKey(id, privateKey)
 }
 
 // ID returns the public key identifier used in JWT headers and JWKS lookup.

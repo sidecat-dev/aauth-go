@@ -109,6 +109,12 @@ request entries archive the verified signature headers, presented credential,
 public-key snapshot, request target, timestamps, replay identity, and exact
 body. That material is sensitive evidence custody, not display data.
 
+Signing keys can likewise remain host-custodied. `NewSigningKey` accepts a
+standard `crypto.Signer` and retains only that signing capability plus its
+Ed25519 public identity. Hosts such as Sidecat can therefore sign through an
+operating-system key store, HSM, encrypted value service, or another protected
+adapter without giving the AAuth package private-key bytes.
+
 Run the current qualification:
 
 ```sh

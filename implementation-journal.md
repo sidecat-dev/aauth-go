@@ -300,3 +300,16 @@ comparators. They do not define compatibility requirements for this library.
   pending families remain open. The completion implementation uses only the
   standalone public package and reference package; Sidecat is an intended
   consumer, not a dependency.
+
+### Protected host signing boundary
+
+- **Status: the standalone library can sign through caller-owned protected key
+  custody without importing or depending on Sidecat.**
+- `NewSigningKey` accepts the standard `crypto.Signer` capability, verifies
+  that it exposes the mandatory Ed25519 public key, and derives the public JWK
+  without requesting private bytes. `NewEd25519SigningKey` remains the
+  convenient in-memory constructor and delegates to the same checked path.
+- An executable test signs a real AAuth HTTP request through a recording
+  external signer and proves that the caller-held capability, rather than a
+  copied private key, performed the signature. This is the portability seam
+  Sidecat can back with its own protected-value custody and access receipts.
