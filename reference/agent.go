@@ -298,8 +298,13 @@ func (agent *Agent) exchangeResourceToken(
 	if err != nil {
 		return Grant{}, err
 	}
+	expectedIssuer := personServerID
 	if resourceGrant.Claims.Audience != personServerID {
-		return Grant{}, errors.New("reference: resource-token audience does not match person-server endpoint")
+		if resourceGrant.Claims.Mission == nil ||
+			resourceGrant.Claims.Mission.Approver != personServerID {
+			return Grant{}, errors.New("reference: federated resource token is not governed by the person server")
+		}
+		expectedIssuer = resourceGrant.Claims.Audience
 	}
 	tokenInput := map[string]string{"resource_token": resourceGrant.ResourceToken}
 	if subagentToken != "" {
@@ -339,7 +344,7 @@ func (agent *Agent) exchangeResourceToken(
 	if err != nil {
 		return Grant{}, err
 	}
-	if authClaims.Issuer != personServerID ||
+	if authClaims.Issuer != expectedIssuer ||
 		authClaims.Mission == nil ||
 		resourceGrant.Claims.Mission == nil ||
 		*authClaims.Mission != *resourceGrant.Claims.Mission {

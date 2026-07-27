@@ -28,6 +28,12 @@ person-server, auth-token, and protected-operation path. The person server
 enforces single-level delegation and emits an auth token bound to the
 sub-agent's key with the parent in `act.agent`.
 
+The four-party path is live as well: resources can target an access server,
+the person server applies user policy and signs the federated request with its
+discoverable `jwks_uri` identity, the access server applies independent trust
+and resource policy, and both the person server and agent verify the returned
+proof-bound auth token before it reaches the resource.
+
 Run the current qualification:
 
 ```sh
@@ -36,8 +42,7 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
-Four-party access servers, call chaining, deferred interactions, R3, Events,
-Bootstrap, and the remaining Signature-Key schemes still require
-implementation and qualification.
+Call chaining, deferred interactions, R3, Events, Bootstrap, and the remaining
+Signature-Key schemes still require implementation and qualification.
 
 No upstream contribution or repository is implied by this local project.

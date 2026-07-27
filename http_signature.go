@@ -17,23 +17,32 @@ import (
 
 const DefaultSignatureWindow = 60 * time.Second
 
+const (
+	SignatureKeyJWT     = "jwt"
+	SignatureKeyJWKSURI = "jwks_uri"
+)
+
 // VerifiedRequest is the trusted signing context of an HTTP request.
 type VerifiedRequest struct {
-	CredentialType string
-	Agent          string
-	PublicKey      JWK
-	AgentToken     *AgentTokenClaims
-	AuthToken      *AuthTokenClaims
-	Created        time.Time
-	ReplayKey      string
+	SignatureKeyType string
+	Signer           string
+	RawCredential    string
+	CredentialType   string
+	Agent            string
+	PublicKey        JWK
+	AgentToken       *AgentTokenClaims
+	AuthToken        *AuthTokenClaims
+	Created          time.Time
+	ReplayKey        string
 }
 
 // VerifyRequestOptions declares the message components and token forms a
 // particular endpoint accepts.
 type VerifyRequestOptions struct {
-	RequiredComponents     []string
-	AllowedCredentialTypes []string
-	SignatureWindow        time.Duration
+	RequiredComponents       []string
+	AllowedCredentialTypes   []string
+	AllowedSignatureKeyTypes []string
+	SignatureWindow          time.Duration
 }
 
 // SignRequest applies the AAuth HTTP Message Signatures profile using a JWT
@@ -48,8 +57,51 @@ func SignRequest(request *http.Request, key SigningKey, credential string, clock
 	if credential == "" {
 		return errors.New("aauth: JWT credential is required")
 	}
+	return signRequestWithSignatureKey(
+		request,
+		key,
+		`sig=jwt;jwt=`+strconv.Quote(credential),
+		clock,
+	)
+}
 
-	request.Header.Set("Signature-Key", `sig=jwt;jwt=`+strconv.Quote(credential))
+// SignRequestWithJWKSURI signs as a URI-identified server whose key is
+// discoverable through the Signature-Key two-hop metadata/JWKS scheme.
+func SignRequestWithJWKSURI(
+	request *http.Request,
+	key SigningKey,
+	identifier string,
+	discoveryDocument string,
+	clock Clock,
+) error {
+	if err := ValidateServerIdentifier(identifier); err != nil {
+		return fmt.Errorf("aauth: jwks_uri signer: %w", err)
+	}
+	if !discoveryDocumentPattern.MatchString(discoveryDocument) {
+		return errors.New("aauth: jwks_uri discovery document is invalid")
+	}
+	if key.ID() == "" {
+		return errors.New("aauth: jwks_uri signing key is required")
+	}
+	header := `sig=jwks_uri;id=` + strconv.Quote(identifier) +
+		`;dwk=` + strconv.Quote(discoveryDocument) +
+		`;kid=` + strconv.Quote(key.ID())
+	return signRequestWithSignatureKey(request, key, header, clock)
+}
+
+func signRequestWithSignatureKey(
+	request *http.Request,
+	key SigningKey,
+	signatureKeyHeader string,
+	clock Clock,
+) error {
+	if request == nil || request.URL == nil {
+		return errors.New("aauth: request URL is required")
+	}
+	if clock == nil {
+		return errors.New("aauth: clock is required")
+	}
+	request.Header.Set("Signature-Key", signatureKeyHeader)
 	components := []string{"@method", "@authority", "@path"}
 
 	if request.Header.Get("Authorization") != "" {
@@ -103,39 +155,69 @@ func VerifyRequest(
 		return verified, errors.New("aauth: clock is required")
 	}
 
-	credential, err := parseSignatureKey(request.Header.Get("Signature-Key"))
+	signatureKey, err := parseSignatureKey(request.Header.Get("Signature-Key"))
 	if err != nil {
 		return verified, err
 	}
-	header, err := PeekTokenHeader(credential)
-	if err != nil {
-		return verified, fmt.Errorf("aauth: Signature-Key JWT: %w", err)
+	allowedSignatureKeyTypes := options.AllowedSignatureKeyTypes
+	if len(allowedSignatureKeyTypes) == 0 {
+		allowedSignatureKeyTypes = []string{SignatureKeyJWT}
 	}
-	if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
-		return verified, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type)
+	if !contains(allowedSignatureKeyTypes, signatureKey.scheme) {
+		return verified, fmt.Errorf("aauth: Signature-Key type %q is not accepted", signatureKey.scheme)
 	}
+	verified.SignatureKeyType = signatureKey.scheme
 
-	switch header.Type {
-	case AgentTokenType:
-		claims, verifyErr := VerifyAgentToken(ctx, credential, resolver, clock)
-		if verifyErr != nil {
-			return verified, verifyErr
+	switch signatureKey.scheme {
+	case SignatureKeyJWT:
+		header, err := PeekTokenHeader(signatureKey.parameters["jwt"])
+		if err != nil {
+			return verified, fmt.Errorf("aauth: Signature-Key JWT: %w", err)
 		}
-		verified.CredentialType = AgentTokenType
-		verified.Agent = claims.Subject
-		verified.PublicKey = claims.Confirmation.JWK
-		verified.AgentToken = &claims
-	case AuthTokenType:
-		claims, verifyErr := VerifyAuthToken(ctx, credential, resolver, clock)
-		if verifyErr != nil {
-			return verified, verifyErr
+		if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
+			return verified, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type)
 		}
-		verified.CredentialType = AuthTokenType
-		verified.Agent = claims.Agent
-		verified.PublicKey = claims.Confirmation.JWK
-		verified.AuthToken = &claims
-	default:
-		return verified, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type)
+		verified.RawCredential = signatureKey.parameters["jwt"]
+		switch header.Type {
+		case AgentTokenType:
+			claims, verifyErr := VerifyAgentToken(ctx, verified.RawCredential, resolver, clock)
+			if verifyErr != nil {
+				return verified, verifyErr
+			}
+			verified.CredentialType = AgentTokenType
+			verified.Agent = claims.Subject
+			verified.Signer = claims.Subject
+			verified.PublicKey = claims.Confirmation.JWK
+			verified.AgentToken = &claims
+		case AuthTokenType:
+			claims, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, clock)
+			if verifyErr != nil {
+				return verified, verifyErr
+			}
+			verified.CredentialType = AuthTokenType
+			verified.Agent = claims.Agent
+			verified.Signer = claims.Agent
+			verified.PublicKey = claims.Confirmation.JWK
+			verified.AuthToken = &claims
+		default:
+			return verified, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type)
+		}
+	case SignatureKeyJWKSURI:
+		identifier := signatureKey.parameters["id"]
+		document := signatureKey.parameters["dwk"]
+		keyID := signatureKey.parameters["kid"]
+		if err := ValidateServerIdentifier(identifier); err != nil {
+			return verified, fmt.Errorf("aauth: Signature-Key id: %w", err)
+		}
+		if !discoveryDocumentPattern.MatchString(document) || keyID == "" {
+			return verified, errors.New("aauth: Signature-Key jwks_uri parameters are invalid")
+		}
+		resolved, err := resolver.ResolveKey(ctx, identifier, document, keyID)
+		if err != nil {
+			return verified, err
+		}
+		verified.Signer = identifier
+		verified.PublicKey = resolved
 	}
 
 	components, created, params, err := parseSignatureInput(request.Header.Get("Signature-Input"))
@@ -295,16 +377,74 @@ func parseSignatureInput(header string) ([]string, int64, string, error) {
 	return components, created, params, nil
 }
 
-func parseSignatureKey(header string) (string, error) {
-	const prefix = `sig=jwt;jwt=`
-	if !strings.HasPrefix(header, prefix) {
-		return "", errors.New("aauth: Signature-Key must use sig=jwt")
+type parsedSignatureKey struct {
+	scheme     string
+	parameters map[string]string
+}
+
+func parseSignatureKey(header string) (parsedSignatureKey, error) {
+	var parsed parsedSignatureKey
+	if !strings.HasPrefix(header, "sig=") {
+		return parsed, errors.New("aauth: Signature-Key must contain the sig label")
 	}
-	credential, err := strconv.Unquote(strings.TrimPrefix(header, prefix))
-	if err != nil || credential == "" {
-		return "", errors.New("aauth: Signature-Key jwt is invalid")
+	remainder := strings.TrimPrefix(header, "sig=")
+	schemeEnd := strings.IndexByte(remainder, ';')
+	if schemeEnd < 1 {
+		return parsed, errors.New("aauth: Signature-Key scheme or parameters are missing")
 	}
-	return credential, nil
+	parsed.scheme = remainder[:schemeEnd]
+	parsed.parameters = make(map[string]string)
+	remainder = remainder[schemeEnd:]
+	for remainder != "" {
+		if remainder[0] != ';' {
+			return parsedSignatureKey{}, errors.New("aauth: Signature-Key parameter separator is invalid")
+		}
+		remainder = strings.TrimLeft(remainder[1:], " \t")
+		equals := strings.IndexByte(remainder, '=')
+		if equals <= 0 {
+			return parsedSignatureKey{}, errors.New("aauth: Signature-Key parameter is invalid")
+		}
+		name := remainder[:equals]
+		remainder = remainder[equals+1:]
+		if _, exists := parsed.parameters[name]; exists {
+			return parsedSignatureKey{}, fmt.Errorf("aauth: duplicate Signature-Key parameter %q", name)
+		}
+		if remainder == "" || remainder[0] != '"' {
+			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q must be a string", name)
+		}
+		endQuote := 1
+		for endQuote < len(remainder) {
+			if remainder[endQuote] == '"' && remainder[endQuote-1] != '\\' {
+				break
+			}
+			endQuote++
+		}
+		if endQuote >= len(remainder) {
+			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q is unterminated", name)
+		}
+		value, err := strconv.Unquote(remainder[:endQuote+1])
+		if err != nil || value == "" {
+			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q is invalid", name)
+		}
+		parsed.parameters[name] = value
+		remainder = remainder[endQuote+1:]
+	}
+	required := map[string][]string{
+		SignatureKeyJWT:     {"jwt"},
+		SignatureKeyJWKSURI: {"id", "dwk", "kid"},
+	}[parsed.scheme]
+	if required == nil {
+		return parsedSignatureKey{}, fmt.Errorf("aauth: unsupported Signature-Key scheme %q", parsed.scheme)
+	}
+	if len(parsed.parameters) != len(required) {
+		return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key %s has unexpected parameters", parsed.scheme)
+	}
+	for _, name := range required {
+		if parsed.parameters[name] == "" {
+			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key %s requires %s", parsed.scheme, name)
+		}
+	}
+	return parsed, nil
 }
 
 func parseSignature(header string) ([]byte, error) {

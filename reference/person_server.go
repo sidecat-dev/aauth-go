@@ -1,8 +1,12 @@
 package reference
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,23 +16,27 @@ import (
 )
 
 type PersonServerConfig struct {
-	Identifier          string
-	SigningKey          aauth.SigningKey
-	KeyResolver         aauth.KeyResolver
-	Clock               aauth.Clock
-	NewID               func() string
-	MissionPolicy       aauth.MissionPolicy
-	AuthorizationPolicy aauth.AuthorizationPolicy
+	Identifier           string
+	SigningKey           aauth.SigningKey
+	KeyResolver          aauth.KeyResolver
+	Clock                aauth.Clock
+	NewID                func() string
+	MissionPolicy        aauth.MissionPolicy
+	AuthorizationPolicy  aauth.AuthorizationPolicy
+	FederationClient     *http.Client
+	AccessServerEndpoint func(context.Context, string) (string, error)
 }
 
 type PersonServer struct {
-	identifier          string
-	signingKey          aauth.SigningKey
-	keyResolver         aauth.KeyResolver
-	clock               aauth.Clock
-	newID               func() string
-	missionPolicy       aauth.MissionPolicy
-	authorizationPolicy aauth.AuthorizationPolicy
+	identifier           string
+	signingKey           aauth.SigningKey
+	keyResolver          aauth.KeyResolver
+	clock                aauth.Clock
+	newID                func() string
+	missionPolicy        aauth.MissionPolicy
+	authorizationPolicy  aauth.AuthorizationPolicy
+	federationClient     *http.Client
+	accessServerEndpoint func(context.Context, string) (string, error)
 
 	mu       sync.RWMutex
 	missions map[string]storedMission
@@ -57,15 +65,20 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		config.NewID == nil || config.MissionPolicy == nil || config.AuthorizationPolicy == nil {
 		return nil, errors.New("reference: person server requires key, resolver, clock, id source, and policies")
 	}
+	if (config.FederationClient == nil) != (config.AccessServerEndpoint == nil) {
+		return nil, errors.New("reference: federation client and access-server endpoint resolver must be configured together")
+	}
 	return &PersonServer{
-		identifier:          config.Identifier,
-		signingKey:          config.SigningKey,
-		keyResolver:         config.KeyResolver,
-		clock:               config.Clock,
-		newID:               config.NewID,
-		missionPolicy:       config.MissionPolicy,
-		authorizationPolicy: config.AuthorizationPolicy,
-		missions:            make(map[string]storedMission),
+		identifier:           config.Identifier,
+		signingKey:           config.SigningKey,
+		keyResolver:          config.KeyResolver,
+		clock:                config.Clock,
+		newID:                config.NewID,
+		missionPolicy:        config.MissionPolicy,
+		authorizationPolicy:  config.AuthorizationPolicy,
+		federationClient:     config.FederationClient,
+		accessServerEndpoint: config.AccessServerEndpoint,
+		missions:             make(map[string]storedMission),
 	}, nil
 }
 
@@ -196,8 +209,14 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	if resourceToken.Audience != server.identifier {
-		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token audience does not match person server"))
-		return
+		if server.federationClient == nil || server.accessServerEndpoint == nil {
+			writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token audience requires an unconfigured access server"))
+			return
+		}
+		if err := aauth.ValidateServerIdentifier(resourceToken.Audience); err != nil {
+			writeProblem(response, http.StatusForbidden, "invalid_resource_token", err)
+			return
+		}
 	}
 	if resourceToken.Agent != targetAgent {
 		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token agent does not match requester"))
@@ -247,6 +266,30 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	}
 
 	now := server.clock.Now()
+	if resourceToken.Audience != server.identifier {
+		federatedToken, federatedClaims, err := server.exchangeWithAccessServer(
+			request.Context(),
+			resourceToken.Audience,
+			input.ResourceToken,
+			verified.RawCredential,
+			input.SubagentToken,
+			targetAgent,
+			targetKey,
+			parentAgent,
+			resourceToken,
+			decision,
+		)
+		if err != nil {
+			writeProblem(response, http.StatusBadGateway, "federation_failed", err)
+			return
+		}
+		writeJSON(response, http.StatusOK, map[string]any{
+			"auth_token": federatedToken,
+			"expires_in": federatedClaims.ExpiresAt - now.Unix(),
+		})
+		return
+	}
+
 	expiresAt := now.Add(time.Hour).Unix()
 	if targetTokenExpiry < expiresAt {
 		expiresAt = targetTokenExpiry
@@ -277,6 +320,111 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		"auth_token": authToken,
 		"expires_in": expiresAt - now.Unix(),
 	})
+}
+
+func (server *PersonServer) exchangeWithAccessServer(
+	ctx context.Context,
+	accessServerIdentifier string,
+	resourceTokenCompact string,
+	agentTokenCompact string,
+	subagentTokenCompact string,
+	targetAgent string,
+	targetKey aauth.JWK,
+	parentAgent string,
+	resourceToken aauth.ResourceTokenClaims,
+	personDecision aauth.AuthorizationDecision,
+) (string, aauth.AuthTokenClaims, error) {
+	var claims aauth.AuthTokenClaims
+	endpoint, err := server.accessServerEndpoint(ctx, accessServerIdentifier)
+	if err != nil {
+		return "", claims, fmt.Errorf("resolve access-server endpoint: %w", err)
+	}
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return "", claims, err
+	}
+	endpointIssuer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return "", claims, err
+	}
+	if endpointIssuer != accessServerIdentifier {
+		return "", claims, errors.New("access-server endpoint origin does not match resource-token audience")
+	}
+	input := map[string]string{
+		"resource_token": resourceTokenCompact,
+		"agent_token":    agentTokenCompact,
+	}
+	if subagentTokenCompact != "" {
+		input["subagent_token"] = subagentTokenCompact
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return "", claims, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", claims, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequestWithJWKSURI(
+		request,
+		server.signingKey,
+		server.identifier,
+		aauth.PersonDiscoveryDocument,
+		server.clock,
+	); err != nil {
+		return "", claims, err
+	}
+	response, err := server.federationClient.Do(request)
+	if err != nil {
+		return "", claims, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+		return "", claims, fmt.Errorf("access server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
+		return "", claims, err
+	}
+	claims, err = aauth.VerifyAuthToken(ctx, result.AuthToken, server.keyResolver, server.clock)
+	if err != nil {
+		return "", claims, err
+	}
+	if claims.Issuer != accessServerIdentifier || claims.DWK != aauth.AccessDiscoveryDocument {
+		return "", claims, errors.New("access-server auth token has the wrong issuer or discovery document")
+	}
+	if err := aauth.ValidateAuthTokenContext(
+		claims,
+		resourceToken.Issuer,
+		targetAgent,
+		targetKey,
+		nil,
+	); err != nil {
+		return "", claims, err
+	}
+	grantedScopes, err := parseScopes(claims.Scope)
+	if err != nil {
+		return "", claims, err
+	}
+	if !scopesContained(grantedScopes, personDecision.Scope) {
+		return "", claims, errors.New("access-server auth token exceeds the person-server grant")
+	}
+	if resourceToken.Mission != nil {
+		if claims.Mission == nil || *claims.Mission != *resourceToken.Mission {
+			return "", claims, errors.New("access-server auth token changed the mission reference")
+		}
+	}
+	if parentAgent == "" {
+		if claims.Actor != nil {
+			return "", claims, errors.New("access-server auth token unexpectedly contains an act chain")
+		}
+	} else if claims.Actor == nil || claims.Actor.Agent != parentAgent {
+		return "", claims, errors.New("access-server auth token does not name the parent agent")
+	}
+	return result.AuthToken, claims, nil
 }
 
 func (server *PersonServer) handleMetadata(response http.ResponseWriter, _ *http.Request) {

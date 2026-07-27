@@ -14,6 +14,7 @@ import (
 type ResourceConfig struct {
 	Identifier   string
 	PersonServer string
+	AccessServer string
 	SigningKey   aauth.SigningKey
 	KeyResolver  aauth.KeyResolver
 	Clock        aauth.Clock
@@ -24,7 +25,7 @@ type ResourceConfig struct {
 
 type Resource struct {
 	identifier    string
-	personServer  string
+	tokenAudience string
 	signingKey    aauth.SigningKey
 	keyResolver   aauth.KeyResolver
 	clock         aauth.Clock
@@ -39,7 +40,14 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	if err := aauth.ValidateServerIdentifier(config.Identifier); err != nil {
 		return nil, err
 	}
-	if err := aauth.ValidateServerIdentifier(config.PersonServer); err != nil {
+	if (config.PersonServer == "") == (config.AccessServer == "") {
+		return nil, errors.New("reference: resource requires exactly one person-server or access-server audience")
+	}
+	tokenAudience := config.PersonServer
+	if tokenAudience == "" {
+		tokenAudience = config.AccessServer
+	}
+	if err := aauth.ValidateServerIdentifier(tokenAudience); err != nil {
 		return nil, err
 	}
 	if config.SigningKey.ID() == "" || config.KeyResolver == nil || config.Clock == nil ||
@@ -51,7 +59,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	}
 	return &Resource{
 		identifier:    config.Identifier,
-		personServer:  config.PersonServer,
+		tokenAudience: tokenAudience,
 		signingKey:    config.SigningKey,
 		keyResolver:   config.KeyResolver,
 		clock:         config.Clock,
@@ -114,7 +122,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	token, err := aauth.MintResourceToken(resource.signingKey, aauth.ResourceTokenClaims{
 		Issuer:    resource.identifier,
 		DWK:       aauth.ResourceDiscoveryDocument,
-		Audience:  resource.personServer,
+		Audience:  resource.tokenAudience,
 		JTI:       resource.newID(),
 		Agent:     verified.Agent,
 		AgentJKT:  thumbprint,
