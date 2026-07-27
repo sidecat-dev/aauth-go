@@ -245,6 +245,7 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 
 	body, err := json.Marshal(reference.BootstrapRefreshRequest{
 		PersonServer: "https://ps.example",
+		Nonce:        "MDEyMzQ1Njc4OWFiY2RlZg",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -266,6 +267,40 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	missingNonceBody, err := json.Marshal(reference.BootstrapRefreshRequest{
+		PersonServer: "https://ps.example",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingNonceRequest, err := http.NewRequest(
+		http.MethodPost,
+		"https://ap.example/refresh",
+		bytes.NewReader(missingNonceBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingNonceRequest.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequestWithJKTJWT(
+		missingNonceRequest,
+		ephemeral,
+		delegation,
+		clock,
+	); err != nil {
+		t.Fatal(err)
+	}
+	missingNonceResponse, err := server.Client().Do(missingNonceRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingNonceResponse.Body.Close()
+	if missingNonceResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf(
+			"missing-nonce refresh status = %d",
+			missingNonceResponse.StatusCode,
+		)
 	}
 	if err := aauth.SignRequestWithJKTJWT(request, ephemeral, delegation, clock); err != nil {
 		t.Fatal(err)
@@ -349,5 +384,73 @@ func TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken(t *testing.T) {
 		!result.Claims.Confirmation.JWK.Equal(durable.PublicJWK()) ||
 		!result.SigningKey.PublicJWK().Equal(durable.PublicJWK()) {
 		t.Fatalf("single-key bootstrap result = %#v", result)
+	}
+}
+
+func TestBootstrapRefreshesTheSameRequestKeyTwiceWithinOneClockSecond(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 27, 13, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	apKey := testSigningKey(t, "ap-key")
+	durable := testSigningKey(t, "install-key")
+	requestKey := testSigningKey(t, "request-key")
+	thumbprint, err := durable.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := reference.NewAgentProvider(reference.AgentProviderConfig{
+		Identifier: "https://ap.example",
+		SigningKey: apKey,
+		Clock:      clock,
+		NewID:      sequentialIDs("agent-token-1", "agent-token-2"),
+		Enrollments: reference.StaticEnrollmentStore{
+			thumbprint: {
+				Agent:        "aauth:stable-install@ap.example",
+				PersonServer: "https://ps.example",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newLogicalGateway(t, map[string]http.Handler{
+		"ap.example": provider.Handler(),
+	})
+	defer server.Close()
+	client, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
+		DurableKey: durable,
+		KeyResolver: aauth.StaticKeyResolver{
+			"https://ap.example": {"ap-key": apKey.PublicJWK()},
+		},
+		HTTPClient: server.Client(),
+		Clock:      clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := client.Refresh(
+		context.Background(),
+		"https://ap.example/refresh",
+		"https://ps.example",
+		requestKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.Refresh(
+		context.Background(),
+		"https://ap.example/refresh",
+		"https://ps.example",
+		requestKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Identifier != second.Identifier ||
+		!first.SigningKey.PublicJWK().Equal(second.SigningKey.PublicJWK()) ||
+		first.AgentToken == second.AgentToken {
+		t.Fatalf("same-key bootstrap results = %#v and %#v", first, second)
 	}
 }

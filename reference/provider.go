@@ -2,6 +2,7 @@ package reference
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"sync"
@@ -11,6 +12,8 @@ import (
 )
 
 var ErrUnknownEnrollment = errors.New("reference: unknown enrollment")
+
+const bootstrapNonceBytes = 16
 
 // AgentEnrollment is the provider-owned binding from one durable installation
 // key to the stable agent identity and person server it may request.
@@ -210,6 +213,7 @@ func (provider *AgentProvider) Handler() http.Handler {
 // protocol message.
 type BootstrapRefreshRequest struct {
 	PersonServer string `json:"person_server"`
+	Nonce        string `json:"nonce"`
 }
 
 type bootstrapRefreshResponse struct {
@@ -253,6 +257,17 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 	}
 	if err := aauth.ValidateServerIdentifier(refresh.PersonServer); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(refresh.Nonce)
+	if err != nil || len(nonce) != bootstrapNonceBytes ||
+		base64.RawURLEncoding.EncodeToString(nonce) != refresh.Nonce {
+		writeProblem(
+			response,
+			http.StatusBadRequest,
+			"invalid_request",
+			errors.New("reference: bootstrap request nonce is invalid"),
+		)
 		return
 	}
 	durableThumbprint, err := verified.IdentityKey.Thumbprint()

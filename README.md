@@ -139,9 +139,11 @@ implementations.
 `reference.BootstrapClient.Refresh` performs the two-key exchange and returns a
 verified `BootstrapResult` containing the stable identifier, active ephemeral
 signing key, agent token, and verified claims. That result can be passed
-directly to `reference.NewAgent`. `RefreshSingleKey` implements the simpler
-profile in which the durable key signs with `hwk` and remains the token's
-confirmation key.
+directly to `reference.NewAgent`. Every refresh includes a fresh
+content-digest-covered client nonce, so two refreshes made with the same keys
+inside one clock second remain distinct while an exact retransmission is still
+refused. `RefreshSingleKey` implements the simpler profile in which the
+durable key signs with `hwk` and remains the token's confirmation key.
 
 The complete journey rotates the ephemeral key across two refreshes while
 preserving the enrolled identity, then uses the second token for a real mission

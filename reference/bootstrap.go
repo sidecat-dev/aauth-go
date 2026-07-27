@@ -3,6 +3,8 @@ package reference
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -121,7 +123,14 @@ func (client *BootstrapClient) refresh(
 	sign func(*http.Request) error,
 ) (BootstrapResult, error) {
 	var result BootstrapResult
-	body, err := json.Marshal(BootstrapRefreshRequest{PersonServer: personServer})
+	nonceBytes := make([]byte, bootstrapNonceBytes)
+	if _, err := io.ReadFull(rand.Reader, nonceBytes); err != nil {
+		return result, errors.New("reference: generate bootstrap request nonce")
+	}
+	body, err := json.Marshal(BootstrapRefreshRequest{
+		PersonServer: personServer,
+		Nonce:        base64.RawURLEncoding.EncodeToString(nonceBytes),
+	})
 	if err != nil {
 		return result, err
 	}

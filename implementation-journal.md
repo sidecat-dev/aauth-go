@@ -416,9 +416,12 @@ comparators. They do not define compatibility requirements for this library.
 - The two-key client mints a short-lived delegation with a caller-custodied
   durable signer, signs the request with a caller-supplied ephemeral key, and
   verifies the returned issuer, subject, person server, token signature, and
-  confirmation key before returning a usable result. The single-key client
-  signs with the durable key under `hwk` and verifies that the same key carries
-  through.
+  confirmation key before returning a usable result. A fresh canonical
+  client nonce is covered by the content digest on every refresh. This keeps
+  rapid same-key refreshes distinct even when their signature timestamps share
+  a clock second, while the provider still refuses an exact retransmission.
+  The single-key client signs with the durable key under `hwk` and verifies
+  that the same key carries through.
 - The vertical rotates through two ephemeral keys while preserving one
   enrolled `sub`, then uses the second token to create a real mission at a
   person server. Separate controls refuse unknown enrollment, exact proof
