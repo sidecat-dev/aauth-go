@@ -5,7 +5,16 @@ Sidecat. The protocol library has no Sidecat dependency. The `reference`
 package supplies deployable role handlers and an agent client over the public
 library.
 
-The implemented live vertical is the three-party mission flow:
+Resource-managed access is implemented as a complete two-party path. A
+resource can apply caller-owned authorization policy without a signing key or
+another AAuth server, advertise `access_mode=aauth-access-token`, issue an
+opaque `AAuth-Access` credential, and bind its retained grant to the verified
+agent identity and confirmation key. The agent signs `Authorization: AAuth`
+as a covered component, adopts downscoped grants and rotated credentials, and
+the resource refuses unsigned, substituted, replayed, expired, or
+differently-keyed use before invoking the protected operation.
+
+The three-party mission flow is also implemented end to end:
 
 1. an agent provider issues an Ed25519-bound `aa-agent+jwt`;
 2. the agent signs a mission proposal to a person server;

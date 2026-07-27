@@ -12,61 +12,93 @@ import (
 )
 
 type ResourceConfig struct {
-	Identifier   string
-	PersonServer string
-	AccessServer string
-	SigningKey   aauth.SigningKey
-	KeyResolver  aauth.KeyResolver
-	Clock        aauth.Clock
-	NewID        func() string
-	Scopes       []string
-	Operation    func(context.Context, aauth.AuthorizedRequest) (any, error)
+	Identifier          string
+	PersonServer        string
+	AccessServer        string
+	SigningKey          aauth.SigningKey
+	KeyResolver         aauth.KeyResolver
+	Clock               aauth.Clock
+	NewID               func() string
+	Scopes              []string
+	AuthorizationPolicy aauth.AuthorizationPolicy
+	Operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
 }
 
 type Resource struct {
-	identifier    string
-	tokenAudience string
-	signingKey    aauth.SigningKey
-	keyResolver   aauth.KeyResolver
-	clock         aauth.Clock
-	newID         func() string
-	scopes        []string
-	operation     func(context.Context, aauth.AuthorizedRequest) (any, error)
-	replayMu      sync.Mutex
-	replayedProof map[string]time.Time
+	identifier          string
+	tokenAudience       string
+	signingKey          aauth.SigningKey
+	hasSigningKey       bool
+	keyResolver         aauth.KeyResolver
+	clock               aauth.Clock
+	newID               func() string
+	scopes              []string
+	authorizationPolicy aauth.AuthorizationPolicy
+	operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
+	accessMu            sync.Mutex
+	access              map[string]localAccessGrant
+	replayMu            sync.Mutex
+	replayedProof       map[string]time.Time
+}
+
+type localAccessGrant struct {
+	agent      string
+	subject    string
+	thumbprint string
+	scope      []string
+	mission    *aauth.MissionReference
+	expiresAt  time.Time
 }
 
 func NewResource(config ResourceConfig) (*Resource, error) {
 	if err := aauth.ValidateServerIdentifier(config.Identifier); err != nil {
 		return nil, err
 	}
-	if (config.PersonServer == "") == (config.AccessServer == "") {
-		return nil, errors.New("reference: resource requires exactly one person-server or access-server audience")
+	modeCount := 0
+	if config.PersonServer != "" {
+		modeCount++
+	}
+	if config.AccessServer != "" {
+		modeCount++
+	}
+	if config.AuthorizationPolicy != nil {
+		modeCount++
+	}
+	if modeCount != 1 {
+		return nil, errors.New("reference: resource requires exactly one person server, access server, or local authorization policy")
 	}
 	tokenAudience := config.PersonServer
 	if tokenAudience == "" {
 		tokenAudience = config.AccessServer
 	}
-	if err := aauth.ValidateServerIdentifier(tokenAudience); err != nil {
-		return nil, err
+	if tokenAudience != "" {
+		if err := aauth.ValidateServerIdentifier(tokenAudience); err != nil {
+			return nil, err
+		}
 	}
-	if config.SigningKey.ID() == "" || config.KeyResolver == nil || config.Clock == nil ||
-		config.NewID == nil || len(config.Scopes) == 0 || config.Operation == nil {
-		return nil, errors.New("reference: resource requires key, resolver, clock, id source, scopes, and operation")
+	if tokenAudience != "" && config.SigningKey.ID() == "" {
+		return nil, errors.New("reference: a resource that issues resource tokens requires a signing key")
+	}
+	if config.KeyResolver == nil || config.Clock == nil || config.NewID == nil ||
+		len(config.Scopes) == 0 || config.Operation == nil {
+		return nil, errors.New("reference: resource requires resolver, clock, id source, scopes, and operation")
 	}
 	if _, err := parseScopes(strings.Join(config.Scopes, " ")); err != nil {
 		return nil, err
 	}
 	return &Resource{
-		identifier:    config.Identifier,
-		tokenAudience: tokenAudience,
-		signingKey:    config.SigningKey,
-		keyResolver:   config.KeyResolver,
-		clock:         config.Clock,
-		newID:         config.NewID,
-		scopes:        append([]string(nil), config.Scopes...),
-		operation:     config.Operation,
-		replayedProof: make(map[string]time.Time),
+		identifier:          config.Identifier,
+		tokenAudience:       tokenAudience,
+		signingKey:          config.SigningKey,
+		hasSigningKey:       config.SigningKey.ID() != "",
+		keyResolver:         config.KeyResolver,
+		clock:               config.Clock,
+		newID:               config.NewID,
+		scopes:              append([]string(nil), config.Scopes...),
+		authorizationPolicy: config.AuthorizationPolicy,
+		operation:           config.Operation,
+		access:              make(map[string]localAccessGrant),
+		replayedProof:       make(map[string]time.Time),
 	}, nil
 }
 
@@ -119,6 +151,53 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		return
 	}
 	now := resource.clock.Now()
+	if resource.authorizationPolicy != nil {
+		decision, err := resource.authorizationPolicy(request.Context(), aauth.AuthorizationRequest{
+			Agent:    verified.Agent,
+			Resource: resource.identifier,
+			Scope:    append([]string(nil), scopes...),
+			Mission:  mission,
+		})
+		if err != nil {
+			writeProblem(response, http.StatusForbidden, "access_denied", err)
+			return
+		}
+		if len(decision.Scope) == 0 || !scopesContained(decision.Scope, scopes) {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("local authorization policy returned an invalid grant"))
+			return
+		}
+		accessToken := resource.newID()
+		if err := aauth.ValidateAccessToken(accessToken); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		expiresAt := now.Add(time.Hour)
+		if agentExpiry := time.Unix(verified.AgentToken.ExpiresAt, 0); agentExpiry.Before(expiresAt) {
+			expiresAt = agentExpiry
+		}
+		resource.accessMu.Lock()
+		if _, exists := resource.access[accessToken]; exists {
+			resource.accessMu.Unlock()
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access token source returned a duplicate value"))
+			return
+		}
+		resource.access[accessToken] = localAccessGrant{
+			agent:      verified.Agent,
+			subject:    decision.Subject,
+			thumbprint: thumbprint,
+			scope:      append([]string(nil), decision.Scope...),
+			mission:    mission,
+			expiresAt:  expiresAt,
+		}
+		resource.accessMu.Unlock()
+		response.Header().Set("AAuth-Access", accessToken)
+		writeJSON(response, http.StatusOK, map[string]any{
+			"status": "authorized",
+			"scope":  strings.Join(decision.Scope, " "),
+		})
+		return
+	}
+
 	token, err := aauth.MintResourceToken(resource.signingKey, aauth.ResourceTokenClaims{
 		Issuer:    resource.identifier,
 		DWK:       aauth.ResourceDiscoveryDocument,
@@ -139,6 +218,10 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 }
 
 func (resource *Resource) handleProtected(response http.ResponseWriter, request *http.Request) {
+	if usesAAuthScheme(request.Header.Get("Authorization")) {
+		resource.handleAccessProtected(response, request)
+		return
+	}
 	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
 		AllowedCredentialTypes: []string{aauth.AuthTokenType},
 	})
@@ -178,6 +261,64 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	writeJSON(response, http.StatusOK, result)
 }
 
+func usesAAuthScheme(header string) bool {
+	separator := strings.IndexByte(header, ' ')
+	return separator > 0 && strings.EqualFold(header[:separator], "AAuth")
+}
+
+func (resource *Resource) handleAccessProtected(response http.ResponseWriter, request *http.Request) {
+	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
+		RequiredComponents:     []string{"authorization"},
+		AllowedCredentialTypes: []string{aauth.AgentTokenType},
+	})
+	if err != nil {
+		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		return
+	}
+	accessToken, err := aauth.ParseAccessAuthorization(request.Header.Get("Authorization"))
+	if err != nil {
+		writeProblem(response, http.StatusUnauthorized, "invalid_access", err)
+		return
+	}
+	resource.accessMu.Lock()
+	grant, exists := resource.access[accessToken]
+	if exists && !grant.expiresAt.After(resource.clock.Now()) {
+		delete(resource.access, accessToken)
+		exists = false
+	}
+	resource.accessMu.Unlock()
+	if !exists {
+		writeProblem(response, http.StatusForbidden, "invalid_access", errors.New("access token is unknown or expired"))
+		return
+	}
+	thumbprint, err := verified.PublicKey.Thumbprint()
+	if err != nil || grant.agent != verified.Agent || grant.thumbprint != thumbprint {
+		writeProblem(response, http.StatusForbidden, "invalid_access", errors.New("access token is bound to a different agent key"))
+		return
+	}
+	if !scopesContained(resource.scopes, grant.scope) {
+		writeProblem(response, http.StatusForbidden, "insufficient_scope", errors.New("access token does not grant the operation scope"))
+		return
+	}
+	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
+		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		return
+	}
+	result, err := resource.operation(request.Context(), aauth.AuthorizedRequest{
+		Agent:   grant.agent,
+		Subject: grant.subject,
+		Scope:   append([]string(nil), grant.scope...),
+		Mission: grant.mission,
+		Method:  request.Method,
+		Path:    request.URL.Path,
+	})
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "operation_failed", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
 func (resource *Resource) seenReplay(key string, expiresAt time.Time) bool {
 	resource.replayMu.Lock()
 	defer resource.replayMu.Unlock()
@@ -195,14 +336,26 @@ func (resource *Resource) seenReplay(key string, expiresAt time.Time) bool {
 }
 
 func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.Request) {
-	writeJSON(response, http.StatusOK, map[string]any{
+	metadata := map[string]any{
 		"issuer":                 resource.identifier,
-		"jwks_uri":               resource.identifier + "/jwks",
 		"authorization_endpoint": resource.identifier + "/authorize",
-	})
+	}
+	if resource.authorizationPolicy != nil {
+		metadata["access_mode"] = "aauth-access-token"
+	} else {
+		metadata["access_mode"] = "auth-token"
+	}
+	if resource.hasSigningKey {
+		metadata["jwks_uri"] = resource.identifier + "/jwks"
+	}
+	writeJSON(response, http.StatusOK, metadata)
 }
 
 func (resource *Resource) handleJWKS(response http.ResponseWriter, _ *http.Request) {
+	if !resource.hasSigningKey {
+		writeProblem(response, http.StatusNotFound, "not_found", errors.New("resource has no signing keys"))
+		return
+	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"keys": []aauth.JWK{resource.signingKey.PublicJWK()},
 	})

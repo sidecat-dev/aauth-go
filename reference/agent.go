@@ -43,6 +43,14 @@ type ResourceGrant struct {
 	Claims        aauth.ResourceTokenClaims
 }
 
+// AccessGrant is a resource-managed authorization result. Token is opaque to
+// the agent and is only presented back to Resource with a signed request.
+type AccessGrant struct {
+	Resource string
+	Token    string
+	Scope    []string
+}
+
 func NewAgent(config AgentConfig) (*Agent, error) {
 	if err := aauth.ValidateAgentIdentifier(config.Identifier); err != nil {
 		return nil, err
@@ -484,6 +492,133 @@ func (agent *Agent) DoAuthorized(
 		return nil, err
 	}
 	return agent.httpClient.Do(request)
+}
+
+// AuthorizeResourceManaged asks a resource to apply its own authorization
+// policy and return an opaque, proof-bound AAuth-Access credential.
+func (agent *Agent) AuthorizeResourceManaged(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+) (AccessGrant, error) {
+	var grant AccessGrant
+	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
+		return grant, err
+	}
+	requestedScopes, err := parseScopes(strings.Join(scopes, " "))
+	if err != nil {
+		return grant, err
+	}
+	body, err := json.Marshal(map[string]string{"scope": strings.Join(requestedScopes, " ")})
+	if err != nil {
+		return grant, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, resourceEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return grant, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return grant, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return grant, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return grant, responseError(response)
+	}
+	values := response.Header.Values("AAuth-Access")
+	if len(values) != 1 {
+		return grant, errors.New("reference: resource did not return exactly one AAuth-Access credential")
+	}
+	if err := aauth.ValidateAccessToken(values[0]); err != nil {
+		return grant, err
+	}
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxJSONBody+1))
+	if err != nil {
+		return grant, err
+	}
+	if len(responseBody) > maxJSONBody {
+		return grant, errors.New("reference: authorization response is too large")
+	}
+	var result struct {
+		Status string `json:"status"`
+		Scope  string `json:"scope"`
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return grant, fmt.Errorf("reference: decode authorization response: %w", err)
+	}
+	grantedScopes, err := parseScopes(result.Scope)
+	if err != nil {
+		return grant, fmt.Errorf("reference: invalid granted scope: %w", err)
+	}
+	if result.Status != "authorized" || !scopesContained(grantedScopes, requestedScopes) {
+		return grant, errors.New("reference: authorization response contains an invalid status or scope")
+	}
+	resourceID, err := endpointIdentifier(resourceEndpoint)
+	if err != nil {
+		return grant, err
+	}
+	return AccessGrant{
+		Resource: resourceID,
+		Token:    values[0],
+		Scope:    append([]string(nil), grantedScopes...),
+	}, nil
+}
+
+// DoWithAccess signs and sends a request using a resource-managed grant. The
+// grant is updated in place when the resource rotates AAuth-Access.
+func (agent *Agent) DoWithAccess(
+	ctx context.Context,
+	method string,
+	endpoint string,
+	grant *AccessGrant,
+) (*http.Response, error) {
+	if grant == nil {
+		return nil, errors.New("reference: access grant is required")
+	}
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return nil, err
+	}
+	resourceID, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if resourceID != grant.Resource {
+		return nil, errors.New("reference: access grant does not apply to endpoint")
+	}
+	authorization, err := aauth.AccessAuthorization(grant.Token)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", authorization)
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return nil, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	values := response.Header.Values("AAuth-Access")
+	if len(values) == 0 {
+		return response, nil
+	}
+	if len(values) != 1 {
+		response.Body.Close()
+		return nil, errors.New("reference: resource returned more than one AAuth-Access credential")
+	}
+	if err := aauth.ValidateAccessToken(values[0]); err != nil {
+		response.Body.Close()
+		return nil, err
+	}
+	grant.Token = values[0]
+	return response, nil
 }
 
 func responseError(response *http.Response) error {
