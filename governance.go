@@ -123,7 +123,50 @@ type MissionLogEntry struct {
 	RecordedAt time.Time       `json:"recorded_at"`
 	Agent      string          `json:"agent"`
 	DecidedBy  string          `json:"decided_by,omitempty"`
+	// RequestProofID correlates a permission decision with the verified request
+	// proof that caused it. It is not an AAuth idempotency identifier.
+	RequestProofID string          `json:"request_proof_id,omitempty"`
 	Request    json.RawMessage `json:"request,omitempty"`
+	Response   json.RawMessage `json:"response,omitempty"`
+	Proof      *RequestProof   `json:"proof,omitempty"`
+}
+
+// RequestProof archives the artifacts needed to attribute a request after the
+// issuer rotates its live JWKS. SignatureKey can contain a credential and is
+// sensitive custody, not presentation data.
+type RequestProof struct {
+	Method           string    `json:"method"`
+	Authority        string    `json:"authority"`
+	Target           string    `json:"target"`
+	ContentDigest    string    `json:"content_digest,omitempty"`
+	SignatureInput   string    `json:"signature_input"`
+	Signature        string    `json:"signature"`
+	SignatureKey     string    `json:"signature_key"`
+	AAuthMission     string    `json:"aauth_mission,omitempty"`
+	Authorization    string    `json:"authorization,omitempty"`
+	SignatureKeyType string    `json:"signature_key_type"`
+	CredentialType   string    `json:"credential_type,omitempty"`
+	Signer           string    `json:"signer"`
+	Agent            string    `json:"agent,omitempty"`
+	PublicKey        JWK       `json:"public_key"`
+	Created          time.Time `json:"created"`
+	VerifiedAt       time.Time `json:"verified_at"`
+	ReplayKey        string    `json:"replay_key"`
+}
+
+// PermissionRecord is the person server's ordered custody for every permission
+// request, including requests made outside a mission. Request and Proof are
+// immutable verification evidence; Response is populated only after a terminal
+// decision. PendingID links a deferred request to its private continuation.
+type PermissionRecord struct {
+	Sequence   uint64          `json:"sequence"`
+	RecordedAt time.Time       `json:"recorded_at"`
+	Agent      string          `json:"agent"`
+	Request    json.RawMessage `json:"request"`
+	Proof      *RequestProof   `json:"proof"`
+	PendingID  string          `json:"pending_id,omitempty"`
+	DecidedAt  time.Time       `json:"decided_at,omitempty"`
+	DecidedBy  string          `json:"decided_by,omitempty"`
 	Response   json.RawMessage `json:"response,omitempty"`
 }
 

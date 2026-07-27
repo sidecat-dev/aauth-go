@@ -193,8 +193,63 @@ comparators. They do not define compatibility requirements for this library.
   signing agent. The BEAM implementation explicitly left this area open. The
   standalone path keeps the useful shapes and closes those authorization
   gaps; neither comparator defines its package boundary.
-- The reference custody is currently in memory. Durable mission/pending
-  storage, agent-requested completion through the interaction endpoint,
-  token/interaction/clarification entries in the same mission log, and a
-  general recorder for missionless permission requests remain open. No new
-  protocol feedback was found; existing workspace feedback was not re-raised.
+- At this checkpoint the reference custody was in memory; the following
+  tranche adds restart-safe mission/permission custody. Agent-requested
+  completion through the interaction endpoint, token/interaction/clarification
+  entries in the same mission log, and a general recorder for missionless
+  permission requests remain open. No new protocol feedback was found;
+  existing workspace feedback was not re-raised.
+
+### Restart-safe governance custody and request proof evidence
+
+- **Status: mission and permission governance state has an injectable durable
+  contract and a qualified single-writer file adapter.**
+- Mission permission/audit request entries now retain the exact body plus the
+  verified HTTP signature headers, presented `Signature-Key` credential,
+  request method/authority/target, content digest, verified public-key snapshot,
+  signature and verification times, and replay identity. This follows the
+  draft's key-rotation guidance: attribution evidence is captured while the
+  issuer key is still live instead of assuming later JWKS discovery will work.
+  The credential and signatures are explicitly sensitive custody.
+- `reference.GovernanceStore` is an opaque snapshot boundary that a Sidecat
+  store or another host can implement without introducing a Sidecat dependency.
+  The included file adapter is private (`0600`), bounded, single-writer, and
+  publishes with temporary-file write, file sync, rename, and directory sync.
+- The snapshot envelope binds a deterministic state payload with SHA-256.
+  Loading is strict and fail-closed: schema, PS identity, exact mission hash and
+  blob fields, two-state lifecycle/log agreement, contiguous log sequences,
+  request/body digest evidence, public keys, permission state transitions,
+  pending IDs/codes/ownership, and replay expiries are validated. Empty,
+  loosely-permissioned, truncated, corrupted, or cross-server snapshots are
+  refused rather than treated as fresh state.
+- Mission creation, log append, termination, permission code correlation,
+  trusted approval/rejection, and pending terminal delivery save their state
+  before success is exposed. A terminal permission response and its mission-log
+  entry are one snapshot transition, so restart cannot revive a served URL or
+  lose the corresponding decision. Definite save failure rolls back memory;
+  publication with unproven directory-sync durability returns
+  `ErrGovernanceStateUncertain` and deliberately retains the candidate state
+  instead of lying by rolling back to a known-stale value.
+- The restart journey creates a mission and deferred permission, reconstructs
+  the PS, refuses the exact proof replay, resumes signed polling and code
+  correlation, grants and audits, reconstructs again, proves the served URL
+  remains gone, concurrently appends signed audits with contiguous ordering,
+  injects definite and uncertain save failures, persists termination, and
+  refuses post-termination work. It then rejects cross-server reuse, corrupts
+  a real valid snapshot, and proves startup fails closed.
+- Replay admission and its corresponding mission, permission, or audit record
+  now share one durable transition. A definite save failure rolls both back, so
+  the exact signed request can be retried; the test proves this for permission
+  and audit. Long-term records remain valid after the short replay cache expires
+  and is pruned.
+- **Protocol finding earned:** a lost audit `201` cannot be reconciled. The
+  executable test commits the audit, drops the response, then shows that a
+  freshly signed retry creates a second indistinguishable entry. The request
+  has no stable identifier, so content deduplication would also collapse
+  legitimate repeated actions. This is recorded as N6 in the reconciled
+  workspace feedback.
+- This custody covers PS missions, permission continuations/tombstones, and
+  their replay proofs. All permission requests, including missionless requests,
+  now have an ordered durable request/terminal-response record. Token/AS/resource
+  pending state, agent-requested mission completion, and the remaining
+  mission-log event families remain open.

@@ -237,15 +237,36 @@ func TestMissionPermissionAndAuditVertical(t *testing.T) {
 		!strings.Contains(string(snapshot.Log[2].Request), `"completed"`) {
 		t.Fatalf("mission log did not retain permission/audit evidence: %#v", snapshot.Log)
 	}
+	for _, entry := range []aauth.MissionLogEntry{snapshot.Log[0], snapshot.Log[2]} {
+		if entry.Proof == nil ||
+			entry.Proof.Method != http.MethodPost ||
+			entry.Proof.Authority != "ps.example" ||
+			entry.Proof.SignatureInput == "" ||
+			entry.Proof.Signature == "" ||
+			entry.Proof.SignatureKey == "" ||
+			entry.Proof.ContentDigest == "" ||
+			entry.Proof.Agent != "aauth:operator@ap.example" ||
+			entry.Proof.Created.IsZero() ||
+			entry.Proof.VerifiedAt.IsZero() ||
+			!entry.Proof.PublicKey.Equal(agentKey.PublicJWK()) {
+			t.Fatalf("mission log request proof = %#v", entry.Proof)
+		}
+	}
+	if snapshot.Log[0].Proof.Target != "/permission" ||
+		snapshot.Log[2].Proof.Target != "/audit" {
+		t.Fatalf("mission log proof targets = %q, %q", snapshot.Log[0].Proof.Target, snapshot.Log[2].Proof.Target)
+	}
 
 	snapshot.Bytes[0] ^= 1
 	snapshot.Log[0].Request[0] ^= 1
+	snapshot.Log[0].Proof.Signature = "mutated"
 	unchanged, err := ps.MissionSnapshot(mission.Reference)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(unchanged.Bytes) != string(mission.Bytes) ||
-		!strings.HasPrefix(string(unchanged.Log[0].Request), "{") {
+		!strings.HasPrefix(string(unchanged.Log[0].Request), "{") ||
+		unchanged.Log[0].Proof.Signature == "mutated" {
 		t.Fatal("caller mutation changed retained mission custody")
 	}
 

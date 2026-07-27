@@ -86,6 +86,17 @@ prior log. A host-owned termination transition permanently refuses later
 permission and audit use, including a deferred grant approved before
 termination but not yet delivered.
 
+Governance custody can be injected through the small `GovernanceStore`
+interface. The included single-writer file adapter writes private `0600`
+checksum-bound snapshots by synced temporary-file replacement and refuses
+empty, malformed, cross-server, loosely-permissioned, or semantically
+inconsistent state. Approved missions, ordered logs, permission continuations,
+terminal tombstones, every permission request and terminal response, and active
+governance replay proofs survive restart. Mission-log request entries archive
+the verified signature headers, presented credential,
+public-key snapshot, request target, timestamps, replay identity, and exact
+body. That material is sensitive evidence custody, not display data.
+
 Run the current qualification:
 
 ```sh
@@ -95,10 +106,11 @@ go vet ./...
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
 Four-party call chaining, interaction relay/callback and clarification flows,
-agent-requested mission completion, durable external mission/pending storage,
-R3, Events, Bootstrap, and the remaining Signature-Key schemes still require
-implementation and qualification. The reference server's current mission log
-is process-local; callers receive defensive snapshots, but restart durability
-must be supplied before production deployment.
+agent-requested mission completion, restart custody for token/AS/resource
+continuations, R3, Events, Bootstrap, and the remaining Signature-Key schemes
+still require implementation and qualification. Without a configured
+`GovernanceStore`, the reference person server deliberately remains
+process-local. The file adapter has a single-writer contract; a Sidecat or other
+host may implement the same standalone interface with its own durable store.
 
 No upstream contribution or repository is implied by this local project.

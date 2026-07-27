@@ -26,6 +26,7 @@ type PersonServerConfig struct {
 	AuthorizationPolicy           aauth.AuthorizationPolicy
 	PermissionPolicy              aauth.PermissionPolicy
 	PermissionInteractionRequired func(context.Context, aauth.PermissionEvaluation) (bool, error)
+	GovernanceStore               GovernanceStore
 	InteractionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	Random                        io.Reader
 	PendingLifetime               time.Duration
@@ -44,6 +45,7 @@ type PersonServer struct {
 	authorizationPolicy           aauth.AuthorizationPolicy
 	permissionPolicy              aauth.PermissionPolicy
 	permissionInteractionRequired func(context.Context, aauth.PermissionEvaluation) (bool, error)
+	governanceStore               GovernanceStore
 	interactionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	random                        io.Reader
 	pendingLifetime               time.Duration
@@ -51,15 +53,16 @@ type PersonServer struct {
 	accessServerEndpoint          func(context.Context, string) (string, error)
 	trustedUpstreamIssuer         func(context.Context, string) error
 
-	mu                  sync.RWMutex
-	missions            map[string]storedMission
-	randomMu            sync.Mutex
-	pendingMu           sync.Mutex
-	pending             map[string]*pendingPersonAuthorization
-	permissionPendingMu sync.Mutex
-	permissionPending   map[string]*pendingPersonPermission
-	replayMu            sync.Mutex
-	replayedProof       map[string]time.Time
+	mu                sync.RWMutex
+	missions          map[string]storedMission
+	randomMu          sync.Mutex
+	governanceReplays map[string]time.Time
+	permissionHistory []aauth.PermissionRecord
+	pendingMu         sync.Mutex
+	pending           map[string]*pendingPersonAuthorization
+	permissionPending map[string]pendingPersonPermission
+	replayMu          sync.Mutex
+	replayedProof     map[string]time.Time
 }
 
 type storedMission struct {
@@ -117,6 +120,7 @@ type pendingPersonPermission struct {
 	pendingInteraction
 	agent                  string
 	pollingAgentThumbprint string
+	requestReplayKey       string
 	requestBody            []byte
 	decision               aauth.PermissionDecision
 }
@@ -154,7 +158,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 	if random == nil {
 		random = rand.Reader
 	}
-	return &PersonServer{
+	server := &PersonServer{
 		identifier:                    config.Identifier,
 		signingKey:                    config.SigningKey,
 		keyResolver:                   config.KeyResolver,
@@ -164,6 +168,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		authorizationPolicy:           config.AuthorizationPolicy,
 		permissionPolicy:              config.PermissionPolicy,
 		permissionInteractionRequired: config.PermissionInteractionRequired,
+		governanceStore:               config.GovernanceStore,
 		interactionRequired:           config.InteractionRequired,
 		random:                        random,
 		pendingLifetime:               pendingLifetime,
@@ -171,10 +176,53 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		accessServerEndpoint:          config.AccessServerEndpoint,
 		trustedUpstreamIssuer:         config.TrustedUpstreamIssuer,
 		missions:                      make(map[string]storedMission),
+		governanceReplays:             make(map[string]time.Time),
 		pending:                       make(map[string]*pendingPersonAuthorization),
-		permissionPending:             make(map[string]*pendingPersonPermission),
+		permissionPending:             make(map[string]pendingPersonPermission),
 		replayedProof:                 make(map[string]time.Time),
-	}, nil
+	}
+	if server.governanceStore != nil {
+		body, err := server.governanceStore.Load()
+		if err != nil {
+			return nil, fmt.Errorf("reference: load governance state: %w", err)
+		}
+		missions, permissions, pendingPermissions, replays, err := decodeGovernanceState(
+			body,
+			server.identifier,
+		)
+		if err != nil {
+			return nil, err
+		}
+		server.missions = missions
+		server.permissionHistory = permissions
+		server.permissionPending = pendingPermissions
+		server.governanceReplays = replays
+	}
+	return server, nil
+}
+
+func (server *PersonServer) persistGovernanceLocked() error {
+	if server.governanceStore == nil {
+		return nil
+	}
+	body, err := encodeGovernanceState(
+		server.identifier,
+		server.missions,
+		server.permissionHistory,
+		server.permissionPending,
+		server.governanceReplays,
+	)
+	if err != nil {
+		return err
+	}
+	if err := server.governanceStore.Save(body); err != nil {
+		return fmt.Errorf("reference: save governance state: %w", err)
+	}
+	return nil
+}
+
+func governanceSaveDefinitelyFailed(err error) bool {
+	return !errors.Is(err, ErrGovernanceStateUncertain)
 }
 
 func (server *PersonServer) Handler() http.Handler {
@@ -201,6 +249,10 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 	})
 	if err != nil {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		return
+	}
+	if server.governanceReplayExists(verified.ReplayKey) {
+		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
 		return
 	}
 	var proposal aauth.MissionProposal
@@ -243,6 +295,17 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		return
 	}
 	server.mu.Lock()
+	if _, replayed := server.governanceReplays[verified.ReplayKey]; replayed {
+		server.mu.Unlock()
+		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		return
+	}
+	previousReplays := copyGovernanceReplays(server.governanceReplays)
+	server.addGovernanceReplayLocked(
+		verified.ReplayKey,
+		verified.Created.Add(aauth.DefaultSignatureWindow),
+	)
+	previous, replaced := server.missions[reference.S256]
 	server.missions[reference.S256] = storedMission{
 		reference:     reference,
 		agent:         verified.Agent,
@@ -251,6 +314,19 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		approvedTools: append([]aauth.Tool(nil), decision.Tools...),
 		capabilities:  append([]string(nil), decision.Capabilities...),
 		status:        aauth.MissionActive,
+	}
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.governanceReplays = previousReplays
+			if replaced {
+				server.missions[reference.S256] = previous
+			} else {
+				delete(server.missions, reference.S256)
+			}
+		}
+		server.mu.Unlock()
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
 	}
 	server.mu.Unlock()
 
@@ -281,6 +357,14 @@ func (server *PersonServer) MissionSnapshot(
 	return copyMissionSnapshot(mission), nil
 }
 
+// PermissionHistory returns defensive, ordered custody for every permission
+// request handled by this person server, including missionless requests.
+func (server *PersonServer) PermissionHistory() []aauth.PermissionRecord {
+	server.mu.RLock()
+	defer server.mu.RUnlock()
+	return copyPermissionHistory(server.permissionHistory)
+}
+
 // TerminateMission performs the host-owned state transition defined by the
 // draft's mission-management boundary. Agent-requested completion remains an
 // interaction-endpoint concern.
@@ -300,6 +384,7 @@ func (server *PersonServer) TerminateMission(reference aauth.MissionReference) e
 	if mission.status == aauth.MissionTerminated {
 		return ErrMissionTerminated
 	}
+	previous := mission
 	mission.log = append(mission.log, aauth.MissionLogEntry{
 		Sequence:   uint64(len(mission.log) + 1),
 		Kind:       aauth.MissionLogTermination,
@@ -308,6 +393,12 @@ func (server *PersonServer) TerminateMission(reference aauth.MissionReference) e
 	})
 	mission.status = aauth.MissionTerminated
 	server.missions[reference.S256] = mission
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.missions[reference.S256] = previous
+		}
+		return err
+	}
 	return nil
 }
 
@@ -334,7 +425,7 @@ func (server *PersonServer) handlePermission(
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
 		return
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
+	if server.governanceReplayExists(verified.ReplayKey) {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
 		return
 	}
@@ -347,6 +438,8 @@ func (server *PersonServer) handlePermission(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	recordedAt := server.clock.Now().UTC()
+	proof := requestProof(request, verified, recordedAt)
 
 	evaluation := aauth.PermissionEvaluation{
 		Agent:   verified.Agent,
@@ -359,19 +452,6 @@ func (server *PersonServer) handlePermission(
 			return
 		}
 		evaluation.Mission = &mission
-		if err := server.appendMissionLog(
-			verified.Agent,
-			*input.Mission,
-			aauth.MissionLogEntry{
-				Kind:       aauth.MissionLogPermissionRequest,
-				RecordedAt: server.clock.Now().UTC(),
-				Agent:      verified.Agent,
-				Request:    append([]byte(nil), body...),
-			},
-		); err != nil {
-			server.writeMissionError(response, err)
-			return
-		}
 	}
 	if server.permissionInteractionRequired != nil {
 		required, err := server.permissionInteractionRequired(
@@ -394,8 +474,10 @@ func (server *PersonServer) handlePermission(
 				thumbprint,
 				verified.AgentToken.ExpiresAt,
 				body,
+				proof,
+				verified.Created.Add(aauth.DefaultSignatureWindow),
 			); err != nil {
-				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				server.writeMissionError(response, err)
 			}
 			return
 		}
@@ -408,13 +490,24 @@ func (server *PersonServer) handlePermission(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	server.completePermission(response, verified.Agent, input.Mission, decision)
+	server.completePermission(
+		response,
+		verified.Agent,
+		input,
+		body,
+		proof,
+		verified.Created.Add(aauth.DefaultSignatureWindow),
+		decision,
+	)
 }
 
 func (server *PersonServer) completePermission(
 	response http.ResponseWriter,
 	agent string,
-	mission *aauth.MissionReference,
+	input aauth.PermissionRequest,
+	requestBody []byte,
+	proof *aauth.RequestProof,
+	replayExpiresAt time.Time,
 	decision aauth.PermissionDecision,
 ) {
 	result := aauth.PermissionResponse{
@@ -430,22 +523,17 @@ func (server *PersonServer) completePermission(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if mission != nil {
-		err := server.appendMissionLog(
-			agent,
-			*mission,
-			aauth.MissionLogEntry{
-				Kind:       aauth.MissionLogPermissionDecision,
-				RecordedAt: server.clock.Now().UTC(),
-				Agent:      agent,
-				DecidedBy:  decision.DecidedBy,
-				Response:   append([]byte(nil), resultBody...),
-			},
-		)
-		if err != nil {
-			server.writeMissionError(response, err)
-			return
-		}
+	if err := server.commitImmediatePermission(
+		agent,
+		input,
+		requestBody,
+		proof,
+		replayExpiresAt,
+		decision,
+		resultBody,
+	); err != nil {
+		server.writeMissionError(response, err)
+		return
 	}
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
@@ -453,36 +541,146 @@ func (server *PersonServer) completePermission(
 	_, _ = response.Write(resultBody)
 }
 
-func (server *PersonServer) completePermissionProblem(
-	response http.ResponseWriter,
+var errGovernanceReplay = errors.New("reference: request proof was replayed")
+
+func (server *PersonServer) commitImmediatePermission(
 	agent string,
+	input aauth.PermissionRequest,
 	requestBody []byte,
-	status int,
-	code string,
-	cause error,
-) {
-	body := problemBody(status, code, cause, nil)
+	proof *aauth.RequestProof,
+	replayExpiresAt time.Time,
+	decision aauth.PermissionDecision,
+	responseBody []byte,
+) error {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if _, replayed := server.governanceReplays[proof.ReplayKey]; replayed {
+		return errGovernanceReplay
+	}
+	previousReplays := copyGovernanceReplays(server.governanceReplays)
+	previousHistory := copyPermissionHistory(server.permissionHistory)
+	var previousMission storedMission
+	missionChanged := false
+	decidedAt := server.clock.Now().UTC()
+
+	server.permissionHistory = append(server.permissionHistory, aauth.PermissionRecord{
+		Sequence:   uint64(len(server.permissionHistory) + 1),
+		RecordedAt: proof.VerifiedAt,
+		Agent:      agent,
+		Request:    append([]byte(nil), requestBody...),
+		Proof:      copyRequestProof(proof),
+		DecidedAt:  decidedAt,
+		DecidedBy:  decision.DecidedBy,
+		Response:   append([]byte(nil), responseBody...),
+	})
+	if input.Mission != nil {
+		mission, err := server.activeMissionForAgentLocked(agent, *input.Mission)
+		if err != nil {
+			server.permissionHistory = previousHistory
+			return err
+		}
+		previousMission = mission
+		mission.log = append(mission.log,
+			aauth.MissionLogEntry{
+				Sequence:   uint64(len(mission.log) + 1),
+				Kind:       aauth.MissionLogPermissionRequest,
+				RecordedAt: proof.VerifiedAt,
+				Agent:      agent,
+				RequestProofID: proof.ReplayKey,
+				Request:    append([]byte(nil), requestBody...),
+				Proof:      copyRequestProof(proof),
+			},
+			aauth.MissionLogEntry{
+				Sequence:   uint64(len(mission.log) + 2),
+				Kind:       aauth.MissionLogPermissionDecision,
+				RecordedAt: decidedAt,
+				Agent:      agent,
+				DecidedBy:  decision.DecidedBy,
+				RequestProofID: proof.ReplayKey,
+				Response:   append([]byte(nil), responseBody...),
+			},
+		)
+		server.missions[input.Mission.S256] = mission
+		missionChanged = true
+	}
+	server.addGovernanceReplayLocked(proof.ReplayKey, replayExpiresAt)
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.governanceReplays = previousReplays
+			server.permissionHistory = previousHistory
+			if missionChanged {
+				server.missions[input.Mission.S256] = previousMission
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func (server *PersonServer) commitPendingPermissionRequest(
+	pending pendingPersonPermission,
+	requestBody []byte,
+	proof *aauth.RequestProof,
+	replayExpiresAt time.Time,
+) error {
 	var input aauth.PermissionRequest
 	if err := decodeJSONBytes(bytes.NewReader(requestBody), &input); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
+		return err
 	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if _, replayed := server.governanceReplays[proof.ReplayKey]; replayed {
+		return errGovernanceReplay
+	}
+	if _, exists := server.permissionPending[pending.id]; exists {
+		return errors.New("reference: pending identifier source returned a duplicate value")
+	}
+	previousReplays := copyGovernanceReplays(server.governanceReplays)
+	previousHistory := copyPermissionHistory(server.permissionHistory)
+	var previousMission storedMission
+	missionChanged := false
+
+	server.permissionHistory = append(server.permissionHistory, aauth.PermissionRecord{
+		Sequence:   uint64(len(server.permissionHistory) + 1),
+		RecordedAt: proof.VerifiedAt,
+		Agent:      pending.agent,
+		Request:    append([]byte(nil), requestBody...),
+		Proof:      copyRequestProof(proof),
+		PendingID:  pending.id,
+	})
 	if input.Mission != nil {
-		if err := server.appendMissionLog(
-			agent,
-			*input.Mission,
-			aauth.MissionLogEntry{
-				Kind:       aauth.MissionLogPermissionDecision,
-				RecordedAt: server.clock.Now().UTC(),
-				Agent:      agent,
-				Response:   append([]byte(nil), body...),
-			},
-		); err != nil {
-			server.writeMissionError(response, err)
-			return
+		mission, err := server.activeMissionForAgentLocked(pending.agent, *input.Mission)
+		if err != nil {
+			server.permissionHistory = previousHistory
+			return err
 		}
+		previousMission = mission
+		mission.log = append(mission.log, aauth.MissionLogEntry{
+			Sequence:   uint64(len(mission.log) + 1),
+			Kind:       aauth.MissionLogPermissionRequest,
+			RecordedAt: proof.VerifiedAt,
+			Agent:      pending.agent,
+			RequestProofID: proof.ReplayKey,
+			Request:    append([]byte(nil), requestBody...),
+			Proof:      copyRequestProof(proof),
+		})
+		server.missions[input.Mission.S256] = mission
+		missionChanged = true
 	}
-	writeProblemBody(response, status, body)
+	server.permissionPending[pending.id] = pending
+	server.addGovernanceReplayLocked(proof.ReplayKey, replayExpiresAt)
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.governanceReplays = previousReplays
+			server.permissionHistory = previousHistory
+			delete(server.permissionPending, pending.id)
+			if missionChanged {
+				server.missions[input.Mission.S256] = previousMission
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func (server *PersonServer) beginPendingPermission(
@@ -491,6 +689,8 @@ func (server *PersonServer) beginPendingPermission(
 	agentThumbprint string,
 	agentTokenExpiresAt int64,
 	requestBody []byte,
+	proof *aauth.RequestProof,
+	replayExpiresAt time.Time,
 ) error {
 	now := server.clock.Now()
 	expiresAt := now.Add(server.pendingLifetime)
@@ -507,19 +707,21 @@ func (server *PersonServer) beginPendingPermission(
 	if err != nil {
 		return err
 	}
-	pending := &pendingPersonPermission{
+	pending := pendingPersonPermission{
 		pendingInteraction:     interaction,
 		agent:                  agent,
 		pollingAgentThumbprint: agentThumbprint,
+		requestReplayKey:       proof.ReplayKey,
 		requestBody:            append([]byte(nil), requestBody...),
 	}
-	server.permissionPendingMu.Lock()
-	if _, exists := server.permissionPending[interaction.id]; exists {
-		server.permissionPendingMu.Unlock()
-		return errors.New("reference: pending identifier source returned a duplicate value")
+	if err := server.commitPendingPermissionRequest(
+		pending,
+		requestBody,
+		proof,
+		replayExpiresAt,
+	); err != nil {
+		return err
 	}
-	server.permissionPending[interaction.id] = pending
-	server.permissionPendingMu.Unlock()
 	return server.writePendingPermission(
 		response,
 		interaction.id,
@@ -553,25 +755,35 @@ func (server *PersonServer) handlePermissionInteraction(
 	response http.ResponseWriter,
 	request *http.Request,
 ) {
-	server.permissionPendingMu.Lock()
+	server.mu.Lock()
 	pending, exists := server.permissionPending[request.PathValue("id")]
 	if !exists {
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		writeProblem(response, http.StatusGone, "invalid_code", errors.New("pending permission interaction is unknown"))
 		return
 	}
+	original := pending
 	status, code, err := pending.correlate(
 		request.URL.Query()["code"],
 		server.clock.Now(),
 	)
+	server.permissionPending[pending.id] = pending
+	if persistErr := server.persistGovernanceLocked(); persistErr != nil {
+		if governanceSaveDefinitelyFailed(persistErr) {
+			server.permissionPending[pending.id] = original
+		}
+		server.mu.Unlock()
+		writeProblem(response, http.StatusInternalServerError, "server_error", persistErr)
+		return
+	}
 	if err != nil {
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		writeProblem(response, status, code, err)
 		return
 	}
 	body := append([]byte(nil), pending.requestBody...)
 	agent := pending.agent
-	server.permissionPendingMu.Unlock()
+	server.mu.Unlock()
 
 	var input aauth.PermissionRequest
 	if err := decodeJSONBytes(bytes.NewReader(body), &input); err != nil {
@@ -591,24 +803,33 @@ func (server *PersonServer) ApprovePermission(
 	ctx context.Context,
 	pendingID string,
 ) error {
-	server.permissionPendingMu.Lock()
+	server.mu.Lock()
 	pending, exists := server.permissionPending[pendingID]
 	if !exists {
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		return errors.New("reference: pending permission does not exist")
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
+		original := pending
 		pending.state = pendingAuthorizationExpired
-		server.permissionPendingMu.Unlock()
+		server.permissionPending[pendingID] = pending
+		if err := server.persistGovernanceLocked(); err != nil {
+			if governanceSaveDefinitelyFailed(err) {
+				server.permissionPending[pendingID] = original
+			}
+			server.mu.Unlock()
+			return err
+		}
+		server.mu.Unlock()
 		return errors.New("reference: pending permission expired")
 	}
 	if pending.state != pendingAuthorizationInteracting {
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		return errors.New("reference: pending permission is not awaiting a trusted decision")
 	}
 	body := append([]byte(nil), pending.requestBody...)
 	agent := pending.agent
-	server.permissionPendingMu.Unlock()
+	server.mu.Unlock()
 
 	var input aauth.PermissionRequest
 	if err := decodeJSONBytes(bytes.NewReader(body), &input); err != nil {
@@ -637,17 +858,34 @@ func (server *PersonServer) ApprovePermission(
 		return err
 	}
 
-	server.permissionPendingMu.Lock()
-	defer server.permissionPendingMu.Unlock()
-	if pending.state != pendingAuthorizationInteracting {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	pending, exists = server.permissionPending[pendingID]
+	if !exists || pending.state != pendingAuthorizationInteracting {
 		return errors.New("reference: pending permission changed while approval was evaluated")
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
+		original := pending
 		pending.state = pendingAuthorizationExpired
+		server.permissionPending[pendingID] = pending
+		if err := server.persistGovernanceLocked(); err != nil {
+			if governanceSaveDefinitelyFailed(err) {
+				server.permissionPending[pendingID] = original
+			}
+			return err
+		}
 		return errors.New("reference: pending permission expired")
 	}
+	original := pending
 	pending.decision = decision
 	pending.state = pendingAuthorizationApproved
+	server.permissionPending[pendingID] = pending
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.permissionPending[pendingID] = original
+		}
+		return err
+	}
 	return nil
 }
 
@@ -662,22 +900,131 @@ func (server *PersonServer) RejectPermission(
 		code != aauth.PollingServerError {
 		return errors.New("reference: unsupported permission rejection code")
 	}
-	server.permissionPendingMu.Lock()
-	defer server.permissionPendingMu.Unlock()
+	server.mu.Lock()
+	defer server.mu.Unlock()
 	pending, exists := server.permissionPending[pendingID]
 	if !exists {
 		return errors.New("reference: pending permission does not exist")
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
+		original := pending
 		pending.state = pendingAuthorizationExpired
+		server.permissionPending[pendingID] = pending
+		if err := server.persistGovernanceLocked(); err != nil {
+			if governanceSaveDefinitelyFailed(err) {
+				server.permissionPending[pendingID] = original
+			}
+			return err
+		}
 		return errors.New("reference: pending permission expired")
 	}
 	if pending.state != pendingAuthorizationInteracting {
 		return errors.New("reference: pending permission is not awaiting a trusted decision")
 	}
+	original := pending
 	pending.pollingError = code
 	pending.state = pendingAuthorizationRejected
+	server.permissionPending[pendingID] = pending
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.permissionPending[pendingID] = original
+		}
+		return err
+	}
 	return nil
+}
+
+func (server *PersonServer) commitPendingPermissionTerminalLocked(
+	pendingID string,
+	pending pendingPersonPermission,
+	responseBody []byte,
+) error {
+	originalPending := server.permissionPending[pendingID]
+	originalHistory := copyPermissionHistory(server.permissionHistory)
+	var input aauth.PermissionRequest
+	if err := decodeJSONBytes(bytes.NewReader(pending.requestBody), &input); err != nil {
+		return err
+	}
+	pending.state = pendingAuthorizationServed
+	server.permissionPending[pendingID] = pending
+	recordIndex := -1
+	for index, record := range server.permissionHistory {
+		if record.Proof != nil && record.Proof.ReplayKey == pending.requestReplayKey {
+			recordIndex = index
+			break
+		}
+	}
+	if recordIndex < 0 {
+		server.permissionPending[pendingID] = originalPending
+		return errors.New("reference: pending permission request record is missing")
+	}
+
+	var originalMission storedMission
+	missionChanged := false
+	missionTerminated := false
+	if input.Mission != nil {
+		mission, exists := server.missions[input.Mission.S256]
+		if !exists ||
+			mission.reference != *input.Mission ||
+			mission.agent != pending.agent ||
+			aauth.S256(mission.bytes) != input.Mission.S256 {
+			server.permissionPending[pendingID] = originalPending
+			return ErrMissionUnknown
+		}
+		if mission.status == aauth.MissionTerminated {
+			responseBody = problemBody(
+				http.StatusForbidden,
+				"mission_terminated",
+				ErrMissionTerminated,
+				map[string]any{"mission_status": string(aauth.MissionTerminated)},
+			)
+			missionTerminated = true
+		} else {
+			originalMission = mission
+			mission.log = append(mission.log, aauth.MissionLogEntry{
+				Sequence:   uint64(len(mission.log) + 1),
+				Kind:       aauth.MissionLogPermissionDecision,
+				RecordedAt: server.clock.Now().UTC(),
+				Agent:      pending.agent,
+				DecidedBy:  pending.decision.DecidedBy,
+				RequestProofID: pending.requestReplayKey,
+				Response:   append([]byte(nil), responseBody...),
+			})
+			server.missions[input.Mission.S256] = mission
+			missionChanged = true
+		}
+	}
+	record := server.permissionHistory[recordIndex]
+	record.DecidedAt = server.clock.Now().UTC()
+	record.DecidedBy = pending.decision.DecidedBy
+	record.Response = append([]byte(nil), responseBody...)
+	server.permissionHistory[recordIndex] = record
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.permissionPending[pendingID] = originalPending
+			server.permissionHistory = originalHistory
+			if missionChanged {
+				server.missions[input.Mission.S256] = originalMission
+			}
+		}
+		return err
+	}
+	if missionTerminated {
+		return ErrMissionTerminated
+	}
+	return nil
+}
+
+func writePermissionTerminal(
+	response http.ResponseWriter,
+	status int,
+	contentType string,
+	body []byte,
+) {
+	response.Header().Set("Content-Type", contentType)
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(status)
+	_, _ = response.Write(body)
 }
 
 func (server *PersonServer) handlePendingPermission(
@@ -703,16 +1050,16 @@ func (server *PersonServer) handlePendingPermission(
 		return
 	}
 
-	server.permissionPendingMu.Lock()
+	server.mu.Lock()
 	pending, exists := server.permissionPending[request.PathValue("id")]
 	if !exists {
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		writeProblem(response, http.StatusGone, "gone", errors.New("pending permission is unknown"))
 		return
 	}
 	if pending.agent != verified.Agent ||
 		pending.pollingAgentThumbprint != thumbprint {
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		writeProblem(response, http.StatusForbidden, "invalid_pending", errors.New("pending permission belongs to a different agent key"))
 		return
 	}
@@ -727,68 +1074,82 @@ func (server *PersonServer) handlePendingPermission(
 		id := pending.id
 		state := pending.state
 		code := pending.code
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		if err := server.writePendingPermission(response, id, state, code); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 	case pendingAuthorizationApproved:
-		agent := pending.agent
-		body := append([]byte(nil), pending.requestBody...)
-		decision := pending.decision
-		pending.state = pendingAuthorizationServed
-		server.permissionPendingMu.Unlock()
-		var input aauth.PermissionRequest
-		if err := decodeJSONBytes(bytes.NewReader(body), &input); err != nil {
+		result := aauth.PermissionResponse{
+			Permission: pending.decision.Permission,
+			Reason:     pending.decision.Reason,
+		}
+		if err := result.Validate(); err != nil {
+			server.mu.Unlock()
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		server.completePermission(response, agent, input.Mission, decision)
+		body, err := json.Marshal(result)
+		if err != nil {
+			server.mu.Unlock()
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		err = server.commitPendingPermissionTerminalLocked(pending.id, pending, body)
+		server.mu.Unlock()
+		if err != nil {
+			server.writeMissionError(response, err)
+			return
+		}
+		writePermissionTerminal(response, http.StatusOK, "application/json", body)
 	case pendingAuthorizationExpired:
-		agent := pending.agent
-		body := append([]byte(nil), pending.requestBody...)
-		pending.state = pendingAuthorizationServed
-		server.permissionPendingMu.Unlock()
-		server.completePermissionProblem(
-			response,
-			agent,
-			body,
+		body := problemBody(
 			http.StatusRequestTimeout,
 			"expired",
 			errors.New("pending permission expired"),
+			nil,
 		)
+		err := server.commitPendingPermissionTerminalLocked(pending.id, pending, body)
+		server.mu.Unlock()
+		if err != nil {
+			server.writeMissionError(response, err)
+			return
+		}
+		writePermissionTerminal(response, http.StatusRequestTimeout, "application/problem+json", body)
 	case pendingAuthorizationRejected:
 		code := pending.pollingError
-		agent := pending.agent
-		body := append([]byte(nil), pending.requestBody...)
-		pending.state = pendingAuthorizationServed
-		server.permissionPendingMu.Unlock()
 		status := http.StatusForbidden
 		if code == aauth.PollingServerError {
 			status = http.StatusInternalServerError
 		}
-		server.completePermissionProblem(
-			response,
-			agent,
-			body,
+		body := problemBody(
 			status,
 			string(code),
 			errors.New("pending permission was not approved"),
+			nil,
 		)
+		err := server.commitPendingPermissionTerminalLocked(pending.id, pending, body)
+		server.mu.Unlock()
+		if err != nil {
+			server.writeMissionError(response, err)
+			return
+		}
+		writePermissionTerminal(response, status, "application/problem+json", body)
 	case pendingAuthorizationInvalidCode:
-		agent := pending.agent
-		body := append([]byte(nil), pending.requestBody...)
-		pending.state = pendingAuthorizationServed
-		server.permissionPendingMu.Unlock()
-		server.completePermissionProblem(
-			response,
-			agent,
-			body,
+		body := problemBody(
 			http.StatusGone,
 			"invalid_code",
 			errors.New("permission interaction code validation failed"),
+			nil,
 		)
+		err := server.commitPendingPermissionTerminalLocked(pending.id, pending, body)
+		server.mu.Unlock()
+		if err != nil {
+			server.writeMissionError(response, err)
+			return
+		}
+		writePermissionTerminal(response, http.StatusGone, "application/problem+json", body)
 	default:
-		server.permissionPendingMu.Unlock()
+		server.mu.Unlock()
 		writeProblem(response, http.StatusGone, "gone", errors.New("pending permission already returned a terminal response"))
 	}
 }
@@ -816,7 +1177,7 @@ func (server *PersonServer) handleAudit(
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
 		return
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
+	if server.governanceReplayExists(verified.ReplayKey) {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
 		return
 	}
@@ -829,15 +1190,19 @@ func (server *PersonServer) handleAudit(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	err = server.appendMissionLog(
+	err = server.appendMissionLogWithReplay(
 		verified.Agent,
 		input.Mission,
 		aauth.MissionLogEntry{
 			Kind:       aauth.MissionLogAudit,
 			RecordedAt: server.clock.Now().UTC(),
 			Agent:      verified.Agent,
+			RequestProofID: verified.ReplayKey,
 			Request:    append([]byte(nil), body...),
+			Proof:      requestProof(request, verified, server.clock.Now()),
 		},
+		verified.ReplayKey,
+		verified.Created.Add(aauth.DefaultSignatureWindow),
 	)
 	if err != nil {
 		server.writeMissionError(response, err)
@@ -856,53 +1221,82 @@ func (server *PersonServer) activeMissionForAgent(
 	}
 	server.mu.RLock()
 	defer server.mu.RUnlock()
+	mission, err := server.activeMissionForAgentLocked(agent, reference)
+	if err != nil {
+		return aauth.MissionSnapshot{}, err
+	}
+	return copyMissionSnapshot(mission), nil
+}
+
+func (server *PersonServer) activeMissionForAgentLocked(
+	agent string,
+	reference aauth.MissionReference,
+) (storedMission, error) {
 	mission, exists := server.missions[reference.S256]
 	if !exists ||
 		mission.reference != reference ||
 		mission.agent != agent ||
 		aauth.S256(mission.bytes) != reference.S256 {
-		return aauth.MissionSnapshot{}, ErrMissionUnknown
+		return storedMission{}, ErrMissionUnknown
 	}
 	if mission.status == aauth.MissionTerminated {
-		return aauth.MissionSnapshot{}, ErrMissionTerminated
+		return storedMission{}, ErrMissionTerminated
 	}
-	return copyMissionSnapshot(mission), nil
+	return mission, nil
 }
 
-func (server *PersonServer) appendMissionLog(
+func (server *PersonServer) appendMissionLogWithReplay(
 	agent string,
 	reference aauth.MissionReference,
 	entry aauth.MissionLogEntry,
+	replayKey string,
+	replayExpiresAt time.Time,
 ) error {
 	if err := reference.Validate(); err != nil || reference.Approver != server.identifier {
 		return ErrMissionUnknown
 	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	mission, exists := server.missions[reference.S256]
-	if !exists ||
-		mission.reference != reference ||
-		mission.agent != agent ||
-		aauth.S256(mission.bytes) != reference.S256 {
-		return ErrMissionUnknown
+	if _, replayed := server.governanceReplays[replayKey]; replayed {
+		return errGovernanceReplay
 	}
-	if mission.status == aauth.MissionTerminated {
-		return ErrMissionTerminated
+	mission, err := server.activeMissionForAgentLocked(agent, reference)
+	if err != nil {
+		return err
 	}
 	entry.Sequence = uint64(len(mission.log) + 1)
 	entry.Request = append([]byte(nil), entry.Request...)
 	entry.Response = append([]byte(nil), entry.Response...)
+	entry.Proof = copyRequestProof(entry.Proof)
 	mission.log = append(mission.log, entry)
+	previous := server.missions[reference.S256]
+	previousReplays := copyGovernanceReplays(server.governanceReplays)
 	server.missions[reference.S256] = mission
+	server.addGovernanceReplayLocked(replayKey, replayExpiresAt)
+	if err := server.persistGovernanceLocked(); err != nil {
+		if governanceSaveDefinitelyFailed(err) {
+			server.missions[reference.S256] = previous
+			server.governanceReplays = previousReplays
+		}
+		return err
+	}
 	return nil
 }
 
 func (server *PersonServer) writeMissionError(response http.ResponseWriter, err error) {
+	if errors.Is(err, errGovernanceReplay) {
+		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		return
+	}
 	if errors.Is(err, ErrMissionTerminated) {
 		writeMissionTerminated(response)
 		return
 	}
-	writeProblem(response, http.StatusForbidden, "invalid_mission", err)
+	if errors.Is(err, ErrMissionUnknown) {
+		writeProblem(response, http.StatusForbidden, "invalid_mission", err)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
 func copyMissionSnapshot(mission storedMission) aauth.MissionSnapshot {
@@ -911,6 +1305,7 @@ func copyMissionSnapshot(mission storedMission) aauth.MissionSnapshot {
 		log[index] = entry
 		log[index].Request = append([]byte(nil), entry.Request...)
 		log[index].Response = append([]byte(nil), entry.Response...)
+		log[index].Proof = copyRequestProof(entry.Proof)
 	}
 	return aauth.MissionSnapshot{
 		Reference:     mission.reference,
@@ -940,6 +1335,7 @@ func copyPermissionEvaluation(
 			mission.Log[index] = entry
 			mission.Log[index].Request = append([]byte(nil), entry.Request...)
 			mission.Log[index].Response = append([]byte(nil), entry.Response...)
+			mission.Log[index].Proof = copyRequestProof(entry.Proof)
 		}
 		copied.Mission = &mission
 	}
@@ -962,6 +1358,48 @@ func copyPermissionRequest(request aauth.PermissionRequest) aauth.PermissionRequ
 		}
 	}
 	return copied
+}
+
+func requestProof(
+	request *http.Request,
+	verified aauth.VerifiedRequest,
+	verifiedAt time.Time,
+) *aauth.RequestProof {
+	authority := request.Host
+	if authority == "" && request.URL != nil {
+		authority = request.URL.Host
+	}
+	target := ""
+	if request.URL != nil {
+		target = request.URL.RequestURI()
+	}
+	return &aauth.RequestProof{
+		Method:           request.Method,
+		Authority:        authority,
+		Target:           target,
+		ContentDigest:    request.Header.Get("Content-Digest"),
+		SignatureInput:   request.Header.Get("Signature-Input"),
+		Signature:        request.Header.Get("Signature"),
+		SignatureKey:     request.Header.Get("Signature-Key"),
+		AAuthMission:     request.Header.Get("AAuth-Mission"),
+		Authorization:    request.Header.Get("Authorization"),
+		SignatureKeyType: verified.SignatureKeyType,
+		CredentialType:   verified.CredentialType,
+		Signer:           verified.Signer,
+		Agent:            verified.Agent,
+		PublicKey:        verified.PublicKey,
+		Created:          verified.Created.UTC(),
+		VerifiedAt:       verifiedAt.UTC(),
+		ReplayKey:        verified.ReplayKey,
+	}
+}
+
+func copyRequestProof(proof *aauth.RequestProof) *aauth.RequestProof {
+	if proof == nil {
+		return nil
+	}
+	copied := *proof
+	return &copied
 }
 
 func (server *PersonServer) handleToken(response http.ResponseWriter, request *http.Request) {
@@ -1678,6 +2116,34 @@ func (server *PersonServer) handleInteraction(
 		"resource": authorizationRequest.Resource,
 		"scope":    strings.Join(authorizationRequest.Scope, " "),
 	})
+}
+
+func (server *PersonServer) governanceReplayExists(key string) bool {
+	server.mu.RLock()
+	defer server.mu.RUnlock()
+	_, exists := server.governanceReplays[key]
+	return exists
+}
+
+func (server *PersonServer) addGovernanceReplayLocked(
+	key string,
+	expiresAt time.Time,
+) {
+	now := server.clock.Now()
+	for existing, expiry := range server.governanceReplays {
+		if !expiry.After(now) {
+			delete(server.governanceReplays, existing)
+		}
+	}
+	server.governanceReplays[key] = expiresAt
+}
+
+func copyGovernanceReplays(source map[string]time.Time) map[string]time.Time {
+	copied := make(map[string]time.Time, len(source))
+	for key, expiry := range source {
+		copied[key] = expiry
+	}
+	return copied
 }
 
 func (server *PersonServer) seenReplay(key string, expiresAt time.Time) bool {
