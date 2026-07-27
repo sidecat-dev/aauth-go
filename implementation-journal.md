@@ -313,3 +313,29 @@ comparators. They do not define compatibility requirements for this library.
   external signer and proves that the caller-held capability, rather than a
   copied private key, performed the signature. This is the portability seam
   Sidecat can back with its own protected-value custody and access receipts.
+
+### Runnable durable person-server process
+
+- **Status: a standalone person-server process is implemented and qualified
+  over real TLS and process restart.**
+- `aauth-reference serve person --profile FILE` composes the public
+  `reference.PersonServer` with an explicit trust map, deployment-owned
+  action/scope policy, TLS 1.3, and the single-writer file governance store.
+  It has no Sidecat import or runtime dependency.
+- Startup refuses unknown profile fields, noncanonical custody paths,
+  symlinked parents or files, multiply linked files, non-`0600` sensitive
+  files, foreign ownership, an unprotected governance directory or existing
+  snapshot, invalid trust keys, and a TLS leaf that does not cover the AAuth
+  identifier. Diagnostics identify the invalid boundary without printing
+  secret material.
+- The executable journey builds and starts the binary, connects the standalone
+  agent client over certificate-verified HTTPS, creates a mission, obtains a
+  local-action permission, records an audit, and observes a policy denial for
+  an unlisted action. It then shuts down with SIGTERM, starts a new process
+  against the same snapshot, reuses the exact prior mission for another
+  permission and audit, and proves the private state advanced.
+- This process makes the person-server role independently operable and gives
+  Sidecat a genuine peer to consume. It does not turn the conservative static
+  JSON policy into a general policy language or claim production key
+  provisioning, service supervision, multi-writer state, or full AAuth
+  conformance.

@@ -115,6 +115,68 @@ Ed25519 public identity. Hosts such as Sidecat can therefore sign through an
 operating-system key store, HSM, encrypted value service, or another protected
 adapter without giving the AAuth package private-key bytes.
 
+## Running a person server
+
+The module includes one deliberately small deployment program:
+
+```sh
+go run ./cmd/aauth-reference serve person --profile /absolute/path/person.json
+```
+
+It serves the standalone `reference.PersonServer` over TLS 1.3 and persists
+mission governance through `reference.FileGovernanceStore`. It is a real
+process boundary, not a Sidecat wrapper: the command imports only this module,
+and Sidecat can run it as an independent AAuth peer.
+
+The profile is strict JSON with this shape:
+
+```json
+{
+  "format": "aauth.reference.person-profile.v0",
+  "identifier": "https://person.example",
+  "listen": "127.0.0.1:8443",
+  "key_id": "person-key-1",
+  "signing_key": "<base64 encoding of a 64-byte Ed25519 private key>",
+  "tls_certificate": "/absolute/path/person-chain.pem",
+  "tls_private_key": "/absolute/path/person-tls-key.pem",
+  "governance_file": "/absolute/path/state/person-governance.json",
+  "trusted_keys": {
+    "https://ap.example": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "<base64url public key>",
+        "alg": "EdDSA",
+        "kid": "ap-key-1"
+      }
+    ]
+  },
+  "allowed_actions": ["store.backup.create"],
+  "allowed_scopes": []
+}
+```
+
+Go JSON encodes the `signing_key` byte slice with standard padded base64.
+The profile, TLS chain, and TLS private key must be canonical absolute paths
+to owned, regular, single-link `0600` files below non-symlinked directories.
+The TLS leaf must cover the profile identifier's host. The governance
+directory is created as `0700`, and an existing snapshot must satisfy the same
+private-file custody checks. These checks currently express POSIX host
+custody; the protocol and reference packages remain independent of the
+executable's deployment adapter.
+
+`trusted_keys` is an explicit issuer-to-JWK trust map. Mission tools and local
+permission actions are default-deny against `allowed_actions`; authorization
+scopes are default-deny against `allowed_scopes`. Startup emits one bounded
+JSON readiness line containing the schema, AAuth identifier, and bound address.
+SIGINT or SIGTERM performs a bounded graceful shutdown. Errors do not echo
+profile contents or private keys.
+
+The process qualification builds the actual binary, connects a real agent over
+certificate-verified HTTPS, creates and uses a mission, records audit evidence,
+refuses an unlisted action, restarts the process, and proves the same mission
+and durable governance remain usable.
+
 Run the current qualification:
 
 ```sh
@@ -127,9 +189,10 @@ Four-party call chaining, interaction/payment relay and callbacks, question
 delivery, updated-request/cancel clarification actions, restart custody for
 token/AS/resource continuations, R3, Events, Bootstrap, and the remaining
 Signature-Key schemes still require implementation and qualification. Without
-a configured `GovernanceStore`, the reference person server deliberately
-remains process-local. The file adapter has a single-writer contract; a Sidecat
-or other host may implement the same standalone interface with its own durable
-store.
+a configured `GovernanceStore`, an embedded reference person server
+deliberately remains process-local. The runnable person profile always
+configures the file adapter, which has a single-writer contract; a Sidecat or
+other host embedding the package may implement the same standalone interface
+with its own durable store.
 
 No upstream contribution or repository is implied by this local project.
