@@ -41,8 +41,7 @@ comparators. They do not define compatibility requirements for this library.
 - Existing Sidecat Go work confirmed the token68, covered-authorization, and
   replacement-token behaviors. The standalone implementation adds the
   resource-side grant and refusal path; no Sidecat package is imported.
-- Deferred `202` interaction and polling are not part of this tranche and
-  remain an explicit implementation gap.
+- Deferred `202` interaction and polling were added in the following tranche.
 
 ### Existing complete paths
 
@@ -80,6 +79,35 @@ comparators. They do not define compatibility requirements for this library.
   codes, development-only HTTP acceptance, `200` for still-pending polls, and
   rejection of otherwise ignorable non-token extension parameters. This
   implementation does not retain those behaviors.
-- Generic deferred handling at the PS and AS, callback redirects and their
-  terminal error mapping, interaction relay, clarification actions, `503`
-  retry behavior, and durable external pending-state custody remain open.
+- Generic deferred handling at the AS, callback redirects and their terminal
+  error mapping, interaction relay, clarification actions, and durable
+  external pending-state custody remain open.
+
+### Person-server deferred interaction
+
+- **Status: implemented and qualified for the PS-hosted three-party path.**
+- The agent sends `Prefer: wait=0` to the token endpoint and accepts either a
+  direct auth-token grant or a same-origin pending continuation. Every poll is
+  a signed GET bound at the server to the same top-level agent and confirmation
+  key as the initial request.
+- Before creating pending state, the PS verifies the agent proof, resource
+  token, audience, scope, mission, and cross-token agent/key bindings. It
+  retains those verified inputs with an expiry no later than either input
+  token. Deployment authorization policy does not run until a valid
+  interaction code has correlated a browser session and a separate trusted
+  application call approves the request.
+- The executable journey covers exact initial-proof replay refusal, another
+  agent's poll refusal, early-approval refusal, code aliasing and single use,
+  policy invocation only at trusted approval, terminal auth-token issuance,
+  use at the protected resource, denial, expiry, three-attempt invalid-code
+  failure, and one-shot terminal responses.
+- Client polling now also applies `503 Retry-After` and continues to add five
+  seconds after every `429`, in addition to enforcing the local not-before
+  time before making another network call.
+- The prior Sidecat feedback authority is
+  `/home/jgay-automate/workspaces/sidecat-workspace/aauth/`. This tranche did
+  not produce a new protocol finding; it implements the deferred rules already
+  recorded there without re-raising reconciled feedback.
+- AS-hosted deferral, PS pass-through of AS requirements, clarification POST
+  actions, interaction relay/callback, and durable external pending-state
+  custody remain open.

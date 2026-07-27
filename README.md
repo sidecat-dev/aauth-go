@@ -3,7 +3,9 @@
 This is an independent Go implementation of AAuth maintained for use by
 Sidecat. The protocol library has no Sidecat dependency. The `reference`
 package supplies deployable role handlers and an agent client over the public
-library.
+library. Sidecat is an intended consumer of this module; independence means the
+dependency points from Sidecat to this library, never that Sidecat is excluded
+from using it.
 
 Resource-managed access is implemented as a complete two-party path. A
 resource can apply caller-owned authorization policy without a signing key or
@@ -32,6 +34,14 @@ The three-party mission flow is also implemented end to end:
    audience, and scope before issuing an `aa-auth+jwt`;
 6. the resource verifies the JWT trust and request-context proof before calling
    the protected operation.
+
+The person server can defer that token exchange for its own user interaction.
+Its pending state is bound to the initiating agent and key, retains the
+already-verified resource and mission context, and invokes deployment policy
+only after a separate trusted approval. Success, denial, expiry, invalid-code
+failure, replay refusal, and one-shot terminal delivery run through the actual
+person-server, agent, and resource handlers. Polling clients honor both
+`429` linear slowdown and `503 Retry-After`.
 
 HTTP request bodies use `Content-Digest`, all AAuth requests use the mandatory
 RFC 9421 components, and protected operations reject an exact proof replay.
@@ -64,9 +74,8 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
-Four-party call chaining, deferred handling across PS and AS endpoints,
-interaction relay/callback and clarification flows, R3, Events, Bootstrap, and
-the remaining Signature-Key schemes still require implementation and
-qualification.
+Four-party call chaining, deferred handling at AS endpoints, interaction
+relay/callback and clarification flows, R3, Events, Bootstrap, and the
+remaining Signature-Key schemes still require implementation and qualification.
 
 No upstream contribution or repository is implied by this local project.

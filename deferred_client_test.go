@@ -106,3 +106,87 @@ func TestAgentEnforcesRetryAfterAndSlowDown(t *testing.T) {
 		t.Fatalf("approved authorization = %#v", approved)
 	}
 }
+
+func TestAgentBacksOffAfterServiceUnavailable(t *testing.T) {
+	t.Parallel()
+
+	var polls int
+	gateway := newLogicalGateway(t, map[string]http.Handler{
+		"resource.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			switch {
+			case request.Method == http.MethodPost && request.URL.Path == "/authorize":
+				response.Header().Set("Location", "/pending/request-503")
+				response.Header().Set("Retry-After", "0")
+				response.Header().Set("Cache-Control", "no-store")
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(http.StatusAccepted)
+				_, _ = io.WriteString(response, `{"status":"pending"}`)
+			case request.Method == http.MethodGet && request.URL.Path == "/pending/request-503":
+				polls++
+				if polls == 1 {
+					response.Header().Set("Retry-After", "3")
+					response.Header().Set("Content-Type", "application/problem+json")
+					response.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = io.WriteString(response, `{"status":503,"error":"server_error"}`)
+					return
+				}
+				response.Header().Set("AAuth-Access", "opaque-access-token")
+				response.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(response, `{"status":"authorized","scope":"documents.read"}`)
+			default:
+				http.NotFound(response, request)
+			}
+		}),
+	})
+	defer gateway.Close()
+
+	now := time.Date(2026, 7, 27, 15, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	agent, err := reference.NewAgent(reference.AgentConfig{
+		Identifier:  "aauth:reader@ap.example",
+		SigningKey:  testSigningKey(t, "agent-key"),
+		AgentToken:  "agent-token",
+		KeyResolver: aauth.StaticKeyResolver{},
+		HTTPClient:  gateway.Client(),
+		Clock:       clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authorization, err := agent.RequestResourceManagedAccess(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"documents.read"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := authorization.Pending
+	if pending == nil {
+		t.Fatalf("authorization = %#v", authorization)
+	}
+
+	if _, err := agent.PollResourceManagedAccess(context.Background(), pending); err == nil {
+		t.Fatal("503 poll succeeded")
+	}
+	if pending.RetryAfter != 3*time.Second ||
+		!pending.NotBefore.Equal(now.Add(3*time.Second)) {
+		t.Fatalf("503 pending state = %#v", pending)
+	}
+	if _, err := agent.PollResourceManagedAccess(context.Background(), pending); err == nil {
+		t.Fatal("agent ignored 503 Retry-After")
+	}
+	if polls != 1 {
+		t.Fatalf("network polls before backoff elapsed = %d", polls)
+	}
+
+	now = now.Add(3 * time.Second)
+	approved, err := agent.PollResourceManagedAccess(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Grant == nil || approved.Grant.Token != "opaque-access-token" {
+		t.Fatalf("approved authorization = %#v", approved)
+	}
+}

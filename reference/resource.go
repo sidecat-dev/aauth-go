@@ -387,6 +387,15 @@ func copyAuthorizationRequest(request aauth.AuthorizationRequest) aauth.Authoriz
 		mission := *request.Mission
 		copied.Mission = &mission
 	}
+	if request.Upstream != nil {
+		upstream := *request.Upstream
+		upstream.Actor = copyActor(request.Upstream.Actor)
+		if request.Upstream.Mission != nil {
+			mission := *request.Upstream.Mission
+			upstream.Mission = &mission
+		}
+		copied.Upstream = &upstream
+	}
 	return copied
 }
 

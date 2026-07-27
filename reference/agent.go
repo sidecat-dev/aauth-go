@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,31 @@ type ResourceGrant struct {
 	Resource      string
 	ResourceToken string
 	Claims        aauth.ResourceTokenClaims
+}
+
+// TokenAuthorization is either an auth-token grant or a signed-poll
+// continuation at a person server.
+type TokenAuthorization struct {
+	Grant   *Grant
+	Pending *PendingTokenAuthorization
+}
+
+// PendingTokenAuthorization retains the validation context needed to verify a
+// person server's eventual auth-token response.
+type PendingTokenAuthorization struct {
+	ID           string
+	PersonServer string
+	Location     string
+	RetryAfter   time.Duration
+	NotBefore    time.Time
+	Status       string
+	Requirement  *aauth.Requirement
+
+	resourceGrant  ResourceGrant
+	expectedIssuer string
+	expectedAgent  string
+	expectedKey    aauth.JWK
+	expectedActor  *aauth.Actor
 }
 
 // AccessGrant is a resource-managed authorization result. Token is opaque to
@@ -272,21 +298,42 @@ func (agent *Agent) ExchangeResourceToken(
 	personServerEndpoint string,
 	resourceGrant ResourceGrant,
 ) (Grant, error) {
-	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	authorization, err := agent.RequestTokenAuthorization(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+	)
 	if err != nil {
 		return Grant{}, err
 	}
+	if authorization.Grant == nil {
+		return Grant{}, errors.New("reference: authorization is pending; use RequestTokenAuthorization and PollTokenAuthorization")
+	}
+	return *authorization.Grant, nil
+}
+
+// RequestTokenAuthorization exchanges a resource token at a person server and
+// returns either the immediate auth-token grant or a deferred continuation.
+func (agent *Agent) RequestTokenAuthorization(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+) (TokenAuthorization, error) {
+	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
 	if agentClaims.ParentAgent != "" {
-		return Grant{}, errors.New("reference: sub-agent cannot request authorization directly")
+		return TokenAuthorization{}, errors.New("reference: sub-agent cannot request authorization directly")
 	}
 	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
-		return Grant{}, err
+		return TokenAuthorization{}, err
 	}
 	if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
-		return Grant{}, errors.New("reference: resource token is not bound to the requesting agent")
+		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the requesting agent")
 	}
-	return agent.exchangeResourceToken(
+	return agent.requestTokenAuthorization(
 		ctx,
 		personServerEndpoint,
 		resourceGrant,
@@ -398,18 +445,48 @@ func (agent *Agent) exchangeResourceToken(
 	expectedActor *aauth.Actor,
 	upstreamToken string,
 ) (Grant, error) {
-	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+	authorization, err := agent.requestTokenAuthorization(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		subagentToken,
+		expectedAgent,
+		expectedKey,
+		expectedActor,
+		upstreamToken,
+	)
+	if err != nil {
 		return Grant{}, err
+	}
+	if authorization.Grant == nil {
+		return Grant{}, errors.New("reference: authorization is pending; use a deferred token-authorization method")
+	}
+	return *authorization.Grant, nil
+}
+
+func (agent *Agent) requestTokenAuthorization(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	subagentToken string,
+	expectedAgent string,
+	expectedKey aauth.JWK,
+	expectedActor *aauth.Actor,
+	upstreamToken string,
+) (TokenAuthorization, error) {
+	var authorization TokenAuthorization
+	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+		return authorization, err
 	}
 	personServerID, err := endpointIdentifier(personServerEndpoint)
 	if err != nil {
-		return Grant{}, err
+		return authorization, err
 	}
 	expectedIssuer := personServerID
 	if resourceGrant.Claims.Audience != personServerID {
 		if resourceGrant.Claims.Mission == nil ||
 			resourceGrant.Claims.Mission.Approver != personServerID {
-			return Grant{}, errors.New("reference: federated resource token is not governed by the person server")
+			return authorization, errors.New("reference: federated resource token is not governed by the person server")
 		}
 		expectedIssuer = resourceGrant.Claims.Audience
 	}
@@ -422,24 +499,72 @@ func (agent *Agent) exchangeResourceToken(
 	}
 	tokenBody, err := json.Marshal(tokenInput)
 	if err != nil {
-		return Grant{}, err
+		return authorization, err
 	}
 	tokenRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, personServerEndpoint, bytes.NewReader(tokenBody))
 	if err != nil {
-		return Grant{}, err
+		return authorization, err
 	}
 	tokenRequest.Header.Set("Content-Type", "application/json")
+	tokenRequest.Header.Set("Prefer", "wait=0")
 	if err := aauth.SignRequest(tokenRequest, agent.signingKey, agent.agentToken, agent.clock); err != nil {
-		return Grant{}, err
+		return authorization, err
 	}
 	tokenResponse, err := agent.httpClient.Do(tokenRequest)
 	if err != nil {
-		return Grant{}, err
+		return authorization, err
 	}
 	defer tokenResponse.Body.Close()
-	if tokenResponse.StatusCode != http.StatusOK {
-		return Grant{}, responseError(tokenResponse)
+	switch tokenResponse.StatusCode {
+	case http.StatusOK:
+		grant, err := agent.parseTokenGrantResponse(
+			ctx,
+			tokenResponse,
+			resourceGrant,
+			expectedIssuer,
+			expectedAgent,
+			expectedKey,
+			expectedActor,
+		)
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Grant = &grant
+		return authorization, nil
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(tokenResponse)
+		if err != nil {
+			return authorization, err
+		}
+		pending, err := newPendingTokenAuthorization(
+			personServerID,
+			resourceGrant,
+			expectedIssuer,
+			expectedAgent,
+			expectedKey,
+			expectedActor,
+			deferred,
+			agent.clock.Now(),
+		)
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Pending = &pending
+		return authorization, nil
+	default:
+		return authorization, responseError(tokenResponse)
 	}
+}
+
+func (agent *Agent) parseTokenGrantResponse(
+	ctx context.Context,
+	tokenResponse *http.Response,
+	resourceGrant ResourceGrant,
+	expectedIssuer string,
+	expectedAgent string,
+	expectedKey aauth.JWK,
+	expectedActor *aauth.Actor,
+) (Grant, error) {
 	var tokenResult struct {
 		AuthToken string `json:"auth_token"`
 	}
@@ -477,6 +602,140 @@ func (agent *Agent) exchangeResourceToken(
 		AuthToken: tokenResult.AuthToken,
 		Claims:    authClaims,
 	}, nil
+}
+
+func newPendingTokenAuthorization(
+	personServer string,
+	resourceGrant ResourceGrant,
+	expectedIssuer string,
+	expectedAgent string,
+	expectedKey aauth.JWK,
+	expectedActor *aauth.Actor,
+	deferred aauth.DeferredResponse,
+	now time.Time,
+) (PendingTokenAuthorization, error) {
+	parsed, err := url.Parse(deferred.Location)
+	if err != nil {
+		return PendingTokenAuthorization{}, err
+	}
+	locationServer, err := endpointIdentifier(deferred.Location)
+	if err != nil {
+		return PendingTokenAuthorization{}, err
+	}
+	if locationServer != personServer {
+		return PendingTokenAuthorization{}, errors.New("reference: pending token authorization moved to another person server")
+	}
+	return PendingTokenAuthorization{
+		ID:             path.Base(parsed.Path),
+		PersonServer:   personServer,
+		Location:       deferred.Location,
+		RetryAfter:     deferred.RetryAfter,
+		NotBefore:      now.Add(deferred.RetryAfter),
+		Status:         deferred.Status,
+		Requirement:    deferred.Requirement,
+		resourceGrant:  resourceGrant,
+		expectedIssuer: expectedIssuer,
+		expectedAgent:  expectedAgent,
+		expectedKey:    expectedKey,
+		expectedActor:  copyActor(expectedActor),
+	}, nil
+}
+
+// PollTokenAuthorization makes one signed GET to a pending person-server token
+// request. It returns a refreshed continuation or the terminal auth-token
+// grant.
+func (agent *Agent) PollTokenAuthorization(
+	ctx context.Context,
+	pending *PendingTokenAuthorization,
+) (TokenAuthorization, error) {
+	var authorization TokenAuthorization
+	if pending == nil {
+		return authorization, errors.New("reference: pending token authorization is required")
+	}
+	if agent.clock.Now().Before(pending.NotBefore) {
+		return authorization, errors.New("reference: pending token authorization is not ready to poll")
+	}
+	if err := aauth.ValidatePollingEndpoint(pending.Location); err != nil {
+		return authorization, err
+	}
+	personServer, err := endpointIdentifier(pending.Location)
+	if err != nil {
+		return authorization, err
+	}
+	if personServer != pending.PersonServer {
+		return authorization, errors.New("reference: pending token authorization does not apply to its endpoint")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.Location, nil)
+	if err != nil {
+		return authorization, err
+	}
+	request.Header.Set("Prefer", "wait=0")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return authorization, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return authorization, err
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+	case http.StatusOK:
+		grant, err := agent.parseTokenGrantResponse(
+			ctx,
+			response,
+			pending.resourceGrant,
+			pending.expectedIssuer,
+			pending.expectedAgent,
+			pending.expectedKey,
+			pending.expectedActor,
+		)
+		if err != nil {
+			return authorization, err
+		}
+		authorization.Grant = &grant
+		return authorization, nil
+	case http.StatusAccepted:
+		deferred, err := aauth.ParseDeferredResponse(response)
+		if err != nil {
+			return authorization, err
+		}
+		next, err := newPendingTokenAuthorization(
+			pending.PersonServer,
+			pending.resourceGrant,
+			pending.expectedIssuer,
+			pending.expectedAgent,
+			pending.expectedKey,
+			pending.expectedActor,
+			deferred,
+			agent.clock.Now(),
+		)
+		if err != nil {
+			return authorization, err
+		}
+		*pending = next
+		authorization.Pending = pending
+		return authorization, nil
+	default:
+		responseErr := responseError(response)
+		updatePollingBackoff(
+			response,
+			&pending.RetryAfter,
+			&pending.NotBefore,
+			agent.clock.Now(),
+		)
+		return authorization, responseErr
+	}
+}
+
+func copyActor(actor *aauth.Actor) *aauth.Actor {
+	if actor == nil {
+		return nil
+	}
+	return &aauth.Actor{
+		Agent: actor.Agent,
+		Actor: copyActor(actor.Actor),
+	}
 }
 
 func actorsEqual(left, right *aauth.Actor) bool {
@@ -710,15 +969,52 @@ func (agent *Agent) PollResourceManagedAccess(
 		return authorization, nil
 	default:
 		responseErr := responseError(response)
-		var problem *aauth.ProblemError
-		if response.StatusCode == http.StatusTooManyRequests &&
-			errors.As(responseErr, &problem) &&
-			problem.Code == aauth.PollingSlowDown {
-			pending.RetryAfter += 5 * time.Second
-			pending.NotBefore = agent.clock.Now().Add(pending.RetryAfter)
-		}
+		updatePollingBackoff(
+			response,
+			&pending.RetryAfter,
+			&pending.NotBefore,
+			agent.clock.Now(),
+		)
 		return authorization, responseErr
 	}
+}
+
+func updatePollingBackoff(
+	response *http.Response,
+	retryAfter *time.Duration,
+	notBefore *time.Time,
+	now time.Time,
+) {
+	switch response.StatusCode {
+	case http.StatusTooManyRequests:
+		*retryAfter += 5 * time.Second
+		*notBefore = now.Add(*retryAfter)
+	case http.StatusServiceUnavailable:
+		delay, err := responseRetryAfter(response.Header.Values("Retry-After"), now)
+		if err != nil {
+			delay = 5 * time.Second
+		}
+		*retryAfter = delay
+		*notBefore = now.Add(delay)
+	}
+}
+
+func responseRetryAfter(values []string, now time.Time) (time.Duration, error) {
+	if len(values) != 1 {
+		return 0, errors.New("reference: response requires exactly one Retry-After")
+	}
+	value := strings.TrimSpace(values[0])
+	if seconds, err := strconv.ParseUint(value, 10, 31); err == nil {
+		return time.Duration(seconds) * time.Second, nil
+	}
+	at, err := http.ParseTime(value)
+	if err != nil {
+		return 0, errors.New("reference: response Retry-After is invalid")
+	}
+	if !at.After(now) {
+		return 0, nil
+	}
+	return at.Sub(now), nil
 }
 
 // DoWithAccess signs and sends a request using a resource-managed grant. The

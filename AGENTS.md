@@ -9,13 +9,19 @@ AAuth repository and carries no commitment to publish or contribute it.
 ## Boundaries
 
 - Keep every protocol package usable without Sidecat. Do not import Sidecat
-  code, types, stores, policy, or configuration.
+  code, types, stores, policy, or configuration. This is a one-way dependency
+  boundary: Sidecat is an intended first-class consumer and will import this
+  standalone module.
 - Put deployment policy behind explicit interfaces: key resolution, clocks,
   randomness, replay custody, mission decisions, authorization decisions, and
   protected operations.
 - Treat the locally pinned AAuth editor drafts as the protocol source. Existing
   Sidecat Go and BEAM implementations are interoperability peers and sources of
   implementation experience, not code to transplant.
+- Treat `/home/jgay-automate/workspaces/sidecat-workspace/aauth/` as Sidecat's
+  existing AAuth implementation journal and reconciled feedback custody. Read
+  it before classifying a finding as new; do not replace it with upstream
+  repository searches or infer that any finding should be submitted.
 - Preserve exact wire bytes where the protocol binds them. In particular,
   mission `s256` is over the exact approved response bytes.
 - Reject incomplete authorization. JWT verification, request proof,
