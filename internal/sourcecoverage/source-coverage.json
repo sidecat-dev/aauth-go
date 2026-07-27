@@ -138,7 +138,7 @@
       "source": "core",
       "section": "agent-tokens/agent-token-verification",
       "status": "exercised",
-      "claim": "Issuer trust, JWT validity, confirmation-key binding, and request proof are verified before the supported endpoints proceed.",
+      "claim": "Issuer trust, JWT validity, issuer-domain identity binding, confirmation-key binding, and request proof are verified before the supported endpoints proceed.",
       "evidence": [
         {
           "file": "request_security_test.go",
@@ -147,6 +147,10 @@
         {
           "file": "elixir_interop_test.go",
           "test": "TestElixirSignedAgentRequestVerifiesInGo"
+        },
+        {
+          "file": "token_identity_internal_test.go",
+          "test": "TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain"
         }
       ]
     },
@@ -816,7 +820,7 @@
       "source": "signature-key",
       "section": "name-signature-key-http-request-",
       "status": "partial",
-      "claim": "Signature-Key parsing, signing, and proof binding are implemented for jwt and jwks_uri; other schemes and multiple signatures are not.",
+      "claim": "Signature-Key parsing, signing, and proof binding are implemented for the selected Ed25519 jwt, jwks_uri, hwk, and jkt-jwt profiles; other schemes and multiple signatures are not.",
       "evidence": [
         {
           "file": "http_signature_jwks_test.go",
@@ -825,6 +829,10 @@
         {
           "file": "request_security_test.go",
           "test": "TestSignedRequestRejectsConfirmationKeySubstitution"
+        },
+        {
+          "file": "http_signature_inline_test.go",
+          "test": "TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey"
         }
       ]
     },
@@ -843,14 +851,42 @@
     {
       "source": "signature-key",
       "section": "name-header-web-key-hwk",
-      "status": "unsupported",
-      "claim": "The hwk scheme is not implemented."
+      "status": "exercised",
+      "claim": "The selected OKP/Ed25519 hwk profile carries the exact inline public-key parameters, covers them in the request signature, and verifies without discovery.",
+      "evidence": [
+        {
+          "file": "http_signature_inline_test.go",
+          "test": "TestHWKRequestCarriesAndProvesItsInlineEd25519Key"
+        },
+        {
+          "file": "bootstrap_journey_test.go",
+          "test": "TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken"
+        }
+      ]
     },
     {
       "source": "signature-key",
       "section": "name-jkt-jwt-self-issued-key-del",
-      "status": "unsupported",
-      "claim": "The jkt-jwt scheme is not implemented."
+      "status": "exercised",
+      "claim": "The mandatory jkt-s256+jwt Ed25519 profile verifies the durable-key thumbprint identity, self-signature, time, delegated key, and ephemeral-key HTTP proof in both Go and Elixir.",
+      "evidence": [
+        {
+          "file": "http_signature_inline_test.go",
+          "test": "TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey"
+        },
+        {
+          "file": "http_signature_inline_internal_test.go",
+          "test": "TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey"
+        },
+        {
+          "file": "elixir_interop_test.go",
+          "test": "TestElixirJKTJWTRequestVerifiesInGo"
+        },
+        {
+          "file": "internal/interop/cmd/generate/main_test.go",
+          "test": "TestGenerateProducesVerifiableGoJKTJWTRequest"
+        }
+      ]
     },
     {
       "source": "signature-key",
@@ -995,8 +1031,18 @@
     {
       "source": "bootstrap",
       "section": "per-platform-keys",
-      "status": "unsupported",
-      "claim": "Platform-specific key enrollment and custody profiles are not implemented."
+      "status": "partial",
+      "claim": "Two-key durable-to-ephemeral rotation and the simpler single-durable-key pattern are executable through caller-custodied Ed25519 signers; platform-specific key generation, protected storage, and attestation remain deployment work.",
+      "evidence": [
+        {
+          "file": "bootstrap_journey_test.go",
+          "test": "TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity"
+        },
+        {
+          "file": "bootstrap_journey_test.go",
+          "test": "TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken"
+        }
+      ]
     },
     {
       "source": "bootstrap",
@@ -1007,14 +1053,34 @@
     {
       "source": "bootstrap",
       "section": "identifier-strategies",
-      "status": "unsupported",
-      "claim": "Bootstrap identifier-strategy negotiation is not implemented."
+      "status": "partial",
+      "claim": "A caller-owned enrollment store binds each durable-key thumbprint to a stable opaque agent identifier, and ephemeral rotation preserves it; enrollment ceremonies and strategy selection remain deployment-specific.",
+      "evidence": [
+        {
+          "file": "bootstrap_journey_test.go",
+          "test": "TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity"
+        }
+      ]
     },
     {
       "source": "bootstrap",
       "section": "refresh-patterns",
-      "status": "unsupported",
-      "claim": "Bootstrap token refresh patterns are not implemented."
+      "status": "exercised",
+      "claim": "The reference AP and client execute two-key jkt-jwt refresh and single-key hwk refresh, enforce enrollment and person-server policy, reject replay, and issue verified agent tokens bound to the active request key.",
+      "evidence": [
+        {
+          "file": "bootstrap_journey_test.go",
+          "test": "TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity"
+        },
+        {
+          "file": "bootstrap_journey_test.go",
+          "test": "TestBootstrapRefusesUnknownInstallAndExactRequestReplay"
+        },
+        {
+          "file": "bootstrap_journey_test.go",
+          "test": "TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken"
+        }
+      ]
     },
     {
       "source": "bootstrap",

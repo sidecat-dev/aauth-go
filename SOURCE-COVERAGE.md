@@ -8,9 +8,9 @@ Profile: AAuth Go maintained supported profile
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 52 |
-| Partial | 18 |
-| Unsupported | 26 |
+| Exercised | 55 |
+| Partial | 20 |
+| Unsupported | 21 |
 | Informational | 0 |
 | Unclaimed | 369 |
 
@@ -21,17 +21,21 @@ Profile: AAuth Go maintained supported profile
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 44 | 16 | 3 | 0 | 165 |
-| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 3 | 2 | 6 | 0 | 62 |
+| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 2 | 4 | 0 | 62 |
 | `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 0 | 5 | 0 | 44 |
 | `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 0 | 7 | 0 | 57 |
-| `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 0 | 0 | 5 | 0 | 38 |
+| `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 1 | 2 | 2 | 0 | 38 |
 | `interop-profile` | interop-demo-profile at AAuth b414033d4c81224034b5b419216ae06706ede660 | `a9eb24420b2c0a4176833a67e1ce8c55c007e65d567bcd3f076426cba8643cca` | 5 | 0 | 0 | 0 | 3 |
 
 ## Explicit section dispositions
 
-### `bootstrap/identifier-strategies` — Unsupported
+### `bootstrap/identifier-strategies` — Partial
 
-Bootstrap identifier-strategy negotiation is not implemented.
+A caller-owned enrollment store binds each durable-key thumbprint to a stable opaque agent identifier, and ephemeral rotation preserves it; enrollment ceremonies and strategy selection remain deployment-specific.
+
+Evidence:
+
+- `bootstrap_journey_test.go:TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity`
 
 ### `bootstrap/optional-attestation` — Unsupported
 
@@ -41,13 +45,24 @@ Platform attestation is not implemented.
 
 Per-platform enrollment flows are not implemented.
 
-### `bootstrap/per-platform-keys` — Unsupported
+### `bootstrap/per-platform-keys` — Partial
 
-Platform-specific key enrollment and custody profiles are not implemented.
+Two-key durable-to-ephemeral rotation and the simpler single-durable-key pattern are executable through caller-custodied Ed25519 signers; platform-specific key generation, protected storage, and attestation remain deployment work.
 
-### `bootstrap/refresh-patterns` — Unsupported
+Evidence:
 
-Bootstrap token refresh patterns are not implemented.
+- `bootstrap_journey_test.go:TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity`
+- `bootstrap_journey_test.go:TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken`
+
+### `bootstrap/refresh-patterns` — Exercised
+
+The reference AP and client execute two-key jkt-jwt refresh and single-key hwk refresh, enforce enrollment and person-server policy, reject replay, and issue verified agent tokens bound to the active request key.
+
+Evidence:
+
+- `bootstrap_journey_test.go:TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity`
+- `bootstrap_journey_test.go:TestBootstrapRefusesUnknownInstallAndExactRequestReplay`
+- `bootstrap_journey_test.go:TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken`
 
 ### `core/access-server-federation` — Exercised
 
@@ -75,12 +90,13 @@ Evidence:
 
 ### `core/agent-tokens/agent-token-verification` — Exercised
 
-Issuer trust, JWT validity, confirmation-key binding, and request proof are verified before the supported endpoints proceed.
+Issuer trust, JWT validity, issuer-domain identity binding, confirmation-key binding, and request proof are verified before the supported endpoints proceed.
 
 Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
 - `elixir_interop_test.go:TestElixirSignedAgentRequestVerifiesInGo`
+- `token_identity_internal_test.go:TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain`
 
 ### `core/as-token-endpoint/as-response` — Partial
 
@@ -642,13 +658,25 @@ R3 processing and caching are not implemented.
 
 Accept-Signature sigkey negotiation is not implemented.
 
-### `signature-key/name-header-web-key-hwk` — Unsupported
+### `signature-key/name-header-web-key-hwk` — Exercised
 
-The hwk scheme is not implemented.
+The selected OKP/Ed25519 hwk profile carries the exact inline public-key parameters, covers them in the request signature, and verifies without discovery.
 
-### `signature-key/name-jkt-jwt-self-issued-key-del` — Unsupported
+Evidence:
 
-The jkt-jwt scheme is not implemented.
+- `http_signature_inline_test.go:TestHWKRequestCarriesAndProvesItsInlineEd25519Key`
+- `bootstrap_journey_test.go:TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken`
+
+### `signature-key/name-jkt-jwt-self-issued-key-del` — Exercised
+
+The mandatory jkt-s256+jwt Ed25519 profile verifies the durable-key thumbprint identity, self-signature, time, delegated key, and ephemeral-key HTTP proof in both Go and Elixir.
+
+Evidence:
+
+- `http_signature_inline_test.go:TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey`
+- `http_signature_inline_internal_test.go:TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey`
+- `elixir_interop_test.go:TestElixirJKTJWTRequestVerifiesInGo`
+- `internal/interop/cmd/generate/main_test.go:TestGenerateProducesVerifiableGoJKTJWTRequest`
 
 ### `signature-key/name-jwks-uri-discovery-jwks_uri` — Exercised
 
@@ -686,12 +714,13 @@ The Signature-Error response header is not implemented.
 
 ### `signature-key/name-signature-key-http-request-` — Partial
 
-Signature-Key parsing, signing, and proof binding are implemented for jwt and jwks_uri; other schemes and multiple signatures are not.
+Signature-Key parsing, signing, and proof binding are implemented for the selected Ed25519 jwt, jwks_uri, hwk, and jkt-jwt profiles; other schemes and multiple signatures are not.
 
 Evidence:
 
 - `http_signature_jwks_test.go:TestJWKSURIRequestIdentitySignsAndVerifies`
 - `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
+- `http_signature_inline_test.go:TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey`
 
 ### `signature-key/name-signature-key-integrity` — Exercised
 

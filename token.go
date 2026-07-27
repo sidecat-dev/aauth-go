@@ -100,6 +100,9 @@ func MintAgentToken(issuer string, key SigningKey, request AgentTokenRequest, no
 	if err := ValidateAgentIdentifier(request.Agent); err != nil {
 		return "", fmt.Errorf("aauth: agent-token subject: %w", err)
 	}
+	if err := validateAgentIssuerDomain(request.Agent, issuer); err != nil {
+		return "", fmt.Errorf("aauth: agent-token subject: %w", err)
+	}
 	if request.PersonServer != "" {
 		if err := ValidateServerIdentifier(request.PersonServer); err != nil {
 			return "", fmt.Errorf("aauth: agent-token person server: %w", err)
@@ -361,6 +364,9 @@ func validateAgentClaims(claims AgentTokenClaims, now time.Time) error {
 	if err := ValidateAgentIdentifier(claims.Subject); err != nil {
 		return fmt.Errorf("aauth: agent-token subject: %w", err)
 	}
+	if err := validateAgentIssuerDomain(claims.Subject, claims.Issuer); err != nil {
+		return fmt.Errorf("aauth: agent-token subject: %w", err)
+	}
 	if claims.JTI == "" {
 		return errors.New("aauth: agent-token jti is required")
 	}
@@ -480,6 +486,25 @@ func validateTimes(issuedAt, expiresAt int64, now time.Time) error {
 	}
 	if expiresAt <= now.Unix() {
 		return errors.New("token is expired")
+	}
+	return nil
+}
+
+func validateAgentIssuerDomain(agent string, issuer string) error {
+	_, agentDomain, err := agentIdentifierParts(agent)
+	if err != nil {
+		return err
+	}
+	if err := ValidateServerIdentifier(issuer); err != nil {
+		return err
+	}
+	providerDomain := strings.TrimPrefix(issuer, "https://")
+	if agentDomain != providerDomain {
+		return fmt.Errorf(
+			"agent identifier domain %q does not match issuer domain %q",
+			agentDomain,
+			providerDomain,
+		)
 	}
 	return nil
 }

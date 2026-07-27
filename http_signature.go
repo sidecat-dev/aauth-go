@@ -20,6 +20,8 @@ const DefaultSignatureWindow = 60 * time.Second
 const (
 	SignatureKeyJWT     = "jwt"
 	SignatureKeyJWKSURI = "jwks_uri"
+	SignatureKeyHWK     = "hwk"
+	SignatureKeyJKTJWT  = "jkt-jwt"
 )
 
 // VerifiedRequest is the trusted signing context of an HTTP request.
@@ -30,6 +32,8 @@ type VerifiedRequest struct {
 	CredentialType   string
 	Agent            string
 	PublicKey        JWK
+	IdentityKey      JWK
+	JKTJWT           *VerifiedJKTJWT
 	AgentToken       *AgentTokenClaims
 	AuthToken        *AuthTokenClaims
 	Created          time.Time
@@ -61,6 +65,45 @@ func SignRequest(request *http.Request, key SigningKey, credential string, clock
 		request,
 		key,
 		`sig=jwt;jwt=`+strconv.Quote(credential),
+		clock,
+	)
+}
+
+// SignRequestWithHWK signs with the Ed25519 key carried inline in
+// Signature-Key. The key is pseudonymous and requires no discovery resolver.
+func SignRequestWithHWK(request *http.Request, key SigningKey, clock Clock) error {
+	public := key.PublicJWK()
+	if _, err := public.PublicKey(); err != nil {
+		return fmt.Errorf("aauth: hwk signing key: %w", err)
+	}
+	header := `sig=hwk;kty=` + strconv.Quote(public.Kty) +
+		`;crv=` + strconv.Quote(public.Crv) +
+		`;x=` + strconv.Quote(public.X)
+	return signRequestWithSignatureKey(request, key, header, clock)
+}
+
+// SignRequestWithJKTJWT signs with the delegated key named by a valid
+// durable-key JWK Thumbprint JWT.
+func SignRequestWithJKTJWT(
+	request *http.Request,
+	key SigningKey,
+	delegation string,
+	clock Clock,
+) error {
+	if delegation == "" {
+		return errors.New("aauth: jkt-jwt delegation is required")
+	}
+	verified, err := VerifyJKTJWT(delegation, clock)
+	if err != nil {
+		return err
+	}
+	if !verified.Confirmation.Equal(key.PublicJWK()) {
+		return errors.New("aauth: jkt-jwt delegated key does not match the request signing key")
+	}
+	return signRequestWithSignatureKey(
+		request,
+		key,
+		`sig=jkt-jwt;jwt=`+strconv.Quote(delegation),
 		clock,
 	)
 }
@@ -148,9 +191,6 @@ func VerifyRequest(
 	if request == nil || request.URL == nil {
 		return verified, errors.New("aauth: request URL is required")
 	}
-	if resolver == nil {
-		return verified, errors.New("aauth: key resolver is required")
-	}
 	if clock == nil {
 		return verified, errors.New("aauth: clock is required")
 	}
@@ -170,6 +210,9 @@ func VerifyRequest(
 
 	switch signatureKey.scheme {
 	case SignatureKeyJWT:
+		if resolver == nil {
+			return verified, errors.New("aauth: key resolver is required")
+		}
 		header, err := PeekTokenHeader(signatureKey.parameters["jwt"])
 		if err != nil {
 			return verified, fmt.Errorf("aauth: Signature-Key JWT: %w", err)
@@ -203,6 +246,9 @@ func VerifyRequest(
 			return verified, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type)
 		}
 	case SignatureKeyJWKSURI:
+		if resolver == nil {
+			return verified, errors.New("aauth: key resolver is required")
+		}
 		identifier := signatureKey.parameters["id"]
 		document := signatureKey.parameters["dwk"]
 		keyID := signatureKey.parameters["kid"]
@@ -218,6 +264,33 @@ func VerifyRequest(
 		}
 		verified.Signer = identifier
 		verified.PublicKey = resolved
+		verified.IdentityKey = resolved
+	case SignatureKeyHWK:
+		inline := JWK{
+			Kty: signatureKey.parameters["kty"],
+			Crv: signatureKey.parameters["crv"],
+			X:   signatureKey.parameters["x"],
+		}
+		if _, err := inline.PublicKey(); err != nil {
+			return verified, fmt.Errorf("aauth: Signature-Key hwk: %w", err)
+		}
+		identity, err := inline.ThumbprintURI()
+		if err != nil {
+			return verified, fmt.Errorf("aauth: Signature-Key hwk identity: %w", err)
+		}
+		verified.Signer = identity
+		verified.PublicKey = inline
+		verified.IdentityKey = inline
+	case SignatureKeyJKTJWT:
+		delegation, err := VerifyJKTJWT(signatureKey.parameters["jwt"], clock)
+		if err != nil {
+			return verified, err
+		}
+		verified.RawCredential = signatureKey.parameters["jwt"]
+		verified.Signer = delegation.Issuer
+		verified.PublicKey = delegation.Confirmation
+		verified.IdentityKey = delegation.IdentityKey
+		verified.JKTJWT = &delegation
 	}
 
 	components, created, params, err := parseSignatureInput(request.Header.Get("Signature-Input"))
@@ -432,6 +505,8 @@ func parseSignatureKey(header string) (parsedSignatureKey, error) {
 	required := map[string][]string{
 		SignatureKeyJWT:     {"jwt"},
 		SignatureKeyJWKSURI: {"id", "dwk", "kid"},
+		SignatureKeyHWK:     {"kty", "crv", "x"},
+		SignatureKeyJKTJWT:  {"jwt"},
 	}[parsed.scheme]
 	if required == nil {
 		return parsedSignatureKey{}, fmt.Errorf("aauth: unsupported Signature-Key scheme %q", parsed.scheme)

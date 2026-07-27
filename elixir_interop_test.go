@@ -17,6 +17,7 @@ import (
 )
 
 const elixirAgentRequestVector = "interop/elixir-agent-request.json"
+const elixirJKTJWTRequestVector = "interop/elixir-jkt-jwt-request.json"
 
 type elixirRequestFixture struct {
 	Schema    string `json:"schema"`
@@ -32,6 +33,25 @@ type elixirRequestFixture struct {
 		PersonServer string                 `json:"person_server"`
 		AgentKey     aauth.JWK              `json:"agent_key"`
 		Mission      aauth.MissionReference `json:"mission"`
+	} `json:"expected"`
+	Request struct {
+		Method  string            `json:"method"`
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers"`
+	} `json:"request"`
+}
+
+type elixirJKTJWTRequestFixture struct {
+	Schema    string `json:"schema"`
+	Generator struct {
+		Repository string `json:"repository"`
+		Commit     string `json:"commit"`
+	} `json:"generator"`
+	Now      int64 `json:"now"`
+	Expected struct {
+		Identity    string    `json:"identity"`
+		IdentityKey aauth.JWK `json:"identity_key"`
+		RequestKey  aauth.JWK `json:"request_key"`
 	} `json:"expected"`
 	Request struct {
 		Method  string            `json:"method"`
@@ -129,6 +149,81 @@ func TestElixirSignedAgentRequestRefusesWireMutation(t *testing.T) {
 			t.Fatal("mutated Elixir Signature-Key was accepted")
 		}
 	})
+}
+
+func TestElixirJKTJWTRequestVerifiesInGo(t *testing.T) {
+	body, err := os.ReadFile(elixirJKTJWTRequestVector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var fixture elixirJKTJWTRequestFixture
+	if err := decoder.Decode(&fixture); err != nil {
+		t.Fatal(err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		t.Fatal("Elixir jkt-jwt fixture has trailing JSON")
+	}
+	commitBytes, commitErr := hex.DecodeString(fixture.Generator.Commit)
+	if fixture.Schema != "aauth.interop.elixir-jkt-jwt-request.v0" ||
+		fixture.Generator.Repository != "https://gitlab.com/sidecat-dev/sidecat-beam" ||
+		commitErr != nil ||
+		len(commitBytes) != 20 ||
+		fixture.Request.Method != http.MethodPost ||
+		fixture.Request.URL == "" {
+		t.Fatalf("Elixir jkt-jwt fixture metadata is invalid: %#v", fixture)
+	}
+	request, err := http.NewRequest(fixture.Request.Method, fixture.Request.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range fixture.Request.Headers {
+		request.Header.Set(name, value)
+	}
+	clock := aauth.ClockFunc(func() time.Time {
+		return time.Unix(fixture.Now, 0)
+	})
+	verified, err := aauth.VerifyRequest(
+		context.Background(),
+		request,
+		nil,
+		clock,
+		aauth.VerifyRequestOptions{
+			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJKTJWT},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.Signer != fixture.Expected.Identity ||
+		!verified.IdentityKey.Equal(fixture.Expected.IdentityKey) ||
+		!verified.PublicKey.Equal(fixture.Expected.RequestKey) {
+		t.Fatalf("verified Elixir jkt-jwt request = %#v", verified)
+	}
+
+	mutated := request.Clone(context.Background())
+	mutated.Header.Set(
+		"Signature-Key",
+		strings.Replace(
+			request.Header.Get("Signature-Key"),
+			`sig=jkt-jwt;jwt="`,
+			`sig=jkt-jwt;jwt="A`,
+			1,
+		),
+	)
+	if _, err := aauth.VerifyRequest(
+		context.Background(),
+		mutated,
+		nil,
+		clock,
+		aauth.VerifyRequestOptions{
+			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJKTJWT},
+		},
+	); err == nil {
+		t.Fatal("mutated Elixir jkt-jwt Signature-Key was accepted")
+	}
 }
 
 func loadElixirRequestFixture(t *testing.T) elixirRequestFixture {

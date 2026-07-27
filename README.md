@@ -115,6 +115,41 @@ Ed25519 public identity. Hosts such as Sidecat can therefore sign through an
 operating-system key store, HSM, encrypted value service, or another protected
 adapter without giving the AAuth package private-key bytes.
 
+## Bootstrapping an enrolled agent
+
+The standalone library implements the source-backed agent-token refresh
+patterns that turn an enrolled installation into a usable agent. The mandatory
+Ed25519 profile supports both inline `hwk` requests and
+`jkt-s256+jwt` delegation: a durable installation key self-signs a short-lived
+JWT naming a fresh ephemeral key, and that ephemeral key signs the refresh
+request. Verification exposes the durable thumbprint identity separately from
+the request key and refuses expiry, issuer/key mismatch, signature mutation,
+and a request signed by the durable key instead of the delegated key.
+
+`reference.AgentProvider` serves `POST /refresh` when configured with an
+`EnrollmentStore`. The store maps the durable RFC 7638 thumbprint to a stable
+opaque agent identifier and allowed person server. Provider policy, token IDs,
+token lifetime, enrollment lookup, and replay custody are caller-owned
+boundaries. Delegations are limited to five minutes by default, with an
+explicit provider setting required to change that ceiling. The included static
+enrollment map and memory replay store are useful for embedding and
+qualification; a durable or horizontally scaled deployment supplies its own
+implementations.
+
+`reference.BootstrapClient.Refresh` performs the two-key exchange and returns a
+verified `BootstrapResult` containing the stable identifier, active ephemeral
+signing key, agent token, and verified claims. That result can be passed
+directly to `reference.NewAgent`. `RefreshSingleKey` implements the simpler
+profile in which the durable key signs with `hwk` and remains the token's
+confirmation key.
+
+The complete journey rotates the ephemeral key across two refreshes while
+preserving the enrolled identity, then uses the second token for a real mission
+request. Separate controls refuse an unknown durable key and an exact refresh
+proof replay. Platform enrollment ceremonies, hardware attestation, and
+platform-specific key stores remain deployment concerns; both durable and
+ephemeral keys can use caller-custodied `crypto.Signer` implementations.
+
 ## Installing and proving the reference program
 
 Install the standalone program with the ordinary Go toolchain:
@@ -251,13 +286,12 @@ certification and not an upstream submission.
 
 ## Independent Elixir interoperability
 
-The [interoperability evidence](interop/README.md) exercises the supported
-agent-request profile in both directions against our separate Elixir AAuth
-implementation. The Elixir implementation mints an agent token and signs a
-mission-bearing request which Go verifies from exact retained wire values. Go
-then generates the reciprocal token and signed request, which the Elixir
-implementation verifies. Both directions include mutation controls for the
-mission and Signature-Key bindings, and both generators are deterministic.
+The [interoperability evidence](interop/README.md) exercises both the supported
+agent-request profile and the `jkt-jwt` durable-to-ephemeral request profile in
+both directions against our separate Elixir AAuth implementation. Each
+implementation generates exact retained wire values that the other verifies.
+Mutation controls cover the mission and Signature-Key bindings, and every
+generator is deterministic.
 
 The Elixir implementation is comparator and peer evidence, not a runtime or
 module dependency. Ordinary Go builds, tests, embedding, and the runnable
@@ -275,12 +309,12 @@ go vet ./...
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
 Four-party call chaining, interaction/payment relay and callbacks, question
 delivery, updated-request/cancel clarification actions, restart custody for
-token/AS/resource continuations, R3, Events, Bootstrap, and the remaining
-Signature-Key schemes still require implementation and qualification. Without
-a configured `GovernanceStore`, an embedded reference person server
-deliberately remains process-local. The runnable person profile always
-configures the file adapter, which has a single-writer contract; a Sidecat or
-other host embedding the package may implement the same standalone interface
-with its own durable store.
+token/AS/resource continuations, R3, Events, platform enrollment/attestation,
+and the self-jwt, x509, Accept-Signature, and Signature-Error surfaces still
+require implementation and qualification. Without a configured
+`GovernanceStore`, an embedded reference person server deliberately remains
+process-local. The runnable person profile always configures the file adapter,
+which has a single-writer contract; a Sidecat or other host embedding the
+package may implement the same standalone interface with its own durable store.
 
 No upstream contribution or repository is implied by this local project.

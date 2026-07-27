@@ -64,6 +64,16 @@ func (key JWK) Thumbprint() (string, error) {
 	return rawURL.EncodeToString(digest[:]), nil
 }
 
+// ThumbprintURI returns the SHA-256 JWK Thumbprint URI used by the jkt-jwt
+// Signature-Key scheme.
+func (key JWK) ThumbprintURI() (string, error) {
+	thumbprint, err := key.Thumbprint()
+	if err != nil {
+		return "", err
+	}
+	return "urn:jkt:sha-256:" + thumbprint, nil
+}
+
 // Equal reports whether two JWKs identify the same public key.
 func (key JWK) Equal(other JWK) bool {
 	left, leftErr := key.Thumbprint()

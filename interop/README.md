@@ -49,3 +49,38 @@ This is implementation-to-implementation evidence, not an expected value
 transcribed from draft prose. It proves the selected request profile in both
 directions. It does not claim every token, Signature-Key scheme, HTTP
 component, response, or server role interoperates.
+
+The same comparator pair now exercises the mandatory
+`jkt-s256+jwt`/Ed25519 profile in both directions. The vectors retain a
+durable-key self-issued delegation, the delegated ephemeral request key, and
+the exact RFC 9421 headers. Each verifier independently recomputes the durable
+JWK thumbprint URI, verifies the naming JWT, resolves the ephemeral key, checks
+the HTTP signature, and refuses a mutated Signature-Key.
+
+Generate the Elixir request and verify it through the Go test:
+
+```sh
+cd /absolute/path/to/sidecat-beam
+mix run /absolute/path/to/aauth-go/interop/generate_elixir_jkt_jwt_request.exs \
+  /absolute/path/to/aauth-go/interop/elixir-jkt-jwt-request.json
+
+cd /absolute/path/to/aauth-go
+go test ./... -run TestElixirJKTJWTRequestVerifiesInGo
+```
+
+Generate the reciprocal Go request and verify it through Elixir:
+
+```sh
+cd /absolute/path/to/aauth-go
+go run ./internal/interop/cmd/generate --profile jkt-jwt-request \
+  interop/go-jkt-jwt-request.json
+
+cd /absolute/path/to/sidecat-beam
+mix run /absolute/path/to/aauth-go/interop/verify_go_jkt_jwt_request.exs \
+  /absolute/path/to/aauth-go/interop/go-jkt-jwt-request.json
+```
+
+These vectors prove self-issued key delegation and request-key binding. The AP
+enrollment lookup, refresh policy, replay custody, and returned agent token are
+proved separately by the Go bootstrap journey because the bootstrap draft
+deliberately leaves those deployment choices informational.

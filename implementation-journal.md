@@ -394,3 +394,41 @@ comparators. They do not define compatibility requirements for this library.
 - The Go library and executable still have no Elixir or Sidecat dependency.
   Elixir is invoked only when a maintainer deliberately regenerates or
   reciprocally verifies the interoperability vectors.
+
+### Enrolled-install bootstrap and key delegation
+
+- **Status: the informational bootstrap refresh patterns are implemented as a
+  complete standalone AP/client journey.**
+- The root package implements the exact selected Signature-Key profiles for
+  OKP/Ed25519 `hwk` and mandatory `jkt-s256+jwt`. A JWK Thumbprint JWT carries
+  the durable identity key in its protected header, binds `iss` to that key's
+  RFC 7638 SHA-256 URI, validates `iat` and `exp`, and delegates HTTP signing
+  only to `cnf.jwk`. Verification returns the durable identity and active
+  request key as distinct trusted values.
+- The reference AP accepts refresh only when an injected enrollment store maps
+  the durable thumbprint to a valid stable agent identifier and allowed person
+  server. An optional policy sees both verified keys and the selected scheme.
+  Replay admission is also an explicit interface so a deployment can provide
+  durable or distributed custody; the included memory implementation is
+  process-local. The provider rejects a delegation beyond its explicit
+  maximum lifetime, which defaults to the client's five-minute delegation
+  lifetime.
+- The two-key client mints a short-lived delegation with a caller-custodied
+  durable signer, signs the request with a caller-supplied ephemeral key, and
+  verifies the returned issuer, subject, person server, token signature, and
+  confirmation key before returning a usable result. The single-key client
+  signs with the durable key under `hwk` and verifies that the same key carries
+  through.
+- The vertical rotates through two ephemeral keys while preserving one
+  enrolled `sub`, then uses the second token to create a real mission at a
+  person server. Separate controls refuse unknown enrollment, exact proof
+  replay, expired and future delegations, delegation-signature mutation, and a
+  durable-key HTTP proof where the delegated ephemeral key is required.
+- Independent Elixir and Go implementations now generate and verify
+  `jkt-jwt` request vectors in both directions, including durable thumbprint
+  identity, delegated key resolution, exact request proof, and Signature-Key
+  mutation controls.
+- Source coverage now marks the selected `hwk`, `jkt-jwt`, and refresh
+  behaviors exercised. Platform-specific protected key creation/storage,
+  enrollment ceremonies, attestation, and identifier-strategy selection remain
+  explicit deployment work; no upstream commitment or submission is implied.
