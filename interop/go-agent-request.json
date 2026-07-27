@@ -1,0 +1,44 @@
+{
+  "schema": "aauth.interop.go-agent-request.v0",
+  "generator": {
+    "repository": "https://gitlab.com/sidecat-dev/aauth-go",
+    "path": "internal/interop/cmd/generate"
+  },
+  "now": 2000000100,
+  "issuer": "https://provider.example",
+  "issuer_key": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+    "alg": "EdDSA",
+    "kid": "go-provider-key",
+    "use": "sig"
+  },
+  "expected": {
+    "agent": "aauth:interop@provider.example",
+    "person_server": "https://person.example",
+    "agent_key": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "ptJFXqOldxq6n8sDeSQRTJL58yUEn2tCaec52QSLuGk",
+      "alg": "EdDSA",
+      "kid": "go-agent-key",
+      "use": "sig"
+    },
+    "mission": {
+      "approver": "https://person.example",
+      "s256": "MtHuZ19BWF4OXms-Et7bjVUtE2sQG-jWD2FbPTGIYtw"
+    }
+  },
+  "request": {
+    "method": "GET",
+    "url": "https://resource.example/authorize",
+    "agent_token": "eyJhbGciOiJFZERTQSIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImdvLXByb3ZpZGVyLWtleSJ9.eyJpc3MiOiJodHRwczovL3Byb3ZpZGVyLmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6aW50ZXJvcEBwcm92aWRlci5leGFtcGxlIiwianRpIjoiZ28tZWxpeGlyLWFnZW50LXRva2VuIiwiY25mIjp7Imp3ayI6eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5IiwieCI6InB0SkZYcU9sZHhxNm44c0RlU1FSVEpMNTh5VUVuMnRDYWVjNTJRU0x1R2siLCJhbGciOiJFZERTQSIsImtpZCI6ImdvLWFnZW50LWtleSIsInVzZSI6InNpZyJ9fSwiaWF0IjoyMDAwMDAwMDAwLCJleHAiOjIwMDAwMDM2MDAsInBzIjoiaHR0cHM6Ly9wZXJzb24uZXhhbXBsZSJ9.37QsK_mgCbDfy3Cmv_qiuUpZfQj411ulTSlxlwKBBmG5DzLmRwWcik3PydbFmt-xPzKqKl8He6tm4EqhOeXCBg",
+    "headers": {
+      "AAuth-Mission": "approver=\"https://person.example\"; s256=\"MtHuZ19BWF4OXms-Et7bjVUtE2sQG-jWD2FbPTGIYtw\"",
+      "Signature": "sig=:+IqJ3ffADlwJ/eQXTDA+q68l9AkDWWKoBORQ7ptpY1tHhysVuvo6nfTdZhQ3mt/LmWSCSsVJ+pzxBA9BRwZfBA==:",
+      "Signature-Input": "sig=(\"@method\" \"@authority\" \"@path\" \"aauth-mission\" \"signature-key\");created=2000000100",
+      "Signature-Key": "sig=jwt;jwt=\"eyJhbGciOiJFZERTQSIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImdvLXByb3ZpZGVyLWtleSJ9.eyJpc3MiOiJodHRwczovL3Byb3ZpZGVyLmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6aW50ZXJvcEBwcm92aWRlci5leGFtcGxlIiwianRpIjoiZ28tZWxpeGlyLWFnZW50LXRva2VuIiwiY25mIjp7Imp3ayI6eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5IiwieCI6InB0SkZYcU9sZHhxNm44c0RlU1FSVEpMNTh5VUVuMnRDYWVjNTJRU0x1R2siLCJhbGciOiJFZERTQSIsImtpZCI6ImdvLWFnZW50LWtleSIsInVzZSI6InNpZyJ9fSwiaWF0IjoyMDAwMDAwMDAwLCJleHAiOjIwMDAwMDM2MDAsInBzIjoiaHR0cHM6Ly9wZXJzb24uZXhhbXBsZSJ9.37QsK_mgCbDfy3Cmv_qiuUpZfQj411ulTSlxlwKBBmG5DzLmRwWcik3PydbFmt-xPzKqKl8He6tm4EqhOeXCBg\""
+    }
+  }
+}

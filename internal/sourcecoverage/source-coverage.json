@@ -143,6 +143,10 @@
         {
           "file": "request_security_test.go",
           "test": "TestSignedRequestRejectsConfirmationKeySubstitution"
+        },
+        {
+          "file": "elixir_interop_test.go",
+          "test": "TestElixirSignedAgentRequestVerifiesInGo"
         }
       ]
     },
@@ -873,6 +877,10 @@
         {
           "file": "request_security_test.go",
           "test": "TestSignedRequestRejectsConfirmationKeySubstitution"
+        },
+        {
+          "file": "elixir_interop_test.go",
+          "test": "TestElixirSignedAgentRequestVerifiesInGo"
         }
       ]
     },
@@ -1035,6 +1043,10 @@
         {
           "file": "journey_test.go",
           "test": "TestThreePartyMissionAuthorizationJourney"
+        },
+        {
+          "file": "elixir_interop_test.go",
+          "test": "TestElixirSignedAgentRequestVerifiesInGo"
         }
       ]
     },

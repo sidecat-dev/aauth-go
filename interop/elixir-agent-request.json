@@ -1,0 +1,39 @@
+{
+  "expected": {
+    "agent": "aauth:interop@provider.example",
+    "agent_key": {
+      "crv": "Ed25519",
+      "kid": "oWoCDhXDpU-aK83U43UkCkoY9GTPhwhG-20iyo08Jgk",
+      "kty": "OKP",
+      "x": "6NpjpAymh8h8_OBcskp4bH51zEnHDbVXPwJvHGqGzqo"
+    },
+    "mission": {
+      "approver": "https://person.example",
+      "s256": "yoRv6qYZPaInVR05bLvM0MS0NBcO_rDaXHAdOYB58QM"
+    },
+    "person_server": "https://person.example"
+  },
+  "generator": {
+    "commit": "6fc87c6316583e94088cb7c72722d65fe5f11edc",
+    "repository": "https://gitlab.com/sidecat-dev/sidecat-beam"
+  },
+  "issuer": "https://provider.example",
+  "issuer_key": {
+    "crv": "Ed25519",
+    "kid": "vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E",
+    "kty": "OKP",
+    "x": "0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc"
+  },
+  "now": 2000000100,
+  "request": {
+    "headers": {
+      "AAuth-Mission": "approver=\"https://person.example\"; s256=\"yoRv6qYZPaInVR05bLvM0MS0NBcO_rDaXHAdOYB58QM\"",
+      "Signature": "sig=:EwvRn1bhgDOtxCR/a6sONitUZgX2wRrf3QilJEb8USNTsH+B0tzUOWXQUF2ili2tORpsO2DUTMucaspyUlfJCQ==:",
+      "Signature-Input": "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\" \"aauth-mission\");created=2000000100",
+      "Signature-Key": "sig=jwt;jwt=\"eyJhbGciOiJFZERTQSIsImtpZCI6InZhSlB0ZWYtdlBuR0FJV0UxOXFsTVBEWVdHYUVSM3plZUpNXzNyMVdPN0UiLCJ0eXAiOiJhYS1hZ2VudCtqd3QifQ.eyJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJrdHkiOiJPS1AiLCJ4IjoiNk5wanBBeW1oOGg4X09CY3NrcDRiSDUxekVuSERiVlhQd0p2SEdxR3pxbyJ9fSwiZHdrIjoiYWF1dGgtYWdlbnQuanNvbiIsImV4cCI6MjAwMDAwMzYwMCwiaWF0IjoyMDAwMDAwMDAwLCJpc3MiOiJodHRwczovL3Byb3ZpZGVyLmV4YW1wbGUiLCJqdGkiOiJlbGl4aXItZ28tYWdlbnQtdG9rZW4iLCJwcyI6Imh0dHBzOi8vcGVyc29uLmV4YW1wbGUiLCJzdWIiOiJhYXV0aDppbnRlcm9wQHByb3ZpZGVyLmV4YW1wbGUifQ.sb8g6wCsvyOPGK8jZUNMR3PQhTq4R9kojbxRYMP0TQ6060eZ6svtK-PhPAnt9GyIIe05V9QBrZxpr-fBjB5BAA\""
+    },
+    "method": "GET",
+    "url": "https://resource.example/authorize"
+  },
+  "schema": "aauth.interop.elixir-agent-request.v0"
+}

@@ -212,6 +212,22 @@ matches the embedded contract and that every named evidence test still exists.
 This is maintained implementation coverage, not a full-conformance
 certification and not an upstream submission.
 
+## Independent Elixir interoperability
+
+The [interoperability evidence](interop/README.md) exercises the supported
+agent-request profile in both directions against our separate Elixir AAuth
+implementation. The Elixir implementation mints an agent token and signs a
+mission-bearing request which Go verifies from exact retained wire values. Go
+then generates the reciprocal token and signed request, which the Elixir
+implementation verifies. Both directions include mutation controls for the
+mission and Signature-Key bindings, and both generators are deterministic.
+
+The Elixir implementation is comparator and peer evidence, not a runtime or
+module dependency. Ordinary Go builds, tests, embedding, and the runnable
+person server require no BEAM installation. The retained vectors make the Go
+side continuously testable; rerunning the reciprocal Elixir check is an
+explicit maintainer qualification.
+
 Run the current qualification:
 
 ```sh

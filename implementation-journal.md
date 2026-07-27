@@ -366,3 +366,31 @@ comparators. They do not define compatibility requirements for this library.
   importing an upstream repository, making an upstream commitment, or
   pretending unimplemented R3, Events, Bootstrap, Signature-Key schemes, or
   other core behaviors are supported.
+
+### Independent Elixir interoperability
+
+- **Status: the selected agent-token, mission-presentation, JWT Signature-Key,
+  and RFC 9421 request profile interoperates in both directions with our
+  independent Elixir AAuth implementation.**
+- At exact `sidecat-beam` revision
+  `6fc87c6316583e94088cb7c72722d65fe5f11edc`, the Elixir implementation mints
+  a fixed `aa-agent+jwt`, builds an `AAuth-Mission` reference, and signs a real
+  GET request. The Go implementation verifies issuer trust, token lifetime and
+  claims, confirmation-key binding, covered components, mission syntax,
+  signature freshness, and Ed25519 proof from the retained exact headers.
+- The reciprocal vector is emitted solely through the public Go package. The
+  Elixir implementation independently verifies the Go token, confirmation
+  key, mission, and HTTP signature. Both directions change the mission and
+  Signature-Key separately and prove that neither modified request verifies.
+- Fixed seeds, identifiers, times, token IDs, mission bytes, and request
+  targets make both generators byte-deterministic. The fixtures contain only
+  public keys, tokens, and signed public request material. The deterministic
+  test seeds remain visibly confined to the generators and grant no deployment
+  authority.
+- This proof uses the source implementations themselves rather than expected
+  bytes transcribed from a draft. It is deliberately bounded: it does not
+  assert cross-runtime coverage for every token, Signature-Key scheme,
+  component, response, interaction, or deployed server role.
+- The Go library and executable still have no Elixir or Sidecat dependency.
+  Elixir is invoked only when a maintainer deliberately regenerates or
+  reciprocally verifies the interoperability vectors.

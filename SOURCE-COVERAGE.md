@@ -80,6 +80,7 @@ Issuer trust, JWT validity, confirmation-key binding, and request proof are veri
 Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
+- `elixir_interop_test.go:TestElixirSignedAgentRequestVerifiesInGo`
 
 ### `core/as-token-endpoint/as-response` — Partial
 
@@ -590,6 +591,7 @@ The mission presentation, signed resource authorization request, and resource-to
 Evidence:
 
 - `journey_test.go:TestThreePartyMissionAuthorizationJourney`
+- `elixir_interop_test.go:TestElixirSignedAgentRequestVerifiesInGo`
 
 ### `interop-profile/aauth-interoperability-demo-profile/surface-3-resource-token-issuance-and-issuer-discovery` — Exercised
 
@@ -664,6 +666,7 @@ AAuth agent and auth JWTs supply the confirmation key for the supported signed-r
 Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
+- `elixir_interop_test.go:TestElixirSignedAgentRequestVerifiesInGo`
 
 ### `signature-key/name-label-consistency` — Exercised
 
