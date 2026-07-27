@@ -162,12 +162,14 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	}
 
 	result, err := resource.operation(request.Context(), aauth.AuthorizedRequest{
-		Agent:   claims.Agent,
-		Subject: claims.Subject,
-		Scope:   granted,
-		Mission: claims.Mission,
-		Method:  request.Method,
-		Path:    request.URL.Path,
+		Agent:     claims.Agent,
+		Subject:   claims.Subject,
+		Scope:     granted,
+		Mission:   claims.Mission,
+		Actor:     claims.Actor,
+		AuthToken: verified.RawCredential,
+		Method:    request.Method,
+		Path:      request.URL.Path,
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "operation_failed", err)

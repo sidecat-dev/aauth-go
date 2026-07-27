@@ -147,11 +147,35 @@ func (agent *Agent) RequestResourceToken(
 	scopes []string,
 	mission aauth.ApprovedMission,
 ) (ResourceGrant, error) {
+	if err := mission.ValidateExactBytes(); err != nil {
+		return ResourceGrant{}, err
+	}
+	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission.Reference)
+}
+
+// RequestResourceTokenForReference is used by an intermediary resource, which
+// receives the mission reference in an upstream auth token but never receives
+// or dereferences the mission body.
+func (agent *Agent) RequestResourceTokenForReference(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	mission aauth.MissionReference,
+) (ResourceGrant, error) {
+	if err := mission.Validate(); err != nil {
+		return ResourceGrant{}, err
+	}
+	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission)
+}
+
+func (agent *Agent) requestResourceToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	mission aauth.MissionReference,
+) (ResourceGrant, error) {
 	var grant ResourceGrant
 	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
-		return grant, err
-	}
-	if err := mission.ValidateExactBytes(); err != nil {
 		return grant, err
 	}
 	requestedScopes, err := parseScopes(strings.Join(scopes, " "))
@@ -171,7 +195,7 @@ func (agent *Agent) RequestResourceToken(
 		return grant, err
 	}
 	resourceRequest.Header.Set("Content-Type", "application/json")
-	missionHeader, err := mission.Reference.Header()
+	missionHeader, err := mission.Header()
 	if err != nil {
 		return grant, err
 	}
@@ -203,7 +227,7 @@ func (agent *Agent) RequestResourceToken(
 	}
 	if resourceClaims.Issuer != resourceID ||
 		resourceClaims.Agent != agent.identifier || resourceClaims.AgentJKT != agentThumbprint ||
-		resourceClaims.Mission == nil || *resourceClaims.Mission != mission.Reference {
+		resourceClaims.Mission == nil || *resourceClaims.Mission != mission {
 		return grant, errors.New("reference: resource token does not match the authorization request")
 	}
 	return ResourceGrant{
@@ -239,6 +263,7 @@ func (agent *Agent) ExchangeResourceToken(
 		"",
 		agent.identifier,
 		agent.signingKey.PublicJWK(),
+		nil,
 		"",
 	)
 }
@@ -278,7 +303,58 @@ func (agent *Agent) AuthorizeSubagent(
 		subagentToken,
 		subagentClaims.Subject,
 		subagentClaims.Confirmation.JWK,
+		&aauth.Actor{Agent: agent.identifier},
+		"",
+	)
+}
+
+func (agent *Agent) ExchangeChainedResourceToken(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	upstreamToken string,
+) (Grant, error) {
+	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return Grant{}, err
+	}
+	if agentClaims.ParentAgent != "" {
+		return Grant{}, errors.New("reference: sub-agent cannot perform call chaining")
+	}
+	upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return Grant{}, err
+	}
+	if upstream.Audience != agentClaims.Issuer {
+		return Grant{}, errors.New("reference: upstream auth-token audience does not match intermediary issuer")
+	}
+	personServerID, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return Grant{}, err
+	}
+	if upstream.Mission != nil {
+		if upstream.Mission.Approver != personServerID {
+			return Grant{}, errors.New("reference: upstream mission routes to a different person server")
+		}
+	} else if upstream.Issuer != personServerID {
+		return Grant{}, errors.New("reference: upstream token without a mission routes to its issuer")
+	}
+	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
+	if err != nil {
+		return Grant{}, err
+	}
+	if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
+		return Grant{}, errors.New("reference: downstream resource token is not bound to the intermediary")
+	}
+	return agent.exchangeResourceToken(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		"",
 		agent.identifier,
+		agent.signingKey.PublicJWK(),
+		&aauth.Actor{Agent: agent.identifier, Actor: upstream.Actor},
+		upstreamToken,
 	)
 }
 
@@ -289,7 +365,8 @@ func (agent *Agent) exchangeResourceToken(
 	subagentToken string,
 	expectedAgent string,
 	expectedKey aauth.JWK,
-	expectedActor string,
+	expectedActor *aauth.Actor,
+	upstreamToken string,
 ) (Grant, error) {
 	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
 		return Grant{}, err
@@ -309,6 +386,9 @@ func (agent *Agent) exchangeResourceToken(
 	tokenInput := map[string]string{"resource_token": resourceGrant.ResourceToken}
 	if subagentToken != "" {
 		tokenInput["subagent_token"] = subagentToken
+	}
+	if upstreamToken != "" {
+		tokenInput["upstream_token"] = upstreamToken
 	}
 	tokenBody, err := json.Marshal(tokenInput)
 	if err != nil {
@@ -359,18 +439,25 @@ func (agent *Agent) exchangeResourceToken(
 	); err != nil {
 		return Grant{}, err
 	}
-	if expectedActor == "" {
-		if authClaims.Actor != nil {
-			return Grant{}, errors.New("reference: direct auth token unexpectedly contains an act chain")
-		}
-	} else if authClaims.Actor == nil || authClaims.Actor.Agent != expectedActor {
-		return Grant{}, errors.New("reference: sub-agent auth token does not name its parent in act.agent")
+	if !actorsEqual(authClaims.Actor, expectedActor) {
+		return Grant{}, errors.New("reference: auth token contains an unexpected act chain")
 	}
 	return Grant{
 		Resource:  resourceGrant.Resource,
 		AuthToken: tokenResult.AuthToken,
 		Claims:    authClaims,
 	}, nil
+}
+
+func actorsEqual(left, right *aauth.Actor) bool {
+	for left != nil && right != nil {
+		if left.Agent != right.Agent {
+			return false
+		}
+		left = left.Actor
+		right = right.Actor
+	}
+	return left == nil && right == nil
 }
 
 func (agent *Agent) DoAuthorized(

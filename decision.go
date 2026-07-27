@@ -10,6 +10,7 @@ type AuthorizationRequest struct {
 	Scope         []string
 	Mission       *MissionReference
 	Justification string
+	Upstream      *AuthTokenClaims
 }
 
 // AuthorizationDecision is the authority's granted identity and scope.
@@ -21,12 +22,14 @@ type AuthorizationDecision struct {
 // AuthorizedRequest is supplied to a protected operation only after protocol
 // proof and authorization checks have passed.
 type AuthorizedRequest struct {
-	Agent   string
-	Subject string
-	Scope   []string
-	Mission *MissionReference
-	Method  string
-	Path    string
+	Agent     string
+	Subject   string
+	Scope     []string
+	Mission   *MissionReference
+	Actor     *Actor
+	AuthToken string
+	Method    string
+	Path      string
 }
 
 // MissionPolicy is intentionally caller-owned.

@@ -16,27 +16,29 @@ import (
 )
 
 type PersonServerConfig struct {
-	Identifier           string
-	SigningKey           aauth.SigningKey
-	KeyResolver          aauth.KeyResolver
-	Clock                aauth.Clock
-	NewID                func() string
-	MissionPolicy        aauth.MissionPolicy
-	AuthorizationPolicy  aauth.AuthorizationPolicy
-	FederationClient     *http.Client
-	AccessServerEndpoint func(context.Context, string) (string, error)
+	Identifier            string
+	SigningKey            aauth.SigningKey
+	KeyResolver           aauth.KeyResolver
+	Clock                 aauth.Clock
+	NewID                 func() string
+	MissionPolicy         aauth.MissionPolicy
+	AuthorizationPolicy   aauth.AuthorizationPolicy
+	FederationClient      *http.Client
+	AccessServerEndpoint  func(context.Context, string) (string, error)
+	TrustedUpstreamIssuer func(context.Context, string) error
 }
 
 type PersonServer struct {
-	identifier           string
-	signingKey           aauth.SigningKey
-	keyResolver          aauth.KeyResolver
-	clock                aauth.Clock
-	newID                func() string
-	missionPolicy        aauth.MissionPolicy
-	authorizationPolicy  aauth.AuthorizationPolicy
-	federationClient     *http.Client
-	accessServerEndpoint func(context.Context, string) (string, error)
+	identifier            string
+	signingKey            aauth.SigningKey
+	keyResolver           aauth.KeyResolver
+	clock                 aauth.Clock
+	newID                 func() string
+	missionPolicy         aauth.MissionPolicy
+	authorizationPolicy   aauth.AuthorizationPolicy
+	federationClient      *http.Client
+	accessServerEndpoint  func(context.Context, string) (string, error)
+	trustedUpstreamIssuer func(context.Context, string) error
 
 	mu       sync.RWMutex
 	missions map[string]storedMission
@@ -69,16 +71,17 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		return nil, errors.New("reference: federation client and access-server endpoint resolver must be configured together")
 	}
 	return &PersonServer{
-		identifier:           config.Identifier,
-		signingKey:           config.SigningKey,
-		keyResolver:          config.KeyResolver,
-		clock:                config.Clock,
-		newID:                config.NewID,
-		missionPolicy:        config.MissionPolicy,
-		authorizationPolicy:  config.AuthorizationPolicy,
-		federationClient:     config.FederationClient,
-		accessServerEndpoint: config.AccessServerEndpoint,
-		missions:             make(map[string]storedMission),
+		identifier:            config.Identifier,
+		signingKey:            config.SigningKey,
+		keyResolver:           config.KeyResolver,
+		clock:                 config.Clock,
+		newID:                 config.NewID,
+		missionPolicy:         config.MissionPolicy,
+		authorizationPolicy:   config.AuthorizationPolicy,
+		federationClient:      config.FederationClient,
+		accessServerEndpoint:  config.AccessServerEndpoint,
+		trustedUpstreamIssuer: config.TrustedUpstreamIssuer,
+		missions:              make(map[string]storedMission),
 	}, nil
 }
 
@@ -166,6 +169,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	var input struct {
 		ResourceToken string `json:"resource_token"`
 		SubagentToken string `json:"subagent_token,omitempty"`
+		UpstreamToken string `json:"upstream_token,omitempty"`
 		Justification string `json:"justification,omitempty"`
 	}
 	if err := decodeJSON(response, request, &input); err != nil || input.ResourceToken == "" {
@@ -174,6 +178,10 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	}
 	if verified.AgentToken.ParentAgent != "" {
 		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request authorization directly"))
+		return
+	}
+	if input.SubagentToken != "" && input.UpstreamToken != "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("subagent_token and upstream_token cannot be combined"))
 		return
 	}
 
@@ -201,6 +209,36 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		if subagent.ExpiresAt < targetTokenExpiry {
 			targetTokenExpiry = subagent.ExpiresAt
 		}
+	}
+	var upstream *aauth.AuthTokenClaims
+	if input.UpstreamToken != "" {
+		if server.trustedUpstreamIssuer == nil {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("call chaining is not configured"))
+			return
+		}
+		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, server.clock)
+		if err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			return
+		}
+		if err := server.trustedUpstreamIssuer(request.Context(), claims.Issuer); err != nil {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", err)
+			return
+		}
+		if claims.Audience != verified.AgentToken.Issuer {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth-token audience does not match intermediary issuer"))
+			return
+		}
+		if claims.Mission != nil {
+			if claims.Mission.Approver != server.identifier {
+				writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream mission names a different person server"))
+				return
+			}
+		} else if claims.Issuer != server.identifier {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("missionless upstream token must route to its issuer"))
+			return
+		}
+		upstream = &claims
 	}
 
 	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
@@ -233,6 +271,12 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
+	if upstream != nil {
+		if (upstream.Mission == nil) != (resourceToken.Mission == nil) {
+			writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream and upstream mission presence differs"))
+			return
+		}
+	}
 	if resourceToken.Mission != nil {
 		if resourceToken.Mission.Approver != server.identifier {
 			writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("mission approver does not match person server"))
@@ -241,7 +285,15 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		server.mu.RLock()
 		mission, exists := server.missions[resourceToken.Mission.S256]
 		server.mu.RUnlock()
-		if !exists || !mission.active || mission.agent != verified.Agent ||
+		missionOwner := verified.Agent
+		if upstream != nil {
+			missionOwner = upstream.Agent
+			if upstream.Mission == nil || *upstream.Mission != *resourceToken.Mission {
+				writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream mission does not match upstream authorization"))
+				return
+			}
+		}
+		if !exists || !mission.active || mission.agent != missionOwner ||
 			aauth.S256(mission.bytes) != resourceToken.Mission.S256 {
 			writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("mission is absent, inactive, or bound to a different agent"))
 			return
@@ -255,6 +307,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		Scope:         append([]string(nil), scopes...),
 		Mission:       resourceToken.Mission,
 		Justification: input.Justification,
+		Upstream:      upstream,
 	})
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
@@ -267,6 +320,10 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 
 	now := server.clock.Now()
 	if resourceToken.Audience != server.identifier {
+		if upstream != nil {
+			writeProblem(response, http.StatusNotImplemented, "federation_failed", errors.New("four-party call chaining is not yet implemented"))
+			return
+		}
 		federatedToken, federatedClaims, err := server.exchangeWithAccessServer(
 			request.Context(),
 			resourceToken.Audience,
@@ -295,7 +352,9 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		expiresAt = targetTokenExpiry
 	}
 	var actor *aauth.Actor
-	if parentAgent != "" {
+	if upstream != nil {
+		actor = &aauth.Actor{Agent: verified.Agent, Actor: upstream.Actor}
+	} else if parentAgent != "" {
 		actor = &aauth.Actor{Agent: parentAgent}
 	}
 	authToken, err := aauth.MintAuthToken(server.signingKey, aauth.AuthTokenClaims{
