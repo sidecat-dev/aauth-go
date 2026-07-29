@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -198,8 +199,15 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 		"https://ap.example/refresh",
 		"https://ps.example",
 		ephemeral,
-	); err == nil || !strings.Contains(err.Error(), "unknown_enrollment") {
-		t.Fatalf("unknown enrollment error = %v", err)
+	); err == nil {
+		t.Fatal("unknown enrollment was accepted")
+	} else {
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) ||
+			problem.Status != http.StatusForbidden ||
+			problem.Code != "unknown_enrollment" {
+			t.Fatalf("unknown enrollment error = %v (%#v)", err, problem)
+		}
 	}
 
 	knownClient, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
@@ -239,8 +247,15 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 		"https://ap.example/refresh",
 		"https://ps.example",
 		testSigningKey(t, "overlong-ephemeral"),
-	); err == nil || !strings.Contains(err.Error(), "delegation_too_long") {
-		t.Fatalf("overlong delegation error = %v", err)
+	); err == nil {
+		t.Fatal("overlong delegation was accepted")
+	} else {
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) ||
+			problem.Status != http.StatusForbidden ||
+			problem.Code != "delegation_too_long" {
+			t.Fatalf("overlong delegation error = %v (%#v)", err, problem)
+		}
 	}
 
 	body, err := json.Marshal(reference.BootstrapRefreshRequest{

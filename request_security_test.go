@@ -70,6 +70,29 @@ func TestSignedRequestRejectsMissionAddedOutsideCoveredComponents(t *testing.T) 
 	}
 }
 
+func TestSignedRequestRejectsAdditionalCoveredFieldValue(t *testing.T) {
+	t.Parallel()
+
+	fixture := newAuthRequestFixture(t)
+	request := fixture.request(t, http.MethodGet, nil)
+	request.Header.Set("Authorization", "Bearer signed-value")
+	if err := aauth.SignRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Add("Authorization", "Bearer appended-value")
+
+	_, err := aauth.VerifyRequest(
+		context.Background(),
+		request,
+		fixture.keys,
+		fixture.clock,
+		aauth.VerifyRequestOptions{AllowedCredentialTypes: []string{aauth.AuthTokenType}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "HTTP message signature is invalid") {
+		t.Fatalf("additional covered field value error = %v", err)
+	}
+}
+
 func TestAuthTokenRejectsWrongAudienceAtResourceBoundary(t *testing.T) {
 	t.Parallel()
 

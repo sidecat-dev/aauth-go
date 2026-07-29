@@ -113,7 +113,10 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 	}
 	identityPublic, err := header.JWK.PublicKey()
 	if err != nil {
-		return verified, fmt.Errorf("aauth: jkt-jwt header jwk: %w", err)
+		return verified, &TokenValidationError{
+			Code:  TokenValidationInvalidKey,
+			Cause: fmt.Errorf("aauth: jkt-jwt header jwk: %w", err),
+		}
 	}
 	identityEd25519, ok := identityPublic.(ed25519.PublicKey)
 	if !ok {
@@ -139,7 +142,10 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 		return verified, fmt.Errorf("aauth: jkt-jwt: %w", err)
 	}
 	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
-		return verified, fmt.Errorf("aauth: jkt-jwt cnf.jwk: %w", err)
+		return verified, &TokenValidationError{
+			Code:  TokenValidationInvalidKey,
+			Cause: fmt.Errorf("aauth: jkt-jwt cnf.jwk: %w", err),
+		}
 	}
 	signature, err := rawURL.DecodeString(parts[2])
 	if err != nil {

@@ -2,8 +2,10 @@ package aauth_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,9 +132,41 @@ func TestHTTPKeyResolverAppliesUnknownKeyRefreshFloor(t *testing.T) {
 	}
 	if _, err := resolver.ResolveKey(context.Background(), "https://issuer.example", aauth.ResourceDiscoveryDocument, "unknown-key"); err == nil {
 		t.Fatal("unknown kid was accepted")
+	} else {
+		var resolutionError *aauth.KeyResolutionError
+		if !errors.As(err, &resolutionError) || resolutionError.Code != aauth.KeyResolutionUnknown {
+			t.Fatalf("unknown kid error = %v (%#v)", err, resolutionError)
+		}
 	}
 	if fetches.Load() != 2 {
 		t.Fatalf("unknown kid bypassed one-minute refresh floor; total fetches = %d", fetches.Load())
+	}
+
+	differentKey := testSigningKey(t, "known-key")
+	token, err := aauth.MintResourceToken(differentKey, aauth.ResourceTokenClaims{
+		Issuer:    "https://issuer.example",
+		DWK:       aauth.ResourceDiscoveryDocument,
+		Audience:  "https://ps.example",
+		JTI:       "resource-token-with-bad-signature",
+		Agent:     "aauth:planner@ap.example",
+		AgentJKT:  "agent-thumbprint",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		Scope:     "documents.read",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aauth.VerifyResourceToken(context.Background(), token, resolver, clock); err == nil {
+		t.Fatal("token signed by an untrusted same-kid key was accepted")
+	} else {
+		var resolutionError *aauth.KeyResolutionError
+		if errors.As(err, &resolutionError) {
+			t.Fatalf("refresh floor masked bad signature as key resolution failure: %v", err)
+		}
+	}
+	if fetches.Load() != 2 {
+		t.Fatalf("bad same-kid signature bypassed refresh floor; total fetches = %d", fetches.Load())
 	}
 }
 
@@ -163,9 +197,53 @@ func TestHTTPKeyResolverDoesNotFetchBeforeAdmission(t *testing.T) {
 	}
 	if _, err := resolver.ResolveKey(context.Background(), "https://issuer.example", aauth.ResourceDiscoveryDocument, "unknown"); err == nil {
 		t.Fatal("denied discovery succeeded")
+	} else {
+		var resolutionError *aauth.KeyResolutionError
+		if !errors.As(err, &resolutionError) || resolutionError.Code != aauth.KeyResolutionDenied {
+			t.Fatalf("denied discovery error = %v (%#v)", err, resolutionError)
+		}
 	}
 	if fetches.Load() != 0 {
 		t.Fatalf("denied discovery made %d requests", fetches.Load())
+	}
+}
+
+func TestHTTPKeyResolverClassifiesAdmissionCancellationAsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "canceled", err: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+				Client: http.DefaultClient,
+				Clock: aauth.ClockFunc(func() time.Time {
+					return time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+				}),
+				Admit: func(context.Context, string) error {
+					return fmt.Errorf("admission interrupted: %w", test.err)
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolver.ResolveKey(
+				context.Background(),
+				"https://issuer.example",
+				aauth.ResourceDiscoveryDocument,
+				"issuer-key",
+			)
+			var resolutionError *aauth.KeyResolutionError
+			if !errors.As(err, &resolutionError) ||
+				resolutionError.Code != aauth.KeyResolutionUnavailable ||
+				!errors.Is(err, test.err) {
+				t.Fatalf("admission cancellation error = %v (%#v)", err, resolutionError)
+			}
+		})
 	}
 }
 
@@ -177,11 +255,21 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 	oldKey := testSigningKey(t, "rotating-key")
 	newKey := testSigningKey(t, "rotating-key")
 	currentKey := oldKey.PublicJWK()
+	failRefresh := false
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	var signalRefresh sync.Once
 	var fetches atomic.Int32
 
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"issuer.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			fetches.Add(1)
+			if failRefresh {
+				signalRefresh.Do(func() { close(refreshStarted) })
+				<-releaseRefresh
+				http.Error(response, "temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			switch request.URL.Path {
 			case "/.well-known/aauth-resource.json":
 				_, _ = fmt.Fprint(response, `{"issuer":"https://issuer.example","jwks_uri":"https://issuer.example/jwks"}`)
@@ -228,4 +316,246 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 	if fetches.Load() != 4 {
 		t.Fatalf("same-kid refresh fetches = %d, want initial metadata+JWKS and one refresh", fetches.Load())
 	}
+
+	now = now.Add(61 * time.Second)
+	failRefresh = true
+	anotherKey := testSigningKey(t, "rotating-key")
+	token, err = aauth.MintResourceToken(anotherKey, aauth.ResourceTokenClaims{
+		Issuer:    "https://issuer.example",
+		DWK:       aauth.ResourceDiscoveryDocument,
+		Audience:  "https://ps.example",
+		JTI:       "resource-token-after-failed-rotation",
+		Agent:     "aauth:planner@ap.example",
+		AgentJKT:  "agent-thumbprint",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		Scope:     "documents.read",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	go func() {
+		_, err := aauth.VerifyResourceToken(context.Background(), token, resolver, clock)
+		results <- err
+	}()
+	<-refreshStarted
+	go func() {
+		_, err := aauth.VerifyResourceToken(context.Background(), token, resolver, clock)
+		results <- err
+	}()
+	close(releaseRefresh)
+	for range 2 {
+		err := <-results
+		if err == nil {
+			t.Fatal("token verification ignored failed same-kid refresh")
+		}
+		var resolutionError *aauth.KeyResolutionError
+		if !errors.As(err, &resolutionError) ||
+			resolutionError.Code != aauth.KeyResolutionUnavailable {
+			t.Fatalf("failed same-kid refresh error = %v (%#v)", err, resolutionError)
+		}
+	}
+	if fetches.Load() != 5 {
+		t.Fatalf("concurrent failed refresh made %d fetches, want one failed attempt after four successful requests", fetches.Load())
+	}
+	if _, err := aauth.VerifyResourceToken(context.Background(), token, resolver, clock); err == nil {
+		t.Fatal("subsequent verification ignored the shared refresh failure")
+	} else {
+		var resolutionError *aauth.KeyResolutionError
+		if !errors.As(err, &resolutionError) ||
+			resolutionError.Code != aauth.KeyResolutionUnavailable {
+			t.Fatalf("shared failed refresh error = %v (%#v)", err, resolutionError)
+		}
+	}
+	if fetches.Load() != 5 {
+		t.Fatalf("subsequent verification bypassed the failed-refresh floor; total fetches = %d", fetches.Load())
+	}
+}
+
+func TestHTTPKeyResolverCancellationDoesNotPoisonHealthyCaller(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	key := testSigningKey(t, "issuer-key").PublicJWK()
+	firstRequestStarted := make(chan struct{})
+	var calls atomic.Int32
+
+	gateway := newLogicalGateway(t, map[string]http.Handler{
+		"issuer.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			call := calls.Add(1)
+			if call == 1 {
+				close(firstRequestStarted)
+				<-request.Context().Done()
+				return
+			}
+			switch request.URL.Path {
+			case "/.well-known/aauth-resource.json":
+				_, _ = fmt.Fprint(response, `{"issuer":"https://issuer.example","jwks_uri":"https://issuer.example/jwks"}`)
+			case "/jwks":
+				_, _ = fmt.Fprintf(
+					response,
+					`{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`,
+					key.X,
+				)
+			default:
+				http.NotFound(response, request)
+			}
+		}),
+	})
+	defer gateway.Close()
+
+	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+		Client: gateway.Client(),
+		Clock:  aauth.ClockFunc(func() time.Time { return now }),
+		Admit:  func(context.Context, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leaderContext, cancelLeader := context.WithCancel(context.Background())
+	leaderResult := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveKey(
+			leaderContext,
+			"https://issuer.example",
+			aauth.ResourceDiscoveryDocument,
+			"issuer-key",
+		)
+		leaderResult <- err
+	}()
+	<-firstRequestStarted
+
+	healthyResult := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveKey(
+			context.Background(),
+			"https://issuer.example",
+			aauth.ResourceDiscoveryDocument,
+			"issuer-key",
+		)
+		healthyResult <- err
+	}()
+	cancelLeader()
+
+	if err := <-leaderResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled leader error = %v, want context cancellation", err)
+	}
+	if err := <-healthyResult; err != nil {
+		t.Fatalf("healthy caller inherited canceled leader result: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("discovery calls = %d, want canceled metadata plus healthy metadata and JWKS", calls.Load())
+	}
+
+	if _, err := resolver.ResolveKey(
+		context.Background(),
+		"https://issuer.example",
+		aauth.ResourceDiscoveryDocument,
+		"issuer-key",
+	); err != nil {
+		t.Fatalf("cached key unavailable after healthy retry: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("cached lookup made %d discovery calls, want 3", calls.Load())
+	}
+}
+
+func TestTokenVerificationPreservesOperationalRefreshFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	oldKey := testSigningKey(t, "rotating-key")
+	newKey := testSigningKey(t, "rotating-key")
+	token, err := aauth.MintResourceToken(newKey, aauth.ResourceTokenClaims{
+		Issuer:    "https://issuer.example",
+		DWK:       aauth.ResourceDiscoveryDocument,
+		Audience:  "https://ps.example",
+		JTI:       "resource-token-after-failed-refresh",
+		Agent:     "aauth:planner@ap.example",
+		AgentJKT:  "agent-thumbprint",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		Scope:     "documents.read",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name string
+		err  error
+		want aauth.KeyResolutionCode
+	}{
+		{
+			name: "denied",
+			err: &aauth.KeyResolutionError{
+				Code:  aauth.KeyResolutionDenied,
+				Cause: errors.New("private admission detail"),
+			},
+			want: aauth.KeyResolutionDenied,
+		},
+		{
+			name: "unavailable",
+			err: &aauth.KeyResolutionError{
+				Code:  aauth.KeyResolutionUnavailable,
+				Cause: errors.New("private transport detail"),
+			},
+			want: aauth.KeyResolutionUnavailable,
+		},
+		{
+			name: "invalid",
+			err: &aauth.KeyResolutionError{
+				Code:  aauth.KeyResolutionInvalid,
+				Cause: errors.New("invalid refreshed metadata"),
+			},
+			want: aauth.KeyResolutionInvalid,
+		},
+		{
+			name: "untyped",
+			err:  errors.New("unclassified refresh failure"),
+			want: aauth.KeyResolutionUnavailable,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := staleRefreshResolver{
+				stale: oldKey.PublicJWK(),
+				err:   test.err,
+			}
+			_, err := aauth.VerifyResourceToken(
+				context.Background(),
+				token,
+				resolver,
+				aauth.ClockFunc(func() time.Time { return now }),
+			)
+			var resolutionError *aauth.KeyResolutionError
+			if !errors.As(err, &resolutionError) || resolutionError.Code != test.want {
+				t.Fatalf("VerifyResourceToken error = %v (%#v), want %q", err, resolutionError, test.want)
+			}
+		})
+	}
+}
+
+type staleRefreshResolver struct {
+	stale aauth.JWK
+	err   error
+}
+
+func (resolver staleRefreshResolver) ResolveKey(
+	context.Context,
+	string,
+	string,
+	string,
+) (aauth.JWK, error) {
+	return resolver.stale, nil
+}
+
+func (resolver staleRefreshResolver) RefreshKey(
+	context.Context,
+	string,
+	string,
+	string,
+) (aauth.JWK, error) {
+	return aauth.JWK{}, resolver.err
 }

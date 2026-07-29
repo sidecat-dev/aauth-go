@@ -160,11 +160,11 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	var input struct {
@@ -190,7 +190,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 	now := resource.clock.Now()
@@ -470,12 +470,12 @@ func (resource *Resource) handlePendingAuthorization(response http.ResponseWrite
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 
@@ -590,7 +590,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		AllowedCredentialTypes: []string{aauth.AuthTokenType},
 	})
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	claims := verified.AuthToken
@@ -604,7 +604,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		return
 	}
 	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 
@@ -636,12 +636,12 @@ func (resource *Resource) handleAccessProtected(response http.ResponseWriter, re
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	accessToken, err := aauth.ParseAccessAuthorization(request.Header.Get("Authorization"))
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_access", err)
+		writeProblem(response, http.StatusBadRequest, "invalid_access", err)
 		return
 	}
 	resource.accessMu.Lock()
@@ -665,7 +665,7 @@ func (resource *Resource) handleAccessProtected(response http.ResponseWriter, re
 		return
 	}
 	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	result, err := resource.operation(request.Context(), aauth.AuthorizedRequest{

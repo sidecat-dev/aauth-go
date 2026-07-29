@@ -1,9 +1,11 @@
 package aauth_test
 
 import (
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -99,6 +101,34 @@ func TestSigningKeyRejectsUnsupportedOrUninitializedSigner(t *testing.T) {
 	}
 	if _, err := aauth.NewSigningKey("key", unsupportedSigner{}); err == nil {
 		t.Fatal("accepted signer without an Ed25519 public key")
+	}
+}
+
+func TestStaticKeyResolverClassifiesResolutionFailures(t *testing.T) {
+	t.Parallel()
+
+	resolver := aauth.StaticKeyResolver{
+		"https://issuer.example": {
+			"invalid": {Kty: "OKP", Crv: "Ed25519", X: "invalid", Kid: "invalid"},
+		},
+	}
+	for _, test := range []struct {
+		name   string
+		issuer string
+		keyID  string
+		want   aauth.KeyResolutionCode
+	}{
+		{name: "unknown key", issuer: "https://issuer.example", keyID: "missing", want: aauth.KeyResolutionUnknown},
+		{name: "untrusted issuer", issuer: "https://other.example", keyID: "missing", want: aauth.KeyResolutionInvalid},
+		{name: "invalid key", issuer: "https://issuer.example", keyID: "invalid", want: aauth.KeyResolutionInvalid},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := resolver.ResolveKey(context.Background(), test.issuer, aauth.ResourceDiscoveryDocument, test.keyID)
+			var resolutionError *aauth.KeyResolutionError
+			if !errors.As(err, &resolutionError) || resolutionError.Code != test.want {
+				t.Fatalf("ResolveKey error = %v (%#v), want %q", err, resolutionError, test.want)
+			}
+		})
 	}
 }
 

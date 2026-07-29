@@ -18,8 +18,59 @@ sources:
 | Events | AAuth source above, revision 00 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` |
 | Bootstrap | AAuth source above, revision 01 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` |
 
-The Sidecat Go and BEAM implementations are implementation-experience
-comparators. They do not define compatibility requirements for this library.
+Earlier exercised Go implementations are implementation-experience
+comparators. Unexercised BEAM source may be consulted as code archaeology, but
+provides no conformance evidence. Neither defines compatibility requirements
+for this library.
+
+## 2026-07-29
+
+### HTTP signature error wire contract
+
+- **Status: implemented for the selected Ed25519 profile.** `VerifyRequest`
+  now returns a typed `SignatureError` that preserves its cause for
+  `errors.Is` and `errors.As`. The selected path distinguishes malformed or
+  missing proof material, missing covered components, unsupported algorithms,
+  invalid or unknown keys, invalid or expired JWT credentials, and invalid
+  signatures.
+- Optional RFC 9421 `expires` parameters are signed and verified alongside the
+  existing mandatory `created` window. A future expiry is accepted; an expiry
+  at or before current time is refused.
+- Reference signature-verification failures return `401` with an RFC 8941
+  `Signature-Error` header and an RFC 9457 Problem Details body whose type is
+  the Signature-Key draft's matching `urn:ietf:params:sig-error:` URI. The
+  header is the client parser's required authoritative input. Local discovery
+  denial or unavailability is a sanitized `503`, while successful
+  authentication followed by policy denial remains `403` without either
+  signature negotiation or Signature-Error.
+- Key resolvers now return typed unknown, invalid, denied, and unavailable
+  classifications. Only a successfully consulted key set that lacks the
+  requested key becomes `unknown_key`; operational resolution failures are not
+  mislabeled as client authentication failures or exposed in response detail.
+- Initial issuer-key absence and disappearance after a same-`kid` refresh
+  remain `unknown_key`. A valid JWT carrying an unusable confirmation key is
+  instead `invalid_key`; malformed JWT structure or signature remains
+  `invalid_jwt`.
+- Concurrent discovery callers share one in-flight fetch. Genuine remote
+  failures participate in the one-minute refresh floor through bounded
+  negative state, while caller cancellation and local egress denial never
+  poison healthy callers. A stale matching cached key remains available to an
+  ordinary lookup after a remote failure, but a forced retry cannot silently
+  reuse key material whose signature was already shown invalid.
+- **Source ambiguity recorded:** the AAuth core profile maps missing signature
+  headers to `invalid_request`, while the Signature-Key draft groups missing
+  signature headers under `invalid_signature`. The reference AAuth endpoints
+  follow the core profile's code and its required `401` status; malformed
+  supplied signature material maps to `invalid_signature`.
+- RFC 9421 derived-component construction preserves the case-sensitive HTTP
+  method and normalizes authority host case and default ports. Signature-Error
+  parsing and serialization use a complete RFC 8941 implementation, including
+  field-line combination, strict strings, and ignorable future members and
+  error-code registry entries.
+- Covered HTTP fields combine all field-line values in wire order before
+  signature-base construction. Required component and freshness checks finish
+  before key resolution, so malformed or insufficient proof cannot trigger
+  discovery effects.
 
 ## 2026-07-27
 

@@ -66,6 +66,78 @@ func writeProblem(response http.ResponseWriter, status int, code string, err err
 	writeProblemBody(response, status, problemBody(status, code, err, nil))
 }
 
+// writeSignatureFailure emits the AAuth HTTP-signature profile's 401 response.
+// Authentication failure is distinct from policy denial: callers use this only
+// before an endpoint has successfully authenticated the request.
+func writeSignatureFailure(response http.ResponseWriter, err error) {
+	if writeOperationalResolutionFailure(response, err) {
+		return
+	}
+	var signatureError *aauth.SignatureError
+	if !errors.As(err, &signatureError) {
+		signatureError = &aauth.SignatureError{
+			Code:  aauth.SignatureErrorInvalidSignature,
+			Cause: err,
+		}
+	}
+	header, formatErr := aauth.FormatSignatureError(*signatureError)
+	if formatErr != nil {
+		signatureError = &aauth.SignatureError{
+			Code:  aauth.SignatureErrorInvalidSignature,
+			Cause: formatErr,
+		}
+		header, _ = aauth.FormatSignatureError(*signatureError)
+	}
+	response.Header().Set("Signature-Error", header)
+	extensions := make(map[string]any)
+	if len(signatureError.RequiredInput) > 0 {
+		extensions["required_input"] = signatureError.RequiredInput
+	}
+	if len(signatureError.SupportedAlgorithms) > 0 {
+		extensions["supported_algorithms"] = signatureError.SupportedAlgorithms
+	}
+	// Causes can contain admitted endpoints, trust configuration, and
+	// transport diagnostics. They remain available to the local caller but
+	// are never copied into a remote Problem Details response.
+	body := problemBody(http.StatusUnauthorized, string(signatureError.Code), nil, extensions)
+	var problem map[string]any
+	if err := json.Unmarshal(body, &problem); err == nil {
+		problem["type"] = signatureError.ProblemType()
+		if encoded, err := json.Marshal(problem); err == nil {
+			body = encoded
+		}
+	}
+	writeProblemBody(response, http.StatusUnauthorized, body)
+}
+
+func writeOperationalResolutionFailure(response http.ResponseWriter, err error) bool {
+	var resolutionError *aauth.KeyResolutionError
+	if !errors.As(err, &resolutionError) ||
+		(resolutionError.Code != aauth.KeyResolutionDenied &&
+			resolutionError.Code != aauth.KeyResolutionUnavailable) {
+		return false
+	}
+	writeProblem(response, http.StatusServiceUnavailable, "server_error", nil)
+	return true
+}
+
+func writeTokenVerificationFailure(
+	response http.ResponseWriter,
+	status int,
+	code string,
+	err error,
+) {
+	if writeOperationalResolutionFailure(response, err) {
+		return
+	}
+	var resolutionError *aauth.KeyResolutionError
+	if errors.As(err, &resolutionError) {
+		writeProblem(response, status, code, nil)
+		return
+	}
+	writeProblem(response, status, code, err)
+}
+
 func problemBody(
 	status int,
 	code string,

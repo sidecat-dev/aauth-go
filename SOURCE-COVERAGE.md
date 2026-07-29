@@ -9,8 +9,8 @@ Profile: AAuth Go maintained supported profile
 | Status | Sections |
 | --- | ---: |
 | Exercised | 54 |
-| Partial | 21 |
-| Unsupported | 21 |
+| Partial | 22 |
+| Unsupported | 20 |
 | Informational | 0 |
 | Unclaimed | 369 |
 
@@ -21,7 +21,7 @@ Profile: AAuth Go maintained supported profile
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 43 | 17 | 3 | 0 | 165 |
-| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 2 | 4 | 0 | 62 |
+| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 3 | 3 | 0 | 62 |
 | `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 0 | 5 | 0 | 44 |
 | `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 0 | 7 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 1 | 2 | 2 | 0 | 38 |
@@ -230,11 +230,12 @@ Evidence:
 
 ### `core/error-response-format` — Partial
 
-The supported problem response fields and wire validation are implemented; endpoint-specific error coverage is incomplete.
+Problem Details are implemented, and reference signature-verification failures use the matching 401 Signature-Error header and sig-error URN; endpoint-specific coverage beyond that profile remains incomplete.
 
 Evidence:
 
 - `problem_test.go:TestDecodeProblemResponseRejectsInvalidWireValue`
+- `reference/signature_error_test.go:TestResourceReportsSignatureFailuresAsSignatureError`
 
 ### `core/freshness-and-replay` — Exercised
 
@@ -248,12 +249,13 @@ Evidence:
 
 ### `core/http-message-signatures-profile` — Partial
 
-The selected Ed25519 request-signing profile is implemented with two Signature-Key schemes; algorithms and schemes outside that profile are open.
+The selected Ed25519 request-signing profile enforces created freshness, optional RFC 9421 expires freshness, required components, and typed verification failures; algorithms and schemes outside that profile remain open.
 
 Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsBodyMutation`
 - `http_signature_jwks_test.go:TestJWKSURIRequestIdentitySignsAndVerifies`
+- `signature_error_test.go:TestVerifyRequestClassifiesExpiresAndRequiredInputs`
 
 ### `core/identifiers-and-discovery` — Partial
 
@@ -712,9 +714,16 @@ Evidence:
 
 The self-jwt scheme is not implemented.
 
-### `signature-key/name-signature-error-http-respon` — Unsupported
+### `signature-key/name-signature-error-http-respon` — Partial
 
-The Signature-Error response header is not implemented.
+The RFC 8941 codec and AAuth reference response path are exercised, including unknown-member tolerance, authoritative header decoding, operational resolution failures, and post-authentication policy denial. The AAuth core and Signature-Key drafts assign different codes to missing proof headers; the AAuth profile follows core invalid_request, so generic Signature-Key response conformance is not claimed.
+
+Evidence:
+
+- `signature_error_test.go:TestSignatureErrorWireContract`
+- `signature_error_test.go:TestSignatureErrorIgnoresRFC8941UnknownMembers`
+- `reference/signature_error_test.go:TestResourceReportsSignatureFailuresAsSignatureError`
+- `reference/signature_error_test.go:TestResourcePolicyDenialIsNotASignatureFailure`
 
 ### `signature-key/name-signature-key-http-request-` — Partial
 

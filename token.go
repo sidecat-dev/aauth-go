@@ -21,6 +21,43 @@ const (
 	AccessDiscoveryDocument   = "aauth-access.json"
 )
 
+// TokenValidationCode identifies a stable validation failure for a compact
+// token. Callers that expose tokens through another protocol can classify the
+// failure without inspecting diagnostic text.
+type TokenValidationCode string
+
+const (
+	TokenValidationExpired    TokenValidationCode = "expired"
+	TokenValidationInvalidKey TokenValidationCode = "invalid_key"
+)
+
+// TokenValidationError retains the underlying validation cause while exposing
+// a stable code for protocol adapters.
+type TokenValidationError struct {
+	Code  TokenValidationCode
+	Cause error
+}
+
+type unsupportedTokenAlgorithmError struct{ algorithm string }
+
+func (err *unsupportedTokenAlgorithmError) Error() string {
+	return fmt.Sprintf("aauth: unsupported token algorithm %q", err.algorithm)
+}
+
+func (err *TokenValidationError) Error() string {
+	if err == nil || err.Cause == nil {
+		return "aauth: token validation failed"
+	}
+	return "aauth: token validation " + string(err.Code) + ": " + err.Cause.Error()
+}
+
+func (err *TokenValidationError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Cause
+}
+
 // Confirmation is the RFC 7800 confirmation claim used by AAuth.
 type Confirmation struct {
 	JWK JWK `json:"jwk"`
@@ -283,7 +320,7 @@ func verifyResolvedTokenKey(
 		return errors.New("aauth: alg none is forbidden")
 	}
 	if header.Algorithm != "EdDSA" {
-		return fmt.Errorf("aauth: unsupported token algorithm %q", header.Algorithm)
+		return &unsupportedTokenAlgorithmError{algorithm: header.Algorithm}
 	}
 	if header.KeyID == "" {
 		return errors.New("aauth: token kid is required")
@@ -293,7 +330,7 @@ func verifyResolvedTokenKey(
 	}
 	key, err := resolver.ResolveKey(ctx, issuer, dwk, header.KeyID)
 	if err != nil {
-		return err
+		return normalizeKeyResolutionError(err)
 	}
 	publicKey, err := key.PublicKey()
 	if err != nil {
@@ -315,6 +352,12 @@ func verifyResolvedTokenKey(
 					ed25519.Verify(refreshedEd25519, []byte(signingInput), signature) {
 					return nil
 				}
+			}
+		} else {
+			normalized := normalizeKeyResolutionError(refreshErr)
+			var resolutionError *KeyResolutionError
+			if errors.As(normalized, &resolutionError) {
+				return normalized
 			}
 		}
 	}
@@ -377,7 +420,10 @@ func validateAgentClaims(claims AgentTokenClaims, now time.Time) error {
 		return errors.New("aauth: agent-token lifetime exceeds 24 hours")
 	}
 	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
-		return fmt.Errorf("aauth: agent-token cnf.jwk: %w", err)
+		return &TokenValidationError{
+			Code:  TokenValidationInvalidKey,
+			Cause: fmt.Errorf("aauth: agent-token cnf.jwk: %w", err),
+		}
 	}
 	if claims.PersonServer != "" {
 		if err := ValidateServerIdentifier(claims.PersonServer); err != nil {
@@ -449,7 +495,10 @@ func validateAuthClaims(claims AuthTokenClaims, now time.Time, enforceCurrentTim
 		return fmt.Errorf("aauth: auth-token agent: %w", err)
 	}
 	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
-		return fmt.Errorf("aauth: auth-token cnf.jwk: %w", err)
+		return &TokenValidationError{
+			Code:  TokenValidationInvalidKey,
+			Cause: fmt.Errorf("aauth: auth-token cnf.jwk: %w", err),
+		}
 	}
 	if claims.Subject == "" && claims.Scope == "" {
 		return errors.New("aauth: auth-token requires sub or scope")
@@ -485,7 +534,10 @@ func validateTimes(issuedAt, expiresAt int64, now time.Time) error {
 		return errors.New("iat is in the future")
 	}
 	if expiresAt <= now.Unix() {
-		return errors.New("token is expired")
+		return &TokenValidationError{
+			Code:  TokenValidationExpired,
+			Cause: errors.New("token is expired"),
+		}
 	}
 	return nil
 }

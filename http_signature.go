@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,9 +50,28 @@ type VerifyRequestOptions struct {
 	SignatureWindow          time.Duration
 }
 
+// SignRequestOptions controls optional HTTP Message Signature parameters.
+// A zero ExpiresAt preserves the default created-only profile.
+type SignRequestOptions struct {
+	ExpiresAt time.Time
+}
+
 // SignRequest applies the AAuth HTTP Message Signatures profile using a JWT
 // identity credential in Signature-Key.
 func SignRequest(request *http.Request, key SigningKey, credential string, clock Clock) error {
+	return SignRequestWithOptions(request, key, credential, clock, SignRequestOptions{})
+}
+
+// SignRequestWithOptions applies the JWT Signature-Key profile with optional
+// RFC 9421 signature parameters. ExpiresAt, when present, must be after the
+// signing clock's current time.
+func SignRequestWithOptions(
+	request *http.Request,
+	key SigningKey,
+	credential string,
+	clock Clock,
+	options SignRequestOptions,
+) error {
 	if request == nil || request.URL == nil {
 		return errors.New("aauth: request URL is required")
 	}
@@ -66,6 +86,7 @@ func SignRequest(request *http.Request, key SigningKey, credential string, clock
 		key,
 		`sig=jwt;jwt=`+strconv.Quote(credential),
 		clock,
+		options,
 	)
 }
 
@@ -79,7 +100,7 @@ func SignRequestWithHWK(request *http.Request, key SigningKey, clock Clock) erro
 	header := `sig=hwk;kty=` + strconv.Quote(public.Kty) +
 		`;crv=` + strconv.Quote(public.Crv) +
 		`;x=` + strconv.Quote(public.X)
-	return signRequestWithSignatureKey(request, key, header, clock)
+	return signRequestWithSignatureKey(request, key, header, clock, SignRequestOptions{})
 }
 
 // SignRequestWithJKTJWT signs with the delegated key named by a valid
@@ -105,6 +126,7 @@ func SignRequestWithJKTJWT(
 		key,
 		`sig=jkt-jwt;jwt=`+strconv.Quote(delegation),
 		clock,
+		SignRequestOptions{},
 	)
 }
 
@@ -129,7 +151,7 @@ func SignRequestWithJWKSURI(
 	header := `sig=jwks_uri;id=` + strconv.Quote(identifier) +
 		`;dwk=` + strconv.Quote(discoveryDocument) +
 		`;kid=` + strconv.Quote(key.ID())
-	return signRequestWithSignatureKey(request, key, header, clock)
+	return signRequestWithSignatureKey(request, key, header, clock, SignRequestOptions{})
 }
 
 func signRequestWithSignatureKey(
@@ -137,6 +159,7 @@ func signRequestWithSignatureKey(
 	key SigningKey,
 	signatureKeyHeader string,
 	clock Clock,
+	options SignRequestOptions,
 ) error {
 	if request == nil || request.URL == nil {
 		return errors.New("aauth: request URL is required")
@@ -164,7 +187,11 @@ func signRequestWithSignatureKey(
 	}
 	components = append(components, "signature-key")
 
-	params := signatureParams(components, clock.Now().Unix())
+	now := clock.Now()
+	if !options.ExpiresAt.IsZero() && options.ExpiresAt.Unix() <= now.Unix() {
+		return errors.New("aauth: signature expires time must be after created time")
+	}
+	params := signatureParams(components, now.Unix(), options.ExpiresAt)
 	base, err := signatureBase(request, components, params)
 	if err != nil {
 		return err
@@ -195,37 +222,101 @@ func VerifyRequest(
 		return verified, errors.New("aauth: clock is required")
 	}
 
-	signatureKey, err := parseSignatureKey(request.Header.Get("Signature-Key"))
+	signatureHeader := request.Header.Get("Signature")
+	signatureInputHeader := request.Header.Get("Signature-Input")
+	signatureKeyHeader := request.Header.Get("Signature-Key")
+	if signatureHeader == "" || signatureInputHeader == "" || signatureKeyHeader == "" {
+		// The generic Signature-Key draft groups absent proof headers under
+		// invalid_signature. The AAuth core profile explicitly overrides that
+		// classification: its verification step 1 requires invalid_request
+		// before parsing or resolving any supplied proof material.
+		return verified, newSignatureError(
+			SignatureErrorInvalidRequest,
+			errors.New("aauth: Signature, Signature-Input, and Signature-Key headers are required"),
+		)
+	}
+	components, created, expires, params, err := parseSignatureInput(signatureInputHeader)
 	if err != nil {
-		return verified, err
+		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
+	}
+	required := append([]string{"@method", "@authority", "@path", "signature-key"}, options.RequiredComponents...)
+	if hasRequestBody(request) {
+		required = append(required, "content-digest")
+	}
+	if request.Header.Get("AAuth-Mission") != "" {
+		required = append(required, "aauth-mission")
+	}
+	if request.Header.Get("Authorization") != "" {
+		required = append(required, "authorization")
+	}
+	for _, component := range required {
+		if !contains(components, strings.ToLower(component)) {
+			return VerifiedRequest{}, signatureErrorWithRequiredInput(
+				fmt.Errorf("aauth: signature does not cover required component %q", component),
+				required,
+			)
+		}
+	}
+
+	window := options.SignatureWindow
+	if window == 0 {
+		window = DefaultSignatureWindow
+	}
+	if window < 0 {
+		return VerifiedRequest{}, newSignatureError(
+			SignatureErrorInvalidRequest,
+			errors.New("aauth: signature window must not be negative"),
+		)
+	}
+	createdAt := time.Unix(created, 0)
+	age := clock.Now().Sub(createdAt)
+	if age < -window || age > window {
+		return VerifiedRequest{}, newSignatureError(
+			SignatureErrorInvalidSignature,
+			errors.New("aauth: signature created time is outside the validity window"),
+		)
+	}
+	if expires != nil && !time.Unix(*expires, 0).After(clock.Now()) {
+		return VerifiedRequest{}, newSignatureError(
+			SignatureErrorInvalidSignature,
+			errors.New("aauth: signature expires time is in the past"),
+		)
+	}
+
+	signatureKey, err := parseSignatureKey(signatureKeyHeader)
+	if err != nil {
+		return verified, newSignatureError(SignatureErrorInvalidKey, err)
 	}
 	allowedSignatureKeyTypes := options.AllowedSignatureKeyTypes
 	if len(allowedSignatureKeyTypes) == 0 {
 		allowedSignatureKeyTypes = []string{SignatureKeyJWT}
 	}
 	if !contains(allowedSignatureKeyTypes, signatureKey.scheme) {
-		return verified, fmt.Errorf("aauth: Signature-Key type %q is not accepted", signatureKey.scheme)
+		return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key type %q is not accepted", signatureKey.scheme))
 	}
 	verified.SignatureKeyType = signatureKey.scheme
 
 	switch signatureKey.scheme {
 	case SignatureKeyJWT:
 		if resolver == nil {
-			return verified, errors.New("aauth: key resolver is required")
+			return verified, keyResolutionError(
+				KeyResolutionUnavailable,
+				errors.New("aauth: key resolver is required"),
+			)
 		}
 		header, err := PeekTokenHeader(signatureKey.parameters["jwt"])
 		if err != nil {
-			return verified, fmt.Errorf("aauth: Signature-Key JWT: %w", err)
+			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key JWT: %w", err))
 		}
 		if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
-			return verified, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type)
+			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
 		}
 		verified.RawCredential = signatureKey.parameters["jwt"]
 		switch header.Type {
 		case AgentTokenType:
 			claims, verifyErr := VerifyAgentToken(ctx, verified.RawCredential, resolver, clock)
 			if verifyErr != nil {
-				return verified, verifyErr
+				return verified, classifyJWTVerificationError(verifyErr)
 			}
 			verified.CredentialType = AgentTokenType
 			verified.Agent = claims.Subject
@@ -235,7 +326,7 @@ func VerifyRequest(
 		case AuthTokenType:
 			claims, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, clock)
 			if verifyErr != nil {
-				return verified, verifyErr
+				return verified, classifyJWTVerificationError(verifyErr)
 			}
 			verified.CredentialType = AuthTokenType
 			verified.Agent = claims.Agent
@@ -243,24 +334,27 @@ func VerifyRequest(
 			verified.PublicKey = claims.Confirmation.JWK
 			verified.AuthToken = &claims
 		default:
-			return verified, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type)
+			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type))
 		}
 	case SignatureKeyJWKSURI:
 		if resolver == nil {
-			return verified, errors.New("aauth: key resolver is required")
+			return verified, keyResolutionError(
+				KeyResolutionUnavailable,
+				errors.New("aauth: key resolver is required"),
+			)
 		}
 		identifier := signatureKey.parameters["id"]
 		document := signatureKey.parameters["dwk"]
 		keyID := signatureKey.parameters["kid"]
 		if err := ValidateServerIdentifier(identifier); err != nil {
-			return verified, fmt.Errorf("aauth: Signature-Key id: %w", err)
+			return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key id: %w", err))
 		}
 		if !discoveryDocumentPattern.MatchString(document) || keyID == "" {
-			return verified, errors.New("aauth: Signature-Key jwks_uri parameters are invalid")
+			return verified, newSignatureError(SignatureErrorInvalidKey, errors.New("aauth: Signature-Key jwks_uri parameters are invalid"))
 		}
 		resolved, err := resolver.ResolveKey(ctx, identifier, document, keyID)
 		if err != nil {
-			return verified, err
+			return verified, classifyJWKSURIResolutionError(err)
 		}
 		verified.Signer = identifier
 		verified.PublicKey = resolved
@@ -272,11 +366,11 @@ func VerifyRequest(
 			X:   signatureKey.parameters["x"],
 		}
 		if _, err := inline.PublicKey(); err != nil {
-			return verified, fmt.Errorf("aauth: Signature-Key hwk: %w", err)
+			return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key hwk: %w", err))
 		}
 		identity, err := inline.ThumbprintURI()
 		if err != nil {
-			return verified, fmt.Errorf("aauth: Signature-Key hwk identity: %w", err)
+			return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key hwk identity: %w", err))
 		}
 		verified.Signer = identity
 		verified.PublicKey = inline
@@ -284,7 +378,7 @@ func VerifyRequest(
 	case SignatureKeyJKTJWT:
 		delegation, err := VerifyJKTJWT(signatureKey.parameters["jwt"], clock)
 		if err != nil {
-			return verified, err
+			return verified, classifyJWTVerificationError(err)
 		}
 		verified.RawCredential = signatureKey.parameters["jwt"]
 		verified.Signer = delegation.Issuer
@@ -293,62 +387,32 @@ func VerifyRequest(
 		verified.JKTJWT = &delegation
 	}
 
-	components, created, params, err := parseSignatureInput(request.Header.Get("Signature-Input"))
-	if err != nil {
-		return VerifiedRequest{}, err
-	}
-	required := append([]string{"@method", "@authority", "@path", "signature-key"}, options.RequiredComponents...)
-	for _, component := range required {
-		if !contains(components, strings.ToLower(component)) {
-			return VerifiedRequest{}, fmt.Errorf("aauth: signature does not cover required component %q", component)
-		}
-	}
-	if hasRequestBody(request) && !contains(components, "content-digest") {
-		return VerifiedRequest{}, errors.New("aauth: request body is not covered by content-digest")
-	}
-	if request.Header.Get("AAuth-Mission") != "" && !contains(components, "aauth-mission") {
-		return VerifiedRequest{}, errors.New("aauth: AAuth-Mission is not covered by the signature")
-	}
-	if request.Header.Get("Authorization") != "" && !contains(components, "authorization") {
-		return VerifiedRequest{}, errors.New("aauth: Authorization is not covered by the signature")
-	}
-
-	window := options.SignatureWindow
-	if window == 0 {
-		window = DefaultSignatureWindow
-	}
-	if window < 0 {
-		return VerifiedRequest{}, errors.New("aauth: signature window must not be negative")
-	}
-	createdAt := time.Unix(created, 0)
-	age := clock.Now().Sub(createdAt)
-	if age < -window || age > window {
-		return VerifiedRequest{}, errors.New("aauth: signature created time is outside the validity window")
-	}
-
 	if contains(components, "content-digest") {
 		if err := verifyContentDigest(request); err != nil {
-			return VerifiedRequest{}, err
+			return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
 		}
 	}
 	base, err := signatureBase(request, components, params)
 	if err != nil {
-		return VerifiedRequest{}, err
+		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
 	}
-	signature, err := parseSignature(request.Header.Get("Signature"))
+	signature, err := parseSignature(signatureHeader)
 	if err != nil {
-		return VerifiedRequest{}, err
+		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
 	}
 	publicKey, err := verified.PublicKey.PublicKey()
 	if err != nil {
-		return VerifiedRequest{}, err
+		if verified.PublicKey.Alg != "" && verified.PublicKey.Alg != "EdDSA" {
+			return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, SupportedAlgorithms: []string{"ed25519"}, Cause: err}
+		}
+		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidKey, err)
 	}
 	ed25519Key, ok := publicKey.(ed25519.PublicKey)
 	if !ok {
-		return VerifiedRequest{}, errors.New("aauth: request confirmation key is not Ed25519")
+		return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, SupportedAlgorithms: []string{"ed25519"}, Cause: errors.New("aauth: request confirmation key is not Ed25519")}
 	}
 	if !ed25519.Verify(ed25519Key, []byte(base), signature) {
-		return VerifiedRequest{}, errors.New("aauth: HTTP message signature is invalid")
+		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, errors.New("aauth: HTTP message signature is invalid"))
 	}
 
 	replayMaterial := append([]byte(base), signature...)
@@ -358,12 +422,16 @@ func VerifyRequest(
 	return verified, nil
 }
 
-func signatureParams(components []string, created int64) string {
+func signatureParams(components []string, created int64, expires time.Time) string {
 	var quoted []string
 	for _, component := range components {
 		quoted = append(quoted, strconv.Quote(component))
 	}
-	return "(" + strings.Join(quoted, " ") + ");created=" + strconv.FormatInt(created, 10)
+	params := "(" + strings.Join(quoted, " ") + ");created=" + strconv.FormatInt(created, 10)
+	if !expires.IsZero() {
+		params += ";expires=" + strconv.FormatInt(expires.Unix(), 10)
+	}
+	return params
 }
 
 func signatureBase(request *http.Request, components []string, params string) (string, error) {
@@ -372,11 +440,12 @@ func signatureBase(request *http.Request, components []string, params string) (s
 		var value string
 		switch component {
 		case "@method":
-			value = strings.ToUpper(request.Method)
+			value = request.Method
 		case "@authority":
-			value = request.Host
-			if value == "" {
-				value = request.URL.Host
+			var err error
+			value, err = normalizedRequestAuthority(request)
+			if err != nil {
+				return "", err
 			}
 		case "@path":
 			value = request.URL.EscapedPath()
@@ -387,10 +456,15 @@ func signatureBase(request *http.Request, components []string, params string) (s
 			if strings.HasPrefix(component, "@") {
 				return "", fmt.Errorf("aauth: unsupported derived signature component %q", component)
 			}
-			value = request.Header.Get(http.CanonicalHeaderKey(component))
-			if value == "" {
+			values := request.Header.Values(http.CanonicalHeaderKey(component))
+			if len(values) == 0 {
 				return "", fmt.Errorf("aauth: covered header %q is absent", component)
 			}
+			// RFC 9421 Section 2.1 derives a single field value by combining
+			// every field line in order with a comma and one space. Covering
+			// only the first value would let an appended field line evade the
+			// signature.
+			value = strings.Join(values, ", ")
 		}
 		lines = append(lines, strconv.Quote(component)+": "+value)
 	}
@@ -398,30 +472,59 @@ func signatureBase(request *http.Request, components []string, params string) (s
 	return strings.Join(lines, "\n"), nil
 }
 
-func parseSignatureInput(header string) ([]string, int64, string, error) {
+func normalizedRequestAuthority(request *http.Request) (string, error) {
+	authority := request.Host
+	if authority == "" {
+		authority = request.URL.Host
+	}
+	if authority == "" {
+		return "", errors.New("aauth: request authority is required")
+	}
+
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		// A bracketed IPv6 literal without a port is already in the authority
+		// form. Registered host names are case-insensitive.
+		if !strings.Contains(authority, ":") ||
+			strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
+			return strings.ToLower(authority), nil
+		}
+		return "", fmt.Errorf("aauth: request authority %q is invalid: %w", authority, err)
+	}
+	host = strings.ToLower(host)
+	scheme := strings.ToLower(request.URL.Scheme)
+	if scheme == "" {
+		if request.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]", nil
+		}
+		return host, nil
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func parseSignatureInput(header string) ([]string, int64, *int64, string, error) {
 	if !strings.HasPrefix(header, "sig=(") {
-		return nil, 0, "", errors.New("aauth: Signature-Input must contain the sig label")
+		return nil, 0, nil, "", errors.New("aauth: Signature-Input must contain the sig label")
 	}
 	params := strings.TrimPrefix(header, "sig=")
-	end := strings.Index(params, ");created=")
-	if end < 0 || !strings.HasSuffix(params[:end+1], ")") {
-		return nil, 0, "", errors.New("aauth: Signature-Input has invalid parameters")
+	end := strings.IndexByte(params, ')')
+	if end < 1 {
+		return nil, 0, nil, "", errors.New("aauth: Signature-Input has invalid parameters")
 	}
 	componentText := params[1:end]
-	createdText := params[end+10:]
-	if createdText == "" || strings.ContainsAny(createdText, ";, \t\r\n") {
-		return nil, 0, "", errors.New("aauth: Signature-Input created is invalid")
-	}
-	created, err := strconv.ParseInt(createdText, 10, 64)
-	if err != nil || created <= 0 {
-		return nil, 0, "", errors.New("aauth: Signature-Input created is invalid")
-	}
 
 	var components []string
 	for len(strings.TrimSpace(componentText)) > 0 {
 		componentText = strings.TrimSpace(componentText)
 		if componentText[0] != '"' {
-			return nil, 0, "", errors.New("aauth: Signature-Input component is not quoted")
+			return nil, 0, nil, "", errors.New("aauth: Signature-Input component is not quoted")
 		}
 		endQuote := 1
 		for endQuote < len(componentText) {
@@ -431,23 +534,114 @@ func parseSignatureInput(header string) ([]string, int64, string, error) {
 			endQuote++
 		}
 		if endQuote >= len(componentText) {
-			return nil, 0, "", errors.New("aauth: Signature-Input component quote is unterminated")
+			return nil, 0, nil, "", errors.New("aauth: Signature-Input component quote is unterminated")
 		}
 		value, err := strconv.Unquote(componentText[:endQuote+1])
 		if err != nil {
-			return nil, 0, "", fmt.Errorf("aauth: decode Signature-Input component: %w", err)
+			return nil, 0, nil, "", fmt.Errorf("aauth: decode Signature-Input component: %w", err)
 		}
 		value = strings.ToLower(value)
 		if contains(components, value) {
-			return nil, 0, "", fmt.Errorf("aauth: duplicate signed component %q", value)
+			return nil, 0, nil, "", fmt.Errorf("aauth: duplicate signed component %q", value)
 		}
 		components = append(components, value)
 		componentText = componentText[endQuote+1:]
 	}
 	if len(components) == 0 {
-		return nil, 0, "", errors.New("aauth: Signature-Input covers no components")
+		return nil, 0, nil, "", errors.New("aauth: Signature-Input covers no components")
 	}
-	return components, created, params, nil
+
+	var created int64
+	var expires *int64
+	seenCreated := false
+	remainder := params[end+1:]
+	for remainder != "" {
+		if !strings.HasPrefix(remainder, ";") {
+			return nil, 0, nil, "", errors.New("aauth: Signature-Input parameter separator is invalid")
+		}
+		remainder = remainder[1:]
+		parameterEnd := strings.IndexByte(remainder, ';')
+		parameter := remainder
+		if parameterEnd >= 0 {
+			parameter = remainder[:parameterEnd]
+			remainder = remainder[parameterEnd:]
+		} else {
+			remainder = ""
+		}
+		name, value, ok := strings.Cut(parameter, "=")
+		if !ok || name == "" || value == "" || strings.ContainsAny(name, " ,\t\r\n") || strings.ContainsAny(value, " ,\t\r\n") {
+			return nil, 0, nil, "", errors.New("aauth: Signature-Input parameter is invalid")
+		}
+		switch name {
+		case "created":
+			if seenCreated {
+				return nil, 0, nil, "", errors.New("aauth: Signature-Input created is duplicated")
+			}
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed <= 0 {
+				return nil, 0, nil, "", errors.New("aauth: Signature-Input created is invalid")
+			}
+			created, seenCreated = parsed, true
+		case "expires":
+			if expires != nil {
+				return nil, 0, nil, "", errors.New("aauth: Signature-Input expires is duplicated")
+			}
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed <= 0 {
+				return nil, 0, nil, "", errors.New("aauth: Signature-Input expires is invalid")
+			}
+			expires = &parsed
+		}
+	}
+	if !seenCreated {
+		return nil, 0, nil, "", errors.New("aauth: Signature-Input created is required")
+	}
+	if expires != nil && *expires <= created {
+		return nil, 0, nil, "", errors.New("aauth: Signature-Input expires must be after created")
+	}
+	return components, created, expires, params, nil
+}
+
+func classifyJWTVerificationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var resolutionError *KeyResolutionError
+	if errors.As(err, &resolutionError) {
+		switch resolutionError.Code {
+		case KeyResolutionUnknown:
+			return newSignatureError(SignatureErrorUnknownKey, err)
+		case KeyResolutionDenied, KeyResolutionUnavailable:
+			return err
+		}
+	}
+	var validation *TokenValidationError
+	if errors.As(err, &validation) {
+		switch validation.Code {
+		case TokenValidationExpired:
+			return newSignatureError(SignatureErrorExpiredJWT, err)
+		case TokenValidationInvalidKey:
+			return newSignatureError(SignatureErrorInvalidKey, err)
+		}
+	}
+	return newSignatureError(SignatureErrorInvalidJWT, err)
+}
+
+func classifyJWKSURIResolutionError(err error) error {
+	var resolutionError *KeyResolutionError
+	if !errors.As(err, &resolutionError) {
+		return normalizeKeyResolutionError(err)
+	}
+	switch resolutionError.Code {
+	case KeyResolutionUnknown:
+		return newSignatureError(SignatureErrorUnknownKey, err)
+	case KeyResolutionInvalid:
+		return newSignatureError(SignatureErrorInvalidKey, err)
+	case KeyResolutionDenied, KeyResolutionUnavailable:
+		return err
+	default:
+		return newSignatureError(SignatureErrorInvalidKey, err)
+	}
 }
 
 type parsedSignatureKey struct {

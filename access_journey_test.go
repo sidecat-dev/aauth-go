@@ -230,6 +230,34 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 		t.Fatalf("lowercase AAuth access execution count = %d", executionCount)
 	}
 
+	malformedRequest, err := http.NewRequest(
+		http.MethodGet,
+		"https://resource.example/documents",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformedRequest.Header.Set("Authorization", "AAuth one two")
+	if err := aauth.SignRequest(malformedRequest, agentKey, agentToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	malformed, err := client.Do(malformedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer malformed.Body.Close()
+	if malformed.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(malformed.Body)
+		t.Fatalf("malformed AAuth access status = %d, body = %s", malformed.StatusCode, body)
+	}
+	if got := malformed.Header.Get("Signature-Error"); got != "" {
+		t.Fatalf("malformed authenticated access Signature-Error = %q", got)
+	}
+	if executionCount != 2 {
+		t.Fatalf("malformed access invoked operation; execution count = %d", executionCount)
+	}
+
 	replayed, err := client.Do(lowercaseRequest.Clone(context.Background()))
 	if err != nil {
 		t.Fatal(err)

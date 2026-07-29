@@ -236,7 +236,7 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if verified.JKTJWT != nil &&
@@ -244,7 +244,7 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 			provider.maxDelegationLifetime {
 		writeProblem(
 			response,
-			http.StatusUnauthorized,
+			http.StatusForbidden,
 			"delegation_too_long",
 			errors.New("reference: jkt-jwt delegation lifetime exceeds provider policy"),
 		)
@@ -272,13 +272,13 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 	}
 	durableThumbprint, err := verified.IdentityKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 	enrollment, err := provider.enrollments.LookupEnrollment(request.Context(), durableThumbprint)
 	if err != nil {
 		if errors.Is(err, ErrUnknownEnrollment) {
-			writeProblem(response, http.StatusUnauthorized, "unknown_enrollment", err)
+			writeProblem(response, http.StatusForbidden, "unknown_enrollment", err)
 			return
 		}
 		writeProblem(response, http.StatusInternalServerError, "enrollment_lookup_failed", err)
@@ -326,7 +326,7 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 		provider.clock.Now(),
 	); err != nil {
 		if errors.Is(err, ErrRefreshProofReplayed) {
-			writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+			writeSignatureFailure(response, err)
 			return
 		}
 		writeProblem(response, http.StatusInternalServerError, "replay_custody_failed", err)

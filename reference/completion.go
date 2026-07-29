@@ -67,11 +67,11 @@ func (server *PersonServer) handleAgentInteraction(
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if server.governanceReplayExists(verified.ReplayKey) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errGovernanceReplay)
+		writeSignatureFailure(response, errGovernanceReplay)
 		return
 	}
 	var input aauth.InteractionRequest
@@ -98,7 +98,7 @@ func (server *PersonServer) handleAgentInteraction(
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 	now := server.clock.Now()
@@ -108,12 +108,10 @@ func (server *PersonServer) handleAgentInteraction(
 		expiresAt = tokenExpiry
 	}
 	if !expiresAt.After(now) {
-		writeProblem(
-			response,
-			http.StatusUnauthorized,
-			"invalid_signature",
-			errors.New("reference: agent credential expires before completion review can begin"),
-		)
+		writeSignatureFailure(response, &aauth.SignatureError{
+			Code:  aauth.SignatureErrorExpiredJWT,
+			Cause: errors.New("reference: agent credential expired while beginning completion review"),
+		})
 		return
 	}
 	server.randomMu.Lock()
@@ -213,12 +211,12 @@ func (server *PersonServer) handlePendingAgentInteraction(
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 	switch request.Method {
@@ -383,7 +381,7 @@ func (server *PersonServer) receiveCompletionClarification(
 	thumbprint string,
 ) {
 	if server.governanceReplayExists(verified.ReplayKey) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errGovernanceReplay)
+		writeSignatureFailure(response, errGovernanceReplay)
 		return
 	}
 	body, err := readBoundedRequestBody(request)
@@ -485,7 +483,7 @@ func (server *PersonServer) receiveCompletionClarification(
 	}
 	if _, replayed := server.governanceReplays[proof.ReplayKey]; replayed {
 		server.mu.Unlock()
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errGovernanceReplay)
+		writeSignatureFailure(response, errGovernanceReplay)
 		return
 	}
 	previousPending := pending

@@ -309,12 +309,20 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
+The selected HTTP-message-signature profile supports mandatory `created` and
+optional RFC 9421 `expires` parameters, returns typed library errors, and has
+the reference handlers emit RFC 8941 `Signature-Error` dictionaries with a
+Problem Details body whose type is the Signature-Key draft's matching
+`urn:ietf:params:sig-error:` URI. Clients use the header as the authoritative
+machine-readable failure record; operational key-resolution failures remain
+local `503` failures, and a policy denial after successful authentication
+remains an ordinary `403` without signature negotiation.
 Missionless direct-AS call chaining, resource-owned interaction chaining,
 interaction/payment relay and callbacks, question delivery,
 updated-request/cancel clarification actions, restart custody for
 token/AS/resource continuations, R3, Events, platform enrollment/attestation,
-and the self-jwt, x509, Accept-Signature, and Signature-Error surfaces still
-require implementation and qualification. Without a configured
+and the self-jwt, x509, and Accept-Signature surfaces still require
+implementation and qualification. Without a configured
 `GovernanceStore`, an embedded reference person server deliberately remains
 process-local. The runnable person profile always configures the file adapter,
 which has a single-writer contract; a host embedding the package may implement

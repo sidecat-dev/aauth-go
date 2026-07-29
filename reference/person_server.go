@@ -264,11 +264,11 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if server.governanceReplayExists(verified.ReplayKey) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	var proposal aauth.MissionProposal
@@ -313,7 +313,7 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 	server.mu.Lock()
 	if _, replayed := server.governanceReplays[verified.ReplayKey]; replayed {
 		server.mu.Unlock()
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	previousReplays := copyGovernanceReplays(server.governanceReplays)
@@ -438,11 +438,11 @@ func (server *PersonServer) handlePermission(
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if server.governanceReplayExists(verified.ReplayKey) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	var input aauth.PermissionRequest
@@ -481,7 +481,7 @@ func (server *PersonServer) handlePermission(
 		if required {
 			thumbprint, err := verified.PublicKey.Thumbprint()
 			if err != nil {
-				writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+				writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 				return
 			}
 			if err := server.beginPendingPermission(
@@ -1057,12 +1057,12 @@ func (server *PersonServer) handlePendingPermission(
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 
@@ -1190,11 +1190,11 @@ func (server *PersonServer) handleAudit(
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if server.governanceReplayExists(verified.ReplayKey) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	var input aauth.AuditRequest
@@ -1301,7 +1301,7 @@ func (server *PersonServer) appendMissionLogWithReplay(
 
 func (server *PersonServer) writeMissionError(response http.ResponseWriter, err error) {
 	if errors.Is(err, errGovernanceReplay) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if errors.Is(err, ErrMissionTerminated) {
@@ -1424,11 +1424,11 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	var input struct {
@@ -1452,7 +1452,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	if input.SubagentToken != "" {
 		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, server.keyResolver, server.clock)
 		if err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_subagent_token", err)
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
 		}
 		if subagent.ParentAgent == "" || subagent.ParentAgent != verified.Agent {
@@ -1478,7 +1478,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, server.clock)
 		if err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
 		}
 		if err := server.trustedUpstreamIssuer(request.Context(), claims.Issuer); err != nil {
@@ -1509,7 +1509,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 
 	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
 	if err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
 	if resourceToken.Audience != server.identifier {
@@ -1564,7 +1564,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 
 	pollingAgentThumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 	authorizationContext := personAuthorizationContext{
@@ -1978,12 +1978,12 @@ func (server *PersonServer) handlePendingAuthorization(
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 
@@ -2298,7 +2298,12 @@ func (server *PersonServer) pollFederatedAuthorization(
 		status := response.StatusCode
 		code := "federation_failed"
 		detail := errors.New("access server returned a terminal response")
-		if strings.HasPrefix(
+		if response.StatusCode == http.StatusUnauthorized {
+			// The agent authenticated successfully to this person server.
+			// A PS-to-AS authentication failure is an upstream federation
+			// failure, not a new challenge to the agent.
+			status = http.StatusBadGateway
+		} else if strings.HasPrefix(
 			strings.ToLower(response.Header.Get("Content-Type")),
 			"application/problem+json",
 		) {

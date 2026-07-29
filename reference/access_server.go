@@ -118,7 +118,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
 	})
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if err := server.trustedPersonServer(request.Context(), verified.Signer); err != nil {
@@ -126,7 +126,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request proof was replayed"))
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 
@@ -143,7 +143,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	}
 	agentToken, err := aauth.VerifyAgentToken(request.Context(), input.AgentToken, server.keyResolver, server.clock)
 	if err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", err)
+		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_agent_token", err)
 		return
 	}
 	if agentToken.ParentAgent != "" {
@@ -162,7 +162,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	if input.SubagentToken != "" {
 		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, server.keyResolver, server.clock)
 		if err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_subagent_token", err)
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
 		}
 		if subagent.ParentAgent != agentToken.Subject {
@@ -184,7 +184,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		}
 		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, server.clock)
 		if err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
 		}
 		if err := server.trustedUpstreamIssuer(request.Context(), claims.Issuer); err != nil {
@@ -210,7 +210,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 
 	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
 	if err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
 	if resourceToken.Audience != server.identifier {
@@ -247,7 +247,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	}
 	pollingKeyThumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 	authorizationContext := accessServerAuthorizationContext{
@@ -496,7 +496,7 @@ func (server *AccessServer) handlePendingAuthorization(
 		},
 	)
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)
+		writeSignatureFailure(response, err)
 		return
 	}
 	if err := server.trustedPersonServer(request.Context(), verified.Signer); err != nil {
@@ -505,7 +505,7 @@ func (server *AccessServer) handlePendingAuthorization(
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_key", err)
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
 

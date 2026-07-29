@@ -712,11 +712,15 @@
       "source": "core",
       "section": "error-response-format",
       "status": "partial",
-      "claim": "The supported problem response fields and wire validation are implemented; endpoint-specific error coverage is incomplete.",
+      "claim": "Problem Details are implemented, and reference signature-verification failures use the matching 401 Signature-Error header and sig-error URN; endpoint-specific coverage beyond that profile remains incomplete.",
       "evidence": [
         {
           "file": "problem_test.go",
           "test": "TestDecodeProblemResponseRejectsInvalidWireValue"
+        },
+        {
+          "file": "reference/signature_error_test.go",
+          "test": "TestResourceReportsSignatureFailuresAsSignatureError"
         }
       ]
     },
@@ -724,7 +728,7 @@
       "source": "core",
       "section": "http-message-signatures-profile",
       "status": "partial",
-      "claim": "The selected Ed25519 request-signing profile is implemented with two Signature-Key schemes; algorithms and schemes outside that profile are open.",
+      "claim": "The selected Ed25519 request-signing profile enforces created freshness, optional RFC 9421 expires freshness, required components, and typed verification failures; algorithms and schemes outside that profile remain open.",
       "evidence": [
         {
           "file": "request_security_test.go",
@@ -733,6 +737,10 @@
         {
           "file": "http_signature_jwks_test.go",
           "test": "TestJWKSURIRequestIdentitySignsAndVerifies"
+        },
+        {
+          "file": "signature_error_test.go",
+          "test": "TestVerifyRequestClassifiesExpiresAndRequiredInputs"
         }
       ]
     },
@@ -957,8 +965,26 @@
     {
       "source": "signature-key",
       "section": "name-signature-error-http-respon",
-      "status": "unsupported",
-      "claim": "The Signature-Error response header is not implemented."
+      "status": "partial",
+      "claim": "The RFC 8941 codec and AAuth reference response path are exercised, including unknown-member tolerance, authoritative header decoding, operational resolution failures, and post-authentication policy denial. The AAuth core and Signature-Key drafts assign different codes to missing proof headers; the AAuth profile follows core invalid_request, so generic Signature-Key response conformance is not claimed.",
+      "evidence": [
+        {
+          "file": "signature_error_test.go",
+          "test": "TestSignatureErrorWireContract"
+        },
+        {
+          "file": "signature_error_test.go",
+          "test": "TestSignatureErrorIgnoresRFC8941UnknownMembers"
+        },
+        {
+          "file": "reference/signature_error_test.go",
+          "test": "TestResourceReportsSignatureFailuresAsSignatureError"
+        },
+        {
+          "file": "reference/signature_error_test.go",
+          "test": "TestResourcePolicyDenialIsNotASignatureFailure"
+        }
+      ]
     },
     {
       "source": "signature-key",
