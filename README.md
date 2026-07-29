@@ -309,14 +309,16 @@ go vet ./...
 ```
 
 Current scope is deliberately stated as a vertical, not full AAuth conformance.
-Four-party call chaining, interaction/payment relay and callbacks, question
-delivery, updated-request/cancel clarification actions, restart custody for
+Missionless direct-AS call chaining, resource-owned interaction chaining,
+interaction/payment relay and callbacks, question delivery,
+updated-request/cancel clarification actions, restart custody for
 token/AS/resource continuations, R3, Events, platform enrollment/attestation,
 and the self-jwt, x509, Accept-Signature, and Signature-Error surfaces still
 require implementation and qualification. Without a configured
 `GovernanceStore`, an embedded reference person server deliberately remains
 process-local. The runnable person profile always configures the file adapter,
-which has a single-writer contract; a Sidecat or other host embedding the
-package may implement the same standalone interface with its own durable store.
+which has a single-writer contract; a host embedding the package may implement
+the same standalone interface with its own durable store.
 
-No upstream contribution or repository is implied by this local project.
+This repository is being prepared for upstream stewardship; no remote or
+repository-custody transfer has occurred.

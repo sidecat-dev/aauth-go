@@ -94,6 +94,7 @@ type personAuthorizationContext struct {
 	resourceTokenCompact   string
 	agentTokenCompact      string
 	subagentTokenCompact   string
+	upstreamTokenCompact   string
 	targetAgent            string
 	targetKey              aauth.JWK
 	parentAgent            string
@@ -1444,11 +1445,6 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request authorization directly"))
 		return
 	}
-	if input.SubagentToken != "" && input.UpstreamToken != "" {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("subagent_token and upstream_token cannot be combined"))
-		return
-	}
-
 	targetAgent := verified.Agent
 	targetKey := verified.PublicKey
 	parentAgent := ""
@@ -1489,6 +1485,9 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", err)
 			return
 		}
+		// The upstream token's agent and confirmation key identify the
+		// upstream caller. The intermediary resource is bound by the
+		// token audience and its agent-token issuer.
 		if claims.Audience != verified.AgentToken.Issuer {
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth-token audience does not match intermediary issuer"))
 			return
@@ -1503,6 +1502,9 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		upstream = &claims
+		if claims.ExpiresAt < targetTokenExpiry {
+			targetTokenExpiry = claims.ExpiresAt
+		}
 	}
 
 	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
@@ -1548,7 +1550,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 		missionOwner := verified.Agent
 		if upstream != nil {
-			missionOwner = upstream.Agent
+			missionOwner = delegationOriginAgent(*upstream)
 			if upstream.Mission == nil || *upstream.Mission != *resourceToken.Mission {
 				writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream mission does not match upstream authorization"))
 				return
@@ -1578,6 +1580,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		resourceTokenCompact:   input.ResourceToken,
 		agentTokenCompact:      verified.RawCredential,
 		subagentTokenCompact:   input.SubagentToken,
+		upstreamTokenCompact:   input.UpstreamToken,
 		targetAgent:            targetAgent,
 		targetKey:              targetKey,
 		parentAgent:            parentAgent,
@@ -1603,7 +1606,10 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 	}
 
-	decision, err := server.authorizationPolicy(request.Context(), authorizationContext.request)
+	decision, err := server.authorizationPolicy(
+		request.Context(),
+		copyAuthorizationRequest(authorizationContext.request),
+	)
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
 		return
@@ -1624,19 +1630,20 @@ func (server *PersonServer) completeAuthorization(
 	resourceToken := authorizationContext.resourceToken
 	now := server.clock.Now()
 	if resourceToken.Audience != server.identifier {
-		if authorizationContext.request.Upstream != nil {
-			writeProblem(response, http.StatusNotImplemented, "federation_failed", errors.New("four-party call chaining is not yet implemented"))
-			return
-		}
+		expectedActor := authorizationActor(
+			authorizationContext.request.Upstream,
+			authorizationContext.parentAgent,
+		)
 		exchange, err := server.exchangeWithAccessServer(
 			ctx,
 			resourceToken.Audience,
 			authorizationContext.resourceTokenCompact,
 			authorizationContext.agentTokenCompact,
 			authorizationContext.subagentTokenCompact,
+			authorizationContext.upstreamTokenCompact,
 			authorizationContext.targetAgent,
 			authorizationContext.targetKey,
-			authorizationContext.parentAgent,
+			expectedActor,
 			resourceToken,
 			decision,
 		)
@@ -1667,15 +1674,10 @@ func (server *PersonServer) completeAuthorization(
 	if authorizationContext.targetTokenExpiresAt < expiresAt {
 		expiresAt = authorizationContext.targetTokenExpiresAt
 	}
-	var actor *aauth.Actor
-	if authorizationContext.request.Upstream != nil {
-		actor = &aauth.Actor{
-			Agent: authorizationContext.pollingAgent,
-			Actor: authorizationContext.request.Upstream.Actor,
-		}
-	} else if authorizationContext.parentAgent != "" {
-		actor = &aauth.Actor{Agent: authorizationContext.parentAgent}
-	}
+	actor := authorizationActor(
+		authorizationContext.request.Upstream,
+		authorizationContext.parentAgent,
+	)
 	authToken, err := aauth.MintAuthToken(server.signingKey, aauth.AuthTokenClaims{
 		Issuer:       server.identifier,
 		DWK:          aauth.PersonDiscoveryDocument,
@@ -2220,13 +2222,17 @@ func (server *PersonServer) pollFederatedAuthorization(
 
 	switch response.StatusCode {
 	case http.StatusOK:
+		expectedActor := authorizationActor(
+			authorizationContext.request.Upstream,
+			authorizationContext.parentAgent,
+		)
 		exchange, err := server.parseAccessServerGrant(
 			ctx,
 			response,
 			federated.accessServer,
 			authorizationContext.targetAgent,
 			authorizationContext.targetKey,
-			authorizationContext.parentAgent,
+			expectedActor,
 			authorizationContext.resourceToken,
 			personDecision,
 		)
@@ -2413,9 +2419,10 @@ func (server *PersonServer) exchangeWithAccessServer(
 	resourceTokenCompact string,
 	agentTokenCompact string,
 	subagentTokenCompact string,
+	upstreamTokenCompact string,
 	targetAgent string,
 	targetKey aauth.JWK,
-	parentAgent string,
+	expectedActor *aauth.Actor,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
 ) (accessServerExchange, error) {
@@ -2440,6 +2447,9 @@ func (server *PersonServer) exchangeWithAccessServer(
 	}
 	if subagentTokenCompact != "" {
 		input["subagent_token"] = subagentTokenCompact
+	}
+	if upstreamTokenCompact != "" {
+		input["upstream_token"] = upstreamTokenCompact
 	}
 	body, err := json.Marshal(input)
 	if err != nil {
@@ -2480,7 +2490,7 @@ func (server *PersonServer) exchangeWithAccessServer(
 			accessServerIdentifier,
 			targetAgent,
 			targetKey,
-			parentAgent,
+			expectedActor,
 			resourceToken,
 			personDecision,
 		)
@@ -2496,7 +2506,7 @@ func (server *PersonServer) parseAccessServerGrant(
 	accessServerIdentifier string,
 	targetAgent string,
 	targetKey aauth.JWK,
-	parentAgent string,
+	expectedActor *aauth.Actor,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
 ) (accessServerExchange, error) {
@@ -2535,12 +2545,8 @@ func (server *PersonServer) parseAccessServerGrant(
 			return exchange, errors.New("access-server auth token changed the mission reference")
 		}
 	}
-	if parentAgent == "" {
-		if claims.Actor != nil {
-			return exchange, errors.New("access-server auth token unexpectedly contains an act chain")
-		}
-	} else if claims.Actor == nil || claims.Actor.Agent != parentAgent {
-		return exchange, errors.New("access-server auth token does not name the parent agent")
+	if !actorsEqual(claims.Actor, expectedActor) {
+		return exchange, errors.New("access-server auth token contains an unexpected act chain")
 	}
 	exchange.authToken = result.AuthToken
 	exchange.claims = claims

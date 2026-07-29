@@ -8,8 +8,8 @@ Profile: AAuth Go maintained supported profile
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 55 |
-| Partial | 20 |
+| Exercised | 54 |
+| Partial | 21 |
 | Unsupported | 21 |
 | Informational | 0 |
 | Unclaimed | 369 |
@@ -20,7 +20,7 @@ Profile: AAuth Go maintained supported profile
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 44 | 16 | 3 | 0 | 165 |
+| `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 43 | 17 | 3 | 0 | 165 |
 | `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 2 | 4 | 0 | 62 |
 | `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 0 | 5 | 0 | 44 |
 | `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 0 | 7 | 0 | 57 |
@@ -180,11 +180,12 @@ Evidence:
 
 ### `core/call-chaining` — Partial
 
-Three-party downstream call chaining is implemented; four-party chaining and general interaction chaining remain open.
+Mission-governed multi-hop call chaining crosses three- and four-party authorization, composes with parent-mediated sub-agents, preserves nested delegation, and supports immediate and deferred access-server issuance. Missionless direct-AS routing and resource-owned interaction chaining remain open.
 
 Evidence:
 
 - `call_chaining_journey_test.go:TestResourceExtendsAuthorizationToDownstreamResource`
+- `call_chaining_journey_test.go:TestResourceExtendsAuthorizationThroughDownstreamAccessServer`
 
 ### `core/covered-components` — Exercised
 
@@ -237,10 +238,12 @@ Evidence:
 
 ### `core/freshness-and-replay` — Exercised
 
-The supported endpoints enforce a bounded signature window and reject exact proof replay.
+The supported endpoints enforce a bounded signature window and reject exact proof replay within one live process. Governance endpoints backed by GovernanceStore retain applicable replay decisions across restart; token, access-server, and resource replay caches remain process-local.
 
 Evidence:
 
+- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
+- `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
 - `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
 
 ### `core/http-message-signatures-profile` — Partial
@@ -548,13 +551,14 @@ Third-party login is not implemented.
 
 Token revocation is not implemented.
 
-### `core/upstream-token-verification` — Exercised
+### `core/upstream-token-verification` — Partial
 
-A downstream call verifies the upstream token as evidence while binding new authority to the intermediary's own key.
+Person and access servers verify upstream JWT trust, issuer admission, mission continuity, and the draft step-3 audience-to-intermediary-agent-token-issuer binding before policy. The person server forwards the compact token unchanged. Actor construction follows the coherent delegation-chain semantics recorded in feedback N5 rather than contradictory step 4, so the source section remains partial pending draft resolution.
 
 Evidence:
 
 - `call_chaining_journey_test.go:TestResourceExtendsAuthorizationToDownstreamResource`
+- `call_chaining_journey_test.go:TestResourceExtendsAuthorizationThroughDownstreamAccessServer`
 
 ### `core/verification` — Exercised
 

@@ -882,6 +882,32 @@ func (agent *Agent) AuthorizeSubagent(
 	return *authorization.Grant, nil
 }
 
+// AuthorizeChainedSubagent lets a resource acting as a parent agent extend its
+// upstream authorization to a sub-agent. The returned token is bound to the
+// sub-agent and records both the parent and the upstream delegation chain.
+func (agent *Agent) AuthorizeChainedSubagent(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	subagentToken string,
+	upstreamToken string,
+) (Grant, error) {
+	authorization, err := agent.RequestChainedSubagentTokenAuthorization(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		subagentToken,
+		upstreamToken,
+	)
+	if err != nil {
+		return Grant{}, err
+	}
+	if authorization.Grant == nil {
+		return Grant{}, errors.New("reference: chained sub-agent authorization is pending; use RequestChainedSubagentTokenAuthorization and PollTokenAuthorization")
+	}
+	return *authorization.Grant, nil
+}
+
 // RequestSubagentTokenAuthorization lets a parent exchange a sub-agent's
 // resource token and receive either an immediate grant or a continuation the
 // parent polls with its own proof.
@@ -890,6 +916,43 @@ func (agent *Agent) RequestSubagentTokenAuthorization(
 	personServerEndpoint string,
 	resourceGrant ResourceGrant,
 	subagentToken string,
+) (TokenAuthorization, error) {
+	return agent.requestSubagentTokenAuthorization(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		subagentToken,
+		"",
+	)
+}
+
+// RequestChainedSubagentTokenAuthorization is the deferred-capable form of
+// AuthorizeChainedSubagent.
+func (agent *Agent) RequestChainedSubagentTokenAuthorization(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	subagentToken string,
+	upstreamToken string,
+) (TokenAuthorization, error) {
+	if upstreamToken == "" {
+		return TokenAuthorization{}, errors.New("reference: upstream auth token is required")
+	}
+	return agent.requestSubagentTokenAuthorization(
+		ctx,
+		personServerEndpoint,
+		resourceGrant,
+		subagentToken,
+		upstreamToken,
+	)
+}
+
+func (agent *Agent) requestSubagentTokenAuthorization(
+	ctx context.Context,
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+	subagentToken string,
+	upstreamToken string,
 ) (TokenAuthorization, error) {
 	parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
 	if err != nil {
@@ -913,6 +976,28 @@ func (agent *Agent) RequestSubagentTokenAuthorization(
 		resourceGrant.Claims.AgentJKT != subagentThumbprint {
 		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the sub-agent")
 	}
+	expectedActor := &aauth.Actor{Agent: agent.identifier}
+	if upstreamToken != "" {
+		upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return TokenAuthorization{}, err
+		}
+		if upstream.Audience != parentClaims.Issuer {
+			return TokenAuthorization{}, errors.New("reference: upstream auth-token audience does not match intermediary issuer")
+		}
+		personServerID, err := endpointIdentifier(personServerEndpoint)
+		if err != nil {
+			return TokenAuthorization{}, err
+		}
+		if upstream.Mission != nil {
+			if upstream.Mission.Approver != personServerID {
+				return TokenAuthorization{}, errors.New("reference: upstream mission routes to a different person server")
+			}
+		} else if upstream.Issuer != personServerID {
+			return TokenAuthorization{}, errors.New("reference: upstream token without a mission routes to its issuer")
+		}
+		expectedActor = authorizationActor(&upstream, agent.identifier)
+	}
 	return agent.requestTokenAuthorization(
 		ctx,
 		personServerEndpoint,
@@ -920,8 +1005,8 @@ func (agent *Agent) RequestSubagentTokenAuthorization(
 		subagentToken,
 		subagentClaims.Subject,
 		subagentClaims.Confirmation.JWK,
-		&aauth.Actor{Agent: agent.identifier},
-		"",
+		expectedActor,
+		upstreamToken,
 	)
 }
 
@@ -966,6 +1051,9 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
+	// The upstream token remains bound to the upstream caller. The
+	// intermediary resource is selected by its audience and proves its own
+	// identity with the separately presented agent token and request key.
 	if upstream.Audience != agentClaims.Issuer {
 		return TokenAuthorization{}, errors.New("reference: upstream auth-token audience does not match intermediary issuer")
 	}
@@ -994,7 +1082,7 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 		"",
 		agent.identifier,
 		agent.signingKey.PublicJWK(),
-		&aauth.Actor{Agent: agent.identifier, Actor: upstream.Actor},
+		authorizationActor(&upstream, ""),
 		upstreamToken,
 	)
 }
@@ -1300,6 +1388,37 @@ func copyActor(actor *aauth.Actor) *aauth.Actor {
 		Agent: actor.Agent,
 		Actor: copyActor(actor.Actor),
 	}
+}
+
+// authorizationActor preserves delegation order. A parent-mediated sub-agent
+// records its parent first; call-chain delegation then records the upstream
+// token's agent followed by any actor links that token already carried.
+func authorizationActor(upstream *aauth.AuthTokenClaims, parentAgent string) *aauth.Actor {
+	if upstream != nil {
+		upstreamActor := &aauth.Actor{
+			Agent: upstream.Agent,
+			Actor: copyActor(upstream.Actor),
+		}
+		if parentAgent != "" {
+			return &aauth.Actor{
+				Agent: parentAgent,
+				Actor: upstreamActor,
+			}
+		}
+		return upstreamActor
+	}
+	if parentAgent != "" {
+		return &aauth.Actor{Agent: parentAgent}
+	}
+	return nil
+}
+
+func delegationOriginAgent(upstream aauth.AuthTokenClaims) string {
+	agent := upstream.Agent
+	for actor := upstream.Actor; actor != nil; actor = actor.Actor {
+		agent = actor.Agent
+	}
+	return agent
 }
 
 func actorsEqual(left, right *aauth.Actor) bool {

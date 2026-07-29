@@ -537,12 +537,16 @@
     {
       "source": "core",
       "section": "upstream-token-verification",
-      "status": "exercised",
-      "claim": "A downstream call verifies the upstream token as evidence while binding new authority to the intermediary's own key.",
+      "status": "partial",
+      "claim": "Person and access servers verify upstream JWT trust, issuer admission, mission continuity, and the draft step-3 audience-to-intermediary-agent-token-issuer binding before policy. The person server forwards the compact token unchanged. Actor construction follows the coherent delegation-chain semantics recorded in feedback N5 rather than contradictory step 4, so the source section remains partial pending draft resolution.",
       "evidence": [
         {
           "file": "call_chaining_journey_test.go",
           "test": "TestResourceExtendsAuthorizationToDownstreamResource"
+        },
+        {
+          "file": "call_chaining_journey_test.go",
+          "test": "TestResourceExtendsAuthorizationThroughDownstreamAccessServer"
         }
       ]
     },
@@ -550,11 +554,15 @@
       "source": "core",
       "section": "call-chaining",
       "status": "partial",
-      "claim": "Three-party downstream call chaining is implemented; four-party chaining and general interaction chaining remain open.",
+      "claim": "Mission-governed multi-hop call chaining crosses three- and four-party authorization, composes with parent-mediated sub-agents, preserves nested delegation, and supports immediate and deferred access-server issuance. Missionless direct-AS routing and resource-owned interaction chaining remain open.",
       "evidence": [
         {
           "file": "call_chaining_journey_test.go",
           "test": "TestResourceExtendsAuthorizationToDownstreamResource"
+        },
+        {
+          "file": "call_chaining_journey_test.go",
+          "test": "TestResourceExtendsAuthorizationThroughDownstreamAccessServer"
         }
       ]
     },
@@ -756,8 +764,16 @@
       "source": "core",
       "section": "freshness-and-replay",
       "status": "exercised",
-      "claim": "The supported endpoints enforce a bounded signature window and reject exact proof replay.",
+      "claim": "The supported endpoints enforce a bounded signature window and reject exact proof replay within one live process. Governance endpoints backed by GovernanceStore retain applicable replay decisions across restart; token, access-server, and resource replay caches remain process-local.",
       "evidence": [
+        {
+          "file": "journey_test.go",
+          "test": "TestThreePartyMissionAuthorizationJourney"
+        },
+        {
+          "file": "deferred_person_server_journey_test.go",
+          "test": "TestPersonServerDeferredAuthorizationVertical"
+        },
         {
           "file": "governance_restart_test.go",
           "test": "TestPersonServerGovernanceSurvivesRestart"

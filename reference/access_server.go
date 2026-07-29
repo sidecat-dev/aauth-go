@@ -20,23 +20,27 @@ type AccessServerConfig struct {
 	Clock               aauth.Clock
 	NewID               func() string
 	TrustedPersonServer func(context.Context, string) error
-	AuthorizationPolicy aauth.AuthorizationPolicy
-	InteractionRequired func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	Random              io.Reader
-	PendingLifetime     time.Duration
+	// TrustedUpstreamIssuer admits auth-token issuers whose established
+	// authorization the access server may extend through call chaining.
+	TrustedUpstreamIssuer func(context.Context, string) error
+	AuthorizationPolicy   aauth.AuthorizationPolicy
+	InteractionRequired   func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	Random                io.Reader
+	PendingLifetime       time.Duration
 }
 
 type AccessServer struct {
-	identifier          string
-	signingKey          aauth.SigningKey
-	keyResolver         aauth.KeyResolver
-	clock               aauth.Clock
-	newID               func() string
-	trustedPersonServer func(context.Context, string) error
-	authorizationPolicy aauth.AuthorizationPolicy
-	interactionRequired func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	random              io.Reader
-	pendingLifetime     time.Duration
+	identifier            string
+	signingKey            aauth.SigningKey
+	keyResolver           aauth.KeyResolver
+	clock                 aauth.Clock
+	newID                 func() string
+	trustedPersonServer   func(context.Context, string) error
+	trustedUpstreamIssuer func(context.Context, string) error
+	authorizationPolicy   aauth.AuthorizationPolicy
+	interactionRequired   func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	random                io.Reader
+	pendingLifetime       time.Duration
 
 	replayMu      sync.Mutex
 	replayedProof map[string]time.Time
@@ -82,18 +86,19 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		random = rand.Reader
 	}
 	return &AccessServer{
-		identifier:          config.Identifier,
-		signingKey:          config.SigningKey,
-		keyResolver:         config.KeyResolver,
-		clock:               config.Clock,
-		newID:               config.NewID,
-		trustedPersonServer: config.TrustedPersonServer,
-		authorizationPolicy: config.AuthorizationPolicy,
-		interactionRequired: config.InteractionRequired,
-		random:              random,
-		pendingLifetime:     pendingLifetime,
-		replayedProof:       make(map[string]time.Time),
-		pending:             make(map[string]*pendingAccessServerAuthorization),
+		identifier:            config.Identifier,
+		signingKey:            config.SigningKey,
+		keyResolver:           config.KeyResolver,
+		clock:                 config.Clock,
+		newID:                 config.NewID,
+		trustedPersonServer:   config.TrustedPersonServer,
+		trustedUpstreamIssuer: config.TrustedUpstreamIssuer,
+		authorizationPolicy:   config.AuthorizationPolicy,
+		interactionRequired:   config.InteractionRequired,
+		random:                random,
+		pendingLifetime:       pendingLifetime,
+		replayedProof:         make(map[string]time.Time),
+		pending:               make(map[string]*pendingAccessServerAuthorization),
 	}, nil
 }
 
@@ -129,6 +134,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		ResourceToken string `json:"resource_token"`
 		AgentToken    string `json:"agent_token"`
 		SubagentToken string `json:"subagent_token,omitempty"`
+		UpstreamToken string `json:"upstream_token,omitempty"`
 	}
 	if err := decodeJSON(response, request, &input); err != nil ||
 		input.ResourceToken == "" || input.AgentToken == "" {
@@ -170,6 +176,37 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			targetExpiry = subagent.ExpiresAt
 		}
 	}
+	var upstream *aauth.AuthTokenClaims
+	if input.UpstreamToken != "" {
+		if server.trustedUpstreamIssuer == nil {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("call chaining is not configured"))
+			return
+		}
+		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, server.clock)
+		if err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			return
+		}
+		if err := server.trustedUpstreamIssuer(request.Context(), claims.Issuer); err != nil {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", err)
+			return
+		}
+		// The upstream token's agent and confirmation key identify the
+		// upstream caller. The intermediary resource is bound by the
+		// token audience and its agent-token issuer.
+		if claims.Audience != agentToken.Issuer {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth-token audience does not match intermediary issuer"))
+			return
+		}
+		if claims.Mission != nil && claims.Mission.Approver != verified.Signer {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream mission names a different person server"))
+			return
+		}
+		if claims.ExpiresAt < targetExpiry {
+			targetExpiry = claims.ExpiresAt
+		}
+		upstream = &claims
+	}
 
 	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
 	if err != nil {
@@ -193,6 +230,16 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("mission approver does not match person server"))
 		return
 	}
+	if upstream != nil {
+		if (upstream.Mission == nil) != (resourceToken.Mission == nil) {
+			writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream and upstream mission presence differs"))
+			return
+		}
+		if upstream.Mission != nil && *upstream.Mission != *resourceToken.Mission {
+			writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream mission does not match upstream authorization"))
+			return
+		}
+	}
 	scopes, err := parseScopes(resourceToken.Scope)
 	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
@@ -210,6 +257,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			Resource:    resourceToken.Issuer,
 			Scope:       append([]string(nil), scopes...),
 			Mission:     resourceToken.Mission,
+			Upstream:    upstream,
 		},
 		resourceToken:        resourceToken,
 		targetAgent:          targetAgent,
@@ -235,7 +283,10 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 	}
-	decision, err := server.authorizationPolicy(request.Context(), authorizationContext.request)
+	decision, err := server.authorizationPolicy(
+		request.Context(),
+		copyAuthorizationRequest(authorizationContext.request),
+	)
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
 		return
@@ -252,10 +303,10 @@ func (server *AccessServer) completeAuthorization(
 	authorizationContext accessServerAuthorizationContext,
 	decision aauth.AuthorizationDecision,
 ) {
-	var actor *aauth.Actor
-	if authorizationContext.parentAgent != "" {
-		actor = &aauth.Actor{Agent: authorizationContext.parentAgent}
-	}
+	actor := authorizationActor(
+		authorizationContext.request.Upstream,
+		authorizationContext.parentAgent,
+	)
 	now := server.clock.Now()
 	expiresAt := now.Add(time.Hour).Unix()
 	if authorizationContext.targetTokenExpiresAt < expiresAt {
