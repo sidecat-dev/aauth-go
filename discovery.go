@@ -396,7 +396,8 @@ func (resolver *HTTPKeyResolver) rememberDiscoveryFailureLocked(
 			delete(resolver.attempts, existingKey)
 			continue
 		}
-		if oldestAt.IsZero() || attempt.at.Before(oldestAt) {
+		if oldestAt.IsZero() || attempt.at.Before(oldestAt) ||
+			(attempt.at.Equal(oldestAt) && discoveryCacheKeyBefore(existingKey, oldestKey)) {
 			oldestKey = existingKey
 			oldestAt = attempt.at
 		}
@@ -420,7 +421,8 @@ func (resolver *HTTPKeyResolver) rememberDiscoveryEntryLocked(
 			delete(resolver.cache, existingKey)
 			continue
 		}
-		if oldestAt.IsZero() || existing.fetchedAt.Before(oldestAt) {
+		if oldestAt.IsZero() || existing.fetchedAt.Before(oldestAt) ||
+			(existing.fetchedAt.Equal(oldestAt) && discoveryCacheKeyBefore(existingKey, oldestKey)) {
 			oldestKey = existingKey
 			oldestAt = existing.fetchedAt
 		}
@@ -430,6 +432,13 @@ func (resolver *HTTPKeyResolver) rememberDiscoveryEntryLocked(
 		delete(resolver.cache, oldestKey)
 	}
 	resolver.cache[key] = entry
+}
+
+func discoveryCacheKeyBefore(left, right discoveryCacheKey) bool {
+	if left.issuer != right.issuer {
+		return left.issuer < right.issuer
+	}
+	return left.document < right.document
 }
 
 func (resolver *HTTPKeyResolver) fetch(

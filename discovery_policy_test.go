@@ -368,6 +368,91 @@ func TestHTTPKeyResolverRetainedStateIsBounded(t *testing.T) {
 	}
 }
 
+func TestHTTPKeyResolverEvictsTiedRetainedStateDeterministically(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	key := testSigningKey(t, "issuer-key")
+	var mu sync.Mutex
+	calls := make(map[string]int)
+	handlers := make(map[string]http.Handler)
+	for _, prefix := range []string{"success", "failure"} {
+		for _, suffix := range []string{"alpha", "beta", "gamma"} {
+			host := prefix + "-" + suffix + ".example"
+			hostCopy := host
+			handlers[host] = http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				mu.Lock()
+				calls[hostCopy+request.URL.Path]++
+				mu.Unlock()
+				if strings.HasPrefix(hostCopy, "failure-") {
+					http.Error(response, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				response.Header().Set("Cache-Control", "max-age=300")
+				switch request.URL.Path {
+				case "/.well-known/aauth-resource.json":
+					_, _ = fmt.Fprintf(response, `{"issuer":"https://%s","jwks_uri":"https://%s/jwks"}`, hostCopy, hostCopy)
+				case "/jwks":
+					_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
+				default:
+					http.NotFound(response, request)
+				}
+			})
+		}
+	}
+	gateway := newLogicalGateway(t, handlers)
+	defer gateway.Close()
+
+	for iteration := 0; iteration < 64; iteration++ {
+		resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+			Client: gateway.Client(),
+			Clock:  aauth.ClockFunc(func() time.Time { return now }),
+			Admit:  func(context.Context, string) error { return nil },
+			Limits: aauth.HTTPKeyResolverLimits{PositiveEntries: 2, NegativeEntries: 2, InFlightEntries: 2},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, suffix := range []string{"beta", "alpha", "gamma"} {
+			host := "success-" + suffix + ".example"
+			if _, err := resolver.ResolveKey(context.Background(), "https://"+host, aauth.ResourceDiscoveryDocument, "issuer-key"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mu.Lock()
+		beforePositive := calls["success-alpha.example/.well-known/aauth-resource.json"]
+		mu.Unlock()
+		if _, err := resolver.ResolveKey(context.Background(), "https://success-alpha.example", aauth.ResourceDiscoveryDocument, "issuer-key"); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		afterPositive := calls["success-alpha.example/.well-known/aauth-resource.json"]
+		mu.Unlock()
+		if afterPositive != beforePositive+1 {
+			t.Fatalf("iteration %d retained tied positive alpha entry; fetches %d -> %d", iteration, beforePositive, afterPositive)
+		}
+
+		for _, suffix := range []string{"beta", "alpha", "gamma"} {
+			host := "failure-" + suffix + ".example"
+			if _, err := resolver.ResolveKey(context.Background(), "https://"+host, aauth.ResourceDiscoveryDocument, "issuer-key"); err == nil {
+				t.Fatalf("%s unexpectedly resolved", host)
+			}
+		}
+		mu.Lock()
+		beforeNegative := calls["failure-alpha.example/.well-known/aauth-resource.json"]
+		mu.Unlock()
+		if _, err := resolver.ResolveKey(context.Background(), "https://failure-alpha.example", aauth.ResourceDiscoveryDocument, "issuer-key"); err == nil {
+			t.Fatal("failure-alpha.example unexpectedly resolved")
+		}
+		mu.Lock()
+		afterNegative := calls["failure-alpha.example/.well-known/aauth-resource.json"]
+		mu.Unlock()
+		if afterNegative != beforeNegative+1 {
+			t.Fatalf("iteration %d retained tied negative alpha entry; fetches %d -> %d", iteration, beforeNegative, afterNegative)
+		}
+	}
+}
+
 func TestHTTPKeyResolverBoundsConcurrentUniqueInflight(t *testing.T) {
 	t.Parallel()
 
