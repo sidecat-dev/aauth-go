@@ -61,6 +61,7 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 		clock:       clock,
 		newID:       ids,
 		store:       apStore,
+		resolver:    resolver,
 		activeUntil: activeUntil,
 	})
 	resource := newEventResource(t, eventResourceInput{
@@ -144,6 +145,7 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 		clock:       clock,
 		newID:       ids,
 		store:       apStore,
+		resolver:    resolver,
 		activeUntil: activeUntil,
 	})
 	handlers.set("ap.example", ap.Handler())
@@ -184,6 +186,7 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 		clock:       clock,
 		newID:       ids,
 		store:       apStore,
+		resolver:    resolver,
 		activeUntil: activeUntil,
 	})
 	resource = newEventResource(t, eventResourceInput{
@@ -380,6 +383,7 @@ type eventProviderInput struct {
 	clock       aauth.Clock
 	newID       func() string
 	store       reference.APEventStore
+	resolver    aauth.KeyResolver
 	activeUntil time.Time
 }
 
@@ -393,6 +397,7 @@ func newEventProvider(t *testing.T, input eventProviderInput) *reference.AgentPr
 		Events: &reference.AgentProviderEventsConfig{
 			EventEndpoint: input.endpoint,
 			Store:         input.store,
+			KeyResolver:   input.resolver,
 			SubscriptionActiveUntil: func(context.Context, string, string) (time.Time, error) {
 				return input.activeUntil, nil
 			},

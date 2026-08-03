@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -127,6 +128,7 @@ type AgentProviderConfig struct {
 type AgentProviderEventsConfig struct {
 	EventEndpoint           string
 	Store                   APEventStore
+	KeyResolver             aauth.KeyResolver
 	SubscriptionActiveUntil func(context.Context, string, string) (time.Time, error)
 	TokenLifetime           time.Duration
 }
@@ -148,7 +150,9 @@ type AgentProvider struct {
 	clock                 aauth.Clock
 	newID                 func() string
 	eventEndpoint         string
+	eventEndpointPath     string
 	eventStore            APEventStore
+	eventKeyResolver      aauth.KeyResolver
 	eventActiveUntil      func(context.Context, string, string) (time.Time, error)
 	eventTokenLifetime    time.Duration
 	enrollments           EnrollmentStore
@@ -172,7 +176,9 @@ func NewAgentProvider(config AgentProviderConfig) (*AgentProvider, error) {
 		return nil, errors.New("reference: agent provider identifier source is required")
 	}
 	var eventEndpoint string
+	var eventEndpointPath string
 	var eventStore APEventStore
+	var eventKeyResolver aauth.KeyResolver
 	var eventActiveUntil func(context.Context, string, string) (time.Time, error)
 	var eventTokenLifetime time.Duration
 	if config.Events != nil {
@@ -182,6 +188,9 @@ func NewAgentProvider(config AgentProviderConfig) (*AgentProvider, error) {
 		if config.Events.Store == nil {
 			return nil, errors.New("reference: agent provider event store is required")
 		}
+		if config.Events.KeyResolver == nil {
+			return nil, errors.New("reference: agent provider event key resolver is required")
+		}
 		if config.Events.SubscriptionActiveUntil == nil {
 			return nil, errors.New("reference: agent provider event active-until policy is required")
 		}
@@ -189,7 +198,13 @@ func NewAgentProvider(config AgentProviderConfig) (*AgentProvider, error) {
 			return nil, errors.New("reference: agent provider event token lifetime must be positive")
 		}
 		eventEndpoint = config.Events.EventEndpoint
+		parsedEventEndpoint, err := url.Parse(eventEndpoint)
+		if err != nil || parsedEventEndpoint.Path == "" || parsedEventEndpoint.Path == "/" {
+			return nil, errors.New("reference: agent provider event endpoint requires a non-root path")
+		}
+		eventEndpointPath = parsedEventEndpoint.Path
 		eventStore = config.Events.Store
+		eventKeyResolver = config.Events.KeyResolver
 		eventActiveUntil = config.Events.SubscriptionActiveUntil
 		eventTokenLifetime = config.Events.TokenLifetime
 	}
@@ -217,7 +232,9 @@ func NewAgentProvider(config AgentProviderConfig) (*AgentProvider, error) {
 		clock:                 config.Clock,
 		newID:                 config.NewID,
 		eventEndpoint:         eventEndpoint,
+		eventEndpointPath:     eventEndpointPath,
 		eventStore:            eventStore,
+		eventKeyResolver:      eventKeyResolver,
 		eventActiveUntil:      eventActiveUntil,
 		eventTokenLifetime:    eventTokenLifetime,
 		enrollments:           config.Enrollments,
@@ -298,6 +315,9 @@ func (provider *AgentProvider) IssueAgentToken(request aauth.AgentTokenRequest) 
 
 func (provider *AgentProvider) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if provider.eventEndpointPath != "" {
+		mux.HandleFunc("POST "+provider.eventEndpointPath, provider.acceptEvent)
+	}
 	if provider.enrollments != nil {
 		mux.HandleFunc("POST /refresh", provider.refresh)
 	}
@@ -317,6 +337,66 @@ func (provider *AgentProvider) Handler() http.Handler {
 		})
 	})
 	return mux
+}
+
+const referenceEventTokenLifetime = 5 * time.Minute
+
+func (provider *AgentProvider) acceptEvent(response http.ResponseWriter, request *http.Request) {
+	if request.ContentLength != 0 || len(request.TransferEncoding) != 0 ||
+		(request.Body != nil && request.Body != http.NoBody) {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("reference: event delivery must be bodyless"))
+		return
+	}
+	var claims aauth.EventTokenClaims
+	verified, err := aauth.VerifyRequest(
+		request.Context(),
+		request,
+		provider.eventKeyResolver,
+		provider.clock,
+		aauth.VerifyRequestOptions{
+			AllowedCredentialTypes:   []string{aauth.EventTokenType},
+			AllowedSignatureKeyTypes: []string{aauth.SignatureKeySelfJWT},
+			SelfJWTMaximumLifetime:   referenceEventTokenLifetime,
+			SelfJWTClaimPolicy: func(verified aauth.VerifiedSelfJWT) error {
+				decoded, decodeErr := aauth.DecodeVerifiedEventToken(verified, provider.clock)
+				if decodeErr == nil {
+					claims = decoded
+				}
+				return decodeErr
+			},
+		},
+	)
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
+	if verified.SelfJWT == nil || verified.RawCredential == "" || verified.Signer != claims.Issuer {
+		writeSignatureFailure(response, errors.New("reference: verified event proof is incomplete"))
+		return
+	}
+	_, remaining, err := provider.eventStore.AcceptEvent(request.Context(), AcceptedEventInput{
+		Resource:   claims.Issuer,
+		Agent:      claims.Audience,
+		EventID:    claims.EventID,
+		Token:      verified.RawCredential,
+		AcceptedAt: provider.clock.Now(),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrEventSubscriptionMismatch):
+			writeProblem(response, http.StatusForbidden, "subscription_mismatch", err)
+		case errors.Is(err, ErrEventSubscriptionNotFound):
+			writeProblem(response, http.StatusNotFound, "subscription_not_found", err)
+		case errors.Is(err, ErrEventSubscriptionExhausted):
+			writeProblem(response, http.StatusTooManyRequests, "subscription_exhausted", err)
+		case errors.Is(err, ErrEventRecordInvalid):
+			writeProblem(response, http.StatusBadRequest, "invalid_event", err)
+		default:
+			writeProblem(response, http.StatusInternalServerError, "server_error", nil)
+		}
+		return
+	}
+	writeJSON(response, http.StatusAccepted, map[string]int{"remaining_uses": remaining})
 }
 
 // BootstrapRefreshRequest selects the person server for the new agent token.

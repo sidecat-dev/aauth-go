@@ -58,6 +58,10 @@ type ResourceEventsConfig struct {
 	ActiveUntil            func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 }
 
+type agentEventMetadataResolver interface {
+	ResolveAgentEventMetadata(context.Context, string) (aauth.AgentEventMetadata, error)
+}
+
 type Resource struct {
 	identifier              string
 	tokenAudience           string
@@ -324,6 +328,89 @@ func (resource *Resource) handlePublicEventSubscription(response http.ResponseWr
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	response.WriteHeader(http.StatusCreated)
+}
+
+// DeliverEvent retains one exact payload-free event JWT before resolving the
+// AP's current endpoint and sending it with a fresh HTTP proof.
+func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID string) error {
+	if resource == nil || resource.eventStore == nil || resource.eventHTTPClient == nil {
+		return errors.New("reference: resource Events is not configured")
+	}
+	metadataResolver, ok := resource.keyResolver.(agentEventMetadataResolver)
+	if !ok {
+		return errors.New("reference: resource Events requires agent event metadata resolution")
+	}
+	subscription, err := resource.eventStore.Load(ctx, apIssuer, eventID)
+	if err != nil {
+		return err
+	}
+	now := resource.clock.Now()
+	if subscription.Resource != resource.identifier || !subscription.ActiveUntil.After(now) {
+		return ErrEventSubscriptionNotFound
+	}
+	pending, err := resource.eventStore.LoadPending(ctx, apIssuer, eventID)
+	if errors.Is(err, ErrEventPendingNotFound) {
+		compact, mintErr := aauth.MintEventToken(resource.signingKey, aauth.EventTokenClaims{
+			Issuer:    resource.identifier,
+			DWK:       aauth.ResourceDiscoveryDocument,
+			Audience:  subscription.Agent,
+			EventID:   subscription.EventID,
+			IssuedAt:  now.Unix(),
+			ExpiresAt: now.Add(referenceEventTokenLifetime).Unix(),
+		})
+		if mintErr != nil {
+			return mintErr
+		}
+		pending = PendingEventDelivery{
+			APIssuer:  apIssuer,
+			EventID:   eventID,
+			Token:     compact,
+			CreatedAt: now,
+		}
+		if retainErr := resource.eventStore.RetainPending(ctx, pending); retainErr != nil {
+			return retainErr
+		}
+	} else if err != nil {
+		return err
+	}
+	metadata, err := metadataResolver.ResolveAgentEventMetadata(ctx, apIssuer)
+	if err != nil {
+		return err
+	}
+	if metadata.Issuer != apIssuer {
+		return errors.New("reference: resolved event metadata issuer does not match subscription")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.EventEndpoint, nil)
+	if err != nil {
+		return err
+	}
+	if err := aauth.SignRequestWithSelfJWT(request, resource.signingKey, pending.Token, resource.clock); err != nil {
+		return err
+	}
+	response, err := resource.eventHTTPClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusAccepted:
+		decoder := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody+1))
+		decoder.DisallowUnknownFields()
+		var result struct {
+			RemainingUses int `json:"remaining_uses"`
+		}
+		if err := decoder.Decode(&result); err != nil || result.RemainingUses != 0 {
+			return errors.New("reference: event acceptance response is invalid")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return errors.New("reference: event acceptance response has trailing data")
+		}
+	case http.StatusTooManyRequests:
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8<<10))
+	default:
+		return responseError(response)
+	}
+	return resource.eventStore.CompletePending(ctx, apIssuer, eventID)
 }
 
 func validatePublicRoutePath(value string) error {

@@ -225,6 +225,7 @@ func newEventsTestAgentProvider(
 		Events: &AgentProviderEventsConfig{
 			EventEndpoint: endpoint,
 			Store:         store,
+			KeyResolver:   aauth.StaticKeyResolver{},
 			SubscriptionActiveUntil: func(context.Context, string, string) (time.Time, error) {
 				return activeUntil, nil
 			},

@@ -54,10 +54,18 @@ type discoveryCacheKey struct {
 }
 
 type discoveryCacheEntry struct {
-	keys       map[string]JWK
-	fetchedAt  time.Time
-	freshUntil time.Time
-	discardAt  time.Time
+	keys          map[string]JWK
+	eventMetadata *AgentEventMetadata
+	fetchedAt     time.Time
+	freshUntil    time.Time
+	discardAt     time.Time
+}
+
+// AgentEventMetadata is the admitted Events routing projection of one current
+// agent-provider discovery document.
+type AgentEventMetadata struct {
+	Issuer        string
+	EventEndpoint string
 }
 
 type discoveryAttempt struct {
@@ -97,6 +105,76 @@ func (resolver *HTTPKeyResolver) RefreshKey(
 	keyID string,
 ) (JWK, error) {
 	return resolver.resolveKey(ctx, issuer, discoveryDocument, keyID, true)
+}
+
+// ResolveAgentEventMetadata returns the current admitted Events endpoint under
+// the same discovery cache and single-flight boundary used for issuer keys.
+func (resolver *HTTPKeyResolver) ResolveAgentEventMetadata(
+	ctx context.Context,
+	issuer string,
+) (AgentEventMetadata, error) {
+	var zero AgentEventMetadata
+	if err := ValidateServerIdentifier(issuer); err != nil {
+		return zero, keyResolutionError(KeyResolutionInvalid, fmt.Errorf("aauth: event metadata issuer: %w", err))
+	}
+	cacheKey := discoveryCacheKey{issuer: issuer, document: AgentDiscoveryDocument}
+	for {
+		now := resolver.clock.Now()
+		resolver.mu.Lock()
+		entry, cached := resolver.cache[cacheKey]
+		if cached && !entry.discardAt.After(now) {
+			delete(resolver.cache, cacheKey)
+			entry = discoveryCacheEntry{}
+			cached = false
+		}
+		if cached && entry.freshUntil.After(now) {
+			metadata := entry.eventMetadata
+			resolver.mu.Unlock()
+			if metadata == nil {
+				return zero, keyResolutionError(KeyResolutionInvalid, errors.New("aauth: agent metadata does not advertise Events"))
+			}
+			return *metadata, nil
+		}
+		if attempt, attempted := resolver.attempts[cacheKey]; attempted {
+			if attempt.at.Add(minimumDiscoveryRefresh).After(now) && attempt.err != nil {
+				resolver.mu.Unlock()
+				return zero, attempt.err
+			}
+			delete(resolver.attempts, cacheKey)
+		}
+		if pending, ok := resolver.inflight[cacheKey]; ok {
+			resolver.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return zero, keyResolutionError(KeyResolutionUnavailable, ctx.Err())
+			case <-pending:
+				continue
+			}
+		}
+		pending := make(chan struct{})
+		resolver.inflight[cacheKey] = pending
+		resolver.mu.Unlock()
+
+		fetched, fetchErr := resolver.fetch(ctx, issuer, AgentDiscoveryDocument)
+
+		resolver.mu.Lock()
+		delete(resolver.inflight, cacheKey)
+		if retainDiscoveryFailure(fetchErr) {
+			resolver.rememberDiscoveryFailureLocked(cacheKey, resolver.clock.Now(), fetchErr)
+		}
+		if fetchErr == nil {
+			resolver.cache[cacheKey] = fetched
+		}
+		close(pending)
+		resolver.mu.Unlock()
+		if fetchErr != nil {
+			return zero, fetchErr
+		}
+		if fetched.eventMetadata == nil {
+			return zero, keyResolutionError(KeyResolutionInvalid, errors.New("aauth: agent metadata does not advertise Events"))
+		}
+		return *fetched.eventMetadata, nil
+	}
 }
 
 func (resolver *HTTPKeyResolver) resolveKey(
@@ -289,8 +367,9 @@ func (resolver *HTTPKeyResolver) fetch(
 		return discoveryCacheEntry{}, err
 	}
 	var metadata struct {
-		Issuer  string `json:"issuer"`
-		JWKSURI string `json:"jwks_uri"`
+		Issuer        string `json:"issuer"`
+		JWKSURI       string `json:"jwks_uri"`
+		EventEndpoint string `json:"event_endpoint"`
 	}
 	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
 		return discoveryCacheEntry{}, keyResolutionError(
@@ -309,6 +388,16 @@ func (resolver *HTTPKeyResolver) fetch(
 			KeyResolutionInvalid,
 			fmt.Errorf("aauth: discovery jwks_uri: %w", err),
 		)
+	}
+	var eventMetadata *AgentEventMetadata
+	if discoveryDocument == AgentDiscoveryDocument && metadata.EventEndpoint != "" {
+		if err := validateDiscoveryURL(metadata.EventEndpoint); err != nil {
+			return discoveryCacheEntry{}, keyResolutionError(
+				KeyResolutionInvalid,
+				fmt.Errorf("aauth: discovery event_endpoint: %w", err),
+			)
+		}
+		eventMetadata = &AgentEventMetadata{Issuer: issuer, EventEndpoint: metadata.EventEndpoint}
 	}
 
 	keySetBytes, keySetFreshness, err := resolver.fetchJSON(ctx, metadata.JWKSURI)
@@ -359,10 +448,11 @@ func (resolver *HTTPKeyResolver) fetch(
 	}
 	now := resolver.clock.Now()
 	return discoveryCacheEntry{
-		keys:       keys,
-		fetchedAt:  now,
-		freshUntil: now.Add(freshness),
-		discardAt:  now.Add(maximumDiscoveryRetention),
+		keys:          keys,
+		eventMetadata: eventMetadata,
+		fetchedAt:     now,
+		freshUntil:    now.Add(freshness),
+		discardAt:     now.Add(maximumDiscoveryRetention),
 	}, nil
 }
 
@@ -441,6 +531,9 @@ func validateDiscoveryURL(endpoint string) error {
 func cacheFreshness(cacheControl string) time.Duration {
 	for _, directive := range strings.Split(cacheControl, ",") {
 		name, value, found := strings.Cut(strings.TrimSpace(strings.ToLower(directive)), "=")
+		if name == "no-store" || name == "no-cache" {
+			return 0
+		}
 		if !found || name != "max-age" {
 			continue
 		}
