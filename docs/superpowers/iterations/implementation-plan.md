@@ -45,16 +45,18 @@ real-HTTP logical gateway test harness.
 
 **Files:**
 
-- Create: `events_journey_test.go`
+- Create: `testdata/eventsjourney/events_journey_test.go`
 - Modify: `docs/superpowers/iterations/behavior-corpus.md`
 
 **Interfaces:**
 
 - Consumes: existing `newLogicalGateway`, `testSigningKey`, mutable test clock,
   and real reference handlers.
-- Produces: `TestPublicSubscriptionEventSurvivesHostReconstruction`, the stable
-  M5 sentinel command, and test helpers that reconstruct each host from only
-  durable interface state.
+- Produces: `TestPublicSubscriptionEventSurvivesHostReconstruction` as an
+  explicitly invoked RED package, and test helpers that reconstruct each host
+  from only durable interface state. `testdata` keeps the intentionally
+  uncompilable future-facing test out of unrelated intermediate `go test ./...`
+  runs; Task 7 promotes the same test into the normal root suite.
 
 - [ ] **Step 1: Write the failing journey test**
 
@@ -80,7 +82,7 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 
 - [ ] **Step 2: Run the journey and record the intentional RED**
 
-Run: `go test ./... -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
+Run: `go test ./testdata/eventsjourney -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
 
 Expected: FAIL at compile time because the accepted Events host interfaces and
 services do not exist; no production code has changed.
@@ -88,7 +90,7 @@ services do not exist; no production code has changed.
 - [ ] **Step 3: Record the exact sentinel in the corpus**
 
 ```markdown
-`go test ./... -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
+`go test ./testdata/eventsjourney -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
 ```
 
 - [ ] **Step 4: Record RED evidence**
@@ -182,8 +184,8 @@ Expected: PASS.
 
 Run: `go test ./... -count=1`
 
-Expected: existing M3/M4 tests PASS; the complete M5 journey remains RED only
-at the first unimplemented reference-host API.
+Expected: existing M3/M4 tests PASS. The separately invoked complete M5
+journey remains RED at the first unimplemented reference-host API.
 
 - [ ] **Step 6: Record the core-proof checkpoint through Sidecat**
 
@@ -444,7 +446,7 @@ Run: `go test ./reference -run '^TestPublicEventRegistration' -count=1`
 
 Expected: PASS.
 
-Run: `go test ./... -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
+Run: `go test ./testdata/eventsjourney -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
 
 Expected: RED at event delivery, after registration has succeeded.
 
@@ -503,7 +505,7 @@ Run: `go test -race ./... -run '^(TestAgentEventMetadata|TestEventDelivery|TestA
 
 Expected: PASS.
 
-Run: `go test ./... -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
+Run: `go test ./testdata/eventsjourney -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
 
 Expected: RED only at adapter/agent continuation.
 
@@ -512,6 +514,9 @@ Expected: RED only at adapter/agent continuation.
 **Files:**
 
 - Create: `reference/events_agent_test.go`
+- Create: `events_journey_test.go` by promoting the complete test from
+  `testdata/eventsjourney/events_journey_test.go`
+- Delete: `testdata/eventsjourney/events_journey_test.go`
 - Modify: `reference/events.go`
 - Modify: `reference/agent.go`
 
@@ -554,6 +559,9 @@ then transitions to dispatched before action. Reconcile dispatched work as
 completed, proven not-applied, or unknown; unknown remains unacknowledged.
 
 - [ ] **Step 4: Run focused and full journey tests**
+
+First promote the unchanged journey test into the root package now that every
+API it exercises exists; update the behavior-corpus command to the root suite.
 
 Run: `go test -race ./reference -run '^(TestAgentEventProcessing|TestEventAdapter)' -count=1`
 
