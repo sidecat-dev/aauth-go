@@ -102,8 +102,30 @@ func TestAgentProviderIssuesOnlyAfterDurableSubscriptionCommit(t *testing.T) {
 	if issueErr != nil || recoveredToken == "" {
 		t.Fatalf("healthy retry issuance = %q, %v", recoveredToken, issueErr)
 	}
-	if got := recoveryAuthority.subscriptions["event-two"]; got.EventID != "event-two" || got.ActiveUntil != activeUntil {
-		t.Fatalf("healthy retry authority = %#v", got)
+	wantRecoveredRecord := wantRecord
+	wantRecoveredRecord.EventID = "event-two"
+	if got := recoveryAuthority.subscriptions["event-two"]; got != wantRecoveredRecord {
+		t.Fatalf("healthy retry authority = %#v, want %#v", got, wantRecoveredRecord)
+	}
+	recoveredClaims, err := aauth.VerifySubscribeToken(ctx, recoveredToken, aauth.StaticKeyResolver{
+		"https://ap.example": {providerKey.ID(): providerKey.PublicJWK()},
+	}, aauth.ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredClaims.Issuer != wantRecoveredRecord.APIssuer ||
+		recoveredClaims.DWK != aauth.AgentDiscoveryDocument ||
+		recoveredClaims.Subject != wantRecoveredRecord.Agent ||
+		recoveredClaims.Audience != wantRecoveredRecord.Resource ||
+		recoveredClaims.EventID != wantRecoveredRecord.EventID ||
+		recoveredClaims.IssuedAt != now.Unix() ||
+		recoveredClaims.ExpiresAt != now.Add(5*time.Minute).Unix() ||
+		recoveredClaims.MaxUses == nil || *recoveredClaims.MaxUses != wantRecoveredRecord.MaxUses ||
+		!recoveredClaims.Confirmation.JWK.Equal(agentKey.PublicJWK()) {
+		t.Fatalf("healthy retry subscribe claims = %#v", recoveredClaims)
+	}
+	if !wantRecoveredRecord.ActiveUntil.After(time.Unix(recoveredClaims.ExpiresAt, 0)) {
+		t.Fatalf("healthy retry active_until %v must be independent of token expiry %v", wantRecoveredRecord.ActiveUntil, time.Unix(recoveredClaims.ExpiresAt, 0))
 	}
 	reconstructed := newEventsTestAgentProvider(t, providerKey, recoveryAuthority, func() string { return "event-two" }, now, activeUntil, "https://ap.example/events")
 	if token, issueErr := reconstructed.IssueEventSubscription(ctx, request); token != "" || !errors.Is(issueErr, ErrEventSubscriptionConflict) {

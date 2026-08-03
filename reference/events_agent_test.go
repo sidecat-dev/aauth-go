@@ -314,6 +314,9 @@ func TestAgentEventRefusalMatrixSurvivesStoreReconstruction(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer agentStore.Close()
+			if got := agentStore.memory.refusalReason[accepted.Delivery]; got != test.wantReason {
+				t.Fatalf("reopened refusal reason = %q, want %q", got, test.wantReason)
+			}
 			agent = newAgentEventTestAgentWithResolver(t, agentStore, action, resolver, clock)
 			adapter, err := NewEventAdapter(apStore, agent)
 			if err != nil {

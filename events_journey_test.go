@@ -402,6 +402,9 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 	if got := action.dispatchCount(); got != 1 {
 		t.Fatalf("completed event duplicate changed dispatch count to %d", got)
 	}
+	if got := action.reconciliationCount(); got != 1 {
+		t.Fatalf("completed event duplicate changed reconciliation count to %d", got)
+	}
 }
 
 // terminalBeforeAckAPEventStore makes the ordering requirement observable at

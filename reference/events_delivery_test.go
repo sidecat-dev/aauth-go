@@ -383,7 +383,8 @@ func TestAPEventEndpointRefusalMatrixLeavesAuthorityUnchanged(t *testing.T) {
 }
 
 func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	apKey := eventsProviderTestSigningKey(t, "ap-events-key")
@@ -395,90 +396,172 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 			resourceKeyB.ID(): resourceKeyB.PublicJWK(),
 		},
 	}
-	directory := filepath.Join(t.TempDir(), "ap-store")
-	store, err := OpenFileAPEventStore(FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"})
+	root := t.TempDir()
+	apDirectory := filepath.Join(root, "ap-store")
+	resourceDirectory := filepath.Join(root, "resource-store")
+	store, err := OpenFileAPEventStore(FileAPEventStoreConfig{Directory: apDirectory, Issuer: "https://ap.example"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateSubscription(ctx, APEventSubscription{
+	t.Cleanup(func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	})
+	resourceStore, err := OpenFileResourceEventStore(FileResourceEventStoreConfig{Directory: resourceDirectory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if resourceStore != nil {
+			_ = resourceStore.Close()
+		}
+	})
+	subscription := ResourceEventSubscription{
 		APIssuer: "https://ap.example", EventID: "event-concurrent",
 		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-		ActiveUntil: now.Add(time.Hour), MaxUses: 1,
+		ActiveUntil: now.Add(time.Hour),
+	}
+	if err := resourceStore.Register(ctx, subscription); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSubscription(ctx, APEventSubscription{
+		APIssuer: subscription.APIssuer, EventID: subscription.EventID,
+		Resource: subscription.Resource, Agent: subscription.Agent,
+		ActiveUntil: subscription.ActiveUntil, MaxUses: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retainedToken := mintDeliveryTestEvent(t, resourceKeyA, now, subscription.Agent, subscription.EventID)
+	if err := resourceStore.RetainPending(ctx, PendingEventDelivery{
+		APIssuer: subscription.APIssuer, EventID: subscription.EventID,
+		Token: retainedToken, CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	barrier := &twoArrivalAPEventStore{APEventStore: store, release: make(chan struct{})}
 	provider := newDeliveryTestProvider(t, apKey, barrier, resolver, clock)
+	directToken := mintDeliveryTestEvent(t, resourceKeyB, now, subscription.Agent, subscription.EventID)
 	tokens := map[string]aauth.SigningKey{
-		mintDeliveryTestEvent(t, resourceKeyA, now, "aauth:subscriber@ap.example", "event-concurrent"): resourceKeyA,
-		mintDeliveryTestEvent(t, resourceKeyB, now, "aauth:subscriber@ap.example", "event-concurrent"): resourceKeyB,
+		retainedToken: resourceKeyA,
+		directToken:   resourceKeyB,
 	}
-	type result struct {
-		token  string
+	metadataResolver := hostileEventMetadataResolver{
+		StaticKeyResolver: resolver,
+		metadata: aauth.AgentEventMetadata{
+			Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events",
+		},
+	}
+	client := &http.Client{Transport: registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return eventRegistrationHTTPResponse(provider.Handler(), request), nil
+	})}
+	resource := newDeliveryTestResource(t, resourceKeyA, metadataResolver, client, clock, resourceStore)
+	resourceResult := make(chan error, 1)
+	directResult := make(chan struct {
+		status int
+		body   []byte
+	}, 1)
+	go func() {
+		resourceResult <- resource.DeliverEvent(ctx, subscription.APIssuer, subscription.EventID)
+	}()
+	go func() {
+		request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, "https://ap.example/events", nil)
+		if requestErr != nil {
+			directResult <- struct {
+				status int
+				body   []byte
+			}{body: []byte(requestErr.Error())}
+			return
+		}
+		if signErr := aauth.SignRequestWithSelfJWT(request, resourceKeyB, directToken, clock); signErr != nil {
+			directResult <- struct {
+				status int
+				body   []byte
+			}{body: []byte(signErr.Error())}
+			return
+		}
+		response := eventRegistrationHTTPResponse(provider.Handler(), request)
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		directResult <- struct {
+			status int
+			body   []byte
+		}{status: response.StatusCode, body: body}
+	}()
+	var directOutcome struct {
 		status int
 		body   []byte
 	}
-	results := make(chan result, len(tokens))
-	for compact, proofKey := range tokens {
-		compact, proofKey := compact, proofKey
-		go func() {
-			request, requestErr := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
-			if requestErr != nil {
-				results <- result{token: compact, status: 0, body: []byte(requestErr.Error())}
-				return
-			}
-			if signErr := aauth.SignRequestWithSelfJWT(request, proofKey, compact, clock); signErr != nil {
-				results <- result{token: compact, status: 0, body: []byte(signErr.Error())}
-				return
-			}
-			response := eventRegistrationHTTPResponse(provider.Handler(), request)
-			body, _ := io.ReadAll(response.Body)
-			_ = response.Body.Close()
-			results <- result{token: compact, status: response.StatusCode, body: body}
-		}()
+	select {
+	case err := <-resourceResult:
+		if err != nil {
+			t.Fatalf("resource contender failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("resource contender did not finish: %v", ctx.Err())
 	}
-	var winner string
-	statusCounts := make(map[int]int)
-	for range tokens {
-		outcome := <-results
-		statusCounts[outcome.status]++
-		switch outcome.status {
-		case http.StatusAccepted:
-			winner = outcome.token
-			var body struct {
-				RemainingUses int `json:"remaining_uses"`
-			}
-			decoder := json.NewDecoder(bytes.NewReader(outcome.body))
-			if err := decoder.Decode(&body); err != nil || body.RemainingUses != 0 {
-				t.Fatalf("winner body = %#v, %v: %s", body, err, outcome.body)
-			}
-			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-				t.Fatalf("winner body has trailing data: %v", err)
-			}
-		case http.StatusTooManyRequests:
-		default:
-			t.Fatalf("concurrent delivery status = %d: %s", outcome.status, outcome.body)
+	select {
+	case directOutcome = <-directResult:
+	case <-ctx.Done():
+		t.Fatalf("direct contender did not finish: %v", ctx.Err())
+	}
+	if directOutcome.status != http.StatusAccepted && directOutcome.status != http.StatusTooManyRequests {
+		t.Fatalf("direct contender status = %d: %s", directOutcome.status, directOutcome.body)
+	}
+	winner := retainedToken
+	if directOutcome.status == http.StatusAccepted {
+		winner = directToken
+		var body struct {
+			RemainingUses int `json:"remaining_uses"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(directOutcome.body))
+		if err := decoder.Decode(&body); err != nil || body.RemainingUses != 0 {
+			t.Fatalf("direct winner body = %#v, %v: %s", body, err, directOutcome.body)
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			t.Fatalf("direct winner body has trailing data: %v", err)
 		}
 	}
-	if statusCounts[http.StatusAccepted] != 1 || statusCounts[http.StatusTooManyRequests] != 1 || winner == "" {
-		t.Fatalf("concurrent statuses = %#v, winner empty = %t", statusCounts, winner == "")
+	accepted, err := store.NextDelivery(ctx)
+	if err != nil || accepted.Token != winner {
+		t.Fatalf("winner inbox = %#v, %v; want token %q", accepted, err, winner)
+	}
+	if _, err := resourceStore.Load(ctx, subscription.APIssuer, subscription.EventID); !errors.Is(err, ErrEventSubscriptionNotFound) {
+		t.Fatalf("settled resource subscription error = %v, want not found", err)
+	}
+	if _, err := resourceStore.LoadPending(ctx, subscription.APIssuer, subscription.EventID); !errors.Is(err, ErrEventPendingNotFound) {
+		t.Fatalf("settled resource pending error = %v, want not found", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	store = nil
+	if err := resourceStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resourceStore = nil
 
-	store, err = OpenFileAPEventStore(FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"})
+	store, err = OpenFileAPEventStore(FileAPEventStoreConfig{Directory: apDirectory, Issuer: "https://ap.example"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	resourceStore, err = OpenFileResourceEventStore(FileResourceEventStoreConfig{Directory: resourceDirectory})
+	if err != nil {
+		t.Fatal(err)
+	}
 	provider = newDeliveryTestProvider(t, apKey, store, resolver, clock)
-	accepted, err := store.NextDelivery(ctx)
+	accepted, err = store.NextDelivery(ctx)
 	if err != nil || accepted.Token != winner {
 		t.Fatalf("reopened winner inbox = %#v, %v; want token %q", accepted, err, winner)
 	}
 	if got := store.memory.subscriptions["event-concurrent"].UseCount; got != 1 || store.memory.nextDelivery != 1 || len(store.memory.inbox) != 1 {
 		t.Fatalf("reopened final-use state = uses %d, sequence %d, inbox %d", got, store.memory.nextDelivery, len(store.memory.inbox))
+	}
+	if _, err := resourceStore.Load(ctx, subscription.APIssuer, subscription.EventID); !errors.Is(err, ErrEventSubscriptionNotFound) {
+		t.Fatalf("reopened settled resource subscription error = %v, want not found", err)
+	}
+	if _, err := resourceStore.LoadPending(ctx, subscription.APIssuer, subscription.EventID); !errors.Is(err, ErrEventPendingNotFound) {
+		t.Fatalf("reopened settled resource pending error = %v, want not found", err)
 	}
 	before := snapshotMemoryAPEventStore(t, store.memory)
 	now = now.Add(time.Second)
