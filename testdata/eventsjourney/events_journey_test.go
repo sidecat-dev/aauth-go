@@ -165,6 +165,14 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	if firstErr == nil {
 		t.Fatal("first delivery unexpectedly observed the AP acceptance response")
 	}
+	acceptedAfterLostResponse, err := apStore.NextDelivery(ctx)
+	if err != nil {
+		t.Fatalf("AP inbox after lost acceptance response: %v", err)
+	}
+	if acceptedAfterLostResponse.Token != lostResponses.tokens()[0] {
+		t.Fatal("AP did not commit the exact event JWT before its 202 response was lost")
+	}
+	now = now.Add(time.Second)
 
 	// Reconstruct both protocol hosts and retry. The resource must send the
 	// exact retained JWT with a fresh HTTP proof; the AP returns exhausted 429,
@@ -195,8 +203,16 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	if got := lostResponses.attemptCount(); got != 2 {
 		t.Fatalf("event delivery attempts = %d, want 2", got)
 	}
-	if first, second := lostResponses.tokens(); first == "" || first != second {
-		t.Fatalf("event retry JWTs differ: first=%q second=%q", first, second)
+	if got := lostResponses.statuses(); len(got) != 2 || got[0] != http.StatusAccepted || got[1] != http.StatusTooManyRequests {
+		t.Fatalf("event response statuses = %v, want [202 429]", got)
+	}
+	tokens := lostResponses.tokens()
+	if len(tokens) != 2 || tokens[0] == "" || tokens[0] != tokens[1] {
+		t.Fatalf("event retry JWTs differ: %q", tokens)
+	}
+	proofs := lostResponses.proofs()
+	if len(proofs) != 2 || proofs[0] == "" || proofs[1] == "" || proofs[0] == proofs[1] {
+		t.Fatalf("event retry HTTP proofs were not fresh: %q", proofs)
 	}
 	if got := lostResponses.bodyBytes(); got != 0 {
 		t.Fatalf("event request body bytes = %d, want 0", got)
@@ -223,6 +239,25 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	if err := adapter.Continue(ctx); err == nil {
 		t.Fatal("first adapter continuation unexpectedly observed action completion")
 	}
+	pendingAfterUnknown, err := apStore.NextDelivery(ctx)
+	if err != nil {
+		t.Fatalf("AP inbox after unknown action outcome: %v", err)
+	}
+	if pendingAfterUnknown.Token != accepted.Token {
+		t.Fatal("adapter acknowledged the AP inbox before a durable terminal disposition")
+	}
+	actionKey := reference.EventActionKey{
+		ResourceIssuer: resourceID,
+		APIssuer:       apID,
+		EventID:        subscribeClaims.EventID,
+	}
+	processing, err := agentStore.LoadProcessing(ctx, actionKey)
+	if err != nil {
+		t.Fatalf("load processing after unknown action outcome: %v", err)
+	}
+	if processing.State != reference.EventDispatched {
+		t.Fatalf("processing after unknown action outcome = %q, want dispatched", processing.State)
+	}
 	agent = newEventAgent(t, eventAgentInput{
 		identifier: agentID,
 		signingKey: agentKey,
@@ -242,6 +277,16 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	}
 	if got := action.dispatchCount(); got != 1 {
 		t.Fatalf("agent action dispatches = %d, want 1", got)
+	}
+	if got := action.reconciliationCount(); got != 1 {
+		t.Fatalf("agent action reconciliations = %d, want 1", got)
+	}
+	processing, err = agentStore.LoadProcessing(ctx, actionKey)
+	if err != nil {
+		t.Fatalf("load processing after reconciliation: %v", err)
+	}
+	if processing.State != reference.EventCompleted {
+		t.Fatalf("processing after reconciliation = %q, want completed", processing.State)
 	}
 	if _, err := apStore.NextDelivery(ctx); !errors.Is(err, reference.ErrNoPendingEventDelivery) {
 		t.Fatalf("AP inbox after terminal agent completion error = %v, want no pending delivery", err)
@@ -352,9 +397,10 @@ func newEventAgent(t *testing.T, input eventAgentInput) *reference.Agent {
 }
 
 type recoverableAction struct {
-	mu         sync.Mutex
-	dispatches int
-	completed  map[reference.EventActionKey]bool
+	mu              sync.Mutex
+	dispatches      int
+	reconciliations int
+	completed       map[reference.EventActionKey]bool
 }
 
 func (action *recoverableAction) Dispatch(_ context.Context, input reference.EventActionInput) (reference.EventActionOutcome, error) {
@@ -363,16 +409,18 @@ func (action *recoverableAction) Dispatch(_ context.Context, input reference.Eve
 	if action.completed == nil {
 		action.completed = make(map[reference.EventActionKey]bool)
 	}
-	if !action.completed[input.Key] {
-		action.dispatches++
-		action.completed[input.Key] = true
+	action.dispatches++
+	if action.completed[input.Key] {
+		return reference.EventActionUnknown, errors.New("journey: duplicate action dispatch")
 	}
+	action.completed[input.Key] = true
 	return reference.EventActionUnknown, errors.New("journey: action completion response was lost")
 }
 
 func (action *recoverableAction) Reconcile(_ context.Context, key reference.EventActionKey) (reference.EventActionOutcome, error) {
 	action.mu.Lock()
 	defer action.mu.Unlock()
+	action.reconciliations++
 	if action.completed[key] {
 		return reference.EventActionCompleted, nil
 	}
@@ -383,6 +431,12 @@ func (action *recoverableAction) dispatchCount() int {
 	action.mu.Lock()
 	defer action.mu.Unlock()
 	return action.dispatches
+}
+
+func (action *recoverableAction) reconciliationCount() int {
+	action.mu.Lock()
+	defer action.mu.Unlock()
+	return action.reconciliations
 }
 
 type logicalHandlers struct {
@@ -437,13 +491,15 @@ func (transport *logicalTransport) RoundTrip(request *http.Request) (*http.Respo
 }
 
 type loseAcceptedResponseTransport struct {
-	mu         sync.Mutex
-	base       http.RoundTripper
-	armedURL   string
-	lost       bool
-	attempts   int
-	tokensSeen []string
-	bodySeen   int
+	mu           sync.Mutex
+	base         http.RoundTripper
+	armedURL     string
+	lost         bool
+	attempts     int
+	tokensSeen   []string
+	proofsSeen   []string
+	statusesSeen []int
+	bodySeen     int
 }
 
 func (transport *loseAcceptedResponseTransport) arm(endpoint string) {
@@ -456,15 +512,20 @@ func (transport *loseAcceptedResponseTransport) arm(endpoint string) {
 func (transport *loseAcceptedResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	isEvent := request.Method == http.MethodPost && request.URL.String() == transport.armedURL
 	if isEvent {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			return nil, err
+		var body []byte
+		if request.Body != nil {
+			var err error
+			body, err = io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			request.Body = io.NopCloser(strings.NewReader(string(body)))
 		}
-		request.Body = io.NopCloser(strings.NewReader(string(body)))
 		transport.mu.Lock()
 		transport.attempts++
 		transport.bodySeen += len(body)
 		transport.tokensSeen = append(transport.tokensSeen, signatureKeyJWT(request.Header.Get("Signature-Key")))
+		transport.proofsSeen = append(transport.proofsSeen, request.Header.Get("Signature-Input")+"\n"+request.Header.Get("Signature"))
 		transport.mu.Unlock()
 	}
 	response, err := transport.base.RoundTrip(request)
@@ -472,6 +533,9 @@ func (transport *loseAcceptedResponseTransport) RoundTrip(request *http.Request)
 		return response, err
 	}
 	transport.mu.Lock()
+	if response != nil {
+		transport.statusesSeen = append(transport.statusesSeen, response.StatusCode)
+	}
 	lose := !transport.lost
 	if lose {
 		transport.lost = true
@@ -496,6 +560,18 @@ func (transport *loseAcceptedResponseTransport) tokens() []string {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
 	return append([]string(nil), transport.tokensSeen...)
+}
+
+func (transport *loseAcceptedResponseTransport) proofs() []string {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	return append([]string(nil), transport.proofsSeen...)
+}
+
+func (transport *loseAcceptedResponseTransport) statuses() []int {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	return append([]int(nil), transport.statusesSeen...)
 }
 
 func (transport *loseAcceptedResponseTransport) bodyBytes() int {
