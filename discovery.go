@@ -20,7 +20,11 @@ const (
 	minimumDiscoveryRefresh   = time.Minute
 	maximumDiscoveryRetention = 24 * time.Hour
 	maximumDiscoveryDocument  = 1 << 20
-	maximumDiscoveryFailures  = 1024
+	maximumDiscoveryName      = 255
+
+	defaultDiscoveryPositiveEntries = 1024
+	defaultDiscoveryNegativeEntries = 1024
+	defaultDiscoveryInFlightEntries = 128
 )
 
 var discoveryDocumentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.json$`)
@@ -32,6 +36,16 @@ type HTTPKeyResolverConfig struct {
 	Client *http.Client
 	Clock  Clock
 	Admit  EgressAdmitter
+	Limits HTTPKeyResolverLimits
+}
+
+// HTTPKeyResolverLimits bounds retained successful issuers, retained remote
+// failures, and concurrent unique discovery work. Zero fields select finite
+// defaults; negative values are invalid.
+type HTTPKeyResolverLimits struct {
+	PositiveEntries int
+	NegativeEntries int
+	InFlightEntries int
 }
 
 // HTTPKeyResolver performs the Signature-Key two-hop metadata/JWKS discovery
@@ -41,6 +55,7 @@ type HTTPKeyResolver struct {
 	client *http.Client
 	clock  Clock
 	admit  EgressAdmitter
+	limits HTTPKeyResolverLimits
 
 	mu       sync.Mutex
 	cache    map[discoveryCacheKey]discoveryCacheEntry
@@ -77,14 +92,35 @@ func NewHTTPKeyResolver(config HTTPKeyResolverConfig) (*HTTPKeyResolver, error) 
 	if config.Client == nil || config.Clock == nil || config.Admit == nil {
 		return nil, errors.New("aauth: HTTP key resolver requires client, clock, and egress admitter")
 	}
+	limits, err := normalizeHTTPKeyResolverLimits(config.Limits)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPKeyResolver{
 		client:   config.Client,
 		clock:    config.Clock,
 		admit:    config.Admit,
+		limits:   limits,
 		cache:    make(map[discoveryCacheKey]discoveryCacheEntry),
 		inflight: make(map[discoveryCacheKey]chan struct{}),
 		attempts: make(map[discoveryCacheKey]discoveryAttempt),
 	}, nil
+}
+
+func normalizeHTTPKeyResolverLimits(limits HTTPKeyResolverLimits) (HTTPKeyResolverLimits, error) {
+	if limits.PositiveEntries < 0 || limits.NegativeEntries < 0 || limits.InFlightEntries < 0 {
+		return HTTPKeyResolverLimits{}, errors.New("aauth: HTTP key resolver limits must not be negative")
+	}
+	if limits.PositiveEntries == 0 {
+		limits.PositiveEntries = defaultDiscoveryPositiveEntries
+	}
+	if limits.NegativeEntries == 0 {
+		limits.NegativeEntries = defaultDiscoveryNegativeEntries
+	}
+	if limits.InFlightEntries == 0 {
+		limits.InFlightEntries = defaultDiscoveryInFlightEntries
+	}
+	return limits, nil
 }
 
 func (resolver *HTTPKeyResolver) ResolveKey(
@@ -151,6 +187,13 @@ func (resolver *HTTPKeyResolver) ResolveAgentEventMetadata(
 				continue
 			}
 		}
+		if len(resolver.inflight) >= resolver.limits.InFlightEntries {
+			resolver.mu.Unlock()
+			return zero, keyResolutionError(
+				KeyResolutionUnavailable,
+				errors.New("aauth: concurrent discovery capacity is exhausted"),
+			)
+		}
 		pending := make(chan struct{})
 		resolver.inflight[cacheKey] = pending
 		resolver.mu.Unlock()
@@ -163,7 +206,8 @@ func (resolver *HTTPKeyResolver) ResolveAgentEventMetadata(
 			resolver.rememberDiscoveryFailureLocked(cacheKey, resolver.clock.Now(), fetchErr)
 		}
 		if fetchErr == nil {
-			resolver.cache[cacheKey] = fetched
+			delete(resolver.attempts, cacheKey)
+			resolver.rememberDiscoveryEntryLocked(cacheKey, resolver.clock.Now(), fetched)
 		}
 		close(pending)
 		resolver.mu.Unlock()
@@ -190,7 +234,7 @@ func (resolver *HTTPKeyResolver) resolveKey(
 			fmt.Errorf("aauth: discovery issuer: %w", err),
 		)
 	}
-	if !discoveryDocumentPattern.MatchString(discoveryDocument) {
+	if len(discoveryDocument) > maximumDiscoveryName || !discoveryDocumentPattern.MatchString(discoveryDocument) {
 		return JWK{}, keyResolutionError(
 			KeyResolutionInvalid,
 			errors.New("aauth: discovery document name is invalid"),
@@ -275,6 +319,13 @@ func (resolver *HTTPKeyResolver) resolveKey(
 				continue
 			}
 		}
+		if len(resolver.inflight) >= resolver.limits.InFlightEntries {
+			resolver.mu.Unlock()
+			return JWK{}, keyResolutionError(
+				KeyResolutionUnavailable,
+				errors.New("aauth: concurrent discovery capacity is exhausted"),
+			)
+		}
 		pending := make(chan struct{})
 		resolver.inflight[cacheKey] = pending
 		resolver.mu.Unlock()
@@ -287,7 +338,8 @@ func (resolver *HTTPKeyResolver) resolveKey(
 			resolver.rememberDiscoveryFailureLocked(cacheKey, resolver.clock.Now(), fetchErr)
 		}
 		if fetchErr == nil {
-			resolver.cache[cacheKey] = fetched
+			delete(resolver.attempts, cacheKey)
+			resolver.rememberDiscoveryEntryLocked(cacheKey, resolver.clock.Now(), fetched)
 			entry = fetched
 		} else if cached {
 			entry = resolver.cache[cacheKey]
@@ -350,10 +402,34 @@ func (resolver *HTTPKeyResolver) rememberDiscoveryFailureLocked(
 		}
 	}
 	if _, exists := resolver.attempts[key]; !exists &&
-		len(resolver.attempts) >= maximumDiscoveryFailures {
+		len(resolver.attempts) >= resolver.limits.NegativeEntries {
 		delete(resolver.attempts, oldestKey)
 	}
 	resolver.attempts[key] = discoveryAttempt{at: now, err: err}
+}
+
+func (resolver *HTTPKeyResolver) rememberDiscoveryEntryLocked(
+	key discoveryCacheKey,
+	now time.Time,
+	entry discoveryCacheEntry,
+) {
+	var oldestKey discoveryCacheKey
+	var oldestAt time.Time
+	for existingKey, existing := range resolver.cache {
+		if !existing.discardAt.After(now) {
+			delete(resolver.cache, existingKey)
+			continue
+		}
+		if oldestAt.IsZero() || existing.fetchedAt.Before(oldestAt) {
+			oldestKey = existingKey
+			oldestAt = existing.fetchedAt
+		}
+	}
+	if _, exists := resolver.cache[key]; !exists &&
+		len(resolver.cache) >= resolver.limits.PositiveEntries {
+		delete(resolver.cache, oldestKey)
+	}
+	resolver.cache[key] = entry
 }
 
 func (resolver *HTTPKeyResolver) fetch(
@@ -485,6 +561,13 @@ func (resolver *HTTPKeyResolver) fetchJSON(ctx context.Context, endpoint string)
 	}
 	response, err := client.Do(request)
 	if err != nil {
+		var resolutionError *KeyResolutionError
+		if errors.As(err, &resolutionError) && resolutionError.Code == KeyResolutionDenied {
+			return nil, 0, keyResolutionError(
+				KeyResolutionDenied,
+				fmt.Errorf("aauth: discovery connection denied for %q: %w", endpoint, err),
+			)
+		}
 		return nil, 0, keyResolutionError(
 			KeyResolutionUnavailable,
 			fmt.Errorf("aauth: fetch discovery endpoint %q: %w", endpoint, err),
