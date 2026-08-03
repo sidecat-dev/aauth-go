@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,21 @@ import (
 )
 
 func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		fileBacked bool
+	}{
+		{name: "memory adapters"},
+		{name: "file adapters", fileBacked: true},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			runPublicSubscriptionEventJourney(t, test.fileBacked)
+		})
+	}
+}
+
+func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
@@ -33,9 +49,77 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	apID := "https://ap.example"
 	resourceID := "https://resource.example"
 
-	agentStore := reference.NewMemoryAgentEventStore()
-	apStore := newTerminalBeforeAckAPEventStore(reference.NewMemoryAPEventStore(apID), agentStore)
-	resourceStore := reference.NewMemoryResourceEventStore()
+	var rawAPStore reference.APEventStore
+	var resourceStore reference.ResourceEventStore
+	var agentStore reference.AgentEventStore
+	var reopenAP, reopenResource, reopenAgent func()
+	if fileBacked {
+		base := t.TempDir()
+		apDirectory := filepath.Join(base, "ap")
+		resourceDirectory := filepath.Join(base, "resource")
+		agentDirectory := filepath.Join(base, "agent")
+		openAP := func() {
+			store, err := reference.OpenFileAPEventStore(reference.FileAPEventStoreConfig{
+				Directory: apDirectory, Issuer: apID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rawAPStore = store
+		}
+		openResource := func() {
+			store, err := reference.OpenFileResourceEventStore(reference.FileResourceEventStoreConfig{Directory: resourceDirectory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resourceStore = store
+		}
+		openAgent := func() {
+			store, err := reference.OpenFileAgentEventStore(reference.FileAgentEventStoreConfig{Directory: agentDirectory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			agentStore = store
+		}
+		openAP()
+		openResource()
+		openAgent()
+		reopenAP = func() {
+			if err := rawAPStore.(io.Closer).Close(); err != nil {
+				t.Fatal(err)
+			}
+			openAP()
+		}
+		reopenResource = func() {
+			if err := resourceStore.(io.Closer).Close(); err != nil {
+				t.Fatal(err)
+			}
+			openResource()
+		}
+		reopenAgent = func() {
+			if err := agentStore.(io.Closer).Close(); err != nil {
+				t.Fatal(err)
+			}
+			openAgent()
+		}
+		defer func() {
+			if err := errors.Join(
+				rawAPStore.(io.Closer).Close(),
+				resourceStore.(io.Closer).Close(),
+				agentStore.(io.Closer).Close(),
+			); err != nil {
+				t.Error(err)
+			}
+		}()
+	} else {
+		rawAPStore = reference.NewMemoryAPEventStore(apID)
+		resourceStore = reference.NewMemoryResourceEventStore()
+		agentStore = reference.NewMemoryAgentEventStore()
+		reopenAP = func() {}
+		reopenResource = func() {}
+		reopenAgent = func() {}
+	}
+	apStore := newTerminalBeforeAckAPEventStore(rawAPStore, agentStore)
 	action := &recoverableAction{}
 
 	protocolClient := &http.Client{}
@@ -151,6 +235,7 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	handlers.set("ap.example", ap.Handler())
 
 	// Reconstruct the resource from its durable authority before delivery.
+	reopenResource()
 	resource = newEventResource(t, eventResourceInput{
 		identifier:  resourceID,
 		signingKey:  resourceKey,
@@ -179,6 +264,9 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	// Reconstruct both protocol hosts and retry. The resource must send the
 	// exact retained JWT with a fresh HTTP proof; the AP returns exhausted 429,
 	// which settles the lost 202 without another use or inbox record.
+	reopenAP()
+	reopenResource()
+	apStore = newTerminalBeforeAckAPEventStore(rawAPStore, agentStore)
 	ap = newEventProvider(t, eventProviderInput{
 		identifier:  apID,
 		endpoint:    apID + "/events-v2",
@@ -261,6 +349,8 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	if processing.State != reference.EventDispatched {
 		t.Fatalf("processing after unknown action outcome = %q, want dispatched", processing.State)
 	}
+	reopenAgent()
+	apStore = newTerminalBeforeAckAPEventStore(rawAPStore, agentStore)
 	agent = newEventAgent(t, eventAgentInput{
 		identifier: agentID,
 		signingKey: agentKey,
