@@ -70,6 +70,23 @@ with its own key, and validates the terminal AS token before returning it to
 the agent. Slowdown, denial, expiry, invalid-code failure, and one-shot terminal
 delivery cross both continuation boundaries.
 
+One R3 direct-grant path is implemented through that real four-party flow. A
+resource advertises an MCP vocabulary, validates an agent's `r3_operations`
+through a deployment-owned authoritative-definition boundary, serializes and
+retains one exact R3 document, and issues its URI plus unpadded SHA-256 hash in
+the resource token. The AS alone performs a signed, no-redirect fetch; verifies
+the exact bytes before parsing or policy; coalesces a hash-keyed cache; and
+requires a successful issuance-audit write before releasing an auth token.
+The resource independently enforces both ordinary scope and semantic
+membership in `r3_granted`, without fetching R3 at call time.
+
+This is intentionally not described as complete R3. The exercised journey is
+one vocabulary, scope plus R3, and direct grants. Conditional grants, per-call
+proposal documents and retries, scope-free R3, multi-definition composition,
+person-server document use, live discovery adapters for every standard
+vocabulary, and externally durable R3 document custody remain open. The
+[source coverage report](SOURCE-COVERAGE.md) keeps those boundaries explicit.
+
 Three-party call chaining is exercised through two real protected resources.
 The intermediary signs as its own agent, carries the upstream auth token only
 as evidence, obtains a downstream token bound to its own key, and the person
@@ -286,20 +303,19 @@ matches the embedded contract and that every named evidence test still exists.
 This is maintained implementation coverage, not a full-conformance
 certification and not an upstream submission.
 
-## Independent Elixir interoperability
+## Retained Elixir-origin interoperability fixtures
 
-The [interoperability evidence](interop/README.md) exercises both the supported
-agent-request profile and the `jkt-jwt` durable-to-ephemeral request profile in
-both directions against our separate Elixir AAuth implementation. Each
-implementation generates exact retained wire values that the other verifies.
-Mutation controls cover the mission and Signature-Key bindings, and every
-generator is deterministic.
+The repository retains [historical wire fixtures](interop/README.md) attributed
+to an earlier Elixir prototype. Go tests verify those exact bytes and their
+mutation controls, but the current maintenance run has not re-executed the
+Elixir generator or reciprocal verifier. The fixtures therefore are useful
+code-archeology inputs and static Go verification cases, not current evidence
+of a running peer implementation.
 
-The Elixir implementation is comparator and peer evidence, not a runtime or
-module dependency. Ordinary Go builds, tests, embedding, and the runnable
-person server require no BEAM installation. The retained vectors make the Go
-side continuously testable; rerunning the reciprocal Elixir check is an
-explicit maintainer qualification.
+Ordinary Go builds, tests, embedding, and the runnable person server require no
+BEAM installation. Re-running both generators and both independent verifiers
+from pinned clean checkouts is an explicit future qualification gate before
+any bidirectional-interoperability claim is restored.
 
 Run the current qualification:
 
@@ -320,9 +336,10 @@ remains an ordinary `403` without signature negotiation.
 Missionless direct-AS call chaining, resource-owned interaction chaining,
 interaction/payment relay and callbacks, question delivery,
 updated-request/cancel clarification actions, restart custody for
-token/AS/resource continuations, R3, Events, platform enrollment/attestation,
-and the self-jwt, x509, and Accept-Signature surfaces still require
-implementation and qualification. Without a configured
+token/AS/resource continuations, R3 conditional and per-call processing,
+Events, platform enrollment/attestation, and the self-jwt, x509, and
+Accept-Signature surfaces still require implementation and qualification.
+Without a configured
 `GovernanceStore`, an embedded reference person server deliberately remains
 process-local. The runnable person profile always configures the file adapter,
 which has a single-writer contract; a host embedding the package may implement

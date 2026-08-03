@@ -45,6 +45,7 @@ type ResourceGrant struct {
 	Resource      string
 	ResourceToken string
 	Claims        aauth.ResourceTokenClaims
+	requestedR3   *aauth.R3OperationSet
 }
 
 // TokenAuthorization is either an auth-token grant or a signed-poll
@@ -713,6 +714,33 @@ func (agent *Agent) Authorize(
 	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
 }
 
+// AuthorizeR3 performs the ordinary four-party authorization journey while
+// asking the resource for one content-addressed R3 operation set.
+func (agent *Agent) AuthorizeR3(
+	ctx context.Context,
+	resourceEndpoint string,
+	personServerEndpoint string,
+	scopes []string,
+	mission aauth.ApprovedMission,
+	operations aauth.R3OperationSet,
+) (Grant, error) {
+	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+		return Grant{}, err
+	}
+	personServerID, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return Grant{}, err
+	}
+	if mission.Reference.Approver != personServerID {
+		return Grant{}, errors.New("reference: mission approver does not match person-server endpoint")
+	}
+	resourceGrant, err := agent.RequestResourceTokenR3(ctx, resourceEndpoint, scopes, mission, operations)
+	if err != nil {
+		return Grant{}, err
+	}
+	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
+}
+
 func (agent *Agent) RequestResourceToken(
 	ctx context.Context,
 	resourceEndpoint string,
@@ -722,7 +750,26 @@ func (agent *Agent) RequestResourceToken(
 	if err := mission.ValidateExactBytes(); err != nil {
 		return ResourceGrant{}, err
 	}
-	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission.Reference)
+	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission.Reference, nil)
+}
+
+// RequestResourceTokenR3 asks the resource to validate an R3 operation set and
+// return a resource token that identifies the resulting exact document.
+func (agent *Agent) RequestResourceTokenR3(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	mission aauth.ApprovedMission,
+	operations aauth.R3OperationSet,
+) (ResourceGrant, error) {
+	if err := mission.ValidateExactBytes(); err != nil {
+		return ResourceGrant{}, err
+	}
+	if err := operations.Validate(); err != nil {
+		return ResourceGrant{}, err
+	}
+	cloned := operations.Clone()
+	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission.Reference, &cloned)
 }
 
 // RequestResourceTokenForReference is used by an intermediary resource, which
@@ -737,7 +784,7 @@ func (agent *Agent) RequestResourceTokenForReference(
 	if err := mission.Validate(); err != nil {
 		return ResourceGrant{}, err
 	}
-	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission)
+	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission, nil)
 }
 
 func (agent *Agent) requestResourceToken(
@@ -745,6 +792,7 @@ func (agent *Agent) requestResourceToken(
 	resourceEndpoint string,
 	scopes []string,
 	mission aauth.MissionReference,
+	r3Operations *aauth.R3OperationSet,
 ) (ResourceGrant, error) {
 	var grant ResourceGrant
 	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
@@ -758,7 +806,14 @@ func (agent *Agent) requestResourceToken(
 	if err != nil {
 		return grant, err
 	}
-	resourceBody, err := json.Marshal(map[string]string{"scope": strings.Join(requestedScopes, " ")})
+	resourceInput := struct {
+		Scope        string                `json:"scope"`
+		R3Operations *aauth.R3OperationSet `json:"r3_operations,omitempty"`
+	}{
+		Scope:        strings.Join(requestedScopes, " "),
+		R3Operations: r3Operations,
+	}
+	resourceBody, err := json.Marshal(resourceInput)
 	if err != nil {
 		return grant, err
 	}
@@ -802,10 +857,19 @@ func (agent *Agent) requestResourceToken(
 		resourceClaims.Mission == nil || *resourceClaims.Mission != mission {
 		return grant, errors.New("reference: resource token does not match the authorization request")
 	}
+	if r3Operations != nil && (resourceClaims.R3URI == "" || resourceClaims.R3S256 == "") {
+		return grant, errors.New("reference: resource token omitted the requested R3 reference")
+	}
+	var requestedR3 *aauth.R3OperationSet
+	if r3Operations != nil {
+		cloned := r3Operations.Clone()
+		requestedR3 = &cloned
+	}
 	return ResourceGrant{
 		Resource:      resourceID,
 		ResourceToken: resourceResult.ResourceToken,
 		Claims:        resourceClaims,
+		requestedR3:   requestedR3,
 	}, nil
 }
 
@@ -1236,6 +1300,20 @@ func (agent *Agent) parseTokenGrantResponse(
 		resourceGrant.Claims.Mission == nil ||
 		*authClaims.Mission != *resourceGrant.Claims.Mission {
 		return Grant{}, errors.New("reference: auth token does not match the resource token")
+	}
+	if authClaims.R3URI != resourceGrant.Claims.R3URI ||
+		authClaims.R3S256 != resourceGrant.Claims.R3S256 {
+		return Grant{}, errors.New("reference: auth token R3 reference does not match the resource token")
+	}
+	if resourceGrant.requestedR3 != nil {
+		if authClaims.R3Granted == nil ||
+			!resourceGrant.requestedR3.ContainsSet(*authClaims.R3Granted) {
+			return Grant{}, errors.New("reference: auth token grants R3 operations outside the agent request")
+		}
+		if authClaims.R3Conditional != nil &&
+			!resourceGrant.requestedR3.ContainsSet(*authClaims.R3Conditional) {
+			return Grant{}, errors.New("reference: auth token conditionally grants R3 operations outside the agent request")
+		}
 	}
 	if err := aauth.ValidateAuthTokenContext(
 		authClaims,

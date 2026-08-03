@@ -3,6 +3,7 @@ package reference
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -27,29 +28,40 @@ type ResourceConfig struct {
 	Random              io.Reader
 	PendingLifetime     time.Duration
 	Operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
+	// R3Vocabularies is the exact discovery-value map advertised by the
+	// resource. R3DocumentForOperations is the deployment-owned validation
+	// and document-selection boundary for those authoritative definitions.
+	R3Vocabularies          map[string]json.RawMessage
+	R3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
+	R3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
 }
 
 type Resource struct {
-	identifier          string
-	tokenAudience       string
-	signingKey          aauth.SigningKey
-	hasSigningKey       bool
-	keyResolver         aauth.KeyResolver
-	clock               aauth.Clock
-	newID               func() string
-	scopes              []string
-	authorizationPolicy aauth.AuthorizationPolicy
-	interactionRequired func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	random              io.Reader
-	pendingLifetime     time.Duration
-	operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
-	randomMu            sync.Mutex
-	pendingMu           sync.Mutex
-	pending             map[string]*pendingAuthorization
-	accessMu            sync.Mutex
-	access              map[string]localAccessGrant
-	replayMu            sync.Mutex
-	replayedProof       map[string]time.Time
+	identifier              string
+	tokenAudience           string
+	signingKey              aauth.SigningKey
+	hasSigningKey           bool
+	keyResolver             aauth.KeyResolver
+	clock                   aauth.Clock
+	newID                   func() string
+	scopes                  []string
+	authorizationPolicy     aauth.AuthorizationPolicy
+	interactionRequired     func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	random                  io.Reader
+	pendingLifetime         time.Duration
+	operation               func(context.Context, aauth.AuthorizedRequest) (any, error)
+	r3Vocabularies          map[string]json.RawMessage
+	r3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
+	r3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
+	r3Mu                    sync.RWMutex
+	r3Documents             map[string][]byte
+	randomMu                sync.Mutex
+	pendingMu               sync.Mutex
+	pending                 map[string]*pendingAuthorization
+	accessMu                sync.Mutex
+	access                  map[string]localAccessGrant
+	replayMu                sync.Mutex
+	replayedProof           map[string]time.Time
 }
 
 type localAccessGrant struct {
@@ -105,6 +117,32 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		len(config.Scopes) == 0 || config.Operation == nil {
 		return nil, errors.New("reference: resource requires resolver, clock, id source, scopes, and operation")
 	}
+	r3Parts := 0
+	if len(config.R3Vocabularies) != 0 {
+		r3Parts++
+	}
+	if config.R3DocumentForOperations != nil {
+		r3Parts++
+	}
+	if config.R3OperationForRequest != nil {
+		r3Parts++
+	}
+	if r3Parts != 0 && r3Parts != 3 {
+		return nil, errors.New("reference: R3 requires vocabularies, document selection, and request mapping")
+	}
+	if r3Parts != 0 && config.AccessServer == "" {
+		return nil, errors.New("reference: R3 requires an access server")
+	}
+	r3Vocabularies := make(map[string]json.RawMessage, len(config.R3Vocabularies))
+	for vocabulary, discovery := range config.R3Vocabularies {
+		if err := aauth.ValidateR3VocabularyURI(vocabulary); err != nil {
+			return nil, err
+		}
+		if len(discovery) == 0 || !json.Valid(discovery) {
+			return nil, errors.New("reference: R3 discovery value must be valid JSON")
+		}
+		r3Vocabularies[vocabulary] = append(json.RawMessage(nil), discovery...)
+	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
 		pendingLifetime = 5 * time.Minute
@@ -120,22 +158,26 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		return nil, err
 	}
 	return &Resource{
-		identifier:          config.Identifier,
-		tokenAudience:       tokenAudience,
-		signingKey:          config.SigningKey,
-		hasSigningKey:       config.SigningKey.ID() != "",
-		keyResolver:         config.KeyResolver,
-		clock:               config.Clock,
-		newID:               config.NewID,
-		scopes:              append([]string(nil), config.Scopes...),
-		authorizationPolicy: config.AuthorizationPolicy,
-		interactionRequired: config.InteractionRequired,
-		random:              random,
-		pendingLifetime:     pendingLifetime,
-		operation:           config.Operation,
-		pending:             make(map[string]*pendingAuthorization),
-		access:              make(map[string]localAccessGrant),
-		replayedProof:       make(map[string]time.Time),
+		identifier:              config.Identifier,
+		tokenAudience:           tokenAudience,
+		signingKey:              config.SigningKey,
+		hasSigningKey:           config.SigningKey.ID() != "",
+		keyResolver:             config.KeyResolver,
+		clock:                   config.Clock,
+		newID:                   config.NewID,
+		scopes:                  append([]string(nil), config.Scopes...),
+		authorizationPolicy:     config.AuthorizationPolicy,
+		interactionRequired:     config.InteractionRequired,
+		random:                  random,
+		pendingLifetime:         pendingLifetime,
+		operation:               config.Operation,
+		r3Vocabularies:          r3Vocabularies,
+		r3DocumentForOperations: config.R3DocumentForOperations,
+		r3OperationForRequest:   config.R3OperationForRequest,
+		r3Documents:             make(map[string][]byte),
+		pending:                 make(map[string]*pendingAuthorization),
+		access:                  make(map[string]localAccessGrant),
+		replayedProof:           make(map[string]time.Time),
 	}, nil
 }
 
@@ -146,6 +188,7 @@ func (resource *Resource) Handler() http.Handler {
 	mux.HandleFunc("GET /interaction/{id}", resource.handleInteraction)
 	mux.HandleFunc("GET /.well-known/aauth-resource.json", resource.handleMetadata)
 	mux.HandleFunc("GET /jwks", resource.handleJWKS)
+	mux.HandleFunc("GET /r3/{s256}", resource.handleR3Document)
 	mux.HandleFunc("/", resource.handleProtected)
 	return mux
 }
@@ -168,7 +211,8 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		return
 	}
 	var input struct {
-		Scope string `json:"scope"`
+		Scope        string                `json:"scope"`
+		R3Operations *aauth.R3OperationSet `json:"r3_operations,omitempty"`
 	}
 	if err := decodeJSON(response, request, &input); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
@@ -178,6 +222,52 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	if err != nil || !scopesContained(scopes, resource.scopes) {
 		writeProblem(response, http.StatusBadRequest, "invalid_scope", err)
 		return
+	}
+	var r3URI string
+	var r3S256 string
+	if input.R3Operations != nil {
+		if resource.r3DocumentForOperations == nil {
+			writeProblem(response, http.StatusBadRequest, "unsupported_r3_vocabulary", errors.New("resource does not advertise R3"))
+			return
+		}
+		if err := input.R3Operations.Validate(); err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_r3_operations", err)
+			return
+		}
+		if _, advertised := resource.r3Vocabularies[input.R3Operations.Vocabulary]; !advertised {
+			writeProblem(response, http.StatusBadRequest, "unsupported_r3_vocabulary", errors.New("requested R3 vocabulary is not advertised"))
+			return
+		}
+		exactBytes, err := resource.r3DocumentForOperations(
+			request.Context(),
+			input.R3Operations.Clone(),
+		)
+		if err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_r3_operations", err)
+			return
+		}
+		document, err := aauth.ParseR3Document(exactBytes)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		documentOperations := document.OperationSet()
+		if documentOperations.Vocabulary != input.R3Operations.Vocabulary ||
+			!documentOperations.ContainsSet(*input.R3Operations) {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("R3 document does not cover the requested operations"))
+			return
+		}
+		r3S256 = aauth.R3S256(exactBytes)
+		resource.r3Mu.Lock()
+		existing, exists := resource.r3Documents[r3S256]
+		if exists && string(existing) != string(exactBytes) {
+			resource.r3Mu.Unlock()
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("R3 digest collision"))
+			return
+		}
+		resource.r3Documents[r3S256] = append([]byte(nil), exactBytes...)
+		resource.r3Mu.Unlock()
+		r3URI = resource.identifier + "/r3/" + r3S256
 	}
 	var mission *aauth.MissionReference
 	if header := request.Header.Get("AAuth-Mission"); header != "" {
@@ -250,6 +340,8 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		ExpiresAt: now.Add(5 * time.Minute).Unix(),
 		Scope:     strings.Join(scopes, " "),
 		Mission:   mission,
+		R3URI:     r3URI,
+		R3S256:    r3S256,
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -351,6 +443,7 @@ func (resource *Resource) beginPendingAuthorization(
 func copyAuthorizationRequest(request aauth.AuthorizationRequest) aauth.AuthorizationRequest {
 	copied := request
 	copied.Scope = append([]string(nil), request.Scope...)
+	copied.R3 = request.R3.Clone()
 	if request.Mission != nil {
 		mission := *request.Mission
 		copied.Mission = &mission
@@ -607,6 +700,35 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
+	if claims.R3URI != "" {
+		if claims.Issuer != resource.tokenAudience {
+			writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("R3 auth-token issuer is not the resource access server"))
+			return
+		}
+		if resource.r3OperationForRequest == nil {
+			writeProblem(response, http.StatusForbidden, "r3_not_configured", errors.New("resource cannot map this R3 operation"))
+			return
+		}
+		if claims.R3Conditional != nil {
+			writeProblem(response, http.StatusForbidden, "unsupported_r3_conditional", errors.New("reference resource does not implement the R3 conditional lifecycle"))
+			return
+		}
+		mapped, err := resource.r3OperationForRequest(request.Context(), request)
+		if err != nil {
+			writeProblem(response, http.StatusForbidden, "r3_operation_unknown", err)
+			return
+		}
+		if err := mapped.Validate(); err != nil || len(mapped.Operations) != 1 {
+			writeProblem(response, http.StatusForbidden, "r3_operation_unknown", errors.New("resource request mapping must return one valid R3 operation"))
+			return
+		}
+		if claims.R3Granted == nil ||
+			mapped.Vocabulary != claims.R3Granted.Vocabulary ||
+			!claims.R3Granted.Contains(mapped.Operations[0]) {
+			writeProblem(response, http.StatusForbidden, "r3_operation_denied", errors.New("R3 operation is not granted"))
+			return
+		}
+	}
 
 	result, err := resource.operation(request.Context(), aauth.AuthorizedRequest{
 		Agent:     claims.Agent,
@@ -712,7 +834,46 @@ func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.R
 	if resource.hasSigningKey {
 		metadata["jwks_uri"] = resource.identifier + "/jwks"
 	}
+	if len(resource.r3Vocabularies) != 0 {
+		vocabularies := make(map[string]json.RawMessage, len(resource.r3Vocabularies))
+		for vocabulary, discovery := range resource.r3Vocabularies {
+			vocabularies[vocabulary] = append(json.RawMessage(nil), discovery...)
+		}
+		metadata["r3_vocabularies"] = vocabularies
+	}
 	writeJSON(response, http.StatusOK, metadata)
+}
+
+func (resource *Resource) handleR3Document(response http.ResponseWriter, request *http.Request) {
+	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
+		AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
+	})
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
+	if verified.Signer != resource.tokenAudience {
+		writeSignatureFailure(response, errors.New("R3 document request is not signed by the resource access server"))
+		return
+	}
+	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
+		return
+	}
+	s256 := request.PathValue("s256")
+	resource.r3Mu.RLock()
+	document, exists := resource.r3Documents[s256]
+	document = append([]byte(nil), document...)
+	resource.r3Mu.RUnlock()
+	if !exists || aauth.R3S256(document) != s256 {
+		writeProblem(response, http.StatusNotFound, "not_found", errors.New("R3 document is unknown"))
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "private, immutable")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	response.WriteHeader(http.StatusOK)
+	_, _ = response.Write(document)
 }
 
 func (resource *Resource) handleJWKS(response http.ResponseWriter, _ *http.Request) {

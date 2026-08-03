@@ -97,6 +97,8 @@ type ResourceTokenClaims struct {
 	ExpiresAt int64             `json:"exp"`
 	Scope     string            `json:"scope"`
 	Mission   *MissionReference `json:"mission,omitempty"`
+	R3URI     string            `json:"r3_uri,omitempty"`
+	R3S256    string            `json:"r3_s256,omitempty"`
 }
 
 // Actor records one link in an AAuth delegation chain.
@@ -107,19 +109,23 @@ type Actor struct {
 
 // AuthTokenClaims are the claims of an aa-auth+jwt.
 type AuthTokenClaims struct {
-	Issuer       string            `json:"iss"`
-	DWK          string            `json:"dwk"`
-	Audience     string            `json:"aud"`
-	JTI          string            `json:"jti"`
-	Agent        string            `json:"agent"`
-	Confirmation Confirmation      `json:"cnf"`
-	Actor        *Actor            `json:"act,omitempty"`
-	IssuedAt     int64             `json:"iat"`
-	ExpiresAt    int64             `json:"exp"`
-	Subject      string            `json:"sub,omitempty"`
-	Scope        string            `json:"scope,omitempty"`
-	Mission      *MissionReference `json:"mission,omitempty"`
-	Tenant       string            `json:"tenant,omitempty"`
+	Issuer        string            `json:"iss"`
+	DWK           string            `json:"dwk"`
+	Audience      string            `json:"aud"`
+	JTI           string            `json:"jti"`
+	Agent         string            `json:"agent"`
+	Confirmation  Confirmation      `json:"cnf"`
+	Actor         *Actor            `json:"act,omitempty"`
+	IssuedAt      int64             `json:"iat"`
+	ExpiresAt     int64             `json:"exp"`
+	Subject       string            `json:"sub,omitempty"`
+	Scope         string            `json:"scope,omitempty"`
+	Mission       *MissionReference `json:"mission,omitempty"`
+	Tenant        string            `json:"tenant,omitempty"`
+	R3URI         string            `json:"r3_uri,omitempty"`
+	R3S256        string            `json:"r3_s256,omitempty"`
+	R3Granted     *R3OperationSet   `json:"r3_granted,omitempty"`
+	R3Conditional *R3OperationSet   `json:"r3_conditional,omitempty"`
 }
 
 // TokenHeader is the protected JWS header common to AAuth tokens.
@@ -475,6 +481,9 @@ func validateResourceClaims(claims ResourceTokenClaims, now time.Time, enforceCu
 			return fmt.Errorf("aauth: resource-token mission: %w", err)
 		}
 	}
+	if err := validateR3Reference(claims.R3URI, claims.R3S256); err != nil {
+		return fmt.Errorf("aauth: resource-token: %w", err)
+	}
 	return nil
 }
 
@@ -516,6 +525,37 @@ func validateAuthClaims(claims AuthTokenClaims, now time.Time, enforceCurrentTim
 	if claims.Mission != nil {
 		if err := claims.Mission.Validate(); err != nil {
 			return fmt.Errorf("aauth: auth-token mission: %w", err)
+		}
+	}
+	if err := validateR3Reference(claims.R3URI, claims.R3S256); err != nil {
+		return fmt.Errorf("aauth: auth-token: %w", err)
+	}
+	hasR3Reference := claims.R3URI != ""
+	if !hasR3Reference && (claims.R3Granted != nil || claims.R3Conditional != nil) {
+		return errors.New("aauth: auth-token R3 grants require an R3 reference")
+	}
+	if hasR3Reference {
+		if claims.R3Granted == nil {
+			return errors.New("aauth: auth-token R3 reference requires r3_granted")
+		}
+		if err := claims.R3Granted.validate(true); err != nil {
+			return fmt.Errorf("aauth: auth-token r3_granted: %w", err)
+		}
+		if len(claims.R3Granted.Operations) == 0 && claims.R3Conditional == nil {
+			return errors.New("aauth: auth-token R3 grant contains no operations")
+		}
+		if claims.R3Conditional != nil {
+			if err := claims.R3Conditional.Validate(); err != nil {
+				return fmt.Errorf("aauth: auth-token r3_conditional: %w", err)
+			}
+			if claims.R3Granted.Vocabulary != claims.R3Conditional.Vocabulary {
+				return errors.New("aauth: auth-token R3 grant vocabularies differ")
+			}
+			for _, operation := range claims.R3Conditional.Operations {
+				if claims.R3Granted.Contains(operation) {
+					return errors.New("aauth: auth-token R3 operation is both granted and conditional")
+				}
+			}
 		}
 	}
 	for actor := claims.Actor; actor != nil; actor = actor.Actor {

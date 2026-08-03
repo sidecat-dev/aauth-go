@@ -1001,26 +1001,62 @@
     {
       "source": "r3",
       "section": "authorization-endpoint-extensions",
-      "status": "unsupported",
-      "claim": "R3 authorization-endpoint extensions are not implemented."
+      "status": "partial",
+      "claim": "The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, and returns one R3 reference alongside independently enforced scope. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.",
+      "evidence": [
+        {
+          "file": "r3_journey_test.go",
+          "test": "TestR3DirectGrantJourney"
+        }
+      ]
     },
     {
       "source": "r3",
       "section": "r3-document",
-      "status": "unsupported",
-      "claim": "R3 documents and content addressing are not implemented."
+      "status": "partial",
+      "claim": "The reference resource validates the standard operation-entry shapes, preserves selected document bytes without reserialization, hashes and stores them by unpadded base64url SHA-256, advertises the vocabulary, and serves the exact bytes only to its signed access server. External durable document stores and multi-definition composition remain open.",
+      "evidence": [
+        {
+          "file": "r3_journey_test.go",
+          "test": "TestR3DirectGrantJourney"
+        },
+        {
+          "file": "r3_test.go",
+          "test": "TestR3DocumentHashRetainsExactWireIdentity"
+        },
+        {
+          "file": "r3_test.go",
+          "test": "TestR3StandardVocabularyOperationShapes"
+        }
+      ]
     },
     {
       "source": "r3",
       "section": "r3-processing",
-      "status": "unsupported",
-      "claim": "R3 processing and caching are not implemented."
+      "status": "partial",
+      "claim": "The access server performs a no-redirect same-resource signed fetch, verifies exact bytes before parsing or policy, coalesces and re-hashes a hash-keyed cache, and requires a successful synchronous issuance-audit callback before releasing a token. Person-server document fetching and conditional processing remain open.",
+      "evidence": [
+        {
+          "file": "r3_journey_test.go",
+          "test": "TestR3DirectGrantJourney"
+        }
+      ]
     },
     {
       "source": "r3",
       "section": "auth-token-extensions",
-      "status": "unsupported",
-      "claim": "R3 auth-token extensions and resource enforcement are not implemented."
+      "status": "partial",
+      "claim": "Resource and auth tokens enforce complete URI/hash claim pairs; the selected auth token echoes the verified reference and a policy-narrowed direct grant, and the resource executes only a semantically matching real operation without enforcement-time fetching. Conditional challenges and per-call auth tokens remain open.",
+      "evidence": [
+        {
+          "file": "r3_journey_test.go",
+          "test": "TestR3DirectGrantJourney"
+        },
+        {
+          "file": "r3_test.go",
+          "test": "TestR3TokenClaimsRequireCompleteConsistentClaims"
+        }
+      ]
     },
     {
       "source": "r3",

@@ -51,9 +51,10 @@ type VerifyRequestOptions struct {
 }
 
 // SignRequestOptions controls optional HTTP Message Signature parameters.
-// A zero ExpiresAt preserves the default created-only profile.
+// A zero ExpiresAt and empty Nonce preserve the default created-only profile.
 type SignRequestOptions struct {
 	ExpiresAt time.Time
+	Nonce     string
 }
 
 // SignRequest applies the AAuth HTTP Message Signatures profile using a JWT
@@ -139,6 +140,26 @@ func SignRequestWithJWKSURI(
 	discoveryDocument string,
 	clock Clock,
 ) error {
+	return SignRequestWithJWKSURIOptions(
+		request,
+		key,
+		identifier,
+		discoveryDocument,
+		clock,
+		SignRequestOptions{},
+	)
+}
+
+// SignRequestWithJWKSURIOptions signs with a URI-identified server key and
+// optional RFC 9421 signature parameters.
+func SignRequestWithJWKSURIOptions(
+	request *http.Request,
+	key SigningKey,
+	identifier string,
+	discoveryDocument string,
+	clock Clock,
+	options SignRequestOptions,
+) error {
 	if err := ValidateServerIdentifier(identifier); err != nil {
 		return fmt.Errorf("aauth: jwks_uri signer: %w", err)
 	}
@@ -151,7 +172,7 @@ func SignRequestWithJWKSURI(
 	header := `sig=jwks_uri;id=` + strconv.Quote(identifier) +
 		`;dwk=` + strconv.Quote(discoveryDocument) +
 		`;kid=` + strconv.Quote(key.ID())
-	return signRequestWithSignatureKey(request, key, header, clock, SignRequestOptions{})
+	return signRequestWithSignatureKey(request, key, header, clock, options)
 }
 
 func signRequestWithSignatureKey(
@@ -191,7 +212,10 @@ func signRequestWithSignatureKey(
 	if !options.ExpiresAt.IsZero() && options.ExpiresAt.Unix() <= now.Unix() {
 		return errors.New("aauth: signature expires time must be after created time")
 	}
-	params := signatureParams(components, now.Unix(), options.ExpiresAt)
+	if strings.ContainsAny(options.Nonce, "\r\n") {
+		return errors.New("aauth: signature nonce must not contain line breaks")
+	}
+	params := signatureParams(components, now.Unix(), options.ExpiresAt, options.Nonce)
 	base, err := signatureBase(request, components, params)
 	if err != nil {
 		return err
@@ -422,7 +446,7 @@ func VerifyRequest(
 	return verified, nil
 }
 
-func signatureParams(components []string, created int64, expires time.Time) string {
+func signatureParams(components []string, created int64, expires time.Time, nonce string) string {
 	var quoted []string
 	for _, component := range components {
 		quoted = append(quoted, strconv.Quote(component))
@@ -430,6 +454,9 @@ func signatureParams(components []string, created int64, expires time.Time) stri
 	params := "(" + strings.Join(quoted, " ") + ");created=" + strconv.FormatInt(created, 10)
 	if !expires.IsZero() {
 		params += ";expires=" + strconv.FormatInt(expires.Unix(), 10)
+	}
+	if nonce != "" {
+		params += ";nonce=" + strconv.Quote(nonce)
 	}
 	return params
 }
@@ -554,6 +581,7 @@ func parseSignatureInput(header string) ([]string, int64, *int64, string, error)
 	var created int64
 	var expires *int64
 	seenCreated := false
+	seenNonce := false
 	remainder := params[end+1:]
 	for remainder != "" {
 		if !strings.HasPrefix(remainder, ";") {
@@ -591,6 +619,15 @@ func parseSignatureInput(header string) ([]string, int64, *int64, string, error)
 				return nil, 0, nil, "", errors.New("aauth: Signature-Input expires is invalid")
 			}
 			expires = &parsed
+		case "nonce":
+			if seenNonce {
+				return nil, 0, nil, "", errors.New("aauth: Signature-Input nonce is duplicated")
+			}
+			nonce, err := strconv.Unquote(value)
+			if err != nil || nonce == "" {
+				return nil, 0, nil, "", errors.New("aauth: Signature-Input nonce is invalid")
+			}
+			seenNonce = true
 		}
 	}
 	if !seenCreated {

@@ -2538,6 +2538,9 @@ func (server *PersonServer) parseAccessServerGrant(
 	); err != nil {
 		return exchange, err
 	}
+	if claims.R3URI != resourceToken.R3URI || claims.R3S256 != resourceToken.R3S256 {
+		return exchange, errors.New("access-server auth token changed the R3 reference")
+	}
 	grantedScopes, err := parseScopes(claims.Scope)
 	if err != nil {
 		return exchange, err

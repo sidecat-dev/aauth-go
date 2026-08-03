@@ -25,6 +25,47 @@ for this library.
 
 ## 2026-07-29
 
+### R3 one-vocabulary direct grant
+
+- **Status: implemented and qualified as one narrow but complete vertical, not
+  as full R3.** A signed agent request carries one MCP operation plus ordinary
+  scope through the real resource → PS → AS flow. The resource validates the
+  operation at a caller-owned authoritative-definition boundary, retains the
+  selected exact document bytes, and issues one URI/hash pair.
+- The R3 endpoint accepts only a valid `jwks_uri` HTTP signature from the
+  resource's configured AS. The AS requires same-resource hosting, forbids
+  redirects, bounds the body, hashes the received bytes before parsing or
+  policy, and coalesces a hash-keyed cache. Every cache read recomputes the
+  digest over retained exact bytes.
+- Policy sees a defensive copy of the verified exact bytes and parsed
+  document. It may narrow to a direct subset. Resource-token, auth-token, PS,
+  and agent checks preserve the same URI/hash pair; the agent additionally
+  refuses operations outside its request. The protected resource maps the real
+  call back to one vocabulary entry, applies ordinary scope independently, and
+  invokes only a matching direct grant without fetching at enforcement time.
+- Token release is fail-closed behind a synchronous deployment-owned audit
+  callback containing URI, hash, agent, resource, token ID, and issuance time.
+  A callback error exposes no auth token. A deployment must make a successful
+  callback durable; the reference ordering prevents a delivered-token-without-
+  audit gap but may leave an orphan audit if response delivery fails.
+- Executable negative paths cover unsigned document access, one-byte response
+  mutation before policy, an operation absent from the authoritative
+  definition, an audit-store failure, an ungranted protected call, no fetch at
+  enforcement time, and repeated issuance from a re-hashed cache.
+- **Still open:** `r3_conditional`, per-call proposal documents and parameter
+  binding, scope-free R3, PS display/consent fetching, multi-document
+  composition, durable external document storage, live discovery validation
+  adapters, and full journeys for the other seven standard vocabularies.
+- **Draft ambiguities exposed, not silently resolved:** R3 says both PS and AS
+  fetch while also requiring every fetch to be signed by the resource's single
+  AS; its JWT `typ` examples conflict with core's `aa-*+jwt` values; it both
+  requires stable bytes and discusses updating one URI; and the AS receives
+  the document but not the agent's original operation request. This
+  implementation follows the explicit AS-only access-control rule, retains
+  core token types, uses a hash-derived URI, and has the agent reject an
+  overbroad returned grant. These choices are implementation boundaries, not
+  assertions that the draft contradictions are resolved.
+
 ### HTTP signature error wire contract
 
 - **Status: implemented for the selected Ed25519 profile.** `VerifyRequest`

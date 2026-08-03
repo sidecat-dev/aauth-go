@@ -3,7 +3,9 @@ package reference
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -27,6 +29,14 @@ type AccessServerConfig struct {
 	InteractionRequired   func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	Random                io.Reader
 	PendingLifetime       time.Duration
+	// R3HTTPClient fetches content-addressed documents as this access server.
+	// R3Audit must durably record a successful issuance before the token is
+	// released to the caller; returning an error makes issuance fail closed.
+	R3HTTPClient   *http.Client
+	R3Audit        func(context.Context, aauth.R3AuditRecord) error
+	R3Admit        func(context.Context, string) error
+	R3FetchTimeout time.Duration
+	R3CacheLimit   int
 }
 
 type AccessServer struct {
@@ -41,6 +51,13 @@ type AccessServer struct {
 	interactionRequired   func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	random                io.Reader
 	pendingLifetime       time.Duration
+	r3HTTPClient          *http.Client
+	r3Audit               func(context.Context, aauth.R3AuditRecord) error
+	r3Admit               func(context.Context, string) error
+	r3FetchTimeout        time.Duration
+	r3CacheLimit          int
+	r3CacheMu             sync.Mutex
+	r3Cache               map[string]*r3CacheEntry
 
 	replayMu      sync.Mutex
 	replayedProof map[string]time.Time
@@ -66,6 +83,13 @@ type pendingAccessServerAuthorization struct {
 	decision aauth.AuthorizationDecision
 }
 
+type r3CacheEntry struct {
+	ready      chan struct{}
+	exactBytes []byte
+	document   aauth.R3Document
+	err        error
+}
+
 func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 	if err := aauth.ValidateServerIdentifier(config.Identifier); err != nil {
 		return nil, err
@@ -73,6 +97,33 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 	if config.SigningKey.ID() == "" || config.KeyResolver == nil || config.Clock == nil ||
 		config.NewID == nil || config.TrustedPersonServer == nil || config.AuthorizationPolicy == nil {
 		return nil, errors.New("reference: access server requires key, resolver, clock, id source, trust, and policy")
+	}
+	r3Parts := 0
+	if config.R3HTTPClient != nil {
+		r3Parts++
+	}
+	if config.R3Audit != nil {
+		r3Parts++
+	}
+	if config.R3Admit != nil {
+		r3Parts++
+	}
+	if r3Parts != 0 && r3Parts != 3 {
+		return nil, errors.New("reference: R3 requires an HTTP client, egress admission, and issuance audit")
+	}
+	r3FetchTimeout := config.R3FetchTimeout
+	if r3FetchTimeout == 0 {
+		r3FetchTimeout = 10 * time.Second
+	}
+	if r3FetchTimeout < 0 {
+		return nil, errors.New("reference: R3 fetch timeout must not be negative")
+	}
+	r3CacheLimit := config.R3CacheLimit
+	if r3CacheLimit == 0 {
+		r3CacheLimit = 128
+	}
+	if r3CacheLimit < 0 {
+		return nil, errors.New("reference: R3 cache limit must not be negative")
 	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
@@ -97,6 +148,12 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		interactionRequired:   config.InteractionRequired,
 		random:                random,
 		pendingLifetime:       pendingLifetime,
+		r3HTTPClient:          config.R3HTTPClient,
+		r3Audit:               config.R3Audit,
+		r3Admit:               config.R3Admit,
+		r3FetchTimeout:        r3FetchTimeout,
+		r3CacheLimit:          r3CacheLimit,
+		r3Cache:               make(map[string]*r3CacheEntry),
 		replayedProof:         make(map[string]time.Time),
 		pending:               make(map[string]*pendingAccessServerAuthorization),
 	}, nil
@@ -245,6 +302,18 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
+	var r3Authorization *aauth.R3Authorization
+	if resourceToken.R3URI != "" {
+		if server.r3HTTPClient == nil || server.r3Audit == nil {
+			writeProblem(response, http.StatusForbidden, "unsupported_r3", errors.New("access server is not configured for R3"))
+			return
+		}
+		r3Authorization, err = server.fetchR3Authorization(request.Context(), resourceToken)
+		if err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_r3_document", err)
+			return
+		}
+	}
 	pollingKeyThumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
@@ -258,6 +327,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			Scope:       append([]string(nil), scopes...),
 			Mission:     resourceToken.Mission,
 			Upstream:    upstream,
+			R3:          r3Authorization,
 		},
 		resourceToken:        resourceToken,
 		targetAgent:          targetAgent,
@@ -277,6 +347,10 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		if required {
+			if r3Authorization != nil {
+				writeProblem(response, http.StatusNotImplemented, "unsupported_r3_deferred", errors.New("reference access server does not implement deferred R3 issuance"))
+				return
+			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
@@ -295,10 +369,15 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization policy returned an invalid grant"))
 		return
 	}
-	server.completeAuthorization(response, authorizationContext, decision)
+	if err := validateR3AuthorizationDecision(decision, r3Authorization); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization policy returned an invalid R3 grant"))
+		return
+	}
+	server.completeAuthorization(request.Context(), response, authorizationContext, decision)
 }
 
 func (server *AccessServer) completeAuthorization(
+	ctx context.Context,
 	response http.ResponseWriter,
 	authorizationContext accessServerAuthorizationContext,
 	decision aauth.AuthorizationDecision,
@@ -312,28 +391,222 @@ func (server *AccessServer) completeAuthorization(
 	if authorizationContext.targetTokenExpiresAt < expiresAt {
 		expiresAt = authorizationContext.targetTokenExpiresAt
 	}
+	tokenID := server.newID()
 	authToken, err := aauth.MintAuthToken(server.signingKey, aauth.AuthTokenClaims{
-		Issuer:       server.identifier,
-		DWK:          aauth.AccessDiscoveryDocument,
-		Audience:     authorizationContext.resourceToken.Issuer,
-		JTI:          server.newID(),
-		Agent:        authorizationContext.targetAgent,
-		Confirmation: aauth.Confirmation{JWK: authorizationContext.targetKey},
-		Actor:        actor,
-		IssuedAt:     now.Unix(),
-		ExpiresAt:    expiresAt,
-		Subject:      decision.Subject,
-		Scope:        strings.Join(decision.Scope, " "),
-		Mission:      authorizationContext.resourceToken.Mission,
+		Issuer:        server.identifier,
+		DWK:           aauth.AccessDiscoveryDocument,
+		Audience:      authorizationContext.resourceToken.Issuer,
+		JTI:           tokenID,
+		Agent:         authorizationContext.targetAgent,
+		Confirmation:  aauth.Confirmation{JWK: authorizationContext.targetKey},
+		Actor:         actor,
+		IssuedAt:      now.Unix(),
+		ExpiresAt:     expiresAt,
+		Subject:       decision.Subject,
+		Scope:         strings.Join(decision.Scope, " "),
+		Mission:       authorizationContext.resourceToken.Mission,
+		R3URI:         authorizationContext.resourceToken.R3URI,
+		R3S256:        authorizationContext.resourceToken.R3S256,
+		R3Granted:     cloneR3OperationSet(decision.R3Granted),
+		R3Conditional: cloneR3OperationSet(decision.R3Conditional),
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if authorizationContext.request.R3 != nil {
+		if err := server.r3Audit(ctx, aauth.R3AuditRecord{
+			R3URI:    authorizationContext.resourceToken.R3URI,
+			R3S256:   authorizationContext.resourceToken.R3S256,
+			Agent:    authorizationContext.targetAgent,
+			Resource: authorizationContext.resourceToken.Issuer,
+			TokenID:  tokenID,
+			IssuedAt: now.UTC(),
+		}); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "r3_audit_failed", err)
+			return
+		}
+	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"auth_token": authToken,
 		"expires_in": expiresAt - now.Unix(),
 	})
+}
+
+func (server *AccessServer) fetchR3Authorization(
+	ctx context.Context,
+	resourceToken aauth.ResourceTokenClaims,
+) (*aauth.R3Authorization, error) {
+	resourceIdentifier, err := endpointIdentifier(resourceToken.R3URI)
+	if err != nil {
+		return nil, err
+	}
+	if resourceIdentifier != resourceToken.Issuer {
+		return nil, errors.New("reference: r3_uri is not hosted by the resource-token issuer")
+	}
+	server.r3CacheMu.Lock()
+	entry, exists := server.r3Cache[resourceToken.R3S256]
+	if exists {
+		ready := entry.ready
+		server.r3CacheMu.Unlock()
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if entry.err != nil {
+			return nil, entry.err
+		}
+		if aauth.R3S256(entry.exactBytes) != resourceToken.R3S256 {
+			return nil, errors.New("reference: cached R3 document hash is invalid")
+		}
+		return &aauth.R3Authorization{
+			URI:        resourceToken.R3URI,
+			S256:       resourceToken.R3S256,
+			ExactBytes: append([]byte(nil), entry.exactBytes...),
+			Document:   cloneR3Document(entry.document),
+		}, nil
+	}
+	if len(server.r3Cache) >= server.r3CacheLimit {
+		server.r3CacheMu.Unlock()
+		return nil, errors.New("reference: R3 cache capacity is exhausted")
+	}
+	entry = &r3CacheEntry{ready: make(chan struct{})}
+	server.r3Cache[resourceToken.R3S256] = entry
+	server.r3CacheMu.Unlock()
+
+	fetchContext, cancelFetch := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		server.r3FetchTimeout,
+	)
+	authorization, fetchErr := server.fetchR3AuthorizationUncached(fetchContext, resourceToken)
+	cancelFetch()
+	server.r3CacheMu.Lock()
+	if fetchErr != nil {
+		entry.err = fetchErr
+		delete(server.r3Cache, resourceToken.R3S256)
+	} else {
+		entry.exactBytes = append([]byte(nil), authorization.ExactBytes...)
+		entry.document = cloneR3Document(authorization.Document)
+	}
+	close(entry.ready)
+	server.r3CacheMu.Unlock()
+	return authorization, fetchErr
+}
+
+func (server *AccessServer) fetchR3AuthorizationUncached(
+	ctx context.Context,
+	resourceToken aauth.ResourceTokenClaims,
+) (*aauth.R3Authorization, error) {
+	if err := server.r3Admit(ctx, resourceToken.R3URI); err != nil {
+		return nil, fmt.Errorf("reference: R3 fetch is not admitted: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceToken.R3URI, nil)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := server.newR3FetchNonce()
+	if err != nil {
+		return nil, err
+	}
+	if err := aauth.SignRequestWithJWKSURIOptions(
+		request,
+		server.signingKey,
+		server.identifier,
+		aauth.AccessDiscoveryDocument,
+		server.clock,
+		aauth.SignRequestOptions{Nonce: nonce},
+	); err != nil {
+		return nil, err
+	}
+	client := *server.r3HTTPClient
+	client.Jar = nil
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, responseError(response)
+	}
+	exactBytes, err := io.ReadAll(io.LimitReader(response.Body, maxJSONBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(exactBytes) > maxJSONBody {
+		return nil, errors.New("reference: R3 document is too large")
+	}
+	if aauth.R3S256(exactBytes) != resourceToken.R3S256 {
+		return nil, errors.New("reference: R3 document hash does not match the resource token")
+	}
+	document, err := aauth.ParseR3Document(exactBytes)
+	if err != nil {
+		return nil, err
+	}
+	return &aauth.R3Authorization{
+		URI:        resourceToken.R3URI,
+		S256:       resourceToken.R3S256,
+		ExactBytes: append([]byte(nil), exactBytes...),
+		Document:   document,
+	}, nil
+}
+
+func (server *AccessServer) newR3FetchNonce() (string, error) {
+	var nonce [16]byte
+	server.randomMu.Lock()
+	_, err := io.ReadFull(server.random, nonce[:])
+	server.randomMu.Unlock()
+	if err != nil {
+		return "", errors.New("reference: generate R3 fetch nonce")
+	}
+	return base64.RawURLEncoding.EncodeToString(nonce[:]), nil
+}
+
+func validateR3AuthorizationDecision(
+	decision aauth.AuthorizationDecision,
+	authorization *aauth.R3Authorization,
+) error {
+	if authorization == nil {
+		if decision.R3Granted != nil || decision.R3Conditional != nil {
+			return errors.New("reference: R3 grant has no verified R3 document")
+		}
+		return nil
+	}
+	if decision.R3Granted == nil {
+		return errors.New("reference: verified R3 authorization requires a direct grant")
+	}
+	if decision.R3Conditional != nil {
+		return errors.New("reference: R3 conditional issuance is not implemented")
+	}
+	if err := decision.R3Granted.Validate(); err != nil {
+		return err
+	}
+	documentOperations := authorization.Document.OperationSet()
+	if !documentOperations.ContainsSet(*decision.R3Granted) {
+		return errors.New("reference: R3 direct grant exceeds the verified document")
+	}
+	return nil
+}
+
+func cloneR3OperationSet(operationSet *aauth.R3OperationSet) *aauth.R3OperationSet {
+	if operationSet == nil {
+		return nil
+	}
+	cloned := operationSet.Clone()
+	return &cloned
+}
+
+func cloneR3Document(document aauth.R3Document) aauth.R3Document {
+	cloned := document
+	cloned.Operations = document.OperationSet().Operations
+	if document.Display != nil {
+		display := *document.Display
+		cloned.Display = &display
+	}
+	return cloned
 }
 
 func (server *AccessServer) beginPendingAuthorization(
@@ -436,6 +709,9 @@ func (server *AccessServer) ApproveAuthorization(ctx context.Context, pendingID 
 	if err := validateAuthorizationDecision(decision, authorizationRequest.Scope); err != nil {
 		return err
 	}
+	if err := validateR3AuthorizationDecision(decision, authorizationRequest.R3); err != nil {
+		return err
+	}
 
 	server.pendingMu.Lock()
 	defer server.pendingMu.Unlock()
@@ -447,8 +723,10 @@ func (server *AccessServer) ApproveAuthorization(ctx context.Context, pendingID 
 		return errors.New("reference: pending authorization expired")
 	}
 	pending.decision = aauth.AuthorizationDecision{
-		Subject: decision.Subject,
-		Scope:   append([]string(nil), decision.Scope...),
+		Subject:       decision.Subject,
+		Scope:         append([]string(nil), decision.Scope...),
+		R3Granted:     cloneR3OperationSet(decision.R3Granted),
+		R3Conditional: cloneR3OperationSet(decision.R3Conditional),
 	}
 	pending.state = pendingAuthorizationApproved
 	return nil
@@ -540,12 +818,14 @@ func (server *AccessServer) handlePendingAuthorization(
 	case pendingAuthorizationApproved:
 		authorizationContext := copyAccessServerAuthorizationContext(pending.context)
 		decision := aauth.AuthorizationDecision{
-			Subject: pending.decision.Subject,
-			Scope:   append([]string(nil), pending.decision.Scope...),
+			Subject:       pending.decision.Subject,
+			Scope:         append([]string(nil), pending.decision.Scope...),
+			R3Granted:     cloneR3OperationSet(pending.decision.R3Granted),
+			R3Conditional: cloneR3OperationSet(pending.decision.R3Conditional),
 		}
 		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
-		server.completeAuthorization(response, authorizationContext, decision)
+		server.completeAuthorization(request.Context(), response, authorizationContext, decision)
 	case pendingAuthorizationExpired:
 		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()

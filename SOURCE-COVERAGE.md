@@ -9,8 +9,8 @@ Profile: AAuth Go maintained supported profile
 | Status | Sections |
 | --- | ---: |
 | Exercised | 54 |
-| Partial | 22 |
-| Unsupported | 20 |
+| Partial | 26 |
+| Unsupported | 16 |
 | Informational | 0 |
 | Unclaimed | 369 |
 
@@ -22,7 +22,7 @@ Profile: AAuth Go maintained supported profile
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 43 | 17 | 3 | 0 | 165 |
 | `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 3 | 3 | 0 | 62 |
-| `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 0 | 5 | 0 | 44 |
+| `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 4 | 1 | 0 | 44 |
 | `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 0 | 7 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 1 | 2 | 2 | 0 | 38 |
 | `interop-profile` | interop-demo-profile at AAuth b414033d4c81224034b5b419216ae06706ede660 | `a9eb24420b2c0a4176833a67e1ce8c55c007e65d567bcd3f076426cba8643cca` | 5 | 0 | 0 | 0 | 3 |
@@ -640,25 +640,44 @@ Evidence:
 
 - `subagent_journey_test.go:TestParentMediatesSubagentAuthorization`
 
-### `r3/auth-token-extensions` — Unsupported
+### `r3/auth-token-extensions` — Partial
 
-R3 auth-token extensions and resource enforcement are not implemented.
+Resource and auth tokens enforce complete URI/hash claim pairs; the selected auth token echoes the verified reference and a policy-narrowed direct grant, and the resource executes only a semantically matching real operation without enforcement-time fetching. Conditional challenges and per-call auth tokens remain open.
 
-### `r3/authorization-endpoint-extensions` — Unsupported
+Evidence:
 
-R3 authorization-endpoint extensions are not implemented.
+- `r3_journey_test.go:TestR3DirectGrantJourney`
+- `r3_test.go:TestR3TokenClaimsRequireCompleteConsistentClaims`
+
+### `r3/authorization-endpoint-extensions` — Partial
+
+The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, and returns one R3 reference alongside independently enforced scope. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.
+
+Evidence:
+
+- `r3_journey_test.go:TestR3DirectGrantJourney`
 
 ### `r3/per-call-proposals` — Unsupported
 
 R3 per-call proposals are not implemented.
 
-### `r3/r3-document` — Unsupported
+### `r3/r3-document` — Partial
 
-R3 documents and content addressing are not implemented.
+The reference resource validates the standard operation-entry shapes, preserves selected document bytes without reserialization, hashes and stores them by unpadded base64url SHA-256, advertises the vocabulary, and serves the exact bytes only to its signed access server. External durable document stores and multi-definition composition remain open.
 
-### `r3/r3-processing` — Unsupported
+Evidence:
 
-R3 processing and caching are not implemented.
+- `r3_journey_test.go:TestR3DirectGrantJourney`
+- `r3_test.go:TestR3DocumentHashRetainsExactWireIdentity`
+- `r3_test.go:TestR3StandardVocabularyOperationShapes`
+
+### `r3/r3-processing` — Partial
+
+The access server performs a no-redirect same-resource signed fetch, verifies exact bytes before parsing or policy, coalesces and re-hashes a hash-keyed cache, and requires a successful synchronous issuance-audit callback before releasing a token. Person-server document fetching and conditional processing remain open.
+
+Evidence:
+
+- `r3_journey_test.go:TestR3DirectGrantJourney`
 
 ### `signature-key/name-accept-signature-sigkey-par` — Unsupported
 

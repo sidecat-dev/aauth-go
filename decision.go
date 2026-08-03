@@ -8,6 +8,7 @@ type AuthorizationRequest struct {
 	ParentAgent   string
 	Resource      string
 	Scope         []string
+	R3            *R3Authorization
 	Mission       *MissionReference
 	Justification string
 	Upstream      *AuthTokenClaims
@@ -15,8 +16,10 @@ type AuthorizationRequest struct {
 
 // AuthorizationDecision is the authority's granted identity and scope.
 type AuthorizationDecision struct {
-	Subject string
-	Scope   []string
+	Subject       string
+	Scope         []string
+	R3Granted     *R3OperationSet
+	R3Conditional *R3OperationSet
 }
 
 // AuthorizedRequest is supplied to a protected operation only after protocol
