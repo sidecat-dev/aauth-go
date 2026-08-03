@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,45 @@ import (
 	"time"
 )
 
+type selfJWTLocator struct {
+	Issuer string
+	DWK    string
+}
+
+func preflightSelfJWTClaims(payload []byte, now time.Time) (selfJWTLocator, error) {
+	var locator selfJWTLocator
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return locator, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: decode self-jwt claims: %w", err))
+	}
+	if _, ok := claims["cnf"]; ok {
+		return locator, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: self-jwt must not contain cnf"))
+	}
+	if err := json.Unmarshal(claims["iss"], &locator.Issuer); err != nil || locator.Issuer == "" {
+		return locator, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: self-jwt iss is required and must be a string"))
+	}
+	if err := ValidateServerIdentifier(locator.Issuer); err != nil {
+		return locator, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: self-jwt issuer: %w", err))
+	}
+	if err := json.Unmarshal(claims["dwk"], &locator.DWK); err != nil ||
+		!discoveryDocumentPattern.MatchString(locator.DWK) {
+		return locator, newSignatureError(SignatureErrorInvalidKey, errors.New("aauth: self-jwt dwk is required and must be a safe discovery document"))
+	}
+	if rawExpiry, ok := claims["exp"]; ok {
+		var expiry int64
+		if err := json.Unmarshal(rawExpiry, &expiry); err != nil || expiry <= 0 {
+			return locator, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: self-jwt exp must be a NumericDate"))
+		}
+		if expiry <= now.Unix() {
+			return locator, newSignatureError(SignatureErrorExpiredJWT, &TokenValidationError{
+				Code:  TokenValidationExpired,
+				Cause: errors.New("token is expired"),
+			})
+		}
+	}
+	return locator, nil
+}
+
 const DefaultSignatureWindow = 60 * time.Second
 
 const (
@@ -23,6 +63,7 @@ const (
 	SignatureKeyJWKSURI = "jwks_uri"
 	SignatureKeyHWK     = "hwk"
 	SignatureKeyJKTJWT  = "jkt-jwt"
+	SignatureKeySelfJWT = "self-jwt"
 )
 
 // VerifiedRequest is the trusted signing context of an HTTP request.
@@ -37,6 +78,7 @@ type VerifiedRequest struct {
 	JKTJWT           *VerifiedJKTJWT
 	AgentToken       *AgentTokenClaims
 	AuthToken        *AuthTokenClaims
+	SelfJWT          *VerifiedSelfJWT
 	Created          time.Time
 	ReplayKey        string
 }
@@ -61,6 +103,36 @@ type SignRequestOptions struct {
 // identity credential in Signature-Key.
 func SignRequest(request *http.Request, key SigningKey, credential string, clock Clock) error {
 	return SignRequestWithOptions(request, key, credential, clock, SignRequestOptions{})
+}
+
+// SignRequestWithSelfJWT carries the exact caller-supplied compact JWT and
+// signs the HTTP request with the same key that signed the JWT.
+func SignRequestWithSelfJWT(
+	request *http.Request,
+	key SigningKey,
+	compact string,
+	clock Clock,
+) error {
+	if compact == "" {
+		return errors.New("aauth: self-jwt is required")
+	}
+	header, _, signature, signingInput, err := decodeToken(compact)
+	if err != nil {
+		return fmt.Errorf("aauth: self-jwt: %w", err)
+	}
+	if header.Algorithm != "EdDSA" || header.KeyID == "" || header.KeyID != key.ID() {
+		return errors.New("aauth: self-jwt signing key does not match the token header")
+	}
+	if err := verifyTokenSignatureWithKey(signingInput, signature, key.PublicJWK()); err != nil {
+		return fmt.Errorf("aauth: self-jwt signing key does not verify the token: %w", err)
+	}
+	return signRequestWithSignatureKey(
+		request,
+		key,
+		`sig=self-jwt;jwt=`+strconv.Quote(compact),
+		clock,
+		SignRequestOptions{},
+	)
 }
 
 // SignRequestWithOptions applies the JWT Signature-Key profile with optional
@@ -412,6 +484,48 @@ func VerifyRequest(
 		verified.PublicKey = delegation.Confirmation
 		verified.IdentityKey = delegation.IdentityKey
 		verified.JKTJWT = &delegation
+	case SignatureKeySelfJWT:
+		if resolver == nil {
+			return verified, keyResolutionError(
+				KeyResolutionUnavailable,
+				errors.New("aauth: key resolver is required"),
+			)
+		}
+		compact := signatureKey.parameters["jwt"]
+		header, payload, tokenSignature, signingInput, err := decodeToken(compact)
+		if err != nil {
+			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key self-jwt: %w", err))
+		}
+		if header.Algorithm == "none" {
+			return verified, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: alg none is forbidden"))
+		}
+		if header.Algorithm != "EdDSA" {
+			return verified, newSignatureError(SignatureErrorInvalidJWT, &unsupportedTokenAlgorithmError{algorithm: header.Algorithm})
+		}
+		if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
+			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
+		}
+		locator, err := preflightSelfJWTClaims(payload, clock.Now())
+		if err != nil {
+			return verified, err
+		}
+		if header.KeyID == "" {
+			return verified, newSignatureError(SignatureErrorInvalidKey, errors.New("aauth: self-jwt kid is required"))
+		}
+		resolved, err := resolver.ResolveKey(ctx, locator.Issuer, locator.DWK, header.KeyID)
+		if err != nil {
+			return verified, classifyJWKSURIResolutionError(err)
+		}
+		if err := verifyTokenSignatureWithKey(signingInput, tokenSignature, resolved); err != nil {
+			return verified, classifyJWTVerificationError(err)
+		}
+		verified.RawCredential = compact
+		verified.CredentialType = header.Type
+		verified.Signer = locator.Issuer
+		verified.PublicKey = resolved
+		verified.IdentityKey = resolved
+		selfJWT := newVerifiedSelfJWT(header, locator.Issuer, locator.DWK, payload)
+		verified.SelfJWT = &selfJWT
 	}
 
 	if contains(components, "content-digest") {
@@ -741,6 +855,7 @@ func parseSignatureKey(header string) (parsedSignatureKey, error) {
 		SignatureKeyJWKSURI: {"id", "dwk", "kid"},
 		SignatureKeyHWK:     {"kty", "crv", "x"},
 		SignatureKeyJKTJWT:  {"jwt"},
+		SignatureKeySelfJWT: {"jwt"},
 	}[parsed.scheme]
 	if required == nil {
 		return parsedSignatureKey{}, fmt.Errorf("aauth: unsupported Signature-Key scheme %q", parsed.scheme)

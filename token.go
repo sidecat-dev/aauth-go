@@ -370,6 +370,24 @@ func verifyResolvedTokenKey(
 	return errors.New("aauth: token signature is invalid")
 }
 
+func verifyTokenSignatureWithKey(signingInput string, signature []byte, key JWK) error {
+	publicKey, err := key.PublicKey()
+	if err != nil {
+		return &TokenValidationError{Code: TokenValidationInvalidKey, Cause: err}
+	}
+	ed25519Key, ok := publicKey.(ed25519.PublicKey)
+	if !ok {
+		return &TokenValidationError{
+			Code:  TokenValidationInvalidKey,
+			Cause: errors.New("aauth: resolved token key is not Ed25519"),
+		}
+	}
+	if !ed25519.Verify(ed25519Key, []byte(signingInput), signature) {
+		return errors.New("aauth: token signature is invalid")
+	}
+	return nil
+}
+
 func decodeToken(compact string) (TokenHeader, []byte, []byte, string, error) {
 	var header TokenHeader
 	parts := strings.Split(compact, ".")
