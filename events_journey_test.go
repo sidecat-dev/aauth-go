@@ -1,4 +1,4 @@
-package eventsjourney_test
+package aauth_test
 
 import (
 	"context"
@@ -24,11 +24,11 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	ids := sequentialIDs("agent-token", "event-1", "delivery-1")
+	ids := eventJourneySequentialIDs("agent-token", "event-1", "delivery-1")
 
-	apKey := testSigningKey(t, "ap-key")
-	resourceKey := testSigningKey(t, "resource-key")
-	agentKey := testSigningKey(t, "agent-key")
+	apKey := eventJourneySigningKey(t, "ap-key")
+	resourceKey := eventJourneySigningKey(t, "resource-key")
+	agentKey := eventJourneySigningKey(t, "agent-key")
 	agentID := "aauth:subscriber@ap.example"
 	apID := "https://ap.example"
 	resourceID := "https://resource.example"
@@ -97,7 +97,7 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 		"ap.example":       ap.Handler(),
 		"resource.example": resource.Handler(),
 	}}
-	gateway := newLogicalGateway(t, handlers)
+	gateway := newEventJourneyLogicalGateway(t, handlers)
 	defer gateway.Close()
 	lostResponses := &loseAcceptedResponseTransport{base: gateway.Client().Transport}
 	protocolClient.Transport = lostResponses
@@ -427,7 +427,7 @@ func newEventResource(t *testing.T, input eventResourceInput) *reference.Resourc
 		SigningKey:  input.signingKey,
 		KeyResolver: input.resolver,
 		Clock:       input.clock,
-		NewID:       sequentialIDs("unused-resource-id"),
+		NewID:       eventJourneySequentialIDs("unused-resource-id"),
 		Scopes:      []string{"qualification.read"},
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			return aauth.AuthorizationDecision{}, errors.New("ordinary authorization is outside this Events journey")
@@ -546,7 +546,7 @@ func (handlers *logicalHandlers) ServeHTTP(response http.ResponseWriter, request
 	handler.ServeHTTP(response, request)
 }
 
-func newLogicalGateway(t *testing.T, handler http.Handler) *httptest.Server {
+func newEventJourneyLogicalGateway(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	target, err := url.Parse(server.URL)
@@ -554,16 +554,16 @@ func newLogicalGateway(t *testing.T, handler http.Handler) *httptest.Server {
 		server.Close()
 		t.Fatal(err)
 	}
-	server.Client().Transport = &logicalTransport{target: target, base: server.Client().Transport}
+	server.Client().Transport = &eventJourneyLogicalTransport{target: target, base: server.Client().Transport}
 	return server
 }
 
-type logicalTransport struct {
+type eventJourneyLogicalTransport struct {
 	target *url.URL
 	base   http.RoundTripper
 }
 
-func (transport *logicalTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (transport *eventJourneyLogicalTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	cloned := request.Clone(request.Context())
 	cloned.URL.Scheme = transport.target.Scheme
 	cloned.URL.Host = transport.target.Host
@@ -679,7 +679,7 @@ func signatureKeyJWT(header string) string {
 	return value[:end]
 }
 
-func testSigningKey(t *testing.T, id string) aauth.SigningKey {
+func eventJourneySigningKey(t *testing.T, id string) aauth.SigningKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -692,7 +692,7 @@ func testSigningKey(t *testing.T, id string) aauth.SigningKey {
 	return key
 }
 
-func sequentialIDs(values ...string) func() string {
+func eventJourneySequentialIDs(values ...string) func() string {
 	next := 0
 	return func() string {
 		if next >= len(values) {

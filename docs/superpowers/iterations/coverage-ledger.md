@@ -11,7 +11,7 @@
 | SCENARIO-0006 | STORY-0004 | ITER-0000 | real signed-HTTP parameter mutation matrix | automated, pass |
 | SCENARIO-0007 | STORY-0005 | ITER-0002 | resource/AS reconstruction and custody refusal | automated, pass |
 | SCENARIO-0008 | STORY-0005 | ITER-0002 | proof replay and durable token-consumption tests | automated, pass |
-| JOURNEY-0002 | STORY-0006..0015 | ITER-0003 | public subscription through reconstructed agent | pending |
+| JOURNEY-0002 | STORY-0006..0015 | ITER-0003 | `TestPublicSubscriptionEventSurvivesHostReconstruction` | automated, pass |
 | SCENARIO-0009 | STORY-0006 | ITER-0003 | self-jwt preflight/no-discovery matrix | pending |
 | SCENARIO-0010 | STORY-0006..0007,0012..0013 | ITER-0003 | same-key dual-proof exchange | pending |
 | SCENARIO-0011 | STORY-0007 | ITER-0003 | admitted and bounded discovery | pending |
@@ -21,7 +21,7 @@
 | SCENARIO-0015 | STORY-0013 | ITER-0003 | failure-injected atomic inbox acceptance | pending |
 | SCENARIO-0016 | STORY-0012..0013 | ITER-0003 | concurrent final use and resource cleanup | pending |
 | SCENARIO-0017 | STORY-0013 | ITER-0003 | AP response-class and no-mutation matrix | pending |
-| SCENARIO-0018 | STORY-0014..0016 | ITER-0003 | agent completion/refusal reconstruction | pending |
+| SCENARIO-0018 | STORY-0014..0016 | ITER-0003 | focused agent state-machine race suite | automated, pass |
 | SCENARIO-0019 | STORY-0010,0014,0016 | ITER-0003 | exact-byte and public-claim audit | pending |
 | SCENARIO-0020 | STORY-0009 | ITER-0003 | AP collision/commit/restart custody | pending |
 | SCENARIO-0021 | STORY-0010..0011,0015 | ITER-0003 | context/resource/dedup custody failures | pending |

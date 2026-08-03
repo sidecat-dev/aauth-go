@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,12 +48,17 @@ var (
 	ErrEventContextConflict = errors.New("reference: agent event context identity collided")
 	// ErrEventProcessingNotFound means no processing record exists for an action.
 	ErrEventProcessingNotFound = errors.New("reference: agent event processing was not found")
+	// ErrNoEventProcessing means a cursor scan has no further nonterminal work.
+	ErrNoEventProcessing = errors.New("reference: no agent event processing remains")
 	// ErrEventProcessingConflict means an action or trusted delivery identity is
 	// already bound to different processing work.
 	ErrEventProcessingConflict = errors.New("reference: agent event processing identity collided")
 	// ErrEventProcessingTransition means the requested state change would hide
 	// or regress an already recorded consequence.
 	ErrEventProcessingTransition = errors.New("reference: agent event processing transition is invalid")
+	// ErrEventProcessingIncomplete means durable work remains pending or its
+	// external consequence is still unknown.
+	ErrEventProcessingIncomplete = errors.New("reference: agent event processing is not terminal")
 	// ErrEventDispositionNotFound means the trusted delivery key has no durable
 	// processing disposition.
 	ErrEventDispositionNotFound = errors.New("reference: agent event disposition was not found")
@@ -129,10 +135,12 @@ const (
 )
 
 type AgentEventProcessing struct {
-	Delivery  EventDeliveryKey     `json:"delivery"`
-	Action    EventActionKey       `json:"action"`
-	State     EventProcessingState `json:"state"`
-	ExpiresAt time.Time            `json:"expires_at"`
+	Delivery  EventDeliveryKey       `json:"delivery"`
+	Action    EventActionKey         `json:"action"`
+	State     EventProcessingState   `json:"state"`
+	ExpiresAt time.Time              `json:"expires_at"`
+	Token     string                 `json:"token"`
+	Event     aauth.EventTokenClaims `json:"event"`
 }
 
 type EventDeliveryKey struct {
@@ -174,16 +182,57 @@ type AgentEventStore interface {
 	PutContext(context.Context, AgentEventContext) error
 	LookupContext(context.Context, string, string) (AgentEventContext, error)
 	AdmitProcessing(context.Context, AgentEventProcessing) error
-	MarkDispatched(context.Context, EventActionKey) error
+	BeginDispatch(context.Context, EventActionKey) (bool, error)
+	RetryNotApplied(context.Context, EventActionKey) (bool, error)
 	MarkCompleted(context.Context, EventActionKey) error
 	MarkRefused(context.Context, EventDeliveryKey, EventRefusalReason) error
 	LoadProcessing(context.Context, EventActionKey) (AgentEventProcessing, error)
+	LoadProcessingByDelivery(context.Context, EventDeliveryKey) (AgentEventProcessing, error)
+	NextProcessing(context.Context, *EventActionKey) (AgentEventProcessing, error)
 	LoadDisposition(context.Context, EventDeliveryKey) (EventProcessingState, error)
 }
 
 type EventAction interface {
 	Dispatch(context.Context, EventActionInput) (EventActionOutcome, error)
 	Reconcile(context.Context, EventActionKey) (EventActionOutcome, error)
+}
+
+// EventAdapter moves one AP inbox record through the agent and acknowledges it
+// only after reloading an exact durable terminal disposition.
+type EventAdapter struct {
+	source APEventStore
+	agent  *Agent
+}
+
+func NewEventAdapter(source APEventStore, agent *Agent) (*EventAdapter, error) {
+	if source == nil || agent == nil || agent.eventStore == nil || agent.eventAction == nil {
+		return nil, errors.New("reference: event adapter requires an AP source and configured agent")
+	}
+	return &EventAdapter{source: source, agent: agent}, nil
+}
+
+func (adapter *EventAdapter) Continue(ctx context.Context) error {
+	if adapter == nil || adapter.source == nil || adapter.agent == nil {
+		return errors.New("reference: event adapter is not configured")
+	}
+	accepted, err := adapter.source.NextDelivery(ctx)
+	if errors.Is(err, ErrNoPendingEventDelivery) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := adapter.agent.AcceptEvent(ctx, accepted); err != nil {
+		return err
+	}
+	state, err := adapter.agent.eventStore.LoadDisposition(ctx, accepted.Delivery)
+	if err != nil {
+		return err
+	}
+	if state != EventCompleted && state != EventRefused {
+		return ErrEventProcessingIncomplete
+	}
+	return adapter.source.AcknowledgeDelivery(ctx, accepted.Delivery.DeliveryID)
 }
 
 type eventSubscriptionKey struct {
@@ -574,8 +623,56 @@ func (store *MemoryAgentEventStore) AdmitProcessing(
 	return nil
 }
 
-func (store *MemoryAgentEventStore) MarkDispatched(ctx context.Context, key EventActionKey) error {
-	return store.transitionProcessing(ctx, key, EventPending, EventDispatched)
+func (store *MemoryAgentEventStore) BeginDispatch(ctx context.Context, key EventActionKey) (bool, error) {
+	if err := eventContextError(ctx); err != nil {
+		return false, err
+	}
+	if store == nil || validateEventActionKey(key) != nil {
+		return false, fmt.Errorf("%w: action identity is invalid", ErrEventRecordInvalid)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	processing, exists := store.processing[key]
+	if !exists {
+		return false, ErrEventProcessingNotFound
+	}
+	switch processing.State {
+	case EventPending:
+		processing.State = EventDispatched
+		store.processing[key] = processing
+		store.dispositions[processing.Delivery] = EventDispatched
+		return true, nil
+	case EventDispatched:
+		return false, nil
+	default:
+		return false, ErrEventProcessingTransition
+	}
+}
+
+func (store *MemoryAgentEventStore) RetryNotApplied(ctx context.Context, key EventActionKey) (bool, error) {
+	if err := eventContextError(ctx); err != nil {
+		return false, err
+	}
+	if store == nil || validateEventActionKey(key) != nil {
+		return false, fmt.Errorf("%w: action identity is invalid", ErrEventRecordInvalid)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	processing, exists := store.processing[key]
+	if !exists {
+		return false, ErrEventProcessingNotFound
+	}
+	switch processing.State {
+	case EventDispatched:
+		processing.State = EventPending
+		store.processing[key] = processing
+		store.dispositions[processing.Delivery] = EventPending
+		return true, nil
+	case EventPending:
+		return false, nil
+	default:
+		return false, ErrEventProcessingTransition
+	}
 }
 
 func (store *MemoryAgentEventStore) MarkCompleted(ctx context.Context, key EventActionKey) error {
@@ -656,6 +753,68 @@ func (store *MemoryAgentEventStore) LoadProcessing(
 		return zero, ErrEventProcessingNotFound
 	}
 	return processing, nil
+}
+
+func (store *MemoryAgentEventStore) LoadProcessingByDelivery(
+	ctx context.Context,
+	delivery EventDeliveryKey,
+) (AgentEventProcessing, error) {
+	var zero AgentEventProcessing
+	if err := eventContextError(ctx); err != nil {
+		return zero, err
+	}
+	if store == nil || validateEventDeliveryKey(delivery) != nil {
+		return zero, fmt.Errorf("%w: delivery identity is invalid", ErrEventRecordInvalid)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	action, exists := store.deliveryOwner[delivery]
+	if !exists {
+		return zero, ErrEventProcessingNotFound
+	}
+	processing, exists := store.processing[action]
+	if !exists || processing.Delivery != delivery {
+		return zero, ErrEventProcessingNotFound
+	}
+	return processing, nil
+}
+
+func (store *MemoryAgentEventStore) NextProcessing(
+	ctx context.Context,
+	after *EventActionKey,
+) (AgentEventProcessing, error) {
+	var zero AgentEventProcessing
+	if err := eventContextError(ctx); err != nil {
+		return zero, err
+	}
+	if store == nil {
+		return zero, fmt.Errorf("%w: agent event store is required", ErrEventRecordInvalid)
+	}
+	if after != nil {
+		if err := validateEventActionKey(*after); err != nil {
+			return zero, err
+		}
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var selected AgentEventProcessing
+	found := false
+	for key, processing := range store.processing {
+		if processing.State != EventPending && processing.State != EventDispatched {
+			continue
+		}
+		if after != nil && compareEventActionKey(key, *after) <= 0 {
+			continue
+		}
+		if !found || compareEventActionKey(key, selected.Action) < 0 {
+			selected = processing
+			found = true
+		}
+	}
+	if !found {
+		return zero, ErrNoEventProcessing
+	}
+	return selected, nil
 }
 
 func (store *MemoryAgentEventStore) LoadDisposition(
@@ -780,10 +939,36 @@ func validateAgentEventProcessing(processing AgentEventProcessing) error {
 		return err
 	}
 	if processing.Delivery.APIssuer != processing.Action.APIssuer ||
-		processing.State != EventPending || processing.ExpiresAt.IsZero() {
+		processing.State != EventPending || processing.ExpiresAt.IsZero() ||
+		processing.Token == "" || processing.Delivery.TokenDigest != eventTokenDigest(processing.Token) {
+		return fmt.Errorf("%w: agent processing is incomplete", ErrEventRecordInvalid)
+	}
+	if err := aauth.ValidateServerIdentifier(processing.Event.Issuer); err != nil ||
+		processing.Event.DWK != aauth.ResourceDiscoveryDocument ||
+		aauth.ValidateAgentIdentifier(processing.Event.Audience) != nil ||
+		processing.Event.EventID == "" || processing.Event.IssuedAt <= 0 ||
+		processing.Event.ExpiresAt <= processing.Event.IssuedAt ||
+		processing.Event.Issuer != processing.Action.ResourceIssuer ||
+		processing.Event.EventID != processing.Action.EventID ||
+		!processing.ExpiresAt.Equal(time.Unix(processing.Event.ExpiresAt, 0)) {
 		return fmt.Errorf("%w: agent processing is incomplete", ErrEventRecordInvalid)
 	}
 	return nil
+}
+
+func compareEventActionKey(left, right EventActionKey) int {
+	if left.ResourceIssuer != right.ResourceIssuer {
+		return strings.Compare(left.ResourceIssuer, right.ResourceIssuer)
+	}
+	if left.APIssuer != right.APIssuer {
+		return strings.Compare(left.APIssuer, right.APIssuer)
+	}
+	return strings.Compare(left.EventID, right.EventID)
+}
+
+func eventTokenDigest(token string) string {
+	digest := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 func validateEventDeliveryKey(delivery EventDeliveryKey) error {

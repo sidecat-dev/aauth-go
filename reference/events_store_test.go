@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestMemoryAPEventStoreCommitsUseAndInboxAtomically(t *testing.T) {
@@ -252,12 +254,19 @@ func TestMemoryAgentEventStorePreservesUnknownDispatch(t *testing.T) {
 		Action:    action,
 		State:     EventPending,
 		ExpiresAt: time.Date(2026, 8, 3, 5, 0, 0, 0, time.UTC),
+		Token:     "token-one",
+		Event: aauth.EventTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "aauth:subscriber@ap.example", EventID: localContext.EventID,
+			IssuedAt:  time.Date(2026, 8, 3, 4, 55, 0, 0, time.UTC).Unix(),
+			ExpiresAt: time.Date(2026, 8, 3, 5, 0, 0, 0, time.UTC).Unix(),
+		},
 	}
 	if err := store.AdmitProcessing(ctx, processing); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkDispatched(ctx, action); err != nil {
-		t.Fatal(err)
+	if claimed, err := store.BeginDispatch(ctx, action); err != nil || !claimed {
+		t.Fatalf("begin dispatch = %v, %v", claimed, err)
 	}
 	got, err := store.LoadProcessing(ctx, action)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -43,6 +44,7 @@ type Agent struct {
 	clock       aauth.Clock
 	eventStore  AgentEventStore
 	eventAction EventAction
+	eventMu     sync.Mutex
 }
 
 type Grant struct {
@@ -252,6 +254,244 @@ func (agent *Agent) RegisterPublicEventSubscription(
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8<<10))
 	return nil
+}
+
+// AcceptEvent independently verifies one AP-custodied compact event token and
+// advances its durable local action state without trusting token claims before
+// verification.
+func (agent *Agent) AcceptEvent(
+	ctx context.Context,
+	accepted AcceptedEvent,
+) (EventProcessingState, error) {
+	if agent == nil || agent.eventStore == nil || agent.eventAction == nil {
+		return "", errors.New("reference: agent Events is not configured")
+	}
+	agent.eventMu.Lock()
+	defer agent.eventMu.Unlock()
+	return agent.acceptEvent(ctx, accepted)
+}
+
+// ResumeEvents makes one cursor-bounded pass over durable nonterminal agent
+// work. One unknown action cannot starve later action keys in the same pass.
+func (agent *Agent) ResumeEvents(ctx context.Context) error {
+	if agent == nil || agent.eventStore == nil || agent.eventAction == nil {
+		return errors.New("reference: agent Events is not configured")
+	}
+	agent.eventMu.Lock()
+	defer agent.eventMu.Unlock()
+
+	var cursor *EventActionKey
+	var joined error
+	for {
+		processing, err := agent.eventStore.NextProcessing(ctx, cursor)
+		if errors.Is(err, ErrNoEventProcessing) {
+			return joined
+		}
+		if err != nil {
+			return errors.Join(joined, err)
+		}
+		next := processing.Action
+		cursor = &next
+		if _, err := agent.continueEventProcessing(ctx, processing, true); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+}
+
+func (agent *Agent) acceptEvent(
+	ctx context.Context,
+	accepted AcceptedEvent,
+) (EventProcessingState, error) {
+	if err := validateAcceptedEventEnvelope(ctx, accepted); err != nil {
+		return "", err
+	}
+	state, err := agent.eventStore.LoadDisposition(ctx, accepted.Delivery)
+	if err == nil {
+		if state == EventCompleted || state == EventRefused {
+			return state, nil
+		}
+		processing, loadErr := agent.eventStore.LoadProcessingByDelivery(ctx, accepted.Delivery)
+		if loadErr != nil {
+			return state, loadErr
+		}
+		return agent.continueEventProcessing(ctx, processing, false)
+	}
+	if !errors.Is(err, ErrEventDispositionNotFound) {
+		return "", err
+	}
+
+	claims, err := aauth.VerifyEventToken(ctx, accepted.Token, agent.keyResolver, agent.clock)
+	if err != nil {
+		if retryableEventVerificationError(err) {
+			return "", err
+		}
+		reason := EventRefusalInvalid
+		var validationError *aauth.TokenValidationError
+		if errors.As(err, &validationError) && validationError.Code == aauth.TokenValidationExpired {
+			reason = EventRefusalExpired
+		}
+		return agent.refuseEvent(ctx, accepted.Delivery, reason)
+	}
+	if claims.ExpiresAt-claims.IssuedAt > int64(referenceEventTokenLifetime/time.Second) ||
+		claims.Audience != agent.identifier {
+		return agent.refuseEvent(ctx, accepted.Delivery, EventRefusalInvalid)
+	}
+	localContext, err := agent.eventStore.LookupContext(ctx, accepted.APIssuer, claims.EventID)
+	if errors.Is(err, ErrEventContextNotFound) {
+		return agent.refuseEvent(ctx, accepted.Delivery, EventRefusalUnknownContext)
+	}
+	if err != nil {
+		return "", err
+	}
+	action := EventActionKey{
+		ResourceIssuer: claims.Issuer,
+		APIssuer:       accepted.APIssuer,
+		EventID:        claims.EventID,
+	}
+	processing := AgentEventProcessing{
+		Delivery:  accepted.Delivery,
+		Action:    action,
+		State:     EventPending,
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0),
+		Token:     accepted.Token,
+		Event:     claims,
+	}
+	if localContext.APIssuer != action.APIssuer || localContext.EventID != action.EventID {
+		return "", errors.New("reference: stored event context does not match verified event")
+	}
+	if err := agent.eventStore.AdmitProcessing(ctx, processing); err != nil {
+		return "", err
+	}
+	return agent.continueEventProcessing(ctx, processing, false)
+}
+
+func (agent *Agent) continueEventProcessing(
+	ctx context.Context,
+	processing AgentEventProcessing,
+	reverify bool,
+) (EventProcessingState, error) {
+	switch processing.State {
+	case EventCompleted, EventRefused:
+		return processing.State, nil
+	case EventDispatched:
+		outcome, err := agent.eventAction.Reconcile(ctx, processing.Action)
+		return agent.recordEventActionOutcome(ctx, processing, outcome, err)
+	case EventPending:
+	default:
+		return "", fmt.Errorf("reference: unknown event processing state %q", processing.State)
+	}
+
+	if reverify {
+		claims, err := aauth.VerifyEventToken(ctx, processing.Token, agent.keyResolver, agent.clock)
+		if err != nil {
+			var validationError *aauth.TokenValidationError
+			if errors.As(err, &validationError) && validationError.Code == aauth.TokenValidationExpired {
+				return agent.refuseEvent(ctx, processing.Delivery, EventRefusalExpired)
+			}
+			return EventPending, err
+		}
+		if claims != processing.Event {
+			return EventPending, errors.New("reference: retained event token no longer matches verified processing")
+		}
+	}
+	if !processing.ExpiresAt.After(agent.clock.Now()) {
+		return agent.refuseEvent(ctx, processing.Delivery, EventRefusalExpired)
+	}
+	localContext, err := agent.eventStore.LookupContext(ctx, processing.Action.APIssuer, processing.Action.EventID)
+	if errors.Is(err, ErrEventContextNotFound) {
+		return agent.refuseEvent(ctx, processing.Delivery, EventRefusalUnknownContext)
+	}
+	if err != nil {
+		return EventPending, err
+	}
+	claimed, err := agent.eventStore.BeginDispatch(ctx, processing.Action)
+	if err != nil {
+		return EventPending, err
+	}
+	if !claimed {
+		current, loadErr := agent.eventStore.LoadProcessing(ctx, processing.Action)
+		if loadErr != nil {
+			return EventDispatched, loadErr
+		}
+		if current.State == EventCompleted || current.State == EventRefused {
+			return current.State, nil
+		}
+		return current.State, ErrEventProcessingIncomplete
+	}
+	processing.State = EventDispatched
+	outcome, err := agent.eventAction.Dispatch(ctx, EventActionInput{
+		Key: processing.Action, Context: localContext, Event: processing.Event,
+	})
+	return agent.recordEventActionOutcome(ctx, processing, outcome, err)
+}
+
+func (agent *Agent) recordEventActionOutcome(
+	ctx context.Context,
+	processing AgentEventProcessing,
+	outcome EventActionOutcome,
+	actionErr error,
+) (EventProcessingState, error) {
+	if actionErr != nil {
+		return EventDispatched, actionErr
+	}
+	switch outcome {
+	case EventActionCompleted:
+		if err := agent.eventStore.MarkCompleted(ctx, processing.Action); err != nil {
+			return EventDispatched, err
+		}
+		return EventCompleted, nil
+	case EventActionNotApplied:
+		if !processing.ExpiresAt.After(agent.clock.Now()) {
+			return agent.refuseEvent(ctx, processing.Delivery, EventRefusalNotApplied)
+		}
+		transitioned, err := agent.eventStore.RetryNotApplied(ctx, processing.Action)
+		if err != nil {
+			return EventDispatched, err
+		}
+		if !transitioned {
+			return EventPending, ErrEventProcessingIncomplete
+		}
+		return EventPending, ErrEventProcessingIncomplete
+	case EventActionUnknown:
+		return EventDispatched, ErrEventProcessingIncomplete
+	default:
+		return EventDispatched, fmt.Errorf("reference: invalid event action outcome %q", outcome)
+	}
+}
+
+func (agent *Agent) refuseEvent(
+	ctx context.Context,
+	delivery EventDeliveryKey,
+	reason EventRefusalReason,
+) (EventProcessingState, error) {
+	if err := agent.eventStore.MarkRefused(ctx, delivery, reason); err != nil {
+		return "", err
+	}
+	return EventRefused, nil
+}
+
+func validateAcceptedEventEnvelope(ctx context.Context, accepted AcceptedEvent) error {
+	if err := eventContextError(ctx); err != nil {
+		return err
+	}
+	if err := validateEventDeliveryKey(accepted.Delivery); err != nil {
+		return err
+	}
+	if accepted.APIssuer != accepted.Delivery.APIssuer || accepted.Token == "" ||
+		accepted.AcceptedAt.IsZero() || accepted.Delivery.TokenDigest != eventTokenDigest(accepted.Token) {
+		return fmt.Errorf("%w: accepted event envelope is inconsistent", ErrEventRecordInvalid)
+	}
+	return nil
+}
+
+func retryableEventVerificationError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var resolutionError *aauth.KeyResolutionError
+	return errors.As(err, &resolutionError) &&
+		(resolutionError.Code == aauth.KeyResolutionDenied ||
+			resolutionError.Code == aauth.KeyResolutionUnavailable)
 }
 
 func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal aauth.MissionProposal) (aauth.ApprovedMission, error) {

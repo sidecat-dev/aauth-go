@@ -114,6 +114,51 @@ func MintEventToken(key SigningKey, claims EventTokenClaims) (string, error) {
 	return mintToken(key, EventTokenType, claims)
 }
 
+// VerifyEventToken independently verifies a compact event JWS with the
+// resource key selected by its exact issuer and discovery document.
+func VerifyEventToken(
+	ctx context.Context,
+	compact string,
+	resolver KeyResolver,
+	clock Clock,
+) (EventTokenClaims, error) {
+	var claims EventTokenClaims
+	if resolver == nil {
+		return claims, errors.New("aauth: key resolver is required")
+	}
+	if clock == nil {
+		return claims, errors.New("aauth: clock is required")
+	}
+	header, payload, signature, signingInput, err := decodeToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	if header.Type != EventTokenType {
+		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, EventTokenType)
+	}
+	if err := decodeStrictJSON(payload, &claims); err != nil {
+		return claims, fmt.Errorf("aauth: decode %s claims: %w", EventTokenType, err)
+	}
+	if claims.DWK != ResourceDiscoveryDocument {
+		return claims, fmt.Errorf("aauth: event-token dwk is %q, want %q", claims.DWK, ResourceDiscoveryDocument)
+	}
+	if err := verifyResolvedTokenKey(
+		ctx,
+		header,
+		claims.Issuer,
+		claims.DWK,
+		signingInput,
+		signature,
+		resolver,
+	); err != nil {
+		return claims, err
+	}
+	if err := validateEventTokenClaims(claims, clock.Now()); err != nil {
+		return claims, err
+	}
+	return claims, nil
+}
+
 // DecodeVerifiedEventToken applies the Events application policy to claims
 // retained by generic self-jwt verification. It never accepts an unverified
 // compact JWT.

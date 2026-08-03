@@ -3,6 +3,7 @@ package aauth
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -149,6 +150,37 @@ func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
 				t.Fatalf("DecodeVerifiedEventToken accepted %s", test.name)
 			}
 		})
+	}
+}
+
+func TestVerifyEventTokenIndependentlyVerifiesCompactJWS(t *testing.T) {
+	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	clock := ClockFunc(func() time.Time { return now })
+	issuerKey := internalTestSigningKey(t, "resource-events-key")
+	claims := EventTokenClaims{
+		Issuer: "https://resource.example", DWK: ResourceDiscoveryDocument,
+		Audience: "aauth:subscriber@ap.example", EventID: "event-one",
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+	}
+	compact, err := MintEventToken(issuerKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := StaticKeyResolver{
+		claims.Issuer: {issuerKey.ID(): issuerKey.PublicJWK()},
+	}
+	verified, err := VerifyEventToken(context.Background(), compact, resolver, clock)
+	if err != nil || verified != claims {
+		t.Fatalf("VerifyEventToken() = %#v, %v, want %#v", verified, err, claims)
+	}
+	signature := strings.LastIndexByte(compact, '.') + 1
+	replacement := byte('A')
+	if compact[signature] == replacement {
+		replacement = 'B'
+	}
+	corrupt := compact[:signature] + string(replacement) + compact[signature+1:]
+	if _, err := VerifyEventToken(context.Background(), corrupt, resolver, clock); err == nil {
+		t.Fatal("VerifyEventToken accepted a corrupt compact signature")
 	}
 }
 
