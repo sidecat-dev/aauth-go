@@ -400,6 +400,14 @@ type fileAPSnapshot struct {
 	Inbox         []fileAPDeliveryRecord     `json:"inbox"`
 }
 
+type fileAPSnapshotEnvelope struct {
+	Schema        string            `json:"schema"`
+	Issuer        string            `json:"issuer"`
+	NextDelivery  uint64            `json:"next_delivery"`
+	Subscriptions []json.RawMessage `json:"subscriptions"`
+	Inbox         []json.RawMessage `json:"inbox"`
+}
+
 type fileAPSubscriptionRecord struct {
 	Schema       string              `json:"schema"`
 	Subscription APEventSubscription `json:"subscription"`
@@ -415,6 +423,11 @@ type fileResourceSnapshot struct {
 	Authorities []fileResourceAuthorityRecord `json:"authorities"`
 }
 
+type fileResourceSnapshotEnvelope struct {
+	Schema      string            `json:"schema"`
+	Authorities []json.RawMessage `json:"authorities"`
+}
+
 type fileResourceAuthorityRecord struct {
 	Schema       string                     `json:"schema"`
 	APIssuer     string                     `json:"ap_issuer"`
@@ -428,6 +441,13 @@ type fileAgentSnapshot struct {
 	Contexts     []fileAgentContextRecord     `json:"contexts"`
 	Processing   []fileAgentProcessingRecord  `json:"processing"`
 	Dispositions []fileAgentDispositionRecord `json:"dispositions"`
+}
+
+type fileAgentSnapshotEnvelope struct {
+	Schema       string            `json:"schema"`
+	Contexts     []json.RawMessage `json:"contexts"`
+	Processing   []json.RawMessage `json:"processing"`
+	Dispositions []json.RawMessage `json:"dispositions"`
 }
 
 type fileAgentContextRecord struct {
@@ -620,16 +640,25 @@ func encodeFileAPSnapshot(memory *MemoryAPEventStore) ([]byte, [][]byte, error) 
 }
 
 func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*MemoryAPEventStore, error) {
-	var snapshot fileAPSnapshot
+	var snapshot fileAPSnapshotEnvelope
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
 	if snapshot.Schema != fileAPSnapshotSchema || snapshot.Issuer != issuer {
 		return nil, ErrEventStoreIntegrity
 	}
+	if len(snapshot.Subscriptions)+len(snapshot.Inbox) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
+		return nil, ErrEventStoreCapacity
+	}
 	memory := NewMemoryAPEventStore(issuer)
-	recordBodies := make([][]byte, 0, len(snapshot.Subscriptions)+len(snapshot.Inbox))
-	for _, record := range snapshot.Subscriptions {
+	for _, body := range snapshot.Subscriptions {
+		if int64(len(body)) > limits.maxRecordBytes {
+			return nil, ErrEventStoreCapacity
+		}
+		var record fileAPSubscriptionRecord
+		if err := decodeEventFileSnapshot(body, &record); err != nil {
+			return nil, err
+		}
 		if record.Schema != fileAPSubscriptionSchema || record.Subscription.APIssuer != issuer {
 			return nil, ErrEventStoreIntegrity
 		}
@@ -643,10 +672,15 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 			return nil, ErrEventStoreIntegrity
 		}
 		memory.subscriptions[record.Subscription.EventID] = record.Subscription
-		encoded, _ := json.Marshal(record)
-		recordBodies = append(recordBodies, encoded)
 	}
-	for _, record := range snapshot.Inbox {
+	for _, body := range snapshot.Inbox {
+		if int64(len(body)) > limits.maxRecordBytes {
+			return nil, ErrEventStoreCapacity
+		}
+		var record fileAPDeliveryRecord
+		if err := decodeEventFileSnapshot(body, &record); err != nil {
+			return nil, err
+		}
 		if record.Schema != fileAPDeliverySchema || validateStoredAcceptedEvent(record.Accepted, issuer) != nil {
 			return nil, ErrEventStoreIntegrity
 		}
@@ -660,16 +694,6 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 		}
 		memory.inbox[deliveryID] = record.Accepted
 		memory.inboxOrder = append(memory.inboxOrder, deliveryID)
-		encoded, _ := json.Marshal(record)
-		recordBodies = append(recordBodies, encoded)
-	}
-	if len(recordBodies) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
-		return nil, ErrEventStoreCapacity
-	}
-	for _, record := range recordBodies {
-		if int64(len(record)) > limits.maxRecordBytes {
-			return nil, ErrEventStoreCapacity
-		}
 	}
 	memory.nextDelivery = snapshot.NextDelivery
 	return memory, nil
@@ -885,7 +909,7 @@ func encodeFileResourceSnapshot(memory *MemoryResourceEventStore) ([]byte, [][]b
 }
 
 func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryResourceEventStore, error) {
-	var snapshot fileResourceSnapshot
+	var snapshot fileResourceSnapshotEnvelope
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
@@ -896,10 +920,13 @@ func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryRes
 		return nil, ErrEventStoreCapacity
 	}
 	memory := NewMemoryResourceEventStore()
-	for _, record := range snapshot.Authorities {
-		encoded, _ := json.Marshal(record)
-		if int64(len(encoded)) > limits.maxRecordBytes {
+	for _, body := range snapshot.Authorities {
+		if int64(len(body)) > limits.maxRecordBytes {
 			return nil, ErrEventStoreCapacity
+		}
+		var record fileResourceAuthorityRecord
+		if err := decodeEventFileSnapshot(body, &record); err != nil {
+			return nil, err
 		}
 		if record.Schema != fileResourceAuthoritySchema || record.Subscription == nil ||
 			validateEventSubscriptionKey(record.APIssuer, record.EventID) != nil {
@@ -1214,7 +1241,7 @@ func encodeFileAgentSnapshot(memory *MemoryAgentEventStore) ([]byte, [][]byte, e
 }
 
 func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentEventStore, error) {
-	var snapshot fileAgentSnapshot
+	var snapshot fileAgentSnapshotEnvelope
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
@@ -1226,10 +1253,13 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		return nil, ErrEventStoreCapacity
 	}
 	memory := NewMemoryAgentEventStore()
-	for _, record := range snapshot.Contexts {
-		encoded, _ := json.Marshal(record)
-		if int64(len(encoded)) > limits.maxRecordBytes {
+	for _, body := range snapshot.Contexts {
+		if int64(len(body)) > limits.maxRecordBytes {
 			return nil, ErrEventStoreCapacity
+		}
+		var record fileAgentContextRecord
+		if err := decodeEventFileSnapshot(body, &record); err != nil {
+			return nil, err
 		}
 		if record.Schema != fileAgentContextSchema || validateAgentEventContext(record.Context) != nil {
 			return nil, ErrEventStoreIntegrity
@@ -1241,14 +1271,17 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		record.Context.Value = cloneRawMessage(record.Context.Value)
 		memory.contexts[key] = record.Context
 	}
-	for _, record := range snapshot.Processing {
-		encoded, _ := json.Marshal(record)
+	for _, body := range snapshot.Processing {
+		if int64(len(body)) > limits.maxRecordBytes {
+			return nil, ErrEventStoreCapacity
+		}
+		var record fileAgentProcessingRecord
+		if err := decodeEventFileSnapshot(body, &record); err != nil {
+			return nil, err
+		}
 		validation := record.Processing
 		state := validation.State
 		validation.State = EventPending
-		if int64(len(encoded)) > limits.maxRecordBytes {
-			return nil, ErrEventStoreCapacity
-		}
 		if record.Schema != fileAgentProcessingSchema || validateAgentEventProcessing(validation) != nil ||
 			!validEventProcessingState(state) {
 			return nil, ErrEventStoreIntegrity
@@ -1278,10 +1311,13 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 			memory.refusalReason[record.Processing.Delivery] = record.RefusalReason
 		}
 	}
-	for _, record := range snapshot.Dispositions {
-		encoded, _ := json.Marshal(record)
-		if int64(len(encoded)) > limits.maxRecordBytes {
+	for _, body := range snapshot.Dispositions {
+		if int64(len(body)) > limits.maxRecordBytes {
 			return nil, ErrEventStoreCapacity
+		}
+		var record fileAgentDispositionRecord
+		if err := decodeEventFileSnapshot(body, &record); err != nil {
+			return nil, err
 		}
 		if record.Schema != fileAgentDispositionSchema || validateEventDeliveryKey(record.Delivery) != nil || record.State != EventRefused ||
 			!validEventRefusalReason(record.RefusalReason) || record.RefusalReason == EventRefusalNotApplied {

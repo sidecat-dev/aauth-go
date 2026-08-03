@@ -3,6 +3,7 @@ package reference
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -19,11 +20,12 @@ func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
 		close  func() error
 	}
 	type adapter struct {
-		name string
-		open func(string, int, int64, int64) (harness, error)
+		name        string
+		recordField string
+		open        func(string, int, int64, int64) (harness, error)
 	}
 	adapters := []adapter{
-		{name: "AP", open: func(directory string, maxRecords int, maxBytes, maxRecordBytes int64) (harness, error) {
+		{name: "AP", recordField: "subscriptions", open: func(directory string, maxRecords int, maxBytes, maxRecordBytes int64) (harness, error) {
 			store, err := OpenFileAPEventStore(FileAPEventStoreConfig{
 				Directory: directory, Issuer: "https://ap.example", MaxRecords: maxRecords,
 				MaxBytes: maxBytes, MaxRecordBytes: maxRecordBytes,
@@ -45,7 +47,7 @@ func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
 				close: store.Close,
 			}, nil
 		}},
-		{name: "resource", open: func(directory string, maxRecords int, maxBytes, maxRecordBytes int64) (harness, error) {
+		{name: "resource", recordField: "authorities", open: func(directory string, maxRecords int, maxBytes, maxRecordBytes int64) (harness, error) {
 			store, err := OpenFileResourceEventStore(FileResourceEventStoreConfig{
 				Directory: directory, MaxRecords: maxRecords,
 				MaxBytes: maxBytes, MaxRecordBytes: maxRecordBytes,
@@ -64,7 +66,7 @@ func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
 				close: store.Close,
 			}, nil
 		}},
-		{name: "agent", open: func(directory string, maxRecords int, maxBytes, maxRecordBytes int64) (harness, error) {
+		{name: "agent", recordField: "contexts", open: func(directory string, maxRecords int, maxBytes, maxRecordBytes int64) (harness, error) {
 			store, err := OpenFileAgentEventStore(FileAgentEventStoreConfig{
 				Directory: directory, MaxRecords: maxRecords,
 				MaxBytes: maxBytes, MaxRecordBytes: maxRecordBytes,
@@ -118,6 +120,54 @@ func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
 				}
 				if reopened, err := adapter.open(directory, 1, 1<<20, 1<<20); !errors.Is(err, ErrEventStoreCapacity) {
 					t.Fatalf("over-capacity retained state open error = %v", err)
+				} else if reopened.close != nil {
+					_ = reopened.close()
+				}
+			})
+			t.Run("retained raw record exceeds configured per-record bytes", func(t *testing.T) {
+				directory := filepath.Join(t.TempDir(), "store")
+				store, err := adapter.open(directory, 10, 1<<20, 1<<20)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.add("event-one"); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.close(); err != nil {
+					t.Fatal(err)
+				}
+
+				statePath := filepath.Join(directory, eventFileStateName)
+				body, err := os.ReadFile(statePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var outer map[string]json.RawMessage
+				if err := json.Unmarshal(body, &outer); err != nil {
+					t.Fatal(err)
+				}
+				var records []json.RawMessage
+				if err := json.Unmarshal(outer[adapter.recordField], &records); err != nil || len(records) != 1 {
+					t.Fatalf("decode %s record: count = %d, error = %v", adapter.recordField, len(records), err)
+				}
+				canonicalLength := len(records[0])
+				prefix := []byte(`"` + adapter.recordField + `":[{`)
+				recordAt := bytes.Index(body, prefix)
+				if recordAt < 0 {
+					t.Fatalf("state has no %s record", adapter.recordField)
+				}
+				padded := make([]byte, 0, len(body)+64)
+				padded = append(padded, body[:recordAt]...)
+				padded = append(padded, prefix...)
+				padded = append(padded, bytes.Repeat([]byte(" "), 64)...)
+				padded = append(padded, body[recordAt+len(prefix):]...)
+				if err := os.WriteFile(statePath, padded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+
+				limit := int64(canonicalLength + 32)
+				if reopened, err := adapter.open(directory, 10, 1<<20, limit); !errors.Is(err, ErrEventStoreCapacity) {
+					t.Fatalf("padded retained record open = %#v, %v; want capacity", reopened, err)
 				} else if reopened.close != nil {
 					_ = reopened.close()
 				}
