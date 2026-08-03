@@ -83,6 +83,12 @@ type VerifiedRequest struct {
 	ReplayKey        string
 }
 
+// SelfJWTClaimPolicy applies deployment-owned application claim rules after
+// the self-jwt JWS is verified and before the HTTP Message Signature is
+// verified. The supplied value is sealed and may be passed to a strict
+// application decoder such as DecodeVerifiedEventToken.
+type SelfJWTClaimPolicy func(VerifiedSelfJWT) error
+
 // VerifyRequestOptions declares the message components and token forms a
 // particular endpoint accepts.
 type VerifyRequestOptions struct {
@@ -90,6 +96,8 @@ type VerifyRequestOptions struct {
 	AllowedCredentialTypes   []string
 	AllowedSignatureKeyTypes []string
 	SignatureWindow          time.Duration
+	SelfJWTMaximumLifetime   time.Duration
+	SelfJWTClaimPolicy       SelfJWTClaimPolicy
 }
 
 // SignRequestOptions controls optional HTTP Message Signature parameters.
@@ -485,6 +493,12 @@ func VerifyRequest(
 		verified.IdentityKey = delegation.IdentityKey
 		verified.JKTJWT = &delegation
 	case SignatureKeySelfJWT:
+		if options.SelfJWTMaximumLifetime < 0 {
+			return verified, newSignatureError(
+				SignatureErrorInvalidRequest,
+				errors.New("aauth: self-jwt maximum lifetime must not be negative"),
+			)
+		}
 		if resolver == nil {
 			return verified, keyResolutionError(
 				KeyResolutionUnavailable,
@@ -519,12 +533,20 @@ func VerifyRequest(
 		if err := verifyTokenSignatureWithKey(signingInput, tokenSignature, resolved); err != nil {
 			return verified, classifyJWTVerificationError(err)
 		}
+		selfJWT := newVerifiedSelfJWT(header, locator.Issuer, locator.DWK, payload)
+		if err := validateSelfJWTMaximumLifetime(selfJWT, options.SelfJWTMaximumLifetime); err != nil {
+			return verified, newSignatureError(SignatureErrorInvalidJWT, err)
+		}
+		if options.SelfJWTClaimPolicy != nil {
+			if err := options.SelfJWTClaimPolicy(selfJWT); err != nil {
+				return verified, classifyJWTVerificationError(err)
+			}
+		}
 		verified.RawCredential = compact
 		verified.CredentialType = header.Type
 		verified.Signer = locator.Issuer
 		verified.PublicKey = resolved
 		verified.IdentityKey = resolved
-		selfJWT := newVerifiedSelfJWT(header, locator.Issuer, locator.DWK, payload)
 		verified.SelfJWT = &selfJWT
 	}
 
@@ -561,6 +583,28 @@ func VerifyRequest(
 	verified.Created = createdAt
 	verified.ReplayKey = rawURL.EncodeToString(replayDigest[:])
 	return verified, nil
+}
+
+func validateSelfJWTMaximumLifetime(verified VerifiedSelfJWT, maximum time.Duration) error {
+	if maximum == 0 {
+		return nil
+	}
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(verified.Claims, &claims); err != nil {
+		return fmt.Errorf("aauth: decode self-jwt lifetime claims: %w", err)
+	}
+	var issuedAt, expiresAt int64
+	if err := json.Unmarshal(claims["iat"], &issuedAt); err != nil || issuedAt <= 0 {
+		return errors.New("aauth: self-jwt iat is required and must be a NumericDate")
+	}
+	if err := json.Unmarshal(claims["exp"], &expiresAt); err != nil || expiresAt <= issuedAt {
+		return errors.New("aauth: self-jwt exp must define a positive lifetime after iat")
+	}
+	maximumSeconds := int64(maximum / time.Second)
+	if expiresAt-issuedAt > maximumSeconds {
+		return fmt.Errorf("aauth: self-jwt lifetime exceeds %s", maximum)
+	}
+	return nil
 }
 
 func signatureParams(components []string, created int64, expires time.Time, nonce string) string {

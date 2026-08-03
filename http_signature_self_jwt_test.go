@@ -221,6 +221,141 @@ func TestSelfJWTUsesOneDiscoveredKeyForBothProofs(t *testing.T) {
 	})
 }
 
+func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
+	clock := ClockFunc(func() time.Time { return now })
+	issuerKey := internalTestSigningKey(t, "resource-key")
+	otherKey := internalTestSigningKey(t, "other-key")
+	resolver := &selfJWTCountingResolver{keys: map[string]JWK{
+		issuerKey.ID(): issuerKey.PublicJWK(),
+	}}
+	claims := EventTokenClaims{
+		Issuer:    "https://resource.example",
+		DWK:       ResourceDiscoveryDocument,
+		Audience:  "aauth:subscriber@ap.example",
+		EventID:   "event-1",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(time.Minute).Unix(),
+	}
+	compact, err := MintEventToken(issuerKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	policyCalls := 0
+	policy := func(verified VerifiedSelfJWT) error {
+		policyCalls++
+		decoded, err := DecodeVerifiedEventToken(verified, clock)
+		if err != nil {
+			return err
+		}
+		if decoded.Audience != claims.Audience || decoded.EventID != claims.EventID {
+			return errors.New("test policy rejected event routing")
+		}
+		return nil
+	}
+	options := VerifyRequestOptions{
+		AllowedCredentialTypes:   []string{EventTokenType},
+		AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+		SelfJWTMaximumLifetime:   2 * time.Minute,
+		SelfJWTClaimPolicy:       policy,
+	}
+	request, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SignRequestWithSelfJWT(request, issuerKey, compact, clock); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyRequest(context.Background(), request, resolver, clock, options); err != nil {
+		t.Fatal(err)
+	}
+	if policyCalls != 1 {
+		t.Fatalf("valid request policy calls = %d, want 1", policyCalls)
+	}
+
+	t.Run("excessive lifetime", func(t *testing.T) {
+		excessive := claims
+		excessive.ExpiresAt = now.Add(3 * time.Minute).Unix()
+		excessiveCompact, err := MintEventToken(issuerKey, excessive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := SignRequestWithSelfJWT(request, issuerKey, excessiveCompact, clock); err != nil {
+			t.Fatal(err)
+		}
+		beforePolicy := policyCalls
+		_, err = VerifyRequest(context.Background(), request, resolver, clock, options)
+		requireSignatureErrorCode(t, err, SignatureErrorInvalidJWT)
+		if policyCalls != beforePolicy {
+			t.Fatal("claim policy ran after maximum-lifetime refusal")
+		}
+	})
+
+	t.Run("claim policy follows JWT proof", func(t *testing.T) {
+		parts := strings.Split(compact, ".")
+		parts[2] = mutateSelfJWTBase64URL(parts[2])
+		corrupt := strings.Join(parts, ".")
+		request, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := signRequestWithSignatureKey(
+			request,
+			issuerKey,
+			`sig=self-jwt;jwt=`+strconvQuote(corrupt),
+			clock,
+			SignRequestOptions{},
+		); err != nil {
+			t.Fatal(err)
+		}
+		beforePolicy := policyCalls
+		_, err = VerifyRequest(context.Background(), request, resolver, clock, options)
+		requireSignatureErrorCode(t, err, SignatureErrorInvalidJWT)
+		if policyCalls != beforePolicy {
+			t.Fatal("claim policy ran before JWT proof succeeded")
+		}
+	})
+
+	t.Run("claim policy precedes HTTP proof", func(t *testing.T) {
+		request, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := signRequestWithSignatureKey(
+			request,
+			otherKey,
+			`sig=self-jwt;jwt=`+strconvQuote(compact),
+			clock,
+			SignRequestOptions{},
+		); err != nil {
+			t.Fatal(err)
+		}
+		policyFailure := errors.New("test deployment policy refusal")
+		beforePolicy := policyCalls
+		refusing := options
+		refusing.SelfJWTClaimPolicy = func(VerifiedSelfJWT) error {
+			policyCalls++
+			return policyFailure
+		}
+		_, err = VerifyRequest(context.Background(), request, resolver, clock, refusing)
+		var signatureError *SignatureError
+		if !errors.As(err, &signatureError) || signatureError.Code != SignatureErrorInvalidJWT ||
+			!errors.Is(err, policyFailure) {
+			t.Fatalf("claim-policy error = %v (%#v), want invalid_jwt policy refusal", err, signatureError)
+		}
+		if policyCalls != beforePolicy+1 {
+			t.Fatalf("refused request policy calls = %d, want %d", policyCalls, beforePolicy+1)
+		}
+	})
+}
+
 type selfJWTCountingResolver struct {
 	calls        int
 	refreshCalls int
