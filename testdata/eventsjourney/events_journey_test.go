@@ -33,9 +33,9 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	apID := "https://ap.example"
 	resourceID := "https://resource.example"
 
-	apStore := reference.NewMemoryAPEventStore(apID)
-	resourceStore := reference.NewMemoryResourceEventStore()
 	agentStore := reference.NewMemoryAgentEventStore()
+	apStore := newTerminalBeforeAckAPEventStore(reference.NewMemoryAPEventStore(apID), agentStore)
+	resourceStore := reference.NewMemoryResourceEventStore()
 	action := &recoverableAction{}
 
 	protocolClient := &http.Client{}
@@ -288,9 +288,89 @@ func TestPublicSubscriptionEventSurvivesHostReconstruction(t *testing.T) {
 	if processing.State != reference.EventCompleted {
 		t.Fatalf("processing after reconciliation = %q, want completed", processing.State)
 	}
+	acknowledgedStates := apStore.acknowledgedStates()
+	if len(acknowledgedStates) != 1 || acknowledgedStates[0] != reference.EventCompleted {
+		t.Fatalf("AP acknowledgements observed agent states %v, want [completed]", acknowledgedStates)
+	}
 	if _, err := apStore.NextDelivery(ctx); !errors.Is(err, reference.ErrNoPendingEventDelivery) {
 		t.Fatalf("AP inbox after terminal agent completion error = %v, want no pending delivery", err)
 	}
+}
+
+// terminalBeforeAckAPEventStore makes the ordering requirement observable at
+// the authority boundary: acknowledging an AP delivery is impossible unless
+// the agent authority already reports a durable terminal disposition.
+type terminalBeforeAckAPEventStore struct {
+	source       reference.APEventStore
+	agent        reference.AgentEventStore
+	mu           sync.Mutex
+	deliveries   map[string]reference.EventDeliveryKey
+	acknowledged []reference.EventProcessingState
+}
+
+func newTerminalBeforeAckAPEventStore(
+	source reference.APEventStore,
+	agent reference.AgentEventStore,
+) *terminalBeforeAckAPEventStore {
+	return &terminalBeforeAckAPEventStore{
+		source:     source,
+		agent:      agent,
+		deliveries: make(map[string]reference.EventDeliveryKey),
+	}
+}
+
+func (store *terminalBeforeAckAPEventStore) CreateSubscription(
+	ctx context.Context,
+	subscription reference.APEventSubscription,
+) error {
+	return store.source.CreateSubscription(ctx, subscription)
+}
+
+func (store *terminalBeforeAckAPEventStore) AcceptEvent(
+	ctx context.Context,
+	input reference.AcceptedEventInput,
+) (reference.AcceptedEvent, int, error) {
+	return store.source.AcceptEvent(ctx, input)
+}
+
+func (store *terminalBeforeAckAPEventStore) NextDelivery(ctx context.Context) (reference.AcceptedEvent, error) {
+	delivery, err := store.source.NextDelivery(ctx)
+	if err != nil {
+		return delivery, err
+	}
+	store.mu.Lock()
+	store.deliveries[delivery.Delivery.DeliveryID] = delivery.Delivery
+	store.mu.Unlock()
+	return delivery, nil
+}
+
+func (store *terminalBeforeAckAPEventStore) AcknowledgeDelivery(ctx context.Context, deliveryID string) error {
+	store.mu.Lock()
+	delivery, ok := store.deliveries[deliveryID]
+	store.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("journey: AP acknowledgement references unknown delivery %q", deliveryID)
+	}
+	state, err := store.agent.LoadDisposition(ctx, delivery)
+	if err != nil {
+		return fmt.Errorf("journey: load agent disposition before AP acknowledgement: %w", err)
+	}
+	if state != reference.EventCompleted && state != reference.EventRefused {
+		return fmt.Errorf("journey: AP acknowledgement preceded durable terminal disposition: %q", state)
+	}
+	if err := store.source.AcknowledgeDelivery(ctx, deliveryID); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	store.acknowledged = append(store.acknowledged, state)
+	store.mu.Unlock()
+	return nil
+}
+
+func (store *terminalBeforeAckAPEventStore) acknowledgedStates() []reference.EventProcessingState {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return append([]reference.EventProcessingState(nil), store.acknowledged...)
 }
 
 type eventProviderInput struct {
