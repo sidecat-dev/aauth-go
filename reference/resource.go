@@ -1,8 +1,10 @@
 package reference
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +58,23 @@ type ResourceEventsConfig struct {
 	Store                  ResourceEventStore
 	HTTPClient             *http.Client
 	ActiveUntil            func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
+	// AsyncAPIPath and AsyncAPIDocument publish one exact JSON AsyncAPI 3.0.0
+	// Events contract through the resource's R3 vocabulary metadata. They must
+	// be configured together.
+	AsyncAPIPath     string
+	AsyncAPIDocument []byte
+	// ProtectedOperationID and ProtectedMessageID select the one protected
+	// registration operation published by AsyncAPIDocument. ContractStore
+	// retains the exact selected contract before any ticket URL is released.
+	// TicketLifetime bounds the resource-owned, single-use URL capability.
+	ProtectedOperationID string
+	ProtectedMessageID   string
+	ContractStore        EventContractStore
+	TicketLifetime       time.Duration
+	// ProtectedRegistrationValidator is the only route to a body-bearing
+	// protected registration. The body and its media type are proof-covered
+	// before this callback runs; a refusal precedes ticket consumption.
+	ProtectedRegistrationValidator func(context.Context, ProtectedEventRegistration) error
 }
 
 type agentEventMetadataResolver interface {
@@ -63,37 +82,47 @@ type agentEventMetadataResolver interface {
 }
 
 type Resource struct {
-	identifier              string
-	tokenAudience           string
-	signingKey              aauth.SigningKey
-	hasSigningKey           bool
-	keyResolver             aauth.KeyResolver
-	clock                   aauth.Clock
-	newID                   func() string
-	scopes                  []string
-	authorizationPolicy     aauth.AuthorizationPolicy
-	interactionRequired     func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	random                  io.Reader
-	pendingLifetime         time.Duration
-	operation               func(context.Context, aauth.AuthorizedRequest) (any, error)
-	r3Vocabularies          map[string]json.RawMessage
-	r3DocumentStore         R3DocumentStore
-	r3ProposalDocumentStore R3ProposalDocumentStore
-	r3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
-	r3RequiredForRequest    func(context.Context, *http.Request) (bool, error)
-	r3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
-	r3ProposalForRequest    func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
-	eventSubscriptionPath   string
-	eventStore              ResourceEventStore
-	eventHTTPClient         *http.Client
-	eventActiveUntil        func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
-	randomMu                sync.Mutex
-	pendingMu               sync.Mutex
-	pending                 map[string]*pendingAuthorization
-	accessMu                sync.Mutex
-	access                  map[string]localAccessGrant
-	replayMu                sync.Mutex
-	replayedProof           map[string]time.Time
+	identifier                 string
+	tokenAudience              string
+	signingKey                 aauth.SigningKey
+	hasSigningKey              bool
+	keyResolver                aauth.KeyResolver
+	clock                      aauth.Clock
+	newID                      func() string
+	scopes                     []string
+	authorizationPolicy        aauth.AuthorizationPolicy
+	interactionRequired        func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	random                     io.Reader
+	pendingLifetime            time.Duration
+	operation                  func(context.Context, aauth.AuthorizedRequest) (any, error)
+	r3Vocabularies             map[string]json.RawMessage
+	r3DocumentStore            R3DocumentStore
+	r3ProposalDocumentStore    R3ProposalDocumentStore
+	r3DocumentForOperations    func(context.Context, aauth.R3OperationSet) ([]byte, error)
+	r3RequiredForRequest       func(context.Context, *http.Request) (bool, error)
+	r3OperationForRequest      func(context.Context, *http.Request) (aauth.R3OperationSet, error)
+	r3ProposalForRequest       func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
+	eventSubscriptionPath      string
+	eventStore                 ResourceEventStore
+	eventTicketStore           ProtectedEventTicketStore
+	eventHTTPClient            *http.Client
+	eventActiveUntil           func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
+	eventAsyncAPIPath          string
+	eventAsyncAPIDocument      []byte
+	eventAsyncAPIContract      *aauth.EventsAsyncAPIContract
+	eventProtectedOperation    string
+	eventProtectedMessage      aauth.EventsAsyncAPIMessage
+	eventProtectedPath         string
+	eventContractStore         EventContractStore
+	eventTicketLifetime        time.Duration
+	eventRegistrationValidator func(context.Context, ProtectedEventRegistration) error
+	randomMu                   sync.Mutex
+	pendingMu                  sync.Mutex
+	pending                    map[string]*pendingAuthorization
+	accessMu                   sync.Mutex
+	access                     map[string]localAccessGrant
+	replayMu                   sync.Mutex
+	replayedProof              map[string]time.Time
 }
 
 type localAccessGrant struct {
@@ -184,11 +213,24 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	}
 	var eventSubscriptionPath string
 	var eventStore ResourceEventStore
+	var eventTicketStore ProtectedEventTicketStore
 	var eventHTTPClient *http.Client
 	var eventActiveUntil func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
+	var eventAsyncAPIPath string
+	var eventAsyncAPIDocument []byte
+	var eventAsyncAPIContract *aauth.EventsAsyncAPIContract
+	var eventProtectedOperation string
+	var eventProtectedMessage aauth.EventsAsyncAPIMessage
+	var eventProtectedPath string
+	var eventContractStore EventContractStore
+	var eventTicketLifetime time.Duration
+	var eventRegistrationValidator func(context.Context, ProtectedEventRegistration) error
 	if config.Events != nil {
 		if err := validatePublicRoutePath(config.Events.PublicSubscriptionPath); err != nil {
 			return nil, fmt.Errorf("reference: resource Events subscription path: %w", err)
+		}
+		if strings.ContainsAny(config.Events.PublicSubscriptionPath, "{}") {
+			return nil, errors.New("reference: resource public Events subscription path must be literal")
 		}
 		if config.Events.Store == nil || config.Events.HTTPClient == nil || config.Events.ActiveUntil == nil {
 			return nil, errors.New("reference: resource Events requires store, HTTP client, and active-until policy")
@@ -200,6 +242,78 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		eventStore = config.Events.Store
 		eventHTTPClient = config.Events.HTTPClient
 		eventActiveUntil = config.Events.ActiveUntil
+		if (config.Events.AsyncAPIPath == "") != (len(config.Events.AsyncAPIDocument) == 0) {
+			return nil, errors.New("reference: resource Events AsyncAPI path and document must be configured together")
+		}
+		if config.Events.AsyncAPIPath != "" {
+			if err := validatePublicRoutePath(config.Events.AsyncAPIPath); err != nil {
+				return nil, fmt.Errorf("reference: resource Events AsyncAPI path: %w", err)
+			}
+			if strings.ContainsAny(config.Events.AsyncAPIPath, "{}") {
+				return nil, errors.New("reference: resource Events AsyncAPI path must be literal")
+			}
+			if config.Events.AsyncAPIPath == config.Events.PublicSubscriptionPath {
+				return nil, errors.New("reference: resource Events AsyncAPI and subscription paths must differ")
+			}
+			parsed, err := aauth.ParseEventsAsyncAPI(config.Events.AsyncAPIDocument)
+			if err != nil {
+				return nil, fmt.Errorf("reference: resource Events AsyncAPI document: %w", err)
+			}
+			eventAsyncAPIPath = config.Events.AsyncAPIPath
+			eventAsyncAPIDocument = append([]byte(nil), config.Events.AsyncAPIDocument...)
+			eventAsyncAPIContract = parsed
+		}
+		protectedParts := 0
+		if config.Events.ProtectedOperationID != "" {
+			protectedParts++
+		}
+		if config.Events.ProtectedMessageID != "" {
+			protectedParts++
+		}
+		if config.Events.ContractStore != nil {
+			protectedParts++
+		}
+		if config.Events.TicketLifetime != 0 {
+			protectedParts++
+		}
+		if protectedParts != 0 && protectedParts != 4 {
+			return nil, errors.New("reference: protected Events requires operation, message, contract custody, and ticket lifetime")
+		}
+		if protectedParts == 4 {
+			if eventAsyncAPIContract == nil {
+				return nil, errors.New("reference: protected Events requires an AsyncAPI contract")
+			}
+			if config.Events.TicketLifetime < time.Second || config.Events.TicketLifetime > time.Hour {
+				return nil, errors.New("reference: protected Events ticket lifetime must be from one second through one hour")
+			}
+			var ok bool
+			eventTicketStore, ok = config.Events.Store.(ProtectedEventTicketStore)
+			if !ok {
+				return nil, errors.New("reference: protected Events requires an atomic ticket authority")
+			}
+			selected, err := eventAsyncAPIContract.ProtectedMessage(
+				config.Events.ProtectedOperationID,
+				config.Events.ProtectedMessageID,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("reference: protected Events selection: %w", err)
+			}
+			route := strings.Replace(selected.Address, "{"+selected.TicketParameter+"}", "ticket", 1)
+			if err := validatePublicRoutePath(route); err != nil {
+				return nil, fmt.Errorf("reference: protected Events channel address: %w", err)
+			}
+			eventProtectedOperation = selected.OperationID
+			eventProtectedMessage = selected
+			eventProtectedPath = selected.Address
+			eventContractStore = config.Events.ContractStore
+			eventTicketLifetime = config.Events.TicketLifetime
+			eventRegistrationValidator = config.Events.ProtectedRegistrationValidator
+		} else if config.Events.ProtectedRegistrationValidator != nil {
+			return nil, errors.New("reference: protected Events registration validator requires complete protected configuration")
+		}
+	}
+	if err := validateResourceRoutePatterns(eventSubscriptionPath, eventAsyncAPIPath, eventProtectedPath); err != nil {
+		return nil, err
 	}
 	r3Vocabularies := make(map[string]json.RawMessage, len(config.R3Vocabularies))
 	for vocabulary, discovery := range config.R3Vocabularies {
@@ -210,6 +324,17 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 			return nil, errors.New("reference: R3 discovery value must be valid JSON")
 		}
 		r3Vocabularies[vocabulary] = append(json.RawMessage(nil), discovery...)
+	}
+	if eventAsyncAPIPath != "" {
+		discovery, err := json.Marshal(eventAsyncAPIPath)
+		if err != nil {
+			return nil, err
+		}
+		if existing, exists := r3Vocabularies[aauth.R3VocabularyAsyncAPI]; exists &&
+			!bytes.Equal(bytes.TrimSpace(existing), discovery) {
+			return nil, errors.New("reference: resource Events AsyncAPI discovery conflicts with R3 vocabularies")
+		}
+		r3Vocabularies[aauth.R3VocabularyAsyncAPI] = discovery
 	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
@@ -226,40 +351,56 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		return nil, err
 	}
 	return &Resource{
-		identifier:              config.Identifier,
-		tokenAudience:           tokenAudience,
-		signingKey:              config.SigningKey,
-		hasSigningKey:           config.SigningKey.ID() != "",
-		keyResolver:             config.KeyResolver,
-		clock:                   config.Clock,
-		newID:                   config.NewID,
-		scopes:                  append([]string(nil), config.Scopes...),
-		authorizationPolicy:     config.AuthorizationPolicy,
-		interactionRequired:     config.InteractionRequired,
-		random:                  random,
-		pendingLifetime:         pendingLifetime,
-		operation:               config.Operation,
-		r3Vocabularies:          r3Vocabularies,
-		r3DocumentStore:         config.R3DocumentStore,
-		r3ProposalDocumentStore: r3ProposalDocumentStore,
-		r3DocumentForOperations: config.R3DocumentForOperations,
-		r3RequiredForRequest:    config.R3RequiredForRequest,
-		r3OperationForRequest:   config.R3OperationForRequest,
-		r3ProposalForRequest:    config.R3ProposalForRequest,
-		eventSubscriptionPath:   eventSubscriptionPath,
-		eventStore:              eventStore,
-		eventHTTPClient:         eventHTTPClient,
-		eventActiveUntil:        eventActiveUntil,
-		pending:                 make(map[string]*pendingAuthorization),
-		access:                  make(map[string]localAccessGrant),
-		replayedProof:           make(map[string]time.Time),
+		identifier:                 config.Identifier,
+		tokenAudience:              tokenAudience,
+		signingKey:                 config.SigningKey,
+		hasSigningKey:              config.SigningKey.ID() != "",
+		keyResolver:                config.KeyResolver,
+		clock:                      config.Clock,
+		newID:                      config.NewID,
+		scopes:                     append([]string(nil), config.Scopes...),
+		authorizationPolicy:        config.AuthorizationPolicy,
+		interactionRequired:        config.InteractionRequired,
+		random:                     random,
+		pendingLifetime:            pendingLifetime,
+		operation:                  config.Operation,
+		r3Vocabularies:             r3Vocabularies,
+		r3DocumentStore:            config.R3DocumentStore,
+		r3ProposalDocumentStore:    r3ProposalDocumentStore,
+		r3DocumentForOperations:    config.R3DocumentForOperations,
+		r3RequiredForRequest:       config.R3RequiredForRequest,
+		r3OperationForRequest:      config.R3OperationForRequest,
+		r3ProposalForRequest:       config.R3ProposalForRequest,
+		eventSubscriptionPath:      eventSubscriptionPath,
+		eventStore:                 eventStore,
+		eventTicketStore:           eventTicketStore,
+		eventHTTPClient:            eventHTTPClient,
+		eventActiveUntil:           eventActiveUntil,
+		eventAsyncAPIPath:          eventAsyncAPIPath,
+		eventAsyncAPIDocument:      eventAsyncAPIDocument,
+		eventAsyncAPIContract:      eventAsyncAPIContract,
+		eventProtectedOperation:    eventProtectedOperation,
+		eventProtectedMessage:      eventProtectedMessage,
+		eventProtectedPath:         eventProtectedPath,
+		eventContractStore:         eventContractStore,
+		eventTicketLifetime:        eventTicketLifetime,
+		eventRegistrationValidator: eventRegistrationValidator,
+		pending:                    make(map[string]*pendingAuthorization),
+		access:                     make(map[string]localAccessGrant),
+		replayedProof:              make(map[string]time.Time),
 	}, nil
 }
 
 func (resource *Resource) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if resource.eventAsyncAPIPath != "" {
+		mux.HandleFunc("GET "+resource.eventAsyncAPIPath, resource.handleEventsAsyncAPI)
+	}
 	if resource.eventSubscriptionPath != "" {
 		mux.HandleFunc("POST "+resource.eventSubscriptionPath, resource.handlePublicEventSubscription)
+	}
+	if resource.eventProtectedPath != "" {
+		mux.HandleFunc("POST "+resource.eventProtectedPath, resource.handleProtectedEventRegistration)
 	}
 	mux.HandleFunc("POST /authorize", resource.handleAuthorize)
 	mux.HandleFunc("GET /pending/{id}", resource.handlePendingAuthorization)
@@ -270,6 +411,13 @@ func (resource *Resource) Handler() http.Handler {
 	mux.HandleFunc("GET /r3/{s256}", resource.handleR3Document)
 	mux.HandleFunc("/", resource.handleProtected)
 	return mux
+}
+
+func (resource *Resource) handleEventsAsyncAPI(response http.ResponseWriter, _ *http.Request) {
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "max-age=60")
+	response.WriteHeader(http.StatusOK)
+	_, _ = response.Write(resource.eventAsyncAPIDocument)
 }
 
 func (resource *Resource) handlePublicEventSubscription(response http.ResponseWriter, request *http.Request) {
@@ -330,9 +478,110 @@ func (resource *Resource) handlePublicEventSubscription(response http.ResponseWr
 	response.WriteHeader(http.StatusCreated)
 }
 
-// DeliverEvent retains one exact payload-free event JWT before resolving the
-// AP's current endpoint and sending it with a fresh HTTP proof.
+func (resource *Resource) handleProtectedEventRegistration(response http.ResponseWriter, request *http.Request) {
+	hasBody := request.ContentLength != 0 || len(request.TransferEncoding) != 0 ||
+		(request.Body != nil && request.Body != http.NoBody)
+	if hasBody && resource.eventRegistrationValidator == nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("reference: protected event registration must be bodyless"))
+		return
+	}
+	var exactBody []byte
+	var err error
+	var requiredComponents []string
+	if hasBody {
+		exactBody, err = readBoundedRequestBody(request)
+		if err != nil {
+			writeProblem(response, http.StatusRequestEntityTooLarge, "request_too_large", err)
+			return
+		}
+		requiredComponents = []string{"content-type", "content-digest"}
+	}
+	verified, err := aauth.VerifyRequest(
+		request.Context(),
+		request,
+		resource.keyResolver,
+		resource.clock,
+		aauth.VerifyRequestOptions{
+			RequiredComponents:     requiredComponents,
+			AllowedCredentialTypes: []string{aauth.SubscribeTokenType},
+		},
+	)
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
+	claims := verified.SubscribeToken
+	if claims == nil {
+		writeSignatureFailure(response, errors.New("reference: verified subscribe token is required"))
+		return
+	}
+	if claims.Audience != resource.identifier {
+		writeProblem(response, http.StatusForbidden, "invalid_subscription", errors.New("reference: event subscription audience does not match resource"))
+		return
+	}
+	if claims.MaxUses == nil || *claims.MaxUses != 1 {
+		writeProblem(response, http.StatusForbidden, "unsupported_use_policy", errors.New("reference: protected event subscription requires max_uses 1"))
+		return
+	}
+	rawTicket := request.PathValue(resource.eventProtectedMessage.TicketParameter)
+	if rawTicket == "" {
+		writeProblem(response, http.StatusNotFound, "event_ticket_not_found", ErrProtectedEventTicketNotFound)
+		return
+	}
+	ticketDigest := protectedEventTicketDigest(rawTicket)
+	if hasBody {
+		registration := ProtectedEventRegistration{
+			TicketDigest: ticketDigest, Resource: resource.identifier, Agent: verified.Agent,
+			APIssuer: claims.Issuer, EventID: claims.EventID,
+			ContentType: request.Header.Get("Content-Type"), Body: append([]byte(nil), exactBody...),
+		}
+		if err := resource.eventRegistrationValidator(request.Context(), registration); err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_registration", err)
+			return
+		}
+	}
+	_, err = resource.eventTicketStore.ConsumeTicket(request.Context(), ProtectedEventTicketConsumption{
+		TicketDigest: ticketDigest, Resource: resource.identifier, APIssuer: claims.Issuer,
+		EventID: claims.EventID, Agent: verified.Agent, RegisteredAt: resource.clock.Now(),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrProtectedEventTicketNotFound):
+			writeProblem(response, http.StatusNotFound, "event_ticket_not_found", err)
+		case errors.Is(err, ErrProtectedEventTicketMismatch):
+			writeProblem(response, http.StatusForbidden, "event_ticket_mismatch", err)
+		case errors.Is(err, ErrEventSubscriptionConflict):
+			writeProblem(response, http.StatusConflict, "event_subscription_conflict", err)
+		default:
+			writeProblem(response, http.StatusInternalServerError, "event_registration_failed", err)
+		}
+		return
+	}
+	writeJSON(response, http.StatusCreated, map[string]string{"status": "subscribed"})
+}
+
+// DeliverEvent preserves the M5 payload-free profile.
 func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID string) error {
+	return resource.deliverEvent(ctx, apIssuer, eventID, nil)
+}
+
+// DeliverEventPayload validates and retains one exact direct JSON message
+// before resolving the AP and sending it with signed content metadata.
+func (resource *Resource) DeliverEventPayload(
+	ctx context.Context,
+	apIssuer string,
+	eventID string,
+	payload EventPayload,
+) error {
+	return resource.deliverEvent(ctx, apIssuer, eventID, &payload)
+}
+
+func (resource *Resource) deliverEvent(
+	ctx context.Context,
+	apIssuer string,
+	eventID string,
+	payload *EventPayload,
+) error {
 	if resource == nil || resource.eventStore == nil || resource.eventHTTPClient == nil {
 		return errors.New("reference: resource Events is not configured")
 	}
@@ -348,6 +597,22 @@ func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID st
 	if subscription.Resource != resource.identifier || !subscription.ActiveUntil.After(now) {
 		return ErrEventSubscriptionNotFound
 	}
+	if (payload != nil) != hasEventContractBinding(
+		subscription.ContractDigest,
+		subscription.OperationID,
+		subscription.MessageID,
+	) {
+		return ErrEventPayloadNotAllowed
+	}
+	var contentType string
+	var exactPayload []byte
+	var payloadDigest string
+	if payload != nil {
+		contentType, exactPayload, payloadDigest, err = resource.validateEventPayload(ctx, subscription, *payload)
+		if err != nil {
+			return err
+		}
+	}
 	pending, err := resource.eventStore.LoadPending(ctx, apIssuer, eventID)
 	if errors.Is(err, ErrEventPendingNotFound) {
 		compact, mintErr := aauth.MintEventToken(resource.signingKey, aauth.EventTokenClaims{
@@ -362,9 +627,8 @@ func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID st
 			return mintErr
 		}
 		pending = PendingEventDelivery{
-			APIssuer:  apIssuer,
-			EventID:   eventID,
-			Token:     compact,
+			APIssuer: apIssuer, EventID: eventID, Token: compact,
+			ContentType: contentType, Payload: exactPayload, PayloadDigest: payloadDigest,
 			CreatedAt: now,
 		}
 		if retainErr := resource.eventStore.RetainPending(ctx, pending); retainErr != nil {
@@ -372,6 +636,9 @@ func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID st
 		}
 	} else if err != nil {
 		return err
+	} else if pending.ContentType != contentType || pending.PayloadDigest != payloadDigest ||
+		!bytes.Equal(pending.Payload, exactPayload) {
+		return ErrEventPendingConflict
 	}
 	metadata, err := metadataResolver.ResolveAgentEventMetadata(ctx, apIssuer)
 	if err != nil {
@@ -383,12 +650,22 @@ func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID st
 	if err := aauth.ValidateEndpoint(metadata.EventEndpoint); err != nil {
 		return fmt.Errorf("reference: resolved event endpoint: %w", err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.EventEndpoint, nil)
+	var requestBody io.Reader
+	if len(pending.Payload) != 0 {
+		requestBody = bytes.NewReader(pending.Payload)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.EventEndpoint, requestBody)
 	if err != nil {
 		return err
 	}
+	if pending.ContentType != "" {
+		request.Header.Set("Content-Type", pending.ContentType)
+	}
 	if err := aauth.SignRequestWithSelfJWT(request, resource.signingKey, pending.Token, resource.clock); err != nil {
 		return err
+	}
+	if pending.PayloadDigest != "" && request.Header.Get("Content-Digest") != pending.PayloadDigest {
+		return errors.New("reference: signed event payload digest does not match retained custody")
 	}
 	response, err := resource.eventHTTPClient.Do(request)
 	if err != nil {
@@ -416,12 +693,83 @@ func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID st
 	return resource.eventStore.CompletePending(ctx, apIssuer, eventID)
 }
 
+func (resource *Resource) validateEventPayload(
+	ctx context.Context,
+	subscription ResourceEventSubscription,
+	payload EventPayload,
+) (string, []byte, string, error) {
+	if resource.eventContractStore == nil || subscription.ContractDigest == "" ||
+		subscription.OperationID == "" || subscription.MessageID == "" {
+		return "", nil, "", errors.New("reference: event payload subscription has no retained contract")
+	}
+	if payload.OperationID != subscription.OperationID || payload.MessageID != subscription.MessageID {
+		return "", nil, "", errors.New("reference: event payload selection does not match subscription")
+	}
+	exactContract, err := resource.eventContractStore.Load(ctx, subscription.ContractDigest)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if aauth.R3S256(exactContract) != subscription.ContractDigest {
+		return "", nil, "", ErrEventContractIntegrity
+	}
+	contract, err := aauth.ParseEventsAsyncAPI(exactContract)
+	if err != nil {
+		return "", nil, "", err
+	}
+	message, err := contract.ProtectedMessage(subscription.OperationID, subscription.MessageID)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if payload.ContentType != message.ContentType {
+		return "", nil, "", errors.New("reference: event payload media type does not match contract")
+	}
+	if len(payload.Body) > maxEventPayloadBody {
+		return "", nil, "", errors.New("reference: event payload exceeds the supported bound")
+	}
+	if err := message.ValidatePayload(payload.Body); err != nil {
+		return "", nil, "", err
+	}
+	exact := append([]byte(nil), payload.Body...)
+	return payload.ContentType, exact, eventPayloadDigest(exact), nil
+}
+
 func validatePublicRoutePath(value string) error {
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || value == "/" || !strings.HasPrefix(value, "/") ||
 		parsed.Path != value || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		strings.Contains(value, "//") {
 		return errors.New("public route must be one unescaped absolute path")
+	}
+	return nil
+}
+
+func validateResourceRoutePatterns(publicEvents, asyncAPI, protectedEvents string) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("reference: resource route configuration conflicts: %v", recovered)
+		}
+	}()
+	mux := http.NewServeMux()
+	dummy := func(http.ResponseWriter, *http.Request) {}
+	for _, pattern := range []string{
+		"POST /authorize",
+		"GET /pending/{id}",
+		"GET /interaction/{id}",
+		"GET /.well-known/aauth-resource.json",
+		"GET /jwks",
+		"GET /r3/{s256}",
+		"GET /r3/proposals/{s256}",
+	} {
+		mux.HandleFunc(pattern, dummy)
+	}
+	if publicEvents != "" {
+		mux.HandleFunc("POST "+publicEvents, dummy)
+	}
+	if asyncAPI != "" {
+		mux.HandleFunc("GET "+asyncAPI, dummy)
+	}
+	if protectedEvents != "" {
+		mux.HandleFunc("POST "+protectedEvents, dummy)
 	}
 	return nil
 }
@@ -1015,7 +1363,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		}
 	}
 
-	result, err := resource.operation(request.Context(), aauth.AuthorizedRequest{
+	authorized := aauth.AuthorizedRequest{
 		Agent:     claims.Agent,
 		Subject:   claims.Subject,
 		Scope:     granted,
@@ -1025,12 +1373,96 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		Method:    request.Method,
 		Path:      request.URL.Path,
 		Body:      append([]byte(nil), exactBody...),
-	})
+	}
+	result, err := resource.operation(request.Context(), authorized)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "operation_failed", err)
 		return
 	}
+	if protected, ok := protectedEventOperationResult(result); ok {
+		resource.issueProtectedEventTicket(response, request, authorized, protected)
+		return
+	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func protectedEventOperationResult(value any) (ProtectedEventOperationResult, bool) {
+	switch result := value.(type) {
+	case ProtectedEventOperationResult:
+		return result, true
+	case *ProtectedEventOperationResult:
+		if result != nil {
+			return *result, true
+		}
+	}
+	return ProtectedEventOperationResult{}, false
+}
+
+func (resource *Resource) issueProtectedEventTicket(
+	response http.ResponseWriter,
+	request *http.Request,
+	authorized aauth.AuthorizedRequest,
+	result ProtectedEventOperationResult,
+) {
+	if resource.eventProtectedOperation == "" || resource.eventContractStore == nil ||
+		resource.eventTicketStore == nil || result.Response == nil ||
+		result.Ticket.ResourceRevision == "" {
+		writeProblem(response, http.StatusInternalServerError, "event_ticket_not_configured", errors.New("reference: protected event ticket is not configured"))
+		return
+	}
+	now := resource.clock.Now()
+	expiresAt := now.Add(resource.eventTicketLifetime)
+	if !result.Ticket.ActiveUntil.After(expiresAt) {
+		writeProblem(response, http.StatusInternalServerError, "invalid_event_ticket", errors.New("reference: protected event subscription must outlive its ticket"))
+		return
+	}
+	if err := resource.eventContractStore.Retain(
+		request.Context(),
+		resource.eventAsyncAPIContract.Digest(),
+		resource.eventAsyncAPIContract.ExactBytes(),
+		result.Ticket.ActiveUntil,
+	); err != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "event_ticket_unavailable", err)
+		return
+	}
+	rawBytes := make([]byte, 32)
+	resource.randomMu.Lock()
+	_, randomErr := io.ReadFull(resource.random, rawBytes)
+	resource.randomMu.Unlock()
+	if randomErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "event_ticket_unavailable", randomErr)
+		return
+	}
+	rawTicket := base64.RawURLEncoding.EncodeToString(rawBytes)
+	ticket := ProtectedEventTicket{
+		TicketDigest: protectedEventTicketDigest(rawTicket), Resource: resource.identifier,
+		Agent: authorized.Agent, AuthorizedMethod: authorized.Method, AuthorizedPath: authorized.Path,
+		ResourceRevision: result.Ticket.ResourceRevision,
+		ContractDigest:   resource.eventAsyncAPIContract.Digest(),
+		OperationID:      resource.eventProtectedMessage.OperationID,
+		MessageID:        resource.eventProtectedMessage.MessageID,
+		ExpiresAt:        expiresAt, ActiveUntil: result.Ticket.ActiveUntil,
+	}
+	if err := resource.eventTicketStore.CreateTicket(request.Context(), ticket); err != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "event_ticket_unavailable", err)
+		return
+	}
+	path := strings.Replace(
+		resource.eventProtectedMessage.Address,
+		"{"+resource.eventProtectedMessage.TicketParameter+"}",
+		rawTicket,
+		1,
+	)
+	grant := ProtectedEventTicketGrant{
+		URL: resource.identifier + path, ContractDigest: ticket.ContractDigest,
+		OperationID: ticket.OperationID, MessageID: ticket.MessageID,
+	}
+	rendered, err := result.Response(grant)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "operation_response_failed", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, rendered)
 }
 
 func classifyR3ProposalReference(resourceIdentifier, uri, s256 string) (bool, error) {

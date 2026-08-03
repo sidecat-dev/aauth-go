@@ -395,6 +395,32 @@ AsyncAPI, token payloads, and multi-event replay remain outside this profile.
 The bounded file stores provide single-writer reference-host qualification;
 they are not enterprise or distributed storage conformance.
 
+The selected protected Events profile is implemented and qualified as a
+separate one-use vertical. An authenticated resource operation commits an
+opaque ticket capability while retaining only its SHA-256 digest and exact
+agent, operation, resource-revision, contract, message, expiry, and use
+bindings. A bodyless signed registration atomically consumes that ticket and
+creates the subscription. A deployment may opt into a bounded registration
+body validator, but no registration-body schema mapping is inferred from the
+AsyncAPI document.
+
+The protected event is the complete direct `application/json` HTTP body; the
+event JWT remains payload-free. The resource validates and retains the exact
+token, body, media type, and digest before sending signed `content-type` and
+`content-digest`. The AP commits that exact pair before `202 Accepted`, and a
+lost `202 Accepted` is settled by an exact retry and exhausted `429 Too Many
+Requests` without a second inbox record. The agent independently validates the
+same body against the digest-pinned contract before one durable action.
+
+The selected contract is one exact AsyncAPI 3.0.0 JSON document with one
+parameterized channel, one `receive` operation, one locally referenced message,
+`application/json`, and an inline JSON Schema Draft 7 payload. Multi-event replay identity, a
+standardized AP-to-agent transport, general AsyncAPI/YAML/external-reference
+support, registration-body schema mapping, and lost-success
+protected-registration reconciliation remain unsupported. The provided memory
+and bounded single-writer file stores qualify replaceable host boundaries; they
+do not claim distributed, multi-writer, federated, or enterprise storage.
+
 Missionless direct-AS call chaining, resource-owned interaction chaining,
 interaction/payment relay and callbacks, question delivery,
 updated-request/cancel clarification actions, restart custody for

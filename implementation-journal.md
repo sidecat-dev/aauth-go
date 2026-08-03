@@ -23,6 +23,52 @@ comparators. Unexercised BEAM source may be consulted as code archaeology, but
 provides no conformance evidence. Neither defines compatibility requirements
 for this library.
 
+## 2026-08-03
+
+### Protected one-use JSON Events profile
+
+- **Status: implemented and qualified as one protected, one-use, direct-JSON
+  vertical; not general Events or AsyncAPI conformance.** An authenticated
+  resource operation commits a 256-bit opaque ticket before releasing its URL.
+  Durable authority retains only the ticket digest plus the exact agent,
+  authorized call, resource revision, contract digest, operation/message,
+  expiry, and active window.
+- The agent retains the exact admitted AsyncAPI 3.0.0 JSON bytes before sending
+  a bodyless signed registration. Ticket validation, optional covered-body
+  validation, consumption, and resource subscription creation are one atomic
+  store transition. Wrong, expired, replayed, incomplete, colliding, or
+  uncustodied ticket paths create no subscription.
+- The selected AsyncAPI subset has one parameterized channel, one `receive`
+  operation, one local message reference, `application/json`, and one inline
+  compilable JSON Schema Draft 7 payload. Remote references, YAML, ambiguous selections,
+  operation security, and generalized AsyncAPI modeling are not supported.
+- One complete JSON body is the event payload; it is not a JWT claim. The
+  resource validates against the subscription's digest-pinned document and
+  commits exact token, payload bytes, media type, and digest before transport.
+  The AP verifies signed content metadata and atomically commits the final use
+  and exact inbox pair before `202`. A lost success survives reconstruction and
+  settles through exact retry plus `429` without a second record.
+- The non-normative adapter carries the AP's exact retained bytes to the agent.
+  The agent independently verifies the event token, local context, exact
+  contract digest and selection, media type, payload digest, JSON syntax, and
+  schema before durable dispatch. Reconstruction preserves pending and unknown
+  action outcomes, and terminal duplicates perform no second action.
+- Protected ticket support is a separate optional authority interface, so an
+  M5-only deployment store remains source-compatible. The included AP,
+  resource, and agent file stores write v2 records, reopen their M5 v1 records,
+  and upgrade on the next successful commit. Resource identity is atomically
+  compared during ticket consumption, and constructor-time route validation
+  prevents conflicting or templated deployment endpoints from reaching
+  `ServeMux`.
+- Agent contract custody uses exact byte encoding rather than JSON
+  reserialization. The default per-record file bound has explicit headroom for
+  the maximum admitted 1 MiB contract plus local context and its versioned
+  envelope; boundary reconstruction is executable evidence.
+- **Still open:** multi-event replay identity, standardized AP-agent transport,
+  registration-body schema derivation, lost-success protected-registration
+  reconciliation, general AsyncAPI/YAML/external-reference support, and
+  distributed or multi-writer host stores.
+
 ## 2026-08-02
 
 ### R3 conditional per-call authorization
@@ -528,10 +574,9 @@ for this library.
   format, and SHA-256. The generated inventory records all 465 headings, so a
   newly added, removed, retitled, or reparented section is a review event
   instead of disappearing outside the checklist.
-- Claims are deliberately section-specific. Fifty-two selected behaviors are
-  exercised, eighteen broader sections are explicitly partial, twenty-six
-  protocol areas are explicitly unsupported, and the remaining sections stay
-  unclaimed. An exercised label binds only the adjacent written claim to its
+- Claims are deliberately section-specific. The generated report records the
+  current exercised, partial, unsupported, and unclaimed totals. An exercised
+  label binds only the adjacent written claim to its
   named test; it is not a full-section or full-draft conformance assertion.
 - The embedded contract and `SOURCE-COVERAGE.md` are checked for exact
   agreement during `go test ./...`. Evidence verification parses the named Go

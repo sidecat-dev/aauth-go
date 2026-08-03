@@ -1,10 +1,10 @@
 # AAuth evidence roadmap
 
-This roadmap orders repository evidence for the accepted AAuth M4 and M5
-verticals. Sidecat remains the authority for milestone and work state. M4 and
-M5 are closed. The completed M5 Events successor includes its accepted
-Signature-Key self-jwt dependency; this does not revise the dependency-ordered
-M1-M8 roadmap.
+This roadmap orders repository evidence for the accepted AAuth M4 through M6
+verticals. Sidecat remains the authority for milestone and work state. M4,
+M5, and M6 are closed. The completed M5 Events predecessor includes its
+accepted Signature-Key self-jwt dependency; this does not revise the
+dependency-ordered M1-M8 roadmap.
 
 **Reconciliation (2026-08-02):** The initial three-step evidence draft listed
 STORY-0001 through STORY-0004 in both ITER-0000 and ITER-0001. The refusal and
@@ -61,7 +61,6 @@ STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015, STORY-0016,
 STORY-0017
 **Journey scenario:** JOURNEY-0002
 **Status:** done
-**Completed:** 2026-08-03
 **Impacted scenarios:** JOURNEY-0002, SCENARIO-0009 through SCENARIO-0024
 **Harness-first task:** Extend the existing real-HTTP logical gateway with
 separate AP, resource, adapter, and agent reconstruction seams. The first RED
@@ -72,6 +71,32 @@ deployment-store interfaces. It adds protected ticket authority, AsyncAPI
 discovery/schema/payload proof, any clarified multi-event replay identity, and
 may extend the non-normative deployment adapter; none is simulated or frozen
 into protocol wire here.
+
+### ITER-0004 — Protected payload event lifecycle
+
+**Intent:** Prove one authenticated operation through resource-owned ticket
+issuance, protected registration, one AsyncAPI-bound JSON payload, durable AP
+acceptance, and one independently validated agent action after reconstruction.
+**Design rationale:** This is the smallest complete M6 value path. It retains
+the M5 one-use replay model because the source defines no distinct per-event
+identity, and it selects an explicit direct-JSON AsyncAPI profile where the
+pinned draft is contradictory. Ticket authority, exact document custody,
+payload custody, and action continuation remain separate replaceable host
+interfaces.
+**Stories:** STORY-0018, STORY-0019, STORY-0020, STORY-0021, STORY-0022
+**Journey scenario:** JOURNEY-0003
+**Status:** done
+**Completed:** 2026-08-03
+**Impacted scenarios:** JOURNEY-0003, SCENARIO-0025 through SCENARIO-0030
+**Harness-first task:** Extend the real-HTTP logical gateway with a protected
+operation that commits an opaque ticket, then write the complete failing
+journey through ticket registration, exact payload retry, and agent action
+before adding production APIs.
+**Accepted profile:** `m6-profile-decision.md`
+**Look-ahead check:** M6 does not define multi-event replay identity, a
+standardized AP-agent transport, general AsyncAPI tooling, or an
+AsyncAPI-derived registration-body schema. Those require later source or
+architecture acceptance rather than inference from this journey.
 
 ## Closed M4 boundaries
 

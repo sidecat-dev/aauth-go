@@ -208,6 +208,36 @@ func (agent *Agent) RegisterPublicEventSubscription(
 	compact string,
 	localContext AgentEventContext,
 ) error {
+	return agent.registerEventSubscription(ctx, endpoint, compact, localContext)
+}
+
+// RegisterProtectedEventSubscription pins the ticket's exact AsyncAPI
+// selection into local agent custody before spending the single-use URL.
+func (agent *Agent) RegisterProtectedEventSubscription(
+	ctx context.Context,
+	grant ProtectedEventTicketGrant,
+	compact string,
+	localContext AgentEventContext,
+) error {
+	if grant.URL == "" || grant.ContractDigest == "" || grant.OperationID == "" || grant.MessageID == "" {
+		return errors.New("reference: protected event ticket grant is incomplete")
+	}
+	if localContext.ContractDigest != grant.ContractDigest ||
+		localContext.OperationID != grant.OperationID || localContext.MessageID != grant.MessageID {
+		return errors.New("reference: protected event context does not match the ticket grant")
+	}
+	if err := validateAgentEventContext(localContext); err != nil {
+		return err
+	}
+	return agent.registerEventSubscription(ctx, grant.URL, compact, localContext)
+}
+
+func (agent *Agent) registerEventSubscription(
+	ctx context.Context,
+	endpoint string,
+	compact string,
+	localContext AgentEventContext,
+) error {
 	if agent == nil || agent.eventStore == nil {
 		return errors.New("reference: agent Events is not configured")
 	}
@@ -233,6 +263,9 @@ func (agent *Agent) RegisterPublicEventSubscription(
 	}
 	if localContext.APIssuer != claims.Issuer || localContext.EventID != claims.EventID {
 		return errors.New("reference: event subscription context does not match token")
+	}
+	if err := validateAgentEventContext(localContext); err != nil {
+		return err
 	}
 	if err := agent.eventStore.PutContext(ctx, localContext); err != nil {
 		return err
@@ -305,6 +338,9 @@ func (agent *Agent) acceptEvent(
 	if err := validateAcceptedEventEnvelope(ctx, accepted); err != nil {
 		return "", err
 	}
+	if err := validateEventPayloadEnvelope(accepted.ContentType, accepted.Payload, accepted.PayloadDigest); err != nil {
+		return agent.refuseEvent(ctx, accepted.Delivery, EventRefusalInvalid)
+	}
 	state, err := agent.eventStore.LoadDisposition(ctx, accepted.Delivery)
 	if err == nil {
 		if state == EventCompleted || state == EventRefused {
@@ -345,6 +381,9 @@ func (agent *Agent) acceptEvent(
 	if err != nil {
 		return "", err
 	}
+	if err := validateAgentEventPayload(localContext, accepted.ContentType, accepted.Payload, accepted.PayloadDigest); err != nil {
+		return agent.refuseEvent(ctx, accepted.Delivery, EventRefusalInvalid)
+	}
 	action := EventActionKey{
 		ResourceIssuer: claims.Issuer,
 		APIssuer:       accepted.APIssuer,
@@ -355,8 +394,8 @@ func (agent *Agent) acceptEvent(
 		Action:    action,
 		State:     EventPending,
 		ExpiresAt: time.Unix(claims.ExpiresAt, 0),
-		Token:     accepted.Token,
-		Event:     claims,
+		Token:     accepted.Token, Event: claims, ContentType: accepted.ContentType,
+		Payload: append([]byte(nil), accepted.Payload...), PayloadDigest: accepted.PayloadDigest,
 	}
 	if localContext.APIssuer != action.APIssuer || localContext.EventID != action.EventID {
 		return "", errors.New("reference: stored event context does not match verified event")
@@ -406,6 +445,9 @@ func (agent *Agent) continueEventProcessing(
 	if err != nil {
 		return EventPending, err
 	}
+	if err := validateAgentEventPayload(localContext, processing.ContentType, processing.Payload, processing.PayloadDigest); err != nil {
+		return agent.refuseEvent(ctx, processing.Delivery, EventRefusalInvalid)
+	}
 	claimed, err := agent.eventStore.BeginDispatch(ctx, processing.Action, agent.clock.Now())
 	if errors.Is(err, ErrEventProcessingExpired) {
 		return agent.refuseEvent(ctx, processing.Delivery, EventRefusalExpired)
@@ -426,6 +468,8 @@ func (agent *Agent) continueEventProcessing(
 	processing.State = EventDispatched
 	outcome, err := agent.eventAction.Dispatch(ctx, EventActionInput{
 		Key: processing.Action, Context: localContext, Event: processing.Event,
+		ContentType: processing.ContentType, Payload: append([]byte(nil), processing.Payload...),
+		PayloadDigest: processing.PayloadDigest,
 	})
 	return agent.recordEventActionOutcome(ctx, processing, outcome, err)
 }
@@ -492,6 +536,37 @@ func validateAcceptedEventEnvelope(ctx context.Context, accepted AcceptedEvent) 
 		return fmt.Errorf("%w: accepted event envelope is inconsistent", ErrEventRecordInvalid)
 	}
 	return nil
+}
+
+func validateAgentEventPayload(
+	localContext AgentEventContext,
+	contentType string,
+	payload []byte,
+	digest string,
+) error {
+	hasContract := hasEventContractBinding(localContext.ContractDigest, localContext.OperationID, localContext.MessageID)
+	hasPayload := hasEventPayload(contentType, payload, digest)
+	if hasContract != hasPayload {
+		return errors.New("reference: agent event payload does not match local contract context")
+	}
+	if !hasContract {
+		return nil
+	}
+	if err := validateEventPayloadEnvelope(contentType, payload, digest); err != nil {
+		return err
+	}
+	contract, err := aauth.ParseEventsAsyncAPI(localContext.Contract)
+	if err != nil || contract.Digest() != localContext.ContractDigest {
+		return errors.New("reference: agent retained event contract is invalid")
+	}
+	message, err := contract.ProtectedMessage(localContext.OperationID, localContext.MessageID)
+	if err != nil {
+		return err
+	}
+	if contentType != message.ContentType {
+		return errors.New("reference: agent event media type does not match retained contract")
+	}
+	return message.ValidatePayload(payload)
 }
 
 func retryableEventVerificationError(err error) bool {

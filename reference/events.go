@@ -14,7 +14,10 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
+
+const maxEventPayloadBody = 512 << 10
 
 var (
 	// ErrEventRecordInvalid means a store input does not satisfy the durable
@@ -32,6 +35,9 @@ var (
 	// ErrEventSubscriptionExhausted means the subscription has no remaining
 	// uses. It is stable so the AP HTTP surface can map it to status 429.
 	ErrEventSubscriptionExhausted = errors.New("reference: event subscription is exhausted")
+	// ErrEventPayloadNotAllowed distinguishes the M5 payload-free subscription
+	// profile from an M6 contract-bound payload subscription.
+	ErrEventPayloadNotAllowed = errors.New("reference: event payload is not allowed by the subscription")
 	// ErrNoPendingEventDelivery means the AP inbox has no work to continue.
 	ErrNoPendingEventDelivery = errors.New("reference: no pending event delivery")
 	// ErrEventDeliveryNotFound means an AP inbox delivery cannot be acknowledged.
@@ -68,49 +74,77 @@ var (
 )
 
 type APEventSubscription struct {
-	APIssuer    string    `json:"ap_issuer"`
-	EventID     string    `json:"event_id"`
-	Resource    string    `json:"resource"`
-	Agent       string    `json:"agent"`
-	ActiveUntil time.Time `json:"active_until"`
-	MaxUses     int       `json:"max_uses"`
-	UseCount    int       `json:"use_count"`
+	APIssuer       string    `json:"ap_issuer"`
+	EventID        string    `json:"event_id"`
+	Resource       string    `json:"resource"`
+	Agent          string    `json:"agent"`
+	ActiveUntil    time.Time `json:"active_until"`
+	MaxUses        int       `json:"max_uses"`
+	UseCount       int       `json:"use_count"`
+	ContractDigest string    `json:"contract_digest,omitempty"`
+	OperationID    string    `json:"operation_id,omitempty"`
+	MessageID      string    `json:"message_id,omitempty"`
 }
 
 type AcceptedEventInput struct {
-	Resource   string    `json:"resource"`
-	Agent      string    `json:"agent"`
-	EventID    string    `json:"event_id"`
-	Token      string    `json:"token"`
-	AcceptedAt time.Time `json:"accepted_at"`
+	Resource      string    `json:"resource"`
+	Agent         string    `json:"agent"`
+	EventID       string    `json:"event_id"`
+	Token         string    `json:"token"`
+	ContentType   string    `json:"content_type,omitempty"`
+	Payload       []byte    `json:"payload,omitempty"`
+	PayloadDigest string    `json:"payload_digest,omitempty"`
+	AcceptedAt    time.Time `json:"accepted_at"`
 }
 
 type AcceptedEvent struct {
-	Delivery   EventDeliveryKey `json:"delivery"`
-	APIssuer   string           `json:"ap_issuer"`
-	Token      string           `json:"token"`
-	AcceptedAt time.Time        `json:"accepted_at"`
+	Delivery      EventDeliveryKey `json:"delivery"`
+	APIssuer      string           `json:"ap_issuer"`
+	Token         string           `json:"token"`
+	ContentType   string           `json:"content_type,omitempty"`
+	Payload       []byte           `json:"payload,omitempty"`
+	PayloadDigest string           `json:"payload_digest,omitempty"`
+	AcceptedAt    time.Time        `json:"accepted_at"`
 }
 
 type ResourceEventSubscription struct {
-	APIssuer    string    `json:"ap_issuer"`
-	EventID     string    `json:"event_id"`
-	Resource    string    `json:"resource"`
-	Agent       string    `json:"agent"`
-	ActiveUntil time.Time `json:"active_until"`
+	APIssuer       string    `json:"ap_issuer"`
+	EventID        string    `json:"event_id"`
+	Resource       string    `json:"resource"`
+	Agent          string    `json:"agent"`
+	ActiveUntil    time.Time `json:"active_until"`
+	ContractDigest string    `json:"contract_digest,omitempty"`
+	OperationID    string    `json:"operation_id,omitempty"`
+	MessageID      string    `json:"message_id,omitempty"`
 }
 
 type PendingEventDelivery struct {
-	APIssuer  string    `json:"ap_issuer"`
-	EventID   string    `json:"event_id"`
-	Token     string    `json:"token"`
-	CreatedAt time.Time `json:"created_at"`
+	APIssuer      string    `json:"ap_issuer"`
+	EventID       string    `json:"event_id"`
+	Token         string    `json:"token"`
+	ContentType   string    `json:"content_type,omitempty"`
+	Payload       []byte    `json:"payload,omitempty"`
+	PayloadDigest string    `json:"payload_digest,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// EventPayload is one direct JSON AsyncAPI message selected by the protected
+// subscription. Body is the complete HTTP request body, not a JWT claim.
+type EventPayload struct {
+	OperationID string
+	MessageID   string
+	ContentType string
+	Body        []byte
 }
 
 type AgentEventContext struct {
-	APIssuer string          `json:"ap_issuer"`
-	EventID  string          `json:"event_id"`
-	Value    json.RawMessage `json:"value"`
+	APIssuer       string          `json:"ap_issuer"`
+	EventID        string          `json:"event_id"`
+	Value          json.RawMessage `json:"value"`
+	Contract       []byte          `json:"contract,omitempty"`
+	ContractDigest string          `json:"contract_digest,omitempty"`
+	OperationID    string          `json:"operation_id,omitempty"`
+	MessageID      string          `json:"message_id,omitempty"`
 }
 
 type EventActionKey struct {
@@ -138,12 +172,15 @@ const (
 )
 
 type AgentEventProcessing struct {
-	Delivery  EventDeliveryKey       `json:"delivery"`
-	Action    EventActionKey         `json:"action"`
-	State     EventProcessingState   `json:"state"`
-	ExpiresAt time.Time              `json:"expires_at"`
-	Token     string                 `json:"token"`
-	Event     aauth.EventTokenClaims `json:"event"`
+	Delivery      EventDeliveryKey       `json:"delivery"`
+	Action        EventActionKey         `json:"action"`
+	State         EventProcessingState   `json:"state"`
+	ExpiresAt     time.Time              `json:"expires_at"`
+	Token         string                 `json:"token"`
+	Event         aauth.EventTokenClaims `json:"event"`
+	ContentType   string                 `json:"content_type,omitempty"`
+	Payload       []byte                 `json:"payload,omitempty"`
+	PayloadDigest string                 `json:"payload_digest,omitempty"`
 }
 
 type EventDeliveryKey struct {
@@ -153,9 +190,12 @@ type EventDeliveryKey struct {
 }
 
 type EventActionInput struct {
-	Key     EventActionKey         `json:"key"`
-	Context AgentEventContext      `json:"context"`
-	Event   aauth.EventTokenClaims `json:"event"`
+	Key           EventActionKey         `json:"key"`
+	Context       AgentEventContext      `json:"context"`
+	Event         aauth.EventTokenClaims `json:"event"`
+	ContentType   string                 `json:"content_type,omitempty"`
+	Payload       []byte                 `json:"payload,omitempty"`
+	PayloadDigest string                 `json:"payload_digest,omitempty"`
 }
 
 type EventActionOutcome string
@@ -179,6 +219,16 @@ type ResourceEventStore interface {
 	RetainPending(context.Context, PendingEventDelivery) error
 	LoadPending(context.Context, string, string) (PendingEventDelivery, error)
 	CompletePending(context.Context, string, string) error
+}
+
+// ProtectedEventTicketStore is the optional protected-registration authority.
+// ConsumeTicket atomically removes one ticket and creates the returned
+// ResourceEventSubscription in the same authority that also implements
+// ResourceEventStore. M5-only deployments need not implement this interface.
+type ProtectedEventTicketStore interface {
+	CreateTicket(context.Context, ProtectedEventTicket) error
+	LoadTicket(context.Context, string) (ProtectedEventTicket, error)
+	ConsumeTicket(context.Context, ProtectedEventTicketConsumption) (ResourceEventSubscription, error)
 }
 
 type AgentEventStore interface {
@@ -313,6 +363,10 @@ func (store *MemoryAPEventStore) AcceptEvent(
 	if subscription.Resource != input.Resource || subscription.Agent != input.Agent {
 		return zero, 0, ErrEventSubscriptionMismatch
 	}
+	if hasEventPayload(input.ContentType, input.Payload, input.PayloadDigest) !=
+		hasEventContractBinding(subscription.ContractDigest, subscription.OperationID, subscription.MessageID) {
+		return zero, 0, ErrEventPayloadNotAllowed
+	}
 	if subscription.UseCount >= subscription.MaxUses {
 		return zero, 0, ErrEventSubscriptionExhausted
 	}
@@ -329,9 +383,9 @@ func (store *MemoryAPEventStore) AcceptEvent(
 			DeliveryID:  deliveryID,
 			TokenDigest: base64.RawURLEncoding.EncodeToString(digest[:]),
 		},
-		APIssuer:   store.issuer,
-		Token:      input.Token,
-		AcceptedAt: input.AcceptedAt.UTC(),
+		APIssuer: store.issuer, Token: input.Token,
+		ContentType: input.ContentType, Payload: append([]byte(nil), input.Payload...),
+		PayloadDigest: input.PayloadDigest, AcceptedAt: input.AcceptedAt.UTC(),
 	}
 	if store.inbox == nil {
 		store.inbox = make(map[string]AcceptedEvent)
@@ -354,6 +408,7 @@ func (store *MemoryAPEventStore) NextDelivery(ctx context.Context) (AcceptedEven
 	defer store.mu.Unlock()
 	for _, deliveryID := range store.inboxOrder {
 		if accepted, exists := store.inbox[deliveryID]; exists {
+			accepted.Payload = append([]byte(nil), accepted.Payload...)
 			return accepted, nil
 		}
 	}
@@ -382,12 +437,14 @@ type MemoryResourceEventStore struct {
 	mu            sync.Mutex
 	subscriptions map[eventSubscriptionKey]ResourceEventSubscription
 	pending       map[eventSubscriptionKey]PendingEventDelivery
+	tickets       map[string]ProtectedEventTicket
 }
 
 func NewMemoryResourceEventStore() *MemoryResourceEventStore {
 	return &MemoryResourceEventStore{
 		subscriptions: make(map[eventSubscriptionKey]ResourceEventSubscription),
 		pending:       make(map[eventSubscriptionKey]PendingEventDelivery),
+		tickets:       make(map[string]ProtectedEventTicket),
 	}
 }
 
@@ -438,6 +495,95 @@ func (store *MemoryResourceEventStore) Load(
 	return subscription, nil
 }
 
+func (store *MemoryResourceEventStore) CreateTicket(
+	ctx context.Context,
+	ticket ProtectedEventTicket,
+) error {
+	if err := eventContextError(ctx); err != nil {
+		return err
+	}
+	if store == nil {
+		return fmt.Errorf("%w: resource event store is required", ErrEventRecordInvalid)
+	}
+	if err := validateProtectedEventTicket(ticket); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.tickets == nil {
+		store.tickets = make(map[string]ProtectedEventTicket)
+	}
+	if _, exists := store.tickets[ticket.TicketDigest]; exists {
+		return ErrProtectedEventTicketConflict
+	}
+	store.tickets[ticket.TicketDigest] = ticket
+	return nil
+}
+
+func (store *MemoryResourceEventStore) LoadTicket(
+	ctx context.Context,
+	digest string,
+) (ProtectedEventTicket, error) {
+	var zero ProtectedEventTicket
+	if err := eventContextError(ctx); err != nil {
+		return zero, err
+	}
+	if store == nil || digest == "" {
+		return zero, ErrProtectedEventTicketNotFound
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	ticket, exists := store.tickets[digest]
+	if !exists {
+		return zero, ErrProtectedEventTicketNotFound
+	}
+	return ticket, nil
+}
+
+func (store *MemoryResourceEventStore) ConsumeTicket(
+	ctx context.Context,
+	input ProtectedEventTicketConsumption,
+) (ResourceEventSubscription, error) {
+	var zero ResourceEventSubscription
+	if err := eventContextError(ctx); err != nil {
+		return zero, err
+	}
+	if store == nil {
+		return zero, fmt.Errorf("%w: resource event store is required", ErrEventRecordInvalid)
+	}
+	if err := validateProtectedEventTicketConsumption(input); err != nil {
+		return zero, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	ticket, exists := store.tickets[input.TicketDigest]
+	if !exists || !ticket.ExpiresAt.After(input.RegisteredAt) {
+		return zero, ErrProtectedEventTicketNotFound
+	}
+	if ticket.Resource != input.Resource || ticket.Agent != input.Agent {
+		return zero, ErrProtectedEventTicketMismatch
+	}
+	subscription := ResourceEventSubscription{
+		APIssuer: input.APIssuer, EventID: input.EventID, Resource: ticket.Resource,
+		Agent: ticket.Agent, ActiveUntil: ticket.ActiveUntil,
+		ContractDigest: ticket.ContractDigest, OperationID: ticket.OperationID,
+		MessageID: ticket.MessageID,
+	}
+	if err := validateResourceEventSubscription(subscription); err != nil {
+		return zero, err
+	}
+	key := eventSubscriptionKey{APIssuer: input.APIssuer, EventID: input.EventID}
+	if _, exists := store.subscriptions[key]; exists {
+		return zero, ErrEventSubscriptionConflict
+	}
+	if store.subscriptions == nil {
+		store.subscriptions = make(map[eventSubscriptionKey]ResourceEventSubscription)
+	}
+	store.subscriptions[key] = subscription
+	delete(store.tickets, input.TicketDigest)
+	return subscription, nil
+}
+
 func (store *MemoryResourceEventStore) RetainPending(
 	ctx context.Context,
 	pending PendingEventDelivery,
@@ -466,7 +612,7 @@ func (store *MemoryResourceEventStore) RetainPending(
 	if store.pending == nil {
 		store.pending = make(map[eventSubscriptionKey]PendingEventDelivery)
 	}
-	store.pending[key] = pending
+	store.pending[key] = clonePendingEventDelivery(pending)
 	return nil
 }
 
@@ -488,7 +634,7 @@ func (store *MemoryResourceEventStore) LoadPending(
 	if !exists {
 		return zero, ErrEventPendingNotFound
 	}
-	return pending, nil
+	return clonePendingEventDelivery(pending), nil
 }
 
 func (store *MemoryResourceEventStore) CompletePending(
@@ -546,6 +692,7 @@ func (store *MemoryAgentEventStore) PutContext(ctx context.Context, value AgentE
 		return err
 	}
 	value.Value = cloneRawMessage(value.Value)
+	value.Contract = append([]byte(nil), value.Contract...)
 	key := eventSubscriptionKey{APIssuer: value.APIssuer, EventID: value.EventID}
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -553,7 +700,7 @@ func (store *MemoryAgentEventStore) PutContext(ctx context.Context, value AgentE
 		store.contexts = make(map[eventSubscriptionKey]AgentEventContext)
 	}
 	if existing, exists := store.contexts[key]; exists {
-		if subtle.ConstantTimeCompare(existing.Value, value.Value) == 1 {
+		if exactAgentEventContext(existing, value) {
 			return nil
 		}
 		return ErrEventContextConflict
@@ -581,6 +728,7 @@ func (store *MemoryAgentEventStore) LookupContext(
 		return zero, ErrEventContextNotFound
 	}
 	value.Value = cloneRawMessage(value.Value)
+	value.Contract = append([]byte(nil), value.Contract...)
 	return value, nil
 }
 
@@ -597,10 +745,11 @@ func (store *MemoryAgentEventStore) AdmitProcessing(
 	if err := validateAgentEventProcessing(processing); err != nil {
 		return err
 	}
+	processing.Payload = append([]byte(nil), processing.Payload...)
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if existing, exists := store.processing[processing.Action]; exists {
-		if existing == processing {
+		if exactAgentEventProcessing(existing, processing) {
 			return nil
 		}
 		return ErrEventProcessingConflict
@@ -769,7 +918,7 @@ func (store *MemoryAgentEventStore) LoadProcessing(
 	if !exists {
 		return zero, ErrEventProcessingNotFound
 	}
-	return processing, nil
+	return cloneAgentEventProcessing(processing), nil
 }
 
 func (store *MemoryAgentEventStore) LoadProcessingByDelivery(
@@ -793,7 +942,7 @@ func (store *MemoryAgentEventStore) LoadProcessingByDelivery(
 	if !exists || processing.Delivery != delivery {
 		return zero, ErrEventProcessingNotFound
 	}
-	return processing, nil
+	return cloneAgentEventProcessing(processing), nil
 }
 
 func (store *MemoryAgentEventStore) NextProcessing(
@@ -831,7 +980,7 @@ func (store *MemoryAgentEventStore) NextProcessing(
 	if !found {
 		return zero, ErrNoEventProcessing
 	}
-	return selected, nil
+	return cloneAgentEventProcessing(selected), nil
 }
 
 func (store *MemoryAgentEventStore) LoadDisposition(
@@ -896,6 +1045,9 @@ func validateAPEventSubscription(subscription APEventSubscription) error {
 	if subscription.ActiveUntil.IsZero() || subscription.MaxUses <= 0 || subscription.UseCount != 0 {
 		return fmt.Errorf("%w: AP subscription policy is incomplete", ErrEventRecordInvalid)
 	}
+	if err := validateEventContractBinding(subscription.ContractDigest, subscription.OperationID, subscription.MessageID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -909,7 +1061,7 @@ func validateAcceptedEventInput(input AcceptedEventInput) error {
 	if input.EventID == "" || input.Token == "" || input.AcceptedAt.IsZero() {
 		return fmt.Errorf("%w: accepted event is incomplete", ErrEventRecordInvalid)
 	}
-	return nil
+	return validateEventPayloadEnvelope(input.ContentType, input.Payload, input.PayloadDigest)
 }
 
 func validateResourceEventSubscription(subscription ResourceEventSubscription) error {
@@ -925,7 +1077,7 @@ func validateResourceEventSubscription(subscription ResourceEventSubscription) e
 	if subscription.ActiveUntil.IsZero() {
 		return fmt.Errorf("%w: resource subscription lifetime is required", ErrEventRecordInvalid)
 	}
-	return nil
+	return validateEventContractBinding(subscription.ContractDigest, subscription.OperationID, subscription.MessageID)
 }
 
 func validatePendingEventDelivery(pending PendingEventDelivery) error {
@@ -934,6 +1086,52 @@ func validatePendingEventDelivery(pending PendingEventDelivery) error {
 	}
 	if pending.Token == "" || pending.CreatedAt.IsZero() {
 		return fmt.Errorf("%w: pending event is incomplete", ErrEventRecordInvalid)
+	}
+	return validateEventPayloadEnvelope(pending.ContentType, pending.Payload, pending.PayloadDigest)
+}
+
+func validateEventPayloadEnvelope(contentType string, payload []byte, digest string) error {
+	hasPayload := hasEventPayload(contentType, payload, digest)
+	if !hasPayload {
+		return nil
+	}
+	if contentType != "application/json" || len(payload) == 0 || len(payload) > maxEventPayloadBody ||
+		digest == "" || digest != eventPayloadDigest(payload) || validateEventJSON(payload) != nil {
+		return fmt.Errorf("%w: event payload custody is invalid", ErrEventRecordInvalid)
+	}
+	return nil
+}
+
+func hasEventPayload(contentType string, payload []byte, digest string) bool {
+	return contentType != "" || len(payload) != 0 || digest != ""
+}
+
+func hasEventContractBinding(digest, operationID, messageID string) bool {
+	return digest != "" || operationID != "" || messageID != ""
+}
+
+func validateEventContractBinding(digest, operationID, messageID string) error {
+	if !hasEventContractBinding(digest, operationID, messageID) {
+		return nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(digest)
+	if err != nil || len(decoded) != sha256.Size || operationID == "" || messageID == "" {
+		return fmt.Errorf("%w: event contract binding is invalid", ErrEventRecordInvalid)
+	}
+	return nil
+}
+
+func eventPayloadDigest(exact []byte) string {
+	digest := sha256.Sum256(exact)
+	return "sha-256=:" + base64.StdEncoding.EncodeToString(digest[:]) + ":"
+}
+
+func validateEventJSON(exact []byte) error {
+	if !json.Valid(exact) {
+		return errors.New("reference: event payload is not one JSON value")
+	}
+	if err := jsonstrict.RejectAmbiguousNames(exact); err != nil {
+		return fmt.Errorf("reference: event payload: %w", err)
 	}
 	return nil
 }
@@ -945,7 +1143,31 @@ func validateAgentEventContext(value AgentEventContext) error {
 	if len(value.Value) == 0 || !json.Valid(value.Value) {
 		return fmt.Errorf("%w: agent event context must be valid JSON", ErrEventRecordInvalid)
 	}
+	hasContract := len(value.Contract) != 0 || value.ContractDigest != "" ||
+		value.OperationID != "" || value.MessageID != ""
+	if !hasContract {
+		return nil
+	}
+	if len(value.Contract) == 0 || value.ContractDigest == "" ||
+		value.OperationID == "" || value.MessageID == "" {
+		return fmt.Errorf("%w: agent event contract binding is incomplete", ErrEventRecordInvalid)
+	}
+	contract, err := aauth.ParseEventsAsyncAPI(value.Contract)
+	if err != nil || contract.Digest() != value.ContractDigest {
+		return fmt.Errorf("%w: agent event contract is invalid", ErrEventRecordInvalid)
+	}
+	if _, err := contract.ProtectedMessage(value.OperationID, value.MessageID); err != nil {
+		return fmt.Errorf("%w: agent event contract selection is invalid", ErrEventRecordInvalid)
+	}
 	return nil
+}
+
+func exactAgentEventContext(left, right AgentEventContext) bool {
+	return left.APIssuer == right.APIssuer && left.EventID == right.EventID &&
+		left.ContractDigest == right.ContractDigest && left.OperationID == right.OperationID &&
+		left.MessageID == right.MessageID &&
+		subtle.ConstantTimeCompare(left.Value, right.Value) == 1 &&
+		subtle.ConstantTimeCompare(left.Contract, right.Contract) == 1
 }
 
 func validateAgentEventProcessing(processing AgentEventProcessing) error {
@@ -970,7 +1192,19 @@ func validateAgentEventProcessing(processing AgentEventProcessing) error {
 		!processing.ExpiresAt.Equal(time.Unix(processing.Event.ExpiresAt, 0)) {
 		return fmt.Errorf("%w: agent processing is incomplete", ErrEventRecordInvalid)
 	}
-	return nil
+	return validateEventPayloadEnvelope(processing.ContentType, processing.Payload, processing.PayloadDigest)
+}
+
+func exactAgentEventProcessing(left, right AgentEventProcessing) bool {
+	return left.Delivery == right.Delivery && left.Action == right.Action && left.State == right.State &&
+		left.ExpiresAt.Equal(right.ExpiresAt) && left.Token == right.Token && left.Event == right.Event &&
+		left.ContentType == right.ContentType && left.PayloadDigest == right.PayloadDigest &&
+		subtle.ConstantTimeCompare(left.Payload, right.Payload) == 1
+}
+
+func cloneAgentEventProcessing(value AgentEventProcessing) AgentEventProcessing {
+	value.Payload = append([]byte(nil), value.Payload...)
+	return value
 }
 
 func compareEventActionKey(left, right EventActionKey) int {
@@ -1028,7 +1262,14 @@ func validEventRefusalReason(reason EventRefusalReason) bool {
 
 func exactPendingEvent(left PendingEventDelivery, right PendingEventDelivery) bool {
 	return left.APIssuer == right.APIssuer && left.EventID == right.EventID &&
-		left.Token == right.Token && left.CreatedAt.Equal(right.CreatedAt)
+		left.Token == right.Token && left.ContentType == right.ContentType &&
+		left.PayloadDigest == right.PayloadDigest && left.CreatedAt.Equal(right.CreatedAt) &&
+		subtle.ConstantTimeCompare(left.Payload, right.Payload) == 1
+}
+
+func clonePendingEventDelivery(value PendingEventDelivery) PendingEventDelivery {
+	value.Payload = append([]byte(nil), value.Payload...)
+	return value
 }
 
 func cloneRawMessage(value json.RawMessage) json.RawMessage {

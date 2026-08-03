@@ -572,49 +572,57 @@ Evidence:
 
 ### `events/ap-to-agent` — Partial
 
-A non-normative host adapter advances one AP inbox event through durable agent pending, dispatched, completed, or refused states; terminal custody precedes AP acknowledgement and unknown action outcomes remain dispatched for reconciliation. No AP-to-agent wire protocol is claimed.
+A non-normative host adapter advances one exact AP inbox event through durable agent pending, dispatched, completed, or refused states. The agent independently validates token, context, digest-pinned contract, media type, payload digest, JSON, and schema before action; terminal custody precedes AP acknowledgement and unknown outcomes remain dispatched for reconciliation. No AP-to-agent wire protocol is claimed.
 
 Evidence:
 
 - `reference/events_agent_test.go:TestAgentEventProcessingReconcilesDispatchedUnknownHonestly`
 - `reference/events_agent_test.go:TestEventAdapterAcknowledgesOnlyDurableTerminalDisposition`
 - `reference/events_agent_test.go:TestAgentEventRefusalMatrixSurvivesStoreReconstruction`
+- `reference/events_agent_payload_test.go:TestAgentEventPayloadIndependentlyValidatesAndReachesExactAction`
+- `reference/events_agent_payload_test.go:TestEventAdapterPayloadAcknowledgesOnlyAfterTerminalAgentValidation`
 
 ### `events/event-delivery` — Partial
 
-Resource-to-AP delivery retains one exact event token before send, uses fresh HTTP proof on retry, atomically commits one use and exact event token inbox custody before 202, and treats an exact-token 429 retry after an unknown outcome as deterministic settlement. A different valid token after exhaustion also returns 429 without a second acceptance or state mutation.
+Resource-to-AP delivery retains one exact event token and payload pair before send, covers content type and digest in fresh HTTP proof, atomically commits one use and exact inbox custody before 202, and treats an exact-pair 429 retry after an unknown outcome as deterministic settlement. Invalid or different input after exhaustion cannot create a second acceptance or state mutation.
 
 Evidence:
 
 - `reference/events_delivery_test.go:TestAPEventEndpointCommitsInboxBefore202`
 - `reference/events_delivery_test.go:TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction`
 - `events_journey_test.go:TestPublicSubscriptionEventSurvivesHostReconstruction`
+- `reference/events_payload_delivery_test.go:TestEventPayloadDeliveryAPProofRefusalsLeaveUseAndInboxUnchanged`
+- `reference/events_protected_journey_test.go:TestProtectedPayloadEventSurvivesHostReconstruction`
 
 ### `events/event-discovery` — Partial
 
-Agent-provider event endpoint discovery is exercised through admitted agent metadata with HTTP freshness, cache prohibition, rotation, and strict endpoint validation. AsyncAPI discovery and a standardized AP-to-agent delivery description remain open.
+Agent-provider event endpoint discovery is exercised through admitted agent metadata with HTTP freshness, cache prohibition, rotation, and strict endpoint validation. The protected profile adds admitted exact AsyncAPI 3.0.0 JSON discovery with one local receive-operation/message/schema subset; general AsyncAPI and a standardized AP-to-agent delivery description remain open.
 
 Evidence:
 
 - `discovery_events_test.go:TestAgentEventMetadataUsesAdmittedHTTPFreshness`
 - `reference/events_provider_test.go:TestAgentProviderEventsMetadataRotatesWithHTTPFreshness`
+- `events_discovery_test.go:TestEventsContractResolverUsesAdmittedExactHTTPFreshness`
+- `events_asyncapi_test.go:TestEventsAsyncAPIRejectsUnsupportedOrAmbiguousDocuments`
 
 ### `events/event-token` — Partial
 
-The strict aa-event+jwt profile carries one payload-free event identity with resource issuer, resource discovery document, agent audience, event id, issued-at, and expiry claims. Token-carried event data is not supported.
+The strict aa-event+jwt remains payload-free and carries resource issuer, resource discovery document, agent audience, event id, issued-at, and expiry claims. The selected protected profile carries one exact JSON payload as the direct HTTP body rather than a token claim.
 
 Evidence:
 
 - `events_test.go:TestSubscribeAndEventClaimsRejectRequiredFieldMutations`
 - `events_journey_test.go:TestPublicSubscriptionEventSurvivesHostReconstruction`
+- `reference/events_payload_delivery_test.go:TestEventPayloadDeliveryRetainsExactPairAndReconcilesLost202`
 
 ### `events/protocol-overview` — Partial
 
-The selected public single-use profile qualifies one payload-free subscription and event across independent reconstructed AP, resource, and agent hosts. Protected subscriptions, payloads, multi-event replay, and complete Events conformance remain open.
+The selected public single-use payload-free profile and one protected one-use direct JSON profile are qualified across independently reconstructed AP, resource, and agent hosts. Multi-event replay identity and complete Events conformance remain open.
 
 Evidence:
 
 - `events_journey_test.go:TestPublicSubscriptionEventSurvivesHostReconstruction`
+- `reference/events_protected_journey_test.go:TestProtectedPayloadEventSurvivesHostReconstruction`
 
 ### `events/subscribe-token` — Partial
 
@@ -627,13 +635,15 @@ Evidence:
 
 ### `events/subscription-registration` — Partial
 
-Public registration requires the exact subscribe token, its embedded agent proof key, max_uses:1, and a future active window; the resource commits subscription authority and the agent binding without replacement across reconstruction. Agent-local context remains agent-host custody. Protected ticket registration remains open.
+Public registration requires the exact subscribe token, embedded agent proof key, max_uses:1, and a future active window. The selected protected profile adds a digest-only opaque ticket bound to authenticated operation and contract context; bodyless signed validation, ticket consumption, and subscription creation are one atomic transition. Agent-local context remains agent-host custody.
 
 Evidence:
 
 - `reference/events_registration_test.go:TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof`
 - `reference/events_registration_test.go:TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody`
 - `reference/events_registration_test.go:TestPublicEventRegistrationCustodySurvivesReconstruction`
+- `reference/events_ticket_test.go:TestProtectedEventRegistrationConsumesTicketAndCreatesSubscriptionAtomically`
+- `reference/events_ticket_test.go:TestProtectedEventTicketIssueRejectsIncompleteOrCollidingAuthority`
 
 ### `interop-profile/aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response` — Exercised
 

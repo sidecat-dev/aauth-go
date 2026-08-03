@@ -108,6 +108,75 @@ func TestEventsPublicClaimsMatchQualifiedProfile(t *testing.T) {
 	}
 }
 
+func TestEventsM6ClaimsMatchQualifiedProfile(t *testing.T) {
+	bundle, err := Embedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDir, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme, err := os.ReadFile(filepath.Join(repoDir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedREADME := strings.Join(strings.Fields(string(readme)), " ")
+	for _, required := range []string{
+		"The selected protected Events profile is implemented and qualified",
+		"opaque ticket capability",
+		"only its SHA-256 digest",
+		"bodyless signed registration",
+		"direct `application/json` HTTP body",
+		"signed `content-type` and `content-digest`",
+		"exact AsyncAPI 3.0.0 JSON document",
+		"one `receive` operation",
+		"one locally referenced message",
+		"inline JSON Schema",
+		"Multi-event replay identity",
+		"standardized AP-to-agent transport",
+		"general AsyncAPI/YAML/external-reference support",
+		"registration-body schema mapping",
+		"lost-success protected-registration reconciliation",
+	} {
+		if !strings.Contains(normalizedREADME, required) {
+			t.Errorf("README does not state qualified M6 Events boundary %q", required)
+		}
+	}
+
+	wantClaims := map[string]string{
+		"events\x00protocol-overview":         "protected one-use direct JSON",
+		"events\x00subscription-registration": "digest-only opaque ticket",
+		"events\x00event-token":               "direct HTTP body",
+		"events\x00event-delivery":            "exact event token and payload",
+		"events\x00ap-to-agent":               "independently validates",
+		"events\x00event-discovery":           "AsyncAPI 3.0.0",
+	}
+	seen := make(map[string]bool, len(wantClaims))
+	for _, annotation := range bundle.Manifest.Annotations {
+		key := annotation.Source + "\x00" + annotation.Section
+		requiredClaim, wanted := wantClaims[key]
+		if !wanted {
+			continue
+		}
+		seen[key] = true
+		if annotation.Status != StatusPartial {
+			t.Errorf("coverage annotation %q status = %q, want partial", key, annotation.Status)
+		}
+		if !strings.Contains(annotation.Claim, requiredClaim) {
+			t.Errorf("coverage annotation %q claim does not contain %q: %q", key, requiredClaim, annotation.Claim)
+		}
+		if len(annotation.Evidence) == 0 {
+			t.Errorf("coverage annotation %q has no executable evidence", key)
+		}
+	}
+	for key := range wantClaims {
+		if !seen[key] {
+			t.Errorf("coverage annotation %q is absent", key)
+		}
+	}
+}
+
 func TestBundleVerifiesPinnedSourcesSectionsAndEvidence(t *testing.T) {
 	sourceDir := t.TempDir()
 	repoDir := t.TempDir()

@@ -28,6 +28,23 @@
 | SCENARIO-0022 | STORY-0011 | ITER-0003 | two reconstructed AP authorities sharing one opaque `eid` without collision | automated, pass |
 | SCENARIO-0023 | STORY-0012..0013 | ITER-0003 | exact-JWT lost-202 retry, different-JWT final-use race, 429 settlement, and reconstruction | automated, pass |
 | SCENARIO-0024 | STORY-0009..0015,0017 | ITER-0003 | bounded file-adapter corpus plus reconstructed end-to-end journey | automated, pass |
+| JOURNEY-0003 | STORY-0018..0021 | ITER-0004 | `TestProtectedPayloadEventSurvivesHostReconstruction` | automated, pass |
+| SCENARIO-0025 | STORY-0018 | ITER-0004 | protected ticket issue/custody/reopen suite | automated, pass |
+| SCENARIO-0026 | STORY-0018 | ITER-0004 | protected registration atomicity/refusal suite | automated, pass |
+| SCENARIO-0027 | STORY-0019 | ITER-0004 | exact AsyncAPI discovery/profile/parser suite | automated, pass |
+| SCENARIO-0028 | STORY-0020 | ITER-0004 | payload proof/custody/lost-response suite | automated, pass |
+| SCENARIO-0029 | STORY-0021 | ITER-0004 | agent payload validation/recovery suite | automated, pass |
+| SCENARIO-0030 | STORY-0022 | ITER-0004 | claims, source coverage, and sentinel audit | automated, pass |
+
+## M6 source-chunk coverage
+
+| Source chunk | Stories | Scenarios | Classification |
+|---|---|---|---|
+| Events 297-344, protected registration | STORY-0018 | JOURNEY-0003, SCENARIO-0025..0026 | covered; bodyless selected profile and optional deployment validator explicit |
+| Events 346-456, payload delivery/agent | STORY-0020..0021 | JOURNEY-0003, SCENARIO-0028..0029 | covered; direct JSON body selected profile |
+| Events 457-580, AsyncAPI discovery | STORY-0019 | JOURNEY-0003, SCENARIO-0027 | covered; exact JSON 3.0.0 local-reference profile |
+| Events 582-624, security/privacy | STORY-0018..0022 | SCENARIO-0025..0030 | covered; exact payload custody and limitations explicit |
+| Events 697-725, rationale | STORY-0018..0022 | JOURNEY-0003, SCENARIO-0028..0030 | covered; multi-event identity excluded |
 
 ## M5 source-chunk coverage
 

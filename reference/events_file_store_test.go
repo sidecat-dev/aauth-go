@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
@@ -457,6 +459,116 @@ func TestFileEventStoresPreserveCommittedSnapshotAcrossPartialWrite(t *testing.T
 	}
 }
 
+func TestFileResourceEventStoreReopensProtectedTicketConsumption(t *testing.T) {
+	ctx := context.Background()
+	directory := filepath.Join(t.TempDir(), "resource")
+	config := FileResourceEventStoreConfig{Directory: directory}
+	store, err := OpenFileResourceEventStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawTicket := "file-ticket-capability"
+	ticket := protectedEventsTestTicket(rawTicket, fileEventTestNow, protectedEventsTestDocument())
+	if err := store.CreateTicket(ctx, ticket); err != nil {
+		t.Fatal(err)
+	}
+	state, err := os.ReadFile(filepath.Join(directory, eventFileStateName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(state, []byte(rawTicket)) {
+		t.Fatal("file ticket custody retained the raw URL capability")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = OpenFileResourceEventStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := store.LoadTicket(ctx, ticket.TicketDigest)
+	if err != nil || retained != ticket {
+		t.Fatalf("reopened ticket = %#v, %v", retained, err)
+	}
+	input := ProtectedEventTicketConsumption{
+		TicketDigest: ticket.TicketDigest, Resource: ticket.Resource, APIssuer: "https://ap.example",
+		EventID: "protected-event", Agent: ticket.Agent, RegisteredAt: fileEventTestNow,
+	}
+	if _, err := store.ConsumeTicket(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = OpenFileResourceEventStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.LoadTicket(ctx, ticket.TicketDigest); !errors.Is(err, ErrProtectedEventTicketNotFound) {
+		t.Fatalf("consumed reopened ticket error = %v", err)
+	}
+	subscription, err := store.Load(ctx, input.APIssuer, input.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subscription.ContractDigest != ticket.ContractDigest ||
+		subscription.OperationID != ticket.OperationID || subscription.MessageID != ticket.MessageID {
+		t.Fatalf("reopened protected subscription = %#v", subscription)
+	}
+}
+
+func TestFileResourceEventStoreTicketConsumptionIsAtomicBeforePublish(t *testing.T) {
+	ctx := context.Background()
+	directory := filepath.Join(t.TempDir(), "resource")
+	config := FileResourceEventStoreConfig{Directory: directory}
+	store, err := OpenFileResourceEventStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := protectedEventsTestTicket("atomic-file-ticket", fileEventTestNow, protectedEventsTestDocument())
+	if err := store.CreateTicket(ctx, ticket); err != nil {
+		t.Fatal(err)
+	}
+	input := ProtectedEventTicketConsumption{
+		TicketDigest: ticket.TicketDigest, Resource: ticket.Resource, APIssuer: "https://ap.example",
+		EventID: "protected-event", Agent: ticket.Agent, RegisteredAt: fileEventTestNow,
+	}
+	injected := errors.New("test: ticket consume commit failed")
+	store.file.failCommit = func(phase eventFileCommitPhase) error {
+		if phase == eventFileCommitAfterWrite {
+			return injected
+		}
+		return nil
+	}
+	if _, err := store.ConsumeTicket(ctx, input); !errors.Is(err, injected) {
+		t.Fatalf("pre-publish consume error = %v", err)
+	}
+	if _, err := store.LoadTicket(ctx, ticket.TicketDigest); err != nil {
+		t.Fatalf("pre-publish failure consumed ticket: %v", err)
+	}
+	if _, err := store.Load(ctx, input.APIssuer, input.EventID); !errors.Is(err, ErrEventSubscriptionNotFound) {
+		t.Fatalf("pre-publish failure created subscription: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = OpenFileResourceEventStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.LoadTicket(ctx, ticket.TicketDigest); err != nil {
+		t.Fatalf("reopened pre-publish ticket = %v", err)
+	}
+	if _, err := store.ConsumeTicket(ctx, input); err != nil {
+		t.Fatalf("retry consume = %v", err)
+	}
+}
+
 func TestFileEventStoresReopenAgentConsequencesExactly(t *testing.T) {
 	ctx := context.Background()
 	directory := filepath.Join(t.TempDir(), "agent")
@@ -541,10 +653,10 @@ func TestFileEventStoresRefuseCorruptTruncatedAndUnknownVersions(t *testing.T) {
 	}{
 		{name: "truncated", body: original[:len(original)/2]},
 		{name: "corrupt", body: []byte(`{"schema":`)},
-		{name: "unknown snapshot version", body: bytes.Replace(original, []byte("aauth.reference.events.ap-store.v1"), []byte("aauth.reference.events.ap-store.v999"), 1)},
-		{name: "unknown record version", body: bytes.Replace(original, []byte("aauth.reference.events.ap-subscription.v1"), []byte("aauth.reference.events.ap-subscription.v999"), 1)},
+		{name: "unknown snapshot version", body: bytes.Replace(original, []byte("aauth.reference.events.ap-store.v2"), []byte("aauth.reference.events.ap-store.v999"), 1)},
+		{name: "unknown record version", body: bytes.Replace(original, []byte("aauth.reference.events.ap-subscription.v2"), []byte("aauth.reference.events.ap-subscription.v999"), 1)},
 		{name: "unknown field", body: bytes.Replace(original, []byte("{"), []byte(`{"unknown":true,`), 1)},
-		{name: "duplicate field", body: bytes.Replace(original, []byte(`"schema":`), []byte(`"schema":"aauth.reference.events.ap-store.v1","schema":`), 1)},
+		{name: "duplicate field", body: bytes.Replace(original, []byte(`"schema":`), []byte(`"schema":"aauth.reference.events.ap-store.v2","schema":`), 1)},
 		{name: "cross-record authority", body: replaceLastBytes(original, []byte("https://ap.example"), []byte("https://other-ap.example"))},
 		{name: "delivery sequence contradiction", body: bytes.Replace(original, []byte("event-delivery-1"), []byte("event-delivery-999"), 1)},
 	} {
@@ -566,6 +678,200 @@ func TestFileEventStoresRefuseCorruptTruncatedAndUnknownVersions(t *testing.T) {
 		t.Fatalf("failed integrity opens retained writer lock: %v", err)
 	}
 	_ = reopened.Close()
+}
+
+func TestFileEventStoresReopenM5V1AndUpgradeOnNextCommit(t *testing.T) {
+	t.Run("AP", func(t *testing.T) {
+		directory := filepath.Join(t.TempDir(), "ap")
+		config := FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"}
+		store, err := OpenFileAPEventStore(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateSubscription(context.Background(), fileEventTestAPSubscription("event-one")); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.AcceptEvent(context.Background(), AcceptedEventInput{
+			Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
+			EventID: "event-one", Token: "legacy-event-token", AcceptedAt: fileEventTestNow,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		downgradeEventStateForTest(t, directory, map[string]string{
+			"aauth.reference.events.ap-store.v2":        "aauth.reference.events.ap-store.v1",
+			"aauth.reference.events.ap-subscription.v2": "aauth.reference.events.ap-subscription.v1",
+			"aauth.reference.events.ap-delivery.v2":     "aauth.reference.events.ap-delivery.v1",
+		})
+		store, err = OpenFileAPEventStore(config)
+		if err != nil {
+			t.Fatalf("reopen AP v1 state: %v", err)
+		}
+		if err := store.CreateSubscription(context.Background(), fileEventTestAPSubscription("event-two")); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		assertEventStateSchemaForTest(t, directory, "aauth.reference.events.ap-store.v2")
+	})
+
+	t.Run("resource", func(t *testing.T) {
+		directory := filepath.Join(t.TempDir(), "resource")
+		config := FileResourceEventStoreConfig{Directory: directory}
+		store, err := OpenFileResourceEventStore(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Register(context.Background(), fileEventTestResourceSubscription("event-one")); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RetainPending(context.Background(), PendingEventDelivery{
+			APIssuer: "https://ap.example", EventID: "event-one",
+			Token: "legacy-event-token", CreatedAt: fileEventTestNow,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		downgradeEventStateForTest(t, directory, map[string]string{
+			"aauth.reference.events.resource-store.v2":     "aauth.reference.events.resource-store.v1",
+			"aauth.reference.events.resource-authority.v2": "aauth.reference.events.resource-authority.v1",
+		})
+		store, err = OpenFileResourceEventStore(config)
+		if err != nil {
+			t.Fatalf("reopen resource v1 state: %v", err)
+		}
+		if err := store.Register(context.Background(), fileEventTestResourceSubscription("event-two")); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		assertEventStateSchemaForTest(t, directory, "aauth.reference.events.resource-store.v2")
+	})
+
+	t.Run("agent", func(t *testing.T) {
+		directory := filepath.Join(t.TempDir(), "agent")
+		config := FileAgentEventStoreConfig{Directory: directory}
+		store, err := OpenFileAgentEventStore(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.PutContext(context.Background(), AgentEventContext{
+			APIssuer: "https://ap.example", EventID: "event-one", Value: json.RawMessage(`{"local":1}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		resourceKey := eventsProviderTestSigningKey(t, "legacy-file-agent-resource")
+		accepted, claims := acceptedAgentEventTest(t, resourceKey, fileEventTestNow, "event-one", "legacy-delivery")
+		if err := store.AdmitProcessing(context.Background(), AgentEventProcessing{
+			Delivery: accepted.Delivery, Action: eventActionKeyForTest(claims, accepted),
+			State: EventPending, ExpiresAt: time.Unix(claims.ExpiresAt, 0),
+			Token: accepted.Token, Event: claims,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		downgradeEventStateForTest(t, directory, map[string]string{
+			"aauth.reference.events.agent-store.v2":      "aauth.reference.events.agent-store.v1",
+			"aauth.reference.events.agent-context.v2":    "aauth.reference.events.agent-context.v1",
+			"aauth.reference.events.agent-processing.v2": "aauth.reference.events.agent-processing.v1",
+		})
+		store, err = OpenFileAgentEventStore(config)
+		if err != nil {
+			t.Fatalf("reopen agent v1 state: %v", err)
+		}
+		if err := store.PutContext(context.Background(), AgentEventContext{
+			APIssuer: "https://ap.example", EventID: "event-two", Value: json.RawMessage(`{"local":2}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		assertEventStateSchemaForTest(t, directory, "aauth.reference.events.agent-store.v2")
+	})
+}
+
+func TestFileAgentEventStoreDefaultRetainsMaximumAdmittedContract(t *testing.T) {
+	document := protectedEventsTestDocument()
+	const admittedSize = 1 << 20
+	if len(document) >= admittedSize || document[len(document)-1] != '}' {
+		t.Fatal("protected contract fixture cannot be padded to the admitted boundary")
+	}
+	largeDocument := append([]byte(nil), document[:len(document)-1]...)
+	largeDocument = append(largeDocument, bytes.Repeat([]byte(" "), admittedSize-len(document))...)
+	largeDocument = append(largeDocument, '}')
+	if len(largeDocument) != admittedSize {
+		t.Fatalf("large contract bytes = %d", len(largeDocument))
+	}
+	contract, err := aauth.ParseEventsAsyncAPI(largeDocument)
+	if err != nil {
+		t.Fatalf("maximum admitted contract parse: %v", err)
+	}
+
+	directory := filepath.Join(t.TempDir(), "agent")
+	store, err := OpenFileAgentEventStore(FileAgentEventStoreConfig{Directory: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextValue := AgentEventContext{
+		APIssuer: "https://ap.example", EventID: "large-contract",
+		Value: json.RawMessage(`{"local":"appointment-42"}`), Contract: largeDocument,
+		ContractDigest: contract.Digest(), OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
+	}
+	if err := store.PutContext(context.Background(), contextValue); err != nil {
+		t.Fatalf("retain maximum admitted contract under defaults: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenFileAgentEventStore(FileAgentEventStoreConfig{Directory: directory})
+	if err != nil {
+		t.Fatalf("reopen maximum admitted contract: %v", err)
+	}
+	defer store.Close()
+	retained, err := store.LookupContext(context.Background(), contextValue.APIssuer, contextValue.EventID)
+	if err != nil || !bytes.Equal(retained.Contract, largeDocument) {
+		t.Fatalf("reopened maximum contract bytes/error = %d/%v", len(retained.Contract), err)
+	}
+}
+
+func downgradeEventStateForTest(t *testing.T, directory string, replacements map[string]string) {
+	t.Helper()
+	path := filepath.Join(directory, eventFileStateName)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for current := range replacements {
+		if !bytes.Contains(body, []byte(current)) {
+			t.Fatalf("current state does not contain schema %q: %s", current, body)
+		}
+	}
+	for current, legacy := range replacements {
+		body = bytes.ReplaceAll(body, []byte(current), []byte(legacy))
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertEventStateSchemaForTest(t *testing.T, directory, schema string) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(directory, eventFileStateName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(schema)) {
+		t.Fatalf("upgraded state does not contain schema %q: %s", schema, body)
+	}
 }
 
 var fileEventTestNow = time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)

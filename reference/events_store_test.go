@@ -6,12 +6,41 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
+
+// A deployment that implements only the M5 public Events authority must keep
+// satisfying ResourceEventStore when protected ticket support is not enabled.
+type m5OnlyResourceEventStore struct {
+	delegate *MemoryResourceEventStore
+}
+
+func (store *m5OnlyResourceEventStore) Register(ctx context.Context, value ResourceEventSubscription) error {
+	return store.delegate.Register(ctx, value)
+}
+
+func (store *m5OnlyResourceEventStore) Load(ctx context.Context, apIssuer, eventID string) (ResourceEventSubscription, error) {
+	return store.delegate.Load(ctx, apIssuer, eventID)
+}
+
+func (store *m5OnlyResourceEventStore) RetainPending(ctx context.Context, value PendingEventDelivery) error {
+	return store.delegate.RetainPending(ctx, value)
+}
+
+func (store *m5OnlyResourceEventStore) LoadPending(ctx context.Context, apIssuer, eventID string) (PendingEventDelivery, error) {
+	return store.delegate.LoadPending(ctx, apIssuer, eventID)
+}
+
+func (store *m5OnlyResourceEventStore) CompletePending(ctx context.Context, apIssuer, eventID string) error {
+	return store.delegate.CompletePending(ctx, apIssuer, eventID)
+}
+
+var _ ResourceEventStore = (*m5OnlyResourceEventStore)(nil)
 
 func TestMemoryAPEventStoreCommitsUseAndInboxAtomically(t *testing.T) {
 	t.Parallel()
@@ -105,7 +134,7 @@ func TestMemoryAPEventStoreCommitsUseAndInboxAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending != winner {
+	if !reflect.DeepEqual(pending, winner) {
 		t.Fatalf("pending delivery = %#v, want %#v", pending, winner)
 	}
 	if err := store.AcknowledgeDelivery(ctx, winner.Delivery.DeliveryID); err != nil {
@@ -189,7 +218,7 @@ func TestMemoryResourceEventStoreKeysSubscriptionsByAPIssuerAndEID(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered != pending {
+	if !reflect.DeepEqual(recovered, pending) {
 		t.Fatalf("recovered pending delivery = %#v, want %#v", recovered, pending)
 	}
 	if err := store.RetainPending(ctx, PendingEventDelivery{

@@ -45,19 +45,31 @@ const (
 	eventFileLockName        = "writer.lock"
 	eventFileTemporaryPrefix = ".state-"
 
-	defaultEventFileMaxRecords     = 1024
-	defaultEventFileMaxBytes       = int64(8 << 20)
-	defaultEventFileMaxRecordBytes = int64(1 << 20)
+	defaultEventFileMaxRecords = 1024
+	defaultEventFileMaxBytes   = int64(8 << 20)
+	// A protected agent context may contain the full admitted 1 MiB AsyncAPI
+	// document plus local context and its versioned record envelope.
+	defaultEventFileMaxRecordBytes = int64(2 << 20)
 
-	fileAPSnapshotSchema        = "aauth.reference.events.ap-store.v1"
-	fileAPSubscriptionSchema    = "aauth.reference.events.ap-subscription.v1"
-	fileAPDeliverySchema        = "aauth.reference.events.ap-delivery.v1"
-	fileResourceSnapshotSchema  = "aauth.reference.events.resource-store.v1"
-	fileResourceAuthoritySchema = "aauth.reference.events.resource-authority.v1"
-	fileAgentSnapshotSchema     = "aauth.reference.events.agent-store.v1"
-	fileAgentContextSchema      = "aauth.reference.events.agent-context.v1"
-	fileAgentProcessingSchema   = "aauth.reference.events.agent-processing.v1"
+	fileAPSnapshotSchema        = "aauth.reference.events.ap-store.v2"
+	fileAPSubscriptionSchema    = "aauth.reference.events.ap-subscription.v2"
+	fileAPDeliverySchema        = "aauth.reference.events.ap-delivery.v2"
+	fileResourceSnapshotSchema  = "aauth.reference.events.resource-store.v2"
+	fileResourceAuthoritySchema = "aauth.reference.events.resource-authority.v2"
+	fileResourceTicketSchema    = "aauth.reference.events.resource-ticket.v1"
+	fileAgentSnapshotSchema     = "aauth.reference.events.agent-store.v2"
+	fileAgentContextSchema      = "aauth.reference.events.agent-context.v2"
+	fileAgentProcessingSchema   = "aauth.reference.events.agent-processing.v2"
 	fileAgentDispositionSchema  = "aauth.reference.events.agent-disposition.v1"
+
+	fileAPSnapshotSchemaV1        = "aauth.reference.events.ap-store.v1"
+	fileAPSubscriptionSchemaV1    = "aauth.reference.events.ap-subscription.v1"
+	fileAPDeliverySchemaV1        = "aauth.reference.events.ap-delivery.v1"
+	fileResourceSnapshotSchemaV1  = "aauth.reference.events.resource-store.v1"
+	fileResourceAuthoritySchemaV1 = "aauth.reference.events.resource-authority.v1"
+	fileAgentSnapshotSchemaV1     = "aauth.reference.events.agent-store.v1"
+	fileAgentContextSchemaV1      = "aauth.reference.events.agent-context.v1"
+	fileAgentProcessingSchemaV1   = "aauth.reference.events.agent-processing.v1"
 )
 
 type eventFileCommitPhase uint8
@@ -421,11 +433,13 @@ type fileAPDeliveryRecord struct {
 type fileResourceSnapshot struct {
 	Schema      string                        `json:"schema"`
 	Authorities []fileResourceAuthorityRecord `json:"authorities"`
+	Tickets     []fileResourceTicketRecord    `json:"tickets,omitempty"`
 }
 
 type fileResourceSnapshotEnvelope struct {
 	Schema      string            `json:"schema"`
 	Authorities []json.RawMessage `json:"authorities"`
+	Tickets     []json.RawMessage `json:"tickets,omitempty"`
 }
 
 type fileResourceAuthorityRecord struct {
@@ -434,6 +448,11 @@ type fileResourceAuthorityRecord struct {
 	EventID      string                     `json:"event_id"`
 	Subscription *ResourceEventSubscription `json:"subscription"`
 	Pending      *PendingEventDelivery      `json:"pending"`
+}
+
+type fileResourceTicketRecord struct {
+	Schema string               `json:"schema"`
+	Ticket ProtectedEventTicket `json:"ticket"`
 }
 
 type fileAgentSnapshot struct {
@@ -644,8 +663,15 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
-	if snapshot.Schema != fileAPSnapshotSchema || snapshot.Issuer != issuer {
+	legacy := snapshot.Schema == fileAPSnapshotSchemaV1
+	if snapshot.Schema != fileAPSnapshotSchema && !legacy || snapshot.Issuer != issuer {
 		return nil, ErrEventStoreIntegrity
+	}
+	subscriptionSchema := fileAPSubscriptionSchema
+	deliverySchema := fileAPDeliverySchema
+	if legacy {
+		subscriptionSchema = fileAPSubscriptionSchemaV1
+		deliverySchema = fileAPDeliverySchemaV1
 	}
 	if len(snapshot.Subscriptions)+len(snapshot.Inbox) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
 		return nil, ErrEventStoreCapacity
@@ -659,7 +685,8 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != fileAPSubscriptionSchema || record.Subscription.APIssuer != issuer {
+		if record.Schema != subscriptionSchema || record.Subscription.APIssuer != issuer ||
+			legacy && hasEventContractBinding(record.Subscription.ContractDigest, record.Subscription.OperationID, record.Subscription.MessageID) {
 			return nil, ErrEventStoreIntegrity
 		}
 		validation := record.Subscription
@@ -681,7 +708,8 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != fileAPDeliverySchema || validateStoredAcceptedEvent(record.Accepted, issuer) != nil {
+		if record.Schema != deliverySchema || validateStoredAcceptedEvent(record.Accepted, issuer) != nil ||
+			legacy && hasEventPayload(record.Accepted.ContentType, record.Accepted.Payload, record.Accepted.PayloadDigest) {
 			return nil, ErrEventStoreIntegrity
 		}
 		deliveryID := record.Accepted.Delivery.DeliveryID
@@ -692,6 +720,7 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 		if _, exists := memory.inbox[deliveryID]; exists {
 			return nil, ErrEventStoreIntegrity
 		}
+		record.Accepted.Payload = append([]byte(nil), record.Accepted.Payload...)
 		memory.inbox[deliveryID] = record.Accepted
 		memory.inboxOrder = append(memory.inboxOrder, deliveryID)
 	}
@@ -712,7 +741,8 @@ func fileAPDeliverySequence(deliveryID string) (uint64, bool) {
 func validateStoredAcceptedEvent(accepted AcceptedEvent, issuer string) error {
 	if validateEventDeliveryKey(accepted.Delivery) != nil || accepted.Delivery.APIssuer != issuer ||
 		accepted.APIssuer != issuer || accepted.Token == "" || accepted.AcceptedAt.IsZero() ||
-		accepted.Delivery.TokenDigest != eventTokenDigest(accepted.Token) {
+		accepted.Delivery.TokenDigest != eventTokenDigest(accepted.Token) ||
+		validateEventPayloadEnvelope(accepted.ContentType, accepted.Payload, accepted.PayloadDigest) != nil {
 		return ErrEventStoreIntegrity
 	}
 	return nil
@@ -727,6 +757,7 @@ func cloneMemoryAPEventStore(source *MemoryAPEventStore) *MemoryAPEventStore {
 		clone.subscriptions[key] = value
 	}
 	for key, value := range source.inbox {
+		value.Payload = append([]byte(nil), value.Payload...)
 		clone.inbox[key] = value
 	}
 	clone.inboxOrder = append(clone.inboxOrder, source.inboxOrder...)
@@ -798,6 +829,48 @@ func (store *FileResourceEventStore) Load(ctx context.Context, apIssuer, eventID
 		return ResourceEventSubscription{}, err
 	}
 	return store.memory.Load(ctx, apIssuer, eventID)
+}
+
+func (store *FileResourceEventStore) CreateTicket(ctx context.Context, value ProtectedEventTicket) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.openError(); err != nil {
+		return err
+	}
+	candidate := cloneMemoryResourceEventStore(store.memory)
+	if err := candidate.CreateTicket(ctx, value); err != nil {
+		return err
+	}
+	return store.commitCandidate(candidate)
+}
+
+func (store *FileResourceEventStore) LoadTicket(ctx context.Context, digest string) (ProtectedEventTicket, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.openError(); err != nil {
+		return ProtectedEventTicket{}, err
+	}
+	return store.memory.LoadTicket(ctx, digest)
+}
+
+func (store *FileResourceEventStore) ConsumeTicket(
+	ctx context.Context,
+	input ProtectedEventTicketConsumption,
+) (ResourceEventSubscription, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.openError(); err != nil {
+		return ResourceEventSubscription{}, err
+	}
+	candidate := cloneMemoryResourceEventStore(store.memory)
+	subscription, err := candidate.ConsumeTicket(ctx, input)
+	if err != nil {
+		return ResourceEventSubscription{}, err
+	}
+	if err := store.commitCandidate(candidate); err != nil {
+		return ResourceEventSubscription{}, err
+	}
+	return subscription, nil
 }
 
 func (store *FileResourceEventStore) RetainPending(ctx context.Context, value PendingEventDelivery) error {
@@ -883,7 +956,7 @@ func encodeFileResourceSnapshot(memory *MemoryResourceEventStore) ([]byte, [][]b
 		return keys[left].EventID < keys[right].EventID
 	})
 	snapshot := fileResourceSnapshot{Schema: fileResourceSnapshotSchema}
-	records := make([]any, 0, len(keys))
+	records := make([]any, 0, len(keys)+len(memory.tickets))
 	for _, key := range keys {
 		subscription := memory.subscriptions[key]
 		record := fileResourceAuthorityRecord{
@@ -905,6 +978,17 @@ func encodeFileResourceSnapshot(memory *MemoryResourceEventStore) ([]byte, [][]b
 			return nil, nil, ErrEventStoreIntegrity
 		}
 	}
+	ticketDigests := make([]string, 0, len(memory.tickets))
+	for digest := range memory.tickets {
+		ticketDigests = append(ticketDigests, digest)
+	}
+	sort.Strings(ticketDigests)
+	for _, digest := range ticketDigests {
+		ticket := memory.tickets[digest]
+		record := fileResourceTicketRecord{Schema: fileResourceTicketSchema, Ticket: ticket}
+		snapshot.Tickets = append(snapshot.Tickets, record)
+		records = append(records, record)
+	}
 	return marshalEventFileSnapshot(snapshot, records)
 }
 
@@ -913,10 +997,18 @@ func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryRes
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
-	if snapshot.Schema != fileResourceSnapshotSchema {
+	legacy := snapshot.Schema == fileResourceSnapshotSchemaV1
+	if snapshot.Schema != fileResourceSnapshotSchema && !legacy {
 		return nil, ErrEventStoreIntegrity
 	}
-	if len(snapshot.Authorities) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
+	if legacy && len(snapshot.Tickets) != 0 {
+		return nil, ErrEventStoreIntegrity
+	}
+	authoritySchema := fileResourceAuthoritySchema
+	if legacy {
+		authoritySchema = fileResourceAuthoritySchemaV1
+	}
+	if len(snapshot.Authorities)+len(snapshot.Tickets) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
 		return nil, ErrEventStoreCapacity
 	}
 	memory := NewMemoryResourceEventStore()
@@ -928,23 +1020,41 @@ func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryRes
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != fileResourceAuthoritySchema || record.Subscription == nil ||
+		if record.Schema != authoritySchema || record.Subscription == nil ||
 			validateEventSubscriptionKey(record.APIssuer, record.EventID) != nil {
 			return nil, ErrEventStoreIntegrity
 		}
 		key := eventSubscriptionKey{APIssuer: record.APIssuer, EventID: record.EventID}
 		if _, exists := memory.subscriptions[key]; exists || validateResourceEventSubscription(*record.Subscription) != nil ||
-			record.Subscription.APIssuer != key.APIssuer || record.Subscription.EventID != key.EventID {
+			record.Subscription.APIssuer != key.APIssuer || record.Subscription.EventID != key.EventID ||
+			legacy && hasEventContractBinding(record.Subscription.ContractDigest, record.Subscription.OperationID, record.Subscription.MessageID) {
 			return nil, ErrEventStoreIntegrity
 		}
 		memory.subscriptions[key] = *record.Subscription
 		if record.Pending != nil {
 			if validatePendingEventDelivery(*record.Pending) != nil || record.Pending.APIssuer != key.APIssuer ||
-				record.Pending.EventID != key.EventID {
+				record.Pending.EventID != key.EventID ||
+				legacy && hasEventPayload(record.Pending.ContentType, record.Pending.Payload, record.Pending.PayloadDigest) {
 				return nil, ErrEventStoreIntegrity
 			}
-			memory.pending[key] = *record.Pending
+			memory.pending[key] = clonePendingEventDelivery(*record.Pending)
 		}
+	}
+	for _, body := range snapshot.Tickets {
+		if int64(len(body)) > limits.maxRecordBytes {
+			return nil, ErrEventStoreCapacity
+		}
+		var record fileResourceTicketRecord
+		if err := decodeEventFileSnapshot(body, &record); err != nil {
+			return nil, err
+		}
+		if record.Schema != fileResourceTicketSchema || validateProtectedEventTicket(record.Ticket) != nil {
+			return nil, ErrEventStoreIntegrity
+		}
+		if _, exists := memory.tickets[record.Ticket.TicketDigest]; exists {
+			return nil, ErrEventStoreIntegrity
+		}
+		memory.tickets[record.Ticket.TicketDigest] = record.Ticket
 	}
 	return memory, nil
 }
@@ -957,7 +1067,10 @@ func cloneMemoryResourceEventStore(source *MemoryResourceEventStore) *MemoryReso
 		clone.subscriptions[key] = value
 	}
 	for key, value := range source.pending {
-		clone.pending[key] = value
+		clone.pending[key] = clonePendingEventDelivery(value)
+	}
+	for digest, value := range source.tickets {
+		clone.tickets[digest] = value
 	}
 	return clone
 }
@@ -1245,8 +1358,15 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
-	if snapshot.Schema != fileAgentSnapshotSchema {
+	legacy := snapshot.Schema == fileAgentSnapshotSchemaV1
+	if snapshot.Schema != fileAgentSnapshotSchema && !legacy {
 		return nil, ErrEventStoreIntegrity
+	}
+	contextSchema := fileAgentContextSchema
+	processingSchema := fileAgentProcessingSchema
+	if legacy {
+		contextSchema = fileAgentContextSchemaV1
+		processingSchema = fileAgentProcessingSchemaV1
 	}
 	if len(snapshot.Contexts)+len(snapshot.Processing)+len(snapshot.Dispositions) > limits.maxRecords ||
 		int64(len(body)) > limits.maxBytes {
@@ -1261,7 +1381,8 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != fileAgentContextSchema || validateAgentEventContext(record.Context) != nil {
+		if record.Schema != contextSchema || validateAgentEventContext(record.Context) != nil ||
+			legacy && (len(record.Context.Contract) != 0 || hasEventContractBinding(record.Context.ContractDigest, record.Context.OperationID, record.Context.MessageID)) {
 			return nil, ErrEventStoreIntegrity
 		}
 		key := eventSubscriptionKey{APIssuer: record.Context.APIssuer, EventID: record.Context.EventID}
@@ -1269,6 +1390,7 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 			return nil, ErrEventStoreIntegrity
 		}
 		record.Context.Value = cloneRawMessage(record.Context.Value)
+		record.Context.Contract = append([]byte(nil), record.Context.Contract...)
 		memory.contexts[key] = record.Context
 	}
 	for _, body := range snapshot.Processing {
@@ -1282,8 +1404,9 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		validation := record.Processing
 		state := validation.State
 		validation.State = EventPending
-		if record.Schema != fileAgentProcessingSchema || validateAgentEventProcessing(validation) != nil ||
-			!validEventProcessingState(state) {
+		if record.Schema != processingSchema || validateAgentEventProcessing(validation) != nil ||
+			!validEventProcessingState(state) ||
+			legacy && hasEventPayload(validation.ContentType, validation.Payload, validation.PayloadDigest) {
 			return nil, ErrEventStoreIntegrity
 		}
 		if state == EventRefused {
@@ -1304,6 +1427,7 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 			return nil, ErrEventStoreIntegrity
 		}
 		record.Processing.State = state
+		record.Processing.Payload = append([]byte(nil), record.Processing.Payload...)
 		memory.processing[record.Processing.Action] = record.Processing
 		memory.deliveryOwner[record.Processing.Delivery] = record.Processing.Action
 		memory.dispositions[record.Processing.Delivery] = state
@@ -1338,10 +1462,11 @@ func cloneMemoryAgentEventStore(source *MemoryAgentEventStore) *MemoryAgentEvent
 	clone := NewMemoryAgentEventStore()
 	for key, value := range source.contexts {
 		value.Value = cloneRawMessage(value.Value)
+		value.Contract = append([]byte(nil), value.Contract...)
 		clone.contexts[key] = value
 	}
 	for key, value := range source.processing {
-		clone.processing[key] = value
+		clone.processing[key] = cloneAgentEventProcessing(value)
 	}
 	for key, value := range source.dispositions {
 		clone.dispositions[key] = value

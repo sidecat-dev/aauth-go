@@ -136,9 +136,12 @@ type AgentProviderEventsConfig struct {
 // EventSubscriptionRequest binds a resource and agent confirmation key to one
 // provider-generated event identifier.
 type EventSubscriptionRequest struct {
-	Resource string
-	Agent    string
-	AgentKey aauth.JWK
+	Resource       string
+	Agent          string
+	AgentKey       aauth.JWK
+	ContractDigest string
+	OperationID    string
+	MessageID      string
 }
 
 // AgentProvider publishes issuer discovery, supports direct issuance for
@@ -263,6 +266,9 @@ func (provider *AgentProvider) IssueEventSubscription(
 	if _, err := request.AgentKey.PublicKey(); err != nil {
 		return "", fmt.Errorf("reference: event subscription agent key: %w", err)
 	}
+	if err := validateEventContractBinding(request.ContractDigest, request.OperationID, request.MessageID); err != nil {
+		return "", err
+	}
 	eventID := provider.newID()
 	if eventID == "" {
 		return "", errors.New("reference: event subscription identifier source returned an empty value")
@@ -291,12 +297,15 @@ func (provider *AgentProvider) IssueEventSubscription(
 		return "", err
 	}
 	if err := provider.eventStore.CreateSubscription(ctx, APEventSubscription{
-		APIssuer:    provider.identifier,
-		EventID:     eventID,
-		Resource:    request.Resource,
-		Agent:       request.Agent,
-		ActiveUntil: activeUntil,
-		MaxUses:     maxUses,
+		APIssuer:       provider.identifier,
+		EventID:        eventID,
+		Resource:       request.Resource,
+		Agent:          request.Agent,
+		ActiveUntil:    activeUntil,
+		MaxUses:        maxUses,
+		ContractDigest: request.ContractDigest,
+		OperationID:    request.OperationID,
+		MessageID:      request.MessageID,
 	}); err != nil {
 		return "", err
 	}
@@ -342,10 +351,24 @@ func (provider *AgentProvider) Handler() http.Handler {
 const referenceEventTokenLifetime = 5 * time.Minute
 
 func (provider *AgentProvider) acceptEvent(response http.ResponseWriter, request *http.Request) {
-	if request.ContentLength != 0 || len(request.TransferEncoding) != 0 ||
-		(request.Body != nil && request.Body != http.NoBody) {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("reference: event delivery must be bodyless"))
-		return
+	hasBody := request.ContentLength != 0 || len(request.TransferEncoding) != 0 ||
+		(request.Body != nil && request.Body != http.NoBody)
+	var exactPayload []byte
+	var payloadDigest string
+	var err error
+	var requiredComponents []string
+	if hasBody {
+		exactPayload, err = readBoundedRequestBody(request)
+		if err != nil {
+			writeProblem(response, http.StatusRequestEntityTooLarge, "request_too_large", err)
+			return
+		}
+		if len(exactPayload) > maxEventPayloadBody {
+			writeProblem(response, http.StatusRequestEntityTooLarge, "request_too_large", errors.New("reference: event payload exceeds the supported bound"))
+			return
+		}
+		requiredComponents = []string{"content-type", "content-digest"}
+		payloadDigest = eventPayloadDigest(exactPayload)
 	}
 	var claims aauth.EventTokenClaims
 	verified, err := aauth.VerifyRequest(
@@ -354,6 +377,7 @@ func (provider *AgentProvider) acceptEvent(response http.ResponseWriter, request
 		provider.eventKeyResolver,
 		provider.clock,
 		aauth.VerifyRequestOptions{
+			RequiredComponents:       requiredComponents,
 			AllowedCredentialTypes:   []string{aauth.EventTokenType},
 			AllowedSignatureKeyTypes: []string{aauth.SignatureKeySelfJWT},
 			SelfJWTMaximumLifetime:   referenceEventTokenLifetime,
@@ -374,15 +398,20 @@ func (provider *AgentProvider) acceptEvent(response http.ResponseWriter, request
 		writeSignatureFailure(response, errors.New("reference: verified event proof is incomplete"))
 		return
 	}
+	if hasBody && (len(exactPayload) == 0 || request.Header.Get("Content-Type") != "application/json" || validateEventJSON(exactPayload) != nil) {
+		writeProblem(response, http.StatusBadRequest, "invalid_payload", errors.New("reference: event payload must be one application/json value"))
+		return
+	}
 	_, remaining, err := provider.eventStore.AcceptEvent(request.Context(), AcceptedEventInput{
-		Resource:   claims.Issuer,
-		Agent:      claims.Audience,
-		EventID:    claims.EventID,
-		Token:      verified.RawCredential,
+		Resource: claims.Issuer, Agent: claims.Audience, EventID: claims.EventID,
+		Token: verified.RawCredential, ContentType: request.Header.Get("Content-Type"),
+		Payload: exactPayload, PayloadDigest: payloadDigest,
 		AcceptedAt: provider.clock.Now(),
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrEventPayloadNotAllowed):
+			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		case errors.Is(err, ErrEventSubscriptionMismatch):
 			writeProblem(response, http.StatusForbidden, "subscription_mismatch", err)
 		case errors.Is(err, ErrEventSubscriptionNotFound):

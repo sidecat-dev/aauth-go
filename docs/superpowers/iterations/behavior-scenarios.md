@@ -845,3 +845,241 @@ STORY-0013, STORY-0014, STORY-0015, STORY-0017
 **Sources:**
 
 - `draft-hardt-aauth-events.md:188-195,285-295,410-456`
+
+## JOURNEY-0003 — One protected subscription delivers one validated payload
+
+**Kind:** journey
+**Proof seam:** e2e
+**Owning stories:** STORY-0018, STORY-0019, STORY-0020, STORY-0021
+
+**Preconditions:**
+
+- An agent has a valid auth token and subscribe-token confirmation key.
+- A resource publishes one exact admitted AsyncAPI 3.0.0 JSON document with
+  one protected parameterized channel, one receive operation, and one JSON
+  message schema.
+- AP, resource-ticket/subscription, resource-pending, and agent-context/action
+  authorities use independently reopenable stores.
+
+**Action:**
+
+1. Send one signed auth-token request to the protected resource operation.
+2. During the verified operation, durably issue an opaque ticket bound to the
+   agent, operation, resource-state revision, exact AsyncAPI digest, operation,
+   message, future expiry, and one AP use; return its HTTPS URL.
+3. Discover and retain the exact AsyncAPI document, obtain the AP subscribe
+   token, map local context, and send one bodyless signed registration to the
+   ticket path.
+4. Reconstruct the resource, validate one JSON event payload, durably retain
+   its exact token and body, and send it with signed content metadata. Let the
+   AP commit the token and payload but lose the first `202`.
+5. Reconstruct resource and AP, retry the exact pair with a fresh proof, and
+   settle the unknown result through exhausted `429` without another inbox
+   record.
+6. Reconstruct AP adapter and agent, independently verify the token and exact
+   retained AsyncAPI document, validate the payload, dispatch once, record the
+   terminal disposition, acknowledge, and repeat the delivery.
+
+**Expected observables:**
+
+- No ticket URL is released before digest-only durable ticket custody.
+- Ticket consumption and subscription creation are one committed transition.
+- No `202` precedes exact token-plus-payload AP custody.
+- The exact JSON body reaches one action without reserialization; every host
+  reconstruction preserves its selected authority and document version.
+- The duplicate performs no second action and the AP-agent adapter remains a
+  deployment contract, not a standardized wire.
+
+**Automation status:** automated
+**Execution command:** `go test -race ./reference -run '^TestProtectedPayloadEventSurvivesHostReconstruction$' -count=1`
+
+**Sources:**
+
+- `draft-hardt-aauth-events.md:297-456,457-580,582-607,697-725`
+- AsyncAPI 3.0.0 Channel, Operation, Message, Parameter, Reference, and Security
+  Scheme objects
+
+## SCENARIO-0025 — Ticket issue custody is opaque, exact, and restart-safe
+
+**Kind:** failure-recovery
+**Proof seam:** process-level
+**Owning stories:** STORY-0018
+
+**Preconditions:**
+
+- A ticket issuer has an authenticated agent context, a cryptographic random
+  source, a bounded ticket store, and an injected clock.
+
+**Action:**
+
+- Issue successfully, fail before commit, force identifier collision, weaken
+  every required binding, inspect durable bytes, and reopen the ticket store.
+
+**Expected observables:**
+
+- Success releases one HTTPS URL with at least 256 random bits only after the
+  exact record is committed; custody contains its SHA-256 digest but not the raw
+  capability.
+- Failure releases no URL. Collision cannot replace a live record.
+- Reconstruction recovers agent, operation, resource revision, document
+  digest, operation/message selection, expiry, and one-use policy exactly.
+
+**Automation status:** automated
+**Execution command:** `go test -race ./reference -run '^TestProtectedEventTicketIssue' -count=1`
+
+**Sources:** `draft-hardt-aauth-events.md:301-310,600-607,721-725`
+
+## SCENARIO-0026 — Protected registration consumes one exact authority
+
+**Kind:** contract
+**Proof seam:** process-level
+**Owning stories:** STORY-0018
+
+**Preconditions:**
+
+- One valid ticket and matching subscribe token exist in independent durable
+  authorities.
+
+**Action:**
+
+- Register correctly, then vary the ticket path, agent, key, resource audience,
+  document/message binding, expiry, use state, request body policy, signature,
+  and commit outcome. Repeat after resource reconstruction.
+
+**Expected observables:**
+
+- The correct bodyless request atomically consumes the ticket and creates the
+  subscription before success.
+- Every refusal creates no subscription. Validation and commit failures leave
+  a still-valid ticket usable; a successful ticket cannot be used again.
+- Non-empty bodies are rejected by default. With an explicit validator, media
+  type and content digest are proof-covered before validation and consumption.
+
+**Automation status:** automated
+**Execution command:** `go test -race ./reference -run '^TestProtectedEventRegistration' -count=1`
+
+**Sources:** `draft-hardt-aauth-events.md:303-344,596-607`
+
+## SCENARIO-0027 — AsyncAPI contract is exact, local, and unambiguous
+
+**Kind:** contract
+**Proof seam:** integration
+**Owning stories:** STORY-0019
+
+**Preconditions:**
+
+- A resource advertises one AsyncAPI R3 vocabulary endpoint and a ticket names
+  one operation/message selection.
+
+**Action:**
+
+- Fetch and parse the exact document, then vary version, media type, size,
+  duplicate names, channel parameter mapping, action, references, message
+  cardinality, content type, schema, security representation, and selected
+  identifiers. Rotate the current document after ticket issuance.
+
+**Expected observables:**
+
+- The admitted JSON 3.0.0 profile resolves exactly one protected receive
+  operation and one `application/json` message with a compilable inline schema.
+- Invalid or remote/ambiguous variants fail before ticket release or
+  consumption. No network schema reference is followed.
+- Rotation does not alter the digest-bound document used by an existing
+  ticket, subscription, pending delivery, or agent context.
+
+**Automation status:** automated
+**Execution command:** `go test ./... -run '^(TestEventsAsyncAPI|TestResourceEventsAsyncAPIDiscovery)' -count=1`
+
+**Sources:** `draft-hardt-aauth-events.md:457-580`; AsyncAPI 3.0.0
+
+## SCENARIO-0028 — Payload proof and AP custody are one acceptance boundary
+
+**Kind:** failure-recovery
+**Proof seam:** process-level
+**Owning stories:** STORY-0020
+
+**Preconditions:**
+
+- One protected one-use subscription is active and selects one retained JSON
+  message schema.
+
+**Action:**
+
+- Send a valid payload; omit or mutate content metadata; send malformed,
+  schema-invalid, wrong-type, or oversized input; fail resource pending custody
+  and AP inbox custody; lose the successful response; reconstruct and retry.
+
+**Expected observables:**
+
+- Resource validation and pending custody precede transport. AP signature and
+  digest verification precede its atomic use-plus-inbox commit.
+- Every refusal leaves use and inbox state unchanged. No `202` is returned
+  unless exact token, payload bytes, media type, and digest are reloadable.
+- Lost-response retry uses the same token and payload with a new HTTP proof and
+  creates no duplicate acceptance.
+
+**Automation status:** automated
+**Execution command:** `go test -race ./... -run '^(TestEventPayloadDelivery|TestProtectedPayloadEventSurvivesHostReconstruction)$' -count=1`
+
+**Sources:** `draft-hardt-aauth-events.md:346-437,592-607,697-719`
+
+## SCENARIO-0029 — Agent payload verification survives reconstruction
+
+**Kind:** failure-recovery
+**Proof seam:** process-level
+**Owning stories:** STORY-0021
+
+**Preconditions:**
+
+- AP custody contains one trusted delivery envelope and agent context retains
+  the selected exact AsyncAPI document.
+
+**Action:**
+
+- Reconstruct before admission, after pending admission, after dispatch, and
+  after completion. Vary token, payload bytes, media type, digest, document,
+  schema validity, audience, expiry, and local context, then duplicate terminal
+  work.
+
+**Expected observables:**
+
+- Only an independently verified, digest-matching, schema-valid delivery
+  reaches the action. Its exact body is available to the action input.
+- Invalid variants reach one durable terminal refusal and no action.
+- Pending and dispatched work retains M5 continuation/reconciliation behavior;
+  one terminal duplicate performs no second action and is safely acknowledged.
+
+**Automation status:** automated
+**Execution command:** `go test -race ./reference -run '^(TestAgentEventPayload|TestEventAdapterPayload)' -count=1`
+
+**Sources:** `draft-hardt-aauth-events.md:438-456,592-624,705-719`
+
+## SCENARIO-0030 — M6 claims remain narrow and source-honest
+
+**Kind:** contract
+**Proof seam:** integration
+**Owning stories:** STORY-0022
+
+**Preconditions:**
+
+- The protected payload journey and all impacted behavior are automated.
+
+**Action:**
+
+- Inspect public APIs, README, journal, roadmap, source coverage, generated
+  source ledger, exact test selectors, and dependency/build output.
+
+**Expected observables:**
+
+- Claims name one protected, one-use, direct-JSON payload profile and its exact
+  AsyncAPI subset and host-authority boundaries.
+- Body shape, media type, security syntax, bodyless registration, lost ticket
+  response, multi-event identity, AP-agent transport, general AsyncAPI, and
+  storage limitations remain explicit.
+- Full, race, vet, build, source coverage, artifact validators, and every
+  M3/M4/M5 sentinel pass before M6 closure.
+
+**Automation status:** automated
+**Execution command:** `go test ./... -run '^(TestProtectedPayloadEventSurvivesHostReconstruction|TestEventsM6ClaimsMatchQualifiedProfile)$' -count=1`
+
+**Sources:** `draft-hardt-aauth-events.md:297-580,592-624,697-725`
