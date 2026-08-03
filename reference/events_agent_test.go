@@ -380,6 +380,71 @@ func TestEventAdapterAcknowledgesOnlyDurableTerminalDisposition(t *testing.T) {
 	}
 }
 
+func TestEventAdapterReconstructedPendingReappliesAgentPolicy(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	resourceKey := eventsProviderTestSigningKey(t, "resource-events-key")
+
+	for _, test := range []struct {
+		name   string
+		claims aauth.EventTokenClaims
+	}{
+		{name: "different agent", claims: agentEventTestClaims(base, "event-adapter-agent", "aauth:original@ap.example")},
+		{name: "excessive lifetime", claims: func() aauth.EventTokenClaims {
+			claims := agentEventTestClaims(base, "event-adapter-lifetime", "aauth:subscriber@ap.example")
+			claims.ExpiresAt = base.Add(referenceEventTokenLifetime + time.Minute).Unix()
+			return claims
+		}()},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			clock := aauth.ClockFunc(func() time.Time { return base })
+			agentStore := NewMemoryAgentEventStore()
+			putAgentEventTestContext(t, agentStore, test.claims.EventID)
+			apStore := NewMemoryAPEventStore("https://ap.example")
+			if err := apStore.CreateSubscription(ctx, APEventSubscription{
+				APIssuer: "https://ap.example", EventID: test.claims.EventID,
+				Resource: "https://resource.example", Agent: test.claims.Audience,
+				ActiveUntil: base.Add(2 * time.Hour), MaxUses: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			compact, err := aauth.MintEventToken(resourceKey, test.claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted, _, err := apStore.AcceptEvent(ctx, AcceptedEventInput{
+				Resource: "https://resource.example", Agent: test.claims.Audience,
+				EventID: test.claims.EventID, Token: compact, AcceptedAt: base,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			admitAgentEventTestProcessing(t, agentStore, accepted, test.claims)
+
+			action := &scriptedEventAction{dispatchOutcome: EventActionCompleted}
+			agent := newAgentEventTestAgent(t, agentStore, action, resourceKey, clock)
+			adapter, err := NewEventAdapter(apStore, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Continue(ctx); err != nil {
+				t.Fatal(err)
+			}
+			state, err := agentStore.LoadDisposition(ctx, accepted.Delivery)
+			if err != nil || state != EventRefused {
+				t.Fatalf("reconstructed adapter disposition = %q, %v, want refused", state, err)
+			}
+			if dispatches, reconciliations := action.counts(); dispatches != 0 || reconciliations != 0 {
+				t.Fatalf("reconstructed adapter action counts = %d/%d, want 0/0", dispatches, reconciliations)
+			}
+			if _, err := apStore.NextDelivery(ctx); !errors.Is(err, ErrNoPendingEventDelivery) {
+				t.Fatalf("terminal refusal did not acknowledge AP delivery: %v", err)
+			}
+		})
+	}
+}
+
 func newAgentEventTestAgent(t *testing.T, store AgentEventStore, action EventAction, resourceKey aauth.SigningKey, clock aauth.Clock) *Agent {
 	t.Helper()
 	return newAgentEventTestAgentWithResolver(t, store, action, aauth.StaticKeyResolver{

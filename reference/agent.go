@@ -314,7 +314,10 @@ func (agent *Agent) acceptEvent(
 		if loadErr != nil {
 			return state, loadErr
 		}
-		return agent.continueEventProcessing(ctx, processing, false)
+		// A pending record may belong to an Agent reconstructed with different
+		// policy. Reverify it before first dispatch; dispatched work still enters
+		// reconciliation above verification so an unknown consequence is retained.
+		return agent.continueEventProcessing(ctx, processing, true)
 	}
 	if !errors.Is(err, ErrEventDispositionNotFound) {
 		return "", err
