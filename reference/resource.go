@@ -269,6 +269,11 @@ func (resource *Resource) Handler() http.Handler {
 }
 
 func (resource *Resource) handlePublicEventSubscription(response http.ResponseWriter, request *http.Request) {
+	if request.ContentLength != 0 || len(request.TransferEncoding) != 0 ||
+		(request.Body != nil && request.Body != http.NoBody) {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("reference: public event registration must be bodyless"))
+		return
+	}
 	verified, err := aauth.VerifyRequest(
 		request.Context(),
 		request,

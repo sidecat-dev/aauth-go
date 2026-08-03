@@ -416,7 +416,11 @@ func VerifyRequest(
 		if err != nil {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key JWT: %w", err))
 		}
-		if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
+		allowedCredentialTypes := options.AllowedCredentialTypes
+		if len(allowedCredentialTypes) == 0 {
+			allowedCredentialTypes = []string{AgentTokenType, AuthTokenType}
+		}
+		if !contains(allowedCredentialTypes, header.Type) {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
 		}
 		verified.RawCredential = signatureKey.parameters["jwt"]

@@ -51,4 +51,13 @@ func TestVerifyRequestAcceptsSubscribeTokenConfirmationProof(t *testing.T) {
 		!verified.PublicKey.Equal(agentKey.PublicJWK()) {
 		t.Fatalf("verified subscribe request = %#v", verified)
 	}
+	if _, err := VerifyRequest(
+		context.Background(),
+		request,
+		StaticKeyResolver{claims.Issuer: {apKey.ID(): apKey.PublicJWK()}},
+		clock,
+		VerifyRequestOptions{},
+	); err == nil {
+		t.Fatal("VerifyRequest accepted a subscribe token without explicit credential opt-in")
+	}
 }

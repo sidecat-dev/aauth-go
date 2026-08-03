@@ -247,7 +247,7 @@ func (agent *Agent) RegisterPublicEventSubscription(
 		return err
 	}
 	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+	if response.StatusCode != http.StatusCreated {
 		return responseError(response)
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8<<10))

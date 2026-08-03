@@ -112,6 +112,23 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 	if response.Code >= 200 && response.Code < 300 {
 		t.Fatalf("wrong type status = %d, want refusal", response.Code)
 	}
+	bodyRequest := httptest.NewRequest(
+		http.MethodPost,
+		"https://resource.example/events/subscriptions",
+		strings.NewReader(`{"unexpected":"body"}`),
+	)
+	bodyRequest.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(bodyRequest, agentKey, mint(t, validClaims, apKey), clock); err != nil {
+		t.Fatal(err)
+	}
+	bodyResponse := httptest.NewRecorder()
+	resource.Handler().ServeHTTP(bodyResponse, bodyRequest)
+	if bodyResponse.Code >= 200 && bodyResponse.Code < 300 {
+		t.Fatalf("body-bearing registration status = %d, want refusal", bodyResponse.Code)
+	}
+	if _, err := resourceStore.Load(context.Background(), validClaims.Issuer, validClaims.EventID); !errors.Is(err, ErrEventSubscriptionNotFound) {
+		t.Fatalf("body-bearing request mutated resource store: %v", err)
+	}
 
 	validToken := mint(t, validClaims, apKey)
 	transportCalls := 0
@@ -187,6 +204,19 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 	}
 	if failingAgentTransportCalls != 0 {
 		t.Fatalf("local store failure sent %d requests", failingAgentTransportCalls)
+	}
+
+	wrongSuccessAgent := newRegistrationTestAgent(t, resolver, clock, agentKey, NewMemoryAgentEventStore(), registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    request,
+		}, nil
+	}))
+	if err := wrongSuccessAgent.RegisterPublicEventSubscription(context.Background(), "https://resource.example/events/subscriptions", validToken, localContext); err == nil {
+		t.Fatal("agent accepted 200 as a completed public registration")
 	}
 
 	resourceFailure := errors.New("resource subscription store unavailable")
