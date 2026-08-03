@@ -90,7 +90,7 @@ func TestAgentEventProcessingResumesPendingAndProvenNotApplied(t *testing.T) {
 		putAgentEventTestContext(t, store, "event-retry")
 		accepted, claims := acceptedAgentEventTest(t, resourceKey, now, "event-retry", "delivery-retry")
 		admitAgentEventTestProcessing(t, store, accepted, claims)
-		if claimed, err := store.BeginDispatch(ctx, eventActionKeyForTest(claims, accepted)); err != nil || !claimed {
+		if claimed, err := store.BeginDispatch(ctx, eventActionKeyForTest(claims, accepted), now); err != nil || !claimed {
 			t.Fatalf("initial dispatch claim = %v, %v", claimed, err)
 		}
 		action := &scriptedEventAction{reconcileOutcome: EventActionNotApplied, dispatchOutcome: EventActionCompleted}
@@ -122,7 +122,7 @@ func TestAgentEventProcessingResumesPendingAndProvenNotApplied(t *testing.T) {
 		putAgentEventTestContext(t, store, "event-expired")
 		accepted, claims := acceptedAgentEventTest(t, resourceKey, now, "event-expired", "delivery-expired")
 		admitAgentEventTestProcessing(t, store, accepted, claims)
-		if claimed, err := store.BeginDispatch(ctx, eventActionKeyForTest(claims, accepted)); err != nil || !claimed {
+		if claimed, err := store.BeginDispatch(ctx, eventActionKeyForTest(claims, accepted), now); err != nil || !claimed {
 			t.Fatalf("initial dispatch claim = %v, %v", claimed, err)
 		}
 		now = time.Unix(claims.ExpiresAt, 0)
@@ -148,7 +148,7 @@ func TestAgentEventProcessingResumesPendingAndProvenNotApplied(t *testing.T) {
 		putAgentEventTestContext(t, store, "event-unknown")
 		accepted, claims := acceptedAgentEventTest(t, resourceKey, now, "event-unknown", "delivery-unknown")
 		admitAgentEventTestProcessing(t, store, accepted, claims)
-		if claimed, err := store.BeginDispatch(ctx, eventActionKeyForTest(claims, accepted)); err != nil || !claimed {
+		if claimed, err := store.BeginDispatch(ctx, eventActionKeyForTest(claims, accepted), now); err != nil || !claimed {
 			t.Fatalf("initial dispatch claim = %v, %v", claimed, err)
 		}
 		now = time.Unix(claims.ExpiresAt, 0).Add(time.Hour)
@@ -163,6 +163,45 @@ func TestAgentEventProcessingResumesPendingAndProvenNotApplied(t *testing.T) {
 			t.Fatalf("unknown expired disposition = %q, %v", state, err)
 		}
 	})
+
+	for _, test := range []struct {
+		name   string
+		claims aauth.EventTokenClaims
+	}{
+		{name: "wrong agent audience", claims: agentEventTestClaims(base, "event-wrong-agent", "aauth:other@ap.example")},
+		{name: "excessive lifetime", claims: func() aauth.EventTokenClaims {
+			claims := agentEventTestClaims(base, "event-long", "aauth:subscriber@ap.example")
+			claims.ExpiresAt = base.Add(referenceEventTokenLifetime + time.Minute).Unix()
+			return claims
+		}()},
+	} {
+		test := test
+		t.Run("restart refuses "+test.name, func(t *testing.T) {
+			now := base
+			clock := aauth.ClockFunc(func() time.Time { return now })
+			store := NewMemoryAgentEventStore()
+			putAgentEventTestContext(t, store, test.claims.EventID)
+			compact, err := aauth.MintEventToken(resourceKey, test.claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted := acceptedAgentEventTestToken(compact, now, test.claims.EventID)
+			admitAgentEventTestProcessing(t, store, accepted, test.claims)
+			action := &scriptedEventAction{dispatchOutcome: EventActionCompleted}
+			agent := newAgentEventTestAgent(t, store, action, resourceKey, clock)
+
+			if err := agent.ResumeEvents(ctx); err != nil {
+				t.Fatal(err)
+			}
+			state, err := store.LoadDisposition(ctx, accepted.Delivery)
+			if err != nil || state != EventRefused {
+				t.Fatalf("policy-violating restart disposition = %q, %v", state, err)
+			}
+			if dispatches, reconciliations := action.counts(); dispatches != 0 || reconciliations != 0 {
+				t.Fatalf("policy-violating restart action counts = %d/%d", dispatches, reconciliations)
+			}
+		})
+	}
 }
 
 func TestAgentEventProcessingPersistsTerminalRefusalWithoutAction(t *testing.T) {

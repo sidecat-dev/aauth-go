@@ -56,6 +56,9 @@ var (
 	// ErrEventProcessingTransition means the requested state change would hide
 	// or regress an already recorded consequence.
 	ErrEventProcessingTransition = errors.New("reference: agent event processing transition is invalid")
+	// ErrEventProcessingExpired means the store refused a time-bounded state
+	// transition because the event was expired at the supplied decision time.
+	ErrEventProcessingExpired = errors.New("reference: agent event processing is expired")
 	// ErrEventProcessingIncomplete means durable work remains pending or its
 	// external consequence is still unknown.
 	ErrEventProcessingIncomplete = errors.New("reference: agent event processing is not terminal")
@@ -182,8 +185,8 @@ type AgentEventStore interface {
 	PutContext(context.Context, AgentEventContext) error
 	LookupContext(context.Context, string, string) (AgentEventContext, error)
 	AdmitProcessing(context.Context, AgentEventProcessing) error
-	BeginDispatch(context.Context, EventActionKey) (bool, error)
-	RetryNotApplied(context.Context, EventActionKey) (bool, error)
+	BeginDispatch(context.Context, EventActionKey, time.Time) (bool, error)
+	RetryNotApplied(context.Context, EventActionKey, time.Time) (bool, error)
 	MarkCompleted(context.Context, EventActionKey) error
 	MarkRefused(context.Context, EventDeliveryKey, EventRefusalReason) error
 	LoadProcessing(context.Context, EventActionKey) (AgentEventProcessing, error)
@@ -623,11 +626,15 @@ func (store *MemoryAgentEventStore) AdmitProcessing(
 	return nil
 }
 
-func (store *MemoryAgentEventStore) BeginDispatch(ctx context.Context, key EventActionKey) (bool, error) {
+func (store *MemoryAgentEventStore) BeginDispatch(
+	ctx context.Context,
+	key EventActionKey,
+	now time.Time,
+) (bool, error) {
 	if err := eventContextError(ctx); err != nil {
 		return false, err
 	}
-	if store == nil || validateEventActionKey(key) != nil {
+	if store == nil || validateEventActionKey(key) != nil || now.IsZero() {
 		return false, fmt.Errorf("%w: action identity is invalid", ErrEventRecordInvalid)
 	}
 	store.mu.Lock()
@@ -638,6 +645,9 @@ func (store *MemoryAgentEventStore) BeginDispatch(ctx context.Context, key Event
 	}
 	switch processing.State {
 	case EventPending:
+		if !processing.ExpiresAt.After(now) {
+			return false, ErrEventProcessingExpired
+		}
 		processing.State = EventDispatched
 		store.processing[key] = processing
 		store.dispositions[processing.Delivery] = EventDispatched
@@ -649,11 +659,15 @@ func (store *MemoryAgentEventStore) BeginDispatch(ctx context.Context, key Event
 	}
 }
 
-func (store *MemoryAgentEventStore) RetryNotApplied(ctx context.Context, key EventActionKey) (bool, error) {
+func (store *MemoryAgentEventStore) RetryNotApplied(
+	ctx context.Context,
+	key EventActionKey,
+	now time.Time,
+) (bool, error) {
 	if err := eventContextError(ctx); err != nil {
 		return false, err
 	}
-	if store == nil || validateEventActionKey(key) != nil {
+	if store == nil || validateEventActionKey(key) != nil || now.IsZero() {
 		return false, fmt.Errorf("%w: action identity is invalid", ErrEventRecordInvalid)
 	}
 	store.mu.Lock()
@@ -664,6 +678,9 @@ func (store *MemoryAgentEventStore) RetryNotApplied(ctx context.Context, key Eve
 	}
 	switch processing.State {
 	case EventDispatched:
+		if !processing.ExpiresAt.After(now) {
+			return false, ErrEventProcessingExpired
+		}
 		processing.State = EventPending
 		store.processing[key] = processing
 		store.dispositions[processing.Delivery] = EventPending

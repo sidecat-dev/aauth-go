@@ -265,7 +265,13 @@ func TestMemoryAgentEventStorePreservesUnknownDispatch(t *testing.T) {
 	if err := store.AdmitProcessing(ctx, processing); err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := store.BeginDispatch(ctx, action); err != nil || !claimed {
+	if claimed, err := store.BeginDispatch(ctx, action, processing.ExpiresAt); !errors.Is(err, ErrEventProcessingExpired) || claimed {
+		t.Fatalf("expired dispatch claim = %v, %v, want expired", claimed, err)
+	}
+	if state, err := store.LoadDisposition(ctx, delivery); err != nil || state != EventPending {
+		t.Fatalf("expired dispatch changed disposition = %q, %v", state, err)
+	}
+	if claimed, err := store.BeginDispatch(ctx, action, processing.ExpiresAt.Add(-time.Nanosecond)); err != nil || !claimed {
 		t.Fatalf("begin dispatch = %v, %v", claimed, err)
 	}
 	got, err := store.LoadProcessing(ctx, action)
@@ -283,6 +289,12 @@ func TestMemoryAgentEventStorePreservesUnknownDispatch(t *testing.T) {
 	}
 	if state, err := store.LoadDisposition(ctx, delivery); err != nil || state != EventDispatched {
 		t.Fatalf("outcome-unknown disposition after refusal attempt = %q, %v, want dispatched", state, err)
+	}
+	if retried, err := store.RetryNotApplied(ctx, action, processing.ExpiresAt); !errors.Is(err, ErrEventProcessingExpired) || retried {
+		t.Fatalf("expired not-applied retry = %v, %v, want expired", retried, err)
+	}
+	if state, err := store.LoadDisposition(ctx, delivery); err != nil || state != EventDispatched {
+		t.Fatalf("expired retry changed disposition = %q, %v", state, err)
 	}
 	if err := store.MarkRefused(ctx, delivery, EventRefusalNotApplied); err != nil {
 		t.Fatalf("reconciled not-applied refusal: %v", err)

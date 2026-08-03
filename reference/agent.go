@@ -332,8 +332,7 @@ func (agent *Agent) acceptEvent(
 		}
 		return agent.refuseEvent(ctx, accepted.Delivery, reason)
 	}
-	if claims.ExpiresAt-claims.IssuedAt > int64(referenceEventTokenLifetime/time.Second) ||
-		claims.Audience != agent.identifier {
+	if !agent.acceptsEventClaims(claims) {
 		return agent.refuseEvent(ctx, accepted.Delivery, EventRefusalInvalid)
 	}
 	localContext, err := agent.eventStore.LookupContext(ctx, accepted.APIssuer, claims.EventID)
@@ -393,9 +392,9 @@ func (agent *Agent) continueEventProcessing(
 		if claims != processing.Event {
 			return EventPending, errors.New("reference: retained event token no longer matches verified processing")
 		}
-	}
-	if !processing.ExpiresAt.After(agent.clock.Now()) {
-		return agent.refuseEvent(ctx, processing.Delivery, EventRefusalExpired)
+		if !agent.acceptsEventClaims(claims) {
+			return agent.refuseEvent(ctx, processing.Delivery, EventRefusalInvalid)
+		}
 	}
 	localContext, err := agent.eventStore.LookupContext(ctx, processing.Action.APIssuer, processing.Action.EventID)
 	if errors.Is(err, ErrEventContextNotFound) {
@@ -404,7 +403,10 @@ func (agent *Agent) continueEventProcessing(
 	if err != nil {
 		return EventPending, err
 	}
-	claimed, err := agent.eventStore.BeginDispatch(ctx, processing.Action)
+	claimed, err := agent.eventStore.BeginDispatch(ctx, processing.Action, agent.clock.Now())
+	if errors.Is(err, ErrEventProcessingExpired) {
+		return agent.refuseEvent(ctx, processing.Delivery, EventRefusalExpired)
+	}
 	if err != nil {
 		return EventPending, err
 	}
@@ -441,10 +443,10 @@ func (agent *Agent) recordEventActionOutcome(
 		}
 		return EventCompleted, nil
 	case EventActionNotApplied:
-		if !processing.ExpiresAt.After(agent.clock.Now()) {
+		transitioned, err := agent.eventStore.RetryNotApplied(ctx, processing.Action, agent.clock.Now())
+		if errors.Is(err, ErrEventProcessingExpired) {
 			return agent.refuseEvent(ctx, processing.Delivery, EventRefusalNotApplied)
 		}
-		transitioned, err := agent.eventStore.RetryNotApplied(ctx, processing.Action)
 		if err != nil {
 			return EventDispatched, err
 		}
@@ -457,6 +459,11 @@ func (agent *Agent) recordEventActionOutcome(
 	default:
 		return EventDispatched, fmt.Errorf("reference: invalid event action outcome %q", outcome)
 	}
+}
+
+func (agent *Agent) acceptsEventClaims(claims aauth.EventTokenClaims) bool {
+	return claims.Audience == agent.identifier &&
+		claims.ExpiresAt-claims.IssuedAt <= int64(referenceEventTokenLifetime/time.Second)
 }
 
 func (agent *Agent) refuseEvent(
