@@ -23,6 +23,41 @@ comparators. Unexercised BEAM source may be consulted as code archaeology, but
 provides no conformance evidence. Neither defines compatibility requirements
 for this library.
 
+## 2026-08-02
+
+### R3 direct-grant hardening correction
+
+- The one-vocabulary, scope-plus-R3 immediate direct-grant vertical now uses a
+  deployment-owned `R3DocumentStore` before resource-token release. The
+  included single-writer file implementation atomically retains mode-0600
+  exact bytes across resource reconstruction, enforces document/count/byte
+  limits, rejects non-canonical digest paths, and removes only expired
+  documents. Its guarantee ends at the referencing resource token's expiry;
+  permanent historical retrieval and multi-process coordination remain open.
+- The AS document read is admitted before transport, deadline-bounded,
+  redirect-free, body-bounded, nonce-distinct across same-second retries, and
+  cancellation-isolated for concurrent callers. Completed cache entries use
+  least-recently-used eviction; active fetches are never evicted, and an
+  all-active cache refuses additional work until capacity returns.
+- `ResourceGrant.RequestedR3` is now a serializable, cloned agent-state
+  association. It survives JSON reconstruction and is required before an R3
+  exchange, preventing silent overgrant when the selected document is broader
+  than the request. This is not a new protocol claim, cryptographic binding,
+  or built-in durable agent store.
+- Scope-only tokens cannot invoke operations that deployment policy marks as
+  R3-required. Conditional grants and every deferred R3 result are refused,
+  including a valid external HTTP 202, before the agent exposes usable or
+  pending authorization state.
+- Token headers, token payloads, R3 documents, and reference endpoint request
+  bodies reject exact duplicate JSON member names and names that Go's decoder
+  would case-fold onto the same struct field. This is parser hardening across
+  AAuth token and reference request types, not an R3 wire extension.
+- The 2026-07-29 entry's “durable external document storage” item is therefore
+  superseded only for the included bounded single-writer file implementation.
+  Deployment-specific multi-process custody remains open, as do PS document
+  use, conditional grants, per-call proposals, scope-free R3,
+  multi-definition composition, and live adapters for every vocabulary.
+
 ## 2026-07-29
 
 ### R3 one-vocabulary direct grant

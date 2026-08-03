@@ -1,6 +1,7 @@
 package aauth
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -109,6 +110,126 @@ func TestR3DocumentHashRetainsExactWireIdentity(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "display.summary") {
 		t.Fatalf("missing display summary error = %v", err)
 	}
+}
+
+func TestR3DocumentRejectsDuplicateNamesAtEveryDepth(t *testing.T) {
+	t.Parallel()
+
+	for name, exactBytes := range map[string][]byte{
+		"top-level vocabulary": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"read"}]}`,
+		),
+		"top-level operations": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"read"}],` +
+				`"operations":[{"tool":"read"}]}`,
+		),
+		"nested display": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"read"}],` +
+				`"display":{"summary":"Read","summary":"Read"}}`,
+		),
+		"case-variant vocabulary alias": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"Vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"read"}]}`,
+		),
+		"case-variant nested display alias": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"read"}],` +
+				`"display":{"summary":"Read","SUMMARY":"Read"}}`,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ParseR3Document(exactBytes); err == nil ||
+				(!strings.Contains(err.Error(), "duplicate object name") &&
+					!strings.Contains(err.Error(), "case-ambiguous object names")) {
+				t.Fatalf("duplicate-name error = %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifyAuthTokenRejectsDuplicateR3Claims(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 2, 18, 0, 0, 0, time.UTC)
+	accessKey := internalTestSigningKey(t, "access-key")
+	agentKey := internalTestSigningKey(t, "agent-key")
+	document := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}]}`)
+	digest := R3S256(document)
+	granted := &R3OperationSet{
+		Vocabulary: R3VocabularyMCP,
+		Operations: []json.RawMessage{json.RawMessage(`{"tool":"read"}`)},
+	}
+	claims, err := json.Marshal(AuthTokenClaims{
+		Issuer:       "https://as.example",
+		DWK:          AccessDiscoveryDocument,
+		Audience:     "https://resource.example",
+		JTI:          "auth-token",
+		Agent:        "aauth:planner@ap.example",
+		Confirmation: Confirmation{JWK: agentKey.PublicJWK()},
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(time.Hour).Unix(),
+		Subject:      "pairwise-user",
+		Scope:        "records.read",
+		R3URI:        "https://resource.example/r3/" + digest,
+		R3S256:       digest,
+		R3Granted:    granted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, claimName := range map[string]string{
+		"exact duplicate":    "r3_s256",
+		"case-variant alias": "R3_S256",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ambiguousClaims := append(
+				[]byte(`{"`+claimName+`":"`+digest+`",`),
+				claims[1:]...,
+			)
+			compact := signRawTestToken(t, accessKey, AuthTokenType, ambiguousClaims)
+			_, err := VerifyAuthToken(
+				context.Background(),
+				compact,
+				StaticKeyResolver{
+					"https://as.example": {"access-key": accessKey.PublicJWK()},
+				},
+				ClockFunc(func() time.Time { return now }),
+			)
+			if err == nil || (!strings.Contains(err.Error(), "duplicate object name") &&
+				!strings.Contains(err.Error(), "case-ambiguous object names")) {
+				t.Fatalf("ambiguous R3 claim error = %v", err)
+			}
+		})
+	}
+}
+
+func signRawTestToken(
+	t *testing.T,
+	key SigningKey,
+	tokenType string,
+	claims []byte,
+) string {
+	t.Helper()
+	header, err := json.Marshal(TokenHeader{
+		Algorithm: "EdDSA",
+		Type:      tokenType,
+		KeyID:     key.ID(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingInput := rawURL.EncodeToString(header) + "." + rawURL.EncodeToString(claims)
+	signature, err := key.sign([]byte(signingInput))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signingInput + "." + rawURL.EncodeToString(signature)
 }
 
 func TestR3TokenClaimsRequireCompleteConsistentClaims(t *testing.T) {

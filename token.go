@@ -380,12 +380,18 @@ func decodeToken(compact string) (TokenHeader, []byte, []byte, string, error) {
 	if err != nil {
 		return header, nil, nil, "", fmt.Errorf("aauth: decode token header: %w", err)
 	}
+	if err := rejectDuplicateJSONNames(headerBytes); err != nil {
+		return header, nil, nil, "", fmt.Errorf("aauth: parse token header: %w", err)
+	}
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		return header, nil, nil, "", fmt.Errorf("aauth: parse token header: %w", err)
 	}
 	payload, err := rawURL.DecodeString(parts[1])
 	if err != nil {
 		return header, nil, nil, "", fmt.Errorf("aauth: decode token payload: %w", err)
+	}
+	if err := rejectDuplicateJSONNames(payload); err != nil {
+		return header, nil, nil, "", fmt.Errorf("aauth: parse token payload: %w", err)
 	}
 	signature, err := rawURL.DecodeString(parts[2])
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
 
 const maxJSONBody = 1 << 20
@@ -23,7 +24,17 @@ func decodeJSON(response http.ResponseWriter, request *http.Request, destination
 }
 
 func decodeJSONBytes(reader io.Reader, destination any) error {
-	decoder := json.NewDecoder(reader)
+	encoded, err := io.ReadAll(io.LimitReader(reader, maxJSONBody+1))
+	if err != nil {
+		return fmt.Errorf("decode JSON: %w", err)
+	}
+	if len(encoded) > maxJSONBody {
+		return errors.New("decode JSON: input is too large")
+	}
+	if err := jsonstrict.RejectAmbiguousNames(encoded); err != nil {
+		return fmt.Errorf("decode JSON: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return fmt.Errorf("decode JSON: %w", err)

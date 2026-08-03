@@ -42,10 +42,13 @@ type Grant struct {
 }
 
 type ResourceGrant struct {
-	Resource      string
-	ResourceToken string
-	Claims        aauth.ResourceTokenClaims
-	requestedR3   *aauth.R3OperationSet
+	Resource      string                    `json:"resource"`
+	ResourceToken string                    `json:"resource_token"`
+	Claims        aauth.ResourceTokenClaims `json:"claims"`
+	// RequestedR3 is persisted alongside the resource token because the R3
+	// draft does not bind the agent's requested operation subset into that
+	// token. Omitting it for an R3 grant fails closed before token exchange.
+	RequestedR3 *aauth.R3OperationSet `json:"requested_r3,omitempty"`
 }
 
 // TokenAuthorization is either an auth-token grant or a signed-poll
@@ -869,7 +872,7 @@ func (agent *Agent) requestResourceToken(
 		Resource:      resourceID,
 		ResourceToken: resourceResult.ResourceToken,
 		Claims:        resourceClaims,
-		requestedR3:   requestedR3,
+		RequestedR3:   requestedR3,
 	}, nil
 }
 
@@ -1191,6 +1194,9 @@ func (agent *Agent) requestTokenAuthorization(
 	upstreamToken string,
 ) (TokenAuthorization, error) {
 	var authorization TokenAuthorization
+	if err := validateResourceGrantR3Request(resourceGrant); err != nil {
+		return authorization, err
+	}
 	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
 		return authorization, err
 	}
@@ -1248,6 +1254,9 @@ func (agent *Agent) requestTokenAuthorization(
 		authorization.Grant = &grant
 		return authorization, nil
 	case http.StatusAccepted:
+		if resourceGrant.Claims.R3URI != "" {
+			return authorization, errors.New("reference: deferred R3 authorization is not implemented")
+		}
 		deferred, err := aauth.ParseDeferredResponse(tokenResponse)
 		if err != nil {
 			return authorization, err
@@ -1305,14 +1314,13 @@ func (agent *Agent) parseTokenGrantResponse(
 		authClaims.R3S256 != resourceGrant.Claims.R3S256 {
 		return Grant{}, errors.New("reference: auth token R3 reference does not match the resource token")
 	}
-	if resourceGrant.requestedR3 != nil {
+	if authClaims.R3Conditional != nil {
+		return Grant{}, errors.New("reference: conditional R3 grants are not implemented")
+	}
+	if resourceGrant.RequestedR3 != nil {
 		if authClaims.R3Granted == nil ||
-			!resourceGrant.requestedR3.ContainsSet(*authClaims.R3Granted) {
+			!resourceGrant.RequestedR3.ContainsSet(*authClaims.R3Granted) {
 			return Grant{}, errors.New("reference: auth token grants R3 operations outside the agent request")
-		}
-		if authClaims.R3Conditional != nil &&
-			!resourceGrant.requestedR3.ContainsSet(*authClaims.R3Conditional) {
-			return Grant{}, errors.New("reference: auth token conditionally grants R3 operations outside the agent request")
 		}
 	}
 	if err := aauth.ValidateAuthTokenContext(
@@ -1332,6 +1340,22 @@ func (agent *Agent) parseTokenGrantResponse(
 		AuthToken: tokenResult.AuthToken,
 		Claims:    authClaims,
 	}, nil
+}
+
+func validateResourceGrantR3Request(resourceGrant ResourceGrant) error {
+	if resourceGrant.Claims.R3URI == "" {
+		if resourceGrant.RequestedR3 != nil {
+			return errors.New("reference: resource grant has an R3 request without an R3 reference")
+		}
+		return nil
+	}
+	if resourceGrant.RequestedR3 == nil {
+		return errors.New("reference: resource grant is missing the requested R3 operation binding")
+	}
+	if err := resourceGrant.RequestedR3.Validate(); err != nil {
+		return fmt.Errorf("reference: resource grant requested R3 operations: %w", err)
+	}
+	return nil
 }
 
 func newPendingTokenAuthorization(

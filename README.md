@@ -73,18 +73,32 @@ delivery cross both continuation boundaries.
 One R3 direct-grant path is implemented through that real four-party flow. A
 resource advertises an MCP vocabulary, validates an agent's `r3_operations`
 through a deployment-owned authoritative-definition boundary, serializes and
-retains one exact R3 document, and issues its URI plus unpadded SHA-256 hash in
-the resource token. The AS alone performs a signed, no-redirect fetch; verifies
-the exact bytes before parsing or policy; coalesces a hash-keyed cache; and
+durably retains one exact R3 document through a deployment-owned store, and
+issues its URI plus unpadded SHA-256 hash in the resource token only after that
+retention succeeds. The included bounded file store preserves exact bytes
+across resource reconstruction and never evicts a document while its resource
+token is live. The AS alone performs a signed, admitted, deadline-bounded,
+no-redirect fetch; verifies the exact bytes before parsing or policy;
+coalesces a hash-keyed cache with recoverable least-recently-used eviction; and
 requires a successful issuance-audit write before releasing an auth token.
 The resource independently enforces both ordinary scope and semantic
-membership in `r3_granted`, without fetching R3 at call time.
+membership in `r3_granted`, without fetching R3 at call time. The agent retains
+its requested operation set in the persistable resource-grant value and fails
+closed if that binding is absent after reconstruction.
+
+The included store guarantees exact-byte availability through the resource
+token's expiry; it is not permanent historical custody after that expiry.
+Token JSON and reference endpoint request JSON reject exact duplicate member
+names and names that Go would case-fold onto the same struct field before
+decoding.
 
 This is intentionally not described as complete R3. The exercised journey is
 one vocabulary, scope plus R3, and direct grants. Conditional grants, per-call
 proposal documents and retries, scope-free R3, multi-definition composition,
 person-server document use, live discovery adapters for every standard
-vocabulary, and externally durable R3 document custody remain open. The
+vocabulary, and multi-process document-store coordination remain open.
+Conditional and deferred R3 results are explicitly refused by this profile.
+The
 [source coverage report](SOURCE-COVERAGE.md) keeps those boundaries explicit.
 
 Three-party call chaining is exercised through two real protected resources.

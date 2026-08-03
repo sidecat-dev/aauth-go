@@ -29,10 +29,13 @@ type ResourceConfig struct {
 	PendingLifetime     time.Duration
 	Operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
 	// R3Vocabularies is the exact discovery-value map advertised by the
-	// resource. R3DocumentForOperations is the deployment-owned validation
-	// and document-selection boundary for those authoritative definitions.
+	// resource. R3DocumentStore owns exact-byte retention across resource
+	// restarts. The selection, required-operation, and request-mapping callbacks
+	// are deployment policy boundaries for the authoritative definitions.
 	R3Vocabularies          map[string]json.RawMessage
+	R3DocumentStore         R3DocumentStore
 	R3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
+	R3RequiredForRequest    func(context.Context, *http.Request) (bool, error)
 	R3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
 }
 
@@ -51,10 +54,10 @@ type Resource struct {
 	pendingLifetime         time.Duration
 	operation               func(context.Context, aauth.AuthorizedRequest) (any, error)
 	r3Vocabularies          map[string]json.RawMessage
+	r3DocumentStore         R3DocumentStore
 	r3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
+	r3RequiredForRequest    func(context.Context, *http.Request) (bool, error)
 	r3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
-	r3Mu                    sync.RWMutex
-	r3Documents             map[string][]byte
 	randomMu                sync.Mutex
 	pendingMu               sync.Mutex
 	pending                 map[string]*pendingAuthorization
@@ -121,14 +124,20 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	if len(config.R3Vocabularies) != 0 {
 		r3Parts++
 	}
+	if config.R3DocumentStore != nil {
+		r3Parts++
+	}
 	if config.R3DocumentForOperations != nil {
+		r3Parts++
+	}
+	if config.R3RequiredForRequest != nil {
 		r3Parts++
 	}
 	if config.R3OperationForRequest != nil {
 		r3Parts++
 	}
-	if r3Parts != 0 && r3Parts != 3 {
-		return nil, errors.New("reference: R3 requires vocabularies, document selection, and request mapping")
+	if r3Parts != 0 && r3Parts != 5 {
+		return nil, errors.New("reference: R3 requires vocabularies, durable document custody, document selection, required-operation policy, and request mapping")
 	}
 	if r3Parts != 0 && config.AccessServer == "" {
 		return nil, errors.New("reference: R3 requires an access server")
@@ -172,9 +181,10 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		pendingLifetime:         pendingLifetime,
 		operation:               config.Operation,
 		r3Vocabularies:          r3Vocabularies,
+		r3DocumentStore:         config.R3DocumentStore,
 		r3DocumentForOperations: config.R3DocumentForOperations,
+		r3RequiredForRequest:    config.R3RequiredForRequest,
 		r3OperationForRequest:   config.R3OperationForRequest,
-		r3Documents:             make(map[string][]byte),
 		pending:                 make(map[string]*pendingAuthorization),
 		access:                  make(map[string]localAccessGrant),
 		replayedProof:           make(map[string]time.Time),
@@ -225,6 +235,8 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	}
 	var r3URI string
 	var r3S256 string
+	now := resource.clock.Now()
+	resourceTokenExpiresAt := now.Add(5 * time.Minute)
 	if input.R3Operations != nil {
 		if resource.r3DocumentForOperations == nil {
 			writeProblem(response, http.StatusBadRequest, "unsupported_r3_vocabulary", errors.New("resource does not advertise R3"))
@@ -258,15 +270,15 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 			return
 		}
 		r3S256 = aauth.R3S256(exactBytes)
-		resource.r3Mu.Lock()
-		existing, exists := resource.r3Documents[r3S256]
-		if exists && string(existing) != string(exactBytes) {
-			resource.r3Mu.Unlock()
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("R3 digest collision"))
+		if err := resource.r3DocumentStore.Retain(
+			request.Context(),
+			r3S256,
+			exactBytes,
+			resourceTokenExpiresAt,
+		); err != nil {
+			writeProblem(response, http.StatusServiceUnavailable, "r3_custody_unavailable", err)
 			return
 		}
-		resource.r3Documents[r3S256] = append([]byte(nil), exactBytes...)
-		resource.r3Mu.Unlock()
 		r3URI = resource.identifier + "/r3/" + r3S256
 	}
 	var mission *aauth.MissionReference
@@ -283,7 +295,6 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
-	now := resource.clock.Now()
 	if resource.authorizationPolicy != nil {
 		authorizationRequest := aauth.AuthorizationRequest{
 			Agent:    verified.Agent,
@@ -337,7 +348,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		Agent:     verified.Agent,
 		AgentJKT:  thumbprint,
 		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		ExpiresAt: resourceTokenExpiresAt.Unix(),
 		Scope:     strings.Join(scopes, " "),
 		Mission:   mission,
 		R3URI:     r3URI,
@@ -700,6 +711,17 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
+	if resource.r3RequiredForRequest != nil {
+		required, err := resource.r3RequiredForRequest(request.Context(), request)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "r3_mapping_failed", err)
+			return
+		}
+		if required && claims.R3URI == "" {
+			writeProblem(response, http.StatusForbidden, "r3_required", errors.New("this resource operation requires an R3 grant"))
+			return
+		}
+	}
 	if claims.R3URI != "" {
 		if claims.Issuer != resource.tokenAudience {
 			writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("R3 auth-token issuer is not the resource access server"))
@@ -860,13 +882,18 @@ func (resource *Resource) handleR3Document(response http.ResponseWriter, request
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
+	if resource.r3DocumentStore == nil {
+		writeProblem(response, http.StatusNotFound, "not_found", errors.New("R3 documents are not configured"))
+		return
+	}
 	s256 := request.PathValue("s256")
-	resource.r3Mu.RLock()
-	document, exists := resource.r3Documents[s256]
-	document = append([]byte(nil), document...)
-	resource.r3Mu.RUnlock()
-	if !exists || aauth.R3S256(document) != s256 {
+	document, err := resource.r3DocumentStore.Load(request.Context(), s256)
+	if errors.Is(err, ErrR3DocumentNotFound) {
 		writeProblem(response, http.StatusNotFound, "not_found", errors.New("R3 document is unknown"))
+		return
+	}
+	if err != nil || aauth.R3S256(document) != s256 {
+		writeProblem(response, http.StatusInternalServerError, "r3_custody_failed", err)
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")

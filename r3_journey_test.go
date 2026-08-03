@@ -29,6 +29,12 @@ func TestR3DirectGrantJourney(t *testing.T) {
 		"resource-token-3",
 		"auth-token-3",
 		"resource-token-4",
+		"resource-token-5",
+		"auth-token-5",
+		"resource-token-6",
+		"resource-token-7",
+		"resource-token-8",
+		"resource-token-9",
 	)
 	apKey := testSigningKey(t, "ap-key")
 	psKey := testSigningKey(t, "ps-key")
@@ -138,6 +144,7 @@ func TestR3DirectGrantJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	deferPersonAuthorization := false
 	personServer, err := reference.NewPersonServer(reference.PersonServerConfig{
 		Identifier:       "https://ps.example",
 		SigningKey:       psKey,
@@ -160,58 +167,86 @@ func TestR3DirectGrantJourney(t *testing.T) {
 				Scope:   request.Scope,
 			}, nil
 		},
+		InteractionRequired: func(_ context.Context, _ aauth.AuthorizationRequest) (bool, error) {
+			return deferPersonAuthorization, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	operationCalls := 0
-	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:   "https://resource.example",
-		AccessServer: "https://as.example",
-		SigningKey:   resourceKey,
-		KeyResolver:  keyResolver,
-		Clock:        clock,
-		NewID:        ids,
-		Scopes:       []string{"records.read"},
-		R3Vocabularies: map[string]json.RawMessage{
-			aauth.R3VocabularyMCP: json.RawMessage(`"https://resource.example/mcp"`),
-		},
-		R3DocumentForOperations: func(
-			_ context.Context,
-			operations aauth.R3OperationSet,
-		) ([]byte, error) {
-			if !operations.Equal(requestedOperations) {
-				return nil, fmt.Errorf("unexpected requested operations: %#v", operations)
-			}
-			return currentDocumentBytes, nil
-		},
-		R3OperationForRequest: func(
-			_ context.Context,
-			request *http.Request,
-		) (aauth.R3OperationSet, error) {
-			var operation json.RawMessage
-			switch request.URL.Path {
-			case "/records":
-				operation = json.RawMessage(`{"tool":"list_records"}`)
-			case "/records/delete":
-				operation = json.RawMessage(`{"tool":"delete_record"}`)
-			default:
-				return aauth.R3OperationSet{}, fmt.Errorf("unmapped operation path %s", request.URL.Path)
-			}
-			return aauth.R3OperationSet{
-				Vocabulary: aauth.R3VocabularyMCP,
-				Operations: []json.RawMessage{operation},
-			}, nil
-		},
-		Operation: func(_ context.Context, _ aauth.AuthorizedRequest) (any, error) {
-			operationCalls++
-			return map[string]any{"records": []string{"one"}}, nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	documentStoreConfig := reference.FileR3DocumentStoreConfig{
+		Directory:        t.TempDir(),
+		Clock:            clock,
+		MaxDocuments:     8,
+		MaxBytes:         8 << 20,
+		MaxDocumentBytes: 1 << 20,
 	}
+	openDocumentStore := func() reference.R3DocumentStore {
+		store, storeErr := reference.OpenFileR3DocumentStore(documentStoreConfig)
+		if storeErr != nil {
+			t.Fatal(storeErr)
+		}
+		return store
+	}
+	newResource := func(store reference.R3DocumentStore) *reference.Resource {
+		resource, resourceErr := reference.NewResource(reference.ResourceConfig{
+			Identifier:      "https://resource.example",
+			AccessServer:    "https://as.example",
+			SigningKey:      resourceKey,
+			KeyResolver:     keyResolver,
+			Clock:           clock,
+			NewID:           ids,
+			Scopes:          []string{"records.read"},
+			R3DocumentStore: store,
+			R3Vocabularies: map[string]json.RawMessage{
+				aauth.R3VocabularyMCP: json.RawMessage(`"https://resource.example/mcp"`),
+			},
+			R3DocumentForOperations: func(
+				_ context.Context,
+				operations aauth.R3OperationSet,
+			) ([]byte, error) {
+				if !operations.Equal(requestedOperations) {
+					return nil, fmt.Errorf("unexpected requested operations: %#v", operations)
+				}
+				return currentDocumentBytes, nil
+			},
+			R3RequiredForRequest: func(
+				_ context.Context,
+				request *http.Request,
+			) (bool, error) {
+				return strings.HasPrefix(request.URL.Path, "/records"), nil
+			},
+			R3OperationForRequest: func(
+				_ context.Context,
+				request *http.Request,
+			) (aauth.R3OperationSet, error) {
+				var operation json.RawMessage
+				switch request.URL.Path {
+				case "/records":
+					operation = json.RawMessage(`{"tool":"list_records"}`)
+				case "/records/delete":
+					operation = json.RawMessage(`{"tool":"delete_record"}`)
+				default:
+					return aauth.R3OperationSet{}, fmt.Errorf("unmapped operation path %s", request.URL.Path)
+				}
+				return aauth.R3OperationSet{
+					Vocabulary: aauth.R3VocabularyMCP,
+					Operations: []json.RawMessage{operation},
+				}, nil
+			},
+			Operation: func(_ context.Context, _ aauth.AuthorizedRequest) (any, error) {
+				operationCalls++
+				return map[string]any{"records": []string{"one"}}, nil
+			},
+		})
+		if resourceErr != nil {
+			t.Fatal(resourceErr)
+		}
+		return resource
+	}
+	resource := newResource(openDocumentStore())
 
 	resourceHandler := resource.Handler()
 	r3Fetches := 0
@@ -241,10 +276,41 @@ func TestR3DirectGrantJourney(t *testing.T) {
 		_, _ = response.Write(body)
 	})
 
+	accessServerHandler := accessServer.Handler()
+	var accessServerTokenOverride string
+	interceptedAccessServer := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if accessServerTokenOverride == "" || request.Method != http.MethodPost || request.URL.Path != "/token" {
+			accessServerHandler.ServeHTTP(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"auth_token": accessServerTokenOverride,
+			"expires_in": 300,
+		})
+	})
+	personServerHandler := personServer.Handler()
+	externalDeferredR3 := false
+	interceptedPersonServer := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !externalDeferredR3 || request.Method != http.MethodPost || request.URL.Path != "/token" {
+			personServerHandler.ServeHTTP(response, request)
+			return
+		}
+		response.Header().Set("Location", "/pending/external-r3")
+		response.Header().Set("Retry-After", "0")
+		response.Header().Set("Cache-Control", "no-store")
+		response.Header().Set(
+			"AAuth-Requirement",
+			`requirement=interaction; url="https://ps.example/interaction/external-r3"; code="A1B2-C3D4"`,
+		)
+		response.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(response, `{"status":"interacting"}`)
+	})
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"ap.example":       ap.Handler(),
-		"ps.example":       personServer.Handler(),
-		"as.example":       accessServer.Handler(),
+		"ps.example":       interceptedPersonServer,
+		"as.example":       interceptedAccessServer,
 		"resource.example": interceptedResource,
 	})
 	defer gateway.Close()
@@ -267,13 +333,73 @@ func TestR3DirectGrantJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := agent.AuthorizeR3(
+	missionHeader, err := mission.Reference.Header()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguousAuthorizeBody := []byte(
+		`{"scope":"records.read",` +
+			`"r3_operations":{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"list_records"}]},` +
+			`"R3_OPERATIONS":{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"list_records"}]}}`,
+	)
+	ambiguousAuthorizeRequest, err := http.NewRequest(
+		http.MethodPost,
+		"https://resource.example/authorize",
+		strings.NewReader(string(ambiguousAuthorizeBody)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguousAuthorizeRequest.Header.Set("Content-Type", "application/json")
+	ambiguousAuthorizeRequest.Header.Set("AAuth-Mission", missionHeader)
+	if err := aauth.SignRequest(
+		ambiguousAuthorizeRequest,
+		agentKey,
+		agentToken,
+		clock,
+	); err != nil {
+		t.Fatal(err)
+	}
+	ambiguousAuthorizeResponse, err := protocolClient.Do(ambiguousAuthorizeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ambiguousAuthorizeResponse.Body.Close()
+	if ambiguousAuthorizeResponse.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(ambiguousAuthorizeResponse.Body)
+		t.Fatalf(
+			"case-ambiguous R3 authorization status = %d, want 400; body = %s",
+			ambiguousAuthorizeResponse.StatusCode,
+			body,
+		)
+	}
+	resourceGrant, err := agent.RequestResourceTokenR3(
 		context.Background(),
 		"https://resource.example/authorize",
-		"https://ps.example/token",
 		[]string{"records.read"},
 		mission,
 		requestedOperations,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct the resource and its document store after the resource token
+	// exists but before the access server fetches the exact document.
+	resource = newResource(openDocumentStore())
+	resourceHandler = resource.Handler()
+	missingBinding := resourceGrant
+	missingBinding.RequestedR3 = nil
+	if _, err := agent.RequestTokenAuthorization(
+		context.Background(),
+		"https://ps.example/token",
+		missingBinding,
+	); err == nil || !strings.Contains(err.Error(), "missing the requested R3 operation binding") {
+		t.Fatalf("missing persisted R3 binding error = %v", err)
+	}
+	grant, err := agent.ExchangeResourceToken(
+		context.Background(),
+		"https://ps.example/token",
+		resourceGrant,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +504,42 @@ func TestR3DirectGrantJourney(t *testing.T) {
 	}
 	if operationCalls != 1 {
 		t.Fatalf("granted operation calls = %d, want 1", operationCalls)
+	}
+	scopeOnlyToken, err := aauth.MintAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer:       "https://as.example",
+		DWK:          aauth.AccessDiscoveryDocument,
+		Audience:     "https://resource.example",
+		JTI:          "scope-only-auth-token",
+		Agent:        "aauth:planner@ap.example",
+		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(time.Hour).Unix(),
+		Subject:      "federated-pairwise-user",
+		Scope:        "records.read",
+		Mission:      grant.Claims.Mission,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeOnlyResponse, err := agent.DoAuthorized(
+		context.Background(),
+		http.MethodGet,
+		"https://resource.example/records",
+		reference.Grant{
+			Resource:  "https://resource.example",
+			AuthToken: scopeOnlyToken,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scopeOnlyResponse.Body.Close()
+	if scopeOnlyResponse.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(scopeOnlyResponse.Body)
+		t.Fatalf("scope-only R3-required operation status = %d, body = %s", scopeOnlyResponse.StatusCode, body)
+	}
+	if operationCalls != 1 {
+		t.Fatalf("scope-only token ran R3-required operation; calls = %d", operationCalls)
 	}
 
 	denied, err := agent.DoAuthorized(
@@ -497,4 +659,166 @@ func TestR3DirectGrantJourney(t *testing.T) {
 			accessPolicyCalls,
 		)
 	}
+
+	// A persisted resource grant must retain the agent's requested operation
+	// set. Otherwise reconstructing it would silently remove the only check
+	// that prevents a valid access server from granting the document superset.
+	now = now.Add(time.Second)
+	currentDocumentBytes = []byte(
+		`{"version":"4","vocabulary":"urn:aauth:vocabulary:mcp",` +
+			`"operations":[{"tool":"list_records"},{"tool":"delete_record"}],` +
+			`"display":{"summary":"Read or delete records"}}`,
+	)
+	overbroadResourceGrant, err := agent.RequestResourceTokenR3(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"records.read"},
+		mission,
+		requestedOperations,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedGrant, err := json.Marshal(overbroadResourceGrant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restoredGrant reference.ResourceGrant
+	if err := json.Unmarshal(encodedGrant, &restoredGrant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ExchangeResourceToken(
+		context.Background(),
+		"https://ps.example/token",
+		restoredGrant,
+	); err == nil || !strings.Contains(err.Error(), "outside the agent request") {
+		t.Fatalf("reconstructed overgrant error = %v", err)
+	}
+
+	// This profile does not implement either deferred R3 authorization or
+	// conditional grants. Both must be refused before the agent reports a
+	// usable grant.
+	now = now.Add(time.Second)
+	currentDocumentBytes = documentBytes
+	deferredResourceGrant, err := agent.RequestResourceTokenR3(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"records.read"},
+		mission,
+		requestedOperations,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferPersonAuthorization = true
+	_, err = agent.ExchangeResourceToken(
+		context.Background(),
+		"https://ps.example/token",
+		deferredResourceGrant,
+	)
+	deferPersonAuthorization = false
+	if err == nil || !strings.Contains(err.Error(), "deferred R3 authorization is not implemented") {
+		t.Fatalf("deferred R3 error = %v", err)
+	}
+
+	now = now.Add(time.Second)
+	externalDeferredResourceGrant, err := agent.RequestResourceTokenR3(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"records.read"},
+		mission,
+		requestedOperations,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalDeferredR3 = true
+	externalAuthorization, err := agent.RequestTokenAuthorization(
+		context.Background(),
+		"https://ps.example/token",
+		externalDeferredResourceGrant,
+	)
+	externalDeferredR3 = false
+	if err == nil || !strings.Contains(err.Error(), "deferred R3 authorization is not implemented") {
+		t.Fatalf("external deferred R3 error = %v", err)
+	}
+	if externalAuthorization.Grant != nil || externalAuthorization.Pending != nil {
+		t.Fatalf("external deferred R3 exposed authorization state = %#v", externalAuthorization)
+	}
+
+	now = now.Add(time.Second)
+	conditionalResourceGrant, err := agent.RequestResourceTokenR3(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"records.read"},
+		mission,
+		requestedOperations,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyGrant := &aauth.R3OperationSet{
+		Vocabulary: aauth.R3VocabularyMCP,
+		Operations: []json.RawMessage{},
+	}
+	conditionalGrant := requestedOperations.Clone()
+	accessServerTokenOverride, err = aauth.MintAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer:        "https://as.example",
+		DWK:           aauth.AccessDiscoveryDocument,
+		Audience:      "https://resource.example",
+		JTI:           "external-conditional-auth-token",
+		Agent:         "aauth:planner@ap.example",
+		Confirmation:  aauth.Confirmation{JWK: agentKey.PublicJWK()},
+		IssuedAt:      now.Unix(),
+		ExpiresAt:     conditionalResourceGrant.Claims.ExpiresAt,
+		Subject:       "federated-pairwise-user",
+		Scope:         conditionalResourceGrant.Claims.Scope,
+		Mission:       conditionalResourceGrant.Claims.Mission,
+		R3URI:         conditionalResourceGrant.Claims.R3URI,
+		R3S256:        conditionalResourceGrant.Claims.R3S256,
+		R3Granted:     emptyGrant,
+		R3Conditional: &conditionalGrant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = agent.ExchangeResourceToken(
+		context.Background(),
+		"https://ps.example/token",
+		conditionalResourceGrant,
+	)
+	accessServerTokenOverride = ""
+	if err == nil || !strings.Contains(err.Error(), "conditional R3 grants are not implemented") {
+		t.Fatalf("conditional R3 error = %v", err)
+	}
+
+	now = now.Add(time.Second)
+	resource = newResource(&refusingR3DocumentStore{
+		R3DocumentStore: openDocumentStore(),
+		err:             reference.ErrR3DocumentCapacity,
+	})
+	resourceHandler = resource.Handler()
+	if _, err := agent.RequestResourceTokenR3(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"records.read"},
+		mission,
+		requestedOperations,
+	); err == nil || !strings.Contains(err.Error(), "capacity is exhausted") {
+		t.Fatalf("pre-token custody refusal error = %v", err)
+	}
+}
+
+type refusingR3DocumentStore struct {
+	reference.R3DocumentStore
+	err error
+}
+
+func (store *refusingR3DocumentStore) Retain(
+	context.Context,
+	string,
+	[]byte,
+	time.Time,
+) error {
+	return store.err
 }

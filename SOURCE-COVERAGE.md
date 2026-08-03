@@ -642,16 +642,17 @@ Evidence:
 
 ### `r3/auth-token-extensions` — Partial
 
-Resource and auth tokens enforce complete URI/hash claim pairs; the selected auth token echoes the verified reference and a policy-narrowed direct grant, and the resource executes only a semantically matching real operation without enforcement-time fetching. Conditional challenges and per-call auth tokens remain open.
+Resource and auth tokens enforce complete URI/hash claim pairs and reject exact or case-fold-ambiguous claim names. The selected auth token echoes the verified reference and a policy-narrowed direct grant; reconstructed agent state must retain the requested operation subset; and the resource executes only a semantically matching R3-required operation without enforcement-time fetching. This profile explicitly refuses conditional or deferred R3 authorization, including external HTTP 202 responses. Per-call auth tokens remain open.
 
 Evidence:
 
 - `r3_journey_test.go:TestR3DirectGrantJourney`
 - `r3_test.go:TestR3TokenClaimsRequireCompleteConsistentClaims`
+- `r3_test.go:TestVerifyAuthTokenRejectsDuplicateR3Claims`
 
 ### `r3/authorization-endpoint-extensions` — Partial
 
-The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, and returns one R3 reference alongside independently enforced scope. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.
+The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, preserves that requested set in a serializable resource-grant value across agent reconstruction, and returns one R3 reference alongside independently enforced scope. Exact and case-fold-ambiguous request names are refused before decoding. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.
 
 Evidence:
 
@@ -663,21 +664,30 @@ R3 per-call proposals are not implemented.
 
 ### `r3/r3-document` — Partial
 
-The reference resource validates the standard operation-entry shapes, preserves selected document bytes without reserialization, hashes and stores them by unpadded base64url SHA-256, advertises the vocabulary, and serves the exact bytes only to its signed access server. External durable document stores and multi-definition composition remain open.
+The reference resource rejects exact and case-fold duplicate-name ambiguity, validates the standard operation-entry shapes, preserves selected bytes without reserialization, and requires deployment-owned exact-byte custody before issuing the hash-derived URI. The included atomic mode-0600 file store survives resource reconstruction, bounds per-document, total-byte, and count retention, rejects non-canonical digest paths, and evicts only documents whose resource-token retention has expired. It does not promise permanent historical retention after token expiry. The resource serves exact verified bytes only to its signed access server. Multi-process store coordination and multi-definition composition remain open.
 
 Evidence:
 
 - `r3_journey_test.go:TestR3DirectGrantJourney`
 - `r3_test.go:TestR3DocumentHashRetainsExactWireIdentity`
 - `r3_test.go:TestR3StandardVocabularyOperationShapes`
+- `r3_test.go:TestR3DocumentRejectsDuplicateNamesAtEveryDepth`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsExactBytesAcrossRestart`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRefusesOversizedOrInvalidRetention`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRemovesExpiredDocumentsBeforeStartupCapacityCheck`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRejectsNonCanonicalDigestPaths`
 
 ### `r3/r3-processing` — Partial
 
-The access server performs a no-redirect same-resource signed fetch, verifies exact bytes before parsing or policy, coalesces and re-hashes a hash-keyed cache, and requires a successful synchronous issuance-audit callback before releasing a token. Person-server document fetching and conditional processing remain open.
+The access server performs an admitted, deadline-bounded, no-redirect same-resource signed fetch with a fresh nonce, verifies bounded exact bytes before parsing or policy, coalesces concurrent requests with cancellation isolation, and uses recoverable least-recently-used eviction for its re-hashed cache. A successful synchronous issuance-audit callback remains required before token release. Person-server document fetching and conditional processing remain unsupported.
 
 Evidence:
 
 - `r3_journey_test.go:TestR3DirectGrantJourney`
+- `reference/r3_fetch_test.go:TestR3FetchCacheEvictsLeastRecentlyUsedCompletedDocument`
+- `reference/r3_fetch_test.go:TestR3FetchSingleFlightSurvivesLeaderAndWaiterCancellation`
+- `reference/r3_fetch_test.go:TestR3FetchRefusesDeniedRedirectedOversizedAndTimedOutDocuments`
+- `reference/r3_fetch_test.go:TestR3FetchRetryUsesDistinctNonceInSameClockSecond`
 
 ### `signature-key/name-accept-signature-sigkey-par` — Unsupported
 

@@ -58,6 +58,7 @@ type AccessServer struct {
 	r3CacheLimit          int
 	r3CacheMu             sync.Mutex
 	r3Cache               map[string]*r3CacheEntry
+	r3CacheSequence       uint64
 
 	replayMu      sync.Mutex
 	replayedProof map[string]time.Time
@@ -88,6 +89,8 @@ type r3CacheEntry struct {
 	exactBytes []byte
 	document   aauth.R3Document
 	err        error
+	complete   bool
+	lastUsed   uint64
 }
 
 func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
@@ -447,6 +450,8 @@ func (server *AccessServer) fetchR3Authorization(
 	server.r3CacheMu.Lock()
 	entry, exists := server.r3Cache[resourceToken.R3S256]
 	if exists {
+		server.r3CacheSequence++
+		entry.lastUsed = server.r3CacheSequence
 		ready := entry.ready
 		server.r3CacheMu.Unlock()
 		select {
@@ -468,10 +473,25 @@ func (server *AccessServer) fetchR3Authorization(
 		}, nil
 	}
 	if len(server.r3Cache) >= server.r3CacheLimit {
-		server.r3CacheMu.Unlock()
-		return nil, errors.New("reference: R3 cache capacity is exhausted")
+		oldestDigest := ""
+		oldestSequence := ^uint64(0)
+		for digest, candidate := range server.r3Cache {
+			if candidate.complete && candidate.lastUsed < oldestSequence {
+				oldestDigest = digest
+				oldestSequence = candidate.lastUsed
+			}
+		}
+		if oldestDigest == "" {
+			server.r3CacheMu.Unlock()
+			return nil, errors.New("reference: R3 cache capacity is occupied by active fetches")
+		}
+		delete(server.r3Cache, oldestDigest)
 	}
-	entry = &r3CacheEntry{ready: make(chan struct{})}
+	server.r3CacheSequence++
+	entry = &r3CacheEntry{
+		ready:    make(chan struct{}),
+		lastUsed: server.r3CacheSequence,
+	}
 	server.r3Cache[resourceToken.R3S256] = entry
 	server.r3CacheMu.Unlock()
 
@@ -488,6 +508,7 @@ func (server *AccessServer) fetchR3Authorization(
 	} else {
 		entry.exactBytes = append([]byte(nil), authorization.ExactBytes...)
 		entry.document = cloneR3Document(authorization.Document)
+		entry.complete = true
 	}
 	close(entry.ready)
 	server.r3CacheMu.Unlock()

@@ -2,6 +2,7 @@ package aauth
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -52,5 +53,48 @@ func TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "issuer domain") {
 		t.Fatalf("mismatched verification error = %v", err)
+	}
+}
+
+func TestVerifyAgentTokenRejectsCaseVariantClaimAlias(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 2, 19, 0, 0, 0, time.UTC)
+	providerKey := internalTestSigningKey(t, "provider-key")
+	agentKey := internalTestSigningKey(t, "agent-key")
+	claims, err := json.Marshal(AgentTokenClaims{
+		Issuer:       "https://provider.example",
+		DWK:          AgentDiscoveryDocument,
+		Subject:      "aauth:planner@provider.example",
+		JTI:          "agent-token",
+		Confirmation: Confirmation{JWK: agentKey.PublicJWK()},
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, claimName := range map[string]string{
+		"ASCII case alias":   "SUB",
+		"Unicode fold alias": "ſub",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ambiguousClaims := append(
+				[]byte(`{"`+claimName+`":"aauth:planner@provider.example",`),
+				claims[1:]...,
+			)
+			compact := signRawTestToken(t, providerKey, AgentTokenType, ambiguousClaims)
+			_, err := VerifyAgentToken(
+				context.Background(),
+				compact,
+				StaticKeyResolver{
+					"https://provider.example": {"provider-key": providerKey.PublicJWK()},
+				},
+				ClockFunc(func() time.Time { return now }),
+			)
+			if err == nil || !strings.Contains(err.Error(), "case-ambiguous object names") {
+				t.Fatalf("case-variant agent-token claim error = %v", err)
+			}
+		})
 	}
 }

@@ -1002,7 +1002,7 @@
       "source": "r3",
       "section": "authorization-endpoint-extensions",
       "status": "partial",
-      "claim": "The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, and returns one R3 reference alongside independently enforced scope. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.",
+      "claim": "The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, preserves that requested set in a serializable resource-grant value across agent reconstruction, and returns one R3 reference alongside independently enforced scope. Exact and case-fold-ambiguous request names are refused before decoding. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.",
       "evidence": [
         {
           "file": "r3_journey_test.go",
@@ -1014,7 +1014,7 @@
       "source": "r3",
       "section": "r3-document",
       "status": "partial",
-      "claim": "The reference resource validates the standard operation-entry shapes, preserves selected document bytes without reserialization, hashes and stores them by unpadded base64url SHA-256, advertises the vocabulary, and serves the exact bytes only to its signed access server. External durable document stores and multi-definition composition remain open.",
+      "claim": "The reference resource rejects exact and case-fold duplicate-name ambiguity, validates the standard operation-entry shapes, preserves selected bytes without reserialization, and requires deployment-owned exact-byte custody before issuing the hash-derived URI. The included atomic mode-0600 file store survives resource reconstruction, bounds per-document, total-byte, and count retention, rejects non-canonical digest paths, and evicts only documents whose resource-token retention has expired. It does not promise permanent historical retention after token expiry. The resource serves exact verified bytes only to its signed access server. Multi-process store coordination and multi-definition composition remain open.",
       "evidence": [
         {
           "file": "r3_journey_test.go",
@@ -1027,6 +1027,26 @@
         {
           "file": "r3_test.go",
           "test": "TestR3StandardVocabularyOperationShapes"
+        },
+        {
+          "file": "r3_test.go",
+          "test": "TestR3DocumentRejectsDuplicateNamesAtEveryDepth"
+        },
+        {
+          "file": "reference/r3_document_store_test.go",
+          "test": "TestFileR3DocumentStoreRetainsExactBytesAcrossRestart"
+        },
+        {
+          "file": "reference/r3_document_store_test.go",
+          "test": "TestFileR3DocumentStoreRefusesOversizedOrInvalidRetention"
+        },
+        {
+          "file": "reference/r3_document_store_test.go",
+          "test": "TestFileR3DocumentStoreRemovesExpiredDocumentsBeforeStartupCapacityCheck"
+        },
+        {
+          "file": "reference/r3_document_store_test.go",
+          "test": "TestFileR3DocumentStoreRejectsNonCanonicalDigestPaths"
         }
       ]
     },
@@ -1034,11 +1054,27 @@
       "source": "r3",
       "section": "r3-processing",
       "status": "partial",
-      "claim": "The access server performs a no-redirect same-resource signed fetch, verifies exact bytes before parsing or policy, coalesces and re-hashes a hash-keyed cache, and requires a successful synchronous issuance-audit callback before releasing a token. Person-server document fetching and conditional processing remain open.",
+      "claim": "The access server performs an admitted, deadline-bounded, no-redirect same-resource signed fetch with a fresh nonce, verifies bounded exact bytes before parsing or policy, coalesces concurrent requests with cancellation isolation, and uses recoverable least-recently-used eviction for its re-hashed cache. A successful synchronous issuance-audit callback remains required before token release. Person-server document fetching and conditional processing remain unsupported.",
       "evidence": [
         {
           "file": "r3_journey_test.go",
           "test": "TestR3DirectGrantJourney"
+        },
+        {
+          "file": "reference/r3_fetch_test.go",
+          "test": "TestR3FetchCacheEvictsLeastRecentlyUsedCompletedDocument"
+        },
+        {
+          "file": "reference/r3_fetch_test.go",
+          "test": "TestR3FetchSingleFlightSurvivesLeaderAndWaiterCancellation"
+        },
+        {
+          "file": "reference/r3_fetch_test.go",
+          "test": "TestR3FetchRefusesDeniedRedirectedOversizedAndTimedOutDocuments"
+        },
+        {
+          "file": "reference/r3_fetch_test.go",
+          "test": "TestR3FetchRetryUsesDistinctNonceInSameClockSecond"
         }
       ]
     },
@@ -1046,7 +1082,7 @@
       "source": "r3",
       "section": "auth-token-extensions",
       "status": "partial",
-      "claim": "Resource and auth tokens enforce complete URI/hash claim pairs; the selected auth token echoes the verified reference and a policy-narrowed direct grant, and the resource executes only a semantically matching real operation without enforcement-time fetching. Conditional challenges and per-call auth tokens remain open.",
+      "claim": "Resource and auth tokens enforce complete URI/hash claim pairs and reject exact or case-fold-ambiguous claim names. The selected auth token echoes the verified reference and a policy-narrowed direct grant; reconstructed agent state must retain the requested operation subset; and the resource executes only a semantically matching R3-required operation without enforcement-time fetching. This profile explicitly refuses conditional or deferred R3 authorization, including external HTTP 202 responses. Per-call auth tokens remain open.",
       "evidence": [
         {
           "file": "r3_journey_test.go",
@@ -1055,6 +1091,10 @@
         {
           "file": "r3_test.go",
           "test": "TestR3TokenClaimsRequireCompleteConsistentClaims"
+        },
+        {
+          "file": "r3_test.go",
+          "test": "TestVerifyAuthTokenRejectsDuplicateR3Claims"
         }
       ]
     },

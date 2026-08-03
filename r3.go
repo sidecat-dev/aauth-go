@@ -152,6 +152,9 @@ func ParseR3Document(exactBytes []byte) (R3Document, error) {
 	if len(exactBytes) == 0 {
 		return document, errors.New("aauth: R3 document is empty")
 	}
+	if err := rejectDuplicateJSONNames(exactBytes); err != nil {
+		return document, fmt.Errorf("aauth: R3 document: %w", err)
+	}
 	if err := json.Unmarshal(exactBytes, &document); err != nil {
 		return document, fmt.Errorf("aauth: parse R3 document: %w", err)
 	}
@@ -285,68 +288,6 @@ func parseR3Operation(operation json.RawMessage) (string, map[string]json.RawMes
 		return "", nil, errors.New("operation cannot be normalized")
 	}
 	return string(normalized), fields, nil
-}
-
-func rejectDuplicateJSONNames(value []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(value))
-	decoder.UseNumber()
-	if err := scanJSONValue(decoder); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("operation must contain one JSON value")
-	}
-	return nil
-}
-
-func scanJSONValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return errors.New("operation must be valid JSON")
-	}
-	delimiter, composite := token.(json.Delim)
-	if !composite {
-		return nil
-	}
-	switch delimiter {
-	case '{':
-		names := make(map[string]struct{})
-		for decoder.More() {
-			nameToken, err := decoder.Token()
-			if err != nil {
-				return errors.New("operation must be valid JSON")
-			}
-			name, ok := nameToken.(string)
-			if !ok {
-				return errors.New("operation object name must be a string")
-			}
-			if _, duplicate := names[name]; duplicate {
-				return fmt.Errorf("operation contains duplicate object name %q", name)
-			}
-			names[name] = struct{}{}
-			if err := scanJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil || closing != json.Delim('}') {
-			return errors.New("operation object is not closed")
-		}
-	case '[':
-		for decoder.More() {
-			if err := scanJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil || closing != json.Delim(']') {
-			return errors.New("operation array is not closed")
-		}
-	default:
-		return errors.New("operation contains an invalid JSON delimiter")
-	}
-	return nil
 }
 
 func validateR3OperationFields(vocabulary string, fields map[string]json.RawMessage) error {

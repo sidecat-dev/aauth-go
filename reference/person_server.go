@@ -1599,6 +1599,15 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		if required {
+			if resourceToken.R3URI != "" {
+				writeProblem(
+					response,
+					http.StatusNotImplemented,
+					"unsupported_r3_deferred",
+					errors.New("deferred R3 authorization is not implemented"),
+				)
+				return
+			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
@@ -1652,6 +1661,15 @@ func (server *PersonServer) completeAuthorization(
 			return
 		}
 		if exchange.deferred != nil {
+			if resourceToken.R3URI != "" {
+				writeProblem(
+					response,
+					http.StatusNotImplemented,
+					"unsupported_r3_deferred",
+					errors.New("deferred R3 authorization is not implemented"),
+				)
+				return
+			}
 			if err := server.beginFederatedAuthorization(
 				response,
 				authorizationContext,
