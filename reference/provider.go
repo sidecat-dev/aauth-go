@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -113,11 +114,29 @@ type AgentProviderConfig struct {
 	SigningKey            aauth.SigningKey
 	Clock                 aauth.Clock
 	NewID                 func() string
+	Events                *AgentProviderEventsConfig
 	Enrollments           EnrollmentStore
 	RefreshPolicy         AgentRefreshPolicy
 	RefreshReplays        RefreshReplayStore
 	AgentTokenLifetime    time.Duration
 	MaxDelegationLifetime time.Duration
+}
+
+// AgentProviderEventsConfig enables the public Events subscription profile.
+// The store and lifetime policy remain deployment-owned authority boundaries.
+type AgentProviderEventsConfig struct {
+	EventEndpoint           string
+	Store                   APEventStore
+	SubscriptionActiveUntil func(context.Context, string, string) (time.Time, error)
+	TokenLifetime           time.Duration
+}
+
+// EventSubscriptionRequest binds a resource and agent confirmation key to one
+// provider-generated event identifier.
+type EventSubscriptionRequest struct {
+	Resource string
+	Agent    string
+	AgentKey aauth.JWK
 }
 
 // AgentProvider publishes issuer discovery, supports direct issuance for
@@ -128,6 +147,10 @@ type AgentProvider struct {
 	signingKey            aauth.SigningKey
 	clock                 aauth.Clock
 	newID                 func() string
+	eventEndpoint         string
+	eventStore            APEventStore
+	eventActiveUntil      func(context.Context, string, string) (time.Time, error)
+	eventTokenLifetime    time.Duration
 	enrollments           EnrollmentStore
 	refreshPolicy         AgentRefreshPolicy
 	refreshReplays        RefreshReplayStore
@@ -147,6 +170,28 @@ func NewAgentProvider(config AgentProviderConfig) (*AgentProvider, error) {
 	}
 	if config.NewID == nil {
 		return nil, errors.New("reference: agent provider identifier source is required")
+	}
+	var eventEndpoint string
+	var eventStore APEventStore
+	var eventActiveUntil func(context.Context, string, string) (time.Time, error)
+	var eventTokenLifetime time.Duration
+	if config.Events != nil {
+		if err := aauth.ValidateEndpoint(config.Events.EventEndpoint); err != nil {
+			return nil, fmt.Errorf("reference: agent provider event endpoint: %w", err)
+		}
+		if config.Events.Store == nil {
+			return nil, errors.New("reference: agent provider event store is required")
+		}
+		if config.Events.SubscriptionActiveUntil == nil {
+			return nil, errors.New("reference: agent provider event active-until policy is required")
+		}
+		if config.Events.TokenLifetime <= 0 {
+			return nil, errors.New("reference: agent provider event token lifetime must be positive")
+		}
+		eventEndpoint = config.Events.EventEndpoint
+		eventStore = config.Events.Store
+		eventActiveUntil = config.Events.SubscriptionActiveUntil
+		eventTokenLifetime = config.Events.TokenLifetime
 	}
 	lifetime := config.AgentTokenLifetime
 	if lifetime == 0 {
@@ -171,12 +216,74 @@ func NewAgentProvider(config AgentProviderConfig) (*AgentProvider, error) {
 		signingKey:            config.SigningKey,
 		clock:                 config.Clock,
 		newID:                 config.NewID,
+		eventEndpoint:         eventEndpoint,
+		eventStore:            eventStore,
+		eventActiveUntil:      eventActiveUntil,
+		eventTokenLifetime:    eventTokenLifetime,
 		enrollments:           config.Enrollments,
 		refreshPolicy:         config.RefreshPolicy,
 		refreshReplays:        refreshReplays,
 		agentTokenLifetime:    lifetime,
 		maxDelegationLifetime: maxDelegationLifetime,
 	}, nil
+}
+
+// IssueEventSubscription commits the AP authority before returning the exact
+// single-shot public registration credential to its caller.
+func (provider *AgentProvider) IssueEventSubscription(
+	ctx context.Context,
+	request EventSubscriptionRequest,
+) (string, error) {
+	if provider == nil || provider.eventStore == nil {
+		return "", errors.New("reference: agent provider Events is not configured")
+	}
+	if err := aauth.ValidateServerIdentifier(request.Resource); err != nil {
+		return "", fmt.Errorf("reference: event subscription resource: %w", err)
+	}
+	if err := aauth.ValidateAgentIdentifier(request.Agent); err != nil {
+		return "", fmt.Errorf("reference: event subscription agent: %w", err)
+	}
+	if _, err := request.AgentKey.PublicKey(); err != nil {
+		return "", fmt.Errorf("reference: event subscription agent key: %w", err)
+	}
+	eventID := provider.newID()
+	if eventID == "" {
+		return "", errors.New("reference: event subscription identifier source returned an empty value")
+	}
+	now := provider.clock.Now()
+	activeUntil, err := provider.eventActiveUntil(ctx, request.Resource, request.Agent)
+	if err != nil {
+		return "", fmt.Errorf("reference: event subscription active-until policy: %w", err)
+	}
+	if !activeUntil.After(now) {
+		return "", errors.New("reference: event subscription active-until must be in the future")
+	}
+	maxUses := 1
+	compact, err := aauth.MintSubscribeToken(provider.signingKey, aauth.SubscribeTokenClaims{
+		Issuer:       provider.identifier,
+		DWK:          aauth.AgentDiscoveryDocument,
+		Subject:      request.Agent,
+		Audience:     request.Resource,
+		Confirmation: aauth.Confirmation{JWK: request.AgentKey},
+		EventID:      eventID,
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(provider.eventTokenLifetime).Unix(),
+		MaxUses:      &maxUses,
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := provider.eventStore.CreateSubscription(ctx, APEventSubscription{
+		APIssuer:    provider.identifier,
+		EventID:     eventID,
+		Resource:    request.Resource,
+		Agent:       request.Agent,
+		ActiveUntil: activeUntil,
+		MaxUses:     maxUses,
+	}); err != nil {
+		return "", err
+	}
+	return compact, nil
 }
 
 func (provider *AgentProvider) IssueAgentToken(request aauth.AgentTokenRequest) (string, error) {
@@ -195,10 +302,14 @@ func (provider *AgentProvider) Handler() http.Handler {
 		mux.HandleFunc("POST /refresh", provider.refresh)
 	}
 	mux.HandleFunc("GET /.well-known/aauth-agent.json", func(response http.ResponseWriter, _ *http.Request) {
-		writeJSON(response, http.StatusOK, map[string]any{
+		metadata := map[string]any{
 			"issuer":   provider.identifier,
 			"jwks_uri": provider.identifier + "/jwks",
-		})
+		}
+		if provider.eventEndpoint != "" {
+			metadata["event_endpoint"] = provider.eventEndpoint
+		}
+		writeJSON(response, http.StatusOK, metadata)
 	})
 	mux.HandleFunc("GET /jwks", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, map[string]any{
