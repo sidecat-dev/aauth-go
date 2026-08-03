@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +46,16 @@ type ResourceConfig struct {
 	// typed mapping. The resource serializes and retains the returned proposal
 	// before exposing a challenge.
 	R3ProposalForRequest func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
+	Events               *ResourceEventsConfig
+}
+
+// ResourceEventsConfig enables public registration and supplies the external
+// authority and delivery client used by the Events profile.
+type ResourceEventsConfig struct {
+	PublicSubscriptionPath string
+	Store                  ResourceEventStore
+	HTTPClient             *http.Client
+	ActiveUntil            func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 }
 
 type Resource struct {
@@ -67,6 +79,10 @@ type Resource struct {
 	r3RequiredForRequest    func(context.Context, *http.Request) (bool, error)
 	r3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
 	r3ProposalForRequest    func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
+	eventSubscriptionPath   string
+	eventStore              ResourceEventStore
+	eventHTTPClient         *http.Client
+	eventActiveUntil        func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 	randomMu                sync.Mutex
 	pendingMu               sync.Mutex
 	pending                 map[string]*pendingAuthorization
@@ -162,6 +178,25 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 			return nil, errors.New("reference: R3 proposal policy requires durable proposal custody and consumption")
 		}
 	}
+	var eventSubscriptionPath string
+	var eventStore ResourceEventStore
+	var eventHTTPClient *http.Client
+	var eventActiveUntil func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
+	if config.Events != nil {
+		if err := validatePublicRoutePath(config.Events.PublicSubscriptionPath); err != nil {
+			return nil, fmt.Errorf("reference: resource Events subscription path: %w", err)
+		}
+		if config.Events.Store == nil || config.Events.HTTPClient == nil || config.Events.ActiveUntil == nil {
+			return nil, errors.New("reference: resource Events requires store, HTTP client, and active-until policy")
+		}
+		if config.SigningKey.ID() == "" {
+			return nil, errors.New("reference: resource Events requires a signing key")
+		}
+		eventSubscriptionPath = config.Events.PublicSubscriptionPath
+		eventStore = config.Events.Store
+		eventHTTPClient = config.Events.HTTPClient
+		eventActiveUntil = config.Events.ActiveUntil
+	}
 	r3Vocabularies := make(map[string]json.RawMessage, len(config.R3Vocabularies))
 	for vocabulary, discovery := range config.R3Vocabularies {
 		if err := aauth.ValidateR3VocabularyURI(vocabulary); err != nil {
@@ -207,6 +242,10 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		r3RequiredForRequest:    config.R3RequiredForRequest,
 		r3OperationForRequest:   config.R3OperationForRequest,
 		r3ProposalForRequest:    config.R3ProposalForRequest,
+		eventSubscriptionPath:   eventSubscriptionPath,
+		eventStore:              eventStore,
+		eventHTTPClient:         eventHTTPClient,
+		eventActiveUntil:        eventActiveUntil,
 		pending:                 make(map[string]*pendingAuthorization),
 		access:                  make(map[string]localAccessGrant),
 		replayedProof:           make(map[string]time.Time),
@@ -215,6 +254,9 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 
 func (resource *Resource) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if resource.eventSubscriptionPath != "" {
+		mux.HandleFunc("POST "+resource.eventSubscriptionPath, resource.handlePublicEventSubscription)
+	}
 	mux.HandleFunc("POST /authorize", resource.handleAuthorize)
 	mux.HandleFunc("GET /pending/{id}", resource.handlePendingAuthorization)
 	mux.HandleFunc("GET /interaction/{id}", resource.handleInteraction)
@@ -224,6 +266,69 @@ func (resource *Resource) Handler() http.Handler {
 	mux.HandleFunc("GET /r3/{s256}", resource.handleR3Document)
 	mux.HandleFunc("/", resource.handleProtected)
 	return mux
+}
+
+func (resource *Resource) handlePublicEventSubscription(response http.ResponseWriter, request *http.Request) {
+	verified, err := aauth.VerifyRequest(
+		request.Context(),
+		request,
+		resource.keyResolver,
+		resource.clock,
+		aauth.VerifyRequestOptions{AllowedCredentialTypes: []string{aauth.SubscribeTokenType}},
+	)
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
+	claims := verified.SubscribeToken
+	if claims == nil {
+		writeSignatureFailure(response, errors.New("reference: verified subscribe token is required"))
+		return
+	}
+	if claims.Audience != resource.identifier {
+		writeProblem(response, http.StatusForbidden, "invalid_subscription", errors.New("reference: event subscription audience does not match resource"))
+		return
+	}
+	if claims.MaxUses == nil || *claims.MaxUses != 1 {
+		writeProblem(response, http.StatusForbidden, "unsupported_use_policy", errors.New("reference: public event subscription requires max_uses 1"))
+		return
+	}
+	activeUntil, err := resource.eventActiveUntil(request.Context(), *claims)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
+		return
+	}
+	if !activeUntil.After(resource.clock.Now()) {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("reference: resource event active-until must be in the future"))
+		return
+	}
+	err = resource.eventStore.Register(request.Context(), ResourceEventSubscription{
+		APIssuer:    claims.Issuer,
+		EventID:     claims.EventID,
+		Resource:    resource.identifier,
+		Agent:       claims.Subject,
+		ActiveUntil: activeUntil,
+	})
+	if err != nil {
+		if errors.Is(err, ErrEventSubscriptionConflict) {
+			writeProblem(response, http.StatusConflict, "subscription_conflict", err)
+			return
+		}
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(http.StatusCreated)
+}
+
+func validatePublicRoutePath(value string) error {
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || value == "/" || !strings.HasPrefix(value, "/") ||
+		parsed.Path != value || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		strings.Contains(value, "//") {
+		return errors.New("public route must be one unescaped absolute path")
+	}
+	return nil
 }
 
 func (resource *Resource) handleAuthorize(response http.ResponseWriter, request *http.Request) {

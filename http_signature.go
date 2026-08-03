@@ -78,6 +78,7 @@ type VerifiedRequest struct {
 	JKTJWT           *VerifiedJKTJWT
 	AgentToken       *AgentTokenClaims
 	AuthToken        *AuthTokenClaims
+	SubscribeToken   *SubscribeTokenClaims
 	SelfJWT          *VerifiedSelfJWT
 	Created          time.Time
 	ReplayKey        string
@@ -440,6 +441,16 @@ func VerifyRequest(
 			verified.Signer = claims.Agent
 			verified.PublicKey = claims.Confirmation.JWK
 			verified.AuthToken = &claims
+		case SubscribeTokenType:
+			claims, verifyErr := VerifySubscribeToken(ctx, verified.RawCredential, resolver, clock)
+			if verifyErr != nil {
+				return verified, classifyJWTVerificationError(verifyErr)
+			}
+			verified.CredentialType = SubscribeTokenType
+			verified.Agent = claims.Subject
+			verified.Signer = claims.Subject
+			verified.PublicKey = claims.Confirmation.JWK
+			verified.SubscribeToken = &claims
 		default:
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type))
 		}

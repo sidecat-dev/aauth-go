@@ -24,6 +24,14 @@ type AgentConfig struct {
 	KeyResolver aauth.KeyResolver
 	HTTPClient  *http.Client
 	Clock       aauth.Clock
+	Events      *AgentEventsConfig
+}
+
+// AgentEventsConfig supplies replaceable local custody and action execution
+// for the Events profile.
+type AgentEventsConfig struct {
+	Store  AgentEventStore
+	Action EventAction
 }
 
 type Agent struct {
@@ -33,6 +41,8 @@ type Agent struct {
 	keyResolver aauth.KeyResolver
 	httpClient  *http.Client
 	clock       aauth.Clock
+	eventStore  AgentEventStore
+	eventAction EventAction
 }
 
 type Grant struct {
@@ -167,6 +177,15 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		config.HTTPClient == nil || config.Clock == nil {
 		return nil, errors.New("reference: agent requires key, token, resolver, HTTP client, and clock")
 	}
+	var eventStore AgentEventStore
+	var eventAction EventAction
+	if config.Events != nil {
+		if config.Events.Store == nil || config.Events.Action == nil {
+			return nil, errors.New("reference: agent Events requires store and action")
+		}
+		eventStore = config.Events.Store
+		eventAction = config.Events.Action
+	}
 	return &Agent{
 		identifier:  config.Identifier,
 		signingKey:  config.SigningKey,
@@ -174,7 +193,65 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		keyResolver: config.KeyResolver,
 		httpClient:  config.HTTPClient,
 		clock:       config.Clock,
+		eventStore:  eventStore,
+		eventAction: eventAction,
 	}, nil
+}
+
+// RegisterPublicEventSubscription retains the local continuation context
+// before signing and sending the public subscription request.
+func (agent *Agent) RegisterPublicEventSubscription(
+	ctx context.Context,
+	endpoint string,
+	compact string,
+	localContext AgentEventContext,
+) error {
+	if agent == nil || agent.eventStore == nil {
+		return errors.New("reference: agent Events is not configured")
+	}
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return err
+	}
+	resourceIdentifier, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return err
+	}
+	claims, err := aauth.VerifySubscribeToken(ctx, compact, agent.keyResolver, agent.clock)
+	if err != nil {
+		return err
+	}
+	if claims.Subject != agent.identifier {
+		return errors.New("reference: event subscription agent does not match this agent")
+	}
+	if claims.Audience != resourceIdentifier {
+		return errors.New("reference: event subscription resource does not match endpoint")
+	}
+	if !claims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+		return errors.New("reference: event subscription confirmation key does not match this agent")
+	}
+	if localContext.APIssuer != claims.Issuer || localContext.EventID != claims.EventID {
+		return errors.New("reference: event subscription context does not match token")
+	}
+	if err := agent.eventStore.PutContext(ctx, localContext); err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	if err := aauth.SignRequest(request, agent.signingKey, compact, agent.clock); err != nil {
+		return err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return responseError(response)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8<<10))
+	return nil
 }
 
 func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal aauth.MissionProposal) (aauth.ApprovedMission, error) {
