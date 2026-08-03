@@ -335,8 +335,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
   inbox, or agent processing state.
 - The exact journey contains no event payload and exhausts one use once.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./... -run '^TestPublicSubscriptionEventSurvivesHostReconstruction$' -count=1`
 
 **Sources:**
 
@@ -364,8 +364,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - The counting resolver remains at zero and stable typed errors distinguish
   malformed JWT, expired JWT, and invalid key input.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test . -run '^TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery$' -count=1`
 
 **Sources:**
 
@@ -395,8 +395,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - A missing JWKS key reports `unknown_key`; excessive lifetime and claim
   mismatch are refused after JWT proof but before application mutation.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test . -run '^(TestSelfJWTUsesOneDiscoveredKeyForBothProofs|TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof|TestSelfJWTUsesAdmittedHTTPKeyForBothProofs|TestSubscribeAndEventClaimsRejectRequiredFieldMutations)$' -count=1`
 
 **Sources:**
 
@@ -426,8 +426,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - Cached key material cannot make an expired JWT usable, and retained resolver
   state remains bounded.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test . -run '^(TestHTTPKeyResolverPresenterDirectedEgressPolicy|TestSelfJWTExpiryCannotUseWarmDiscoveryCache|TestHTTPKeyResolverRetainedStateIsBounded|TestHTTPKeyResolverEvictsTiedRetainedStateDeterministically|TestHTTPKeyResolverBoundsConcurrentUniqueInflight|TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache|TestHTTPKeyResolverAppliesUnknownKeyRefreshFloor|TestHTTPKeyResolverDoesNotFetchBeforeAdmission)$' -count=1`
 
 **Sources:**
 
@@ -455,8 +455,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - Fresh cache state avoids an extra fetch; delivery after expiry targets B and
   no registration-time endpoint overrides it.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./... -run '^(TestAgentEventMetadataUsesAdmittedHTTPFreshness|TestAgentEventMetadataDoesNotCacheWhenCacheControlForbidsIt|TestAgentProviderEventsMetadataRotatesWithHTTPFreshness|TestPublicSubscriptionEventSurvivesHostReconstruction)$' -count=1`
 
 **Sources:**
 
@@ -486,8 +486,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
   binding mutation fail.
 - No refusal creates or replaces durable resource subscription state.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./... -run '^(TestSubscribeAndEventClaimsRejectRequiredFieldMutations|TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof|TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody)$' -count=1`
 
 **Sources:**
 
@@ -517,8 +517,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
   the live subscription remains usable after registration-token expiry.
 - Both duplicate registrations are refused without replacing or extending it.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./... -run '^(TestPublicEventRegistrationCustodySurvivesReconstruction|TestPublicSubscriptionEventSurvivesHostReconstruction)$' -count=1`
 
 **Sources:**
 
@@ -545,8 +545,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
   work.
 - The later healthy retry commits one recoverable event and one use together.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./reference -run '^TestAPEventEndpointCommitsInboxBefore202$' -count=1`
 
 **Sources:**
 
@@ -575,8 +575,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - Reconstructed state remains exhausted with one exact inbox record, and the
   resource removes its exhausted local subscription.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test -race ./... -run '^(TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction|TestPublicSubscriptionEventSurvivesHostReconstruction)$' -count=1`
 
 **Sources:**
 
@@ -602,8 +602,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - Responses use the specified `400`, `401`, `403`, `404`, and `429` classes.
 - Every refusal leaves the snapshot unchanged and queues no adapter work.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./reference -run '^TestAPEventEndpointRefusalMatrixLeavesAuthorityUnchanged$' -count=1`
 
 **Sources:**
 
@@ -648,8 +648,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
   context rather than unverified claims, and is acknowledged only after that
   refusal survives reconstruction.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test -race ./reference -run '^(TestAgentEventProcessing|TestAgentEventRefusalMatrixSurvivesStoreReconstruction|TestEventAdapter)' -count=1`
 
 **Sources:**
 
@@ -678,8 +678,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
   ownership of protected tickets and AsyncAPI, while AP-agent transport stays
   explicitly non-normative.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./... -run '^(TestEventsPublicClaimsMatchQualifiedProfile|TestSubscribeAndEventClaimsRejectRequiredFieldMutations|TestPublicSubscriptionEventSurvivesHostReconstruction)$' -count=1`
 
 **Sources:**
 
@@ -707,8 +707,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - Successful release has one exact recoverable `(AP issuer, eid)` record whose
   host `active_until` is independent from token `exp`.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./reference -run '^TestAgentProviderIssuesOnlyAfterDurableSubscriptionCommit$' -count=1`
 
 **Sources:**
 
@@ -737,8 +737,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
   leaves adapter work pending.
 - Healthy retries recover exact authority-qualified state and advance once.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./reference -run '^(TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof|TestEventAdapterRecoversAfterDedupCustodyFailure)$' -count=1`
 
 **Sources:**
 
@@ -765,8 +765,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - Both `(AP issuer, eid)` records coexist and remain independently loadable.
 - A duplicate from its own AP cannot replace or extend either record.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test ./reference -run '^TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer$' -count=1`
 
 **Sources:**
 
@@ -797,8 +797,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 - A different JWT also returns `429`; reconstruction preserves exhaustion and
   the single accepted inbox record.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test -race ./... -run '^(TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429|TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction|TestPublicSubscriptionEventSurvivesHostReconstruction)$' -count=1`
 
 **Sources:**
 
@@ -839,8 +839,8 @@ STORY-0013, STORY-0014, STORY-0015, STORY-0017
 - These are reference-host qualification results, not new Events protocol or
   enterprise-storage conformance claims.
 
-**Automation status:** pending
-**Execution command:** TBD
+**Automation status:** automated
+**Execution command:** `go test -race ./... -run '^(TestFileEventStores|TestPublicSubscriptionEventSurvivesHostReconstruction)$' -count=1`
 
 **Sources:**
 

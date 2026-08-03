@@ -1,10 +1,10 @@
 # AAuth evidence roadmap
 
 This roadmap orders repository evidence for the accepted AAuth M4 and M5
-verticals. Sidecat remains the authority for milestone and work state. M4 is
-closed. The only newly scheduled node is the already accepted M5 Events
-successor plus its already accepted Signature-Key self-jwt dependency; this
-does not revise the dependency-ordered M1-M8 roadmap.
+verticals. Sidecat remains the authority for milestone and work state. M4 and
+M5 are closed. The completed M5 Events successor includes its accepted
+Signature-Key self-jwt dependency; this does not revise the dependency-ordered
+M1-M8 roadmap.
 
 **Reconciliation (2026-08-02):** The initial three-step evidence draft listed
 STORY-0001 through STORY-0004 in both ITER-0000 and ITER-0001. The refusal and
@@ -60,7 +60,8 @@ and recovery behavior without becoming an enterprise storage ceiling.
 STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015, STORY-0016,
 STORY-0017
 **Journey scenario:** JOURNEY-0002
-**Status:** pending
+**Status:** done
+**Completed:** 2026-08-03
 **Impacted scenarios:** JOURNEY-0002, SCENARIO-0009 through SCENARIO-0024
 **Harness-first task:** Extend the existing real-HTTP logical gateway with
 separate AP, resource, adapter, and agent reconstruction seams. The first RED

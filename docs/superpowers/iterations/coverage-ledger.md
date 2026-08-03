@@ -12,22 +12,22 @@
 | SCENARIO-0007 | STORY-0005 | ITER-0002 | resource/AS reconstruction and custody refusal | automated, pass |
 | SCENARIO-0008 | STORY-0005 | ITER-0002 | proof replay and durable token-consumption tests | automated, pass |
 | JOURNEY-0002 | STORY-0006..0015 | ITER-0003 | `TestPublicSubscriptionEventSurvivesHostReconstruction` | automated, pass |
-| SCENARIO-0009 | STORY-0006 | ITER-0003 | self-jwt preflight/no-discovery matrix | pending |
-| SCENARIO-0010 | STORY-0006..0007,0012..0013 | ITER-0003 | same-key dual-proof exchange | pending |
-| SCENARIO-0011 | STORY-0007 | ITER-0003 | admitted and bounded discovery | pending |
-| SCENARIO-0012 | STORY-0008,0012 | ITER-0003 | AP metadata cache and endpoint rotation | pending |
-| SCENARIO-0013 | STORY-0009,0011 | ITER-0003 | subscribe-token and proof mutation matrix | pending |
-| SCENARIO-0014 | STORY-0011 | ITER-0003 | token-expiry independence and duplicate registration | pending |
-| SCENARIO-0015 | STORY-0013 | ITER-0003 | failure-injected atomic inbox acceptance | pending |
-| SCENARIO-0016 | STORY-0012..0013 | ITER-0003 | concurrent final use and resource cleanup | pending |
-| SCENARIO-0017 | STORY-0013 | ITER-0003 | AP response-class and no-mutation matrix | pending |
+| SCENARIO-0009 | STORY-0006 | ITER-0003 | `TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery` | automated, pass |
+| SCENARIO-0010 | STORY-0006..0007,0012..0013 | ITER-0003 | same-key dual-proof and strict Events-claim tests | automated, pass |
+| SCENARIO-0011 | STORY-0007 | ITER-0003 | egress policy, bounded retained/inflight state, deterministic eviction, and warm-cache expiry tests | automated, pass |
+| SCENARIO-0012 | STORY-0008,0012 | ITER-0003 | metadata freshness, cache prohibition, rotation, and journey tests | automated, pass |
+| SCENARIO-0013 | STORY-0009,0011 | ITER-0003 | strict token claims, raw mutation endpoint, and exact proof tests | automated, pass |
+| SCENARIO-0014 | STORY-0011 | ITER-0003 | registration reconstruction, expiry independence, and nonreplacement journey | automated, pass |
+| SCENARIO-0015 | STORY-0013 | ITER-0003 | `TestAPEventEndpointCommitsInboxBefore202` failure/recovery path | automated, pass |
+| SCENARIO-0016 | STORY-0012..0013 | ITER-0003 | race-qualified real resource/direct final-use test across AP and resource reconstruction | automated, pass |
+| SCENARIO-0017 | STORY-0013 | ITER-0003 | exact HTTP refusal/problem/signature/no-mutation matrix | automated, pass |
 | SCENARIO-0018 | STORY-0014..0016 | ITER-0003 | focused agent state-machine race suite | automated, pass |
-| SCENARIO-0019 | STORY-0010,0014,0016 | ITER-0003 | exact-byte and public-claim audit | pending |
-| SCENARIO-0020 | STORY-0009 | ITER-0003 | AP collision/commit/restart custody | pending |
-| SCENARIO-0021 | STORY-0010..0011,0015 | ITER-0003 | context/resource/dedup custody failures | pending |
-| SCENARIO-0022 | STORY-0011 | ITER-0003 | two-AP same-eid federation identity | pending |
-| SCENARIO-0023 | STORY-0012..0013 | ITER-0003 | lost-response exact-token retry and exhaustion | pending |
-| SCENARIO-0024 | STORY-0009..0015,0017 | ITER-0003 | bounded replaceable interfaces and file adapters | pending |
+| SCENARIO-0019 | STORY-0010,0014,0016 | ITER-0003 | payload mutation tests, full journey, README invariant, and verified source-coverage report | automated, pass |
+| SCENARIO-0020 | STORY-0009 | ITER-0003 | exact token/record identity plus fail-before-commit, healthy retry, and collision tests | automated, pass |
+| SCENARIO-0021 | STORY-0010..0011,0015 | ITER-0003 | registration authority failure and agent dedup-custody failure/retry tests | automated, pass |
+| SCENARIO-0022 | STORY-0011 | ITER-0003 | two reconstructed AP authorities sharing one opaque `eid` without collision | automated, pass |
+| SCENARIO-0023 | STORY-0012..0013 | ITER-0003 | exact-JWT lost-202 retry, different-JWT final-use race, 429 settlement, and reconstruction | automated, pass |
+| SCENARIO-0024 | STORY-0009..0015,0017 | ITER-0003 | bounded file-adapter corpus plus reconstructed end-to-end journey | automated, pass |
 
 ## M5 source-chunk coverage
 

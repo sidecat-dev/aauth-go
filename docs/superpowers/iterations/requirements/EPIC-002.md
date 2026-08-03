@@ -6,7 +6,7 @@ Events-specific verifier.
 **Stories:** STORY-0006 through STORY-0007
 **Primary source:** `draft-hardt-httpbis-signature-key-06`
 **Accepted scope:** AAuth complete-spec-family roadmap M5 prerequisite
-**Status:** 0/2 done
+**Status:** 2/2 done
 
 ## STORY-0006
 
@@ -49,7 +49,7 @@ the same discoverable issuer key
 
 **Sources:** Signature-Key lines 660-721, 1271-1276
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0007
 
@@ -90,7 +90,7 @@ or unbounded trust state
 
 **Sources:** Signature-Key lines 1171-1215, 1248-1276
 
-**Status:** pending
+**Status:** done
 
 ## Selected-profile boundaries
 

@@ -35,6 +35,79 @@ func TestEmbeddedCoverageEvidenceAndReportAreCurrent(t *testing.T) {
 	}
 }
 
+func TestEventsPublicClaimsMatchQualifiedProfile(t *testing.T) {
+	bundle, err := Embedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDir, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme, err := os.ReadFile(filepath.Join(repoDir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedREADME := strings.Join(strings.Fields(string(readme)), " ")
+	for _, required := range []string{
+		"The selected public Events profile is implemented and qualified",
+		"same admitted, discovered key verifies both the compact JWT and its HTTP Message Signature",
+		"`max_uses: 1`",
+		"retains its local context and registers that exact token at the resource",
+		"payload-free event",
+		"AP can see the event token",
+		"Any future token-carried payload would therefore be AP-visible",
+		"retrieves current details from the resource under its current authorization",
+		"Lost `202 Accepted`",
+		"fresh HTTP proof",
+		"`429 Too Many Requests`",
+		"non-normative host-integration adapter",
+		"Protected subscription tickets, AsyncAPI, token payloads, and multi-event replay remain outside this profile",
+		"single-writer reference-host qualification",
+	} {
+		if !strings.Contains(normalizedREADME, required) {
+			t.Errorf("README does not state qualified Events boundary %q", required)
+		}
+	}
+	if strings.Contains(normalizedREADME, "Events, platform enrollment/attestation, and the self-jwt") {
+		t.Fatal("README still identifies Events and self-jwt as unimplemented")
+	}
+
+	wantClaims := map[string]string{
+		"signature-key\x00name-self-issued-jwt-self-jwt": "same discovered key",
+		"events\x00protocol-overview":                    "public single-use",
+		"events\x00subscribe-token":                      "max_uses:1",
+		"events\x00subscription-registration":            "exact subscribe token",
+		"events\x00event-token":                          "payload-free",
+		"events\x00event-delivery":                       "exact event token",
+		"events\x00ap-to-agent":                          "non-normative",
+		"events\x00event-discovery":                      "AsyncAPI",
+	}
+	seen := make(map[string]bool, len(wantClaims))
+	for _, annotation := range bundle.Manifest.Annotations {
+		key := annotation.Source + "\x00" + annotation.Section
+		requiredClaim, wanted := wantClaims[key]
+		if !wanted {
+			continue
+		}
+		seen[key] = true
+		if annotation.Status != StatusPartial {
+			t.Errorf("coverage annotation %q status = %q, want partial", key, annotation.Status)
+		}
+		if !strings.Contains(annotation.Claim, requiredClaim) {
+			t.Errorf("coverage annotation %q claim does not contain %q: %q", key, requiredClaim, annotation.Claim)
+		}
+		if len(annotation.Evidence) == 0 {
+			t.Errorf("coverage annotation %q has no executable evidence", key)
+		}
+	}
+	for key := range wantClaims {
+		if !seen[key] {
+			t.Errorf("coverage annotation %q is absent", key)
+		}
+	}
+}
+
 func TestBundleVerifiesPinnedSourcesSectionsAndEvidence(t *testing.T) {
 	sourceDir := t.TempDir()
 	repoDir := t.TempDir()

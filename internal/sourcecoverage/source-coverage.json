@@ -947,8 +947,22 @@
     {
       "source": "signature-key",
       "section": "name-self-issued-jwt-self-jwt",
-      "status": "unsupported",
-      "claim": "The self-jwt scheme is not implemented."
+      "status": "partial",
+      "claim": "The selected portable self-jwt profile uses the same discovered key to verify both the compact JWT and its HTTP Message Signature, rejects unsafe issuer, discovery, and time claims before application use, and runs under deployment-owned presenter-directed egress policy. Other self-issued JWT profiles are unclaimed.",
+      "evidence": [
+        {
+          "file": "http_signature_self_jwt_test.go",
+          "test": "TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery"
+        },
+        {
+          "file": "http_signature_self_jwt_test.go",
+          "test": "TestSelfJWTUsesOneDiscoveredKeyForBothProofs"
+        },
+        {
+          "file": "discovery_policy_test.go",
+          "test": "TestSelfJWTUsesAdmittedHTTPKeyForBothProofs"
+        }
+      ]
     },
     {
       "source": "signature-key",
@@ -1173,44 +1187,122 @@
     {
       "source": "events",
       "section": "protocol-overview",
-      "status": "unsupported",
-      "claim": "The AAuth Events protocol is not implemented."
+      "status": "partial",
+      "claim": "The selected public single-use profile qualifies one payload-free subscription and event across independent reconstructed AP, resource, and agent hosts. Protected subscriptions, payloads, multi-event replay, and complete Events conformance remain open.",
+      "evidence": [
+        {
+          "file": "events_journey_test.go",
+          "test": "TestPublicSubscriptionEventSurvivesHostReconstruction"
+        }
+      ]
     },
     {
       "source": "events",
       "section": "subscribe-token",
-      "status": "unsupported",
-      "claim": "Subscribe tokens are not implemented."
+      "status": "partial",
+      "claim": "Strict subscribe-token issue and verification are exercised with the required issuer, aa-subscribe+jwt type, agent discovery document, subject, audience, embedded agent key, event id, issued-at and expiry claims; the selected public profile requires max_uses:1.",
+      "evidence": [
+        {
+          "file": "events_test.go",
+          "test": "TestSubscribeAndEventClaimsRejectRequiredFieldMutations"
+        },
+        {
+          "file": "reference/events_provider_test.go",
+          "test": "TestAgentProviderIssuesOnlyAfterDurableSubscriptionCommit"
+        }
+      ]
     },
     {
       "source": "events",
       "section": "subscription-registration",
-      "status": "unsupported",
-      "claim": "Event subscription registration is not implemented."
+      "status": "partial",
+      "claim": "Public registration requires the exact subscribe token, its embedded agent proof key, max_uses:1, and a future active window; the resource commits subscription authority and the agent binding without replacement across reconstruction. Agent-local context remains agent-host custody. Protected ticket registration remains open.",
+      "evidence": [
+        {
+          "file": "reference/events_registration_test.go",
+          "test": "TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof"
+        },
+        {
+          "file": "reference/events_registration_test.go",
+          "test": "TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody"
+        },
+        {
+          "file": "reference/events_registration_test.go",
+          "test": "TestPublicEventRegistrationCustodySurvivesReconstruction"
+        }
+      ]
     },
     {
       "source": "events",
       "section": "event-token",
-      "status": "unsupported",
-      "claim": "Event tokens are not implemented."
+      "status": "partial",
+      "claim": "The strict aa-event+jwt profile carries one payload-free event identity with resource issuer, resource discovery document, agent audience, event id, issued-at, and expiry claims. Token-carried event data is not supported.",
+      "evidence": [
+        {
+          "file": "events_test.go",
+          "test": "TestSubscribeAndEventClaimsRejectRequiredFieldMutations"
+        },
+        {
+          "file": "events_journey_test.go",
+          "test": "TestPublicSubscriptionEventSurvivesHostReconstruction"
+        }
+      ]
     },
     {
       "source": "events",
       "section": "event-delivery",
-      "status": "unsupported",
-      "claim": "Resource-to-agent-provider event delivery is not implemented."
+      "status": "partial",
+      "claim": "Resource-to-AP delivery retains one exact event token before send, uses fresh HTTP proof on retry, atomically commits one use and exact event token inbox custody before 202, and treats an exact-token 429 retry after an unknown outcome as deterministic settlement. A different valid token after exhaustion also returns 429 without a second acceptance or state mutation.",
+      "evidence": [
+        {
+          "file": "reference/events_delivery_test.go",
+          "test": "TestAPEventEndpointCommitsInboxBefore202"
+        },
+        {
+          "file": "reference/events_delivery_test.go",
+          "test": "TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction"
+        },
+        {
+          "file": "events_journey_test.go",
+          "test": "TestPublicSubscriptionEventSurvivesHostReconstruction"
+        }
+      ]
     },
     {
       "source": "events",
       "section": "ap-to-agent",
-      "status": "unsupported",
-      "claim": "Agent-provider-to-agent event delivery is not implemented."
+      "status": "partial",
+      "claim": "A non-normative host adapter advances one AP inbox event through durable agent pending, dispatched, completed, or refused states; terminal custody precedes AP acknowledgement and unknown action outcomes remain dispatched for reconciliation. No AP-to-agent wire protocol is claimed.",
+      "evidence": [
+        {
+          "file": "reference/events_agent_test.go",
+          "test": "TestAgentEventProcessingReconcilesDispatchedUnknownHonestly"
+        },
+        {
+          "file": "reference/events_agent_test.go",
+          "test": "TestEventAdapterAcknowledgesOnlyDurableTerminalDisposition"
+        },
+        {
+          "file": "reference/events_agent_test.go",
+          "test": "TestAgentEventRefusalMatrixSurvivesStoreReconstruction"
+        }
+      ]
     },
     {
       "source": "events",
       "section": "event-discovery",
-      "status": "unsupported",
-      "claim": "AAuth event discovery is not implemented."
+      "status": "partial",
+      "claim": "Agent-provider event endpoint discovery is exercised through admitted agent metadata with HTTP freshness, cache prohibition, rotation, and strict endpoint validation. AsyncAPI discovery and a standardized AP-to-agent delivery description remain open.",
+      "evidence": [
+        {
+          "file": "discovery_events_test.go",
+          "test": "TestAgentEventMetadataUsesAdmittedHTTPFreshness"
+        },
+        {
+          "file": "reference/events_provider_test.go",
+          "test": "TestAgentProviderEventsMetadataRotatesWithHTTPFreshness"
+        }
+      ]
     },
     {
       "source": "bootstrap",

@@ -375,12 +375,32 @@ Problem Details body whose type is the Signature-Key draft's matching
 machine-readable failure record; operational key-resolution failures remain
 local `503` failures, and a policy denial after successful authentication
 remains an ordinary `403` without signature negotiation.
+
+The selected public Events profile is implemented and qualified as one narrow
+vertical. Its `self-jwt` proof requires that the same admitted, discovered key
+verifies both the compact JWT and its HTTP Message Signature. An agent provider
+issues a strict subscribe token with `max_uses: 1`; the agent retains its local
+context and registers that exact token at the resource; and the resource may
+deliver one payload-free event through the provider to the agent. The AP can
+see the event token. Any future token-carried payload would therefore be
+AP-visible. This profile does not put event data in that token: the agent
+retrieves current details from the resource under its current authorization.
+
+The resource retains the exact event token before sending it. Lost `202
+Accepted` delivery is reconciled by retrying that exact JWT with a fresh HTTP
+proof. A resulting `429 Too Many Requests` settles the retained attempt without
+a second acceptance. The AP-to-agent adapter is a non-normative host-integration
+adapter, not a standardized wire protocol. Protected subscription tickets,
+AsyncAPI, token payloads, and multi-event replay remain outside this profile.
+The bounded file stores provide single-writer reference-host qualification;
+they are not enterprise or distributed storage conformance.
+
 Missionless direct-AS call chaining, resource-owned interaction chaining,
 interaction/payment relay and callbacks, question delivery,
 updated-request/cancel clarification actions, restart custody for
 token/AS/resource continuations, broader R3 vocabularies and PS proposal use,
-Events, platform enrollment/attestation, and the self-jwt, x509, and
-Accept-Signature surfaces still require implementation and qualification.
+platform enrollment/attestation, x509, and Accept-Signature surfaces still
+require implementation and qualification.
 Without a configured
 `GovernanceStore`, an embedded reference person server deliberately remains
 process-local. The runnable person profile always configures the file adapter,

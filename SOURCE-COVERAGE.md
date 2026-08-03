@@ -9,8 +9,8 @@ Profile: AAuth Go maintained supported profile
 | Status | Sections |
 | --- | ---: |
 | Exercised | 54 |
-| Partial | 27 |
-| Unsupported | 15 |
+| Partial | 35 |
+| Unsupported | 7 |
 | Informational | 0 |
 | Unclaimed | 369 |
 
@@ -21,9 +21,9 @@ Profile: AAuth Go maintained supported profile
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 43 | 17 | 3 | 0 | 165 |
-| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 3 | 3 | 0 | 62 |
+| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 4 | 2 | 0 | 62 |
 | `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 5 | 0 | 0 | 44 |
-| `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 0 | 7 | 0 | 57 |
+| `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 7 | 0 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 1 | 2 | 2 | 0 | 38 |
 | `interop-profile` | interop-demo-profile at AAuth b414033d4c81224034b5b419216ae06706ede660 | `a9eb24420b2c0a4176833a67e1ce8c55c007e65d567bcd3f076426cba8643cca` | 5 | 0 | 0 | 0 | 3 |
 
@@ -570,33 +570,70 @@ Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsBodyMutation`
 
-### `events/ap-to-agent` — Unsupported
+### `events/ap-to-agent` — Partial
 
-Agent-provider-to-agent event delivery is not implemented.
+A non-normative host adapter advances one AP inbox event through durable agent pending, dispatched, completed, or refused states; terminal custody precedes AP acknowledgement and unknown action outcomes remain dispatched for reconciliation. No AP-to-agent wire protocol is claimed.
 
-### `events/event-delivery` — Unsupported
+Evidence:
 
-Resource-to-agent-provider event delivery is not implemented.
+- `reference/events_agent_test.go:TestAgentEventProcessingReconcilesDispatchedUnknownHonestly`
+- `reference/events_agent_test.go:TestEventAdapterAcknowledgesOnlyDurableTerminalDisposition`
+- `reference/events_agent_test.go:TestAgentEventRefusalMatrixSurvivesStoreReconstruction`
 
-### `events/event-discovery` — Unsupported
+### `events/event-delivery` — Partial
 
-AAuth event discovery is not implemented.
+Resource-to-AP delivery retains one exact event token before send, uses fresh HTTP proof on retry, atomically commits one use and exact event token inbox custody before 202, and treats an exact-token 429 retry after an unknown outcome as deterministic settlement. A different valid token after exhaustion also returns 429 without a second acceptance or state mutation.
 
-### `events/event-token` — Unsupported
+Evidence:
 
-Event tokens are not implemented.
+- `reference/events_delivery_test.go:TestAPEventEndpointCommitsInboxBefore202`
+- `reference/events_delivery_test.go:TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction`
+- `events_journey_test.go:TestPublicSubscriptionEventSurvivesHostReconstruction`
 
-### `events/protocol-overview` — Unsupported
+### `events/event-discovery` — Partial
 
-The AAuth Events protocol is not implemented.
+Agent-provider event endpoint discovery is exercised through admitted agent metadata with HTTP freshness, cache prohibition, rotation, and strict endpoint validation. AsyncAPI discovery and a standardized AP-to-agent delivery description remain open.
 
-### `events/subscribe-token` — Unsupported
+Evidence:
 
-Subscribe tokens are not implemented.
+- `discovery_events_test.go:TestAgentEventMetadataUsesAdmittedHTTPFreshness`
+- `reference/events_provider_test.go:TestAgentProviderEventsMetadataRotatesWithHTTPFreshness`
 
-### `events/subscription-registration` — Unsupported
+### `events/event-token` — Partial
 
-Event subscription registration is not implemented.
+The strict aa-event+jwt profile carries one payload-free event identity with resource issuer, resource discovery document, agent audience, event id, issued-at, and expiry claims. Token-carried event data is not supported.
+
+Evidence:
+
+- `events_test.go:TestSubscribeAndEventClaimsRejectRequiredFieldMutations`
+- `events_journey_test.go:TestPublicSubscriptionEventSurvivesHostReconstruction`
+
+### `events/protocol-overview` — Partial
+
+The selected public single-use profile qualifies one payload-free subscription and event across independent reconstructed AP, resource, and agent hosts. Protected subscriptions, payloads, multi-event replay, and complete Events conformance remain open.
+
+Evidence:
+
+- `events_journey_test.go:TestPublicSubscriptionEventSurvivesHostReconstruction`
+
+### `events/subscribe-token` — Partial
+
+Strict subscribe-token issue and verification are exercised with the required issuer, aa-subscribe+jwt type, agent discovery document, subject, audience, embedded agent key, event id, issued-at and expiry claims; the selected public profile requires max_uses:1.
+
+Evidence:
+
+- `events_test.go:TestSubscribeAndEventClaimsRejectRequiredFieldMutations`
+- `reference/events_provider_test.go:TestAgentProviderIssuesOnlyAfterDurableSubscriptionCommit`
+
+### `events/subscription-registration` — Partial
+
+Public registration requires the exact subscribe token, its embedded agent proof key, max_uses:1, and a future active window; the resource commits subscription authority and the agent binding without replacement across reconstruction. Agent-local context remains agent-host custody. Protected ticket registration remains open.
+
+Evidence:
+
+- `reference/events_registration_test.go:TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof`
+- `reference/events_registration_test.go:TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody`
+- `reference/events_registration_test.go:TestPublicEventRegistrationCustodySurvivesReconstruction`
 
 ### `interop-profile/aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response` — Exercised
 
@@ -758,9 +795,15 @@ Evidence:
 
 - `http_signature_jwks_test.go:TestJWKSURIRequestRejectsKeyReferenceSubstitution`
 
-### `signature-key/name-self-issued-jwt-self-jwt` — Unsupported
+### `signature-key/name-self-issued-jwt-self-jwt` — Partial
 
-The self-jwt scheme is not implemented.
+The selected portable self-jwt profile uses the same discovered key to verify both the compact JWT and its HTTP Message Signature, rejects unsafe issuer, discovery, and time claims before application use, and runs under deployment-owned presenter-directed egress policy. Other self-issued JWT profiles are unclaimed.
+
+Evidence:
+
+- `http_signature_self_jwt_test.go:TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery`
+- `http_signature_self_jwt_test.go:TestSelfJWTUsesOneDiscoveredKeyForBothProofs`
+- `discovery_policy_test.go:TestSelfJWTUsesAdmittedHTTPKeyForBothProofs`
 
 ### `signature-key/name-signature-error-http-respon` — Partial
 

@@ -5,7 +5,7 @@ resource event, and deliver it once to the correct agent context.
 **Stories:** STORY-0008 through STORY-0017
 **Primary source:** `draft-hardt-aauth-events-00`
 **Accepted scope:** AAuth complete-spec-family roadmap M5
-**Status:** 0/10 done
+**Status:** 10/10 done
 
 ## STORY-0008
 
@@ -28,7 +28,7 @@ or registration-time URL authority
 
 **Sources:** Events lines 196-208, 285, 384-409
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0009
 
@@ -66,7 +66,7 @@ needed to authenticate later delivery
 
 **Sources:** Events lines 143-146, 188-235, 680-703
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0010
 
@@ -93,7 +93,7 @@ that created the subscription
 
 **Sources:** Events lines 188-195, 253-295
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0011
 
@@ -129,7 +129,7 @@ binding
 
 **Sources:** Events lines 188-195, 210-295, 596-598, 680-695
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0012
 
@@ -169,7 +169,7 @@ registration state
 
 **Sources:** Events lines 346-409, 423-434, 680-719
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0013
 
@@ -209,7 +209,7 @@ agent inbox
 
 **Sources:** Events lines 410-437, 582-603, 680-703
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0014
 
@@ -243,7 +243,7 @@ acknowledged to its resource
 
 **Sources:** Events lines 438-442, 664-670
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0015
 
@@ -290,7 +290,7 @@ expiry, context, or replay checks
 
 **Sources:** Events lines 438-456, 592-598, 711-719
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0016
 
@@ -320,7 +320,7 @@ payload-bearing, multi-event, or standardized adapter conformance
 
 **Sources:** Events lines 129-131, 297-344, 438-442, 608-624, 697-719
 
-**Status:** pending
+**Status:** done
 
 ## STORY-0017
 
@@ -363,7 +363,7 @@ enterprise or federated storage ceiling
 **Architecture basis:** Accepted M5 reference-host qualification boundary;
 these controls qualify host custody and do not add Events wire requirements.
 
-**Status:** pending
+**Status:** done
 
 ## Selected-profile and host-architecture boundaries
 
