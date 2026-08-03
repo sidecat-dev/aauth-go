@@ -25,6 +25,57 @@ for this library.
 
 ## 2026-08-02
 
+### R3 conditional per-call authorization
+
+- **Status: implemented as one narrow MCP, scope-plus-R3, immediate-policy
+  vertical; not full R3 and not exactly-once effects.** A class authorization
+  decision may split verified operations into disjoint `r3_granted` and
+  `r3_conditional` subsets. The union remains within both the exact class
+  document and the agent's persisted request. An operation in neither set is
+  refused.
+- The first signed conditional call captures one bounded exact body, requires
+  signed `Content-Type`, rejects query parameters, maps the HTTP method and path
+  to exactly one operation, and executes nothing. A deployment callback supplies inline JSON parameters
+  and/or full presented bytes for digest parameters. The resource serializes a
+  strict one-operation proposal once, verifies it against that same call, and
+  durably retains the exact bytes before exposing a signed resource token that
+  contains only the proposal URI/hash.
+- Proposal documents are distinguished by a required top-level `parameters`
+  object. A proposal with zero or multiple operations, malformed or ambiguous
+  JSON names, an invalid digest object, missing parameters, or an operation
+  other than the mapped call is refused. Inline parameters compare as JSON
+  values. Digest parameters compare the full presented bytes and media type;
+  `excerpt` is display-only.
+- The AS repeats admission even for a warm cache, authenticates to the existing
+  AS-only endpoint, verifies the exact hash before policy, and requires policy
+  to directly grant exactly the proposal's one operation. Recursive
+  conditional results, empty/partial decisions, vocabulary changes, and
+  overgrant fail closed. A bounded issuance store requires a private custody
+  directory and atomically retains mode-0600 exact compact tokens plus a candidate semantic audit keyed by resource
+  issuer and challenge-token JTI/fingerprint. A separate deployment audit must
+  durably and idempotently accept that stable token identity before release;
+  its retention outlives and is independent of the recovery store. Commit or
+  audit failure releases no token. Reconstruction retries the audit and
+  duplicate exchange returns the exact committed token without re-running
+  policy or minting another token.
+- The retry reloads and rehashes the proposal, remaps the actual signed call,
+  compares every parameter, and durably consumes `(proposal digest, per-call
+  auth-token JTI)` immediately before invoking the operation. Missing, extra,
+  or changed parameters fail without consuming a matching request. One fresh
+  valid call is admitted; identical-proof replay and later fresh-proof reuse
+  are refused, including after resource reconstruction. Concurrent store
+  consumption has one winner.
+- Consumption before the operation gives **at-most-once admission**, not
+  exactly-once external consequence. A crash after durable consumption and
+  before the effect can lose the opportunity. Identical proposal bytes may be
+  shared by independently approved tokens because the per-token JTI, not the
+  content hash, is the one-shot identity.
+- The pinned draft says the PS fetches proposals for display while also saying
+  the resource accepts only its one AS signature. This implementation preserves
+  the accepted AS-only boundary, proves PS and unsigned fetch refusal without
+  data leakage, and does not claim informed PS-rendered user consent or invent
+  an AS-to-PS transfer.
+
 ### R3 direct-grant hardening correction
 
 - The one-vocabulary, scope-plus-R3 immediate direct-grant vertical now uses a
@@ -54,9 +105,10 @@ for this library.
   AAuth token and reference request types, not an R3 wire extension.
 - The 2026-07-29 entry's “durable external document storage” item is therefore
   superseded only for the included bounded single-writer file implementation.
-  Deployment-specific multi-process custody remains open, as do PS document
-  use, conditional grants, per-call proposals, scope-free R3,
-  multi-definition composition, and live adapters for every vocabulary.
+  The conditional and per-call items from this intermediate checkpoint are
+  superseded by the entry above. Deployment-specific multi-process custody,
+  PS document use, scope-free R3, multi-definition composition, and live
+  adapters for every vocabulary remain open.
 
 ## 2026-07-29
 

@@ -62,6 +62,40 @@ func TestR3FetchCacheEvictsLeastRecentlyUsedCompletedDocument(t *testing.T) {
 	}
 }
 
+func TestR3FetchRechecksAdmissionBeforeServingWarmCache(t *testing.T) {
+	t.Parallel()
+
+	document := r3TestDocument("read")
+	admitted := true
+	admissionChecks := 0
+	transportCalls := 0
+	server := newR3FetchTestAccessServer(t, r3FetchTestConfig{
+		admit: func(context.Context, string) error {
+			admissionChecks++
+			if !admitted {
+				return errors.New("endpoint was withdrawn from egress policy")
+			}
+			return nil
+		},
+		transport: r3RoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			transportCalls++
+			return r3HTTPResponse(request, http.StatusOK, document), nil
+		}),
+	})
+	token := r3TestResourceToken(document)
+	if _, err := server.fetchR3Authorization(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	admitted = false
+	if _, err := server.fetchR3Authorization(context.Background(), token); err == nil ||
+		!strings.Contains(err.Error(), "not admitted") {
+		t.Fatalf("withdrawn warm-cache admission error = %v", err)
+	}
+	if admissionChecks != 2 || transportCalls != 1 {
+		t.Fatalf("admission checks = %d, transport calls = %d; want 2, 1", admissionChecks, transportCalls)
+	}
+}
+
 func TestR3FetchSingleFlightSurvivesLeaderAndWaiterCancellation(t *testing.T) {
 	t.Parallel()
 

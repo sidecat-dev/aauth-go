@@ -33,6 +33,7 @@ type AuthorizedRequest struct {
 	AuthToken string
 	Method    string
 	Path      string
+	Body      []byte
 }
 
 // MissionPolicy is intentionally caller-owned.

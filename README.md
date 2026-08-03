@@ -70,21 +70,46 @@ with its own key, and validates the terminal AS token before returning it to
 the agent. Slowdown, denial, expiry, invalid-code failure, and one-shot terminal
 delivery cross both continuation boundaries.
 
-One R3 direct-grant path is implemented through that real four-party flow. A
+One R3 direct-grant path and one conditional per-call path are implemented
+through that real four-party flow. A
 resource advertises an MCP vocabulary, validates an agent's `r3_operations`
 through a deployment-owned authoritative-definition boundary, serializes and
 durably retains one exact R3 document through a deployment-owned store, and
 issues its URI plus unpadded SHA-256 hash in the resource token only after that
 retention succeeds. The included bounded file store preserves exact bytes
-across resource reconstruction and never evicts a document while its resource
-token is live. The AS alone performs a signed, admitted, deadline-bounded,
+across resource reconstruction, requires a private custody directory, and
+never evicts a document while its resource token is live. The AS alone performs a signed, admitted, deadline-bounded,
 no-redirect fetch; verifies the exact bytes before parsing or policy;
 coalesces a hash-keyed cache with recoverable least-recently-used eviction; and
 requires a successful issuance-audit write before releasing an auth token.
 The resource independently enforces both ordinary scope and semantic
-membership in `r3_granted`, without fetching R3 at call time. The agent retains
+membership in `r3_granted`, without fetching class R3 at call time. The agent retains
 its requested operation set in the persistable resource-grant value and fails
 closed if that binding is absent after reconstruction.
+
+Access policy may instead place a verified operation in `r3_conditional`. The
+first signed call then executes nothing: the resource captures the bounded
+exact body, builds and durably retains a strict one-operation proposal, and
+returns an auth-token requirement containing a signed resource token with only
+the proposal URI/hash. Query-bearing conditional calls are refused, and
+`Content-Type` is signed whenever a protected body is present. The AS alone
+fetches and hash-verifies the proposal, policy must directly grant exactly its
+one operation, and a bounded file issuance store in a private custody
+directory atomically commits the exact auth token plus proposal, operation, agent, resource, mission, challenge-token,
+and issued-token audit identities. A deployment-owned audit callback must then
+durably and idempotently record that stable issuance identity before release;
+its retention is independent of the short-lived recovery store. If either
+step fails, no token is released. Repeating the exchange after AS
+reconstruction retries the audit and returns the same committed token.
+
+On retry, the resource reloads the exact proposal and compares every actual
+parameter. Inline parameters compare as JSON values; digest parameters compare
+the full presented bytes and media type, never the display excerpt. Durable
+consumption keyed by proposal digest and per-call token JTI happens immediately
+before the operation, survives resource reconstruction, and admits only one
+use. This is at-most-once operation admission: a crash after consumption but
+before the external consequence can lose the opportunity, so the library does
+not claim exactly-once effects.
 
 The included store guarantees exact-byte availability through the resource
 token's expiry; it is not permanent historical custody after that expiry.
@@ -92,12 +117,15 @@ Token JSON and reference endpoint request JSON reject exact duplicate member
 names and names that Go would case-fold onto the same struct field before
 decoding.
 
-This is intentionally not described as complete R3. The exercised journey is
-one vocabulary, scope plus R3, and direct grants. Conditional grants, per-call
-proposal documents and retries, scope-free R3, multi-definition composition,
-person-server document use, live discovery adapters for every standard
-vocabulary, and multi-process document-store coordination remain open.
-Conditional and deferred R3 results are explicitly refused by this profile.
+This is intentionally not described as complete R3. The exercised journeys use
+one vocabulary, ordinary scope, immediate direct or conditional policy, and
+one concrete per-call request mapping. Scope-free R3, multi-definition
+composition, person-server document use, live discovery adapters for every
+standard vocabulary, multi-process file-store coordination, and deferred R3
+remain open. The selected AS-only document endpoint means the person server
+cannot fetch proposal display for user consent; the draft requires that fetch
+while separately requiring the resource to accept only its AS signature, and
+this implementation does not invent a transfer protocol to hide the conflict.
 The
 [source coverage report](SOURCE-COVERAGE.md) keeps those boundaries explicit.
 
@@ -350,7 +378,7 @@ remains an ordinary `403` without signature negotiation.
 Missionless direct-AS call chaining, resource-owned interaction chaining,
 interaction/payment relay and callbacks, question delivery,
 updated-request/cancel clarification actions, restart custody for
-token/AS/resource continuations, R3 conditional and per-call processing,
+token/AS/resource continuations, broader R3 vocabularies and PS proposal use,
 Events, platform enrollment/attestation, and the self-jwt, x509, and
 Accept-Signature surfaces still require implementation and qualification.
 Without a configured

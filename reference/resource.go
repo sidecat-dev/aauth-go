@@ -37,6 +37,13 @@ type ResourceConfig struct {
 	R3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
 	R3RequiredForRequest    func(context.Context, *http.Request) (bool, error)
 	R3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
+	// R3ProposalForRequest maps one authenticated, bounded request body into
+	// the complete security-relevant parameters and display of a conditional
+	// call. Omitting an input leaves it unbound; deployments should include a
+	// full exact-body digest when the operation consumes fields beyond a strict
+	// typed mapping. The resource serializes and retains the returned proposal
+	// before exposing a challenge.
+	R3ProposalForRequest func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
 }
 
 type Resource struct {
@@ -55,9 +62,11 @@ type Resource struct {
 	operation               func(context.Context, aauth.AuthorizedRequest) (any, error)
 	r3Vocabularies          map[string]json.RawMessage
 	r3DocumentStore         R3DocumentStore
+	r3ProposalDocumentStore R3ProposalDocumentStore
 	r3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
 	r3RequiredForRequest    func(context.Context, *http.Request) (bool, error)
 	r3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
+	r3ProposalForRequest    func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
 	randomMu                sync.Mutex
 	pendingMu               sync.Mutex
 	pending                 map[string]*pendingAuthorization
@@ -142,6 +151,17 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	if r3Parts != 0 && config.AccessServer == "" {
 		return nil, errors.New("reference: R3 requires an access server")
 	}
+	if config.R3ProposalForRequest != nil && r3Parts != 5 {
+		return nil, errors.New("reference: R3 proposal policy requires complete R3 configuration")
+	}
+	var r3ProposalDocumentStore R3ProposalDocumentStore
+	if config.R3ProposalForRequest != nil {
+		var ok bool
+		r3ProposalDocumentStore, ok = config.R3DocumentStore.(R3ProposalDocumentStore)
+		if !ok {
+			return nil, errors.New("reference: R3 proposal policy requires durable proposal custody and consumption")
+		}
+	}
 	r3Vocabularies := make(map[string]json.RawMessage, len(config.R3Vocabularies))
 	for vocabulary, discovery := range config.R3Vocabularies {
 		if err := aauth.ValidateR3VocabularyURI(vocabulary); err != nil {
@@ -182,9 +202,11 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		operation:               config.Operation,
 		r3Vocabularies:          r3Vocabularies,
 		r3DocumentStore:         config.R3DocumentStore,
+		r3ProposalDocumentStore: r3ProposalDocumentStore,
 		r3DocumentForOperations: config.R3DocumentForOperations,
 		r3RequiredForRequest:    config.R3RequiredForRequest,
 		r3OperationForRequest:   config.R3OperationForRequest,
+		r3ProposalForRequest:    config.R3ProposalForRequest,
 		pending:                 make(map[string]*pendingAuthorization),
 		access:                  make(map[string]localAccessGrant),
 		replayedProof:           make(map[string]time.Time),
@@ -198,6 +220,7 @@ func (resource *Resource) Handler() http.Handler {
 	mux.HandleFunc("GET /interaction/{id}", resource.handleInteraction)
 	mux.HandleFunc("GET /.well-known/aauth-resource.json", resource.handleMetadata)
 	mux.HandleFunc("GET /jwks", resource.handleJWKS)
+	mux.HandleFunc("GET /r3/proposals/{s256}", resource.handleR3Document)
 	mux.HandleFunc("GET /r3/{s256}", resource.handleR3Document)
 	mux.HandleFunc("/", resource.handleProtected)
 	return mux
@@ -261,6 +284,10 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		document, err := aauth.ParseR3Document(exactBytes)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if document.Parameters != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("R3 class document contains per-call parameters"))
 			return
 		}
 		documentOperations := document.OperationSet()
@@ -690,7 +717,17 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		resource.handleAccessProtected(response, request)
 		return
 	}
+	exactBody, err := readBoundedRequestBody(request)
+	if err != nil {
+		writeProblem(response, http.StatusRequestEntityTooLarge, "request_too_large", err)
+		return
+	}
+	var requiredComponents []string
+	if len(exactBody) != 0 {
+		requiredComponents = append(requiredComponents, "content-type")
+	}
 	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
+		RequiredComponents:     requiredComponents,
 		AllowedCredentialTypes: []string{aauth.AuthTokenType},
 	})
 	if err != nil {
@@ -731,10 +768,6 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 			writeProblem(response, http.StatusForbidden, "r3_not_configured", errors.New("resource cannot map this R3 operation"))
 			return
 		}
-		if claims.R3Conditional != nil {
-			writeProblem(response, http.StatusForbidden, "unsupported_r3_conditional", errors.New("reference resource does not implement the R3 conditional lifecycle"))
-			return
-		}
 		mapped, err := resource.r3OperationForRequest(request.Context(), request)
 		if err != nil {
 			writeProblem(response, http.StatusForbidden, "r3_operation_unknown", err)
@@ -744,10 +777,40 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 			writeProblem(response, http.StatusForbidden, "r3_operation_unknown", errors.New("resource request mapping must return one valid R3 operation"))
 			return
 		}
-		if claims.R3Granted == nil ||
-			mapped.Vocabulary != claims.R3Granted.Vocabulary ||
-			!claims.R3Granted.Contains(mapped.Operations[0]) {
-			writeProblem(response, http.StatusForbidden, "r3_operation_denied", errors.New("R3 operation is not granted"))
+		proposalToken, err := classifyR3ProposalReference(resource.identifier, claims.R3URI, claims.R3S256)
+		if err != nil {
+			writeProblem(response, http.StatusForbidden, "invalid_per_call_token", err)
+			return
+		}
+		if proposalToken && claims.R3Conditional != nil {
+			writeProblem(response, http.StatusForbidden, "invalid_per_call_token", errors.New("per-call R3 token cannot contain conditional operations"))
+			return
+		}
+		if claims.R3Granted != nil &&
+			mapped.Vocabulary == claims.R3Granted.Vocabulary &&
+			claims.R3Granted.Contains(mapped.Operations[0]) {
+			if proposalToken {
+				if err := resource.enforceR3Proposal(request, exactBody, *claims, mapped); err != nil {
+					status := http.StatusForbidden
+					code := "r3_parameter_mismatch"
+					if errors.Is(err, ErrR3DocumentNotFound) || errors.Is(err, ErrR3DocumentIntegrity) {
+						status = http.StatusServiceUnavailable
+						code = "r3_custody_unavailable"
+					}
+					if errors.Is(err, ErrR3ProposalConsumed) {
+						code = "r3_per_call_replayed"
+					}
+					writeProblem(response, status, code, err)
+					return
+				}
+			}
+		} else if claims.R3Conditional != nil &&
+			mapped.Vocabulary == claims.R3Conditional.Vocabulary &&
+			claims.R3Conditional.Contains(mapped.Operations[0]) {
+			resource.challengeR3Conditional(response, request, exactBody, verified, *claims, mapped)
+			return
+		} else {
+			writeProblem(response, http.StatusForbidden, "r3_operation_denied", errors.New("R3 operation is not granted or conditional"))
 			return
 		}
 	}
@@ -761,12 +824,155 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		AuthToken: verified.RawCredential,
 		Method:    request.Method,
 		Path:      request.URL.Path,
+		Body:      append([]byte(nil), exactBody...),
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "operation_failed", err)
 		return
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func classifyR3ProposalReference(resourceIdentifier, uri, s256 string) (bool, error) {
+	prefix := resourceIdentifier + "/r3/proposals/"
+	if !strings.HasPrefix(uri, prefix) {
+		return false, nil
+	}
+	if uri != prefix+s256 {
+		return false, errors.New("reference: R3 proposal URI does not match its digest claim")
+	}
+	return true, nil
+}
+
+func (resource *Resource) enforceR3Proposal(
+	request *http.Request,
+	exactBody []byte,
+	claims aauth.AuthTokenClaims,
+	operation aauth.R3OperationSet,
+) error {
+	if resource.r3ProposalForRequest == nil || resource.r3ProposalDocumentStore == nil {
+		return errors.New("reference: R3 proposal enforcement is not configured")
+	}
+	exactProposal, err := resource.r3ProposalDocumentStore.LoadProposal(
+		request.Context(),
+		claims.R3S256,
+	)
+	if err != nil {
+		return err
+	}
+	if aauth.R3S256(exactProposal) != claims.R3S256 {
+		return ErrR3DocumentIntegrity
+	}
+	document, err := aauth.ParseR3Document(exactProposal)
+	if err != nil {
+		return err
+	}
+	actual, err := resource.r3ProposalForRequest(
+		request.Context(),
+		request,
+		append([]byte(nil), exactBody...),
+	)
+	if err != nil {
+		return err
+	}
+	if err := document.MatchR3Call(operation, actual.Parameters); err != nil {
+		return err
+	}
+	return resource.r3ProposalDocumentStore.ConsumeProposal(
+		request.Context(),
+		claims.R3S256,
+		claims.JTI,
+		time.Unix(claims.ExpiresAt, 0),
+	)
+}
+
+func (resource *Resource) challengeR3Conditional(
+	response http.ResponseWriter,
+	request *http.Request,
+	exactBody []byte,
+	verified aauth.VerifiedRequest,
+	claims aauth.AuthTokenClaims,
+	operation aauth.R3OperationSet,
+) {
+	if resource.r3ProposalForRequest == nil {
+		writeProblem(response, http.StatusForbidden, "r3_conditional_not_configured", errors.New("resource has no R3 proposal policy"))
+		return
+	}
+	if request.URL.RawQuery != "" {
+		writeProblem(response, http.StatusBadRequest, "r3_conditional_query_unsupported", errors.New("conditional R3 calls must not use query parameters"))
+		return
+	}
+	proposal, err := resource.r3ProposalForRequest(
+		request.Context(),
+		request,
+		append([]byte(nil), exactBody...),
+	)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_r3_proposal", err)
+		return
+	}
+	exactProposal, err := aauth.BuildR3Proposal(operation, proposal)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "invalid_r3_proposal", err)
+		return
+	}
+	parsedProposal, err := aauth.ParseR3Document(exactProposal)
+	if err != nil || parsedProposal.MatchR3Call(operation, proposal.Parameters) != nil {
+		writeProblem(response, http.StatusInternalServerError, "invalid_r3_proposal", errors.New("resource proposal does not bind the authenticated call"))
+		return
+	}
+	now := resource.clock.Now()
+	expiresAt := now.Add(5 * time.Minute)
+	if parentExpiry := time.Unix(claims.ExpiresAt, 0); parentExpiry.Before(expiresAt) {
+		expiresAt = parentExpiry
+	}
+	if !expiresAt.After(now) {
+		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("conditional R3 token expires before a proposal can be issued"))
+		return
+	}
+	digest := aauth.R3S256(exactProposal)
+	if err := resource.r3ProposalDocumentStore.RetainProposal(
+		request.Context(),
+		digest,
+		exactProposal,
+		expiresAt,
+	); err != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "r3_custody_unavailable", err)
+		return
+	}
+	thumbprint, err := verified.PublicKey.Thumbprint()
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
+		return
+	}
+	resourceToken, err := aauth.MintResourceToken(resource.signingKey, aauth.ResourceTokenClaims{
+		Issuer:    resource.identifier,
+		DWK:       aauth.ResourceDiscoveryDocument,
+		Audience:  resource.tokenAudience,
+		JTI:       resource.newID(),
+		Agent:     claims.Agent,
+		AgentJKT:  thumbprint,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: expiresAt.Unix(),
+		Scope:     claims.Scope,
+		Mission:   claims.Mission,
+		R3URI:     resource.identifier + "/r3/proposals/" + digest,
+		R3S256:    digest,
+	})
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	requirement, err := aauth.FormatRequirementHeader(aauth.Requirement{
+		Type:          aauth.RequirementAuthToken,
+		ResourceToken: resourceToken,
+	})
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	response.Header().Set("AAuth-Requirement", requirement)
+	writeProblem(response, http.StatusUnauthorized, "r3_conditional", errors.New("conditional R3 call requires per-call authorization"))
 }
 
 func usesAAuthScheme(header string) bool {

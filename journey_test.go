@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -227,6 +228,15 @@ func testSigningKey(t *testing.T, id string) aauth.SigningKey {
 		t.Fatal(err)
 	}
 	return key
+}
+
+func privateTestDirectory(t *testing.T) string {
+	t.Helper()
+	directory, err := os.MkdirTemp(t.TempDir(), "private-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
 }
 
 func sequentialIDs(values ...string) func() string {

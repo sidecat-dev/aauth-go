@@ -9,8 +9,8 @@ Profile: AAuth Go maintained supported profile
 | Status | Sections |
 | --- | ---: |
 | Exercised | 54 |
-| Partial | 26 |
-| Unsupported | 16 |
+| Partial | 27 |
+| Unsupported | 15 |
 | Informational | 0 |
 | Unclaimed | 369 |
 
@@ -22,7 +22,7 @@ Profile: AAuth Go maintained supported profile
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 43 | 17 | 3 | 0 | 165 |
 | `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 3 | 3 | 0 | 62 |
-| `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 4 | 1 | 0 | 44 |
+| `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 5 | 0 | 0 | 44 |
 | `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 0 | 7 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 1 | 2 | 2 | 0 | 38 |
 | `interop-profile` | interop-demo-profile at AAuth b414033d4c81224034b5b419216ae06706ede660 | `a9eb24420b2c0a4176833a67e1ce8c55c007e65d567bcd3f076426cba8643cca` | 5 | 0 | 0 | 0 | 3 |
@@ -642,29 +642,41 @@ Evidence:
 
 ### `r3/auth-token-extensions` — Partial
 
-Resource and auth tokens enforce complete URI/hash claim pairs and reject exact or case-fold-ambiguous claim names. The selected auth token echoes the verified reference and a policy-narrowed direct grant; reconstructed agent state must retain the requested operation subset; and the resource executes only a semantically matching R3-required operation without enforcement-time fetching. This profile explicitly refuses conditional or deferred R3 authorization, including external HTTP 202 responses. Per-call auth tokens remain open.
+Resource and auth tokens enforce complete URI/hash claim pairs and reject exact or case-fold-ambiguous claim names. Class auth tokens may carry disjoint direct and conditional operation subsets. A proposal auth token must echo the proposal reference, directly grant exactly its one operation, carry no recursive conditional result, retain the resource, agent, key, mission, scope, issuer and lifetime bindings, and pass agent validation before use. The resource independently enforces ordinary scope and the mapped R3 operation. Deferred R3 authorization remains unsupported.
 
 Evidence:
 
 - `r3_journey_test.go:TestR3DirectGrantJourney`
 - `r3_test.go:TestR3TokenClaimsRequireCompleteConsistentClaims`
 - `r3_test.go:TestVerifyAuthTokenRejectsDuplicateR3Claims`
+- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
+- `reference/agent_r3_test.go:TestAgentRefusesPerCallTokenThatDoesNotDirectlyGrantExactProposalOperation`
+- `reference/access_server_r3_test.go:TestValidateR3AuthorizationDecisionRequiresExactDirectProposalGrant`
 
 ### `r3/authorization-endpoint-extensions` — Partial
 
-The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, preserves that requested set in a serializable resource-grant value across agent reconstruction, and returns one R3 reference alongside independently enforced scope. Exact and case-fold-ambiguous request names are refused before decoding. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.
+The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, preserves that requested set in serializable agent state, and returns one R3 reference alongside independently enforced scope. Access policy may split verified document operations into disjoint direct and conditional subsets; their union cannot exceed either the document or retained agent request. Exact and case-fold-ambiguous request names are refused before decoding. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.
 
 Evidence:
 
 - `r3_journey_test.go:TestR3DirectGrantJourney`
+- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
+- `reference/access_server_r3_test.go:TestValidateR3AuthorizationDecisionAcceptsOnlyDisjointDocumentSubsets`
 
-### `r3/per-call-proposals` — Unsupported
+### `r3/per-call-proposals` — Partial
 
-R3 per-call proposals are not implemented.
+For one MCP conditional operation alongside a disjoint direct class operation with ordinary scope, the mixed class token executes the direct operation and produces a non-executing auth-token challenge for the conditional call. The signed challenge token references one durably retained exact proposal. The AS alone fetches and hash-verifies it, policy directly approves its single operation, and atomic issuance custody precedes token release. A signed retry must match the selected HTTP operation and every inline and full-byte digest parameter before durable consume-before-effect admission; changed calls and repeated per-call-token use are refused across resource restart. This is at-most-once operation admission, not exactly-once external consequence. Query-bearing conditional calls are unsupported, content type is signed for bodies, and PS proposal retrieval/display remains unresolved because the draft's PS-fetch text conflicts with its AS-only endpoint rule.
+
+Evidence:
+
+- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
+- `r3_test.go:TestR3ProposalBindsInlineAndDigestParameters`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreConsumesProposalOnceAcrossRestart`
+- `reference/r3_issuance_store_test.go:TestFileR3PerCallIssuanceStoreCommitsOneExactTokenAcrossRestart`
 
 ### `r3/r3-document` — Partial
 
-The reference resource rejects exact and case-fold duplicate-name ambiguity, validates the standard operation-entry shapes, preserves selected bytes without reserialization, and requires deployment-owned exact-byte custody before issuing the hash-derived URI. The included atomic mode-0600 file store survives resource reconstruction, bounds per-document, total-byte, and count retention, rejects non-canonical digest paths, and evicts only documents whose resource-token retention has expired. It does not promise permanent historical retention after token expiry. The resource serves exact verified bytes only to its signed access server. Multi-process store coordination and multi-definition composition remain open.
+The reference resource rejects exact and case-fold duplicate-name ambiguity, validates standard operation-entry shapes and strict one-operation proposal parameters, preserves selected bytes without reserialization, and requires deployment-owned exact-byte custody before issuing a hash-derived class or proposal URI. The included atomic mode-0600 file store survives resource reconstruction, durably classifies proposals and their per-token consumption, bounds per-document, total-byte, and count retention, rejects non-canonical digest paths, and evicts only expired custody. Missing, corrupt, substituted, or expired proposal bytes fail closed. It does not promise permanent historical retention after token expiry. Exact bytes are served only to the resource's signed access server. Multi-process store coordination and multi-definition composition remain open.
 
 Evidence:
 
@@ -672,14 +684,18 @@ Evidence:
 - `r3_test.go:TestR3DocumentHashRetainsExactWireIdentity`
 - `r3_test.go:TestR3StandardVocabularyOperationShapes`
 - `r3_test.go:TestR3DocumentRejectsDuplicateNamesAtEveryDepth`
+- `r3_test.go:TestR3ProposalBindsInlineAndDigestParameters`
+- `r3_test.go:TestR3ProposalRejectsMalformedParameterDocuments`
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsExactBytesAcrossRestart`
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRefusesOversizedOrInvalidRetention`
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRemovesExpiredDocumentsBeforeStartupCapacityCheck`
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRejectsNonCanonicalDigestPaths`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreConsumesProposalOnceAcrossRestart`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreFailsClosedForMissingExpiredOrCorruptProposalCustody`
 
 ### `r3/r3-processing` — Partial
 
-The access server performs an admitted, deadline-bounded, no-redirect same-resource signed fetch with a fresh nonce, verifies bounded exact bytes before parsing or policy, coalesces concurrent requests with cancellation isolation, and uses recoverable least-recently-used eviction for its re-hashed cache. A successful synchronous issuance-audit callback remains required before token release. Person-server document fetching and conditional processing remain unsupported.
+The access server performs an admitted, deadline-bounded, no-redirect same-resource signed fetch with a fresh nonce, verifies bounded exact bytes before parsing or policy, rechecks admission before warm-cache reads, coalesces concurrent requests with cancellation isolation, and uses recoverable least-recently-used eviction for its re-hashed cache. Direct issuance remains gated by the deployment audit callback. Proposal issuance in a private custody directory atomically commits the exact auth token and a candidate semantic audit, then requires an independent deployment-owned durable idempotent audit before release. Its token lifetime is capped to proposal custody, and access-server restart retries the audit before recovering that same token. Person-server proposal fetching remains unsupported under the selected AS-only access rule.
 
 Evidence:
 
@@ -688,6 +704,9 @@ Evidence:
 - `reference/r3_fetch_test.go:TestR3FetchSingleFlightSurvivesLeaderAndWaiterCancellation`
 - `reference/r3_fetch_test.go:TestR3FetchRefusesDeniedRedirectedOversizedAndTimedOutDocuments`
 - `reference/r3_fetch_test.go:TestR3FetchRetryUsesDistinctNonceInSameClockSecond`
+- `reference/r3_fetch_test.go:TestR3FetchRechecksAdmissionBeforeServingWarmCache`
+- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
+- `reference/r3_issuance_store_test.go:TestFileR3PerCallIssuanceStoreCommitsOneExactTokenAcrossRestart`
 
 ### `signature-key/name-accept-signature-sigkey-par` — Unsupported
 

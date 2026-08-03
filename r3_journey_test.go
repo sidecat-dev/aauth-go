@@ -177,7 +177,7 @@ func TestR3DirectGrantJourney(t *testing.T) {
 
 	operationCalls := 0
 	documentStoreConfig := reference.FileR3DocumentStoreConfig{
-		Directory:        t.TempDir(),
+		Directory:        privateTestDirectory(t),
 		Clock:            clock,
 		MaxDocuments:     8,
 		MaxBytes:         8 << 20,
@@ -632,8 +632,42 @@ func TestR3DirectGrantJourney(t *testing.T) {
 		)
 	}
 
-	now = now.Add(time.Second)
+	// Proposal documents are a later, exact-call stage. They must never be
+	// accepted as class documents and projected into an ambient resource token.
 	mutateR3Response = false
+	currentDocumentBytes = []byte(
+		`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+			`"operations":[{"tool":"list_records"}],` +
+			`"parameters":{"record_id":"one"}}`,
+	)
+	fetchesBeforeProposalClass := r3Fetches
+	policyCallsBeforeProposalClass := accessPolicyCalls
+	_, err = agent.RequestResourceTokenR3(
+		context.Background(),
+		"https://resource.example/authorize",
+		[]string{"records.read"},
+		mission,
+		requestedOperations,
+	)
+	if err == nil {
+		t.Fatal("resource accepted a per-call proposal as a class R3 document")
+	}
+	if r3Fetches != fetchesBeforeProposalClass || accessPolicyCalls != policyCallsBeforeProposalClass {
+		t.Fatalf(
+			"proposal class confusion escaped resource validation: fetches %d -> %d, policy %d -> %d",
+			fetchesBeforeProposalClass,
+			r3Fetches,
+			policyCallsBeforeProposalClass,
+			accessPolicyCalls,
+		)
+	}
+	currentDocumentBytes = []byte(
+		`{"version":"3","vocabulary":"urn:aauth:vocabulary:mcp",` +
+			`"operations":[{"tool":"list_records"}],` +
+			`"display":{"summary":"Read records under the revised definition"}}`,
+	)
+
+	now = now.Add(time.Second)
 	fetchesBeforeInvalidOperation := r3Fetches
 	policyCallsBeforeInvalidOperation := accessPolicyCalls
 	_, err = agent.AuthorizeR3(
@@ -695,9 +729,8 @@ func TestR3DirectGrantJourney(t *testing.T) {
 		t.Fatalf("reconstructed overgrant error = %v", err)
 	}
 
-	// This profile does not implement either deferred R3 authorization or
-	// conditional grants. Both must be refused before the agent reports a
-	// usable grant.
+	// This profile does not implement deferred R3 authorization. It must be
+	// refused before the agent reports usable or pending state.
 	now = now.Add(time.Second)
 	currentDocumentBytes = documentBytes
 	deferredResourceGrant, err := agent.RequestResourceTokenR3(
@@ -761,7 +794,10 @@ func TestR3DirectGrantJourney(t *testing.T) {
 		Vocabulary: aauth.R3VocabularyMCP,
 		Operations: []json.RawMessage{},
 	}
-	conditionalGrant := requestedOperations.Clone()
+	conditionalGrant := aauth.R3OperationSet{
+		Vocabulary: aauth.R3VocabularyMCP,
+		Operations: []json.RawMessage{json.RawMessage(`{"tool":"delete_record"}`)},
+	}
 	accessServerTokenOverride, err = aauth.MintAuthToken(accessKey, aauth.AuthTokenClaims{
 		Issuer:        "https://as.example",
 		DWK:           aauth.AccessDiscoveryDocument,
@@ -788,8 +824,8 @@ func TestR3DirectGrantJourney(t *testing.T) {
 		conditionalResourceGrant,
 	)
 	accessServerTokenOverride = ""
-	if err == nil || !strings.Contains(err.Error(), "conditional R3 grants are not implemented") {
-		t.Fatalf("conditional R3 error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "conditional outside the agent request") {
+		t.Fatalf("overbroad conditional R3 error = %v", err)
 	}
 
 	now = now.Add(time.Second)

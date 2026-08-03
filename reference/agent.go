@@ -41,6 +41,16 @@ type Grant struct {
 	Claims    aauth.AuthTokenClaims
 }
 
+// AuthorizedCall is the exact HTTP call an agent signs under an auth-token
+// grant. Body is copied into the request; non-empty bodies require an explicit
+// media type so content-type participates in the signed request semantics.
+type AuthorizedCall struct {
+	Method      string
+	Endpoint    string
+	Body        []byte
+	ContentType string
+}
+
 type ResourceGrant struct {
 	Resource      string                    `json:"resource"`
 	ResourceToken string                    `json:"resource_token"`
@@ -49,6 +59,9 @@ type ResourceGrant struct {
 	// draft does not bind the agent's requested operation subset into that
 	// token. Omitting it for an R3 grant fails closed before token exchange.
 	RequestedR3 *aauth.R3OperationSet `json:"requested_r3,omitempty"`
+	// R3Proposal is local agent custody identifying a conditional challenge
+	// exchange. It is not an R3 wire claim.
+	R3Proposal bool `json:"r3_proposal,omitempty"`
 }
 
 // TokenAuthorization is either an auth-token grant or a signed-poll
@@ -895,6 +908,67 @@ func (agent *Agent) ExchangeResourceToken(
 	return *authorization.Grant, nil
 }
 
+// ParseR3ConditionalChallenge verifies and binds one protected-resource 401
+// challenge to the initial conditional grant and attempted operation.
+func (agent *Agent) ParseR3ConditionalChallenge(
+	ctx context.Context,
+	response *http.Response,
+	classGrant Grant,
+	operation aauth.R3OperationSet,
+) (ResourceGrant, error) {
+	if response == nil || response.StatusCode != http.StatusUnauthorized {
+		return ResourceGrant{}, errors.New("reference: R3 conditional challenge must be a 401 response")
+	}
+	if err := operation.Validate(); err != nil || len(operation.Operations) != 1 {
+		return ResourceGrant{}, errors.New("reference: R3 conditional challenge requires one valid operation")
+	}
+	if classGrant.AuthToken == "" || classGrant.Resource == "" ||
+		classGrant.Claims.R3Conditional == nil ||
+		classGrant.Claims.R3Conditional.Vocabulary != operation.Vocabulary ||
+		!classGrant.Claims.R3Conditional.Contains(operation.Operations[0]) {
+		return ResourceGrant{}, errors.New("reference: attempted operation is not conditional in the class grant")
+	}
+	requirement, err := aauth.ParseRequirementHeader(response.Header.Get("AAuth-Requirement"))
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	if requirement.Type != aauth.RequirementAuthToken || requirement.ResourceToken == "" {
+		return ResourceGrant{}, errors.New("reference: R3 conditional challenge does not require an auth token")
+	}
+	claims, err := aauth.VerifyResourceToken(ctx, requirement.ResourceToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	proposalReference, proposalReferenceErr := classifyR3ProposalReference(
+		classGrant.Resource,
+		claims.R3URI,
+		claims.R3S256,
+	)
+	if claims.Issuer != classGrant.Resource || claims.Audience != classGrant.Claims.Issuer ||
+		claims.Agent != classGrant.Claims.Agent || claims.AgentJKT != thumbprint ||
+		claims.Scope != classGrant.Claims.Scope || claims.ExpiresAt > classGrant.Claims.ExpiresAt ||
+		claims.R3URI == "" || claims.R3S256 == "" || proposalReferenceErr != nil ||
+		!proposalReference {
+		return ResourceGrant{}, errors.New("reference: proposal resource token does not match the class grant")
+	}
+	if (claims.Mission == nil) != (classGrant.Claims.Mission == nil) ||
+		claims.Mission != nil && *claims.Mission != *classGrant.Claims.Mission {
+		return ResourceGrant{}, errors.New("reference: proposal resource token mission does not match the class grant")
+	}
+	requested := operation.Clone()
+	return ResourceGrant{
+		Resource:      classGrant.Resource,
+		ResourceToken: requirement.ResourceToken,
+		Claims:        claims,
+		RequestedR3:   &requested,
+		R3Proposal:    true,
+	}, nil
+}
+
 // RequestTokenAuthorization exchanges a resource token at a person server and
 // returns either the immediate auth-token grant or a deferred continuation.
 func (agent *Agent) RequestTokenAuthorization(
@@ -1314,13 +1388,21 @@ func (agent *Agent) parseTokenGrantResponse(
 		authClaims.R3S256 != resourceGrant.Claims.R3S256 {
 		return Grant{}, errors.New("reference: auth token R3 reference does not match the resource token")
 	}
-	if authClaims.R3Conditional != nil {
-		return Grant{}, errors.New("reference: conditional R3 grants are not implemented")
-	}
 	if resourceGrant.RequestedR3 != nil {
 		if authClaims.R3Granted == nil ||
 			!resourceGrant.RequestedR3.ContainsSet(*authClaims.R3Granted) {
 			return Grant{}, errors.New("reference: auth token grants R3 operations outside the agent request")
+		}
+		if authClaims.R3Conditional != nil &&
+			!resourceGrant.RequestedR3.ContainsSet(*authClaims.R3Conditional) {
+			return Grant{}, errors.New("reference: auth token makes R3 operations conditional outside the agent request")
+		}
+	}
+	if resourceGrant.R3Proposal {
+		if resourceGrant.RequestedR3 == nil || len(resourceGrant.RequestedR3.Operations) != 1 ||
+			authClaims.R3Conditional != nil || authClaims.R3Granted == nil ||
+			!authClaims.R3Granted.Equal(*resourceGrant.RequestedR3) {
+			return Grant{}, errors.New("reference: per-call auth token does not grant exactly the proposed operation")
 		}
 	}
 	if err := aauth.ValidateAuthTokenContext(
@@ -1354,6 +1436,16 @@ func validateResourceGrantR3Request(resourceGrant ResourceGrant) error {
 	}
 	if err := resourceGrant.RequestedR3.Validate(); err != nil {
 		return fmt.Errorf("reference: resource grant requested R3 operations: %w", err)
+	}
+	if resourceGrant.R3Proposal {
+		proposalReference, err := classifyR3ProposalReference(
+			resourceGrant.Resource,
+			resourceGrant.Claims.R3URI,
+			resourceGrant.Claims.R3S256,
+		)
+		if len(resourceGrant.RequestedR3.Operations) != 1 || err != nil || !proposalReference {
+			return errors.New("reference: proposal resource grant has an invalid stage binding")
+		}
 	}
 	return nil
 }
@@ -1540,19 +1632,41 @@ func (agent *Agent) DoAuthorized(
 	endpoint string,
 	grant Grant,
 ) (*http.Response, error) {
-	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+	return agent.DoAuthorizedRequest(ctx, AuthorizedCall{
+		Method:   method,
+		Endpoint: endpoint,
+	}, grant)
+}
+
+// DoAuthorizedRequest signs and sends one exact HTTP call under a grant.
+func (agent *Agent) DoAuthorizedRequest(
+	ctx context.Context,
+	call AuthorizedCall,
+	grant Grant,
+) (*http.Response, error) {
+	if err := aauth.ValidateEndpoint(call.Endpoint); err != nil {
 		return nil, err
 	}
-	resourceID, err := endpointIdentifier(endpoint)
+	resourceID, err := endpointIdentifier(call.Endpoint)
 	if err != nil {
 		return nil, err
 	}
 	if resourceID != grant.Resource || grant.AuthToken == "" {
 		return nil, errors.New("reference: grant does not apply to endpoint")
 	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	if len(call.Body) != 0 && strings.TrimSpace(call.ContentType) == "" {
+		return nil, errors.New("reference: authorized request body requires a content type")
+	}
+	var body io.Reader
+	if call.Body != nil {
+		body = bytes.NewReader(append([]byte(nil), call.Body...))
+	}
+	request, err := http.NewRequestWithContext(ctx, call.Method, call.Endpoint, body)
 	if err != nil {
 		return nil, err
+	}
+	if call.ContentType != "" {
+		request.Header.Set("Content-Type", call.ContentType)
 	}
 	if err := aauth.SignRequest(request, agent.signingKey, grant.AuthToken, agent.clock); err != nil {
 		return nil, err

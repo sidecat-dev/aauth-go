@@ -202,6 +202,9 @@ func signRequestWithSignatureKey(
 		digest := sha256.Sum256(body)
 		request.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
 		components = append(components, "content-digest")
+		if request.Header.Get("Content-Type") != "" {
+			components = append(components, "content-type")
+		}
 	}
 	if request.Header.Get("AAuth-Mission") != "" {
 		components = append(components, "aauth-mission")

@@ -30,35 +30,42 @@ type AccessServerConfig struct {
 	Random                io.Reader
 	PendingLifetime       time.Duration
 	// R3HTTPClient fetches content-addressed documents as this access server.
-	// R3Audit must durably record a successful issuance before the token is
-	// released to the caller; returning an error makes issuance fail closed.
+	// R3Audit must durably and idempotently record a successful issuance by
+	// TokenID before the token is released; returning an error makes issuance
+	// fail closed. Its audit retention is independent of short-lived token
+	// recovery in R3PerCallIssuanceStore.
 	R3HTTPClient   *http.Client
 	R3Audit        func(context.Context, aauth.R3AuditRecord) error
 	R3Admit        func(context.Context, string) error
 	R3FetchTimeout time.Duration
 	R3CacheLimit   int
+	// R3PerCallIssuanceStore atomically owns proposal-token consumption and
+	// exact auth-token recovery. It retains the candidate audit beside that
+	// token so R3Audit can be retried after a lost response or process restart.
+	R3PerCallIssuanceStore R3PerCallIssuanceStore
 }
 
 type AccessServer struct {
-	identifier            string
-	signingKey            aauth.SigningKey
-	keyResolver           aauth.KeyResolver
-	clock                 aauth.Clock
-	newID                 func() string
-	trustedPersonServer   func(context.Context, string) error
-	trustedUpstreamIssuer func(context.Context, string) error
-	authorizationPolicy   aauth.AuthorizationPolicy
-	interactionRequired   func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	random                io.Reader
-	pendingLifetime       time.Duration
-	r3HTTPClient          *http.Client
-	r3Audit               func(context.Context, aauth.R3AuditRecord) error
-	r3Admit               func(context.Context, string) error
-	r3FetchTimeout        time.Duration
-	r3CacheLimit          int
-	r3CacheMu             sync.Mutex
-	r3Cache               map[string]*r3CacheEntry
-	r3CacheSequence       uint64
+	identifier             string
+	signingKey             aauth.SigningKey
+	keyResolver            aauth.KeyResolver
+	clock                  aauth.Clock
+	newID                  func() string
+	trustedPersonServer    func(context.Context, string) error
+	trustedUpstreamIssuer  func(context.Context, string) error
+	authorizationPolicy    aauth.AuthorizationPolicy
+	interactionRequired    func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	random                 io.Reader
+	pendingLifetime        time.Duration
+	r3HTTPClient           *http.Client
+	r3Audit                func(context.Context, aauth.R3AuditRecord) error
+	r3Admit                func(context.Context, string) error
+	r3FetchTimeout         time.Duration
+	r3CacheLimit           int
+	r3PerCallIssuanceStore R3PerCallIssuanceStore
+	r3CacheMu              sync.Mutex
+	r3Cache                map[string]*r3CacheEntry
+	r3CacheSequence        uint64
 
 	replayMu      sync.Mutex
 	replayedProof map[string]time.Time
@@ -70,6 +77,7 @@ type AccessServer struct {
 type accessServerAuthorizationContext struct {
 	request              aauth.AuthorizationRequest
 	resourceToken        aauth.ResourceTokenClaims
+	resourceTokenCompact string
 	targetAgent          string
 	targetKey            aauth.JWK
 	parentAgent          string
@@ -140,25 +148,26 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		random = rand.Reader
 	}
 	return &AccessServer{
-		identifier:            config.Identifier,
-		signingKey:            config.SigningKey,
-		keyResolver:           config.KeyResolver,
-		clock:                 config.Clock,
-		newID:                 config.NewID,
-		trustedPersonServer:   config.TrustedPersonServer,
-		trustedUpstreamIssuer: config.TrustedUpstreamIssuer,
-		authorizationPolicy:   config.AuthorizationPolicy,
-		interactionRequired:   config.InteractionRequired,
-		random:                random,
-		pendingLifetime:       pendingLifetime,
-		r3HTTPClient:          config.R3HTTPClient,
-		r3Audit:               config.R3Audit,
-		r3Admit:               config.R3Admit,
-		r3FetchTimeout:        r3FetchTimeout,
-		r3CacheLimit:          r3CacheLimit,
-		r3Cache:               make(map[string]*r3CacheEntry),
-		replayedProof:         make(map[string]time.Time),
-		pending:               make(map[string]*pendingAccessServerAuthorization),
+		identifier:             config.Identifier,
+		signingKey:             config.SigningKey,
+		keyResolver:            config.KeyResolver,
+		clock:                  config.Clock,
+		newID:                  config.NewID,
+		trustedPersonServer:    config.TrustedPersonServer,
+		trustedUpstreamIssuer:  config.TrustedUpstreamIssuer,
+		authorizationPolicy:    config.AuthorizationPolicy,
+		interactionRequired:    config.InteractionRequired,
+		random:                 random,
+		pendingLifetime:        pendingLifetime,
+		r3HTTPClient:           config.R3HTTPClient,
+		r3Audit:                config.R3Audit,
+		r3Admit:                config.R3Admit,
+		r3FetchTimeout:         r3FetchTimeout,
+		r3CacheLimit:           r3CacheLimit,
+		r3PerCallIssuanceStore: config.R3PerCallIssuanceStore,
+		r3Cache:                make(map[string]*r3CacheEntry),
+		replayedProof:          make(map[string]time.Time),
+		pending:                make(map[string]*pendingAccessServerAuthorization),
 	}, nil
 }
 
@@ -333,12 +342,17 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			R3:          r3Authorization,
 		},
 		resourceToken:        resourceToken,
+		resourceTokenCompact: input.ResourceToken,
 		targetAgent:          targetAgent,
 		targetKey:            targetKey,
 		parentAgent:          parentAgent,
 		targetTokenExpiresAt: targetExpiry,
 		pollingServer:        verified.Signer,
 		pollingKeyThumbprint: pollingKeyThumbprint,
+	}
+	if r3Authorization != nil && r3Authorization.Document.Parameters != nil &&
+		server.recoverR3PerCallIssuance(request.Context(), response, authorizationContext) {
+		return
 	}
 	if server.interactionRequired != nil {
 		required, err := server.interactionRequired(
@@ -376,7 +390,47 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization policy returned an invalid R3 grant"))
 		return
 	}
+	if r3Authorization != nil &&
+		(decision.R3Conditional != nil || r3Authorization.Document.Parameters != nil) &&
+		server.r3PerCallIssuanceStore == nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("conditional R3 issuance requires durable per-call issuance custody"))
+		return
+	}
 	server.completeAuthorization(request.Context(), response, authorizationContext, decision)
+}
+
+func (server *AccessServer) recoverR3PerCallIssuance(
+	ctx context.Context,
+	response http.ResponseWriter,
+	authorizationContext accessServerAuthorizationContext,
+) bool {
+	if server.r3PerCallIssuanceStore == nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("per-call issuance store is unavailable"))
+		return true
+	}
+	fingerprint := aauth.R3S256([]byte(authorizationContext.resourceTokenCompact))
+	existing, err := server.r3PerCallIssuanceStore.Load(
+		ctx,
+		authorizationContext.resourceToken.Issuer,
+		authorizationContext.resourceToken.JTI,
+		fingerprint,
+	)
+	if errors.Is(err, ErrR3IssuanceNotFound) {
+		return false
+	}
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "r3_issuance_failed", err)
+		return true
+	}
+	if err := server.r3Audit(ctx, existing.Audit); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "r3_audit_failed", err)
+		return true
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"auth_token": existing.AuthToken,
+		"expires_in": existing.ExpiresAt.Unix() - server.clock.Now().Unix(),
+	})
+	return true
 }
 
 func (server *AccessServer) completeAuthorization(
@@ -393,6 +447,21 @@ func (server *AccessServer) completeAuthorization(
 	expiresAt := now.Add(time.Hour).Unix()
 	if authorizationContext.targetTokenExpiresAt < expiresAt {
 		expiresAt = authorizationContext.targetTokenExpiresAt
+	}
+	if authorizationContext.request.R3 != nil &&
+		authorizationContext.request.R3.Document.Parameters != nil &&
+		authorizationContext.resourceToken.ExpiresAt < expiresAt {
+		expiresAt = authorizationContext.resourceToken.ExpiresAt
+	}
+	proposalIssuance := authorizationContext.request.R3 != nil &&
+		authorizationContext.request.R3.Document.Parameters != nil
+	resourceTokenFingerprint := ""
+	if proposalIssuance {
+		if server.r3PerCallIssuanceStore == nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("per-call issuance store is unavailable"))
+			return
+		}
+		resourceTokenFingerprint = aauth.R3S256([]byte(authorizationContext.resourceTokenCompact))
 	}
 	tokenID := server.newID()
 	authToken, err := aauth.MintAuthToken(server.signingKey, aauth.AuthTokenClaims{
@@ -418,14 +487,38 @@ func (server *AccessServer) completeAuthorization(
 		return
 	}
 	if authorizationContext.request.R3 != nil {
-		if err := server.r3Audit(ctx, aauth.R3AuditRecord{
-			R3URI:    authorizationContext.resourceToken.R3URI,
-			R3S256:   authorizationContext.resourceToken.R3S256,
-			Agent:    authorizationContext.targetAgent,
-			Resource: authorizationContext.resourceToken.Issuer,
-			TokenID:  tokenID,
-			IssuedAt: now.UTC(),
-		}); err != nil {
+		audit := aauth.R3AuditRecord{
+			R3URI:           authorizationContext.resourceToken.R3URI,
+			R3S256:          authorizationContext.resourceToken.R3S256,
+			Agent:           authorizationContext.targetAgent,
+			Resource:        authorizationContext.resourceToken.Issuer,
+			ResourceTokenID: authorizationContext.resourceToken.JTI,
+			TokenID:         tokenID,
+			Mission:         cloneMissionReference(authorizationContext.resourceToken.Mission),
+			R3Granted:       cloneR3OperationSet(decision.R3Granted),
+			R3Conditional:   cloneR3OperationSet(decision.R3Conditional),
+			IssuedAt:        now.UTC(),
+		}
+		if proposalIssuance {
+			committed, err := server.r3PerCallIssuanceStore.Commit(ctx, R3PerCallIssuance{
+				Resource:                 authorizationContext.resourceToken.Issuer,
+				ResourceTokenID:          authorizationContext.resourceToken.JTI,
+				ResourceTokenFingerprint: resourceTokenFingerprint,
+				AuthToken:                authToken,
+				ExpiresAt:                time.Unix(expiresAt, 0).UTC(),
+				Audit:                    audit,
+			})
+			if err != nil {
+				writeProblem(response, http.StatusInternalServerError, "r3_issuance_failed", err)
+				return
+			}
+			if err := server.r3Audit(ctx, committed.Audit); err != nil {
+				writeProblem(response, http.StatusInternalServerError, "r3_audit_failed", err)
+				return
+			}
+			authToken = committed.AuthToken
+			expiresAt = committed.ExpiresAt.Unix()
+		} else if err := server.r3Audit(ctx, audit); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "r3_audit_failed", err)
 			return
 		}
@@ -440,6 +533,9 @@ func (server *AccessServer) fetchR3Authorization(
 	ctx context.Context,
 	resourceToken aauth.ResourceTokenClaims,
 ) (*aauth.R3Authorization, error) {
+	if err := server.r3Admit(ctx, resourceToken.R3URI); err != nil {
+		return nil, fmt.Errorf("reference: R3 fetch is not admitted: %w", err)
+	}
 	resourceIdentifier, err := endpointIdentifier(resourceToken.R3URI)
 	if err != nil {
 		return nil, err
@@ -519,9 +615,6 @@ func (server *AccessServer) fetchR3AuthorizationUncached(
 	ctx context.Context,
 	resourceToken aauth.ResourceTokenClaims,
 ) (*aauth.R3Authorization, error) {
-	if err := server.r3Admit(ctx, resourceToken.R3URI); err != nil {
-		return nil, fmt.Errorf("reference: R3 fetch is not admitted: %w", err)
-	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceToken.R3URI, nil)
 	if err != nil {
 		return nil, err
@@ -597,19 +690,47 @@ func validateR3AuthorizationDecision(
 		return nil
 	}
 	if decision.R3Granted == nil {
-		return errors.New("reference: verified R3 authorization requires a direct grant")
+		return errors.New("reference: verified R3 authorization requires r3_granted")
+	}
+	if err := validateR3DecisionSet(*decision.R3Granted, true); err != nil {
+		return err
 	}
 	if decision.R3Conditional != nil {
-		return errors.New("reference: R3 conditional issuance is not implemented")
+		if err := decision.R3Conditional.Validate(); err != nil {
+			return err
+		}
+		if decision.R3Granted.Vocabulary != decision.R3Conditional.Vocabulary {
+			return errors.New("reference: R3 decision vocabularies differ")
+		}
+		for _, operation := range decision.R3Conditional.Operations {
+			if decision.R3Granted.Contains(operation) {
+				return errors.New("reference: R3 operation is both granted and conditional")
+			}
+		}
 	}
-	if err := decision.R3Granted.Validate(); err != nil {
-		return err
+	if len(decision.R3Granted.Operations) == 0 && decision.R3Conditional == nil {
+		return errors.New("reference: R3 decision contains no operations")
 	}
 	documentOperations := authorization.Document.OperationSet()
 	if !documentOperations.ContainsSet(*decision.R3Granted) {
-		return errors.New("reference: R3 direct grant exceeds the verified document")
+		return errors.New("reference: R3 grant exceeds the verified document")
+	}
+	if decision.R3Conditional != nil && !documentOperations.ContainsSet(*decision.R3Conditional) {
+		return errors.New("reference: R3 conditional grant exceeds the verified document")
+	}
+	if authorization.Document.Parameters != nil {
+		if decision.R3Conditional != nil || !decision.R3Granted.Equal(documentOperations) {
+			return errors.New("reference: R3 proposal requires exactly its one operation as a direct grant")
+		}
 	}
 	return nil
+}
+
+func validateR3DecisionSet(set aauth.R3OperationSet, allowEmpty bool) error {
+	if len(set.Operations) != 0 || !allowEmpty {
+		return set.Validate()
+	}
+	return aauth.ValidateR3VocabularyURI(set.Vocabulary)
 }
 
 func cloneR3OperationSet(operationSet *aauth.R3OperationSet) *aauth.R3OperationSet {
@@ -620,9 +741,24 @@ func cloneR3OperationSet(operationSet *aauth.R3OperationSet) *aauth.R3OperationS
 	return &cloned
 }
 
+func cloneMissionReference(reference *aauth.MissionReference) *aauth.MissionReference {
+	if reference == nil {
+		return nil
+	}
+	cloned := *reference
+	return &cloned
+}
+
 func cloneR3Document(document aauth.R3Document) aauth.R3Document {
 	cloned := document
 	cloned.Operations = document.OperationSet().Operations
+	if document.Parameters != nil {
+		parameters := make(aauth.R3Parameters, len(*document.Parameters))
+		for name, value := range *document.Parameters {
+			parameters[name] = append([]byte(nil), value...)
+		}
+		cloned.Parameters = &parameters
+	}
 	if document.Display != nil {
 		display := *document.Display
 		cloned.Display = &display

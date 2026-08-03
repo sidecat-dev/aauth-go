@@ -134,6 +134,30 @@ type R3Display struct {
 	Implications string `json:"implications,omitempty"`
 	DataAccessed string `json:"data_accessed,omitempty"`
 	Irreversible string `json:"irreversible,omitempty"`
+	Detail       string `json:"detail,omitempty"`
+}
+
+// R3Parameters preserves the proposal's machine-readable parameter values.
+// A value with an s256 member is the draft's digest-object representation;
+// every other value is an inline parameter.
+type R3Parameters map[string]json.RawMessage
+
+// R3CallParameter is the deployment-owned view of one actual call parameter.
+// Inline values use Value. Digested values set Digest and provide the exact
+// PresentedValue bytes; Excerpt is display-only and never authorizes a value.
+type R3CallParameter struct {
+	Value          json.RawMessage
+	PresentedValue []byte
+	Digest         bool
+	Excerpt        string
+	MediaType      string
+}
+
+// R3Proposal supplies the concrete call parameters and optional human context
+// from which a resource serializes one exact per-call proposal.
+type R3Proposal struct {
+	Parameters map[string]R3CallParameter
+	Display    *R3Display
 }
 
 // R3Document is the parsed form of the exact bytes published by a resource.
@@ -143,6 +167,7 @@ type R3Document struct {
 	Version    string            `json:"version,omitempty"`
 	Vocabulary string            `json:"vocabulary"`
 	Operations []json.RawMessage `json:"operations"`
+	Parameters *R3Parameters     `json:"parameters,omitempty"`
 	Display    *R3Display        `json:"display,omitempty"`
 }
 
@@ -164,6 +189,21 @@ func ParseR3Document(exactBytes []byte) (R3Document, error) {
 	if document.Display != nil && strings.TrimSpace(document.Display.Summary) == "" {
 		return document, errors.New("aauth: R3 document display.summary is required")
 	}
+	var topLevel map[string]json.RawMessage
+	if err := json.Unmarshal(exactBytes, &topLevel); err != nil {
+		return document, fmt.Errorf("aauth: parse R3 document fields: %w", err)
+	}
+	if raw, present := topLevel["parameters"]; present {
+		if document.Parameters == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return document, errors.New("aauth: R3 proposal parameters must be an object")
+		}
+		if len(document.Operations) != 1 {
+			return document, errors.New("aauth: R3 proposal must contain exactly one operation")
+		}
+		if err := validateR3Parameters(*document.Parameters); err != nil {
+			return document, err
+		}
+	}
 	return document, nil
 }
 
@@ -173,6 +213,110 @@ func (document R3Document) OperationSet() R3OperationSet {
 		Vocabulary: document.Vocabulary,
 		Operations: cloneRawMessages(document.Operations),
 	}
+}
+
+// BuildR3Proposal serializes one validated proposal exactly once. Callers must
+// retain the returned bytes and use them for both hashing and serving.
+func BuildR3Proposal(operation R3OperationSet, proposal R3Proposal) ([]byte, error) {
+	if err := operation.Validate(); err != nil {
+		return nil, err
+	}
+	if len(operation.Operations) != 1 {
+		return nil, errors.New("aauth: R3 proposal requires exactly one operation")
+	}
+	if proposal.Parameters == nil {
+		return nil, errors.New("aauth: R3 proposal parameters are required")
+	}
+	parameters := make(R3Parameters, len(proposal.Parameters))
+	for name, parameter := range proposal.Parameters {
+		if name == "" {
+			return nil, errors.New("aauth: R3 proposal parameter name must not be empty")
+		}
+		if parameter.Digest {
+			if parameter.PresentedValue == nil {
+				return nil, fmt.Errorf("aauth: R3 proposal parameter %q has no presented bytes", name)
+			}
+			encoded, err := json.Marshal(r3ParameterDigest{
+				S256:      R3S256(parameter.PresentedValue),
+				Excerpt:   parameter.Excerpt,
+				MediaType: parameter.MediaType,
+			})
+			if err != nil {
+				return nil, err
+			}
+			parameters[name] = encoded
+			continue
+		}
+		if parameter.PresentedValue != nil {
+			return nil, fmt.Errorf("aauth: inline R3 proposal parameter %q also has presented bytes", name)
+		}
+		if _, err := normalizeR3JSONValue(parameter.Value); err != nil {
+			return nil, fmt.Errorf("aauth: R3 proposal parameter %q: %w", name, err)
+		}
+		parameters[name] = append(json.RawMessage(nil), parameter.Value...)
+	}
+	document := R3Document{
+		Vocabulary: operation.Vocabulary,
+		Operations: cloneRawMessages(operation.Operations),
+		Parameters: &parameters,
+		Display:    cloneR3Display(proposal.Display),
+	}
+	exactBytes, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("aauth: serialize R3 proposal: %w", err)
+	}
+	if _, err := ParseR3Document(exactBytes); err != nil {
+		return nil, err
+	}
+	return exactBytes, nil
+}
+
+// MatchR3Call verifies one actual operation and every actual parameter against
+// a parsed proposal. Digest values are checked over exact presented bytes;
+// excerpts are intentionally ignored during enforcement.
+func (document R3Document) MatchR3Call(
+	operation R3OperationSet,
+	actual map[string]R3CallParameter,
+) error {
+	if document.Parameters == nil {
+		return errors.New("aauth: R3 document is not a per-call proposal")
+	}
+	if !document.OperationSet().Equal(operation) || len(operation.Operations) != 1 {
+		return errors.New("aauth: R3 proposal operation does not match the actual call")
+	}
+	if actual == nil || len(actual) != len(*document.Parameters) {
+		return errors.New("aauth: R3 proposal parameters do not match the actual call")
+	}
+	for name, approved := range *document.Parameters {
+		parameter, exists := actual[name]
+		if !exists {
+			return fmt.Errorf("aauth: R3 proposal parameter %q is missing from the actual call", name)
+		}
+		digest, isDigest, err := parseR3ParameterDigest(approved)
+		if err != nil {
+			return fmt.Errorf("aauth: R3 proposal parameter %q: %w", name, err)
+		}
+		if isDigest {
+			if !parameter.Digest || parameter.PresentedValue == nil ||
+				R3S256(parameter.PresentedValue) != digest.S256 ||
+				parameter.MediaType != digest.MediaType {
+				return fmt.Errorf("aauth: R3 proposal parameter %q digest does not match the actual call", name)
+			}
+			continue
+		}
+		if parameter.Digest || parameter.PresentedValue != nil {
+			return fmt.Errorf("aauth: R3 proposal parameter %q representation changed", name)
+		}
+		approvedValue, err := normalizeR3JSONValue(approved)
+		if err != nil {
+			return fmt.Errorf("aauth: R3 proposal parameter %q: %w", name, err)
+		}
+		actualValue, err := normalizeR3JSONValue(parameter.Value)
+		if err != nil || !bytes.Equal(approvedValue, actualValue) {
+			return fmt.Errorf("aauth: R3 proposal parameter %q does not match the actual call", name)
+		}
+	}
+	return nil
 }
 
 // R3Authorization is the verified, exact-byte R3 input presented to access
@@ -197,6 +341,7 @@ func (authorization *R3Authorization) Clone() *R3Authorization {
 			Version:    authorization.Document.Version,
 			Vocabulary: authorization.Document.Vocabulary,
 			Operations: cloneRawMessages(authorization.Document.Operations),
+			Parameters: cloneR3Parameters(authorization.Document.Parameters),
 			Display:    cloneR3Display(authorization.Document.Display),
 		},
 	}
@@ -205,12 +350,16 @@ func (authorization *R3Authorization) Clone() *R3Authorization {
 // R3AuditRecord is the issuance fact the reference access server requires its
 // deployment to retain before it releases an R3 auth token.
 type R3AuditRecord struct {
-	R3URI    string
-	R3S256   string
-	Agent    string
-	Resource string
-	TokenID  string
-	IssuedAt time.Time
+	R3URI           string            `json:"r3_uri"`
+	R3S256          string            `json:"r3_s256"`
+	Agent           string            `json:"agent"`
+	Resource        string            `json:"resource"`
+	ResourceTokenID string            `json:"resource_token_id"`
+	TokenID         string            `json:"token_id"`
+	Mission         *MissionReference `json:"mission,omitempty"`
+	R3Granted       *R3OperationSet   `json:"r3_granted,omitempty"`
+	R3Conditional   *R3OperationSet   `json:"r3_conditional,omitempty"`
+	IssuedAt        time.Time         `json:"issued_at"`
 }
 
 // R3S256 computes the unpadded base64url SHA-256 digest over exact bytes.
@@ -288,6 +437,82 @@ func parseR3Operation(operation json.RawMessage) (string, map[string]json.RawMes
 		return "", nil, errors.New("operation cannot be normalized")
 	}
 	return string(normalized), fields, nil
+}
+
+type r3ParameterDigest struct {
+	S256      string `json:"s256"`
+	Excerpt   string `json:"excerpt,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+}
+
+func validateR3Parameters(parameters R3Parameters) error {
+	for name, raw := range parameters {
+		if name == "" {
+			return errors.New("aauth: R3 proposal parameter name must not be empty")
+		}
+		if _, err := normalizeR3JSONValue(raw); err != nil {
+			return fmt.Errorf("aauth: R3 proposal parameter %q: %w", name, err)
+		}
+		if _, _, err := parseR3ParameterDigest(raw); err != nil {
+			return fmt.Errorf("aauth: R3 proposal parameter %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func parseR3ParameterDigest(raw json.RawMessage) (r3ParameterDigest, bool, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return r3ParameterDigest{}, false, nil
+	}
+	if _, present := fields["s256"]; !present {
+		return r3ParameterDigest{}, false, nil
+	}
+	for name := range fields {
+		if name != "s256" && name != "excerpt" && name != "media_type" {
+			return r3ParameterDigest{}, true, errors.New("digest object contains an unknown member")
+		}
+	}
+	var digest r3ParameterDigest
+	if err := json.Unmarshal(raw, &digest); err != nil {
+		return r3ParameterDigest{}, true, errors.New("digest object is invalid")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(digest.S256)
+	if err != nil || len(decoded) != sha256.Size ||
+		base64.RawURLEncoding.EncodeToString(decoded) != digest.S256 {
+		return r3ParameterDigest{}, true, errors.New("digest object s256 is invalid")
+	}
+	if _, present := fields["excerpt"]; present && digest.Excerpt == "" {
+		return r3ParameterDigest{}, true, errors.New("digest object excerpt must not be empty")
+	}
+	if _, present := fields["media_type"]; present && digest.MediaType == "" {
+		return r3ParameterDigest{}, true, errors.New("digest object media_type must not be empty")
+	}
+	return digest, true, nil
+}
+
+func normalizeR3JSONValue(raw json.RawMessage) ([]byte, error) {
+	if len(raw) == 0 || !json.Valid(raw) {
+		return nil, errors.New("value must be valid JSON")
+	}
+	if err := rejectDuplicateJSONNames(raw); err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, errors.New("value must be valid JSON")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, errors.New("value must contain one JSON value")
+	}
+	normalized, err := json.Marshal(value)
+	if err != nil {
+		return nil, errors.New("value cannot be normalized")
+	}
+	return normalized, nil
 }
 
 func validateR3OperationFields(vocabulary string, fields map[string]json.RawMessage) error {
@@ -406,4 +631,28 @@ func cloneR3Display(display *R3Display) *R3Display {
 	}
 	cloned := *display
 	return &cloned
+}
+
+func cloneR3Parameters(parameters *R3Parameters) *R3Parameters {
+	if parameters == nil {
+		return nil
+	}
+	cloned := make(R3Parameters, len(*parameters))
+	for name, value := range *parameters {
+		cloned[name] = append(json.RawMessage(nil), value...)
+	}
+	return &cloned
+}
+
+func cloneR3CallParameters(parameters map[string]R3CallParameter) map[string]R3CallParameter {
+	if parameters == nil {
+		return nil
+	}
+	cloned := make(map[string]R3CallParameter, len(parameters))
+	for name, parameter := range parameters {
+		parameter.Value = append(json.RawMessage(nil), parameter.Value...)
+		parameter.PresentedValue = append([]byte(nil), parameter.PresentedValue...)
+		cloned[name] = parameter
+	}
+	return cloned
 }

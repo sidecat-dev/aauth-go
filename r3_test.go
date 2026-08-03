@@ -112,6 +112,148 @@ func TestR3DocumentHashRetainsExactWireIdentity(t *testing.T) {
 	}
 }
 
+func TestR3ProposalBindsInlineAndDigestParameters(t *testing.T) {
+	t.Parallel()
+
+	operation := R3OperationSet{
+		Vocabulary: R3VocabularyMCP,
+		Operations: []json.RawMessage{json.RawMessage(`{"tool":"send_message"}`)},
+	}
+	proposal := R3Proposal{
+		Parameters: map[string]R3CallParameter{
+			"recipient": {Value: json.RawMessage(`"person@example.com"`)},
+			"body": {
+				Digest:         true,
+				PresentedValue: []byte("hello from the exact request body"),
+				Excerpt:        "hello from...",
+				MediaType:      "text/plain",
+			},
+		},
+		Display: &R3Display{
+			Summary: "Send one message",
+			Detail:  "## Recipient\nperson@example.com",
+		},
+	}
+	exactBytes, err := BuildR3Proposal(operation, proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := ParseR3Document(exactBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Parameters == nil || document.Display == nil ||
+		document.Display.Detail != proposal.Display.Detail {
+		t.Fatalf("parsed proposal = %#v", document)
+	}
+	if strings.Contains(string(exactBytes), "hello from the exact request body") {
+		t.Fatalf("digested body leaked into proposal: %s", exactBytes)
+	}
+	if err := document.MatchR3Call(operation, proposal.Parameters); err != nil {
+		t.Fatalf("matching call parameters were refused: %v", err)
+	}
+
+	changedBody := cloneR3CallParameters(proposal.Parameters)
+	changedBody["body"] = R3CallParameter{
+		Digest:         true,
+		PresentedValue: []byte("hello from a changed request body"),
+		Excerpt:        proposal.Parameters["body"].Excerpt,
+		MediaType:      "text/plain",
+	}
+	if err := document.MatchR3Call(operation, changedBody); err == nil ||
+		!strings.Contains(err.Error(), "body") {
+		t.Fatalf("changed digest bytes error = %v", err)
+	}
+
+	changedRecipient := cloneR3CallParameters(proposal.Parameters)
+	changedRecipient["recipient"] = R3CallParameter{Value: json.RawMessage(`"other@example.com"`)}
+	if err := document.MatchR3Call(operation, changedRecipient); err == nil ||
+		!strings.Contains(err.Error(), "recipient") {
+		t.Fatalf("changed inline parameter error = %v", err)
+	}
+
+	missingParameter := cloneR3CallParameters(proposal.Parameters)
+	delete(missingParameter, "recipient")
+	if err := document.MatchR3Call(operation, missingParameter); err == nil {
+		t.Fatal("call with a missing parameter was accepted")
+	}
+
+	extraParameter := cloneR3CallParameters(proposal.Parameters)
+	extraParameter["priority"] = R3CallParameter{Value: json.RawMessage(`"urgent"`)}
+	if err := document.MatchR3Call(operation, extraParameter); err == nil {
+		t.Fatal("call with an extra parameter was accepted")
+	}
+
+	changedMediaType := cloneR3CallParameters(proposal.Parameters)
+	body := changedMediaType["body"]
+	body.MediaType = "application/octet-stream"
+	changedMediaType["body"] = body
+	if err := document.MatchR3Call(operation, changedMediaType); err == nil {
+		t.Fatal("digest parameter with changed media type was accepted")
+	}
+
+	changedOperation := R3OperationSet{
+		Vocabulary: R3VocabularyMCP,
+		Operations: []json.RawMessage{json.RawMessage(`{"tool":"delete_message"}`)},
+	}
+	if err := document.MatchR3Call(changedOperation, proposal.Parameters); err == nil {
+		t.Fatal("call with a changed operation was accepted")
+	}
+}
+
+func TestR3ProposalRejectsMalformedParameterDocuments(t *testing.T) {
+	t.Parallel()
+
+	for name, exactBytes := range map[string][]byte{
+		"zero operations": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[],"parameters":{"recipient":"person@example.com"}}`,
+		),
+		"null parameters": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"send_message"}],"parameters":null}`,
+		),
+		"invalid digest": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"send_message"}],` +
+				`"parameters":{"body":{"s256":"not-a-digest"}}}`,
+		),
+		"empty digest": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"send_message"}],` +
+				`"parameters":{"body":{"s256":""}}}`,
+		),
+		"array parameters": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"send_message"}],"parameters":[]}`,
+		),
+		"unknown digest member": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"send_message"}],` +
+				`"parameters":{"body":{"s256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","value":"secret"}}}`,
+		),
+		"multiple operations": []byte(
+			`{"vocabulary":"urn:aauth:vocabulary:mcp",` +
+				`"operations":[{"tool":"send_message"},{"tool":"delete_message"}],` +
+				`"parameters":{"recipient":"person@example.com"}}`,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ParseR3Document(exactBytes); err == nil {
+				t.Fatalf("malformed proposal was accepted: %s", exactBytes)
+			}
+		})
+	}
+	operation := R3OperationSet{
+		Vocabulary: R3VocabularyMCP,
+		Operations: []json.RawMessage{json.RawMessage(`{"tool":"send_message"}`)},
+	}
+	if _, err := BuildR3Proposal(operation, R3Proposal{}); err == nil {
+		t.Fatal("proposal without parameters was built")
+	}
+}
+
 func TestR3DocumentRejectsDuplicateNamesAtEveryDepth(t *testing.T) {
 	t.Parallel()
 
