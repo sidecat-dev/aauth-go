@@ -389,8 +389,6 @@ func (provider *AgentProvider) acceptEvent(response http.ResponseWriter, request
 			writeProblem(response, http.StatusNotFound, "subscription_not_found", err)
 		case errors.Is(err, ErrEventSubscriptionExhausted):
 			writeProblem(response, http.StatusTooManyRequests, "subscription_exhausted", err)
-		case errors.Is(err, ErrEventRecordInvalid):
-			writeProblem(response, http.StatusBadRequest, "invalid_event", err)
 		default:
 			writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		}

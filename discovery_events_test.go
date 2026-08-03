@@ -78,3 +78,59 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 		t.Fatalf("rotated metadata/fetches/admissions = %#v, %d/%d/%d", rotated, metadataFetches.Load(), keySetFetches.Load(), admissions)
 	}
 }
+
+func TestAgentEventMetadataDoesNotCacheWhenCacheControlForbidsIt(t *testing.T) {
+	t.Parallel()
+
+	for _, cacheControl := range []string{
+		"max-age=60, no-store",
+		"no-store, max-age=60",
+		"max-age=60, no-cache",
+		"no-cache, max-age=60",
+	} {
+		cacheControl := cacheControl
+		t.Run(cacheControl, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+			signingKey := testSigningKey(t, "ap-events-key")
+			var metadataFetches atomic.Int32
+			gateway := newLogicalGateway(t, map[string]http.Handler{
+				"ap.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+					switch request.URL.Path {
+					case "/.well-known/aauth-agent.json":
+						fetch := metadataFetches.Add(1)
+						response.Header().Set("Cache-Control", cacheControl)
+						_, _ = fmt.Fprintf(response, `{"issuer":"https://ap.example","jwks_uri":"https://ap.example/jwks","event_endpoint":"https://ap.example/events-%d"}`, fetch)
+					case "/jwks":
+						response.Header().Set("Cache-Control", "max-age=60")
+						_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":%q}]}`, signingKey.PublicJWK().X, signingKey.ID())
+					default:
+						http.NotFound(response, request)
+					}
+				}),
+			})
+			defer gateway.Close()
+
+			resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+				Client: gateway.Client(),
+				Clock:  aauth.ClockFunc(func() time.Time { return now }),
+				Admit:  func(context.Context, string) error { return nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := resolver.ResolveAgentEventMetadata(context.Background(), "https://ap.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := resolver.ResolveAgentEventMetadata(context.Background(), "https://ap.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.EventEndpoint == second.EventEndpoint || metadataFetches.Load() != 2 {
+				t.Fatalf("forbidden cache retained metadata: first=%q second=%q fetches=%d", first.EventEndpoint, second.EventEndpoint, metadataFetches.Load())
+			}
+		})
+	}
+}

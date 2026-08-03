@@ -529,11 +529,15 @@ func validateDiscoveryURL(endpoint string) error {
 }
 
 func cacheFreshness(cacheControl string) time.Duration {
-	for _, directive := range strings.Split(cacheControl, ",") {
-		name, value, found := strings.Cut(strings.TrimSpace(strings.ToLower(directive)), "=")
+	directives := strings.Split(cacheControl, ",")
+	for _, directive := range directives {
+		name, _, _ := strings.Cut(strings.TrimSpace(strings.ToLower(directive)), "=")
 		if name == "no-store" || name == "no-cache" {
 			return 0
 		}
+	}
+	for _, directive := range directives {
+		name, value, found := strings.Cut(strings.TrimSpace(strings.ToLower(directive)), "=")
 		if !found || name != "max-age" {
 			continue
 		}

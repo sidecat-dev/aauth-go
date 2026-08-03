@@ -380,6 +380,9 @@ func (resource *Resource) DeliverEvent(ctx context.Context, apIssuer, eventID st
 	if metadata.Issuer != apIssuer {
 		return errors.New("reference: resolved event metadata issuer does not match subscription")
 	}
+	if err := aauth.ValidateEndpoint(metadata.EventEndpoint); err != nil {
+		return fmt.Errorf("reference: resolved event endpoint: %w", err)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, metadata.EventEndpoint, nil)
 	if err != nil {
 		return err

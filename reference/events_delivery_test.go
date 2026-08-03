@@ -80,7 +80,7 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	commitFailure := errors.New("test: atomic event commit failed")
+	commitFailure := errors.Join(ErrEventRecordInvalid, errors.New("test: atomic event commit failed"))
 	failingStore := &failingAcceptAPEventStore{APEventStore: failedAuthority, err: commitFailure}
 	failingProvider := newDeliveryTestProvider(t, apKey, failingStore, aauth.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
@@ -95,8 +95,8 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	}
 	failingResponse := eventRegistrationHTTPResponse(failingProvider.Handler(), failingRequest)
 	defer failingResponse.Body.Close()
-	if failingResponse.StatusCode == http.StatusAccepted {
-		t.Fatal("failed atomic event commit returned 202")
+	if failingResponse.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("invalid store record status = %d, want 500", failingResponse.StatusCode)
 	}
 	if _, err := failedAuthority.NextDelivery(ctx); !errors.Is(err, ErrNoPendingEventDelivery) {
 		t.Fatalf("failed atomic event commit queued work: %v", err)
@@ -183,6 +183,54 @@ func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
 	}
 	if _, err := resourceStore.Load(ctx, subscription.APIssuer, subscription.EventID); !errors.Is(err, ErrEventSubscriptionNotFound) {
 		t.Fatalf("settled subscription error = %v, want not found", err)
+	}
+}
+
+func TestEventDeliveryRejectsUnsafeResolvedEndpointBeforeSend(t *testing.T) {
+	t.Parallel()
+
+	for _, endpoint := range []string{
+		"http://ap.example/events",
+		"https://ap.example/events?tenant=other",
+		"https://user@ap.example/events",
+		"https://ap.example/events#fragment",
+	} {
+		endpoint := endpoint
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+			clock := aauth.ClockFunc(func() time.Time { return now })
+			resourceKey := eventsProviderTestSigningKey(t, "resource-events-key")
+			store := NewMemoryResourceEventStore()
+			subscription := ResourceEventSubscription{
+				APIssuer: "https://ap.example", EventID: "event-one",
+				Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
+				ActiveUntil: now.Add(time.Hour),
+			}
+			if err := store.Register(ctx, subscription); err != nil {
+				t.Fatal(err)
+			}
+			resolver := hostileEventMetadataResolver{
+				StaticKeyResolver: aauth.StaticKeyResolver{},
+				metadata: aauth.AgentEventMetadata{
+					Issuer: subscription.APIssuer, EventEndpoint: endpoint,
+				},
+			}
+			sent := false
+			client := &http.Client{Transport: registrationRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				sent = true
+				return nil, errors.New("test: unsafe endpoint was sent")
+			})}
+			resource := newDeliveryTestResource(t, resourceKey, resolver, client, clock, store)
+			if err := resource.DeliverEvent(ctx, subscription.APIssuer, subscription.EventID); err == nil {
+				t.Fatal("unsafe resolved endpoint was accepted")
+			}
+			if sent {
+				t.Fatal("unsafe resolved endpoint reached the HTTP transport")
+			}
+		})
 	}
 }
 
@@ -311,6 +359,15 @@ func selfJWTFromSignatureKey(value string) string {
 type failingAcceptAPEventStore struct {
 	APEventStore
 	err error
+}
+
+type hostileEventMetadataResolver struct {
+	aauth.StaticKeyResolver
+	metadata aauth.AgentEventMetadata
+}
+
+func (resolver hostileEventMetadataResolver) ResolveAgentEventMetadata(context.Context, string) (aauth.AgentEventMetadata, error) {
+	return resolver.metadata, nil
 }
 
 func (store *failingAcceptAPEventStore) AcceptEvent(context.Context, AcceptedEventInput) (AcceptedEvent, int, error) {
