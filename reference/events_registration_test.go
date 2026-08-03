@@ -189,21 +189,41 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 		t.Fatalf("wrong-agent token sent a request; calls = %d", transportCalls)
 	}
 
+	agentRecoveryClaims := validClaims
+	agentRecoveryClaims.EventID = "event-agent-store-recovery"
+	agentRecoveryToken := mint(t, agentRecoveryClaims, apKey)
+	agentRecoveryContext := AgentEventContext{
+		APIssuer: agentRecoveryClaims.Issuer,
+		EventID:  agentRecoveryClaims.EventID,
+		Value:    json.RawMessage(`{"purpose":"agent store recovery"}`),
+	}
+	agentRecoveryResourceStore := NewMemoryResourceEventStore()
+	agentRecoveryResource := newRegistrationTestResource(t, resolver, clock, agentRecoveryResourceStore, now.Add(48*time.Hour))
 	localFailure := errors.New("local context store unavailable")
 	failingAgentStore := &eventRegistrationFailingAgentStore{
 		AgentEventStore: NewMemoryAgentEventStore(),
 		putErr:          localFailure,
 	}
 	failingAgentTransportCalls := 0
-	failingAgent := newRegistrationTestAgent(t, resolver, clock, agentKey, failingAgentStore, registrationRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	failingAgent := newRegistrationTestAgent(t, resolver, clock, agentKey, failingAgentStore, registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		failingAgentTransportCalls++
-		return nil, errors.New("request must not be sent")
+		return eventRegistrationHTTPResponse(agentRecoveryResource.Handler(), request), nil
 	}))
-	if err := failingAgent.RegisterPublicEventSubscription(context.Background(), "https://resource.example/events/subscriptions", validToken, localContext); !errors.Is(err, localFailure) {
+	if err := failingAgent.RegisterPublicEventSubscription(context.Background(), "https://resource.example/events/subscriptions", agentRecoveryToken, agentRecoveryContext); !errors.Is(err, localFailure) {
 		t.Fatalf("local store failure = %v, want %v", err, localFailure)
 	}
 	if failingAgentTransportCalls != 0 {
 		t.Fatalf("local store failure sent %d requests", failingAgentTransportCalls)
+	}
+	failingAgentStore.putErr = nil
+	if err := failingAgent.RegisterPublicEventSubscription(context.Background(), "https://resource.example/events/subscriptions", agentRecoveryToken, agentRecoveryContext); err != nil {
+		t.Fatalf("healthy agent-store retry failed: %v", err)
+	}
+	if failingAgentTransportCalls != 1 {
+		t.Fatalf("healthy agent-store retry requests = %d, want 1", failingAgentTransportCalls)
+	}
+	if _, err := agentRecoveryResourceStore.Load(context.Background(), agentRecoveryClaims.Issuer, agentRecoveryClaims.EventID); err != nil {
+		t.Fatalf("healthy agent-store retry did not register exact subscription: %v", err)
 	}
 
 	wrongSuccessAgent := newRegistrationTestAgent(t, resolver, clock, agentKey, NewMemoryAgentEventStore(), registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -233,6 +253,84 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 	}
 	if failingResourceStore.calls != 1 {
 		t.Fatalf("resource Register calls = %d, want 1", failingResourceStore.calls)
+	}
+	failingResourceStore.registerErr = nil
+	if err := resourceFailureAgent.RegisterPublicEventSubscription(context.Background(), "https://resource.example/events/subscriptions", validToken, localContext); err != nil {
+		t.Fatalf("healthy resource-store retry failed: %v", err)
+	}
+	if failingResourceStore.calls != 2 {
+		t.Fatalf("resource Register calls after recovery = %d, want 2", failingResourceStore.calls)
+	}
+	if _, err := failingResourceStore.ResourceEventStore.Load(context.Background(), validClaims.Issuer, validClaims.EventID); err != nil {
+		t.Fatalf("healthy resource-store retry did not retain exact subscription: %v", err)
+	}
+}
+
+func TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 3, 7, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	apKey, apPrivate := rawEventsTestSigningKey(t, "ap-events-key")
+	agentKey := eventsProviderTestSigningKey(t, "agent-events-key")
+	resolver := aauth.StaticKeyResolver{
+		"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
+	}
+	maxUses := 1
+	valid := aauth.SubscribeTokenClaims{
+		Issuer: "https://ap.example", DWK: aauth.AgentDiscoveryDocument,
+		Subject: "aauth:subscriber@ap.example", Audience: "https://resource.example",
+		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()}, EventID: "event-raw-mutations",
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(), MaxUses: &maxUses,
+	}
+	validClaims := rawSubscribeRegistrationTestClaims(t, valid)
+
+	for _, test := range []struct {
+		name   string
+		header aauth.TokenHeader
+		claims map[string]any
+	}{
+		{name: "algorithm none", header: aauth.TokenHeader{Algorithm: "none", Type: aauth.SubscribeTokenType, KeyID: apKey.ID()}, claims: validClaims},
+		{name: "wrong discovery document", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "dwk", aauth.ResourceDiscoveryDocument)},
+		{name: "absent subject", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "sub", nil)},
+		{name: "malformed subject", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "sub", "subscriber")},
+		{name: "absent issued time", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "iat", nil)},
+		{name: "malformed issued time", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "iat", "now")},
+		{name: "absent expiry", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "exp", nil)},
+		{name: "malformed expiry", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "exp", "later")},
+		{name: "absent confirmation", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "cnf", nil)},
+		{name: "absent event id", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "eid", nil)},
+		{name: "zero max uses", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "max_uses", 0)},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			store := NewMemoryResourceEventStore()
+			resource := newRegistrationTestResource(t, resolver, clock, store, now.Add(24*time.Hour))
+			before, _, err := encodeFileResourceSnapshot(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			compact := mintRawEventsTestToken(t, apPrivate, test.header, test.claims)
+			request := httptest.NewRequest(http.MethodPost, "https://resource.example/events/subscriptions", nil)
+			if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			resource.Handler().ServeHTTP(response, request)
+			if response.Code >= 200 && response.Code < 300 {
+				t.Fatalf("raw mutation status = %d, want refusal", response.Code)
+			}
+			after, _, err := encodeFileResourceSnapshot(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("raw mutation changed resource custody\nbefore: %s\nafter:  %s", before, after)
+			}
+			if _, err := store.Load(context.Background(), valid.Issuer, valid.EventID); !errors.Is(err, ErrEventSubscriptionNotFound) {
+				t.Fatalf("raw mutation became reachable: %v", err)
+			}
+		})
 	}
 }
 
@@ -286,6 +384,7 @@ func TestPublicEventRegistrationCustodySurvivesReconstruction(t *testing.T) {
 		t.Fatalf("recovered resource subscription = %#v, %v", gotSubscription, err)
 	}
 
+	now = now.Add(6 * time.Minute)
 	request := httptest.NewRequest(http.MethodPost, claims.Audience+"/events/subscriptions", nil)
 	if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
@@ -293,11 +392,107 @@ func TestPublicEventRegistrationCustodySurvivesReconstruction(t *testing.T) {
 	response := httptest.NewRecorder()
 	resource.Handler().ServeHTTP(response, request)
 	if response.Code >= 200 && response.Code < 300 {
-		t.Fatalf("duplicate registration status = %d, want collision", response.Code)
+		t.Fatalf("expired duplicate registration status = %d, want refusal", response.Code)
 	}
 	unchanged, err := resourceStore.Load(ctx, claims.Issuer, claims.EventID)
 	if err != nil || !unchanged.ActiveUntil.Equal(activeUntil) {
-		t.Fatalf("duplicate replaced authority = %#v, %v", unchanged, err)
+		t.Fatalf("expired duplicate replaced authority = %#v, %v", unchanged, err)
+	}
+
+	freshDuplicate := claims
+	freshDuplicate.IssuedAt = now.Unix()
+	freshDuplicate.ExpiresAt = now.Add(5 * time.Minute).Unix()
+	freshCompact, err := aauth.MintSubscribeToken(apKey, freshDuplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshRequest := httptest.NewRequest(http.MethodPost, claims.Audience+"/events/subscriptions", nil)
+	if err := aauth.SignRequest(freshRequest, agentKey, freshCompact, clock); err != nil {
+		t.Fatal(err)
+	}
+	freshResponse := httptest.NewRecorder()
+	resource.Handler().ServeHTTP(freshResponse, freshRequest)
+	if freshResponse.Code >= 200 && freshResponse.Code < 300 {
+		t.Fatalf("fresh duplicate registration status = %d, want collision", freshResponse.Code)
+	}
+	unchanged, err = resourceStore.Load(ctx, claims.Issuer, claims.EventID)
+	if err != nil || unchanged != gotSubscription {
+		t.Fatalf("fresh duplicate replaced authority = %#v, %v; want %#v", unchanged, err, gotSubscription)
+	}
+}
+
+func TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 8, 3, 7, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	agentKey := eventsProviderTestSigningKey(t, "shared-agent-key")
+	apKeys := map[string]aauth.SigningKey{
+		"https://ap-one.example": eventsProviderTestSigningKey(t, "ap-one-key"),
+		"https://ap-two.example": eventsProviderTestSigningKey(t, "ap-two-key"),
+	}
+	resolver := aauth.StaticKeyResolver{}
+	for issuer, key := range apKeys {
+		resolver[issuer] = map[string]aauth.JWK{key.ID(): key.PublicJWK()}
+	}
+	store := NewMemoryResourceEventStore()
+	activeUntil := now.Add(24 * time.Hour)
+	resource := newRegistrationTestResource(t, resolver, clock, store, activeUntil)
+	const eventID = "shared-opaque-event"
+
+	claimsByIssuer := make(map[string]aauth.SubscribeTokenClaims)
+	for issuer, key := range apKeys {
+		claims := aauth.SubscribeTokenClaims{
+			Issuer: issuer, DWK: aauth.AgentDiscoveryDocument,
+			Subject:  strings.Replace(issuer, "https://", "aauth:subscriber@", 1),
+			Audience: "https://resource.example", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+			EventID: eventID, IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+			MaxUses: eventRegistrationMaxUses(1),
+		}
+		claimsByIssuer[issuer] = claims
+		compact, err := aauth.MintSubscribeToken(key, claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, claims.Audience+"/events/subscriptions", nil)
+		if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		resource.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("%s registration status = %d, want 201", issuer, response.Code)
+		}
+	}
+
+	resource = newRegistrationTestResource(t, resolver, clock, store, now.Add(72*time.Hour))
+	now = now.Add(time.Minute)
+	for issuer, key := range apKeys {
+		stored, err := store.Load(ctx, issuer, eventID)
+		if err != nil || stored.APIssuer != issuer || !stored.ActiveUntil.Equal(activeUntil) {
+			t.Fatalf("%s recovered subscription = %#v, %v", issuer, stored, err)
+		}
+		duplicate := claimsByIssuer[issuer]
+		duplicate.IssuedAt = now.Unix()
+		duplicate.ExpiresAt = now.Add(5 * time.Minute).Unix()
+		compact, err := aauth.MintSubscribeToken(key, duplicate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, duplicate.Audience+"/events/subscriptions", nil)
+		if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		resource.Handler().ServeHTTP(response, request)
+		if response.Code >= 200 && response.Code < 300 {
+			t.Fatalf("%s duplicate registration status = %d, want refusal", issuer, response.Code)
+		}
+		unchanged, err := store.Load(ctx, issuer, eventID)
+		if err != nil || unchanged != stored {
+			t.Fatalf("%s duplicate replaced subscription = %#v, %v; want %#v", issuer, unchanged, err, stored)
+		}
 	}
 }
 
@@ -353,6 +548,19 @@ func eventRegistrationClaims(claims aauth.SubscribeTokenClaims, mutate func(*aau
 
 func eventRegistrationMaxUses(value int) *int { return &value }
 
+func rawSubscribeRegistrationTestClaims(t *testing.T, claims aauth.SubscribeTokenClaims) map[string]any {
+	t.Helper()
+	body, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	return decoded
+}
+
 type registrationRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function registrationRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -385,8 +593,11 @@ type eventRegistrationFailingAgentStore struct {
 	putErr error
 }
 
-func (store *eventRegistrationFailingAgentStore) PutContext(context.Context, AgentEventContext) error {
-	return store.putErr
+func (store *eventRegistrationFailingAgentStore) PutContext(ctx context.Context, value AgentEventContext) error {
+	if store.putErr != nil {
+		return store.putErr
+	}
+	return store.AgentEventStore.PutContext(ctx, value)
 }
 
 type eventRegistrationFailingResourceStore struct {
@@ -395,7 +606,10 @@ type eventRegistrationFailingResourceStore struct {
 	calls       int
 }
 
-func (store *eventRegistrationFailingResourceStore) Register(context.Context, ResourceEventSubscription) error {
+func (store *eventRegistrationFailingResourceStore) Register(ctx context.Context, subscription ResourceEventSubscription) error {
 	store.calls++
-	return store.registerErr
+	if store.registerErr != nil {
+		return store.registerErr
+	}
+	return store.ResourceEventStore.Register(ctx, subscription)
 }

@@ -1,10 +1,13 @@
 package reference
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +104,44 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	if _, err := failedAuthority.NextDelivery(ctx); !errors.Is(err, ErrNoPendingEventDelivery) {
 		t.Fatalf("failed atomic event commit queued work: %v", err)
 	}
+	if got := failedAuthority.subscriptions["event-failure"].UseCount; got != 0 || failedAuthority.nextDelivery != 0 || len(failedAuthority.inbox) != 0 {
+		t.Fatalf("failed atomic event commit state = uses %d, sequence %d, inbox %d", got, failedAuthority.nextDelivery, len(failedAuthority.inbox))
+	}
+
+	now = now.Add(time.Second)
+	recoveredProvider := newDeliveryTestProvider(t, apKey, failedAuthority, aauth.StaticKeyResolver{
+		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
+	}, clock)
+	recoveredRequest, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := aauth.SignRequestWithSelfJWT(recoveredRequest, resourceKey, failingToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	recoveredResponse := eventRegistrationHTTPResponse(recoveredProvider.Handler(), recoveredRequest)
+	defer recoveredResponse.Body.Close()
+	if recoveredResponse.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(recoveredResponse.Body)
+		t.Fatalf("healthy retry status = %d: %s", recoveredResponse.StatusCode, body)
+	}
+	var recoveredBody struct {
+		RemainingUses int `json:"remaining_uses"`
+	}
+	decoder := json.NewDecoder(recoveredResponse.Body)
+	if err := decoder.Decode(&recoveredBody); err != nil || recoveredBody.RemainingUses != 0 {
+		t.Fatalf("healthy retry body = %#v, %v", recoveredBody, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		t.Fatalf("healthy retry body has trailing data: %v", err)
+	}
+	recoveredAccepted, err := failedAuthority.NextDelivery(ctx)
+	if err != nil || recoveredAccepted.Token != failingToken {
+		t.Fatalf("healthy retry inbox = %#v, %v", recoveredAccepted, err)
+	}
+	if got := failedAuthority.subscriptions["event-failure"].UseCount; got != 1 || failedAuthority.nextDelivery != 1 || len(failedAuthority.inbox) != 1 {
+		t.Fatalf("healthy retry state = uses %d, sequence %d, inbox %d", got, failedAuthority.nextDelivery, len(failedAuthority.inbox))
+	}
 }
 
 func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
@@ -184,6 +225,321 @@ func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
 	if _, err := resourceStore.Load(ctx, subscription.APIssuer, subscription.EventID); !errors.Is(err, ErrEventSubscriptionNotFound) {
 		t.Fatalf("settled subscription error = %v, want not found", err)
 	}
+	differentToken := mintDeliveryTestEvent(t, resourceKey, now, subscription.Agent, subscription.EventID)
+	if differentToken == pending.Token {
+		t.Fatal("different exhausted event token matched the retained token")
+	}
+	differentRequest, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := aauth.SignRequestWithSelfJWT(differentRequest, resourceKey, differentToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	differentResponse := eventRegistrationHTTPResponse(provider.Handler(), differentRequest)
+	defer differentResponse.Body.Close()
+	if differentResponse.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("different exhausted token status = %d, want 429", differentResponse.StatusCode)
+	}
+	unchangedAccepted, err := apStore.NextDelivery(ctx)
+	if err != nil || unchangedAccepted.Token != pending.Token {
+		t.Fatalf("different exhausted token changed inbox = %#v, %v", unchangedAccepted, err)
+	}
+}
+
+func TestAPEventEndpointRefusalMatrixLeavesAuthorityUnchanged(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	apKey := eventsProviderTestSigningKey(t, "ap-events-key")
+	resourceKey := eventsProviderTestSigningKey(t, "resource-events-key")
+	otherResourceKey := eventsProviderTestSigningKey(t, "other-resource-key")
+
+	for _, test := range []struct {
+		name          string
+		wantStatus    int
+		wantCode      string
+		wantSignature aauth.SignatureErrorCode
+	}{
+		{name: "malformed body", wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "invalid resource proof", wantStatus: http.StatusUnauthorized, wantCode: string(aauth.SignatureErrorInvalidSignature), wantSignature: aauth.SignatureErrorInvalidSignature},
+		{name: "wrong resource", wantStatus: http.StatusForbidden, wantCode: "subscription_mismatch"},
+		{name: "wrong agent", wantStatus: http.StatusForbidden, wantCode: "subscription_mismatch"},
+		{name: "unknown event id", wantStatus: http.StatusNotFound, wantCode: "subscription_not_found"},
+		{name: "expired event id", wantStatus: http.StatusNotFound, wantCode: "subscription_not_found"},
+		{name: "expired token", wantStatus: http.StatusUnauthorized, wantCode: string(aauth.SignatureErrorExpiredJWT), wantSignature: aauth.SignatureErrorExpiredJWT},
+		{name: "exhausted", wantStatus: http.StatusTooManyRequests, wantCode: "subscription_exhausted"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := base
+			clock := aauth.ClockFunc(func() time.Time { return now })
+			store := NewMemoryAPEventStore("https://ap.example")
+			subscription := APEventSubscription{
+				APIssuer: "https://ap.example", EventID: "event-one",
+				Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
+				ActiveUntil: now.Add(time.Hour), MaxUses: 1,
+			}
+			if test.name == "expired event id" {
+				subscription.ActiveUntil = now
+			}
+			if err := store.CreateSubscription(ctx, subscription); err != nil {
+				t.Fatal(err)
+			}
+			resolver := aauth.StaticKeyResolver{
+				"https://resource.example":       {resourceKey.ID(): resourceKey.PublicJWK()},
+				"https://other-resource.example": {otherResourceKey.ID(): otherResourceKey.PublicJWK()},
+			}
+			provider := newDeliveryTestProvider(t, apKey, store, resolver, clock)
+			claims := aauth.EventTokenClaims{
+				Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+				Audience: "aauth:subscriber@ap.example", EventID: "event-one",
+				IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+			}
+			proofKey := resourceKey
+			var body io.Reader
+			switch test.name {
+			case "malformed body":
+				body = strings.NewReader(`{"unexpected":true}`)
+			case "wrong resource":
+				claims.Issuer = "https://other-resource.example"
+				proofKey = otherResourceKey
+			case "wrong agent":
+				claims.Audience = "aauth:other@ap.example"
+			case "unknown event id":
+				claims.EventID = "event-unknown"
+			case "expired token":
+				claims.IssuedAt = now.Add(-2 * time.Minute).Unix()
+				claims.ExpiresAt = now.Add(-time.Minute).Unix()
+			case "exhausted":
+				seedToken := mintDeliveryTestEvent(t, resourceKey, now, claims.Audience, claims.EventID)
+				accepted, _, err := store.AcceptEvent(ctx, AcceptedEventInput{
+					Resource: claims.Issuer, Agent: claims.Audience, EventID: claims.EventID,
+					Token: seedToken, AcceptedAt: now,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.AcknowledgeDelivery(ctx, accepted.Delivery.DeliveryID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			compact, err := aauth.MintEventToken(proofTokenKey(test.name, resourceKey, otherResourceKey), claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := http.NewRequest(http.MethodPost, "https://ap.example/events", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body != nil {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			if err := aauth.SignRequestWithSelfJWT(request, proofKey, compact, clock); err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "invalid resource proof" {
+				request.Header.Set("Signature", corruptDeliveryTestHTTPSignature(request.Header.Get("Signature")))
+			}
+			before := snapshotMemoryAPEventStore(t, store)
+			response := eventRegistrationHTTPResponse(provider.Handler(), request)
+			defer response.Body.Close()
+			if response.StatusCode != test.wantStatus {
+				responseBody, _ := io.ReadAll(response.Body)
+				t.Fatalf("status = %d, want %d: %s", response.StatusCode, test.wantStatus, responseBody)
+			}
+			if got := response.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
+				t.Fatalf("Content-Type = %q", got)
+			}
+			if got := response.Header.Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			var problem struct {
+				Status int    `json:"status"`
+				Error  string `json:"error"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&problem); err != nil || problem.Status != test.wantStatus || problem.Error != test.wantCode {
+				t.Fatalf("problem = %#v, %v", problem, err)
+			}
+			signatureHeader := response.Header.Get("Signature-Error")
+			if test.wantSignature != "" {
+				parsed, err := aauth.ParseSignatureError(signatureHeader)
+				if err != nil || parsed.Code != test.wantSignature {
+					t.Fatalf("Signature-Error = %q, %#v, %v", signatureHeader, parsed, err)
+				}
+			} else if signatureHeader != "" {
+				t.Fatalf("non-authentication refusal emitted Signature-Error %q", signatureHeader)
+			}
+			after := snapshotMemoryAPEventStore(t, store)
+			if !bytes.Equal(before, after) {
+				t.Fatalf("refusal changed AP snapshot\nbefore: %s\nafter:  %s", before, after)
+			}
+			if _, err := store.NextDelivery(ctx); !errors.Is(err, ErrNoPendingEventDelivery) {
+				t.Fatalf("refusal queued adapter work: %v", err)
+			}
+		})
+	}
+}
+
+func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	apKey := eventsProviderTestSigningKey(t, "ap-events-key")
+	resourceKeyA := eventsProviderTestSigningKey(t, "resource-events-a")
+	resourceKeyB := eventsProviderTestSigningKey(t, "resource-events-b")
+	resolver := aauth.StaticKeyResolver{
+		"https://resource.example": {
+			resourceKeyA.ID(): resourceKeyA.PublicJWK(),
+			resourceKeyB.ID(): resourceKeyB.PublicJWK(),
+		},
+	}
+	directory := filepath.Join(t.TempDir(), "ap-store")
+	store, err := OpenFileAPEventStore(FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSubscription(ctx, APEventSubscription{
+		APIssuer: "https://ap.example", EventID: "event-concurrent",
+		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
+		ActiveUntil: now.Add(time.Hour), MaxUses: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	barrier := &twoArrivalAPEventStore{APEventStore: store, release: make(chan struct{})}
+	provider := newDeliveryTestProvider(t, apKey, barrier, resolver, clock)
+	tokens := map[string]aauth.SigningKey{
+		mintDeliveryTestEvent(t, resourceKeyA, now, "aauth:subscriber@ap.example", "event-concurrent"): resourceKeyA,
+		mintDeliveryTestEvent(t, resourceKeyB, now, "aauth:subscriber@ap.example", "event-concurrent"): resourceKeyB,
+	}
+	type result struct {
+		token  string
+		status int
+		body   []byte
+	}
+	results := make(chan result, len(tokens))
+	for compact, proofKey := range tokens {
+		compact, proofKey := compact, proofKey
+		go func() {
+			request, requestErr := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+			if requestErr != nil {
+				results <- result{token: compact, status: 0, body: []byte(requestErr.Error())}
+				return
+			}
+			if signErr := aauth.SignRequestWithSelfJWT(request, proofKey, compact, clock); signErr != nil {
+				results <- result{token: compact, status: 0, body: []byte(signErr.Error())}
+				return
+			}
+			response := eventRegistrationHTTPResponse(provider.Handler(), request)
+			body, _ := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			results <- result{token: compact, status: response.StatusCode, body: body}
+		}()
+	}
+	var winner string
+	statusCounts := make(map[int]int)
+	for range tokens {
+		outcome := <-results
+		statusCounts[outcome.status]++
+		switch outcome.status {
+		case http.StatusAccepted:
+			winner = outcome.token
+			var body struct {
+				RemainingUses int `json:"remaining_uses"`
+			}
+			decoder := json.NewDecoder(bytes.NewReader(outcome.body))
+			if err := decoder.Decode(&body); err != nil || body.RemainingUses != 0 {
+				t.Fatalf("winner body = %#v, %v: %s", body, err, outcome.body)
+			}
+			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+				t.Fatalf("winner body has trailing data: %v", err)
+			}
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("concurrent delivery status = %d: %s", outcome.status, outcome.body)
+		}
+	}
+	if statusCounts[http.StatusAccepted] != 1 || statusCounts[http.StatusTooManyRequests] != 1 || winner == "" {
+		t.Fatalf("concurrent statuses = %#v, winner empty = %t", statusCounts, winner == "")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = OpenFileAPEventStore(FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	provider = newDeliveryTestProvider(t, apKey, store, resolver, clock)
+	accepted, err := store.NextDelivery(ctx)
+	if err != nil || accepted.Token != winner {
+		t.Fatalf("reopened winner inbox = %#v, %v; want token %q", accepted, err, winner)
+	}
+	if got := store.memory.subscriptions["event-concurrent"].UseCount; got != 1 || store.memory.nextDelivery != 1 || len(store.memory.inbox) != 1 {
+		t.Fatalf("reopened final-use state = uses %d, sequence %d, inbox %d", got, store.memory.nextDelivery, len(store.memory.inbox))
+	}
+	before := snapshotMemoryAPEventStore(t, store.memory)
+	now = now.Add(time.Second)
+	for name, attempt := range map[string]struct {
+		token string
+		key   aauth.SigningKey
+	}{
+		"winning exact token": {token: winner, key: tokens[winner]},
+		"different valid token": {
+			token: mintDeliveryTestEvent(t, resourceKeyA, now, "aauth:subscriber@ap.example", "event-concurrent"),
+			key:   resourceKeyA,
+		},
+	} {
+		attempt := attempt
+		t.Run(name, func(t *testing.T) {
+			request, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := aauth.SignRequestWithSelfJWT(request, attempt.key, attempt.token, clock); err != nil {
+				t.Fatal(err)
+			}
+			response := eventRegistrationHTTPResponse(provider.Handler(), request)
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusTooManyRequests {
+				body, _ := io.ReadAll(response.Body)
+				t.Fatalf("exhausted status = %d: %s", response.StatusCode, body)
+			}
+			if after := snapshotMemoryAPEventStore(t, store.memory); !bytes.Equal(before, after) {
+				t.Fatalf("exhausted request changed reopened AP state\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+func proofTokenKey(name string, resourceKey, otherResourceKey aauth.SigningKey) aauth.SigningKey {
+	if name == "wrong resource" {
+		return otherResourceKey
+	}
+	return resourceKey
+}
+
+func snapshotMemoryAPEventStore(t *testing.T, store *MemoryAPEventStore) []byte {
+	t.Helper()
+	body, _, err := encodeFileAPSnapshot(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func corruptDeliveryTestHTTPSignature(value string) string {
+	start := strings.IndexByte(value, ':') + 1
+	if start <= 0 || start >= len(value) {
+		return value + "A"
+	}
+	replacement := byte('A')
+	if value[start] == replacement {
+		replacement = 'B'
+	}
+	return value[:start] + string(replacement) + value[start+1:]
 }
 
 func TestEventDeliveryRejectsUnsafeResolvedEndpointBeforeSend(t *testing.T) {
@@ -359,6 +715,32 @@ func selfJWTFromSignatureKey(value string) string {
 type failingAcceptAPEventStore struct {
 	APEventStore
 	err error
+}
+
+type twoArrivalAPEventStore struct {
+	APEventStore
+	mu       sync.Mutex
+	arrivals int
+	release  chan struct{}
+}
+
+func (store *twoArrivalAPEventStore) AcceptEvent(ctx context.Context, input AcceptedEventInput) (AcceptedEvent, int, error) {
+	store.mu.Lock()
+	store.arrivals++
+	arrival := store.arrivals
+	if arrival == 2 {
+		close(store.release)
+	}
+	release := store.release
+	store.mu.Unlock()
+	if arrival <= 2 {
+		select {
+		case <-ctx.Done():
+			return AcceptedEvent{}, 0, ctx.Err()
+		case <-release:
+		}
+	}
+	return store.APEventStore.AcceptEvent(ctx, input)
 }
 
 type hostileEventMetadataResolver struct {

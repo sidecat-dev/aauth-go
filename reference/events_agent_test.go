@@ -2,8 +2,13 @@ package reference
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +85,29 @@ func TestAgentEventProcessingResumesPendingAndProvenNotApplied(t *testing.T) {
 		}
 		if dispatches, _ := action.counts(); dispatches != 1 {
 			t.Fatalf("pending resume dispatches = %d, want 1", dispatches)
+		}
+	})
+
+	t.Run("never-dispatched pending expires without action", func(t *testing.T) {
+		now := base
+		clock := aauth.ClockFunc(func() time.Time { return now })
+		store := NewMemoryAgentEventStore()
+		putAgentEventTestContext(t, store, "event-pending-expired")
+		accepted, claims := acceptedAgentEventTest(t, resourceKey, now, "event-pending-expired", "delivery-pending-expired")
+		admitAgentEventTestProcessing(t, store, accepted, claims)
+		now = time.Unix(claims.ExpiresAt, 0)
+		action := &scriptedEventAction{dispatchOutcome: EventActionCompleted}
+		agent := newAgentEventTestAgent(t, store, action, resourceKey, clock)
+
+		if err := agent.ResumeEvents(ctx); err != nil {
+			t.Fatal(err)
+		}
+		state, err := store.LoadDisposition(ctx, accepted.Delivery)
+		if err != nil || state != EventRefused {
+			t.Fatalf("expired pending disposition = %q, %v", state, err)
+		}
+		if dispatches, reconciliations := action.counts(); dispatches != 0 || reconciliations != 0 {
+			t.Fatalf("expired pending action counts = %d/%d, want 0/0", dispatches, reconciliations)
 		}
 	})
 
@@ -199,6 +227,109 @@ func TestAgentEventProcessingResumesPendingAndProvenNotApplied(t *testing.T) {
 			}
 			if dispatches, reconciliations := action.counts(); dispatches != 0 || reconciliations != 0 {
 				t.Fatalf("policy-violating restart action counts = %d/%d", dispatches, reconciliations)
+			}
+		})
+	}
+}
+
+func TestAgentEventRefusalMatrixSurvivesStoreReconstruction(t *testing.T) {
+	base := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	trustedKey, trustedPrivate := rawEventsTestSigningKey(t, "resource-events-key")
+	_, untrustedPrivate := rawEventsTestSigningKey(t, "resource-events-key")
+	resolver := aauth.StaticKeyResolver{
+		"https://resource.example": {trustedKey.ID(): trustedKey.PublicJWK()},
+	}
+
+	for _, test := range []struct {
+		name       string
+		header     aauth.TokenHeader
+		claims     map[string]any
+		privateKey ed25519.PrivateKey
+		advance    time.Duration
+		putContext bool
+		wantReason EventRefusalReason
+	}{
+		{name: "wrong type", header: rawEventsTestHeader(aauth.SubscribeTokenType, trustedKey.ID()), claims: rawAgentEventTestClaims(base, "event-wrong-type"), privateKey: trustedPrivate, putContext: true, wantReason: EventRefusalInvalid},
+		{name: "wrong key", header: rawEventsTestHeader(aauth.EventTokenType, trustedKey.ID()), claims: rawAgentEventTestClaims(base, "event-wrong-key"), privateKey: untrustedPrivate, putContext: true, wantReason: EventRefusalInvalid},
+		{name: "wrong discovery document", header: rawEventsTestHeader(aauth.EventTokenType, trustedKey.ID()), claims: mutateRawEventsTestClaim(rawAgentEventTestClaims(base, "event-wrong-dwk"), "dwk", aauth.AgentDiscoveryDocument), privateKey: trustedPrivate, putContext: true, wantReason: EventRefusalInvalid},
+		{name: "absent issued time", header: rawEventsTestHeader(aauth.EventTokenType, trustedKey.ID()), claims: mutateRawEventsTestClaim(rawAgentEventTestClaims(base, "event-no-iat"), "iat", nil), privateKey: trustedPrivate, putContext: true, wantReason: EventRefusalInvalid},
+		{name: "malformed issued time", header: rawEventsTestHeader(aauth.EventTokenType, trustedKey.ID()), claims: mutateRawEventsTestClaim(rawAgentEventTestClaims(base, "event-bad-iat"), "iat", "now"), privateKey: trustedPrivate, putContext: true, wantReason: EventRefusalInvalid},
+		{name: "wrong audience", header: rawEventsTestHeader(aauth.EventTokenType, trustedKey.ID()), claims: mutateRawEventsTestClaim(rawAgentEventTestClaims(base, "event-wrong-audience"), "aud", "aauth:other@ap.example"), privateKey: trustedPrivate, putContext: true, wantReason: EventRefusalInvalid},
+		{name: "expired before processing", header: rawEventsTestHeader(aauth.EventTokenType, trustedKey.ID()), claims: rawAgentEventTestClaims(base, "event-expired-before-agent"), privateKey: trustedPrivate, advance: 10 * time.Minute, putContext: true, wantReason: EventRefusalExpired},
+		{name: "unknown context", header: rawEventsTestHeader(aauth.EventTokenType, trustedKey.ID()), claims: rawAgentEventTestClaims(base, "event-unknown-context"), privateKey: trustedPrivate, wantReason: EventRefusalUnknownContext},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := base.Add(test.advance)
+			clock := aauth.ClockFunc(func() time.Time { return now })
+			eventID, _ := test.claims["eid"].(string)
+			compact := mintRawEventsTestToken(t, test.privateKey, test.header, test.claims)
+
+			directory := filepath.Join(t.TempDir(), "store")
+			agentStore, err := OpenFileAgentEventStore(FileAgentEventStoreConfig{Directory: directory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.putContext {
+				putAgentEventTestContext(t, agentStore, eventID)
+			}
+			apStore := NewMemoryAPEventStore("https://ap.example")
+			agentAudience, _ := test.claims["aud"].(string)
+			if agentAudience == "" {
+				agentAudience = "aauth:subscriber@ap.example"
+			}
+			if err := apStore.CreateSubscription(ctx, APEventSubscription{
+				APIssuer: "https://ap.example", EventID: eventID,
+				Resource: "https://resource.example", Agent: agentAudience,
+				ActiveUntil: now.Add(time.Hour), MaxUses: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			accepted, _, err := apStore.AcceptEvent(ctx, AcceptedEventInput{
+				Resource: "https://resource.example", Agent: agentAudience,
+				EventID: eventID, Token: compact, AcceptedAt: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			action := &scriptedEventAction{dispatchOutcome: EventActionCompleted}
+			agent := newAgentEventTestAgentWithResolver(t, agentStore, action, resolver, clock)
+			state, err := agent.AcceptEvent(ctx, accepted)
+			if err != nil || state != EventRefused {
+				t.Fatalf("initial refusal state/error = %q, %v", state, err)
+			}
+			if got := agentStore.memory.refusalReason[accepted.Delivery]; got != test.wantReason {
+				t.Fatalf("refusal reason = %q, want %q", got, test.wantReason)
+			}
+			if dispatches, reconciliations := action.counts(); dispatches != 0 || reconciliations != 0 {
+				t.Fatalf("refused action counts = %d/%d, want 0/0", dispatches, reconciliations)
+			}
+			if err := agentStore.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			agentStore, err = OpenFileAgentEventStore(FileAgentEventStoreConfig{Directory: directory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer agentStore.Close()
+			agent = newAgentEventTestAgentWithResolver(t, agentStore, action, resolver, clock)
+			adapter, err := NewEventAdapter(apStore, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Continue(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if state, err := agentStore.LoadDisposition(ctx, accepted.Delivery); err != nil || state != EventRefused {
+				t.Fatalf("reopened refusal state/error = %q, %v", state, err)
+			}
+			if _, err := apStore.NextDelivery(ctx); !errors.Is(err, ErrNoPendingEventDelivery) {
+				t.Fatalf("durable refusal did not acknowledge AP work: %v", err)
+			}
+			if dispatches, reconciliations := action.counts(); dispatches != 0 || reconciliations != 0 {
+				t.Fatalf("reopened refusal action counts = %d/%d, want 0/0", dispatches, reconciliations)
 			}
 		})
 	}
@@ -377,6 +508,69 @@ func TestEventAdapterAcknowledgesOnlyDurableTerminalDisposition(t *testing.T) {
 	}
 	if dispatches, _ := action.counts(); dispatches != 1 {
 		t.Fatalf("adapter dispatches = %d, want 1", dispatches)
+	}
+}
+
+func TestEventAdapterRecoversAfterDedupCustodyFailure(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	resourceKey := eventsProviderTestSigningKey(t, "resource-events-key")
+	baseStore := NewMemoryAgentEventStore()
+	putAgentEventTestContext(t, baseStore, "event-dedup-recovery")
+	storeFailure := errors.New("test: dedup authority unavailable")
+	agentStore := &failOnceAdmitProcessingAgentStore{AgentEventStore: baseStore, err: storeFailure}
+	action := &scriptedEventAction{dispatchOutcome: EventActionCompleted}
+	agent := newAgentEventTestAgent(t, agentStore, action, resourceKey, clock)
+	apStore := NewMemoryAPEventStore("https://ap.example")
+	if err := apStore.CreateSubscription(ctx, APEventSubscription{
+		APIssuer: "https://ap.example", EventID: "event-dedup-recovery",
+		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
+		ActiveUntil: now.Add(time.Hour), MaxUses: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	compact, err := aauth.MintEventToken(resourceKey, agentEventTestClaims(now, "event-dedup-recovery", "aauth:subscriber@ap.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, _, err := apStore.AcceptEvent(ctx, AcceptedEventInput{
+		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
+		EventID: "event-dedup-recovery", Token: compact, AcceptedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := NewEventAdapter(apStore, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Continue(ctx); !errors.Is(err, storeFailure) {
+		t.Fatalf("dedup failure = %v, want %v", err, storeFailure)
+	}
+	if dispatches, _ := action.counts(); dispatches != 0 {
+		t.Fatalf("dedup failure dispatched %d actions", dispatches)
+	}
+	if pending, err := apStore.NextDelivery(ctx); err != nil || pending.Delivery != accepted.Delivery {
+		t.Fatalf("dedup failure AP work = %#v, %v", pending, err)
+	}
+
+	agent = newAgentEventTestAgent(t, agentStore, action, resourceKey, clock)
+	adapter, err = NewEventAdapter(apStore, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Continue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := baseStore.LoadDisposition(ctx, accepted.Delivery); err != nil || state != EventCompleted {
+		t.Fatalf("healthy dedup retry state/error = %q, %v", state, err)
+	}
+	if _, err := apStore.NextDelivery(ctx); !errors.Is(err, ErrNoPendingEventDelivery) {
+		t.Fatalf("healthy dedup retry left AP work: %v", err)
+	}
+	if dispatches, _ := action.counts(); dispatches != 1 {
+		t.Fatalf("healthy dedup retry dispatches = %d, want 1", dispatches)
 	}
 }
 
@@ -576,6 +770,73 @@ type terminalReloadFailureAgentStore struct {
 	AgentEventStore
 	mu   sync.Mutex
 	fail bool
+}
+
+type failOnceAdmitProcessingAgentStore struct {
+	AgentEventStore
+	err error
+}
+
+func (store *failOnceAdmitProcessingAgentStore) AdmitProcessing(ctx context.Context, processing AgentEventProcessing) error {
+	if store.err != nil {
+		err := store.err
+		store.err = nil
+		return err
+	}
+	return store.AgentEventStore.AdmitProcessing(ctx, processing)
+}
+
+func rawEventsTestSigningKey(t *testing.T, id string) (aauth.SigningKey, ed25519.PrivateKey) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key, privateKey
+}
+
+func rawEventsTestHeader(tokenType, keyID string) aauth.TokenHeader {
+	return aauth.TokenHeader{Algorithm: "EdDSA", Type: tokenType, KeyID: keyID}
+}
+
+func rawAgentEventTestClaims(now time.Time, eventID string) map[string]any {
+	return map[string]any{
+		"iss": "https://resource.example", "dwk": aauth.ResourceDiscoveryDocument,
+		"aud": "aauth:subscriber@ap.example", "eid": eventID,
+		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
+	}
+}
+
+func mutateRawEventsTestClaim(claims map[string]any, name string, value any) map[string]any {
+	mutated := make(map[string]any, len(claims))
+	for key, original := range claims {
+		mutated[key] = original
+	}
+	if value == nil {
+		delete(mutated, name)
+	} else {
+		mutated[name] = value
+	}
+	return mutated
+}
+
+func mintRawEventsTestToken(t *testing.T, privateKey ed25519.PrivateKey, header aauth.TokenHeader, claims map[string]any) string {
+	t.Helper()
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimsBytes, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := base64.RawURLEncoding.EncodeToString
+	signingInput := encode(headerBytes) + "." + encode(claimsBytes)
+	return signingInput + "." + encode(ed25519.Sign(privateKey, []byte(signingInput)))
 }
 
 func (store *terminalReloadFailureAgentStore) LoadDisposition(ctx context.Context, delivery EventDeliveryKey) (EventProcessingState, error) {

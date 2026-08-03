@@ -89,10 +89,25 @@ func TestAgentProviderIssuesOnlyAfterDurableSubscriptionCommit(t *testing.T) {
 	}
 
 	commitFailure := errors.New("durable store unavailable")
-	failing := &recordingAPEventStore{err: commitFailure}
+	recoveryAuthority := NewMemoryAPEventStore("https://ap.example")
+	failing := &failOnceCreateAPEventStore{APEventStore: recoveryAuthority, err: commitFailure}
 	failingProvider := newEventsTestAgentProvider(t, providerKey, failing, func() string { return "event-two" }, now, activeUntil, "https://ap.example/events")
 	if token, issueErr := failingProvider.IssueEventSubscription(ctx, request); token != "" || !errors.Is(issueErr, commitFailure) {
 		t.Fatalf("failed commit issuance = %q, %v, want empty token and store error", token, issueErr)
+	}
+	if len(recoveryAuthority.subscriptions) != 0 {
+		t.Fatalf("failed commit retained partial authority: %#v", recoveryAuthority.subscriptions)
+	}
+	recoveredToken, issueErr := failingProvider.IssueEventSubscription(ctx, request)
+	if issueErr != nil || recoveredToken == "" {
+		t.Fatalf("healthy retry issuance = %q, %v", recoveredToken, issueErr)
+	}
+	if got := recoveryAuthority.subscriptions["event-two"]; got.EventID != "event-two" || got.ActiveUntil != activeUntil {
+		t.Fatalf("healthy retry authority = %#v", got)
+	}
+	reconstructed := newEventsTestAgentProvider(t, providerKey, recoveryAuthority, func() string { return "event-two" }, now, activeUntil, "https://ap.example/events")
+	if token, issueErr := reconstructed.IssueEventSubscription(ctx, request); token != "" || !errors.Is(issueErr, ErrEventSubscriptionConflict) {
+		t.Fatalf("reconstructed duplicate issuance = %q, %v", token, issueErr)
 	}
 }
 
@@ -255,6 +270,20 @@ type recordingAPEventStore struct {
 	calls   int
 	created APEventSubscription
 	err     error
+}
+
+type failOnceCreateAPEventStore struct {
+	APEventStore
+	err error
+}
+
+func (store *failOnceCreateAPEventStore) CreateSubscription(ctx context.Context, subscription APEventSubscription) error {
+	if store.err != nil {
+		err := store.err
+		store.err = nil
+		return err
+	}
+	return store.APEventStore.CreateSubscription(ctx, subscription)
 }
 
 func (store *recordingAPEventStore) CreateSubscription(_ context.Context, subscription APEventSubscription) error {

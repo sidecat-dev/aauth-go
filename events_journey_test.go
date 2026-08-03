@@ -222,6 +222,14 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 	// The registration credential expires while both independently selected
 	// host subscription lifetimes remain active. Metadata freshness also ends.
 	now = now.Add(10 * time.Minute)
+	if err := agent.RegisterPublicEventSubscription(
+		ctx,
+		resourceID+"/events/subscriptions",
+		subscribeToken,
+		localContext,
+	); err == nil {
+		t.Fatal("expired subscribe token created a second registration")
+	}
 	ap = newEventProvider(t, eventProviderInput{
 		identifier:  apID,
 		endpoint:    apID + "/events-v2",
@@ -387,6 +395,12 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 	}
 	if _, err := apStore.NextDelivery(ctx); !errors.Is(err, reference.ErrNoPendingEventDelivery) {
 		t.Fatalf("AP inbox after terminal agent completion error = %v, want no pending delivery", err)
+	}
+	if state, err := agent.AcceptEvent(ctx, accepted); err != nil || state != reference.EventCompleted {
+		t.Fatalf("completed event duplicate state/error = %q, %v", state, err)
+	}
+	if got := action.dispatchCount(); got != 1 {
+		t.Fatalf("completed event duplicate changed dispatch count to %d", got)
 	}
 }
 
