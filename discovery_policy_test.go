@@ -32,7 +32,7 @@ func TestHTTPKeyResolverPresenterDirectedEgressPolicy(t *testing.T) {
 	}
 	keys := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Cache-Control", "max-age=300")
-		_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
+		_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
 	})
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"public.example":          metadata("https://public.example", "https://keys.example/jwks"),
@@ -153,7 +153,7 @@ func TestSelfJWTExpiryCannotUseWarmDiscoveryCache(t *testing.T) {
 			case "/jwks":
 				keyFetches.Add(1)
 				response.Header().Set("Cache-Control", "max-age=300")
-				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"resource-key"}]}`, key.PublicJWK().X)
+				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"resource-key"}]}`, key.PublicJWK().X)
 			default:
 				http.NotFound(response, request)
 			}
@@ -220,7 +220,7 @@ func TestSelfJWTUsesAdmittedHTTPKeyForBothProofs(t *testing.T) {
 			case "/jwks":
 				keyFetches.Add(1)
 				response.Header().Set("Cache-Control", "max-age=300")
-				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"resource-key"}]}`, key.PublicJWK().X)
+				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"resource-key"}]}`, key.PublicJWK().X)
 			default:
 				http.NotFound(response, request)
 			}
@@ -294,7 +294,7 @@ func TestHTTPKeyResolverRetainedStateIsBounded(t *testing.T) {
 			case "/.well-known/aauth-resource.json":
 				_, _ = fmt.Fprintf(response, `{"issuer":"https://%s","jwks_uri":"https://%s/jwks"}`, hostCopy, hostCopy)
 			case "/jwks":
-				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
+				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
 			default:
 				http.NotFound(response, request)
 			}
@@ -393,7 +393,7 @@ func TestHTTPKeyResolverEvictsTiedRetainedStateDeterministically(t *testing.T) {
 				case "/.well-known/aauth-resource.json":
 					_, _ = fmt.Fprintf(response, `{"issuer":"https://%s","jwks_uri":"https://%s/jwks"}`, hostCopy, hostCopy)
 				case "/jwks":
-					_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
+					_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
 				default:
 					http.NotFound(response, request)
 				}
@@ -510,7 +510,7 @@ func metadataAndKeys(issuer string, key aauth.SigningKey) http.Handler {
 		case "/.well-known/aauth-resource.json":
 			_, _ = fmt.Fprintf(response, `{"issuer":%q,"jwks_uri":%q}`, issuer, issuer+"/jwks")
 		case "/jwks":
-			_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
+			_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"issuer-key"}]}`, key.PublicJWK().X)
 		default:
 			http.NotFound(response, request)
 		}
@@ -588,7 +588,7 @@ func (transport *blockingDiscoveryTransport) RoundTrip(request *http.Request) (*
 		<-transport.release
 		return discoveryJSONResponse(request, fmt.Sprintf(`{"issuer":"https://%s","jwks_uri":"https://%s/jwks"}`, request.URL.Host, request.URL.Host)), nil
 	}
-	return discoveryJSONResponse(request, fmt.Sprintf(`{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`, transport.key.X)), nil
+	return discoveryJSONResponse(request, fmt.Sprintf(`{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"issuer-key"}]}`, transport.key.X)), nil
 }
 
 func discoveryJSONResponse(request *http.Request, body string) *http.Response {

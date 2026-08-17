@@ -359,7 +359,7 @@ func signRawTestToken(
 ) string {
 	t.Helper()
 	header, err := json.Marshal(TokenHeader{
-		Algorithm: "EdDSA",
+		Algorithm: "Ed25519",
 		Type:      tokenType,
 		KeyID:     key.ID(),
 	})

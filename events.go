@@ -173,7 +173,7 @@ func DecodeVerifiedEventToken(verified VerifiedSelfJWT, clock Clock) (EventToken
 	if verified.Header.Type != EventTokenType {
 		return claims, fmt.Errorf("aauth: token typ is %q, want %q", verified.Header.Type, EventTokenType)
 	}
-	if verified.Header.Algorithm != "EdDSA" || verified.Header.KeyID == "" {
+	if verified.Header.Algorithm != Ed25519Algorithm || verified.Header.KeyID == "" {
 		return claims, errors.New("aauth: verified event token header is invalid")
 	}
 	if len(verified.Claims) == 0 {

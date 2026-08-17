@@ -31,7 +31,7 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 			case "/jwks":
 				keySetFetches.Add(1)
 				response.Header().Set("Cache-Control", "max-age=60")
-				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":%q}]}`, signingKey.PublicJWK().X, signingKey.ID())
+				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":%q}]}`, signingKey.PublicJWK().X, signingKey.ID())
 			default:
 				http.NotFound(response, request)
 			}
@@ -104,7 +104,7 @@ func TestAgentEventMetadataDoesNotCacheWhenCacheControlForbidsIt(t *testing.T) {
 						_, _ = fmt.Fprintf(response, `{"issuer":"https://ap.example","jwks_uri":"https://ap.example/jwks","event_endpoint":"https://ap.example/events-%d"}`, fetch)
 					case "/jwks":
 						response.Header().Set("Cache-Control", "max-age=60")
-						_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":%q}]}`, signingKey.PublicJWK().X, signingKey.ID())
+						_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":%q}]}`, signingKey.PublicJWK().X, signingKey.ID())
 					default:
 						http.NotFound(response, request)
 					}

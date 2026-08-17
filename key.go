@@ -14,6 +14,17 @@ import (
 
 var rawURL = base64.RawURLEncoding
 
+// Ed25519Algorithm is the fully specified JOSE algorithm identifier required
+// by the current AAuth and Signature-Key profiles. The polymorphic Ed25519
+// identifier is deliberately not accepted.
+const Ed25519Algorithm = "Ed25519"
+
+type unsupportedJWKAlgorithmError struct{ algorithm string }
+
+func (err *unsupportedJWKAlgorithmError) Error() string {
+	return fmt.Sprintf("aauth: unsupported JWK algorithm %q", err.algorithm)
+}
+
 // JWK is the public JSON Web Key representation used by AAuth confirmation
 // claims and key sets. Ed25519 is the mandatory implementation profile.
 type JWK struct {
@@ -27,6 +38,9 @@ type JWK struct {
 
 // PublicKey validates and decodes the JWK.
 func (key JWK) PublicKey() (crypto.PublicKey, error) {
+	if key.Alg != Ed25519Algorithm {
+		return nil, &unsupportedJWKAlgorithmError{algorithm: key.Alg}
+	}
 	if key.Kty != "OKP" || key.Crv != "Ed25519" {
 		return nil, fmt.Errorf("aauth: unsupported JWK key type %q/%q", key.Kty, key.Crv)
 	}
@@ -36,9 +50,6 @@ func (key JWK) PublicKey() (crypto.PublicKey, error) {
 	}
 	if len(decoded) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("aauth: Ed25519 JWK x has %d bytes, want %d", len(decoded), ed25519.PublicKeySize)
-	}
-	if key.Alg != "" && key.Alg != "EdDSA" {
-		return nil, fmt.Errorf("aauth: Ed25519 JWK alg is %q, want EdDSA", key.Alg)
 	}
 	return ed25519.PublicKey(decoded), nil
 }
@@ -120,7 +131,7 @@ func NewSigningKey(id string, signer crypto.Signer) (SigningKey, error) {
 			Kty: "OKP",
 			Crv: "Ed25519",
 			X:   rawURL.EncodeToString(append(ed25519.PublicKey(nil), publicKey...)),
-			Alg: "EdDSA",
+			Alg: Ed25519Algorithm,
 			Kid: id,
 			Use: "sig",
 		},
@@ -184,6 +195,15 @@ const (
 	// KeyResolutionUnavailable means required discovery could not currently
 	// complete because of cancellation, transport, or remote-service failure.
 	KeyResolutionUnavailable KeyResolutionCode = "unavailable"
+	// KeyResolutionIssuerMissing means the fetched metadata document omitted
+	// the issuer member required to bind it to its discovery identity.
+	KeyResolutionIssuerMissing KeyResolutionCode = "issuer_missing"
+	// KeyResolutionIssuerMismatch means the fetched metadata issuer did not
+	// byte-for-byte match the discovery identity.
+	KeyResolutionIssuerMismatch KeyResolutionCode = "issuer_mismatch"
+	// KeyResolutionUnsupportedAlgorithm means the exact requested JWK names a
+	// missing, polymorphic, or otherwise unsupported signing algorithm.
+	KeyResolutionUnsupportedAlgorithm KeyResolutionCode = "unsupported_algorithm"
 )
 
 // KeyResolutionError preserves resolver diagnostics while exposing a stable
@@ -255,7 +275,15 @@ func (resolver StaticKeyResolver) ResolveKey(_ context.Context, issuer, _ string
 		)
 	}
 	if _, err := key.PublicKey(); err != nil {
-		return JWK{}, keyResolutionError(KeyResolutionInvalid, err)
+		return JWK{}, classifyResolvedJWKError(err)
 	}
 	return key, nil
+}
+
+func classifyResolvedJWKError(err error) error {
+	var unsupportedAlgorithm *unsupportedJWKAlgorithmError
+	if errors.As(err, &unsupportedAlgorithm) {
+		return keyResolutionError(KeyResolutionUnsupportedAlgorithm, err)
+	}
+	return keyResolutionError(KeyResolutionInvalid, err)
 }

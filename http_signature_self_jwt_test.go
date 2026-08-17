@@ -27,7 +27,7 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 	validCompact := mintRawToken(
 		t,
 		key,
-		TokenHeader{Algorithm: "EdDSA", Type: EventTokenType, KeyID: key.ID()},
+		TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()},
 		validClaims,
 	)
 
@@ -72,15 +72,15 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 		want   SignatureErrorCode
 	}{
 		{name: "malformed JWT", rawJWT: "not-a-jwt", want: SignatureErrorInvalidJWT},
-		{name: "wrong type", header: TokenHeader{Algorithm: "EdDSA", Type: SubscribeTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
-		{name: "expired", header: TokenHeader{Algorithm: "EdDSA", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "exp", now.Add(-time.Second).Unix()), want: SignatureErrorExpiredJWT},
-		{name: "missing issuer", header: TokenHeader{Algorithm: "EdDSA", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", nil), want: SignatureErrorInvalidJWT},
-		{name: "unsafe issuer", header: TokenHeader{Algorithm: "EdDSA", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", "http://127.0.0.1"), want: SignatureErrorInvalidJWT},
-		{name: "missing discovery document", header: TokenHeader{Algorithm: "EdDSA", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", nil), want: SignatureErrorInvalidKey},
-		{name: "unsafe discovery document", header: TokenHeader{Algorithm: "EdDSA", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", "../keys.json"), want: SignatureErrorInvalidKey},
-		{name: "missing key id", header: TokenHeader{Algorithm: "EdDSA", Type: EventTokenType}, claims: validClaims, want: SignatureErrorInvalidKey},
+		{name: "wrong type", header: TokenHeader{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
+		{name: "expired", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "exp", now.Add(-time.Second).Unix()), want: SignatureErrorExpiredJWT},
+		{name: "missing issuer", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", nil), want: SignatureErrorInvalidJWT},
+		{name: "unsafe issuer", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", "http://127.0.0.1"), want: SignatureErrorInvalidJWT},
+		{name: "missing discovery document", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", nil), want: SignatureErrorInvalidKey},
+		{name: "unsafe discovery document", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", "../keys.json"), want: SignatureErrorInvalidKey},
+		{name: "missing key id", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType}, claims: validClaims, want: SignatureErrorInvalidKey},
 		{name: "algorithm none", header: TokenHeader{Algorithm: "none", Type: EventTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
-		{name: "confirmation claim", header: TokenHeader{Algorithm: "EdDSA", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "cnf", map[string]any{"jwk": key.PublicJWK()}), want: SignatureErrorInvalidJWT},
+		{name: "confirmation claim", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "cnf", map[string]any{"jwk": key.PublicJWK()}), want: SignatureErrorInvalidJWT},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {

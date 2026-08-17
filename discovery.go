@@ -70,6 +70,7 @@ type discoveryCacheKey struct {
 
 type discoveryCacheEntry struct {
 	keys          map[string]JWK
+	duplicateKeys map[string]struct{}
 	eventMetadata *AgentEventMetadata
 	fetchedAt     time.Time
 	freshUntil    time.Time
@@ -264,51 +265,54 @@ func (resolver *HTTPKeyResolver) resolveKey(
 			attempted = false
 		}
 		if cached && !forceRefresh && entry.freshUntil.After(now) {
-			if key, ok := entry.keys[keyID]; ok {
+			key, selectionErr := selectDiscoveryKey(entry, issuer, keyID)
+			if selectionErr == nil {
 				resolver.mu.Unlock()
 				return key, nil
 			}
+			if !isUnknownKeyResolution(selectionErr) {
+				resolver.mu.Unlock()
+				return JWK{}, selectionErr
+			}
 			if now.Sub(entry.fetchedAt) < minimumDiscoveryRefresh {
 				resolver.mu.Unlock()
-				return JWK{}, keyResolutionError(
-					KeyResolutionUnknown,
-					fmt.Errorf("aauth: issuer %q has no key %q and refresh is rate-limited", issuer, keyID),
-				)
+				return JWK{}, selectionErr
 			}
 		}
 		if attempted {
 			if attempt.err != nil {
 				if !forceRefresh && cached {
-					if key, ok := entry.keys[keyID]; ok {
+					key, selectionErr := selectDiscoveryKey(entry, issuer, keyID)
+					if selectionErr == nil {
 						resolver.mu.Unlock()
 						return key, nil
+					}
+					if !isUnknownKeyResolution(selectionErr) {
+						resolver.mu.Unlock()
+						return JWK{}, selectionErr
 					}
 				}
 				resolver.mu.Unlock()
 				return JWK{}, attempt.err
 			}
 			if cached {
-				if key, ok := entry.keys[keyID]; ok {
+				key, selectionErr := selectDiscoveryKey(entry, issuer, keyID)
+				if selectionErr == nil {
 					resolver.mu.Unlock()
 					return key, nil
 				}
 				resolver.mu.Unlock()
-				return JWK{}, keyResolutionError(
-					KeyResolutionUnknown,
-					fmt.Errorf("aauth: issuer %q has no key %q and refresh is rate-limited", issuer, keyID),
-				)
+				return JWK{}, selectionErr
 			}
 		}
 		if cached && now.Sub(entry.fetchedAt) < minimumDiscoveryRefresh {
-			if key, ok := entry.keys[keyID]; ok {
+			key, selectionErr := selectDiscoveryKey(entry, issuer, keyID)
+			if selectionErr == nil {
 				resolver.mu.Unlock()
 				return key, nil
 			}
 			resolver.mu.Unlock()
-			return JWK{}, keyResolutionError(
-				KeyResolutionUnknown,
-				fmt.Errorf("aauth: issuer %q has no key %q and refresh is rate-limited", issuer, keyID),
-			)
+			return JWK{}, selectionErr
 		}
 		if pending, ok := resolver.inflight[cacheKey]; ok {
 			resolver.mu.Unlock()
@@ -349,21 +353,43 @@ func (resolver *HTTPKeyResolver) resolveKey(
 
 		if fetchErr != nil {
 			if !forceRefresh && cached && entry.discardAt.After(now) {
-				if key, ok := entry.keys[keyID]; ok {
+				key, selectionErr := selectDiscoveryKey(entry, issuer, keyID)
+				if selectionErr == nil {
 					return key, nil
+				}
+				if !isUnknownKeyResolution(selectionErr) {
+					return JWK{}, selectionErr
 				}
 			}
 			return JWK{}, fetchErr
 		}
-		key, ok := fetched.keys[keyID]
-		if !ok {
-			return JWK{}, keyResolutionError(
-				KeyResolutionUnknown,
-				fmt.Errorf("aauth: issuer %q has no key %q", issuer, keyID),
-			)
-		}
-		return key, nil
+		return selectDiscoveryKey(fetched, issuer, keyID)
 	}
+}
+
+func selectDiscoveryKey(entry discoveryCacheEntry, issuer, keyID string) (JWK, error) {
+	if _, duplicate := entry.duplicateKeys[keyID]; duplicate {
+		return JWK{}, keyResolutionError(
+			KeyResolutionInvalid,
+			fmt.Errorf("aauth: issuer %q has duplicate key id %q", issuer, keyID),
+		)
+	}
+	key, ok := entry.keys[keyID]
+	if !ok {
+		return JWK{}, keyResolutionError(
+			KeyResolutionUnknown,
+			fmt.Errorf("aauth: issuer %q has no key %q", issuer, keyID),
+		)
+	}
+	if _, err := key.PublicKey(); err != nil {
+		return JWK{}, classifyResolvedJWKError(err)
+	}
+	return key, nil
+}
+
+func isUnknownKeyResolution(err error) bool {
+	var resolutionError *KeyResolutionError
+	return errors.As(err, &resolutionError) && resolutionError.Code == KeyResolutionUnknown
 }
 
 // retainDiscoveryFailure distinguishes a shared remote failure from a
@@ -462,9 +488,15 @@ func (resolver *HTTPKeyResolver) fetch(
 			fmt.Errorf("aauth: decode discovery metadata: %w", err),
 		)
 	}
+	if metadata.Issuer == "" {
+		return discoveryCacheEntry{}, keyResolutionError(
+			KeyResolutionIssuerMissing,
+			errors.New("aauth: discovery metadata issuer is required"),
+		)
+	}
 	if metadata.Issuer != issuer {
 		return discoveryCacheEntry{}, keyResolutionError(
-			KeyResolutionInvalid,
+			KeyResolutionIssuerMismatch,
 			fmt.Errorf("aauth: discovery metadata issuer %q does not match %q", metadata.Issuer, issuer),
 		)
 	}
@@ -505,24 +537,18 @@ func (resolver *HTTPKeyResolver) fetch(
 		)
 	}
 	keys := make(map[string]JWK, len(keySet.Keys))
+	duplicateKeys := make(map[string]struct{})
 	for _, key := range keySet.Keys {
 		if key.Kid == "" {
-			return discoveryCacheEntry{}, keyResolutionError(
-				KeyResolutionInvalid,
-				errors.New("aauth: discovered JWK has no kid"),
-			)
+			continue
+		}
+		if _, duplicate := duplicateKeys[key.Kid]; duplicate {
+			continue
 		}
 		if _, exists := keys[key.Kid]; exists {
-			return discoveryCacheEntry{}, keyResolutionError(
-				KeyResolutionInvalid,
-				fmt.Errorf("aauth: discovered JWKS has duplicate kid %q", key.Kid),
-			)
-		}
-		if _, err := key.PublicKey(); err != nil {
-			return discoveryCacheEntry{}, keyResolutionError(
-				KeyResolutionInvalid,
-				fmt.Errorf("aauth: discovered JWK %q: %w", key.Kid, err),
-			)
+			delete(keys, key.Kid)
+			duplicateKeys[key.Kid] = struct{}{}
+			continue
 		}
 		keys[key.Kid] = key
 	}
@@ -534,6 +560,7 @@ func (resolver *HTTPKeyResolver) fetch(
 	now := resolver.clock.Now()
 	return discoveryCacheEntry{
 		keys:          keys,
+		duplicateKeys: duplicateKeys,
 		eventMetadata: eventMetadata,
 		fetchedAt:     now,
 		freshUntil:    now.Add(freshness),

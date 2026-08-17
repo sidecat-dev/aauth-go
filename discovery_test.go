@@ -42,7 +42,7 @@ func TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache(t *testing.T) {
 			response.Header().Set("Content-Type", "application/json")
 			response.Header().Set("Cache-Control", "max-age=300")
 			_, _ = fmt.Fprintf(response, `{"keys":[
-				{"kty":"OKP","crv":"Ed25519","x":%q,"alg":"EdDSA","kid":"issuer-key","use":"sig"}
+				{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"issuer-key","use":"sig"}
 			]}`, signingKey.PublicJWK().X)
 		}),
 	})
@@ -114,7 +114,7 @@ func TestHTTPKeyResolverAppliesUnknownKeyRefreshFloor(t *testing.T) {
 				_, _ = fmt.Fprint(response, `{"issuer":"https://issuer.example","jwks_uri":"https://issuer.example/jwks"}`)
 				return
 			}
-			_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"known-key"}]}`, signingKey.PublicJWK().X)
+			_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"known-key"}]}`, signingKey.PublicJWK().X)
 		}),
 	})
 	defer gateway.Close()
@@ -274,7 +274,7 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 			case "/.well-known/aauth-resource.json":
 				_, _ = fmt.Fprint(response, `{"issuer":"https://issuer.example","jwks_uri":"https://issuer.example/jwks"}`)
 			case "/jwks":
-				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"rotating-key"}]}`, currentKey.X)
+				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"rotating-key"}]}`, currentKey.X)
 			default:
 				http.NotFound(response, request)
 			}
@@ -395,7 +395,7 @@ func TestHTTPKeyResolverCancellationDoesNotPoisonHealthyCaller(t *testing.T) {
 			case "/jwks":
 				_, _ = fmt.Fprintf(
 					response,
-					`{"keys":[{"kty":"OKP","crv":"Ed25519","x":%q,"kid":"issuer-key"}]}`,
+					`{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":"issuer-key"}]}`,
 					key.X,
 				)
 			default:

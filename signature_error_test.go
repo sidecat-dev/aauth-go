@@ -28,12 +28,9 @@ func TestSignatureErrorWireContract(t *testing.T) {
 			want: `error=invalid_input, required_input=("@method" "signature-key")`,
 		},
 		{
-			name: "supported algorithms",
-			error: aauth.SignatureError{
-				Code:                aauth.SignatureErrorUnsupportedAlgorithm,
-				SupportedAlgorithms: []string{"ed25519", "ecdsa-p256-sha256"},
-			},
-			want: `error=unsupported_algorithm, supported_algorithms=("ed25519" "ecdsa-p256-sha256")`,
+			name:  "unsupported algorithm has no embedded capability set",
+			error: aauth.SignatureError{Code: aauth.SignatureErrorUnsupportedAlgorithm},
+			want:  `error=unsupported_algorithm`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -49,8 +46,7 @@ func TestSignatureErrorWireContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			if parsed.Code != test.error.Code ||
-				strings.Join(parsed.RequiredInput, " ") != strings.Join(test.error.RequiredInput, " ") ||
-				strings.Join(parsed.SupportedAlgorithms, " ") != strings.Join(test.error.SupportedAlgorithms, " ") {
+				strings.Join(parsed.RequiredInput, " ") != strings.Join(test.error.RequiredInput, " ") {
 				t.Fatalf("parsed Signature-Error = %#v", parsed)
 			}
 		})
@@ -126,7 +122,6 @@ func TestSignatureErrorAppliesRFC8941DictionaryAndCodeSpecificSemantics(t *testi
 		`error="invalid_signature"`,
 		`error=invalid_input, required_input=42`,
 		`error=invalid_input, required_input=("")`,
-		`error=unsupported_algorithm, supported_algorithms=()`,
 		`error=invalid_signature, future=:not-base64:`,
 	} {
 		t.Run(header, func(t *testing.T) {

@@ -2355,6 +2355,1706 @@
           "title": "Deployment Configurations"
         }
       ]
+    },
+    {
+      "id": "core-wire-target",
+      "sections": [
+        {
+          "id": "introduction",
+          "level": 1,
+          "title": "Introduction"
+        },
+        {
+          "id": "introduction/http-clients-need-their-own-identity",
+          "level": 2,
+          "title": "HTTP Clients Need Their Own Identity"
+        },
+        {
+          "id": "introduction/agents-are-different",
+          "level": 2,
+          "title": "Agents Are Different"
+        },
+        {
+          "id": "introduction/what-aauth-provides",
+          "level": 2,
+          "title": "What AAuth Provides"
+        },
+        {
+          "id": "introduction/what-aauth-does-not-do",
+          "level": 2,
+          "title": "What AAuth Does Not Do"
+        },
+        {
+          "id": "introduction/relationship-to-existing-standards",
+          "level": 2,
+          "title": "Relationship to Existing Standards"
+        },
+        {
+          "id": "conventions-and-definitions",
+          "level": 1,
+          "title": "Conventions and Definitions"
+        },
+        {
+          "id": "terminology",
+          "level": 1,
+          "title": "Terminology"
+        },
+        {
+          "id": "protocol-overview",
+          "level": 1,
+          "title": "Protocol Overview"
+        },
+        {
+          "id": "protocol-overview/resource-access-modes",
+          "level": 2,
+          "title": "Resource Access Modes"
+        },
+        {
+          "id": "overview-identity-access",
+          "level": 3,
+          "title": "Agent Identity Access"
+        },
+        {
+          "id": "overview-resource-managed",
+          "level": 3,
+          "title": "Resource-Managed Access (Two-Party)"
+        },
+        {
+          "id": "overview-person-identity",
+          "level": 3,
+          "title": "Person Identity Access"
+        },
+        {
+          "id": "protocol-overview/resource-access-modes/ps-authorization-access-three-party",
+          "level": 3,
+          "title": "PS Authorization Access (Three-Party)"
+        },
+        {
+          "id": "protocol-overview/resource-access-modes/federated-authorization-access-four-party",
+          "level": 3,
+          "title": "Federated Authorization Access (Four-Party)"
+        },
+        {
+          "id": "roles",
+          "level": 2,
+          "title": "Roles"
+        },
+        {
+          "id": "policy-evaluation-points",
+          "level": 2,
+          "title": "Policy Evaluation Points"
+        },
+        {
+          "id": "agent-governance",
+          "level": 2,
+          "title": "Agent Governance"
+        },
+        {
+          "id": "missions-overview",
+          "level": 3,
+          "title": "Missions"
+        },
+        {
+          "id": "mission-creation-overview",
+          "level": 4,
+          "title": "Mission Creation"
+        },
+        {
+          "id": "missions-overview/mission-context-at-resources",
+          "level": 4,
+          "title": "Mission Context at Resources"
+        },
+        {
+          "id": "mission-completion-overview",
+          "level": 4,
+          "title": "Mission Completion"
+        },
+        {
+          "id": "agent-governance/ps-governance-endpoints",
+          "level": 3,
+          "title": "PS Governance Endpoints"
+        },
+        {
+          "id": "protocol-overview/obtaining-an-agent-token",
+          "level": 2,
+          "title": "Obtaining an Agent Token"
+        },
+        {
+          "id": "protocol-overview/bootstrapping",
+          "level": 2,
+          "title": "Bootstrapping"
+        },
+        {
+          "id": "agent-identity",
+          "level": 1,
+          "title": "Agent Identity"
+        },
+        {
+          "id": "agent-identity/agent-identifiers",
+          "level": 2,
+          "title": "Agent Identifiers"
+        },
+        {
+          "id": "agent-tokens",
+          "level": 2,
+          "title": "Agent Token"
+        },
+        {
+          "id": "agent-token-acquisition-overview",
+          "level": 3,
+          "title": "Agent Token Acquisition"
+        },
+        {
+          "id": "agent-tokens/agent-token-structure",
+          "level": 3,
+          "title": "Agent Token Structure"
+        },
+        {
+          "id": "agent-tokens/agent-token-usage",
+          "level": 3,
+          "title": "Agent Token Usage"
+        },
+        {
+          "id": "agent-tokens/agent-token-verification",
+          "level": 3,
+          "title": "Agent Token Verification"
+        },
+        {
+          "id": "person-tokens",
+          "level": 1,
+          "title": "Person Token"
+        },
+        {
+          "id": "person-token-endpoint",
+          "level": 2,
+          "title": "Person Token Endpoint"
+        },
+        {
+          "id": "person-token-structure",
+          "level": 2,
+          "title": "Person Token Structure"
+        },
+        {
+          "id": "person-token-usage",
+          "level": 2,
+          "title": "Person Token Usage"
+        },
+        {
+          "id": "person-token-verification",
+          "level": 2,
+          "title": "Person Token Verification"
+        },
+        {
+          "id": "resource-tokens",
+          "level": 1,
+          "title": "Resource Access and Resource Tokens"
+        },
+        {
+          "id": "resource-tokens/authorization-endpoint-request",
+          "level": 2,
+          "title": "Authorization Endpoint Request"
+        },
+        {
+          "id": "resource-tokens/authorization-endpoint-responses",
+          "level": 2,
+          "title": "Authorization Endpoint Responses"
+        },
+        {
+          "id": "resource-tokens/authorization-endpoint-responses/response-without-resource-token",
+          "level": 3,
+          "title": "Response without Resource Token"
+        },
+        {
+          "id": "resource-tokens/authorization-endpoint-responses/response-with-resource-token",
+          "level": 3,
+          "title": "Response with Resource Token"
+        },
+        {
+          "id": "resource-tokens/authorization-endpoint-responses/authorization-endpoint-error-responses",
+          "level": 3,
+          "title": "Authorization Endpoint Error Responses"
+        },
+        {
+          "id": "requirement-agent-token",
+          "level": 2,
+          "title": "Agent Token Required"
+        },
+        {
+          "id": "requirement-person-token",
+          "level": 2,
+          "title": "Person Token Required"
+        },
+        {
+          "id": "aauth-access",
+          "level": 2,
+          "title": "AAuth-Access Response Header"
+        },
+        {
+          "id": "resource-managed-auth",
+          "level": 2,
+          "title": "Resource-Managed Authorization"
+        },
+        {
+          "id": "requirement-auth-token",
+          "level": 2,
+          "title": "Auth Token Required"
+        },
+        {
+          "id": "deferred-auth-token",
+          "level": 3,
+          "title": "Deferred Delivery"
+        },
+        {
+          "id": "resource-tokens/resource-token",
+          "level": 2,
+          "title": "Resource Token"
+        },
+        {
+          "id": "resource-tokens/resource-token/resource-token-structure",
+          "level": 3,
+          "title": "Resource Token Structure"
+        },
+        {
+          "id": "resource-tokens/resource-token/resource-token-verification",
+          "level": 3,
+          "title": "Resource Token Verification"
+        },
+        {
+          "id": "resource-tokens/resource-token/resource-challenge-verification",
+          "level": 3,
+          "title": "Resource Challenge Verification"
+        },
+        {
+          "id": "person-server",
+          "level": 1,
+          "title": "Person Server"
+        },
+        {
+          "id": "ps-token-endpoint",
+          "level": 2,
+          "title": "PS Token Endpoint"
+        },
+        {
+          "id": "ps-token-endpoint/token-endpoint-modes",
+          "level": 3,
+          "title": "Token Endpoint Modes"
+        },
+        {
+          "id": "ps-token-endpoint/concurrent-token-requests",
+          "level": 3,
+          "title": "Concurrent Token Requests"
+        },
+        {
+          "id": "ps-token-endpoint/agent-token-request",
+          "level": 3,
+          "title": "Agent Token Request"
+        },
+        {
+          "id": "ps-token-endpoint/ps-response",
+          "level": 3,
+          "title": "PS Response"
+        },
+        {
+          "id": "resource-initiated-interaction",
+          "level": 3,
+          "title": "Resource-Initiated Interaction"
+        },
+        {
+          "id": "person-server/user-interaction",
+          "level": 2,
+          "title": "User Interaction"
+        },
+        {
+          "id": "interaction-callback-errors",
+          "level": 3,
+          "title": "Interaction Callback Errors"
+        },
+        {
+          "id": "person-server/clarification-chat",
+          "level": 2,
+          "title": "Clarification Chat"
+        },
+        {
+          "id": "requirement-clarification",
+          "level": 3,
+          "title": "Clarification Required"
+        },
+        {
+          "id": "person-server/clarification-chat/agent-response-to-clarification",
+          "level": 3,
+          "title": "Agent Response to Clarification"
+        },
+        {
+          "id": "person-server/clarification-chat/agent-response-to-clarification/clarification-response",
+          "level": 4,
+          "title": "Clarification Response"
+        },
+        {
+          "id": "person-server/clarification-chat/agent-response-to-clarification/updated-request",
+          "level": 4,
+          "title": "Updated Request"
+        },
+        {
+          "id": "person-server/clarification-chat/agent-response-to-clarification/cancel-request",
+          "level": 4,
+          "title": "Cancel Request"
+        },
+        {
+          "id": "person-server/clarification-chat/clarification-limits",
+          "level": 3,
+          "title": "Clarification Limits"
+        },
+        {
+          "id": "permission-endpoint",
+          "level": 2,
+          "title": "Permission Endpoint"
+        },
+        {
+          "id": "permission-endpoint/permission-request",
+          "level": 3,
+          "title": "Permission Request"
+        },
+        {
+          "id": "permission-endpoint/permission-response",
+          "level": 3,
+          "title": "Permission Response"
+        },
+        {
+          "id": "audit-endpoint",
+          "level": 2,
+          "title": "Audit Endpoint"
+        },
+        {
+          "id": "audit-endpoint/audit-request",
+          "level": 3,
+          "title": "Audit Request"
+        },
+        {
+          "id": "audit-endpoint/audit-response",
+          "level": 3,
+          "title": "Audit Response"
+        },
+        {
+          "id": "interaction-endpoint",
+          "level": 2,
+          "title": "Interaction Endpoint"
+        },
+        {
+          "id": "interaction-endpoint/interaction-request",
+          "level": 3,
+          "title": "Interaction Request"
+        },
+        {
+          "id": "interaction-response-poll-authority",
+          "level": 3,
+          "title": "Interaction Response"
+        },
+        {
+          "id": "interaction-endpoint-errors",
+          "level": 3,
+          "title": "Interaction Endpoint Errors"
+        },
+        {
+          "id": "person-server/re-authorization",
+          "level": 2,
+          "title": "Re-authorization"
+        },
+        {
+          "id": "missions",
+          "level": 1,
+          "title": "Mission"
+        },
+        {
+          "id": "mission-creation",
+          "level": 2,
+          "title": "Mission Creation"
+        },
+        {
+          "id": "mission-approval",
+          "level": 2,
+          "title": "Mission Approval"
+        },
+        {
+          "id": "mission-identifier",
+          "level": 3,
+          "title": "Mission Identifier"
+        },
+        {
+          "id": "mission-log",
+          "level": 2,
+          "title": "Mission Log"
+        },
+        {
+          "id": "mission-update",
+          "level": 2,
+          "title": "Mission Update"
+        },
+        {
+          "id": "mission-completion",
+          "level": 2,
+          "title": "Mission Completion"
+        },
+        {
+          "id": "mission-management",
+          "level": 2,
+          "title": "Mission Management"
+        },
+        {
+          "id": "mission-endpoint-errors",
+          "level": 2,
+          "title": "Mission Endpoint Errors"
+        },
+        {
+          "id": "mission-status-errors",
+          "level": 2,
+          "title": "Mission Status Errors"
+        },
+        {
+          "id": "access-server-federation",
+          "level": 1,
+          "title": "Access Server Federation"
+        },
+        {
+          "id": "as-token-endpoint",
+          "level": 2,
+          "title": "AS Token Endpoint"
+        },
+        {
+          "id": "as-token-endpoint/ps-to-as-token-request",
+          "level": 3,
+          "title": "PS-to-AS Token Request"
+        },
+        {
+          "id": "as-token-endpoint/as-response",
+          "level": 3,
+          "title": "AS Response"
+        },
+        {
+          "id": "as-token-endpoint/auth-token-delivery",
+          "level": 3,
+          "title": "Auth Token Delivery"
+        },
+        {
+          "id": "requirement-claims",
+          "level": 2,
+          "title": "Claims Required"
+        },
+        {
+          "id": "ps-as-federation",
+          "level": 2,
+          "title": "PS-AS Federation"
+        },
+        {
+          "id": "ps-as-trust-establishment",
+          "level": 3,
+          "title": "PS-AS Trust Establishment"
+        },
+        {
+          "id": "as-decision-logic",
+          "level": 3,
+          "title": "AS Decision Logic (Non-Normative)"
+        },
+        {
+          "id": "ps-as-federation/organization-visibility",
+          "level": 3,
+          "title": "Organization Visibility"
+        },
+        {
+          "id": "ps-as-collapse",
+          "level": 3,
+          "title": "PS-AS Collapse"
+        },
+        {
+          "id": "auth-tokens",
+          "level": 2,
+          "title": "Auth Token"
+        },
+        {
+          "id": "auth-tokens/auth-token-structure",
+          "level": 3,
+          "title": "Auth Token Structure"
+        },
+        {
+          "id": "auth-tokens/auth-token-usage",
+          "level": 3,
+          "title": "Auth Token Usage"
+        },
+        {
+          "id": "auth-tokens/auth-token-verification",
+          "level": 3,
+          "title": "Auth Token Verification"
+        },
+        {
+          "id": "auth-tokens/auth-token-verification/jwt-trust-verification",
+          "level": 4,
+          "title": "JWT Trust Verification"
+        },
+        {
+          "id": "auth-tokens/auth-token-verification/request-context-binding",
+          "level": 4,
+          "title": "Request-Context Binding"
+        },
+        {
+          "id": "auth-token-response-verification",
+          "level": 3,
+          "title": "Auth Token Response Verification"
+        },
+        {
+          "id": "upstream-token-verification",
+          "level": 3,
+          "title": "Upstream Token Verification"
+        },
+        {
+          "id": "agent-delegation",
+          "level": 1,
+          "title": "Agent Delegation"
+        },
+        {
+          "id": "multi-hop",
+          "level": 2,
+          "title": "Multi-Hop Resource Access"
+        },
+        {
+          "id": "call-chaining",
+          "level": 3,
+          "title": "Call Chaining"
+        },
+        {
+          "id": "directed-sub-chaining",
+          "level": 4,
+          "title": "Directed Identifiers Across a Chain"
+        },
+        {
+          "id": "interaction-chaining",
+          "level": 3,
+          "title": "Interaction Chaining"
+        },
+        {
+          "id": "sub-agents",
+          "level": 2,
+          "title": "Sub-Agents"
+        },
+        {
+          "id": "sub-agents/sub-agent-identity",
+          "level": 3,
+          "title": "Sub-Agent Identity"
+        },
+        {
+          "id": "sub-agents/single-level-depth",
+          "level": 3,
+          "title": "Single-Level Depth"
+        },
+        {
+          "id": "sub-agents/parent-mediated-authorization",
+          "level": 3,
+          "title": "Parent-Mediated Authorization"
+        },
+        {
+          "id": "third-party-login",
+          "level": 1,
+          "title": "Third-Party Login"
+        },
+        {
+          "id": "third-party-login/login-endpoint",
+          "level": 2,
+          "title": "Login Endpoint"
+        },
+        {
+          "id": "third-party-login/login-flow",
+          "level": 2,
+          "title": "Login Flow"
+        },
+        {
+          "id": "third-party-login/security-considerations-for-third-party-login",
+          "level": 2,
+          "title": "Security Considerations for Third-Party Login"
+        },
+        {
+          "id": "protocol-primitives",
+          "level": 1,
+          "title": "Protocol Primitives"
+        },
+        {
+          "id": "aauth-capabilities",
+          "level": 2,
+          "title": "AAuth-Capabilities Request Header"
+        },
+        {
+          "id": "scopes",
+          "level": 2,
+          "title": "Scopes"
+        },
+        {
+          "id": "account-binding",
+          "level": 2,
+          "title": "Account Binding"
+        },
+        {
+          "id": "requirement-responses",
+          "level": 2,
+          "title": "Requirement Responses"
+        },
+        {
+          "id": "requirement-responses/aauth-requirement-header-structure",
+          "level": 3,
+          "title": "AAuth-Requirement Header Structure"
+        },
+        {
+          "id": "requirement-responses/requirement-values",
+          "level": 3,
+          "title": "Requirement Values"
+        },
+        {
+          "id": "requirement-responses/interaction-required",
+          "level": 3,
+          "title": "Interaction Required"
+        },
+        {
+          "id": "interaction-code-format",
+          "level": 4,
+          "title": "Interaction Code Format"
+        },
+        {
+          "id": "interaction-relay",
+          "level": 4,
+          "title": "Relaying Through the Person Server"
+        },
+        {
+          "id": "requirement-responses/approval-pending",
+          "level": 3,
+          "title": "Approval Pending"
+        },
+        {
+          "id": "deferred-responses",
+          "level": 2,
+          "title": "Deferred Responses"
+        },
+        {
+          "id": "deferred-responses/initial-request",
+          "level": 3,
+          "title": "Initial Request"
+        },
+        {
+          "id": "deferred-responses/pending-response",
+          "level": 3,
+          "title": "Pending Response"
+        },
+        {
+          "id": "deferred-responses/polling-with-get",
+          "level": 3,
+          "title": "Polling with GET"
+        },
+        {
+          "id": "deferred-responses/deferred-response-state-machine",
+          "level": 3,
+          "title": "Deferred Response State Machine"
+        },
+        {
+          "id": "error-responses",
+          "level": 2,
+          "title": "Error Responses"
+        },
+        {
+          "id": "error-responses/authentication-errors",
+          "level": 3,
+          "title": "Authentication Errors"
+        },
+        {
+          "id": "error-response-format",
+          "level": 3,
+          "title": "Error Response Format"
+        },
+        {
+          "id": "token-endpoint-error-codes",
+          "level": 3,
+          "title": "Token Endpoint Error Codes"
+        },
+        {
+          "id": "polling-error-codes",
+          "level": 3,
+          "title": "Polling Error Codes"
+        },
+        {
+          "id": "token-revocation",
+          "level": 2,
+          "title": "Token Revocation"
+        },
+        {
+          "id": "http-message-signatures-profile",
+          "level": 2,
+          "title": "HTTP Message Signatures Profile"
+        },
+        {
+          "id": "signature-algorithms",
+          "level": 3,
+          "title": "Signature Algorithms"
+        },
+        {
+          "id": "keying-material",
+          "level": 3,
+          "title": "Keying Material"
+        },
+        {
+          "id": "http-message-signatures-profile/signing-agent",
+          "level": 3,
+          "title": "Signing (Agent)"
+        },
+        {
+          "id": "covered-components",
+          "level": 4,
+          "title": "Covered Components"
+        },
+        {
+          "id": "http-message-signatures-profile/signing-agent/signature-parameters",
+          "level": 4,
+          "title": "Signature Parameters"
+        },
+        {
+          "id": "verification",
+          "level": 3,
+          "title": "Verification (Server)"
+        },
+        {
+          "id": "scheme-rejection",
+          "level": 4,
+          "title": "Signature-Key Scheme Rejection"
+        },
+        {
+          "id": "freshness-and-replay",
+          "level": 4,
+          "title": "Freshness and Replay"
+        },
+        {
+          "id": "jwks-discovery",
+          "level": 2,
+          "title": "JWKS Discovery and Caching"
+        },
+        {
+          "id": "identifiers-and-discovery",
+          "level": 2,
+          "title": "Identifiers"
+        },
+        {
+          "id": "identifiers-and-discovery/server-identifiers",
+          "level": 3,
+          "title": "Server Identifiers"
+        },
+        {
+          "id": "identifiers-and-discovery/endpoint-urls",
+          "level": 3,
+          "title": "Endpoint URLs"
+        },
+        {
+          "id": "identifiers-and-discovery/other-urls",
+          "level": 3,
+          "title": "Other URLs"
+        },
+        {
+          "id": "metadata-documents",
+          "level": 2,
+          "title": "Metadata Documents"
+        },
+        {
+          "id": "agent-provider-metadata",
+          "level": 3,
+          "title": "Agent Provider Metadata"
+        },
+        {
+          "id": "ps-metadata",
+          "level": 3,
+          "title": "Person Server Metadata"
+        },
+        {
+          "id": "access-server-metadata",
+          "level": 3,
+          "title": "Access Server Metadata"
+        },
+        {
+          "id": "resource-metadata",
+          "level": 3,
+          "title": "Resource Metadata"
+        },
+        {
+          "id": "incremental-adoption",
+          "level": 1,
+          "title": "Incremental Adoption"
+        },
+        {
+          "id": "drop-in-migration",
+          "level": 2,
+          "title": "Drop-In Replacement for API Keys and OAuth"
+        },
+        {
+          "id": "consuming-a-resource",
+          "level": 3,
+          "title": "Consuming a Resource End to End"
+        },
+        {
+          "id": "incremental-adoption/agent-adoption-path",
+          "level": 2,
+          "title": "Agent Adoption Path"
+        },
+        {
+          "id": "incremental-adoption/resource-adoption-path",
+          "level": 2,
+          "title": "Resource Adoption Path"
+        },
+        {
+          "id": "incremental-adoption/adoption-matrix",
+          "level": 2,
+          "title": "Adoption Matrix"
+        },
+        {
+          "id": "security-considerations",
+          "level": 1,
+          "title": "Security Considerations"
+        },
+        {
+          "id": "security-considerations/proof-of-possession",
+          "level": 2,
+          "title": "Proof-of-Possession"
+        },
+        {
+          "id": "security-considerations/token-security",
+          "level": 2,
+          "title": "Token Security"
+        },
+        {
+          "id": "security-considerations/pending-url-security",
+          "level": 2,
+          "title": "Pending URL Security"
+        },
+        {
+          "id": "security-considerations/clarification-chat-security",
+          "level": 2,
+          "title": "Clarification Chat Security"
+        },
+        {
+          "id": "security-considerations/untrusted-input",
+          "level": 2,
+          "title": "Untrusted Input"
+        },
+        {
+          "id": "security-considerations/interaction-code-misdirection",
+          "level": 2,
+          "title": "Interaction Code Misdirection"
+        },
+        {
+          "id": "security-considerations/token-issuer-discovery",
+          "level": 2,
+          "title": "Token Issuer Discovery"
+        },
+        {
+          "id": "security-considerations/aauth-access-security",
+          "level": 2,
+          "title": "AAuth-Access Security"
+        },
+        {
+          "id": "security-considerations/trust-posture-in-ps-asserted-access",
+          "level": 2,
+          "title": "Trust Posture in PS-Asserted Access"
+        },
+        {
+          "id": "person-token-exposure",
+          "level": 2,
+          "title": "Person Token Exposure"
+        },
+        {
+          "id": "continuity-not-proofing",
+          "level": 2,
+          "title": "Continuity, Not Identity Proofing"
+        },
+        {
+          "id": "person-token-org-policy",
+          "level": 2,
+          "title": "Organization Identification"
+        },
+        {
+          "id": "person-token-not-authorization",
+          "level": 2,
+          "title": "Person Token Is Not Authorization"
+        },
+        {
+          "id": "incremental-consent",
+          "level": 2,
+          "title": "Incremental Consent"
+        },
+        {
+          "id": "ps-approval-endpoint-auth",
+          "level": 2,
+          "title": "PS Approval Endpoint Authentication"
+        },
+        {
+          "id": "agent-person-binding",
+          "level": 2,
+          "title": "Agent-Person Binding"
+        },
+        {
+          "id": "security-considerations/ps-as-high-value-target",
+          "level": 2,
+          "title": "PS as High-Value Target"
+        },
+        {
+          "id": "security-considerations/call-chaining-identity",
+          "level": 2,
+          "title": "Call Chaining Identity"
+        },
+        {
+          "id": "security-considerations/token-revocation-and-lifecycle",
+          "level": 2,
+          "title": "Token Revocation and Lifecycle"
+        },
+        {
+          "id": "security-considerations/tls-requirements",
+          "level": 2,
+          "title": "TLS Requirements"
+        },
+        {
+          "id": "security-considerations/non-repudiation-and-audit-after-key-rotation",
+          "level": 2,
+          "title": "Non-Repudiation and Audit After Key Rotation"
+        },
+        {
+          "id": "privacy-considerations",
+          "level": 1,
+          "title": "Privacy Considerations"
+        },
+        {
+          "id": "privacy-considerations/directed-identifiers",
+          "level": 2,
+          "title": "Directed Identifiers"
+        },
+        {
+          "id": "privacy-considerations/ps-visibility",
+          "level": 2,
+          "title": "PS Visibility"
+        },
+        {
+          "id": "privacy-considerations/mission-content-exposure",
+          "level": 2,
+          "title": "Mission Content Exposure"
+        },
+        {
+          "id": "iana-considerations",
+          "level": 1,
+          "title": "IANA Considerations"
+        },
+        {
+          "id": "iana-considerations/http-header-field-registration",
+          "level": 2,
+          "title": "HTTP Header Field Registration"
+        },
+        {
+          "id": "iana-considerations/http-authentication-scheme-registration",
+          "level": 2,
+          "title": "HTTP Authentication Scheme Registration"
+        },
+        {
+          "id": "iana-considerations/well-known-uri-registrations",
+          "level": 2,
+          "title": "Well-Known URI Registrations"
+        },
+        {
+          "id": "iana-considerations/media-type-registrations",
+          "level": 2,
+          "title": "Media Type Registrations"
+        },
+        {
+          "id": "iana-considerations/media-type-registrations/application-aa-agent-jwt",
+          "level": 3,
+          "title": "application/aa-agent+jwt"
+        },
+        {
+          "id": "iana-considerations/media-type-registrations/application-aa-auth-jwt",
+          "level": 3,
+          "title": "application/aa-auth+jwt"
+        },
+        {
+          "id": "iana-considerations/media-type-registrations/application-aa-person-jwt",
+          "level": 3,
+          "title": "application/aa-person+jwt"
+        },
+        {
+          "id": "iana-considerations/media-type-registrations/application-aa-resource-jwt",
+          "level": 3,
+          "title": "application/aa-resource+jwt"
+        },
+        {
+          "id": "iana-considerations/jwt-type-registrations",
+          "level": 2,
+          "title": "JWT Type Registrations"
+        },
+        {
+          "id": "iana-considerations/jwt-claims-registrations",
+          "level": 2,
+          "title": "JWT Claims Registrations"
+        },
+        {
+          "id": "iana-considerations/aauth-requirement-value-registry",
+          "level": 2,
+          "title": "AAuth Requirement Value Registry"
+        },
+        {
+          "id": "iana-considerations/aauth-capability-value-registry",
+          "level": 2,
+          "title": "AAuth Capability Value Registry"
+        },
+        {
+          "id": "aauth-platform-value-registry",
+          "level": 2,
+          "title": "AAuth Platform Value Registry"
+        },
+        {
+          "id": "aauth-access-mode-value-registry",
+          "level": 2,
+          "title": "AAuth Access Mode Value Registry"
+        },
+        {
+          "id": "designated-expert-instructions",
+          "level": 2,
+          "title": "Designated Expert Instructions"
+        },
+        {
+          "id": "iana-considerations/uri-scheme-registration",
+          "level": 2,
+          "title": "URI Scheme Registration"
+        },
+        {
+          "id": "implementation-status",
+          "level": 1,
+          "title": "Implementation Status"
+        },
+        {
+          "id": "document-history",
+          "level": 1,
+          "title": "Document History"
+        },
+        {
+          "id": "acknowledgments",
+          "level": 1,
+          "title": "Acknowledgments"
+        },
+        {
+          "id": "detailed-flows",
+          "level": 1,
+          "title": "Detailed Flows"
+        },
+        {
+          "id": "flow-call-chaining",
+          "level": 2,
+          "title": "Four-Party: Call Chaining"
+        },
+        {
+          "id": "flow-interaction-chaining",
+          "level": 2,
+          "title": "Interaction Chaining"
+        },
+        {
+          "id": "design-rationale",
+          "level": 1,
+          "title": "Design Rationale"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation",
+          "level": 2,
+          "title": "Identity and Foundation"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-https-based-agent-identity",
+          "level": 3,
+          "title": "Why HTTPS-Based Agent Identity"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-per-instance-agent-identity",
+          "level": 3,
+          "title": "Why Per-Instance Agent Identity"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-agents-are-under-an-agent-provider",
+          "level": 3,
+          "title": "Why Agents Are Under an Agent Provider"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-every-agent-has-a-person",
+          "level": 3,
+          "title": "Why Every Agent Has a Person"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-person-tokens",
+          "level": 3,
+          "title": "Why Person Tokens"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-a-mission-belongs-to-an-agent",
+          "level": 3,
+          "title": "Why a Mission Belongs to an Agent"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-no-agent-identifier-reaches-a-resource",
+          "level": 3,
+          "title": "Why No Agent Identifier Reaches a Resource"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-identity-alone-can-authorize",
+          "level": 3,
+          "title": "Why Identity Alone Can Authorize"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-the-mission-is-encoded-rather-than-nested",
+          "level": 3,
+          "title": "Why the Mission Is Encoded Rather Than Nested"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-the-mission-identifier-is-a-hash",
+          "level": 3,
+          "title": "Why the Mission Identifier Is a Hash"
+        },
+        {
+          "id": "why-presented-jti",
+          "level": 3,
+          "title": "Why a Resource Token Names the Person Token"
+        },
+        {
+          "id": "why-tools-are-not-enforced",
+          "level": 3,
+          "title": "Why Tool Pre-Approval Is Not Enforced"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-there-is-no-delegation-chain-claim",
+          "level": 3,
+          "title": "Why There Is No Delegation Chain Claim"
+        },
+        {
+          "id": "design-rationale/identity-and-foundation/why-the-ps-claim-in-agent-tokens",
+          "level": 3,
+          "title": "Why the `ps` Claim in Agent Tokens"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics",
+          "level": 2,
+          "title": "Protocol Mechanics"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics/why-json-in-well-known-uris",
+          "level": 3,
+          "title": "Why `.json` in Well-Known URIs"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics/why-standard-http-async-pattern",
+          "level": 3,
+          "title": "Why Standard HTTP Async Pattern"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics/why-json-instead-of-form-encoded",
+          "level": 3,
+          "title": "Why JSON Instead of Form-Encoded"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics/why-no-authorization-code",
+          "level": 3,
+          "title": "Why No Authorization Code"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics/why-callback-url-has-no-security-role",
+          "level": 3,
+          "title": "Why Callback URL Has No Security Role"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics/why-no-refresh-token",
+          "level": 3,
+          "title": "Why No Refresh Token"
+        },
+        {
+          "id": "design-rationale/protocol-mechanics/why-reuse-openid-connect-vocabulary",
+          "level": 3,
+          "title": "Why Reuse OpenID Connect Vocabulary"
+        },
+        {
+          "id": "design-rationale/architecture",
+          "level": 2,
+          "title": "Architecture"
+        },
+        {
+          "id": "design-rationale/architecture/why-a-separate-person-server",
+          "level": 3,
+          "title": "Why a Separate Person Server"
+        },
+        {
+          "id": "design-rationale/architecture/why-five-resource-access-modes",
+          "level": 3,
+          "title": "Why Five Resource Access Modes"
+        },
+        {
+          "id": "design-rationale/architecture/why-resource-tokens",
+          "level": 3,
+          "title": "Why Resource Tokens"
+        },
+        {
+          "id": "design-rationale/architecture/why-session-tokens-are-opaque",
+          "level": 3,
+          "title": "Why Session Tokens Are Opaque"
+        },
+        {
+          "id": "design-rationale/architecture/why-missions-are-not-a-policy-language",
+          "level": 3,
+          "title": "Why Missions Are Not a Policy Language"
+        },
+        {
+          "id": "design-rationale/architecture/why-missions-have-only-two-states",
+          "level": 3,
+          "title": "Why Missions Have Only Two States"
+        },
+        {
+          "id": "design-rationale/architecture/why-downstream-scope-is-not-constrained-by-upstream-scope",
+          "level": 3,
+          "title": "Why Downstream Scope Is Not Constrained by Upstream Scope"
+        },
+        {
+          "id": "design-rationale/comparisons-with-alternatives",
+          "level": 2,
+          "title": "Comparisons with Alternatives"
+        },
+        {
+          "id": "design-rationale/comparisons-with-alternatives/why-not-mtls",
+          "level": 3,
+          "title": "Why Not mTLS?"
+        },
+        {
+          "id": "design-rationale/comparisons-with-alternatives/why-not-dpop",
+          "level": 3,
+          "title": "Why Not DPoP?"
+        },
+        {
+          "id": "design-rationale/comparisons-with-alternatives/why-not-extend-gnap",
+          "level": 3,
+          "title": "Why Not Extend GNAP"
+        },
+        {
+          "id": "design-rationale/comparisons-with-alternatives/why-not-extend-www-authenticate",
+          "level": 3,
+          "title": "Why Not Extend WWW-Authenticate?"
+        },
+        {
+          "id": "design-rationale/comparisons-with-alternatives/why-not-extend-oauth",
+          "level": 3,
+          "title": "Why Not Extend OAuth?"
+        }
+      ]
+    },
+    {
+      "id": "signature-key-wire-target",
+      "sections": [
+        {
+          "id": "conventions-and-definitions",
+          "level": 1,
+          "title": "Conventions and Definitions"
+        },
+        {
+          "id": "introduction",
+          "level": 1,
+          "title": "Introduction"
+        },
+        {
+          "id": "signature-key-http-request-header",
+          "level": 1,
+          "title": "Signature-Key HTTP Request Header"
+        },
+        {
+          "id": "signature-key-http-request-header/label-consistency",
+          "level": 2,
+          "title": "Label Consistency"
+        },
+        {
+          "id": "multiple-signatures",
+          "level": 2,
+          "title": "Multiple Signatures"
+        },
+        {
+          "id": "algorithm-determination",
+          "level": 2,
+          "title": "Algorithm Determination"
+        },
+        {
+          "id": "signature-key-http-request-header/header-web-key-hwk",
+          "level": 2,
+          "title": "Header Web Key (hwk)"
+        },
+        {
+          "id": "jkt-jwt-scheme",
+          "level": 2,
+          "title": "JKT JWT Self-Issued Key Delegation (jkt-jwt)"
+        },
+        {
+          "id": "jwks-uri-scheme",
+          "level": 2,
+          "title": "JWKS URI Discovery (jwks_uri)"
+        },
+        {
+          "id": "jwks-scheme",
+          "level": 2,
+          "title": "Direct JWKS (jwks)"
+        },
+        {
+          "id": "signature-key-http-request-header/jwt-confirmation-key-jwt",
+          "level": 2,
+          "title": "JWT Confirmation Key (jwt)"
+        },
+        {
+          "id": "signature-key-http-request-header/self-issued-jwt-self-jwt",
+          "level": 2,
+          "title": "Self-Issued JWT (self-jwt)"
+        },
+        {
+          "id": "signature-key-http-request-header/x-509-certificates-x509",
+          "level": 2,
+          "title": "X.509 Certificates (x509)"
+        },
+        {
+          "id": "cached-scheme",
+          "level": 2,
+          "title": "Cached Assertion (cached)"
+        },
+        {
+          "id": "accept-signature-scheme-and-accept-signature-alg-response-headers",
+          "level": 1,
+          "title": "Accept-Signature-Scheme and Accept-Signature-Alg Response Headers"
+        },
+        {
+          "id": "accept-signature-scheme",
+          "level": 2,
+          "title": "Accept-Signature-Scheme"
+        },
+        {
+          "id": "accept-signature-alg",
+          "level": 2,
+          "title": "Accept-Signature-Alg"
+        },
+        {
+          "id": "accept-signature-scheme-and-accept-signature-alg-response-headers/relationship-to-accept-signature",
+          "level": 2,
+          "title": "Relationship to Accept-Signature"
+        },
+        {
+          "id": "accept-signature-scheme-and-accept-signature-alg-response-headers/sending-on-errors-and-on-challenges",
+          "level": 2,
+          "title": "Sending on Errors and on Challenges"
+        },
+        {
+          "id": "accept-signature-scheme-and-accept-signature-alg-response-headers/response-status-codes",
+          "level": 2,
+          "title": "Response Status Codes"
+        },
+        {
+          "id": "accept-signature-scheme-and-accept-signature-alg-response-headers/incremental-adoption",
+          "level": 2,
+          "title": "Incremental Adoption"
+        },
+        {
+          "id": "accept-signature-scheme-and-accept-signature-alg-response-headers/coexistence-with-www-authenticate",
+          "level": 2,
+          "title": "Coexistence with WWW-Authenticate"
+        },
+        {
+          "id": "accept-signature-scheme-and-accept-signature-alg-response-headers/examples",
+          "level": 2,
+          "title": "Examples"
+        },
+        {
+          "id": "client-processing",
+          "level": 2,
+          "title": "Client Processing"
+        },
+        {
+          "id": "signature-error-http-response-header",
+          "level": 1,
+          "title": "Signature-Error HTTP Response Header"
+        },
+        {
+          "id": "signature-error-http-response-header/header-structure",
+          "level": 2,
+          "title": "Header Structure"
+        },
+        {
+          "id": "signature-error-http-response-header/response-body",
+          "level": 2,
+          "title": "Response Body"
+        },
+        {
+          "id": "signature-error-http-response-header/access-denied",
+          "level": 2,
+          "title": "Access Denied"
+        },
+        {
+          "id": "error-codes",
+          "level": 2,
+          "title": "Error Codes"
+        },
+        {
+          "id": "unsupported_algorithm",
+          "level": 3,
+          "title": "unsupported_algorithm"
+        },
+        {
+          "id": "unsupported-scheme",
+          "level": 3,
+          "title": "unsupported_scheme"
+        },
+        {
+          "id": "cache_miss",
+          "level": 3,
+          "title": "cache_miss"
+        },
+        {
+          "id": "error-codes/invalid-signature",
+          "level": 3,
+          "title": "invalid_signature"
+        },
+        {
+          "id": "error-codes/invalid-input",
+          "level": 3,
+          "title": "invalid_input"
+        },
+        {
+          "id": "error-codes/invalid-request",
+          "level": 3,
+          "title": "invalid_request"
+        },
+        {
+          "id": "error-codes/invalid-key",
+          "level": 3,
+          "title": "invalid_key"
+        },
+        {
+          "id": "error-codes/unknown-key",
+          "level": 3,
+          "title": "unknown_key"
+        },
+        {
+          "id": "issuer_missing",
+          "level": 3,
+          "title": "issuer_missing"
+        },
+        {
+          "id": "issuer_mismatch",
+          "level": 3,
+          "title": "issuer_mismatch"
+        },
+        {
+          "id": "error-codes/invalid-jwt",
+          "level": 3,
+          "title": "invalid_jwt"
+        },
+        {
+          "id": "error-codes/expired-jwt",
+          "level": 3,
+          "title": "expired_jwt"
+        },
+        {
+          "id": "signature-key-cache-response-header",
+          "level": 1,
+          "title": "Signature-Key-Cache Response Header"
+        },
+        {
+          "id": "presenting-and-resolving-a-cached-assertion",
+          "level": 2,
+          "title": "Presenting and Resolving a Cached Assertion"
+        },
+        {
+          "id": "signature-key-cache-response-header/degradation-and-interoperability",
+          "level": 2,
+          "title": "Degradation and Interoperability"
+        },
+        {
+          "id": "security-considerations",
+          "level": 1,
+          "title": "Security Considerations"
+        },
+        {
+          "id": "security-considerations/key-validation",
+          "level": 2,
+          "title": "Key Validation"
+        },
+        {
+          "id": "caching-and-performance",
+          "level": 2,
+          "title": "Caching and Performance"
+        },
+        {
+          "id": "scheme-specific-risks",
+          "level": 2,
+          "title": "Scheme-Specific Risks"
+        },
+        {
+          "id": "security-considerations/algorithm-selection",
+          "level": 2,
+          "title": "Algorithm Selection"
+        },
+        {
+          "id": "symmetric-algorithms",
+          "level": 2,
+          "title": "Symmetric Algorithms"
+        },
+        {
+          "id": "cache-identifiers",
+          "level": 2,
+          "title": "Cache Identifiers"
+        },
+        {
+          "id": "pqc-sizes",
+          "level": 2,
+          "title": "Post-Quantum Key and Signature Sizes"
+        },
+        {
+          "id": "security-considerations/signature-key-integrity",
+          "level": 2,
+          "title": "Signature-Key Integrity"
+        },
+        {
+          "id": "privacy-considerations",
+          "level": 1,
+          "title": "Privacy Considerations"
+        },
+        {
+          "id": "pseudonymity-vs-identity",
+          "level": 2,
+          "title": "Pseudonymity vs. Identity"
+        },
+        {
+          "id": "privacy-considerations/key-discovery-tracking",
+          "level": 2,
+          "title": "Key Discovery Tracking"
+        },
+        {
+          "id": "privacy-considerations/jwt-contents",
+          "level": 2,
+          "title": "JWT Contents"
+        },
+        {
+          "id": "iana-considerations",
+          "level": 1,
+          "title": "IANA Considerations"
+        },
+        {
+          "id": "iana-considerations/http-field-name-registration",
+          "level": 2,
+          "title": "HTTP Field Name Registration"
+        },
+        {
+          "id": "scheme-registry",
+          "level": 2,
+          "title": "Signature-Key Scheme Registry"
+        },
+        {
+          "id": "scheme-registry/registration-procedure",
+          "level": 3,
+          "title": "Registration Procedure"
+        },
+        {
+          "id": "scheme-registry/initial-registry-contents",
+          "level": 3,
+          "title": "Initial Registry Contents"
+        },
+        {
+          "id": "scheme-registry/registration-template",
+          "level": 3,
+          "title": "Registration Template"
+        },
+        {
+          "id": "iana-considerations/urn-sub-namespace-registration",
+          "level": 2,
+          "title": "URN Sub-namespace Registration"
+        },
+        {
+          "id": "iana-considerations/signature-error-code-registry",
+          "level": 2,
+          "title": "Signature Error Code Registry"
+        },
+        {
+          "id": "iana-considerations/signature-error-code-registry/initial-registry-contents",
+          "level": 3,
+          "title": "Initial Registry Contents"
+        },
+        {
+          "id": "iana-considerations/signature-error-code-registry/registration-template",
+          "level": 3,
+          "title": "Registration Template"
+        },
+        {
+          "id": "designated-expert-instructions",
+          "level": 2,
+          "title": "Designated Expert Instructions"
+        },
+        {
+          "id": "document-history",
+          "level": 1,
+          "title": "Document History"
+        },
+        {
+          "id": "acknowledgments",
+          "level": 1,
+          "title": "Acknowledgments"
+        },
+        {
+          "id": "design-rationale",
+          "level": 1,
+          "title": "Design Rationale"
+        },
+        {
+          "id": "why-jwks-uri",
+          "level": 2,
+          "title": "Why jwks_uri Instead of Inline JWKS?"
+        },
+        {
+          "id": "design-rationale/why-both-jwks-and-jwks-uri",
+          "level": 2,
+          "title": "Why Both jwks and jwks_uri?"
+        },
+        {
+          "id": "design-rationale/why-a-separate-header",
+          "level": 2,
+          "title": "Why a Separate Header?"
+        },
+        {
+          "id": "design-rationale/why-schemes-instead-of-just-a-key-and-key-id",
+          "level": 2,
+          "title": "Why Schemes Instead of Just a Key and Key ID?"
+        },
+        {
+          "id": "design-rationale/why-a-scheme-token-instead-of-a-header-per-scheme",
+          "level": 2,
+          "title": "Why a Scheme Token Instead of a Header per Scheme?"
+        },
+        {
+          "id": "design-rationale/why-accept-signature-scheme-and-accept-signature-alg-are-separate-headers",
+          "level": 2,
+          "title": "Why Accept-Signature-Scheme and Accept-Signature-Alg Are Separate Headers"
+        },
+        {
+          "id": "design-rationale/layered-cryptographic-agility",
+          "level": 2,
+          "title": "Layered Cryptographic Agility"
+        },
+        {
+          "id": "why-the-verifier-issues-the-cache-identifier",
+          "level": 2,
+          "title": "Why the Verifier Issues the Cache Identifier"
+        },
+        {
+          "id": "precedents-for-assertion-caching",
+          "level": 2,
+          "title": "Precedents for Assertion Caching"
+        },
+        {
+          "id": "design-rationale/why-strings-instead-of-byte-sequences-for-hwk",
+          "level": 2,
+          "title": "Why Strings Instead of Byte Sequences for hwk?"
+        },
+        {
+          "id": "why-alg-is-required",
+          "level": 2,
+          "title": "Why alg Is Required on Every Conveyed Key"
+        }
+      ]
     }
   ]
 }

@@ -151,6 +151,12 @@ func TestResourcePolicyDenialIsNotASignatureFailure(t *testing.T) {
 	if got := response.Header().Get("Accept-Signature"); got != "" {
 		t.Fatalf("403 Accept-Signature = %q, want absent", got)
 	}
+	if got := response.Header().Get("Accept-Signature-Alg"); got != "" {
+		t.Fatalf("403 Accept-Signature-Alg = %q, want absent", got)
+	}
+	if got := response.Header().Get("Accept-Signature-Scheme"); got != "" {
+		t.Fatalf("403 Accept-Signature-Scheme = %q, want absent", got)
+	}
 }
 
 func TestResourceSanitizesOperationalKeyResolutionFailure(t *testing.T) {

@@ -201,7 +201,7 @@ func MintAuthToken(key SigningKey, claims AuthTokenClaims) (string, error) {
 
 func mintToken(key SigningKey, tokenType string, claims any) (string, error) {
 	headerBytes, err := json.Marshal(TokenHeader{
-		Algorithm: "EdDSA",
+		Algorithm: Ed25519Algorithm,
 		Type:      tokenType,
 		KeyID:     key.ID(),
 	})
@@ -325,7 +325,7 @@ func verifyResolvedTokenKey(
 	if header.Algorithm == "none" {
 		return errors.New("aauth: alg none is forbidden")
 	}
-	if header.Algorithm != "EdDSA" {
+	if header.Algorithm != Ed25519Algorithm {
 		return &unsupportedTokenAlgorithmError{algorithm: header.Algorithm}
 	}
 	if header.KeyID == "" {

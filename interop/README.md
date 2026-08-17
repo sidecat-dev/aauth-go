@@ -2,20 +2,18 @@
 
 The Elixir-attributed fixtures in this directory have not been regenerated or
 reciprocally verified during the current maintenance run. Their embedded
-provenance says they came from the earlier `sidecat-beam` prototype; the Go
-tests prove that the retained bytes verify under the Go implementation, not
-that the Elixir implementation currently runs or interoperates. Treat them as
-historical comparator material until the clean-checkout requalification below
-has been performed in both directions.
+provenance says they came from the earlier `sidecat-beam` prototype and their
+compact JWS headers use draft-06's polymorphic `EdDSA` identifier. The active
+draft-08 Go verifier deliberately rejects those exact bytes with
+`unsupported_algorithm`. Treat them as immutable historical comparator
+material, not current interoperability vectors.
 
 `elixir-agent-request.json` records an Elixir-minted
 `aa-agent+jwt`, an Elixir-serialized `AAuth-Mission` reference, and an
 Elixir-created RFC 9421 request signature using the JWT Signature-Key scheme.
 The Go test reconstructs the HTTP request from those exact wire values and
-verifies issuer trust, token claims, confirmation-key binding, required
-component coverage, signature freshness, mission syntax, and the Ed25519
-signature. Mutation controls prove that changing the mission or Signature-Key
-breaks verification.
+proves the Phase-1 compatibility boundary: the prohibited token algorithm is
+rejected before draft-09 claims or its request signature can be accepted.
 
 The fixture records the exact `sidecat-beam` commit that generated it. To
 regenerate from a checked-out copy at that commit:
@@ -52,18 +50,16 @@ signature and mission reference, and runs the same two mutation controls. The
 Go generator itself has an executable test which verifies its emitted request
 before it becomes comparator input.
 
-Once rerun from the recorded clean checkouts, this can become
-implementation-to-implementation evidence rather than a value transcribed from
-draft prose. Until then it is retained evidence with unrefreshed provenance. In
-either state, it cannot establish that every token, Signature-Key scheme, HTTP
-component, response, or server role interoperates.
+The reciprocal Go vector is now emitted with `Ed25519`. It cannot become
+implementation-to-implementation evidence until the comparator itself migrates
+to draft-08 and a clean-checkout run verifies the new bytes. In either state,
+these narrow vectors cannot establish that every token, Signature-Key scheme,
+HTTP component, response, or server role interoperates.
 
-The same comparator pair now exercises the mandatory
-`jkt-s256+jwt`/Ed25519 profile in both directions. The vectors retain a
-durable-key self-issued delegation, the delegated ephemeral request key, and
-the exact RFC 9421 headers. Each verifier independently recomputes the durable
-JWK thumbprint URI, verifies the naming JWT, resolves the ephemeral key, checks
-the HTTP signature, and refuses a mutated Signature-Key.
+The JKT-JWT pair retains the same boundary. The active Go-origin vector carries
+a fully specified `Ed25519` durable key and delegated request key and passes the
+Go verifier. The historical Elixir-origin vector carries `EdDSA` in its signed
+header and is retained to prove that the new verifier refuses it.
 
 Generate the Elixir request and verify it through the Go test:
 
@@ -73,7 +69,7 @@ mix run /absolute/path/to/aauth-go/interop/generate_elixir_jkt_jwt_request.exs \
   /absolute/path/to/aauth-go/interop/elixir-jkt-jwt-request.json
 
 cd /absolute/path/to/aauth-go
-go test ./... -run TestElixirJKTJWTRequestVerifiesInGo
+go test ./... -run TestLegacyDraft06ElixirJKTJWTRequestIsRetainedButRejected
 ```
 
 Generate the reciprocal Go request and verify it through Elixir:
@@ -88,7 +84,8 @@ mix run /absolute/path/to/aauth-go/interop/verify_go_jkt_jwt_request.exs \
   /absolute/path/to/aauth-go/interop/go-jkt-jwt-request.json
 ```
 
-These vectors prove self-issued key delegation and request-key binding. The AP
-enrollment lookup, refresh policy, replay custody, and returned agent token are
-proved separately by the Go bootstrap journey because the bootstrap draft
-deliberately leaves those deployment choices informational.
+The active Go vector proves self-issued key delegation and request-key binding
+inside this implementation. It is not a cross-language interoperability claim.
+The AP enrollment lookup, refresh policy, replay custody, and returned agent
+token are proved separately by the Go bootstrap journey because the bootstrap
+draft deliberately leaves those deployment choices informational.

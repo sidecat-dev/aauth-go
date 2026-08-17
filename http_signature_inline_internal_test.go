@@ -114,7 +114,7 @@ func TestJKTJWTRefusesInvalidProtectedMaterial(t *testing.T) {
 	})
 }
 
-func TestVerifyRequestClassifiesUnsupportedJWTAlgorithmAsInvalidJWT(t *testing.T) {
+func TestVerifyRequestClassifiesUnsupportedJWTAlgorithm(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -146,8 +146,9 @@ func TestVerifyRequestClassifiesUnsupportedJWTAlgorithmAsInvalidJWT(t *testing.T
 	})
 	var signatureError *SignatureError
 	if !errors.As(err, &signatureError) ||
-		signatureError.Code != SignatureErrorInvalidJWT ||
-		len(signatureError.SupportedAlgorithms) != 0 {
+		signatureError.Code != SignatureErrorUnsupportedAlgorithm ||
+		len(signatureError.AcceptedAlgorithms) != 1 ||
+		signatureError.AcceptedAlgorithms[0] != Ed25519Algorithm {
 		t.Fatalf("unsupported token algorithm error = %v (%#v)", err, signatureError)
 	}
 }

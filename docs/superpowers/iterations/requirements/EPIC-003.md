@@ -1,5 +1,12 @@
 # EPIC-003 — Events public subscription lifecycle
 
+> **Historical epic overlay (2026-08-17):** This completed M5 record preserves
+> the Events draft-00 scenario body, but its `EdDSA` emission statement is not
+> current executable evidence. The active shared token signer now emits only
+> `Ed25519` and rejects polymorphic `EdDSA`; the Events topology and lifecycle
+> evidence remains historical/shared, while draft-11 topology migration is
+> explicitly deferred.
+
 **Summary:** Register one public subscription, durably accept one payload-free
 resource event, and deliver it once to the correct agent context.
 **Stories:** STORY-0008 through STORY-0017
@@ -50,7 +57,8 @@ needed to authenticate later delivery
 - AC-2: The AP-signed `aa-subscribe+jwt` has exact `iss`,
   `dwk=aauth-agent.json`, `sub`, resource `aud`, agent `cnf.jwk`, `eid`, `iat`,
   future `exp`, and `max_uses: 1`; `alg=none` is refused and the selected
-  implementation emits EdDSA. Generic token decoding preserves absent or
+  implementation historically emitted EdDSA (superseded: active emission is
+  `Ed25519`). Generic token decoding preserves absent or
   other positive values, but this single-shot host refuses them before
   authority creation. · impact:`journey` · seam:`e2e` ·
   scenario:`SCENARIO-0013`

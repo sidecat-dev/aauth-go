@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dunglas/httpsfv"
 )
 
 type selfJWTLocator struct {
@@ -129,7 +131,7 @@ func SignRequestWithSelfJWT(
 	if err != nil {
 		return fmt.Errorf("aauth: self-jwt: %w", err)
 	}
-	if header.Algorithm != "EdDSA" || header.KeyID == "" || header.KeyID != key.ID() {
+	if header.Algorithm != Ed25519Algorithm || header.KeyID == "" || header.KeyID != key.ID() {
 		return errors.New("aauth: self-jwt signing key does not match the token header")
 	}
 	if err := verifyTokenSignatureWithKey(signingInput, signature, key.PublicJWK()); err != nil {
@@ -181,7 +183,8 @@ func SignRequestWithHWK(request *http.Request, key SigningKey, clock Clock) erro
 	}
 	header := `sig=hwk;kty=` + strconv.Quote(public.Kty) +
 		`;crv=` + strconv.Quote(public.Crv) +
-		`;x=` + strconv.Quote(public.X)
+		`;x=` + strconv.Quote(public.X) +
+		`;alg=` + strconv.Quote(public.Alg)
 	return signRequestWithSignatureKey(request, key, header, clock, SignRequestOptions{})
 }
 
@@ -332,8 +335,8 @@ func VerifyRequest(
 
 	signatureHeader := request.Header.Get("Signature")
 	signatureInputHeader := request.Header.Get("Signature-Input")
-	signatureKeyHeader := request.Header.Get("Signature-Key")
-	if signatureHeader == "" || signatureInputHeader == "" || signatureKeyHeader == "" {
+	signatureKeyHeaders := request.Header.Values("Signature-Key")
+	if signatureHeader == "" || signatureInputHeader == "" || len(signatureKeyHeaders) == 0 {
 		// The generic Signature-Key draft groups absent proof headers under
 		// invalid_signature. The AAuth core profile explicitly overrides that
 		// classification: its verification step 1 requires invalid_request
@@ -391,16 +394,33 @@ func VerifyRequest(
 		)
 	}
 
-	signatureKey, err := parseSignatureKey(signatureKeyHeader)
+	signatureKey, err := parseSignatureKey(signatureKeyHeaders)
 	if err != nil {
+		var unsupportedScheme *unsupportedSignatureKeySchemeError
+		if errors.As(err, &unsupportedScheme) {
+			return verified, &SignatureError{
+				Code:            SignatureErrorUnsupportedScheme,
+				AcceptedSchemes: acceptedSignatureKeyTypes(options),
+				Cause:           err,
+			}
+		}
+		var missingAlgorithm *missingSignatureKeyAlgorithmError
+		if errors.As(err, &missingAlgorithm) {
+			return verified, &SignatureError{
+				Code:               SignatureErrorUnsupportedAlgorithm,
+				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				Cause:              err,
+			}
+		}
 		return verified, newSignatureError(SignatureErrorInvalidKey, err)
 	}
-	allowedSignatureKeyTypes := options.AllowedSignatureKeyTypes
-	if len(allowedSignatureKeyTypes) == 0 {
-		allowedSignatureKeyTypes = []string{SignatureKeyJWT}
-	}
+	allowedSignatureKeyTypes := acceptedSignatureKeyTypes(options)
 	if !contains(allowedSignatureKeyTypes, signatureKey.scheme) {
-		return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key type %q is not accepted", signatureKey.scheme))
+		return verified, &SignatureError{
+			Code:            SignatureErrorUnsupportedScheme,
+			AcceptedSchemes: allowedSignatureKeyTypes,
+			Cause:           fmt.Errorf("aauth: Signature-Key type %q is not accepted", signatureKey.scheme),
+		}
 	}
 	verified.SignatureKeyType = signatureKey.scheme
 
@@ -486,6 +506,14 @@ func VerifyRequest(
 			Kty: signatureKey.parameters["kty"],
 			Crv: signatureKey.parameters["crv"],
 			X:   signatureKey.parameters["x"],
+			Alg: signatureKey.parameters["alg"],
+		}
+		if inline.Alg != Ed25519Algorithm {
+			return verified, &SignatureError{
+				Code:               SignatureErrorUnsupportedAlgorithm,
+				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				Cause:              fmt.Errorf("aauth: unsupported hwk algorithm %q", inline.Alg),
+			}
 		}
 		if _, err := inline.PublicKey(); err != nil {
 			return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key hwk: %w", err))
@@ -528,8 +556,12 @@ func VerifyRequest(
 		if header.Algorithm == "none" {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: alg none is forbidden"))
 		}
-		if header.Algorithm != "EdDSA" {
-			return verified, newSignatureError(SignatureErrorInvalidJWT, &unsupportedTokenAlgorithmError{algorithm: header.Algorithm})
+		if header.Algorithm != Ed25519Algorithm {
+			return verified, &SignatureError{
+				Code:               SignatureErrorUnsupportedAlgorithm,
+				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				Cause:              &unsupportedTokenAlgorithmError{algorithm: header.Algorithm},
+			}
 		}
 		if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
@@ -580,14 +612,14 @@ func VerifyRequest(
 	}
 	publicKey, err := verified.PublicKey.PublicKey()
 	if err != nil {
-		if verified.PublicKey.Alg != "" && verified.PublicKey.Alg != "EdDSA" {
-			return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, SupportedAlgorithms: []string{"ed25519"}, Cause: err}
+		if verified.PublicKey.Alg != Ed25519Algorithm {
+			return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{Ed25519Algorithm}, Cause: err}
 		}
 		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidKey, err)
 	}
 	ed25519Key, ok := publicKey.(ed25519.PublicKey)
 	if !ok {
-		return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, SupportedAlgorithms: []string{"ed25519"}, Cause: errors.New("aauth: request confirmation key is not Ed25519")}
+		return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{Ed25519Algorithm}, Cause: errors.New("aauth: request confirmation key is not Ed25519")}
 	}
 	if !ed25519.Verify(ed25519Key, []byte(base), signature) {
 		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, errors.New("aauth: HTTP message signature is invalid"))
@@ -824,6 +856,18 @@ func classifyJWTVerificationError(err error) error {
 		switch resolutionError.Code {
 		case KeyResolutionUnknown:
 			return newSignatureError(SignatureErrorUnknownKey, err)
+		case KeyResolutionInvalid:
+			return newSignatureError(SignatureErrorInvalidKey, err)
+		case KeyResolutionIssuerMissing:
+			return newSignatureError(SignatureErrorIssuerMissing, err)
+		case KeyResolutionIssuerMismatch:
+			return newSignatureError(SignatureErrorIssuerMismatch, err)
+		case KeyResolutionUnsupportedAlgorithm:
+			return &SignatureError{
+				Code:               SignatureErrorUnsupportedAlgorithm,
+				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				Cause:              err,
+			}
 		case KeyResolutionDenied, KeyResolutionUnavailable:
 			return err
 		}
@@ -835,6 +879,14 @@ func classifyJWTVerificationError(err error) error {
 			return newSignatureError(SignatureErrorExpiredJWT, err)
 		case TokenValidationInvalidKey:
 			return newSignatureError(SignatureErrorInvalidKey, err)
+		}
+	}
+	var unsupportedAlgorithm *unsupportedTokenAlgorithmError
+	if errors.As(err, &unsupportedAlgorithm) {
+		return &SignatureError{
+			Code:               SignatureErrorUnsupportedAlgorithm,
+			AcceptedAlgorithms: []string{Ed25519Algorithm},
+			Cause:              err,
 		}
 	}
 	return newSignatureError(SignatureErrorInvalidJWT, err)
@@ -850,6 +902,16 @@ func classifyJWKSURIResolutionError(err error) error {
 		return newSignatureError(SignatureErrorUnknownKey, err)
 	case KeyResolutionInvalid:
 		return newSignatureError(SignatureErrorInvalidKey, err)
+	case KeyResolutionIssuerMissing:
+		return newSignatureError(SignatureErrorIssuerMissing, err)
+	case KeyResolutionIssuerMismatch:
+		return newSignatureError(SignatureErrorIssuerMismatch, err)
+	case KeyResolutionUnsupportedAlgorithm:
+		return &SignatureError{
+			Code:               SignatureErrorUnsupportedAlgorithm,
+			AcceptedAlgorithms: []string{Ed25519Algorithm},
+			Cause:              err,
+		}
 	case KeyResolutionDenied, KeyResolutionUnavailable:
 		return err
 	default:
@@ -862,62 +924,58 @@ type parsedSignatureKey struct {
 	parameters map[string]string
 }
 
-func parseSignatureKey(header string) (parsedSignatureKey, error) {
+type unsupportedSignatureKeySchemeError struct{ scheme string }
+
+func (err *unsupportedSignatureKeySchemeError) Error() string {
+	return fmt.Sprintf("aauth: unsupported Signature-Key scheme %q", err.scheme)
+}
+
+type missingSignatureKeyAlgorithmError struct{ scheme string }
+
+func (err *missingSignatureKeyAlgorithmError) Error() string {
+	return fmt.Sprintf("aauth: Signature-Key %s requires alg", err.scheme)
+}
+
+func parseSignatureKey(values []string) (parsedSignatureKey, error) {
 	var parsed parsedSignatureKey
-	if !strings.HasPrefix(header, "sig=") {
+	dictionary, err := httpsfv.UnmarshalDictionary(values)
+	if err != nil {
+		return parsed, fmt.Errorf("aauth: parse Signature-Key: %w", err)
+	}
+	member, ok := dictionary.Get("sig")
+	if !ok {
 		return parsed, errors.New("aauth: Signature-Key must contain the sig label")
 	}
-	remainder := strings.TrimPrefix(header, "sig=")
-	schemeEnd := strings.IndexByte(remainder, ';')
-	if schemeEnd < 1 {
-		return parsed, errors.New("aauth: Signature-Key scheme or parameters are missing")
+	item, ok := member.(httpsfv.Item)
+	if !ok {
+		return parsed, errors.New("aauth: Signature-Key sig member must be an Item")
 	}
-	parsed.scheme = remainder[:schemeEnd]
+	scheme, ok := item.Value.(httpsfv.Token)
+	if !ok || scheme == "" {
+		return parsed, errors.New("aauth: Signature-Key scheme must be a token")
+	}
+	parsed.scheme = string(scheme)
 	parsed.parameters = make(map[string]string)
-	remainder = remainder[schemeEnd:]
-	for remainder != "" {
-		if remainder[0] != ';' {
-			return parsedSignatureKey{}, errors.New("aauth: Signature-Key parameter separator is invalid")
-		}
-		remainder = strings.TrimLeft(remainder[1:], " \t")
-		equals := strings.IndexByte(remainder, '=')
-		if equals <= 0 {
-			return parsedSignatureKey{}, errors.New("aauth: Signature-Key parameter is invalid")
-		}
-		name := remainder[:equals]
-		remainder = remainder[equals+1:]
-		if _, exists := parsed.parameters[name]; exists {
-			return parsedSignatureKey{}, fmt.Errorf("aauth: duplicate Signature-Key parameter %q", name)
-		}
-		if remainder == "" || remainder[0] != '"' {
-			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q must be a string", name)
-		}
-		endQuote := 1
-		for endQuote < len(remainder) {
-			if remainder[endQuote] == '"' && remainder[endQuote-1] != '\\' {
-				break
-			}
-			endQuote++
-		}
-		if endQuote >= len(remainder) {
-			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q is unterminated", name)
-		}
-		value, err := strconv.Unquote(remainder[:endQuote+1])
-		if err != nil || value == "" {
-			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q is invalid", name)
-		}
-		parsed.parameters[name] = value
-		remainder = remainder[endQuote+1:]
-	}
 	required := map[string][]string{
 		SignatureKeyJWT:     {"jwt"},
 		SignatureKeyJWKSURI: {"id", "dwk", "kid"},
-		SignatureKeyHWK:     {"kty", "crv", "x"},
+		SignatureKeyHWK:     {"kty", "crv", "x", "alg"},
 		SignatureKeyJKTJWT:  {"jwt"},
 		SignatureKeySelfJWT: {"jwt"},
 	}[parsed.scheme]
 	if required == nil {
-		return parsedSignatureKey{}, fmt.Errorf("aauth: unsupported Signature-Key scheme %q", parsed.scheme)
+		return parsedSignatureKey{}, &unsupportedSignatureKeySchemeError{scheme: parsed.scheme}
+	}
+	for _, name := range item.Params.Names() {
+		value, _ := item.Params.Get(name)
+		stringValue, ok := value.(string)
+		if !ok || stringValue == "" {
+			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q must be a non-empty string", name)
+		}
+		parsed.parameters[name] = stringValue
+	}
+	if parsed.scheme == SignatureKeyHWK && parsed.parameters["alg"] == "" {
+		return parsedSignatureKey{}, &missingSignatureKeyAlgorithmError{scheme: parsed.scheme}
 	}
 	if len(parsed.parameters) != len(required) {
 		return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key %s has unexpected parameters", parsed.scheme)
@@ -928,6 +986,13 @@ func parseSignatureKey(header string) (parsedSignatureKey, error) {
 		}
 	}
 	return parsed, nil
+}
+
+func acceptedSignatureKeyTypes(options VerifyRequestOptions) []string {
+	if len(options.AllowedSignatureKeyTypes) == 0 {
+		return []string{SignatureKeyJWT}
+	}
+	return append([]string(nil), options.AllowedSignatureKeyTypes...)
 }
 
 func parseSignature(header string) ([]byte, error) {

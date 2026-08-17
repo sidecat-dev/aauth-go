@@ -60,7 +60,7 @@ type elixirJKTJWTRequestFixture struct {
 	} `json:"request"`
 }
 
-func TestElixirSignedAgentRequestVerifiesInGo(t *testing.T) {
+func TestLegacyDraft06ElixirAgentRequestIsRetainedButRejected(t *testing.T) {
 	fixture := loadElixirRequestFixture(t)
 	request := elixirFixtureRequest(t, fixture)
 	resolver := aauth.StaticKeyResolver{
@@ -72,7 +72,7 @@ func TestElixirSignedAgentRequestVerifiesInGo(t *testing.T) {
 		return time.Unix(fixture.Now, 0)
 	})
 
-	verified, err := aauth.VerifyRequest(
+	_, err := aauth.VerifyRequest(
 		context.Background(),
 		request,
 		resolver,
@@ -82,23 +82,10 @@ func TestElixirSignedAgentRequestVerifiesInGo(t *testing.T) {
 			AllowedCredentialTypes: []string{aauth.AgentTokenType},
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if verified.SignatureKeyType != aauth.SignatureKeyJWT ||
-		verified.Agent != fixture.Expected.Agent ||
-		verified.AgentToken == nil ||
-		verified.AgentToken.Issuer != fixture.Issuer ||
-		verified.AgentToken.PersonServer != fixture.Expected.PersonServer ||
-		!verified.PublicKey.Equal(fixture.Expected.AgentKey) {
-		t.Fatalf("verified Elixir request = %#v", verified)
-	}
-	mission, err := aauth.ParseMissionHeader(request.Header.Get("AAuth-Mission"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mission != fixture.Expected.Mission {
-		t.Fatalf("mission = %#v, want %#v", mission, fixture.Expected.Mission)
+	var signatureError *aauth.SignatureError
+	if !errors.As(err, &signatureError) ||
+		signatureError.Code != aauth.SignatureErrorUnsupportedAlgorithm {
+		t.Fatalf("legacy draft-06 fixture error = %v, want unsupported_algorithm", err)
 	}
 }
 
@@ -151,7 +138,7 @@ func TestElixirSignedAgentRequestRefusesWireMutation(t *testing.T) {
 	})
 }
 
-func TestElixirJKTJWTRequestVerifiesInGo(t *testing.T) {
+func TestLegacyDraft06ElixirJKTJWTRequestIsRetainedButRejected(t *testing.T) {
 	body, err := os.ReadFile(elixirJKTJWTRequestVector)
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +172,7 @@ func TestElixirJKTJWTRequestVerifiesInGo(t *testing.T) {
 	clock := aauth.ClockFunc(func() time.Time {
 		return time.Unix(fixture.Now, 0)
 	})
-	verified, err := aauth.VerifyRequest(
+	_, err = aauth.VerifyRequest(
 		context.Background(),
 		request,
 		nil,
@@ -194,13 +181,10 @@ func TestElixirJKTJWTRequestVerifiesInGo(t *testing.T) {
 			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJKTJWT},
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if verified.Signer != fixture.Expected.Identity ||
-		!verified.IdentityKey.Equal(fixture.Expected.IdentityKey) ||
-		!verified.PublicKey.Equal(fixture.Expected.RequestKey) {
-		t.Fatalf("verified Elixir jkt-jwt request = %#v", verified)
+	var signatureError *aauth.SignatureError
+	if !errors.As(err, &signatureError) ||
+		signatureError.Code != aauth.SignatureErrorUnsupportedAlgorithm {
+		t.Fatalf("legacy draft-06 jkt-jwt error = %v, want unsupported_algorithm", err)
 	}
 
 	mutated := request.Clone(context.Background())

@@ -1,5 +1,13 @@
 # EPIC-002 — Portable Signature-Key self-jwt
 
+> **Historical epic overlay (2026-08-17):** The `2/2 done` status and source
+> references below are preserved evidence for Signature-Key draft-06. They do
+> not assert current draft-08 wire conformance. The self-JWT dual-proof shape
+> remains shared, but all `EdDSA` algorithm language is superseded by the
+> active requirement for fully specified `Ed25519`, required JWK `alg`, typed
+> `unsupported_algorithm`, and issuer binding. Current draft-08 coverage lives
+> under `signature-key-wire-target` in the source-coverage manifest.
+
 **Summary:** Verify a self-issued JWT and its HTTP Message Signature with one
 admitted issuer key, and produce the same portable proof without an
 Events-specific verifier.
@@ -45,7 +53,8 @@ the same discoverable issuer key
   scenario:`SCENARIO-0010`
   - Proof: accepted and excessive-lifetime tokens traverse the same verifier;
     public documentation distinguishes scheme requirements, Events
-    requirements, and the selected EdDSA implementation profile.
+    requirements, and the selected EdDSA implementation profile (historical
+    draft-06 evidence; superseded by active `Ed25519`).
 
 **Sources:** Signature-Key lines 660-721, 1271-1276
 
@@ -103,5 +112,7 @@ or unbounded trust state
   scheme. AAuth-Go validates every JWT lifetime before discovery and reuses its
   already bounded HTTP metadata/JWKS resolver; it does not create a second
   self-jwt trust cache or claim a source-defined rotation algorithm.
-- Ed25519/EdDSA is the portable implemented algorithm. The draft recommends
-  EdDSA but does not make it the only permitted algorithm.
+- Historical draft-06 disposition: Ed25519/EdDSA was the portable implemented
+  algorithm, and that draft recommended EdDSA without making it exclusive.
+  Active draft-08 behavior instead requires and exclusively implements the
+  fully specified `Ed25519` identifier.

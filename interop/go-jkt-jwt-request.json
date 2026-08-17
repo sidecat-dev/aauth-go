@@ -11,7 +11,7 @@
       "kty": "OKP",
       "crv": "Ed25519",
       "x": "rwaj4ykXFOTzVsGcmxXNGVHsbmZiqne-B1R_KJODNB0",
-      "alg": "EdDSA",
+      "alg": "Ed25519",
       "kid": "go-durable-key",
       "use": "sig"
     },
@@ -19,7 +19,7 @@
       "kty": "OKP",
       "crv": "Ed25519",
       "x": "iyN9eI6Oqu9VDG0SWCP6RfH9X8KbLIi9-HERlHH8ExI",
-      "alg": "EdDSA",
+      "alg": "Ed25519",
       "kid": "go-ephemeral-key",
       "use": "sig"
     }
@@ -28,9 +28,9 @@
     "method": "POST",
     "url": "https://provider.example/refresh",
     "headers": {
-      "Signature": "sig=:x0F+wDB41BGK5k0T6FdKqhFmr3uEyW5aCv7Gxw/yoI8ahZKpJdjGJ1h7+DyIaD6QcxKDZQNgePdlD9QILg4PAQ==:",
+      "Signature": "sig=:eB25IXBe9Uk1MgPwa7P08ait15/AajifzWZDody5+eczSVoaHGktgEjwhfWKTgY95NpWgibtYaOPjy97V0a/Bg==:",
       "Signature-Input": "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=2000000100",
-      "Signature-Key": "sig=jkt-jwt;jwt=\"eyJhbGciOiJFZERTQSIsInR5cCI6ImprdC1zMjU2K2p3dCIsImp3ayI6eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5IiwieCI6InJ3YWo0eWtYRk9UelZzR2NteFhOR1ZIc2JtWmlxbmUtQjFSX0tKT0ROQjAiLCJhbGciOiJFZERTQSIsImtpZCI6ImdvLWR1cmFibGUta2V5IiwidXNlIjoic2lnIn19.eyJpc3MiOiJ1cm46amt0OnNoYS0yNTY6QlZVczREby1fNGRhM1hVbHRlSno3ZFZfWWRPQXRLM3NRcDE4NWwyai1NWSIsImlhdCI6MjAwMDAwMDEwMCwiZXhwIjoyMDAwMDAwNDAwLCJjbmYiOnsiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiaXlOOWVJNk9xdTlWREcwU1dDUDZSZkg5WDhLYkxJaTktSEVSbEhIOEV4SSIsImFsZyI6IkVkRFNBIiwia2lkIjoiZ28tZXBoZW1lcmFsLWtleSIsInVzZSI6InNpZyJ9fX0.EFXCHc9fQORUvHhwubQMVOLqHSBD6zRhsN290HEq38_kRD2zkuBm3xZ0wP4QSJ2Kr1un0_0rWx4a7gHbvFK6Bg\""
+      "Signature-Key": "sig=jkt-jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiamt0LXMyNTYrand0IiwiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoicndhajR5a1hGT1R6VnNHY214WE5HVkhzYm1aaXFuZS1CMVJfS0pPRE5CMCIsImFsZyI6IkVkMjU1MTkiLCJraWQiOiJnby1kdXJhYmxlLWtleSIsInVzZSI6InNpZyJ9fQ.eyJpc3MiOiJ1cm46amt0OnNoYS0yNTY6QlZVczREby1fNGRhM1hVbHRlSno3ZFZfWWRPQXRLM3NRcDE4NWwyai1NWSIsImlhdCI6MjAwMDAwMDEwMCwiZXhwIjoyMDAwMDAwNDAwLCJjbmYiOnsiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiaXlOOWVJNk9xdTlWREcwU1dDUDZSZkg5WDhLYkxJaTktSEVSbEhIOEV4SSIsImFsZyI6IkVkMjU1MTkiLCJraWQiOiJnby1lcGhlbWVyYWwta2V5IiwidXNlIjoic2lnIn19fQ.w61CpW0MAKtpgxpYZPXucxS60Gln5UR6k4UqxIXvPpl-n7WPvUbqyv_WFPXeFn3p6tVYhQvbj51wK1TCG44ZDw\""
     }
   }
 }

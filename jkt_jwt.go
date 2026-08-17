@@ -59,7 +59,7 @@ func MintJKTJWT(
 		return "", fmt.Errorf("aauth: jkt-jwt identity key: %w", err)
 	}
 	headerBytes, err := json.Marshal(jktJWTHeader{
-		Algorithm: "EdDSA",
+		Algorithm: Ed25519Algorithm,
 		Type:      JKTJWTTypeSHA256,
 		JWK:       identityJWK,
 	})
@@ -108,8 +108,8 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 	if header.Algorithm == "none" {
 		return verified, errors.New("aauth: jkt-jwt alg none is forbidden")
 	}
-	if header.Algorithm != "EdDSA" {
-		return verified, fmt.Errorf("aauth: unsupported jkt-jwt algorithm %q", header.Algorithm)
+	if header.Algorithm != Ed25519Algorithm {
+		return verified, &unsupportedTokenAlgorithmError{algorithm: header.Algorithm}
 	}
 	identityPublic, err := header.JWK.PublicKey()
 	if err != nil {

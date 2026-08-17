@@ -265,7 +265,7 @@ The profile is strict JSON with this shape:
         "kty": "OKP",
         "crv": "Ed25519",
         "x": "<base64url public key>",
-        "alg": "EdDSA",
+        "alg": "Ed25519",
         "kid": "ap-key-1"
       }
     ]
@@ -314,23 +314,23 @@ and durable governance remain usable.
 
 The repository carries a generated [source coverage report](SOURCE-COVERAGE.md)
 and the machine-readable manifest and section inventory that produce it. The
-manifest pins the exact bytes and revisions of the six maintained source
+manifest pins the exact bytes and revisions of eight maintained source
 documents, and the pinned bytes themselves are retained in
 `internal/sourcecoverage/sources/`, so every digest resolves from a fresh
 clone. Each positive claim names a Go test; explicit omissions remain
 unsupported or unclaimed instead of being inferred from nearby work.
 
-The implemented profile is the pinned draft family named in the report:
-protocol `draft-hardt-oauth-aauth-protocol-09`, Signature-Key
-`draft-hardt-httpbis-signature-key-06`, R3 `draft-hardt-aauth-r3-01`, Events
-`draft-hardt-aauth-events-00`, and Bootstrap `draft-hardt-aauth-bootstrap-01`.
-The five Markdown sources are the editor sources at the upstream commits named
-in the report; the Signature-Key document is the editor's rendered publication
-snapshot (its source repository tags that commit `-07` while the rendered
-artifact identifies itself as `-06`). Upstream drafts have continued to evolve
-past this pinned family; migrating tracks upstream as deliberate, reviewed
-work, and until a newer family is pinned this repository intentionally
-implements the profile above.
+The implemented profile is transitional and is named precisely in the report.
+Active JWT, JWK, HTTP-signature algorithm, negotiation, and issuer-metadata
+surfaces implement Protocol draft-11 and Signature-Key draft-08: keys carry
+`alg: Ed25519`, `hwk` requires the same fully specified parameter, and
+authentication failures use `Accept-Signature-Alg` and
+`Accept-Signature-Scheme`. The draft-09/06/01 source family remains pinned as
+historical custody for token topology, missions, journeys, R3, Events, and
+Bootstrap behavior that has not yet migrated. The exact draft-11 and draft-08
+editor sources are retained alongside that baseline. The report does not claim
+the draft-11 person-token topology, mission/chaining migration, or R3 draft-02
+semantics.
 
 Verify the source digests, complete heading inventory, evidence test names,
 and embedded coverage contract with:
@@ -359,11 +359,12 @@ certification and not an upstream submission.
 ## Retained Elixir-origin interoperability fixtures
 
 The repository retains [historical wire fixtures](interop/README.md) attributed
-to an earlier Elixir prototype. Go tests verify those exact bytes and their
-mutation controls, but the current maintenance run has not re-executed the
-Elixir generator or reciprocal verifier. The fixtures therefore are useful
-code-archeology inputs and static Go verification cases, not current evidence
-of a running peer implementation.
+to an earlier Elixir prototype. Those exact compact JWS bytes use the now
+prohibited polymorphic `EdDSA` identifier. Go tests retain and deliberately
+reject them with `unsupported_algorithm`; they are historical compatibility
+boundary evidence, not current evidence of a running peer implementation.
+The active Go-origin fixtures are regenerated with fully specified `Ed25519`
+and execute through the public verifier.
 
 Ordinary Go builds, tests, embedding, and the runnable person server require no
 BEAM installation. Re-running both generators and both independent verifiers
@@ -436,8 +437,10 @@ Missionless direct-AS call chaining, resource-owned interaction chaining,
 interaction/payment relay and callbacks, question delivery,
 updated-request/cancel clarification actions, restart custody for
 token/AS/resource continuations, broader R3 vocabularies and PS proposal use,
-platform enrollment/attestation, x509, and Accept-Signature surfaces still
-require implementation and qualification.
+platform enrollment/attestation, x509, additional Signature-Key schemes, and
+broader challenge-selection behavior still require implementation and
+qualification. The Phase-1 `Accept-Signature-Alg` and
+`Accept-Signature-Scheme` failure envelopes are implemented and qualified.
 Without a configured
 `GovernanceStore`, an embedded reference person server deliberately remains
 process-local. The runnable person profile always configures the file adapter,

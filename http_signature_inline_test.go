@@ -25,7 +25,7 @@ func TestHWKRequestCarriesAndProvesItsInlineEd25519Key(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := request.Header.Get("Signature-Key"),
-		`sig=hwk;kty="OKP";crv="Ed25519";x="`+key.PublicJWK().X+`"`; got != want {
+		`sig=hwk;kty="OKP";crv="Ed25519";x="`+key.PublicJWK().X+`";alg="Ed25519"`; got != want {
 		t.Fatalf("Signature-Key = %q, want %q", got, want)
 	}
 
@@ -173,7 +173,7 @@ func TestJKTJWTSignerRefusesAKeyOtherThanTheDelegatedKey(t *testing.T) {
 	}
 }
 
-func TestHWKRefusesParametersOutsideTheSelectedEd25519Profile(t *testing.T) {
+func TestHWKDuplicateAlgorithmParameterRemainsCoveredByTheSignature(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
@@ -188,7 +188,7 @@ func TestHWKRefusesParametersOutsideTheSelectedEd25519Profile(t *testing.T) {
 	}
 	request.Header.Set(
 		"Signature-Key",
-		request.Header.Get("Signature-Key")+`;alg="EdDSA"`,
+		request.Header.Get("Signature-Key")+`;alg="Ed25519"`,
 	)
 	if _, err := aauth.VerifyRequest(
 		context.Background(),
@@ -198,8 +198,8 @@ func TestHWKRefusesParametersOutsideTheSelectedEd25519Profile(t *testing.T) {
 		aauth.VerifyRequestOptions{
 			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyHWK},
 		},
-	); err == nil || !strings.Contains(err.Error(), "unexpected parameters") {
-		t.Fatalf("hwk alg-parameter error = %v", err)
+	); err == nil || !strings.Contains(err.Error(), "HTTP message signature is invalid") {
+		t.Fatalf("hwk covered duplicate alg-parameter error = %v", err)
 	}
 }
 

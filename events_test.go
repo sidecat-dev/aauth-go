@@ -86,7 +86,7 @@ func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
 		test := test
 		t.Run("subscribe "+test.name, func(t *testing.T) {
 			t.Parallel()
-			mutated := mintRawToken(t, issuerKey, TokenHeader{Algorithm: "EdDSA", Type: test.typ, KeyID: issuerKey.ID()}, test.claims)
+			mutated := mintRawToken(t, issuerKey, TokenHeader{Algorithm: "Ed25519", Type: test.typ, KeyID: issuerKey.ID()}, test.claims)
 			if _, err := VerifySubscribeToken(context.Background(), mutated, resolver, clock); err == nil {
 				t.Fatalf("VerifySubscribeToken accepted %s", test.name)
 			}
@@ -120,8 +120,8 @@ func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
 		header TokenHeader
 		claims map[string]any
 	}{
-		{name: "wrong type", header: TokenHeader{Algorithm: "EdDSA", Type: SubscribeTokenType, KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
-		{name: "absent type", header: TokenHeader{Algorithm: "EdDSA", KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
+		{name: "wrong type", header: TokenHeader{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
+		{name: "absent type", header: TokenHeader{Algorithm: "Ed25519", KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
 		{name: "wrong discovery document", header: validEvent.Header, claims: mutateClaim(eventClaimsMap(event), "dwk", AgentDiscoveryDocument)},
 		{name: "absent issued time", header: validEvent.Header, claims: mutateClaim(eventClaimsMap(event), "iat", nil)},
 		{name: "malformed issued time", header: validEvent.Header, claims: mutateClaim(eventClaimsMap(event), "iat", "now")},

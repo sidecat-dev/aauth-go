@@ -2,17 +2,17 @@
 
 This generated source coverage is not a full-conformance claim. It binds the implementation's explicit claims and omissions to pinned source bytes and executable Go evidence.
 
-Profile: AAuth Go pinned-draft profile: draft-hardt-oauth-aauth-protocol-09, draft-hardt-httpbis-signature-key-06, draft-hardt-aauth-r3-01, draft-hardt-aauth-events-00, draft-hardt-aauth-bootstrap-01
+Profile: AAuth Go transition profile: retained draft-hardt-oauth-aauth-protocol-09, draft-hardt-httpbis-signature-key-06, draft-hardt-aauth-r3-01, draft-hardt-aauth-events-00, draft-hardt-aauth-bootstrap-01, and interop-demo-profile; Phase-1 Ed25519 wire migration from draft-hardt-oauth-aauth-protocol-11 and draft-hardt-httpbis-signature-key-08; later token-topology phases unclaimed
 
 ## Summary
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 54 |
-| Partial | 35 |
-| Unsupported | 7 |
+| Exercised | 56 |
+| Partial | 41 |
+| Unsupported | 11 |
 | Informational | 0 |
-| Unclaimed | 369 |
+| Unclaimed | 695 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,12 +20,14 @@ Profile: AAuth Go pinned-draft profile: draft-hardt-oauth-aauth-protocol-09, dra
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 43 | 17 | 3 | 0 | 165 |
-| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 5 | 4 | 2 | 0 | 62 |
+| `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 38 | 21 | 4 | 0 | 165 |
+| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 2 | 4 | 5 | 0 | 62 |
 | `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 5 | 0 | 0 | 44 |
 | `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 7 | 0 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 1 | 2 | 2 | 0 | 38 |
 | `interop-profile` | interop-demo-profile at AAuth b414033d4c81224034b5b419216ae06706ede660 | `a9eb24420b2c0a4176833a67e1ce8c55c007e65d567bcd3f076426cba8643cca` | 5 | 0 | 0 | 0 | 3 |
+| `core-wire-target` | draft-hardt-oauth-aauth-protocol-11 at AAuth 932bc6cead9fca13fa60b085339038a548425d88 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 2 | 1 | 0 | 0 | 253 |
+| `signature-key-wire-target` | draft-hardt-httpbis-signature-key-08 at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 1 | 0 | 0 | 73 |
 
 ## Explicit section dispositions
 
@@ -72,9 +74,9 @@ Evidence:
 
 - `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
 
-### `core/agent-tokens/agent-token-structure` — Exercised
+### `core/agent-tokens/agent-token-structure` — Partial
 
-The selected Ed25519-bound agent-token claim profile is minted and consumed on the three-party path.
+The draft-09 agent-token claim topology remains exercised, but its EdDSA wire-algorithm sentence is historical and superseded by core-wire-target/signature-algorithms.
 
 Evidence:
 
@@ -95,7 +97,6 @@ Issuer trust, JWT validity, issuer-domain identity binding, confirmation-key bin
 Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
-- `elixir_interop_test.go:TestElixirSignedAgentRequestVerifiesInGo`
 - `token_identity_internal_test.go:TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain`
 
 ### `core/as-token-endpoint/as-response` — Partial
@@ -146,9 +147,9 @@ Evidence:
 
 - `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
 
-### `core/auth-tokens/auth-token-structure` — Exercised
+### `core/auth-tokens/auth-token-structure` — Partial
 
-The selected auth-token profile carries issuer, audience, agent, key, mission, scope, and lifetime bindings.
+The draft-09 auth-token claim topology remains exercised, but its EdDSA wire-algorithm sentence is historical and superseded by core-wire-target/signature-algorithms.
 
 Evidence:
 
@@ -247,15 +248,9 @@ Evidence:
 - `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
 - `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
 
-### `core/http-message-signatures-profile` — Partial
+### `core/http-message-signatures-profile` — Unsupported
 
-The selected Ed25519 request-signing profile enforces created freshness, optional RFC 9421 expires freshness, required components, and typed verification failures; algorithms and schemes outside that profile remain open.
-
-Evidence:
-
-- `request_security_test.go:TestSignedRequestRejectsBodyMutation`
-- `http_signature_jwks_test.go:TestJWKSURIRequestIdentitySignsAndVerifies`
-- `signature_error_test.go:TestVerifyRequestClassifiesExpiresAndRequiredInputs`
+Historical draft-09 HTTP-signature algorithm and error semantics are superseded and are not current positive coverage; active Phase-1 coverage is recorded against core-wire-target and signature-key-wire-target.
 
 ### `core/identifiers-and-discovery` — Partial
 
@@ -286,9 +281,9 @@ Evidence:
 - `reference/interaction_test.go:TestDecodeInteractionAuthorizationUsesTypeSpecificSuccessShape`
 - `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
 
-### `core/jwks-discovery` — Exercised
+### `core/jwks-discovery` — Partial
 
-Admitted metadata-to-JWKS discovery, bounded caching, refresh throttling, and same-key-id rotation recovery are executable.
+The draft-09 admitted two-hop fetch, caching, refresh throttling, and rotation mechanics remain shared; current exact-kid algorithm validation and issuer binding are covered only by the draft-11/draft-08 targets.
 
 Evidence:
 
@@ -297,7 +292,7 @@ Evidence:
 
 ### `core/metadata-documents` — Partial
 
-The reference provider, person server, resource, and access server publish the metadata needed by supported journeys.
+The draft-09 role metadata shapes remain historical/shared; current mandatory issuer equality and typed issuer failures are covered by core-wire-target/metadata-documents.
 
 Evidence:
 
@@ -497,9 +492,9 @@ Evidence:
 
 - `journey_test.go:TestThreePartyMissionAuthorizationJourney`
 
-### `core/resource-tokens/resource-token/resource-token-structure` — Exercised
+### `core/resource-tokens/resource-token/resource-token-structure` — Partial
 
-The selected resource-token claim profile is minted and carried across the person-server exchange.
+The draft-09 resource-token claim topology remains exercised, but its EdDSA wire-algorithm sentence is historical and superseded by core-wire-target/signature-algorithms.
 
 Evidence:
 
@@ -562,13 +557,38 @@ Evidence:
 - `call_chaining_journey_test.go:TestResourceExtendsAuthorizationToDownstreamResource`
 - `call_chaining_journey_test.go:TestResourceExtendsAuthorizationThroughDownstreamAccessServer`
 
-### `core/verification` — Exercised
+### `core/verification` — Partial
 
-Server verification checks component coverage, digest, freshness, credential and key binding, signature, and replay identity.
+The draft-09 component, digest, freshness, credential-binding, signature, and replay steps remain shared; its EdDSA algorithm and older error mapping are superseded by core-wire-target/verification.
 
 Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsBodyMutation`
+
+### `core-wire-target/metadata-documents` — Exercised
+
+Admitted metadata discovery requires issuer and exact discovery-identity equality, retaining issuer_missing and issuer_mismatch classifications through the HTTP verification boundary.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer`
+- `draft11_wire_test.go:TestDraft08IssuerMetadataFailuresRetainTheirProtocolCodes`
+
+### `core-wire-target/signature-algorithms` — Exercised
+
+Phase 1 emits and validates fully specified Ed25519 on active JWT and JWK surfaces and rejects polymorphic EdDSA; draft-11 token topology remains unclaimed.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
+
+### `core-wire-target/verification` — Partial
+
+Phase 1 maps unsupported algorithms, unsupported schemes, and issuer metadata failures to the draft-11 typed authentication envelope; Phase-2 credential topology is unclaimed.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft08SignatureKeyFailuresAreTypedAndNegotiable`
 
 ### `events/ap-to-agent` — Partial
 
@@ -660,7 +680,6 @@ The mission presentation, signed resource authorization request, and resource-to
 Evidence:
 
 - `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-- `elixir_interop_test.go:TestElixirSignedAgentRequestVerifiesInGo`
 
 ### `interop-profile/aauth-interoperability-demo-profile/surface-3-resource-token-issuance-and-issuer-discovery` — Exercised
 
@@ -757,31 +776,25 @@ Evidence:
 
 ### `signature-key/name-accept-signature-sigkey-par` — Unsupported
 
-Accept-Signature sigkey negotiation is not implemented.
+The draft-06 sigkey Accept-Signature parameter is historical and intentionally not implemented; draft-08 replaced it with Accept-Signature-Scheme and Accept-Signature-Alg.
 
-### `signature-key/name-header-web-key-hwk` — Exercised
+### `signature-key/name-header-web-key-hwk` — Unsupported
 
-The selected OKP/Ed25519 hwk profile carries the exact inline public-key parameters, covers them in the request signature, and verifies without discovery.
+Historical draft-06 hwk forbids alg and is wire-incompatible with the active draft-08 requirement; no current positive coverage is claimed for this section.
 
-Evidence:
+### `signature-key/name-jkt-jwt-self-issued-key-del` — Partial
 
-- `http_signature_inline_test.go:TestHWKRequestCarriesAndProvesItsInlineEd25519Key`
-- `bootstrap_journey_test.go:TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken`
-
-### `signature-key/name-jkt-jwt-self-issued-key-del` — Exercised
-
-The mandatory jkt-s256+jwt Ed25519 profile verifies the durable-key thumbprint identity, self-signature, time, delegated key, and ephemeral-key HTTP proof in both Go and Elixir.
+The draft-06 durable-to-ephemeral delegation and thumbprint mechanics remain shared; its algorithm/JWK shape is historical, retained Elixir bytes are rejected, and current algorithm evidence belongs to signature-key-wire-target.
 
 Evidence:
 
 - `http_signature_inline_test.go:TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey`
 - `http_signature_inline_internal_test.go:TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey`
-- `elixir_interop_test.go:TestElixirJKTJWTRequestVerifiesInGo`
 - `internal/interop/cmd/generate/main_test.go:TestGenerateProducesVerifiableGoJKTJWTRequest`
 
-### `signature-key/name-jwks-uri-discovery-jwks_uri` — Exercised
+### `signature-key/name-jwks-uri-discovery-jwks_uri` — Partial
 
-The supported server identity uses id, discovery-document, and key-id parameters with admitted two-hop metadata and JWKS resolution.
+The draft-06 id/dwk/kid two-hop shape remains shared; issuer equality, exact selected-kid validation, and fully specified algorithm behavior are covered only against signature-key-wire-target.
 
 Evidence:
 
@@ -790,16 +803,15 @@ Evidence:
 
 ### `signature-key/name-jwt-confirmation-key-jwt` — Partial
 
-AAuth agent and auth JWTs supply the confirmation key for the supported signed-request profile; arbitrary JWT profiles are not accepted.
+The draft-06 JWT confirmation-key delegation shape remains shared; its polymorphic/optional algorithm treatment is historical and current algorithm behavior is covered against signature-key-wire-target.
 
 Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
-- `elixir_interop_test.go:TestElixirSignedAgentRequestVerifiesInGo`
 
 ### `signature-key/name-label-consistency` — Exercised
 
-The supported single sig label is bound consistently across Signature-Key, Signature-Input, and Signature.
+Label correlation for the selected sig member is shared by draft-06 and draft-08; current dictionary dispatch is separately evidenced against signature-key-wire-target.
 
 Evidence:
 
@@ -807,7 +819,7 @@ Evidence:
 
 ### `signature-key/name-self-issued-jwt-self-jwt` — Partial
 
-The selected portable self-jwt profile uses the same discovered key to verify both the compact JWT and its HTTP Message Signature, rejects unsafe issuer, discovery, and time claims before application use, and runs under deployment-owned presenter-directed egress policy. Other self-issued JWT profiles are unclaimed.
+The draft-06 self-JWT dual-proof shape in which the same discovered key verifies the token and HTTP signature remains shared; its algorithm and metadata contract is historical and current fully specified algorithm plus issuer behavior is covered against signature-key-wire-target.
 
 Evidence:
 
@@ -815,30 +827,17 @@ Evidence:
 - `http_signature_self_jwt_test.go:TestSelfJWTUsesOneDiscoveredKeyForBothProofs`
 - `discovery_policy_test.go:TestSelfJWTUsesAdmittedHTTPKeyForBothProofs`
 
-### `signature-key/name-signature-error-http-respon` — Partial
+### `signature-key/name-signature-error-http-respon` — Unsupported
 
-The RFC 8941 codec and AAuth reference response path are exercised, including unknown-member tolerance, authoritative header decoding, operational resolution failures, and post-authentication policy denial. The AAuth core and Signature-Key drafts assign different codes to missing proof headers; the AAuth profile follows core invalid_request, so generic Signature-Key response conformance is not claimed.
+The retained draft-06 Signature-Error contract embeds supported_algorithms and is superseded; current error plus separate negotiation-header coverage is recorded against signature-key-wire-target.
 
-Evidence:
+### `signature-key/name-signature-key-http-request-` — Unsupported
 
-- `signature_error_test.go:TestSignatureErrorWireContract`
-- `signature_error_test.go:TestSignatureErrorIgnoresRFC8941UnknownMembers`
-- `reference/signature_error_test.go:TestResourceReportsSignatureFailuresAsSignatureError`
-- `reference/signature_error_test.go:TestResourcePolicyDenialIsNotASignatureFailure`
-
-### `signature-key/name-signature-key-http-request-` — Partial
-
-Signature-Key parsing, signing, and proof binding are implemented for the selected Ed25519 jwt, jwks_uri, hwk, and jkt-jwt profiles; other schemes and multiple signatures are not.
-
-Evidence:
-
-- `http_signature_jwks_test.go:TestJWKSURIRequestIdentitySignsAndVerifies`
-- `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
-- `http_signature_inline_test.go:TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey`
+The retained draft-06 root wire contract is historical and not current positive coverage; active RFC 8941 dictionary dispatch and fully specified algorithms are covered by signature-key-wire-target.
 
 ### `signature-key/name-signature-key-integrity` — Exercised
 
-Signature-Key is a mandatory covered component, so changing the selected key reference invalidates the HTTP signature.
+Signature-Key coverage and substitution resistance are shared across draft-06 and draft-08; active parser and algorithm semantics are evidenced against signature-key-wire-target.
 
 Evidence:
 
@@ -847,3 +846,81 @@ Evidence:
 ### `signature-key/name-x509-certificates-x509` — Unsupported
 
 The x509 scheme is not implemented.
+
+### `signature-key-wire-target/accept-signature-scheme-and-accept-signature-alg-response-headers` — Exercised
+
+Signature failures carry accepted algorithms and schemes in separate Accept-Signature-Alg and Accept-Signature-Scheme headers, never in supported_algorithms.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft08SignatureKeyFailuresAreTypedAndNegotiable`
+- `reference/draft11_wire_internal_test.go:TestSignatureFailureEmitsDraft08NegotiationHeaders`
+
+### `signature-key-wire-target/algorithm-determination` — Exercised
+
+Every active conveyed Ed25519 JWK requires alg=Ed25519; missing, polymorphic, or structurally inconsistent keys are rejected.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
+
+### `signature-key-wire-target/issuer_mismatch` — Exercised
+
+Metadata whose issuer differs from its discovery identity is rejected with issuer_mismatch from discovery through request verification.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer`
+
+### `signature-key-wire-target/issuer_missing` — Exercised
+
+Metadata without issuer is rejected with issuer_missing from discovery through request verification.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer`
+
+### `signature-key-wire-target/jwks-uri-scheme` — Exercised
+
+JWKS URI resolution selects the exact requested kid before validating only that JWK, so unrelated future or malformed siblings do not deny a valid selected Ed25519 key; selected unsupported algorithms retain the negotiable unsupported_algorithm envelope.
+
+Evidence:
+
+- `draft08_discovery_test.go:TestDraft08JWKSValidatesOnlyTheExactRequestedKid`
+- `draft08_discovery_test.go:TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope`
+
+### `signature-key-wire-target/signature-key-http-request-header` — Partial
+
+The active verifier parses Signature-Key as an RFC 8941 Dictionary, selects the sig Item and Token before dispatch, combines field lines, ignores unselected members, rejects non-string known-scheme parameters and non-RFC string escapes, and supports the selected single-signature schemes; general multiple-signature verification remains unclaimed.
+
+Evidence:
+
+- `signature_key_structured_internal_test.go:TestSignatureKeyUsesRFC8941DictionarySelection`
+- `signature_key_structured_internal_test.go:TestSignatureKeyAcceptsOnlyRFC8941StringEscapes`
+- `signature_key_structured_internal_test.go:TestSignatureKeyRejectsMalformedStructuredMembers`
+- `signature_key_structured_internal_test.go:TestSignatureKeySplitFieldLinesAreAllCoveredByTheSignature`
+
+### `signature-key-wire-target/signature-key-http-request-header/header-web-key-hwk` — Exercised
+
+The active hwk serializer and verifier carry and require the fully specified Ed25519 alg parameter.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
+
+### `signature-key-wire-target/unsupported-scheme` — Exercised
+
+A selected unknown or disallowed Signature-Key scheme is rejected as unsupported_scheme with the accepted scheme set available for HTTP negotiation.
+
+Evidence:
+
+- `draft11_wire_test.go:TestDraft08SignatureKeyFailuresAreTypedAndNegotiable`
+
+### `signature-key-wire-target/unsupported_algorithm` — Exercised
+
+A selected JWK with missing, polymorphic, or unsupported alg is rejected as unsupported_algorithm with Accept-Signature-Alg naming Ed25519; malformed Ed25519 material remains invalid_key.
+
+Evidence:
+
+- `draft08_discovery_test.go:TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope`
+- `draft11_wire_test.go:TestDraft08SignatureKeyFailuresAreTypedAndNegotiable`

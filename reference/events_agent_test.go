@@ -803,7 +803,7 @@ func rawEventsTestSigningKey(t *testing.T, id string) (aauth.SigningKey, ed25519
 }
 
 func rawEventsTestHeader(tokenType, keyID string) aauth.TokenHeader {
-	return aauth.TokenHeader{Algorithm: "EdDSA", Type: tokenType, KeyID: keyID}
+	return aauth.TokenHeader{Algorithm: "Ed25519", Type: tokenType, KeyID: keyID}
 }
 
 func rawAgentEventTestClaims(now time.Time, eventID string) map[string]any {

@@ -17,20 +17,24 @@ const (
 	SignatureErrorInvalidRequest       SignatureErrorCode = "invalid_request"
 	SignatureErrorInvalidInput         SignatureErrorCode = "invalid_input"
 	SignatureErrorUnsupportedAlgorithm SignatureErrorCode = "unsupported_algorithm"
+	SignatureErrorUnsupportedScheme    SignatureErrorCode = "unsupported_scheme"
 	SignatureErrorInvalidSignature     SignatureErrorCode = "invalid_signature"
 	SignatureErrorInvalidKey           SignatureErrorCode = "invalid_key"
 	SignatureErrorUnknownKey           SignatureErrorCode = "unknown_key"
 	SignatureErrorInvalidJWT           SignatureErrorCode = "invalid_jwt"
 	SignatureErrorExpiredJWT           SignatureErrorCode = "expired_jwt"
+	SignatureErrorIssuerMissing        SignatureErrorCode = "issuer_missing"
+	SignatureErrorIssuerMismatch       SignatureErrorCode = "issuer_mismatch"
 )
 
 // SignatureError preserves a machine-readable failure code while retaining
 // the underlying cause for errors.Is and errors.As inspection.
 type SignatureError struct {
-	Code                SignatureErrorCode
-	RequiredInput       []string
-	SupportedAlgorithms []string
-	Cause               error
+	Code               SignatureErrorCode
+	RequiredInput      []string
+	AcceptedAlgorithms []string
+	AcceptedSchemes    []string
+	Cause              error
 }
 
 func (err *SignatureError) Error() string {
@@ -85,12 +89,6 @@ func FormatSignatureError(value SignatureError) (string, error) {
 	if len(value.RequiredInput) > 0 && value.Code != SignatureErrorInvalidInput {
 		return "", errors.New("aauth: required_input applies only to invalid_input")
 	}
-	if len(value.SupportedAlgorithms) > 0 && value.Code != SignatureErrorUnsupportedAlgorithm {
-		return "", errors.New("aauth: supported_algorithms applies only to unsupported_algorithm")
-	}
-	if value.Code == SignatureErrorUnsupportedAlgorithm && len(value.SupportedAlgorithms) == 0 {
-		return "", errors.New("aauth: unsupported_algorithm requires supported_algorithms")
-	}
 	dictionary := httpsfv.NewDictionary()
 	dictionary.Add("error", httpsfv.NewItem(httpsfv.Token(value.Code)))
 	if len(value.RequiredInput) > 0 {
@@ -99,13 +97,6 @@ func FormatSignatureError(value SignatureError) (string, error) {
 			return "", fmt.Errorf("aauth: Signature-Error required_input: %w", err)
 		}
 		dictionary.Add("required_input", innerList)
-	}
-	if len(value.SupportedAlgorithms) > 0 {
-		innerList, err := structuredStringList(value.SupportedAlgorithms)
-		if err != nil {
-			return "", fmt.Errorf("aauth: Signature-Error supported_algorithms: %w", err)
-		}
-		dictionary.Add("supported_algorithms", innerList)
 	}
 	encoded, err := httpsfv.Marshal(dictionary)
 	if err != nil {
@@ -166,18 +157,63 @@ func parseSignatureErrorValues(values []string) (*SignatureError, error) {
 			}
 		}
 	}
-	if result.Code == SignatureErrorUnsupportedAlgorithm {
-		if supportedAlgorithms, ok := dictionary.Get("supported_algorithms"); ok {
-			result.SupportedAlgorithms, err = parseStructuredStringList(supportedAlgorithms)
-			if err != nil {
-				return nil, fmt.Errorf("aauth: parse Signature-Error supported_algorithms: %w", err)
-			}
-		}
-	}
-	if result.Code == SignatureErrorUnsupportedAlgorithm && len(result.SupportedAlgorithms) == 0 {
-		return nil, errors.New("aauth: unsupported_algorithm requires supported_algorithms")
-	}
 	return &result, nil
+}
+
+// FormatAcceptSignatureAlgorithms serializes the fully specified JOSE
+// algorithms accepted by a verifier as an RFC 8941 List of Tokens.
+func FormatAcceptSignatureAlgorithms(values []string) (string, error) {
+	return formatStructuredTokenList("Accept-Signature-Alg", values)
+}
+
+// FormatAcceptSignatureSchemes serializes the Signature-Key schemes accepted
+// by a verifier as an RFC 8941 List of Tokens.
+func FormatAcceptSignatureSchemes(values []string) (string, error) {
+	return formatStructuredTokenList("Accept-Signature-Scheme", values)
+}
+
+func formatStructuredTokenList(name string, values []string) (string, error) {
+	if len(values) == 0 {
+		return "", fmt.Errorf("aauth: %s requires at least one value", name)
+	}
+	list := make(httpsfv.List, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			return "", fmt.Errorf("aauth: %s contains an empty value", name)
+		}
+		list = append(list, httpsfv.NewItem(httpsfv.Token(value)))
+	}
+	encoded, err := httpsfv.Marshal(list)
+	if err != nil {
+		return "", fmt.Errorf("aauth: format %s: %w", name, err)
+	}
+	return encoded, nil
+}
+
+func parseStructuredTokenList(name string, values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	list, err := httpsfv.UnmarshalList(values)
+	if err != nil {
+		return nil, fmt.Errorf("aauth: parse %s: %w", name, err)
+	}
+	result := make([]string, 0, len(list))
+	for _, member := range list {
+		item, ok := member.(httpsfv.Item)
+		if !ok {
+			return nil, fmt.Errorf("aauth: %s members must be tokens", name)
+		}
+		value, ok := item.Value.(httpsfv.Token)
+		if !ok || value == "" {
+			return nil, fmt.Errorf("aauth: %s members must be non-empty tokens", name)
+		}
+		result = append(result, string(value))
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("aauth: %s must not be empty", name)
+	}
+	return result, nil
 }
 
 func parseStructuredStringList(member httpsfv.Member) ([]string, error) {
@@ -208,7 +244,25 @@ func DecodeSignatureErrorResponse(response *http.Response) (*SignatureError, err
 		return nil, errors.New("aauth: signature error response is required")
 	}
 	if values := response.Header.Values("Signature-Error"); len(values) > 0 {
-		return parseSignatureErrorValues(values)
+		decoded, err := parseSignatureErrorValues(values)
+		if err != nil {
+			return nil, err
+		}
+		decoded.AcceptedAlgorithms, err = parseStructuredTokenList(
+			"Accept-Signature-Alg",
+			response.Header.Values("Accept-Signature-Alg"),
+		)
+		if err != nil {
+			return nil, err
+		}
+		decoded.AcceptedSchemes, err = parseStructuredTokenList(
+			"Accept-Signature-Scheme",
+			response.Header.Values("Accept-Signature-Scheme"),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return decoded, nil
 	}
 	return nil, errors.New("aauth: Signature-Error header is required")
 }

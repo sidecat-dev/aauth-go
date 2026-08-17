@@ -1,5 +1,15 @@
 # Behavior scenarios
 
+> **Historical iteration overlay (2026-08-17):** This file preserves the
+> scenarios and evidence language accepted for the draft-09/06/01 iteration.
+> It is not the active wire-contract projection. Every `EdDSA` acceptance or
+> emission statement below is historical and superseded: the active Phase-1
+> implementation emits and accepts only fully specified `Ed25519`, requires
+> JWK and `hwk` `alg`, and deliberately rejects retained draft-06 fixtures.
+> Current evidence is `draft11_wire_test.go`, `draft08_discovery_test.go`, and
+> `signature_key_structured_internal_test.go`; draft-11 token topology remains
+> a later phase.
+
 ## JOURNEY-0001 — A concrete conditional call is approved and executed
 
 **Kind:** journey
@@ -481,7 +491,8 @@ STORY-0010, STORY-0011, STORY-0012, STORY-0013, STORY-0014, STORY-0015
 
 **Expected observables:**
 
-- Only the exact EdDSA selected-profile token with `max_uses: 1` plus matching
+- **Historical draft-06 expectation, superseded:** Only the exact EdDSA
+  selected-profile token with `max_uses: 1` plus matching
   agent proof registers; `alg=none`, absent or other use policies, and every
   binding mutation fail.
 - No refusal creates or replaces durable resource subscription state.

@@ -109,7 +109,7 @@ func TestStaticKeyResolverClassifiesResolutionFailures(t *testing.T) {
 
 	resolver := aauth.StaticKeyResolver{
 		"https://issuer.example": {
-			"invalid": {Kty: "OKP", Crv: "Ed25519", X: "invalid", Kid: "invalid"},
+			"invalid": {Kty: "OKP", Crv: "Ed25519", Alg: "Ed25519", X: "invalid", Kid: "invalid"},
 		},
 	}
 	for _, test := range []struct {

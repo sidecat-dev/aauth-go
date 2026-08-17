@@ -100,12 +100,19 @@ func writeSignatureFailure(response http.ResponseWriter, err error) {
 		header, _ = aauth.FormatSignatureError(*signatureError)
 	}
 	response.Header().Set("Signature-Error", header)
+	if len(signatureError.AcceptedAlgorithms) > 0 {
+		if value, err := aauth.FormatAcceptSignatureAlgorithms(signatureError.AcceptedAlgorithms); err == nil {
+			response.Header().Set("Accept-Signature-Alg", value)
+		}
+	}
+	if len(signatureError.AcceptedSchemes) > 0 {
+		if value, err := aauth.FormatAcceptSignatureSchemes(signatureError.AcceptedSchemes); err == nil {
+			response.Header().Set("Accept-Signature-Scheme", value)
+		}
+	}
 	extensions := make(map[string]any)
 	if len(signatureError.RequiredInput) > 0 {
 		extensions["required_input"] = signatureError.RequiredInput
-	}
-	if len(signatureError.SupportedAlgorithms) > 0 {
-		extensions["supported_algorithms"] = signatureError.SupportedAlgorithms
 	}
 	// Causes can contain admitted endpoints, trust configuration, and
 	// transport diagnostics. They remain available to the local caller but
