@@ -94,7 +94,7 @@ func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  aauth-reference demo person")
 	fmt.Fprintln(
 		writer,
-		"  aauth-reference verify coverage --source-dir DIR [--repo DIR]",
+		"  aauth-reference verify coverage [--source-dir DIR] [--repo DIR]",
 	)
 }
 
@@ -113,16 +113,22 @@ func runCoverageVerification(
 ) int {
 	flags := flag.NewFlagSet("verify coverage", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	sourceDir := flags.String("source-dir", "", "directory containing pinned sources")
+	sourceDir := flags.String(
+		"source-dir",
+		"",
+		"directory containing pinned sources (default: the retained repository copies)",
+	)
 	repoDir := flags.String("repo", ".", "aauth-go repository root")
 	if err := flags.Parse(args); err != nil ||
 		flags.NArg() != 0 ||
 		strings.TrimSpace(*sourceDir) != *sourceDir ||
-		*sourceDir == "" ||
 		strings.TrimSpace(*repoDir) != *repoDir ||
 		*repoDir == "" {
 		writeUsage(stderr)
 		return 2
+	}
+	if *sourceDir == "" {
+		*sourceDir = filepath.Join(*repoDir, "internal", "sourcecoverage", "sources")
 	}
 	bundle, err := sourcecoverage.Embedded()
 	if err != nil {

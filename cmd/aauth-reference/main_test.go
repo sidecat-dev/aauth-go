@@ -514,6 +514,30 @@ func TestUsagePreservesVerbObjectGrammar(t *testing.T) {
 	}
 }
 
+func TestCoverageVerificationDefaultsToRetainedRepositorySources(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{
+			"verify",
+			"coverage",
+			"--repo",
+			filepath.Join("..", ".."),
+		},
+		&stdout,
+		&stderr,
+	)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf(
+			"default-source verification exit/stderr = %d/%q",
+			code,
+			stderr.String(),
+		)
+	}
+	if !strings.Contains(stdout.String(), `"status":"verified"`) {
+		t.Fatalf("default-source verification stdout = %q", stdout.String())
+	}
+}
+
 func TestCoverageVerificationRejectsMissingPinnedSources(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run(

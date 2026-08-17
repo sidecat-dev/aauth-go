@@ -1,6 +1,6 @@
 {
   "schema": "aauth.source-coverage.v0",
-  "profile": "AAuth Go maintained supported profile",
+  "profile": "AAuth Go pinned-draft profile: draft-hardt-oauth-aauth-protocol-09, draft-hardt-httpbis-signature-key-06, draft-hardt-aauth-r3-01, draft-hardt-aauth-events-00, draft-hardt-aauth-bootstrap-01",
   "sources": [
     {
       "id": "core",

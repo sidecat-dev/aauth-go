@@ -315,29 +315,40 @@ and durable governance remain usable.
 The repository carries a generated [source coverage report](SOURCE-COVERAGE.md)
 and the machine-readable manifest and section inventory that produce it. The
 manifest pins the exact bytes and revisions of the six maintained source
-documents. Each positive claim names a Go test; explicit omissions remain
+documents, and the pinned bytes themselves are retained in
+`internal/sourcecoverage/sources/`, so every digest resolves from a fresh
+clone. Each positive claim names a Go test; explicit omissions remain
 unsupported or unclaimed instead of being inferred from nearby work.
 
-Given a directory containing the pinned source filenames, verify the source
-digests, complete heading inventory, evidence test names, and embedded coverage
-contract with:
+The implemented profile is the pinned draft family named in the report:
+protocol `draft-hardt-oauth-aauth-protocol-09`, Signature-Key
+`draft-hardt-httpbis-signature-key-06`, R3 `draft-hardt-aauth-r3-01`, Events
+`draft-hardt-aauth-events-00`, and Bootstrap `draft-hardt-aauth-bootstrap-01`.
+The five Markdown sources are the editor sources at the upstream commits named
+in the report; the Signature-Key document is the editor's rendered publication
+snapshot (its source repository tags that commit `-07` while the rendered
+artifact identifies itself as `-06`). Upstream drafts have continued to evolve
+past this pinned family; migrating tracks upstream as deliberate, reviewed
+work, and until a newer family is pinned this repository intentionally
+implements the profile above.
+
+Verify the source digests, complete heading inventory, evidence test names,
+and embedded coverage contract with:
 
 ```sh
-go run ./cmd/aauth-reference verify coverage \
-  --source-dir /absolute/path/to/pinned-aauth-sources \
-  --repo .
+go run ./cmd/aauth-reference verify coverage
 ```
 
-The command succeeds with one bounded JSON record. It fails closed if source
+The command verifies the retained repository sources by default; pass
+`--source-dir` to verify against an external directory of the same pinned
+filenames. It succeeds with one bounded JSON record and fails closed if source
 bytes or section structure drift, if a named test disappears, or if the
 embedded manifest and inventory are invalid. To intentionally update the
 coverage data after reviewing newer sources or changing claims, regenerate the
 inventory and report:
 
 ```sh
-go run ./internal/sourcecoverage/cmd/generate \
-  --source-dir /absolute/path/to/pinned-aauth-sources \
-  --repo .
+go run ./internal/sourcecoverage/cmd/generate
 ```
 
 `go test ./...` independently proves that the checked-in report exactly

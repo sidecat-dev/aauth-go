@@ -11,7 +11,11 @@ import (
 
 func main() {
 	var (
-		sourceDir = flag.String("source-dir", "", "directory containing pinned sources")
+		sourceDir = flag.String(
+			"source-dir",
+			"",
+			"directory containing pinned sources (default: the retained repository copies)",
+		)
 		repoDir   = flag.String("repo", ".", "aauth-go repository root")
 		manifest  = flag.String(
 			"manifest",
@@ -30,9 +34,12 @@ func main() {
 		)
 	)
 	flag.Parse()
-	if *sourceDir == "" || flag.NArg() != 0 {
+	if flag.NArg() != 0 {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if *sourceDir == "" {
+		*sourceDir = filepath.Join(*repoDir, "internal", "sourcecoverage", "sources")
 	}
 	if err := generate(
 		*sourceDir,

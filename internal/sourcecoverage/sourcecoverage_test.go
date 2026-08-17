@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,9 @@ func TestEmbeddedCoverageEvidenceAndReportAreCurrent(t *testing.T) {
 	}
 	repoDir, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bundle.VerifySources("sources"); err != nil {
 		t.Fatal(err)
 	}
 	if err := bundle.VerifyEvidence(repoDir); err != nil {
@@ -32,6 +36,33 @@ func TestEmbeddedCoverageEvidenceAndReportAreCurrent(t *testing.T) {
 	}
 	if !bytes.Equal(report, checkedIn) {
 		t.Fatal("SOURCE-COVERAGE.md differs from embedded coverage data")
+	}
+}
+
+func TestProfileNamesEveryPinnedDraftRevision(t *testing.T) {
+	bundle, err := Embedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftIdentity := regexp.MustCompile(`draft-[a-z0-9-]+-[0-9]{2}`)
+	named := 0
+	for _, source := range bundle.Manifest.Sources {
+		identity := draftIdentity.FindString(source.Revision)
+		if identity == "" {
+			continue
+		}
+		named++
+		if !strings.Contains(bundle.Manifest.Profile, identity) {
+			t.Errorf(
+				"profile %q does not name pinned source %s revision %q",
+				bundle.Manifest.Profile,
+				source.ID,
+				identity,
+			)
+		}
+	}
+	if named == 0 {
+		t.Fatal("no pinned source carries a draft revision identity")
 	}
 }
 

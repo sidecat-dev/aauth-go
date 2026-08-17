@@ -2,7 +2,7 @@
 
 This generated source coverage is not a full-conformance claim. It binds the implementation's explicit claims and omissions to pinned source bytes and executable Go evidence.
 
-Profile: AAuth Go maintained supported profile
+Profile: AAuth Go pinned-draft profile: draft-hardt-oauth-aauth-protocol-09, draft-hardt-httpbis-signature-key-06, draft-hardt-aauth-r3-01, draft-hardt-aauth-events-00, draft-hardt-aauth-bootstrap-01
 
 ## Summary
 
