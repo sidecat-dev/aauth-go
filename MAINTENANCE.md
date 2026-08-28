@@ -25,17 +25,22 @@ renders: `https://github.com/dickhardt/AAuth` and
    artifacts self-identify as `-06`; the mismatch is recorded, the bytes
    are kept as fetched.
 
-## 2. The feedback journal to the AAuth authors
+## 2. Implementation interpretations and feedback
 
-The implementation journal and reconciled feedback custody are
-maintained by the project maintainer outside this repository (see
-`AGENTS.md` for the current location). Read the journal before
-classifying any finding as new.
+`INTERPRETATIONS.md` is the single public register for choices that affect
+observable protocol behavior. `implementation-journal.md` retains the
+executable implementation findings that support those choices.
+`SPEC-FEEDBACK.md` tracks evidence-backed questions prepared for the AAuth
+authors and their upstream dispositions. Read all three before classifying a
+finding as new.
 
 - A finding enters the journal only after executable evidence exists: a
   failing test, a wire capture, or a journey demonstrating the ambiguity.
-- Each entry records the draft section, observed behavior, exact
-  evidence pointer, and — once reconciled — its disposition.
+- Each interpretation records the exact source revision and section, chosen
+  behavior, plausible alternatives, reason, executable evidence, compatibility
+  effect, and later disposition.
+- Each upstream feedback item starts from executable evidence, asks one neutral
+  question, links its upstream thread, and records the authors' disposition.
 - Feedback is submitted to the authors as Joshua Gay, never as "we" and
   never as an agent.
 
@@ -54,7 +59,8 @@ classifying any finding as new.
    real HTTP handlers and cryptographic verification. Migration order
    follows the dependency analysis: Signature-Key wire format first,
    then person-token topology, then missions and chaining, then R3
-   per-call semantics. Each phase regenerates its interop fixtures; the
-   Elixir interop suite and the journey tests are the qualification
-   evidence.
+   per-call semantics. Each phase regenerates its current Go fixtures and
+   journey evidence. Historical cross-language fixtures remain compatibility
+   evidence only until an independently generated current-profile exchange is
+   added.
 4. **Close** with the full suite and `go vet`, then commit and push.

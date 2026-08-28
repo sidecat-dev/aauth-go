@@ -1,17 +1,52 @@
 # AAuth for Go
 
-This is an independent Go implementation of AAuth maintained for use by
-Sidecat. The protocol library has no Sidecat dependency. The `reference`
-package supplies deployable role handlers and an agent client over the public
-library. Sidecat is an intended consumer of this module; independence means the
-dependency points from Sidecat to this library, never that Sidecat is excluded
-from using it.
+This is an independent, community-oriented Go implementation of AAuth. The
+root package supplies portable protocol types and verification. The `reference`
+package supplies deployable role handlers and an agent client over that public
+library. Host applications consume the module through explicit interfaces;
+the module has no dependency on a particular product or deployment.
 
-Resource-managed access is implemented as a complete two-party path. A
+The repository pins the complete current Dick Hardt editor-source family at
+AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5` and Signature-Key
+`0ff751b571e7fe51336bcc1e526954a202317cc0`. The implementation is transitional:
+its fully specified `Ed25519` and selected Signature-Key behavior are current,
+but its older resource/auth-token journeys do not yet implement the current
+person-token topology. Those journeys remain useful regression evidence for
+implemented library behavior, but [the source coverage report](SOURCE-COVERAGE.md)
+does not count them as current-protocol conformance. This is a
+community-oriented standalone Go implementation; it does not claim an official
+AAuth designation.
+
+## Install
+
+```sh
+go get gitlab.com/sidecat-dev/aauth-go
+```
+
+The public API is the root `aauth` package. Deployable reference role handlers,
+host-owned storage interfaces, and an agent client are in `reference`. The
+[implementation interpretation register](INTERPRETATIONS.md) records observable
+choices, alternatives, reasons, evidence, and compatibility effects in one
+place. [Retained-source provenance](PROVENANCE.md) makes every current input
+reproducible, and the [specification feedback journal](SPEC-FEEDBACK.md) tracks
+evidence-backed questions and their upstream dispositions. Runnable package
+examples are part of the current person-token migration.
+
+## Implemented behavior during the current migration
+
+Unless a paragraph explicitly says otherwise, the journeys in this section are
+implemented behavior from the preceding profile and are retained as migration
+and regression evidence. `SOURCE-COVERAGE.md` is the authority for current
+section claims.
+
+Resource-managed access is implemented as a complete legacy two-party path. A
 resource can apply caller-owned authorization policy without a signing key or
-another AAuth server, advertise `access_mode=aauth-access-token`, issue an
-opaque `AAuth-Access` credential, and bind its retained grant to the verified
-agent identity and confirmation key. The agent signs `Authorization: AAuth`
+another AAuth server, advertise the earlier
+`access_mode=aauth-access-token`, issue an opaque `AAuth-Access` credential,
+and bind its retained grant to the verified agent identity and confirmation
+key. The current editor source renames that metadata value to `session-token`;
+the reference resource has not migrated that advertisement and does not claim
+current resource-metadata conformance. The agent signs `Authorization: AAuth`
 as a covered component, adopts downscoped grants and rotated credentials, and
 the resource refuses unsigned, substituted, replayed, expired, or
 differently-keyed use before invoking the protected operation.
@@ -117,17 +152,24 @@ Token JSON and reference endpoint request JSON reject exact duplicate member
 names and names that Go would case-fold onto the same struct field before
 decoding.
 
-This is intentionally not described as complete R3. The exercised journeys use
-one vocabulary, ordinary scope, immediate direct or conditional policy, and
-one concrete per-call request mapping. Scope-free R3, multi-definition
-composition, person-server document use, live discovery adapters for every
-standard vocabulary, multi-process file-store coordination, and deferred R3
-remain open. The selected AS-only document endpoint means the person server
-cannot fetch proposal display for user consent; the draft requires that fetch
-while separately requiring the resource to accept only its AS signature, and
-this implementation does not invent a transfer protocol to hide the conflict.
-The
-[source coverage report](SOURCE-COVERAGE.md) keeps those boundaries explicit.
+These R3 journeys implement an earlier profile and remain regression evidence,
+not current R3 coverage. The current source uses `r3_per_call`, builds on the
+person-token topology, and permits both the PS and AS to retrieve the exact R3
+document. The existing `r3_conditional` and AS-only handler behavior must
+migrate before the repository claims any current R3 section. Scope-free R3,
+multi-definition composition, live discovery adapters for every standard
+vocabulary, multi-process file-store coordination, and deferred R3 also remain
+open. The [source coverage report](SOURCE-COVERAGE.md) keeps that boundary
+explicit, and [AAG-I004](INTERPRETATIONS.md#aag-i004--current-r3-proposal-retrieval-must-admit-both-the-ps-and-as)
+records why the older endpoint interpretation was withdrawn.
+
+### Legacy governance and delegation evidence
+
+The following governance, completion, call-chaining, and sub-agent journeys
+exercise an earlier protocol profile. They remain valuable regression evidence,
+but they do not establish coverage of the corresponding current-editor
+sections. The current profile uses `mission_s256`, completes missions at the
+mission endpoint, and depends on the person-token topology described above.
 
 Three-party call chaining is exercised through two real protected resources.
 The intermediary signs as its own agent, carries the upstream auth token only
@@ -135,8 +177,8 @@ as evidence, obtains a downstream token bound to its own key, and the person
 server verifies issuer trust, upstream audience, mission continuity, and the
 delegation chain before issuing the downstream grant.
 
-The person server also implements the local-action governance path intended
-for Sidecat use. An agent can make a signed permission request with or without
+The person server also implements a host-integrated local-action governance
+path. An agent can make a signed permission request with or without
 a mission and receive an immediate grant/denial or an ownership-bound deferred
 interaction. Mission-bound permission requests, terminal decisions, and signed
 audit submissions enter an ordered append-only mission log. Host policy sees
@@ -170,9 +212,9 @@ body. That material is sensitive evidence custody, not display data.
 
 Signing keys can likewise remain host-custodied. `NewSigningKey` accepts a
 standard `crypto.Signer` and retains only that signing capability plus its
-Ed25519 public identity. Hosts such as Sidecat can therefore sign through an
-operating-system key store, HSM, encrypted value service, or another protected
-adapter without giving the AAuth package private-key bytes.
+Ed25519 public identity. A host can therefore sign through an operating-system
+key store, HSM, encrypted value service, or another protected adapter without
+giving the AAuth package private-key bytes.
 
 ## Bootstrapping an enrolled agent
 
@@ -219,7 +261,8 @@ Install the standalone program with the ordinary Go toolchain:
 go install gitlab.com/sidecat-dev/aauth-go/cmd/aauth-reference@latest
 ```
 
-The program has no Sidecat or BEAM dependency. Immediately prove the installed
+The program has no dependency on another application runtime. Immediately
+prove the installed
 binary's protected profile, TLS process boundary, mission approval,
 mission-bound permission, outcome audit, default denial, durable governance,
 and process-restart recovery with:
@@ -244,8 +287,8 @@ go run ./cmd/aauth-reference serve person --profile /absolute/path/person.json
 
 It serves the standalone `reference.PersonServer` over TLS 1.3 and persists
 mission governance through `reference.FileGovernanceStore`. It is a real
-process boundary, not a Sidecat wrapper: the command imports only this module,
-and Sidecat can run it as an independent AAuth peer.
+process boundary, not an application wrapper: the command imports only this
+module and can run as an independent AAuth peer.
 
 The profile is strict JSON with this shape:
 
@@ -314,23 +357,20 @@ and durable governance remain usable.
 
 The repository carries a generated [source coverage report](SOURCE-COVERAGE.md)
 and the machine-readable manifest and section inventory that produce it. The
-manifest pins the exact bytes and revisions of eight maintained source
-documents, and the pinned bytes themselves are retained in
+manifest pins the exact bytes and revisions of seven current maintained source
+documents—core, Signature-Key, R3, Events, Bootstrap, Budgets, and the
+interoperability profile—and the pinned bytes themselves are retained in
 `internal/sourcecoverage/sources/`, so every digest resolves from a fresh
 clone. Each positive claim names a Go test; explicit omissions remain
 unsupported or unclaimed instead of being inferred from nearby work.
 
 The implemented profile is transitional and is named precisely in the report.
-Active JWT, JWK, HTTP-signature algorithm, negotiation, and issuer-metadata
-surfaces implement Protocol draft-11 and Signature-Key draft-08: keys carry
-`alg: Ed25519`, `hwk` requires the same fully specified parameter, and
-authentication failures use `Accept-Signature-Alg` and
-`Accept-Signature-Scheme`. The draft-09/06/01 source family remains pinned as
-historical custody for token topology, missions, journeys, R3, Events, and
-Bootstrap behavior that has not yet migrated. The exact draft-11 and draft-08
-editor sources are retained alongside that baseline. The report does not claim
-the draft-11 person-token topology, mission/chaining migration, or R3 draft-02
-semantics.
+Active JWT, JWK, HTTP-signature algorithm, negotiation, and selected discovery
+surfaces use fully specified `Ed25519`, require the same fully specified
+algorithm on applicable JWKs, and return `Accept-Signature-Alg` and
+`Accept-Signature-Scheme` negotiation. The report leaves the current
+person-token topology, its resource/auth-token derivation, the migrated mission
+and chaining paths, and every other unevidenced current section unclaimed.
 
 Verify the source digests, complete heading inventory, evidence test names,
 and embedded coverage contract with:
@@ -402,8 +442,10 @@ The resource retains the exact event token before sending it. Lost `202
 Accepted` delivery is reconciled by retrying that exact JWT with a fresh HTTP
 proof. A resulting `429 Too Many Requests` settles the retained attempt without
 a second acceptance. The AP-to-agent adapter is a non-normative host-integration
-adapter, not a standardized wire protocol. Protected subscription tickets,
-AsyncAPI, token payloads, and multi-event replay remain outside this profile.
+adapter, not a standardized wire protocol. Protected subscription tickets and
+AsyncAPI remain outside this public profile; the separate protected profile
+below implements one bounded ticket and direct-JSON AsyncAPI path.
+Token-carried payloads and multi-event replay remain outside both profiles.
 The bounded file stores provide single-writer reference-host qualification;
 they are not enterprise or distributed storage conformance.
 
@@ -447,5 +489,6 @@ process-local. The runnable person profile always configures the file adapter,
 which has a single-writer contract; a host embedding the package may implement
 the same standalone interface with its own durable store.
 
-This repository is being prepared for upstream stewardship; no remote or
-repository-custody transfer has occurred.
+This repository is maintained as a community-oriented standalone Go
+implementation. No official designation, repository transfer, or upstream
+acceptance is claimed.

@@ -25,7 +25,7 @@ organization = "Hellō"
 
 %%%
 
-<reference anchor="I-D.hardt-oauth-aauth-protocol" target="https://github.com/dickhardt/AAuth">
+<reference anchor="I-D.hardt-oauth-aauth-protocol" target="https://datatracker.ietf.org/doc/draft-hardt-oauth-aauth-protocol">
   <front>
     <title>AAuth Protocol</title>
     <author initials="D." surname="Hardt" fullname="Dick Hardt">
@@ -252,7 +252,7 @@ A typical agent token issued by an AP, illustrating the claims described in [@!I
 JWT header:
 
 ```json
-{ "alg": "EdDSA", "typ": "aa-agent+jwt", "kid": "..." }
+{ "alg": "Ed25519", "typ": "aa-agent+jwt", "kid": "..." }
 ```
 
 JWT payload:
@@ -263,7 +263,8 @@ JWT payload:
   "dwk":  "aauth-agent.json",
   "sub":  "aauth:k7q3p9n2@ap.example",
   "ps":   "https://ps.example",
-  "cnf":  { "jwk": { "kty": "OKP", "crv": "Ed25519", "x": "..." } },
+  "cnf":  { "jwk": { "kty": "OKP", "crv": "Ed25519",
+                     "x": "...", "alg": "Ed25519" } },
   "iat":  1746316800,
   "exp":  1746320400,
   "jti":  "..."
@@ -397,6 +398,10 @@ TBD
 
 *Note: This section is to be removed before publishing as an RFC.*
 
+- draft-hardt-aauth-bootstrap-02
+  - Referenced the AAuth Protocol by its datatracker document URL, which tracks the latest revision.
+  - Algorithm identifiers: `Ed25519` rather than the deprecated polymorphic `EdDSA`; the `cnf.jwk` example carries the `alg` member now required of every conveyed key.
+
 - draft-hardt-aauth-bootstrap-01
   - Major rewrite. The document is now informational guidance for AP implementers. The previously-normative PS bootstrap protocol (PS `/bootstrap` endpoint, `bootstrap_token`, bootstrap announcement, agent server [now Agent Provider] `bootstrap_endpoint` / `refresh_endpoint` / `webauthn_endpoint`) has been removed. PS-side binding to a person now happens lazily on the agent's first interaction with the PS per the AAuth Protocol; the bootstrap document covers AP-side enrollment patterns only.
   - Removed Agent-Attested Display Values section; the `platform` and `device` parameters are defined and described in the AAuth Protocol.
@@ -409,4 +414,3 @@ TBD
 TBD.
 
 {backmatter}
-

@@ -44,7 +44,7 @@ func TestProfileNamesEveryPinnedDraftRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	draftIdentity := regexp.MustCompile(`draft-[a-z0-9-]+-[0-9]{2}`)
+	draftIdentity := regexp.MustCompile(`draft-[a-z0-9-]+-(?:[0-9]{2}|latest)`)
 	named := 0
 	for _, source := range bundle.Manifest.Sources {
 		identity := draftIdentity.FindString(source.Revision)
@@ -63,6 +63,133 @@ func TestProfileNamesEveryPinnedDraftRevision(t *testing.T) {
 	}
 	if named == 0 {
 		t.Fatal("no pinned source carries a draft revision identity")
+	}
+}
+
+func TestCoveragePinsOneCompleteCurrentEditorFamily(t *testing.T) {
+	bundle, err := Embedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]Source{
+		"core": {
+			ID: "core", Revision: "draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5",
+			Filename: "draft-hardt-oauth-aauth-protocol.md", Format: SourceMarkdown,
+			SHA256: "c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19",
+		},
+		"signature-key": {
+			ID: "signature-key", Revision: "draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0",
+			Filename: "draft-hardt-httpbis-signature-key.md", Format: SourceMarkdown,
+			SHA256: "335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb",
+		},
+		"r3": {
+			ID: "r3", Revision: "draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5",
+			Filename: "draft-hardt-aauth-r3.md", Format: SourceMarkdown,
+			SHA256: "dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760",
+		},
+		"events": {
+			ID: "events", Revision: "draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5",
+			Filename: "draft-hardt-aauth-events.md", Format: SourceMarkdown,
+			SHA256: "6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0",
+		},
+		"bootstrap": {
+			ID: "bootstrap", Revision: "draft-hardt-aauth-bootstrap-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5",
+			Filename: "draft-hardt-aauth-bootstrap.md", Format: SourceMarkdown,
+			SHA256: "ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872",
+		},
+		"budgets": {
+			ID: "budgets", Revision: "draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5",
+			Filename: "draft-hardt-aauth-budgets.md", Format: SourceMarkdown,
+			SHA256: "7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d",
+		},
+		"interop-profile": {
+			ID: "interop-profile", Revision: "interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5",
+			Filename: "interop-demo-profile.md", Format: SourceMarkdown,
+			SHA256: "ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195",
+		},
+	}
+	if len(bundle.Manifest.Sources) != len(expected) {
+		t.Fatalf("pinned source count = %d, want one complete seven-source editor family", len(bundle.Manifest.Sources))
+	}
+	seen := make(map[string]bool, len(expected))
+	for _, source := range bundle.Manifest.Sources {
+		want, ok := expected[source.ID]
+		if !ok {
+			t.Errorf("unexpected or historical source entry %q", source.ID)
+			continue
+		}
+		if seen[source.ID] {
+			t.Errorf("source entry %q appears more than once", source.ID)
+		}
+		seen[source.ID] = true
+		if source != want {
+			t.Errorf("source %q = %#v, want %#v", source.ID, source, want)
+		}
+	}
+	for id := range expected {
+		if !seen[id] {
+			t.Errorf("current editor source %q is absent", id)
+		}
+	}
+}
+
+func TestLegacyEvidenceDoesNotClaimTheCurrentPersonTokenTopology(t *testing.T) {
+	bundle, err := Embedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyOnly := map[string]struct{}{
+		"core\x00audit-endpoint/audit-request": {},
+		"core\x00audit-endpoint/audit-response": {},
+		"core\x00covered-components": {},
+		"core\x00interaction-endpoint/interaction-request": {},
+		"core\x00interaction-response-poll-authority": {},
+		"core\x00mission-creation-overview": {},
+		"core\x00mission-completion-overview": {},
+		"core\x00permission-endpoint/permission-request": {},
+		"core\x00permission-endpoint/permission-response": {},
+		"core\x00person-server/user-interaction": {},
+		"core\x00resource-tokens/authorization-endpoint-request": {},
+		"core\x00resource-tokens/authorization-endpoint-responses/response-with-resource-token": {},
+		"core\x00resource-tokens/resource-token/resource-token-verification": {},
+		"core\x00resource-tokens/resource-token/resource-challenge-verification": {},
+		"core\x00requirement-agent-token": {},
+		"core\x00requirement-auth-token": {},
+		"core\x00resource-initiated-interaction": {},
+		"core\x00ps-token-endpoint/agent-token-request": {},
+		"core\x00ps-token-endpoint/ps-response": {},
+		"core\x00mission-creation": {},
+		"core\x00mission-approval": {},
+		"core\x00mission-log": {},
+		"core\x00mission-completion": {},
+		"core\x00access-server-federation": {},
+		"core\x00as-token-endpoint/ps-to-as-token-request": {},
+		"core\x00as-token-endpoint/as-response": {},
+		"core\x00as-token-endpoint/auth-token-delivery": {},
+		"core\x00auth-tokens/auth-token-usage": {},
+		"core\x00auth-tokens/auth-token-verification/jwt-trust-verification": {},
+		"core\x00auth-tokens/auth-token-verification/request-context-binding": {},
+		"core\x00auth-token-response-verification": {},
+		"core\x00upstream-token-verification": {},
+		"core\x00call-chaining": {},
+		"core\x00sub-agents/sub-agent-identity": {},
+		"core\x00sub-agents/parent-mediated-authorization": {},
+		"core\x00metadata-documents": {},
+		"r3\x00auth-token-extensions": {},
+		"r3\x00authorization-endpoint-extensions": {},
+		"r3\x00per-call-proposals": {},
+		"r3\x00r3-document": {},
+		"r3\x00r3-processing": {},
+		"interop-profile\x00aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response": {},
+		"interop-profile\x00aauth-interoperability-demo-profile/surface-3-resource-token-issuance-and-issuer-discovery": {},
+		"interop-profile\x00aauth-interoperability-demo-profile/surface-4-auth-token-issuance-and-presentation": {},
+		"interop-profile\x00aauth-interoperability-demo-profile/surface-5-parent-mediated-sub-agent-token-handling": {},
+	}
+	for _, annotation := range bundle.Manifest.Annotations {
+		key := annotation.Source + "\x00" + annotation.Section
+		if _, found := legacyOnly[key]; found {
+			t.Errorf("legacy evidence still claims current section %s/%s as %s", annotation.Source, annotation.Section, annotation.Status)
+		}
 	}
 }
 
@@ -93,7 +220,8 @@ func TestEventsPublicClaimsMatchQualifiedProfile(t *testing.T) {
 		"fresh HTTP proof",
 		"`429 Too Many Requests`",
 		"non-normative host-integration adapter",
-		"Protected subscription tickets, AsyncAPI, token payloads, and multi-event replay remain outside this profile",
+		"Protected subscription tickets and AsyncAPI remain outside this public profile",
+		"Token-carried payloads and multi-event replay remain outside both profiles",
 		"single-writer reference-host qualification",
 	} {
 		if !strings.Contains(normalizedREADME, required) {
@@ -105,7 +233,7 @@ func TestEventsPublicClaimsMatchQualifiedProfile(t *testing.T) {
 	}
 
 	wantClaims := map[string]string{
-		"signature-key\x00name-self-issued-jwt-self-jwt": "same discovered key",
+		"signature-key\x00signature-key-http-request-header/self-issued-jwt-self-jwt": "same discovered key",
 		"events\x00protocol-overview":                    "public single-use",
 		"events\x00subscribe-token":                      "max_uses:1",
 		"events\x00subscription-registration":            "exact subscribe token",

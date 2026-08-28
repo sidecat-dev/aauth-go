@@ -25,7 +25,7 @@ organization = "Hellō"
 
 %%%
 
-<reference anchor="I-D.hardt-oauth-aauth-protocol" target="https://github.com/dickhardt/AAuth">
+<reference anchor="I-D.hardt-oauth-aauth-protocol" target="https://datatracker.ietf.org/doc/draft-hardt-oauth-aauth-protocol">
   <front>
     <title>AAuth Protocol</title>
     <author initials="D." surname="Hardt" fullname="Dick Hardt">
@@ -58,7 +58,7 @@ organization = "Hellō"
   </front>
 </reference>
 
-<reference anchor="I-D.hardt-aauth-bootstrap" target="https://github.com/dickhardt/AAuth">
+<reference anchor="I-D.hardt-aauth-bootstrap" target="https://datatracker.ietf.org/doc/draft-hardt-aauth-bootstrap">
   <front>
     <title>AAuth Bootstrap Guidance</title>
     <author initials="D." surname="Hardt" fullname="Dick Hardt">
@@ -215,7 +215,7 @@ A subscribe token is a JWT with `typ: aa-subscribe+jwt`, issued and signed by th
 
 Header:
 
-- `alg`: Signing algorithm. EdDSA is RECOMMENDED. Implementations MUST NOT accept `none`.
+- `alg`: Signing algorithm. A fully-specified identifier is REQUIRED; `Ed25519` is RECOMMENDED. Implementations MUST NOT accept `none` or the polymorphic `EdDSA` identifier.
 - `typ`: `aa-subscribe+jwt`
 - `kid`: Key identifier (AP's signing key)
 
@@ -242,7 +242,8 @@ Example subscribe token payload:
   "dwk": "aauth-agent.json",
   "sub": "aauth:k7q3p9n2@ap.example",
   "aud": "https://resource.example",
-  "cnf": { "jwk": { "kty": "OKP", "crv": "Ed25519", "x": "..." } },
+  "cnf": { "jwk": { "kty": "OKP", "crv": "Ed25519",
+                    "x": "...", "alg": "Ed25519" } },
   "eid": "evt_8f3k2n9p",
   "iat": 1750000000,
   "exp": 1750086400,
@@ -351,7 +352,7 @@ When an event fires, the resource issues an event token: a JWT signed by the res
 
 Header:
 
-- `alg`: Signing algorithm. EdDSA is RECOMMENDED.
+- `alg`: Signing algorithm. A fully-specified identifier is REQUIRED; `Ed25519` is RECOMMENDED.
 - `typ`: `aa-event+jwt`
 - `kid`: Key identifier (resource's signing key)
 
@@ -649,6 +650,8 @@ TBD
 *Note: This section is to be removed before publishing as an RFC.*
 
 - draft-hardt-aauth-events-00
+  - Referenced the AAuth Protocol and AAuth Bootstrap by their datatracker document URLs, which track the latest revision.
+  - Algorithm identifiers: `Ed25519` rather than the deprecated polymorphic `EdDSA`; the `cnf.jwk` example carries the `alg` member now required of every conveyed key.
   - Initial draft.
 
 # Acknowledgments
@@ -766,6 +769,5 @@ A self-hosted agent may receive events in two ways depending on whether it manag
 If the agent acts as its own AP ([@?I-D.hardt-aauth-bootstrap]), it may expose an internal event endpoint. Events are delivered directly to this endpoint by the resource — the AP and agent are collocated.
 
 If the agent uses an external AP service, it maintains an outbound persistent connection (SSE, WebSocket, or a similar mechanism) to the AP's inbox service. The AP delivers event tokens and payloads over this connection as they arrive. The self-hosted agent does not need a public inbound endpoint — the outbound connection to the AP is sufficient.
-
 
 

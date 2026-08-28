@@ -2,17 +2,17 @@
 
 This generated source coverage is not a full-conformance claim. It binds the implementation's explicit claims and omissions to pinned source bytes and executable Go evidence.
 
-Profile: AAuth Go transition profile: retained draft-hardt-oauth-aauth-protocol-09, draft-hardt-httpbis-signature-key-06, draft-hardt-aauth-r3-01, draft-hardt-aauth-events-00, draft-hardt-aauth-bootstrap-01, and interop-demo-profile; Phase-1 Ed25519 wire migration from draft-hardt-oauth-aauth-protocol-11 and draft-hardt-httpbis-signature-key-08; later token-topology phases unclaimed
+Profile: AAuth Go current-editor transition profile: draft-hardt-oauth-aauth-protocol-latest, draft-hardt-httpbis-signature-key-latest, draft-hardt-aauth-r3-latest, draft-hardt-aauth-events-latest, draft-hardt-aauth-bootstrap-latest, draft-hardt-aauth-budgets-latest, and interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 and HTTP Signature Keys 0ff751b571e7fe51336bcc1e526954a202317cc0; every unsupported current behavior remains explicit or unclaimed
 
 ## Summary
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 56 |
-| Partial | 41 |
-| Unsupported | 11 |
+| Exercised | 21 |
+| Partial | 16 |
+| Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 695 |
+| Unclaimed | 557 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,14 +20,13 @@ Profile: AAuth Go transition profile: retained draft-hardt-oauth-aauth-protocol-
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-09 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` | 38 | 21 | 4 | 0 | 165 |
-| `signature-key` | draft-hardt-httpbis-signature-key-06 at signature-key 84f2d831e22741435660c1f160344d98c69db4d1 | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` | 2 | 4 | 5 | 0 | 62 |
-| `r3` | draft-hardt-aauth-r3-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` | 0 | 5 | 0 | 0 | 44 |
-| `events` | draft-hardt-aauth-events-00 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` | 0 | 7 | 0 | 0 | 57 |
-| `bootstrap` | draft-hardt-aauth-bootstrap-01 at AAuth b414033d4c81224034b5b419216ae06706ede660 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` | 1 | 2 | 2 | 0 | 38 |
-| `interop-profile` | interop-demo-profile at AAuth b414033d4c81224034b5b419216ae06706ede660 | `a9eb24420b2c0a4176833a67e1ce8c55c007e65d567bcd3f076426cba8643cca` | 5 | 0 | 0 | 0 | 3 |
-| `core-wire-target` | draft-hardt-oauth-aauth-protocol-11 at AAuth 932bc6cead9fca13fa60b085339038a548425d88 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 2 | 1 | 0 | 0 | 253 |
-| `signature-key-wire-target` | draft-hardt-httpbis-signature-key-08 at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 1 | 0 | 0 | 73 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 12 | 5 | 3 | 0 | 236 |
+| `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
+| `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 0 | 0 | 0 | 0 | 56 |
+| `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
+| `bootstrap` | draft-hardt-aauth-bootstrap-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` | 1 | 2 | 2 | 0 | 38 |
+| `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 0 | 0 | 0 | 0 | 91 |
+| `interop-profile` | interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195` | 0 | 0 | 0 | 0 | 8 |
 
 ## Explicit section dispositions
 
@@ -66,22 +65,6 @@ Evidence:
 - `bootstrap_journey_test.go:TestBootstrapRefusesUnknownInstallAndExactRequestReplay`
 - `bootstrap_journey_test.go:TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken`
 
-### `core/access-server-federation` — Exercised
-
-The resource, person server, and access server execute the supported federation path across distinct trust and policy boundaries.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
-
-### `core/agent-tokens/agent-token-structure` — Partial
-
-The draft-09 agent-token claim topology remains exercised, but its EdDSA wire-algorithm sentence is historical and superseded by core-wire-target/signature-algorithms.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
 ### `core/agent-tokens/agent-token-usage` — Exercised
 
 Agent tokens are presented through Signature-Key and bound to the signing key during live authorization requests.
@@ -98,103 +81,6 @@ Evidence:
 
 - `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
 - `token_identity_internal_test.go:TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain`
-
-### `core/as-token-endpoint/as-response` — Partial
-
-Immediate and deferred access-server outcomes are relayed and verified; the complete draft response surface is not implemented.
-
-Evidence:
-
-- `deferred_four_party_journey_test.go:TestAccessServerDeferredAuthorizationThroughPersonServer`
-
-### `core/as-token-endpoint/auth-token-delivery` — Exercised
-
-The person server verifies the access-server result before delivering the auth token to the agent.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
-
-### `core/as-token-endpoint/ps-to-as-token-request` — Exercised
-
-The person server signs a supported access-server token request with its discoverable server identity.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
-
-### `core/audit-endpoint/audit-request` — Exercised
-
-Signed audit requests are validated against mission ownership and action history before append.
-
-Evidence:
-
-- `governance_journey_test.go:TestMissionPermissionAndAuditVertical`
-
-### `core/audit-endpoint/audit-response` — Exercised
-
-Successful audit acceptance is durably committed before the supported response is exposed.
-
-Evidence:
-
-- `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
-
-### `core/auth-token-response-verification` — Exercised
-
-The supported client verifies a returned auth token before presenting it to the resource.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
-
-### `core/auth-tokens/auth-token-structure` — Partial
-
-The draft-09 auth-token claim topology remains exercised, but its EdDSA wire-algorithm sentence is historical and superseded by core-wire-target/signature-algorithms.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/auth-tokens/auth-token-usage` — Exercised
-
-The auth token is presented in Signature-Key and authorizes only the proof-bound protected request.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/auth-tokens/auth-token-verification/jwt-trust-verification` — Exercised
-
-The resource verifies admitted issuer trust and the supported JWT claims before applying authorization.
-
-Evidence:
-
-- `request_security_test.go:TestAuthTokenRejectsWrongAudienceAtResourceBoundary`
-
-### `core/auth-tokens/auth-token-verification/request-context-binding` — Exercised
-
-Audience, request authority, confirmation key, and signed HTTP context are enforced at the resource boundary.
-
-Evidence:
-
-- `request_security_test.go:TestAuthTokenRejectsWrongAudienceAtResourceBoundary`
-
-### `core/call-chaining` — Partial
-
-Mission-governed multi-hop call chaining crosses three- and four-party authorization, composes with parent-mediated sub-agents, preserves nested delegation, and supports immediate and deferred access-server issuance. Missionless direct-AS routing and resource-owned interaction chaining remain open.
-
-Evidence:
-
-- `call_chaining_journey_test.go:TestResourceExtendsAuthorizationToDownstreamResource`
-- `call_chaining_journey_test.go:TestResourceExtendsAuthorizationThroughDownstreamAccessServer`
-
-### `core/covered-components` — Exercised
-
-Method, authority, path, Signature-Key, applicable authorization and mission fields, and body digest are required in the supported profile.
-
-Evidence:
-
-- `request_security_test.go:TestSignedRequestRejectsMissionAddedOutsideCoveredComponents`
 
 ### `core/deferred-responses/deferred-response-state-machine` — Partial
 
@@ -248,10 +134,6 @@ Evidence:
 - `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
 - `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
 
-### `core/http-message-signatures-profile` — Unsupported
-
-Historical draft-09 HTTP-signature algorithm and error semantics are superseded and are not current positive coverage; active Phase-1 coverage is recorded against core-wire-target and signature-key-wire-target.
-
 ### `core/identifiers-and-discovery` — Partial
 
 Canonical HTTPS server identifiers and selected metadata discovery documents are implemented; the complete identifier and metadata surface is not.
@@ -264,98 +146,6 @@ Evidence:
 
 General chained interaction relay is not implemented.
 
-### `core/interaction-endpoint/interaction-request` — Partial
-
-Completion and clarification-response interaction requests are signed, ownership-bound, and durable; other draft actions are open.
-
-Evidence:
-
-- `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
-
-### `core/interaction-response-poll-authority` — Partial
-
-Type-specific completion and question response shapes plus durable polling are implemented for the selected interaction profile.
-
-Evidence:
-
-- `reference/interaction_test.go:TestDecodeInteractionAuthorizationUsesTypeSpecificSuccessShape`
-- `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
-
-### `core/jwks-discovery` — Partial
-
-The draft-09 admitted two-hop fetch, caching, refresh throttling, and rotation mechanics remain shared; current exact-kid algorithm validation and issuer binding are covered only by the draft-11/draft-08 targets.
-
-Evidence:
-
-- `discovery_test.go:TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache`
-- `discovery_test.go:TestTokenVerificationRefreshesSameKidAfterSignatureFailure`
-
-### `core/metadata-documents` — Partial
-
-The draft-09 role metadata shapes remain historical/shared; current mandatory issuer equality and typed issuer failures are covered by core-wire-target/metadata-documents.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
-
-### `core/mission-approval` — Exercised
-
-The supported person-server policy approves or rejects mission content and retains the approved mission as authorization context.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/mission-completion` — Partial
-
-The selected completion path supports clarification and atomic acceptance plus termination, but not every interaction action.
-
-Evidence:
-
-- `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
-
-### `core/mission-completion-overview` — Partial
-
-Completion proposal, clarification, acceptance, termination, restart, and replay handling are implemented; other interaction actions remain open.
-
-Evidence:
-
-- `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
-
-### `core/mission-creation` — Exercised
-
-A proposed mission is signed, policy-evaluated, assigned a durable identifier, and returned with exact approved bytes.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/mission-creation-overview` — Exercised
-
-Mission proposal, approval, exact approved-byte retention, and mission digest agreement are executable.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-- `mission_test.go:TestMissionS256MatchesCrossImplementationGoldenVector`
-
-### `core/mission-log` — Partial
-
-Permission, audit, clarification, completion, termination, proofs, and terminal responses are ordered and durable; other draft event families are open.
-
-Evidence:
-
-- `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
-- `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
-
-### `core/missions/aauth-mission-request-header` — Exercised
-
-The mission header is encoded, presented, covered by the request signature, and rejected if added outside that proof.
-
-Evidence:
-
-- `request_security_test.go:TestSignedRequestRejectsMissionAddedOutsideCoveredComponents`
-
 ### `core/overview-resource-managed` — Exercised
 
 The supported profile implements proof-bound resource-managed access, opaque credential rotation, and protected operation enforcement.
@@ -363,78 +153,6 @@ The supported profile implements proof-bound resource-managed access, opaque cre
 Evidence:
 
 - `access_journey_test.go:TestResourceManagedAAuthAccessIsProofBound`
-
-### `core/permission-endpoint/permission-request` — Exercised
-
-Signed mission-bound and missionless permission requests reach host policy with exact structured input.
-
-Evidence:
-
-- `governance_journey_test.go:TestMissionPermissionAndAuditVertical`
-
-### `core/permission-endpoint/permission-response` — Exercised
-
-Immediate and deferred permission decisions are validated, retained, and returned through the supported person-server profile.
-
-Evidence:
-
-- `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
-
-### `core/person-server/user-interaction` — Partial
-
-The person server supports trusted approval, rejection, clarification, expiry, and durable terminal delivery for selected interaction types.
-
-Evidence:
-
-- `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
-
-### `core/protocol-overview/resource-access-modes/federated-access-four-party` — Exercised
-
-The supported profile executes person-server to access-server federation with independent trust and policy boundaries.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
-
-### `core/protocol-overview/resource-access-modes/ps-asserted-access-three-party` — Exercised
-
-The supported profile executes agent-provider identity, mission approval, resource-token exchange, person-server authorization, and protected resource access.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/ps-token-endpoint/agent-token-request` — Exercised
-
-A signed supported agent-token request reaches the person-server token endpoint with resource and mission context.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/ps-token-endpoint/ps-response` — Partial
-
-Immediate success, denial, and deferred person-server responses are handled; the full draft response family is not implemented.
-
-Evidence:
-
-- `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
-
-### `core/requirement-agent-token` — Exercised
-
-The supported client parses an agent-token requirement and obtains a token before retrying authorization.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/requirement-auth-token` — Exercised
-
-The supported client follows an auth-token requirement through the person server before protected access.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
 
 ### `core/requirement-responses/aauth-requirement-header-structure` — Exercised
 
@@ -454,59 +172,11 @@ Evidence:
 
 ### `core/requirement-responses/interaction-required` — Partial
 
-Interaction requirements are represented for resource, person-server, access-server, and completion continuations; not every type is implemented.
+The supported person-server authorization continuation represents an interaction requirement; the current interaction family remains incomplete.
 
 Evidence:
 
 - `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
-
-### `core/resource-initiated-interaction` — Partial
-
-Resource-hosted deferred approval is implemented with separate trusted decision authority; the broader interaction family remains incomplete.
-
-Evidence:
-
-- `deferred_access_journey_test.go:TestResourceManagedDeferredInteractionVertical`
-
-### `core/resource-tokens/authorization-endpoint-request` — Exercised
-
-The supported resource authorization request is signed, mission-bound when applicable, and handled by a real resource endpoint.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/resource-tokens/authorization-endpoint-responses/response-with-resource-token` — Exercised
-
-A successful supported authorization response returns a proof-bound resource token used in the next protocol step.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/resource-tokens/resource-token/resource-challenge-verification` — Exercised
-
-The client verifies the resource challenge and issuer relationship before adopting the resource token.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/resource-tokens/resource-token/resource-token-structure` — Partial
-
-The draft-09 resource-token claim topology remains exercised, but its EdDSA wire-algorithm sentence is historical and superseded by core-wire-target/signature-algorithms.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `core/resource-tokens/resource-token/resource-token-verification` — Exercised
-
-Resource-token issuer, audience, mission, agent, request-key, lifetime, and scope bindings are verified in the supported flow.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
 
 ### `core/security-considerations/tls-requirements` — Exercised
 
@@ -516,25 +186,17 @@ Evidence:
 
 - `cmd/aauth-reference/main_test.go:TestPersonProcessServesDurableGovernanceOverTLS`
 
-### `core/sub-agents/parent-mediated-authorization` — Exercised
+### `core/signature-algorithms` — Exercised
 
-The parent obtains and polls authority for a sub-agent, while the sub-agent cannot call the person server directly.
+Phase 1 emits and validates fully specified Ed25519 on active JWT and JWK surfaces and rejects polymorphic EdDSA; current editor token topology remains unclaimed.
 
 Evidence:
 
-- `subagent_journey_test.go:TestParentMediatesSubagentAuthorization`
+- `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
 
 ### `core/sub-agents/single-level-depth` — Exercised
 
 The person server permits one delegation level and refuses deeper sub-agent chains.
-
-Evidence:
-
-- `subagent_journey_test.go:TestParentMediatesSubagentAuthorization`
-
-### `core/sub-agents/sub-agent-identity` — Exercised
-
-The supported parent-mediated flow binds a sub-agent identity and confirmation key while retaining the parent actor.
 
 Evidence:
 
@@ -548,43 +210,9 @@ Third-party login is not implemented.
 
 Token revocation is not implemented.
 
-### `core/upstream-token-verification` — Partial
-
-Person and access servers verify upstream JWT trust, issuer admission, mission continuity, and the draft step-3 audience-to-intermediary-agent-token-issuer binding before policy. The person server forwards the compact token unchanged. Actor construction follows the coherent delegation-chain semantics recorded in feedback N5 rather than contradictory step 4, so the source section remains partial pending draft resolution.
-
-Evidence:
-
-- `call_chaining_journey_test.go:TestResourceExtendsAuthorizationToDownstreamResource`
-- `call_chaining_journey_test.go:TestResourceExtendsAuthorizationThroughDownstreamAccessServer`
-
 ### `core/verification` — Partial
 
-The draft-09 component, digest, freshness, credential-binding, signature, and replay steps remain shared; its EdDSA algorithm and older error mapping are superseded by core-wire-target/verification.
-
-Evidence:
-
-- `request_security_test.go:TestSignedRequestRejectsBodyMutation`
-
-### `core-wire-target/metadata-documents` — Exercised
-
-Admitted metadata discovery requires issuer and exact discovery-identity equality, retaining issuer_missing and issuer_mismatch classifications through the HTTP verification boundary.
-
-Evidence:
-
-- `draft11_wire_test.go:TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer`
-- `draft11_wire_test.go:TestDraft08IssuerMetadataFailuresRetainTheirProtocolCodes`
-
-### `core-wire-target/signature-algorithms` — Exercised
-
-Phase 1 emits and validates fully specified Ed25519 on active JWT and JWK surfaces and rejects polymorphic EdDSA; draft-11 token topology remains unclaimed.
-
-Evidence:
-
-- `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
-
-### `core-wire-target/verification` — Partial
-
-Phase 1 maps unsupported algorithms, unsupported schemes, and issuer metadata failures to the draft-11 typed authentication envelope; Phase-2 credential topology is unclaimed.
+Phase 1 maps unsupported algorithms, unsupported schemes, and issuer metadata failures to the current editor typed authentication envelope; Phase-2 credential topology is unclaimed.
 
 Evidence:
 
@@ -665,189 +293,7 @@ Evidence:
 - `reference/events_ticket_test.go:TestProtectedEventRegistrationConsumesTicketAndCreatesSubscriptionAtomically`
 - `reference/events_ticket_test.go:TestProtectedEventTicketIssueRejectsIncompleteOrCollidingAuthority`
 
-### `interop-profile/aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response` — Exercised
-
-Mission approval and exact approved-mission response behavior execute through the reference person server.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `interop-profile/aauth-interoperability-demo-profile/surface-2-aauth-mission-presentation-and-resource-token-echo` — Exercised
-
-The mission presentation, signed resource authorization request, and resource-token continuity surface is executable.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-
-### `interop-profile/aauth-interoperability-demo-profile/surface-3-resource-token-issuance-and-issuer-discovery` — Exercised
-
-Resource-token issuance and admitted issuer metadata plus JWKS discovery are executable.
-
-Evidence:
-
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-- `discovery_test.go:TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache`
-
-### `interop-profile/aauth-interoperability-demo-profile/surface-4-auth-token-issuance-and-presentation` — Exercised
-
-Auth-token issuance, person-server verification, agent adoption, presentation, and resource enforcement are executable.
-
-Evidence:
-
-- `four_party_journey_test.go:TestFourPartyPersonServerAccessServerJourney`
-
-### `interop-profile/aauth-interoperability-demo-profile/surface-5-parent-mediated-sub-agent-token-handling` — Exercised
-
-Parent-mediated sub-agent token handling executes through authorization and protected resource access.
-
-Evidence:
-
-- `subagent_journey_test.go:TestParentMediatesSubagentAuthorization`
-
-### `r3/auth-token-extensions` — Partial
-
-Resource and auth tokens enforce complete URI/hash claim pairs and reject exact or case-fold-ambiguous claim names. Class auth tokens may carry disjoint direct and conditional operation subsets. A proposal auth token must echo the proposal reference, directly grant exactly its one operation, carry no recursive conditional result, retain the resource, agent, key, mission, scope, issuer and lifetime bindings, and pass agent validation before use. The resource independently enforces ordinary scope and the mapped R3 operation. Deferred R3 authorization remains unsupported.
-
-Evidence:
-
-- `r3_journey_test.go:TestR3DirectGrantJourney`
-- `r3_test.go:TestR3TokenClaimsRequireCompleteConsistentClaims`
-- `r3_test.go:TestVerifyAuthTokenRejectsDuplicateR3Claims`
-- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
-- `reference/agent_r3_test.go:TestAgentRefusesPerCallTokenThatDoesNotDirectlyGrantExactProposalOperation`
-- `reference/access_server_r3_test.go:TestValidateR3AuthorizationDecisionRequiresExactDirectProposalGrant`
-
-### `r3/authorization-endpoint-extensions` — Partial
-
-The supported four-party path carries signed r3_operations for one advertised MCP vocabulary, validates the requested operation through a deployment-owned authoritative-definition boundary, preserves that requested set in serializable agent state, and returns one R3 reference alongside independently enforced scope. Access policy may split verified document operations into disjoint direct and conditional subsets; their union cannot exceed either the document or retained agent request. Exact and case-fold-ambiguous request names are refused before decoding. Scope-free R3 and live authoritative discovery adapters for every vocabulary remain open.
-
-Evidence:
-
-- `r3_journey_test.go:TestR3DirectGrantJourney`
-- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
-- `reference/access_server_r3_test.go:TestValidateR3AuthorizationDecisionAcceptsOnlyDisjointDocumentSubsets`
-
-### `r3/per-call-proposals` — Partial
-
-For one MCP conditional operation alongside a disjoint direct class operation with ordinary scope, the mixed class token executes the direct operation and produces a non-executing auth-token challenge for the conditional call. The signed challenge token references one durably retained exact proposal. The AS alone fetches and hash-verifies it, policy directly approves its single operation, and atomic issuance custody precedes token release. A signed retry must match the selected HTTP operation and every inline and full-byte digest parameter before durable consume-before-effect admission; changed calls and repeated per-call-token use are refused across resource restart. This is at-most-once operation admission, not exactly-once external consequence. Query-bearing conditional calls are unsupported, content type is signed for bodies, and PS proposal retrieval/display remains unresolved because the draft's PS-fetch text conflicts with its AS-only endpoint rule.
-
-Evidence:
-
-- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
-- `r3_test.go:TestR3ProposalBindsInlineAndDigestParameters`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreConsumesProposalOnceAcrossRestart`
-- `reference/r3_issuance_store_test.go:TestFileR3PerCallIssuanceStoreCommitsOneExactTokenAcrossRestart`
-
-### `r3/r3-document` — Partial
-
-The reference resource rejects exact and case-fold duplicate-name ambiguity, validates standard operation-entry shapes and strict one-operation proposal parameters, preserves selected bytes without reserialization, and requires deployment-owned exact-byte custody before issuing a hash-derived class or proposal URI. The included atomic mode-0600 file store survives resource reconstruction, durably classifies proposals and their per-token consumption, bounds per-document, total-byte, and count retention, rejects non-canonical digest paths, and evicts only expired custody. Missing, corrupt, substituted, or expired proposal bytes fail closed. It does not promise permanent historical retention after token expiry. Exact bytes are served only to the resource's signed access server. Multi-process store coordination and multi-definition composition remain open.
-
-Evidence:
-
-- `r3_journey_test.go:TestR3DirectGrantJourney`
-- `r3_test.go:TestR3DocumentHashRetainsExactWireIdentity`
-- `r3_test.go:TestR3StandardVocabularyOperationShapes`
-- `r3_test.go:TestR3DocumentRejectsDuplicateNamesAtEveryDepth`
-- `r3_test.go:TestR3ProposalBindsInlineAndDigestParameters`
-- `r3_test.go:TestR3ProposalRejectsMalformedParameterDocuments`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsExactBytesAcrossRestart`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRefusesOversizedOrInvalidRetention`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRemovesExpiredDocumentsBeforeStartupCapacityCheck`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRejectsNonCanonicalDigestPaths`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreConsumesProposalOnceAcrossRestart`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreFailsClosedForMissingExpiredOrCorruptProposalCustody`
-
-### `r3/r3-processing` — Partial
-
-The access server performs an admitted, deadline-bounded, no-redirect same-resource signed fetch with a fresh nonce, verifies bounded exact bytes before parsing or policy, rechecks admission before warm-cache reads, coalesces concurrent requests with cancellation isolation, and uses recoverable least-recently-used eviction for its re-hashed cache. Direct issuance remains gated by the deployment audit callback. Proposal issuance in a private custody directory atomically commits the exact auth token and a candidate semantic audit, then requires an independent deployment-owned durable idempotent audit before release. Its token lifetime is capped to proposal custody, and access-server restart retries the audit before recovering that same token. Person-server proposal fetching remains unsupported under the selected AS-only access rule.
-
-Evidence:
-
-- `r3_journey_test.go:TestR3DirectGrantJourney`
-- `reference/r3_fetch_test.go:TestR3FetchCacheEvictsLeastRecentlyUsedCompletedDocument`
-- `reference/r3_fetch_test.go:TestR3FetchSingleFlightSurvivesLeaderAndWaiterCancellation`
-- `reference/r3_fetch_test.go:TestR3FetchRefusesDeniedRedirectedOversizedAndTimedOutDocuments`
-- `reference/r3_fetch_test.go:TestR3FetchRetryUsesDistinctNonceInSameClockSecond`
-- `reference/r3_fetch_test.go:TestR3FetchRechecksAdmissionBeforeServingWarmCache`
-- `r3_conditional_journey_test.go:TestR3ConditionalPerCallJourney`
-- `reference/r3_issuance_store_test.go:TestFileR3PerCallIssuanceStoreCommitsOneExactTokenAcrossRestart`
-
-### `signature-key/name-accept-signature-sigkey-par` — Unsupported
-
-The draft-06 sigkey Accept-Signature parameter is historical and intentionally not implemented; draft-08 replaced it with Accept-Signature-Scheme and Accept-Signature-Alg.
-
-### `signature-key/name-header-web-key-hwk` — Unsupported
-
-Historical draft-06 hwk forbids alg and is wire-incompatible with the active draft-08 requirement; no current positive coverage is claimed for this section.
-
-### `signature-key/name-jkt-jwt-self-issued-key-del` — Partial
-
-The draft-06 durable-to-ephemeral delegation and thumbprint mechanics remain shared; its algorithm/JWK shape is historical, retained Elixir bytes are rejected, and current algorithm evidence belongs to signature-key-wire-target.
-
-Evidence:
-
-- `http_signature_inline_test.go:TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey`
-- `http_signature_inline_internal_test.go:TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey`
-- `internal/interop/cmd/generate/main_test.go:TestGenerateProducesVerifiableGoJKTJWTRequest`
-
-### `signature-key/name-jwks-uri-discovery-jwks_uri` — Partial
-
-The draft-06 id/dwk/kid two-hop shape remains shared; issuer equality, exact selected-kid validation, and fully specified algorithm behavior are covered only against signature-key-wire-target.
-
-Evidence:
-
-- `http_signature_jwks_test.go:TestJWKSURIRequestIdentitySignsAndVerifies`
-- `discovery_test.go:TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache`
-
-### `signature-key/name-jwt-confirmation-key-jwt` — Partial
-
-The draft-06 JWT confirmation-key delegation shape remains shared; its polymorphic/optional algorithm treatment is historical and current algorithm behavior is covered against signature-key-wire-target.
-
-Evidence:
-
-- `request_security_test.go:TestSignedRequestRejectsConfirmationKeySubstitution`
-
-### `signature-key/name-label-consistency` — Exercised
-
-Label correlation for the selected sig member is shared by draft-06 and draft-08; current dictionary dispatch is separately evidenced against signature-key-wire-target.
-
-Evidence:
-
-- `http_signature_jwks_test.go:TestJWKSURIRequestRejectsKeyReferenceSubstitution`
-
-### `signature-key/name-self-issued-jwt-self-jwt` — Partial
-
-The draft-06 self-JWT dual-proof shape in which the same discovered key verifies the token and HTTP signature remains shared; its algorithm and metadata contract is historical and current fully specified algorithm plus issuer behavior is covered against signature-key-wire-target.
-
-Evidence:
-
-- `http_signature_self_jwt_test.go:TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery`
-- `http_signature_self_jwt_test.go:TestSelfJWTUsesOneDiscoveredKeyForBothProofs`
-- `discovery_policy_test.go:TestSelfJWTUsesAdmittedHTTPKeyForBothProofs`
-
-### `signature-key/name-signature-error-http-respon` — Unsupported
-
-The retained draft-06 Signature-Error contract embeds supported_algorithms and is superseded; current error plus separate negotiation-header coverage is recorded against signature-key-wire-target.
-
-### `signature-key/name-signature-key-http-request-` — Unsupported
-
-The retained draft-06 root wire contract is historical and not current positive coverage; active RFC 8941 dictionary dispatch and fully specified algorithms are covered by signature-key-wire-target.
-
-### `signature-key/name-signature-key-integrity` — Exercised
-
-Signature-Key coverage and substitution resistance are shared across draft-06 and draft-08; active parser and algorithm semantics are evidenced against signature-key-wire-target.
-
-Evidence:
-
-- `http_signature_jwks_test.go:TestJWKSURIRequestRejectsKeyReferenceSubstitution`
-
-### `signature-key/name-x509-certificates-x509` — Unsupported
-
-The x509 scheme is not implemented.
-
-### `signature-key-wire-target/accept-signature-scheme-and-accept-signature-alg-response-headers` — Exercised
+### `signature-key/accept-signature-scheme-and-accept-signature-alg-response-headers` — Exercised
 
 Signature failures carry accepted algorithms and schemes in separate Accept-Signature-Alg and Accept-Signature-Scheme headers, never in supported_algorithms.
 
@@ -856,7 +302,7 @@ Evidence:
 - `draft11_wire_test.go:TestDraft08SignatureKeyFailuresAreTypedAndNegotiable`
 - `reference/draft11_wire_internal_test.go:TestSignatureFailureEmitsDraft08NegotiationHeaders`
 
-### `signature-key-wire-target/algorithm-determination` — Exercised
+### `signature-key/algorithm-determination` — Exercised
 
 Every active conveyed Ed25519 JWK requires alg=Ed25519; missing, polymorphic, or structurally inconsistent keys are rejected.
 
@@ -864,7 +310,7 @@ Evidence:
 
 - `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
 
-### `signature-key-wire-target/issuer_mismatch` — Exercised
+### `signature-key/issuer_mismatch` — Exercised
 
 Metadata whose issuer differs from its discovery identity is rejected with issuer_mismatch from discovery through request verification.
 
@@ -872,7 +318,7 @@ Evidence:
 
 - `draft11_wire_test.go:TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer`
 
-### `signature-key-wire-target/issuer_missing` — Exercised
+### `signature-key/issuer_missing` — Exercised
 
 Metadata without issuer is rejected with issuer_missing from discovery through request verification.
 
@@ -880,7 +326,7 @@ Evidence:
 
 - `draft11_wire_test.go:TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer`
 
-### `signature-key-wire-target/jwks-uri-scheme` — Exercised
+### `signature-key/jwks-uri-scheme` — Exercised
 
 JWKS URI resolution selects the exact requested kid before validating only that JWK, so unrelated future or malformed siblings do not deny a valid selected Ed25519 key; selected unsupported algorithms retain the negotiable unsupported_algorithm envelope.
 
@@ -889,7 +335,7 @@ Evidence:
 - `draft08_discovery_test.go:TestDraft08JWKSValidatesOnlyTheExactRequestedKid`
 - `draft08_discovery_test.go:TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope`
 
-### `signature-key-wire-target/signature-key-http-request-header` — Partial
+### `signature-key/signature-key-http-request-header` — Partial
 
 The active verifier parses Signature-Key as an RFC 8941 Dictionary, selects the sig Item and Token before dispatch, combines field lines, ignores unselected members, rejects non-string known-scheme parameters and non-RFC string escapes, and supports the selected single-signature schemes; general multiple-signature verification remains unclaimed.
 
@@ -900,7 +346,7 @@ Evidence:
 - `signature_key_structured_internal_test.go:TestSignatureKeyRejectsMalformedStructuredMembers`
 - `signature_key_structured_internal_test.go:TestSignatureKeySplitFieldLinesAreAllCoveredByTheSignature`
 
-### `signature-key-wire-target/signature-key-http-request-header/header-web-key-hwk` — Exercised
+### `signature-key/signature-key-http-request-header/header-web-key-hwk` — Exercised
 
 The active hwk serializer and verifier carry and require the fully specified Ed25519 alg parameter.
 
@@ -908,7 +354,20 @@ Evidence:
 
 - `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
 
-### `signature-key-wire-target/unsupported-scheme` — Exercised
+### `signature-key/signature-key-http-request-header/self-issued-jwt-self-jwt` — Partial
+
+The selected self-jwt profile verifies the compact JWT and its HTTP Message Signature with the same discovered key (Ed25519); broader algorithm and multi-signature profiles remain unclaimed.
+
+Evidence:
+
+- `http_signature_self_jwt_test.go:TestSelfJWTUsesOneDiscoveredKeyForBothProofs`
+- `events_journey_test.go:TestPublicSubscriptionEventSurvivesHostReconstruction`
+
+### `signature-key/signature-key-http-request-header/x-509-certificates-x509` — Unsupported
+
+The x509 scheme is not implemented.
+
+### `signature-key/unsupported-scheme` — Exercised
 
 A selected unknown or disallowed Signature-Key scheme is rejected as unsupported_scheme with the accepted scheme set available for HTTP negotiation.
 
@@ -916,7 +375,7 @@ Evidence:
 
 - `draft11_wire_test.go:TestDraft08SignatureKeyFailuresAreTypedAndNegotiable`
 
-### `signature-key-wire-target/unsupported_algorithm` — Exercised
+### `signature-key/unsupported_algorithm` — Exercised
 
 A selected JWK with missing, polymorphic, or unsupported alg is rejected as unsupported_algorithm with Accept-Signature-Alg naming Ed25519; malformed Ed25519 material remains invalid_key.
 

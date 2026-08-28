@@ -12,11 +12,18 @@ sources:
 
 | Source | Pinned identity | SHA-256 |
 | --- | --- | --- |
-| AAuth core | AAuth `b414033d4c81224034b5b419216ae06706ede660` | `2c3650d33caf44ac6c614042edc7094a59146ce01805641eb197759de0aa01d1` |
-| Signature-Key | signature-key `84f2d831e22741435660c1f160344d98c69db4d1` | `e049f5509806db9a9f93da0965e99d84415527634ca8b019f6c697a7743e17bf` |
-| R3 | AAuth source above, revision 01 | `752a72b44f06d457c454f2d187d43352482e2f7ce78a196d1c7fafcf66ea141c` |
-| Events | AAuth source above, revision 00 | `987b4354d14c72d741e4d1d3f51ecb9724bfc57a5eb01eacc92bfd7c27644f37` |
-| Bootstrap | AAuth source above, revision 01 | `27eecfd9b96de86558203684d285a1d14f135d6bd135d550ffa2d3afb1af9355` |
+| AAuth core | AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5` | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` |
+| Signature-Key | signature-key `0ff751b571e7fe51336bcc1e526954a202317cc0` | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` |
+| R3 | AAuth source above | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` |
+| Events | AAuth source above | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` |
+| Bootstrap | AAuth source above | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` |
+| Budgets | AAuth source above | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` |
+| Interoperability profile | AAuth source above | `ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195` |
+
+Entries below retain the source basis and verified boundary they had when they
+were written. A historical green journey is not silently promoted to current
+coverage; `SOURCE-COVERAGE.md` and `INTERPRETATIONS.md` carry the current
+disposition.
 
 Earlier exercised Go implementations are implementation-experience
 comparators. Unexercised BEAM source may be consulted as code archaeology, but
@@ -263,9 +270,9 @@ for this library.
 - The agent validates exactly one token68 credential, records the scope actually
   granted by the resource, and adopts a replacement `AAuth-Access` value on any
   later response.
-- Existing Sidecat Go work confirmed the token68, covered-authorization, and
-  replacement-token behaviors. The standalone implementation adds the
-  resource-side grant and refusal path; no Sidecat package is imported.
+- An earlier Go implementation confirmed the token68, covered-authorization,
+  and replacement-token behaviors. This standalone implementation adds the
+  resource-side grant and refusal path without importing another product.
 - Deferred `202` interaction and polling were added in the following tranche.
 
 ### Existing complete paths
@@ -299,7 +306,7 @@ for this library.
 - Terminal success, user denial, expiry, invalid-code failure, and already-gone
   continuations are one-shot. RFC 9457 responses are decoded into typed Go
   errors.
-- The earlier Sidecat Go implementation supplied useful requirement and
+- The earlier Go implementation supplied useful requirement and
   interaction precedent but had known current-draft gaps: 32-bit hexadecimal
   codes, development-only HTTP acceptance, `200` for still-pending polls, and
   rejection of otherwise ignorable non-token extension parameters. This
@@ -329,10 +336,9 @@ for this library.
 - Client polling now also applies `503 Retry-After` and continues to add five
   seconds after every `429`, in addition to enforcing the local not-before
   time before making another network call.
-- The prior Sidecat feedback authority is
-  `/home/jgay-automate/workspaces/sidecat-workspace/aauth/`. This tranche did
-  not produce a new protocol finding; it implements the deferred rules already
-  recorded there without re-raising reconciled feedback.
+- The reconciled feedback history now lives in `SPEC-FEEDBACK.md`. This tranche
+  did not produce a new protocol finding; it implements the deferred rules
+  already recorded there without re-raising reconciled feedback.
 - Clarification POST actions, interaction relay/callback, and durable external
   pending-state custody remain open.
 
@@ -523,21 +529,21 @@ for this library.
 - General interaction/payment relay, question delivery, updated-request and
   cancel actions, callback chaining, and persistence for the token/AS/resource
   pending families remain open. The completion implementation uses only the
-  standalone public package and reference package; Sidecat is an intended
-  consumer, not a dependency.
+  standalone public package and reference package; consuming applications are
+  not dependencies.
 
 ### Protected host signing boundary
 
 - **Status: the standalone library can sign through caller-owned protected key
-  custody without importing or depending on Sidecat.**
+  custody without importing or depending on a consuming application.**
 - `NewSigningKey` accepts the standard `crypto.Signer` capability, verifies
   that it exposes the mandatory Ed25519 public key, and derives the public JWK
   without requesting private bytes. `NewEd25519SigningKey` remains the
   convenient in-memory constructor and delegates to the same checked path.
 - An executable test signs a real AAuth HTTP request through a recording
   external signer and proves that the caller-held capability, rather than a
-  copied private key, performed the signature. This is the portability seam
-  Sidecat can back with its own protected-value custody and access receipts.
+  copied private key, performed the signature. A host can back this seam with
+  protected-value custody and access receipts.
 
 ### Runnable durable person-server process
 
@@ -546,7 +552,7 @@ for this library.
 - `aauth-reference serve person --profile FILE` composes the public
   `reference.PersonServer` with an explicit trust map, deployment-owned
   action/scope policy, TLS 1.3, and the single-writer file governance store.
-  It has no Sidecat import or runtime dependency.
+  It has no host-application import or runtime dependency.
 - Startup refuses unknown profile fields, noncanonical custody paths,
   symlinked parents or files, multiply linked files, non-`0600` sensitive
   files, foreign ownership, an unprotected governance directory or existing
@@ -560,7 +566,7 @@ for this library.
   against the same snapshot, reuses the exact prior mission for another
   permission and audit, and proves the private state advanced.
 - This process makes the person-server role independently operable and gives
-  Sidecat a genuine peer to consume. It does not turn the conservative static
+  any host a genuine peer to consume. It does not turn the conservative static
   JSON policy into a general policy language or claim production key
   provisioning, service supervision, multi-writer state, or full AAuth
   conformance.
@@ -570,8 +576,9 @@ for this library.
 - **Status: the implementation's supported profile is bound to pinned source
   bytes, a complete source-section inventory, and executable Go evidence.**
 - The manifest pins the current local core, Signature-Key, R3, Events,
-  Bootstrap, and interoperability-profile sources by exact revision, filename,
-  format, and SHA-256. The generated inventory records all 465 headings, so a
+  Bootstrap, Budgets, and interoperability-profile sources by exact revision,
+  filename, format, and SHA-256. The generated inventory records all 600
+  headings, so a
   newly added, removed, retitled, or reparented section is a review event
   instead of disappearing outside the checklist.
 - Claims are deliberately section-specific. The generated report records the
@@ -588,36 +595,24 @@ for this library.
   source refresh or claim change can silently rewrite the pinned manifest.
 - This mechanism creates an honest maintained-current-source loop without
   importing an upstream repository, making an upstream commitment, or
-  pretending unimplemented R3, Events, Bootstrap, Signature-Key schemes, or
-  other core behaviors are supported.
+  treating the 557 unclaimed current sections—including the person-token
+  topology, current R3, and Budgets—as implicitly supported.
 
-### Independent Elixir interoperability
+### Historical Elixir interoperability fixtures
 
-- **Status: the selected agent-token, mission-presentation, JWT Signature-Key,
-  and RFC 9421 request profile interoperates in both directions with our
-  independent Elixir AAuth implementation.**
-- At exact `sidecat-beam` revision
-  `6fc87c6316583e94088cb7c72722d65fe5f11edc`, the Elixir implementation mints
-  a fixed `aa-agent+jwt`, builds an `AAuth-Mission` reference, and signs a real
-  GET request. The Go implementation verifies issuer trust, token lifetime and
-  claims, confirmation-key binding, covered components, mission syntax,
-  signature freshness, and Ed25519 proof from the retained exact headers.
-- The reciprocal vector is emitted solely through the public Go package. The
-  Elixir implementation independently verifies the Go token, confirmation
-  key, mission, and HTTP signature. Both directions change the mission and
-  Signature-Key separately and prove that neither modified request verifies.
-- Fixed seeds, identifiers, times, token IDs, mission bytes, and request
-  targets make both generators byte-deterministic. The fixtures contain only
-  public keys, tokens, and signed public request material. The deterministic
-  test seeds remain visibly confined to the generators and grant no deployment
-  authority.
-- This proof uses the source implementations themselves rather than expected
-  bytes transcribed from a draft. It is deliberately bounded: it does not
-  assert cross-runtime coverage for every token, Signature-Key scheme,
-  component, response, interaction, or deployed server role.
-- The Go library and executable still have no Elixir or Sidecat dependency.
-  Elixir is invoked only when a maintainer deliberately regenerates or
-  reciprocally verifies the interoperability vectors.
+- **Status: retained negative compatibility evidence; no current
+  bidirectional-interoperability claim.**
+- At the exact historical BEAM revision
+  `6fc87c6316583e94088cb7c72722d65fe5f11edc`, the two implementations exchanged
+  deterministic agent-token and signed-request vectors for an earlier source
+  profile. Those vectors use the removed `AAuth-Mission` request header and the
+  now-prohibited polymorphic `EdDSA` identifier.
+- Current Go tests retain and reject those exact bytes as
+  `unsupported_algorithm`. A new cross-implementation claim requires another
+  independently generated current person-token journey in both directions.
+- The Go library and executable have no Elixir or host-application dependency. Elixir is
+  invoked only when a maintainer deliberately regenerates or verifies an
+  interoperability vector.
 
 ### Enrolled-install bootstrap and key delegation
 
@@ -651,10 +646,11 @@ for this library.
   person server. Separate controls refuse unknown enrollment, exact proof
   replay, expired and future delegations, delegation-signature mutation, and a
   durable-key HTTP proof where the delegated ephemeral key is required.
-- Independent Elixir and Go implementations now generate and verify
-  `jkt-jwt` request vectors in both directions, including durable thumbprint
-  identity, delegated key resolution, exact request proof, and Signature-Key
-  mutation controls.
+- At the historical Bootstrap and Signature-Key profile, independent Elixir
+  and Go implementations generated and verified `jkt-jwt` request vectors in
+  both directions, including durable thumbprint identity, delegated key
+  resolution, exact request proof, and Signature-Key mutation controls. Those
+  fixtures do not establish current person-token or full-family conformance.
 - Source coverage now marks the selected `hwk`, `jkt-jwt`, and refresh
   behaviors exercised. Platform-specific protected key creation/storage,
   enrollment ceremonies, attestation, and identifier-strategy selection remain
