@@ -3,6 +3,7 @@ package reference
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +52,15 @@ type Grant struct {
 	Resource  string
 	AuthToken string
 	Claims    aauth.AuthTokenClaims
+}
+
+// PersonGrant is one verified resource-directed person token obtained from a
+// person server. Claims are retained beside the compact token so later client
+// checks do not have to trust caller-reconstructed context.
+type PersonGrant struct {
+	Resource    string
+	PersonToken string
+	Claims      aauth.PersonTokenClaims
 }
 
 // AuthorizedCall is the exact HTTP call an agent signs under an auth-token
@@ -584,6 +594,10 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 	if err := aauth.ValidateEndpoint(endpoint); err != nil {
 		return approved, err
 	}
+	personServer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return approved, err
+	}
 	body, err := json.Marshal(proposal)
 	if err != nil {
 		return approved, err
@@ -604,20 +618,43 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 	if response.StatusCode != http.StatusOK {
 		return approved, responseError(response)
 	}
-	missionBytes, err := io.ReadAll(io.LimitReader(response.Body, maxJSONBody+1))
+	responseBytes, err := io.ReadAll(io.LimitReader(response.Body, maxJSONBody+1))
 	if err != nil {
 		return approved, err
 	}
-	if len(missionBytes) > maxJSONBody {
+	if len(responseBytes) > maxJSONBody {
 		return approved, errors.New("reference: mission response is too large")
 	}
-	reference, err := aauth.ParseMissionHeader(response.Header.Get("AAuth-Mission"))
-	if err != nil {
-		return approved, err
-	}
-	approved = aauth.ApprovedMission{
-		Reference: reference,
-		Bytes:     append([]byte(nil), missionBytes...),
+	missionBytes := responseBytes
+	if header := response.Header.Get("AAuth-Mission"); header != "" {
+		reference, err := aauth.ParseMissionHeader(header)
+		if err != nil {
+			return approved, err
+		}
+		approved = aauth.ApprovedMission{
+			Reference: reference,
+			Bytes:     append([]byte(nil), missionBytes...),
+		}
+	} else {
+		var result struct {
+			S256         string            `json:"s256"`
+			Mission      string            `json:"mission"`
+			Capabilities []string          `json:"capabilities,omitempty"`
+			PersonTokens map[string]string `json:"person_tokens,omitempty"`
+		}
+		if err := json.Unmarshal(responseBytes, &result); err != nil {
+			return approved, fmt.Errorf("reference: decode mission approval: %w", err)
+		}
+		missionBytes, err = base64.RawURLEncoding.DecodeString(result.Mission)
+		if err != nil {
+			return approved, fmt.Errorf("reference: decode approved mission bytes: %w", err)
+		}
+		approved = aauth.ApprovedMission{
+			Reference:    aauth.MissionReference{Approver: personServer, S256: result.S256},
+			Bytes:        append([]byte(nil), missionBytes...),
+			Capabilities: append([]string(nil), result.Capabilities...),
+			PersonTokens: copyStringMap(result.PersonTokens),
+		}
 	}
 	if err := approved.ValidateExactBytes(); err != nil {
 		return approved, err
@@ -629,10 +666,103 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 	if err := json.Unmarshal(missionBytes, &blob); err != nil {
 		return approved, fmt.Errorf("reference: decode approved mission: %w", err)
 	}
-	if blob.Approver != reference.Approver || blob.Agent != agent.identifier {
+	if blob.Approver != approved.Reference.Approver || blob.Agent != agent.identifier {
 		return approved, errors.New("reference: approved mission body does not match agent or approver")
 	}
+	for resource, compact := range approved.PersonTokens {
+		claims, err := aauth.VerifyPersonToken(ctx, compact, agent.keyResolver, agent.clock)
+		if err != nil {
+			return approved, err
+		}
+		if resource != claims.Audience || claims.Issuer != approved.Reference.Approver ||
+			claims.MissionS256 != approved.Reference.S256 ||
+			!claims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+			return approved, errors.New("reference: mission person token does not match its approval")
+		}
+	}
 	return approved, nil
+}
+
+// RequestPersonToken obtains a current resource-directed person token. A
+// mission is optional; when supplied its exact bytes and approver are checked
+// before the mission digest is put on the wire.
+func (agent *Agent) RequestPersonToken(
+	ctx context.Context,
+	endpoint string,
+	resource string,
+	mission *aauth.ApprovedMission,
+) (PersonGrant, error) {
+	var grant PersonGrant
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return grant, err
+	}
+	if err := aauth.ValidateServerIdentifier(resource); err != nil {
+		return grant, err
+	}
+	personServer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return grant, err
+	}
+	input := struct {
+		Resource    string `json:"resource"`
+		MissionS256 string `json:"mission_s256,omitempty"`
+	}{Resource: resource}
+	if mission != nil {
+		if err := mission.ValidateExactBytes(); err != nil {
+			return grant, err
+		}
+		if mission.Reference.Approver != personServer {
+			return grant, errors.New("reference: person-token mission approver does not match endpoint")
+		}
+		input.MissionS256 = mission.Reference.S256
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return grant, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return grant, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+		return grant, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return grant, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return grant, responseError(response)
+	}
+	var result struct {
+		PersonToken string `json:"person_token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
+		return grant, err
+	}
+	claims, err := aauth.VerifyPersonToken(ctx, result.PersonToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return grant, err
+	}
+	if claims.Issuer != personServer || claims.Audience != resource ||
+		claims.MissionS256 != input.MissionS256 ||
+		!claims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+		return grant, errors.New("reference: person token does not match its request")
+	}
+	return PersonGrant{Resource: resource, PersonToken: result.PersonToken, Claims: claims}, nil
+}
+
+func copyStringMap(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	copied := make(map[string]string, len(source))
+	for key, value := range source {
+		copied[key] = value
+	}
+	return copied
 }
 
 // RequestPermission asks a person server to govern a local action. The result
@@ -1132,6 +1262,124 @@ func (agent *Agent) Authorize(
 	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
 }
 
+// AuthorizeWithPersonToken performs the current authorization-endpoint and
+// person-server exchange using one resource-directed aa-person+jwt.
+func (agent *Agent) AuthorizeWithPersonToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	personServerEndpoint string,
+	scopes []string,
+	personToken string,
+) (Grant, error) {
+	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+		return Grant{}, err
+	}
+	personServer, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return Grant{}, err
+	}
+	personClaims, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return Grant{}, err
+	}
+	if personClaims.Issuer != personServer {
+		return Grant{}, errors.New("reference: person token issuer does not match person-server endpoint")
+	}
+	resourceGrant, err := agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, personClaims)
+	if err != nil {
+		return Grant{}, err
+	}
+	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
+}
+
+// RequestResourceTokenWithPersonToken asks a resource to derive a current
+// resource token from an exact person token. The returned grant can be
+// exchanged immediately or retained by the caller across a retry boundary.
+func (agent *Agent) RequestResourceTokenWithPersonToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	personToken string,
+) (ResourceGrant, error) {
+	claims, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims)
+}
+
+func (agent *Agent) requestCurrentResourceToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	personToken string,
+	personClaims aauth.PersonTokenClaims,
+) (ResourceGrant, error) {
+	var grant ResourceGrant
+	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
+		return grant, err
+	}
+	requestedScopes, err := parseScopes(strings.Join(scopes, " "))
+	if err != nil {
+		return grant, err
+	}
+	resourceID, err := endpointIdentifier(resourceEndpoint)
+	if err != nil {
+		return grant, err
+	}
+	if err := aauth.ValidatePersonTokenContext(personClaims, resourceID, agent.signingKey.PublicJWK()); err != nil {
+		return grant, err
+	}
+	body, err := json.Marshal(map[string]string{"scope": strings.Join(requestedScopes, " ")})
+	if err != nil {
+		return grant, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, resourceEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return grant, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agent.signingKey, personToken, agent.clock); err != nil {
+		return grant, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return grant, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return grant, responseError(response)
+	}
+	var result struct {
+		ResourceToken string `json:"resource_token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
+		return grant, err
+	}
+	resourceClaims, err := aauth.VerifyResourceToken(ctx, result.ResourceToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return grant, err
+	}
+	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
+	if err != nil {
+		return grant, err
+	}
+	if resourceClaims.Issuer != resourceID ||
+		resourceClaims.PersonServer != personClaims.Issuer ||
+		resourceClaims.Subject != personClaims.Subject ||
+		resourceClaims.PresentedJTI != personClaims.JTI ||
+		resourceClaims.AgentJKT != thumbprint ||
+		resourceClaims.MissionS256 != personClaims.MissionS256 ||
+		resourceClaims.Tenant != personClaims.Tenant {
+		return grant, errors.New("reference: resource token does not match the presented person token")
+	}
+	return ResourceGrant{
+		Resource:      resourceID,
+		ResourceToken: result.ResourceToken,
+		Claims:        resourceClaims,
+	}, nil
+}
+
 // AuthorizeR3 performs the ordinary four-party authorization journey while
 // asking the resource for one content-addressed R3 operation set.
 func (agent *Agent) AuthorizeR3(
@@ -1389,7 +1637,11 @@ func (agent *Agent) RequestTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
+	if resourceGrant.Claims.PersonServer != "" {
+		if resourceGrant.Claims.Agent != "" || resourceGrant.Claims.AgentJKT != thumbprint {
+			return TokenAuthorization{}, errors.New("reference: current resource token is not bound to the requesting key")
+		}
+	} else if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
 		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the requesting agent")
 	}
 	return agent.requestTokenAuthorization(
@@ -1682,7 +1934,11 @@ func (agent *Agent) requestTokenAuthorization(
 	}
 	expectedIssuer := personServerID
 	if resourceGrant.Claims.Audience != personServerID {
-		if resourceGrant.Claims.Mission == nil ||
+		if resourceGrant.Claims.PersonServer != "" {
+			if resourceGrant.Claims.PersonServer != personServerID {
+				return authorization, errors.New("reference: federated resource token names a different person server")
+			}
+		} else if resourceGrant.Claims.Mission == nil ||
 			resourceGrant.Claims.Mission.Approver != personServerID {
 			return authorization, errors.New("reference: federated resource token is not governed by the person server")
 		}
@@ -1780,7 +2036,26 @@ func (agent *Agent) parseTokenGrantResponse(
 	if err != nil {
 		return Grant{}, err
 	}
-	if authClaims.Issuer != expectedIssuer ||
+	current := resourceGrant.Claims.PersonServer != ""
+	if current {
+		if authClaims.ExpiresAt > resourceGrant.Claims.ExpiresAt {
+			return Grant{}, errors.New("reference: auth token outlives the resource token")
+		}
+		expectedDiscoveryDocument := aauth.AccessDiscoveryDocument
+		if expectedIssuer == resourceGrant.Claims.PersonServer {
+			expectedDiscoveryDocument = aauth.PersonDiscoveryDocument
+		}
+		if authClaims.Issuer != expectedIssuer ||
+			authClaims.DWK != expectedDiscoveryDocument ||
+			authClaims.PersonServer != resourceGrant.Claims.PersonServer ||
+			authClaims.Subject != resourceGrant.Claims.Subject ||
+			authClaims.MissionS256 != resourceGrant.Claims.MissionS256 ||
+			authClaims.Tenant != resourceGrant.Claims.Tenant ||
+			authClaims.Account != resourceGrant.Claims.Account ||
+			authClaims.Agent != "" || authClaims.Actor != nil {
+			return Grant{}, errors.New("reference: current auth token issuer, discovery document, or person context does not match the resource token")
+		}
+	} else if authClaims.Issuer != expectedIssuer ||
 		authClaims.Mission == nil ||
 		resourceGrant.Claims.Mission == nil ||
 		*authClaims.Mission != *resourceGrant.Claims.Mission {
@@ -1807,17 +2082,30 @@ func (agent *Agent) parseTokenGrantResponse(
 			return Grant{}, errors.New("reference: per-call auth token does not grant exactly the proposed operation")
 		}
 	}
-	if err := aauth.ValidateAuthTokenContext(
-		authClaims,
-		resourceGrant.Resource,
-		expectedAgent,
-		expectedKey,
-		requiredScopes,
-	); err != nil {
-		return Grant{}, err
-	}
-	if !actorsEqual(authClaims.Actor, expectedActor) {
-		return Grant{}, errors.New("reference: auth token contains an unexpected act chain")
+	if current {
+		if err := aauth.ValidateCurrentAuthTokenContext(
+			authClaims,
+			resourceGrant.Resource,
+			resourceGrant.Claims.PersonServer,
+			resourceGrant.Claims.Subject,
+			expectedKey,
+			requiredScopes,
+		); err != nil {
+			return Grant{}, err
+		}
+	} else {
+		if err := aauth.ValidateAuthTokenContext(
+			authClaims,
+			resourceGrant.Resource,
+			expectedAgent,
+			expectedKey,
+			requiredScopes,
+		); err != nil {
+			return Grant{}, err
+		}
+		if !actorsEqual(authClaims.Actor, expectedActor) {
+			return Grant{}, errors.New("reference: auth token contains an unexpected act chain")
+		}
 	}
 	return Grant{
 		Resource:  resourceGrant.Resource,

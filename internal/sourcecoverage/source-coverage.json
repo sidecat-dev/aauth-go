@@ -95,6 +95,286 @@
     },
     {
       "source": "core",
+      "section": "person-token-endpoint",
+      "status": "partial",
+      "claim": "Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance also recovers one exact response across partial or uncertain journal, person-token, and mission commits. Deferred, sub-agent, upstream-token, and metadata-fetch behavior remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        },
+        {
+          "file": "current_mission_recovery_test.go",
+          "test": "TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "person-token-structure",
+      "status": "exercised",
+      "claim": "The selected Ed25519 profile emits every required person-token claim, supports mission_s256 and tenant, caps lifetime at one hour, and refuses scope or account.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        },
+        {
+          "file": "person_token_internal_test.go",
+          "test": "TestVerifyPersonTokenRejectsAuthorizationClaims"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "person-token-usage",
+      "status": "exercised",
+      "claim": "An agent presents aa-person+jwt through Signature-Key and signs the authorization request with the token's confirmation key.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "person-token-verification",
+      "status": "exercised",
+      "claim": "Verification covers type, discovery role, admitted issuer key, signature, time, resource audience, and request confirmation key, with negative controls for each context boundary.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/authorization-endpoint-request",
+      "status": "exercised",
+      "claim": "The current client signs a scope request with a resource-directed person token, and the resource verifies that token before issuing a resource token.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/authorization-endpoint-responses/response-with-resource-token",
+      "status": "exercised",
+      "claim": "A four-party resource returns a verified resource token whose audience is its AS and whose person and mission context comes from the presented person token.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/resource-token/resource-token-structure",
+      "status": "exercised",
+      "claim": "The current resource token carries ps, sub, presented_jti, agent_jkt, scope, mission_s256, and tenant while omitting agent and the removed mission object.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/resource-token/resource-token-verification",
+      "status": "partial",
+      "claim": "The PS resolves presented_jti from durable custody and compares ps, resource, sub, mission_s256, and tenant; the AS verifies that ps is the signing PS. Current sub-agent and call-chaining modes remain open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "resource-tokens/resource-token/resource-challenge-verification",
+      "status": "partial",
+      "claim": "The client checks a proactive authorization response's resource issuer, proof key, ps, sub, presented_jti, mission_s256, and tenant against the person token it presented, including a cross-session substitution control. Extracting and verifying a resource token from a protected-resource 401 challenge remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "ps-token-endpoint/agent-token-request",
+      "status": "partial",
+      "claim": "The immediate current request is agent-token signed, key-bound to the resource token, and verified against retained person-token custody. Current optional request parameters and delegation modes remain open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "ps-token-endpoint/ps-response",
+      "status": "partial",
+      "claim": "The immediate four-party response returns a current auth token after PS and AS policy. Current claims, clarification, payment, and interaction composition remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-creation",
+      "status": "partial",
+      "claim": "A current mission proposal is validated before policy, and policy receives the authenticated agent, proof key, token expiry, and person-server binding. The resulting exact digest-bound approval can be recovered after restart. Current mission update, completion, control, and log migration remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        },
+        {
+          "file": "current_mission_recovery_test.go",
+          "test": "TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-approval",
+      "status": "partial",
+      "claim": "Immediate approval returns s256, base64url exact mission bytes, approved resources, and resource-keyed person tokens. One pre-release journal makes the exact response recoverable across partial and uncertain child commits; broader lifecycle and deferred approval remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        },
+        {
+          "file": "current_mission_recovery_test.go",
+          "test": "TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "access-server-federation",
+      "status": "partial",
+      "claim": "The immediate four-party path carries one PS-retained person binding through an independently authenticated AS policy decision. Deferred trust establishment and richer requirement composition remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "as-token-endpoint/ps-to-as-token-request",
+      "status": "partial",
+      "claim": "The PS signs the AS request under its discovered server key and sends the verified resource and agent tokens. Current sub-agent and upstream-token parameters remain open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "as-token-endpoint/as-response",
+      "status": "partial",
+      "claim": "The AS returns a direct current auth token after verifying the sending PS, resource token, agent token, proof key, and policy result. Deferred and payment responses remain open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "as-token-endpoint/auth-token-delivery",
+      "status": "partial",
+      "claim": "The PS verifies the AS issuer, audience, confirmation key, directed person, scope, mission, tenant, account, and resource-token expiry ceiling before delivering the direct grant. Deferred delivery remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-structure",
+      "status": "exercised",
+      "claim": "The selected current auth token requires ps and sub, carries the copied mission and tenant context, and omits agent, act, and the removed mission object.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-usage",
+      "status": "exercised",
+      "claim": "The agent presents the auth token through Signature-Key and signs the protected request with the token's confirmation key; exact proof replay is refused.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-verification/jwt-trust-verification",
+      "status": "exercised",
+      "claim": "The resource verifies current auth-token type, issuer-role discovery, admitted issuer key, signature, time, and HTTPS issuer before policy context is used.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-tokens/auth-token-verification/request-context-binding",
+      "status": "partial",
+      "claim": "The reference resource verifies audience, configured issuer, confirmation key, and required scope, then passes the verified ps and sub to the host operation. It does not match or establish those values against a resource-owned identity record; that host adapter remains open.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "auth-token-response-verification",
+      "status": "exercised",
+      "claim": "The client verifies issuer, audience, confirmation key, sub, ps, mission, tenant, account, requested scope, and the resource-token expiry ceiling before retaining the auth token.",
+      "evidence": [
+        {
+          "file": "current_person_token_journey_test.go",
+          "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
       "section": "interaction-chaining",
       "status": "unsupported",
       "claim": "General chained interaction relay is not implemented."

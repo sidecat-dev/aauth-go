@@ -9,13 +9,12 @@ the module has no dependency on a particular product or deployment.
 The repository pins the complete current Dick Hardt editor-source family at
 AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5` and Signature-Key
 `0ff751b571e7fe51336bcc1e526954a202317cc0`. The implementation is transitional:
-its fully specified `Ed25519` and selected Signature-Key behavior are current,
-but its older resource/auth-token journeys do not yet implement the current
-person-token topology. Those journeys remain useful regression evidence for
-implemented library behavior, but [the source coverage report](SOURCE-COVERAGE.md)
-does not count them as current-protocol conformance. This is a
-community-oriented standalone Go implementation; it does not claim an official
-AAuth designation.
+its fully specified `Ed25519`, selected Signature-Key behavior, and one
+distinct-server immediate person-token journey use the current topology. Older
+resource, governance, delegation, and R3 journeys remain useful regression
+evidence, but [the source coverage report](SOURCE-COVERAGE.md) does not count
+them as current-protocol conformance. This is a community-oriented standalone
+Go implementation; it does not claim an official AAuth designation.
 
 ## Install
 
@@ -33,6 +32,32 @@ evidence-backed questions and their upstream dispositions. Runnable package
 examples are part of the current person-token migration.
 
 ## Implemented behavior during the current migration
+
+The current walking skeleton is a real four-party path. A person server
+validates a mission proposal before policy and gives policy the authenticated
+agent, proof key, AgentToken expiry, and PS binding. Immediate approval retains
+one exact recovery record before committing the mission and its resource-keyed
+person tokens. Partial writes, uncertain commits, restart, and an exact replay
+recover the same response without rerunning policy or minting new tokens.
+
+The agent presents a directed `aa-person+jwt` to a resource. The resource issues
+a current `aa-resource+jwt`; the PS resolves its `presented_jti` against durable
+person-token custody; an independently authenticated AS issues the current
+`aa-auth+jwt`; both the PS and agent reject an auth token that outlives the
+resource token; and the resource verifies the token and signed call before
+invoking its host operation. The included person-token and mission-issuance file
+stores are private, single-writer reference adapters. They do not coordinate
+multiple processes or compact expired records; long-running or high-volume
+deployments should supply their own store implementations.
+
+This slice is deliberately bounded. `reference.Resource` implements explicit
+`auth-token` mode, not every registered access mode. Protected-resource 401
+challenge handling, resource-owned person identity matching, current deferred
+approval, current sub-agent and call-chain behavior, collocated PS/AS roles,
+general three-party PS selection, and account ownership remain open. Exact
+mission recovery requires replay of the original signed request inside its
+signature window. See [AAG-I005 and AAG-I006](INTERPRETATIONS.md) for the
+person-token denial extension and cross-store recovery contract.
 
 Unless a paragraph explicitly says otherwise, the journeys in this section are
 implemented behavior from the preceding profile and are retained as migration
@@ -368,9 +393,10 @@ The implemented profile is transitional and is named precisely in the report.
 Active JWT, JWK, HTTP-signature algorithm, negotiation, and selected discovery
 surfaces use fully specified `Ed25519`, require the same fully specified
 algorithm on applicable JWKs, and return `Accept-Signature-Alg` and
-`Accept-Signature-Scheme` negotiation. The report leaves the current
-person-token topology, its resource/auth-token derivation, the migrated mission
-and chaining paths, and every other unevidenced current section unclaimed.
+`Accept-Signature-Scheme` negotiation. The report claims only the exercised
+parts of the immediate current person-token journey. Challenge handling,
+resource identity continuity, current delegation and deferred paths, and every
+other unevidenced current section remain partial or unclaimed.
 
 Verify the source digests, complete heading inventory, evidence test names,
 and embedded coverage contract with:

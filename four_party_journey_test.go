@@ -2,6 +2,7 @@ package aauth_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,6 +147,19 @@ func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
 	})
 	defer gateway.Close()
 	protocolClient.Transport = gateway.Client().Transport
+
+	metadataResponse, err := protocolClient.Get("https://resource.example/.well-known/aauth-resource.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metadataResponse.Body.Close()
+	var metadata map[string]any
+	if err := json.NewDecoder(metadataResponse.Body).Decode(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if value, exists := metadata["access_mode"]; exists {
+		t.Fatalf("legacy resource advertised current access_mode %#v", value)
+	}
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
 		Identifier:  "aauth:planner@ap.example",

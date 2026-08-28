@@ -247,6 +247,52 @@ mission digest values.
 **Consequence:** implementations must otherwise either invent a removed claim
 or omit an intended anti-substitution check during clarification.
 
+### AAG-F009 — Person-token policy denial has no registered error
+
+**Status:** ready / unsubmitted
+
+**Source:** current AAuth Protocol, `Person Token Endpoint` and `Token Endpoint
+Error Codes`.
+
+**Question:** Which error should a PS return when the AgentToken, signed request,
+resource, and mission are valid, but person-binding policy declines to issue a
+person token?
+
+**Executable evidence:**
+
+- `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+  distinguishes missing or wrong `ps` as registered `400 invalid_agent_token`
+  from a valid policy refusal.
+
+**Provisional choice:** This implementation uses the explicit extension
+`403 person_token_denied`. `user_unreachable` describes a different condition,
+and `invalid_request` would misclassify valid input.
+
+**Consequence:** implementations otherwise invent different codes or overload a
+registered code, making terminal denial handling non-interoperable.
+
+### AAG-F010 — Four-party resource identity should be namespaced by the PS
+
+**Status:** new / evidence pending
+
+**Source:** current AAuth Protocol, `Person Token`, `Resource Token Structure`,
+`Auth Token Structure`, and `Auth Token Verification`.
+
+**Question:** In four-party mode, should a resource match or establish the
+directed person as `(ps, sub)`, while separately trusting the authorization
+issuer as `(iss, dwk)`? The verification text currently says `(iss, sub)`, even
+though `iss` is the AS and the directed subject originated in the PS namespace.
+
+**Evidence needed before submission:** a resource identity adapter test in which
+one AS presents the same `sub` under two different admitted person servers and
+the records remain distinct.
+
+**Provisional choice:** Pass verified `ps` and `sub` to host policy, but do not
+claim identity matching or establishment until that adapter and test exist.
+
+**Consequence:** keying the person by AS issuer can merge unrelated PS namespaces
+or change identity when the same PS moves between access servers.
+
 ## Adding and submitting an item
 
 1. Pin the exact source commit, document, section, and shortest relevant

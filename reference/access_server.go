@@ -216,11 +216,11 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	if agentToken.ParentAgent != "" {
-		writeProblem(response, http.StatusForbidden, "invalid_agent_token", errors.New("sub-agent cannot act as a parent"))
+		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("sub-agent cannot act as a parent"))
 		return
 	}
 	if agentToken.PersonServer != "" && agentToken.PersonServer != verified.Signer {
-		writeProblem(response, http.StatusForbidden, "invalid_agent_token", errors.New("agent token names a different person server"))
+		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("agent token names a different person server"))
 		return
 	}
 
@@ -279,14 +279,28 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 
 	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
 	if err != nil {
-		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_resource_token", err)
+		writeResourceTokenVerificationFailure(response, err)
 		return
 	}
 	if resourceToken.Audience != server.identifier {
 		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token audience does not match access server"))
 		return
 	}
-	if resourceToken.Agent != targetAgent {
+	current := resourceToken.PersonServer != ""
+	if current {
+		if agentToken.PersonServer != verified.Signer {
+			writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("agent token ps does not match sending person server"))
+			return
+		}
+		if resourceToken.PersonServer != verified.Signer {
+			writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token ps does not match sending person server"))
+			return
+		}
+		if input.SubagentToken != "" || input.UpstreamToken != "" {
+			writeProblem(response, http.StatusNotImplemented, "unsupported_current_delegation", errors.New("current person-token sub-agent and call-chaining exchange is not implemented"))
+			return
+		}
+	} else if resourceToken.Agent != targetAgent {
 		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token agent does not match authorized agent"))
 		return
 	}
@@ -350,6 +364,13 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		pollingServer:        verified.Signer,
 		pollingKeyThumbprint: pollingKeyThumbprint,
 	}
+	if current {
+		authorizationContext.request.PersonServer = resourceToken.PersonServer
+		authorizationContext.request.Subject = resourceToken.Subject
+		authorizationContext.request.MissionS256 = resourceToken.MissionS256
+		authorizationContext.request.Tenant = resourceToken.Tenant
+		authorizationContext.request.Account = resourceToken.Account
+	}
 	if r3Authorization != nil && r3Authorization.Document.Parameters != nil &&
 		server.recoverR3PerCallIssuance(request.Context(), response, authorizationContext) {
 		return
@@ -384,6 +405,10 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	}
 	if err := validateAuthorizationDecision(decision, scopes); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization policy returned an invalid grant"))
+		return
+	}
+	if current && decision.Subject != resourceToken.Subject {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization policy changed the person-server directed subject"))
 		return
 	}
 	if err := validateR3AuthorizationDecision(decision, r3Authorization); err != nil {
@@ -448,8 +473,9 @@ func (server *AccessServer) completeAuthorization(
 	if authorizationContext.targetTokenExpiresAt < expiresAt {
 		expiresAt = authorizationContext.targetTokenExpiresAt
 	}
-	if authorizationContext.request.R3 != nil &&
-		authorizationContext.request.R3.Document.Parameters != nil &&
+	if (authorizationContext.resourceToken.PersonServer != "" ||
+		authorizationContext.request.R3 != nil &&
+			authorizationContext.request.R3.Document.Parameters != nil) &&
 		authorizationContext.resourceToken.ExpiresAt < expiresAt {
 		expiresAt = authorizationContext.resourceToken.ExpiresAt
 	}
@@ -464,7 +490,7 @@ func (server *AccessServer) completeAuthorization(
 		resourceTokenFingerprint = aauth.R3S256([]byte(authorizationContext.resourceTokenCompact))
 	}
 	tokenID := server.newID()
-	authToken, err := aauth.MintAuthToken(server.signingKey, aauth.AuthTokenClaims{
+	claims := aauth.AuthTokenClaims{
 		Issuer:        server.identifier,
 		DWK:           aauth.AccessDiscoveryDocument,
 		Audience:      authorizationContext.resourceToken.Issuer,
@@ -481,7 +507,18 @@ func (server *AccessServer) completeAuthorization(
 		R3S256:        authorizationContext.resourceToken.R3S256,
 		R3Granted:     cloneR3OperationSet(decision.R3Granted),
 		R3Conditional: cloneR3OperationSet(decision.R3Conditional),
-	})
+	}
+	if authorizationContext.resourceToken.PersonServer != "" {
+		claims.Agent = ""
+		claims.Actor = nil
+		claims.Subject = authorizationContext.resourceToken.Subject
+		claims.PersonServer = authorizationContext.resourceToken.PersonServer
+		claims.Account = authorizationContext.resourceToken.Account
+		claims.Mission = nil
+		claims.MissionS256 = authorizationContext.resourceToken.MissionS256
+		claims.Tenant = authorizationContext.resourceToken.Tenant
+	}
+	authToken, err := aauth.MintAuthToken(server.signingKey, claims)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -1055,9 +1092,9 @@ func (server *AccessServer) seenReplay(key string, expiresAt time.Time) bool {
 
 func (server *AccessServer) handleMetadata(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]any{
-		"issuer":         server.identifier,
-		"jwks_uri":       server.identifier + "/jwks",
-		"token_endpoint": server.identifier + "/token",
+		"issuer":              server.identifier,
+		"jwks_uri":            server.identifier + "/jwks",
+		"auth_token_endpoint": server.identifier + "/token",
 	})
 }
 

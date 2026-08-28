@@ -79,6 +79,7 @@ type VerifiedRequest struct {
 	IdentityKey      JWK
 	JKTJWT           *VerifiedJKTJWT
 	AgentToken       *AgentTokenClaims
+	PersonToken      *PersonTokenClaims
 	AuthToken        *AuthTokenClaims
 	SubscribeToken   *SubscribeTokenClaims
 	SelfJWT          *VerifiedSelfJWT
@@ -444,23 +445,29 @@ func VerifyRequest(
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
 		}
 		verified.RawCredential = signatureKey.parameters["jwt"]
+		verified.CredentialType = header.Type
 		switch header.Type {
 		case AgentTokenType:
 			claims, verifyErr := VerifyAgentToken(ctx, verified.RawCredential, resolver, clock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
-			verified.CredentialType = AgentTokenType
 			verified.Agent = claims.Subject
 			verified.Signer = claims.Subject
 			verified.PublicKey = claims.Confirmation.JWK
 			verified.AgentToken = &claims
+		case PersonTokenType:
+			claims, verifyErr := VerifyPersonToken(ctx, verified.RawCredential, resolver, clock)
+			if verifyErr != nil {
+				return verified, classifyJWTVerificationError(verifyErr)
+			}
+			verified.PublicKey = claims.Confirmation.JWK
+			verified.PersonToken = &claims
 		case AuthTokenType:
 			claims, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, clock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
-			verified.CredentialType = AuthTokenType
 			verified.Agent = claims.Agent
 			verified.Signer = claims.Agent
 			verified.PublicKey = claims.Confirmation.JWK
@@ -470,7 +477,6 @@ func VerifyRequest(
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
-			verified.CredentialType = SubscribeTokenType
 			verified.Agent = claims.Subject
 			verified.Signer = claims.Subject
 			verified.PublicKey = claims.Confirmation.JWK

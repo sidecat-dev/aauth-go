@@ -179,14 +179,16 @@ type governanceReplay struct {
 }
 
 type governanceMission struct {
-	Reference     aauth.MissionReference  `json:"reference"`
-	Agent         string                  `json:"agent"`
-	Bytes         []byte                  `json:"bytes"`
-	Description   string                  `json:"description"`
-	ApprovedTools []aauth.Tool            `json:"approved_tools,omitempty"`
-	Capabilities  []string                `json:"capabilities,omitempty"`
-	Status        aauth.MissionStatus     `json:"status"`
-	Log           []aauth.MissionLogEntry `json:"log,omitempty"`
+	Reference         aauth.MissionReference  `json:"reference"`
+	Agent             string                  `json:"agent"`
+	Bytes             []byte                  `json:"bytes"`
+	Description       string                  `json:"description"`
+	ApprovedTools     []aauth.Tool            `json:"approved_tools,omitempty"`
+	ApprovedResources []string                `json:"approved_resources,omitempty"`
+	Capabilities      []string                `json:"capabilities,omitempty"`
+	ExpiresAt         string                  `json:"expires_at,omitempty"`
+	Status            aauth.MissionStatus     `json:"status"`
+	Log               []aauth.MissionLogEntry `json:"log,omitempty"`
 }
 
 type governancePendingPermission struct {
@@ -246,14 +248,16 @@ func encodeGovernanceState(
 	for _, id := range missionIDs {
 		mission := missions[id]
 		state.Missions = append(state.Missions, governanceMission{
-			Reference:     mission.reference,
-			Agent:         mission.agent,
-			Bytes:         append([]byte(nil), mission.bytes...),
-			Description:   mission.description,
-			ApprovedTools: append([]aauth.Tool(nil), mission.approvedTools...),
-			Capabilities:  append([]string(nil), mission.capabilities...),
-			Status:        mission.status,
-			Log:           copyMissionLog(mission.log),
+			Reference:         mission.reference,
+			Agent:             mission.agent,
+			Bytes:             append([]byte(nil), mission.bytes...),
+			Description:       mission.description,
+			ApprovedTools:     append([]aauth.Tool(nil), mission.approvedTools...),
+			ApprovedResources: append([]string(nil), mission.approvedResources...),
+			Capabilities:      append([]string(nil), mission.capabilities...),
+			ExpiresAt:         formatOptionalTime(mission.expiresAt),
+			Status:            mission.status,
+			Log:               copyMissionLog(mission.log),
 		})
 	}
 	state.Permissions = copyPermissionHistory(permissions)
@@ -371,7 +375,7 @@ func decodeGovernanceState(
 		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state is too large")
 	}
 	var envelope governanceEnvelope
-	if err := decodeJSONBytes(bytes.NewReader(body), &envelope); err != nil {
+	if err := decodeJSONBytesWithLimit(bytes.NewReader(body), &envelope, maxGovernanceStateBytes); err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: decode governance envelope: %w", err)
 	}
 	if envelope.Schema != governanceEnvelopeSchema {
@@ -386,7 +390,7 @@ func decodeGovernanceState(
 		return nil, nil, nil, nil, nil, nil, errors.New("reference: governance state digest does not match")
 	}
 	var state governanceState
-	if err := decodeJSONBytes(bytes.NewReader(envelope.State), &state); err != nil {
+	if err := decodeJSONBytesWithLimit(bytes.NewReader(envelope.State), &state, maxGovernanceStateBytes); err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("reference: decode governance state: %w", err)
 	}
 	if state.Schema != governanceStateSchema || state.PersonServer != personServer {
@@ -507,12 +511,23 @@ func decodeGovernanceMission(
 		blob.Agent != encoded.Agent ||
 		blob.Description != encoded.Description ||
 		!reflect.DeepEqual(blob.ApprovedTools, encoded.ApprovedTools) ||
+		!reflect.DeepEqual(blob.ApprovedResources, encoded.ApprovedResources) ||
 		!reflect.DeepEqual(blob.Capabilities, encoded.Capabilities) {
 		return mission, errors.New("mission fields do not match exact approved bytes")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, blob.ApprovedAt); err != nil ||
 		strings.TrimSpace(blob.Description) == "" {
 		return mission, errors.New("approved mission time or description is invalid")
+	}
+	var expiresAt *time.Time
+	if encoded.ExpiresAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, encoded.ExpiresAt)
+		if err != nil || blob.ExpiresAt != encoded.ExpiresAt {
+			return mission, errors.New("mission expiry is invalid")
+		}
+		expiresAt = &parsed
+	} else if blob.ExpiresAt != "" {
+		return mission, errors.New("mission expiry does not match exact approved bytes")
 	}
 	for index, entry := range encoded.Log {
 		if err := validateMissionLogEntry(entry, uint64(index+1), encoded.Reference, encoded.Agent); err != nil {
@@ -528,14 +543,16 @@ func decodeGovernanceMission(
 		return mission, errors.New("mission status does not match its termination log")
 	}
 	return storedMission{
-		reference:     encoded.Reference,
-		agent:         encoded.Agent,
-		bytes:         append([]byte(nil), encoded.Bytes...),
-		description:   encoded.Description,
-		approvedTools: append([]aauth.Tool(nil), encoded.ApprovedTools...),
-		capabilities:  append([]string(nil), encoded.Capabilities...),
-		status:        encoded.Status,
-		log:           copyMissionLog(encoded.Log),
+		reference:         encoded.Reference,
+		agent:             encoded.Agent,
+		bytes:             append([]byte(nil), encoded.Bytes...),
+		description:       encoded.Description,
+		approvedTools:     append([]aauth.Tool(nil), encoded.ApprovedTools...),
+		approvedResources: append([]string(nil), encoded.ApprovedResources...),
+		capabilities:      append([]string(nil), encoded.Capabilities...),
+		expiresAt:         expiresAt,
+		status:            encoded.Status,
+		log:               copyMissionLog(encoded.Log),
 	}, nil
 }
 

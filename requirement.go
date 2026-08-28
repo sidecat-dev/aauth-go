@@ -17,6 +17,7 @@ type RequirementType string
 
 const (
 	RequirementAgentToken    RequirementType = "agent-token"
+	RequirementPersonToken   RequirementType = "person-token"
 	RequirementAuthToken     RequirementType = "auth-token"
 	RequirementInteraction   RequirementType = "interaction"
 	RequirementApproval      RequirementType = "approval"

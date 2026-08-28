@@ -176,11 +176,13 @@ type PermissionRecord struct {
 // MissionSnapshot is an immutable caller copy of retained mission custody.
 // Bytes are the exact approved response bytes bound by Reference.S256.
 type MissionSnapshot struct {
-	Reference     MissionReference
-	Bytes         []byte
-	Description   string
-	ApprovedTools []Tool
-	Capabilities  []string
-	Status        MissionStatus
-	Log           []MissionLogEntry
+	Reference         MissionReference
+	Bytes             []byte
+	Description       string
+	ApprovedTools     []Tool
+	ApprovedResources []string
+	Capabilities      []string
+	ExpiresAt         *time.Time
+	Status            MissionStatus
+	Log               []MissionLogEntry
 }

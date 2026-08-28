@@ -46,6 +46,26 @@ func TestUnknownRequirementValueRemainsParseable(t *testing.T) {
 	}
 }
 
+func TestPersonTokenRequirementStructuredFieldRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	requirement := aauth.Requirement{Type: aauth.RequirementPersonToken}
+	header, err := aauth.FormatRequirementHeader(requirement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header != "requirement=person-token" {
+		t.Fatalf("requirement header = %q", header)
+	}
+	parsed, err := aauth.ParseRequirementHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed != requirement {
+		t.Fatalf("parsed requirement = %#v", parsed)
+	}
+}
+
 func TestInteractionRequirementRejectsInvalidWireValues(t *testing.T) {
 	t.Parallel()
 

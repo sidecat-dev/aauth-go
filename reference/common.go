@@ -24,11 +24,15 @@ func decodeJSON(response http.ResponseWriter, request *http.Request, destination
 }
 
 func decodeJSONBytes(reader io.Reader, destination any) error {
-	encoded, err := io.ReadAll(io.LimitReader(reader, maxJSONBody+1))
+	return decodeJSONBytesWithLimit(reader, destination, maxJSONBody)
+}
+
+func decodeJSONBytesWithLimit(reader io.Reader, destination any, limit int64) error {
+	encoded, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return fmt.Errorf("decode JSON: %w", err)
 	}
-	if len(encoded) > maxJSONBody {
+	if int64(len(encoded)) > limit {
 		return errors.New("decode JSON: input is too large")
 	}
 	if err := jsonstrict.RejectAmbiguousNames(encoded); err != nil {
@@ -154,6 +158,15 @@ func writeTokenVerificationFailure(
 		return
 	}
 	writeProblem(response, status, code, err)
+}
+
+func writeResourceTokenVerificationFailure(response http.ResponseWriter, err error) {
+	var validationError *aauth.TokenValidationError
+	if errors.As(err, &validationError) && validationError.Code == aauth.TokenValidationExpired {
+		writeTokenVerificationFailure(response, http.StatusBadRequest, "expired_resource_token", err)
+		return
+	}
+	writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_resource_token", err)
 }
 
 func problemBody(

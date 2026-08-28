@@ -12,6 +12,7 @@ import (
 
 const (
 	AgentTokenType    = "aa-agent+jwt"
+	PersonTokenType   = "aa-person+jwt"
 	ResourceTokenType = "aa-resource+jwt"
 	AuthTokenType     = "aa-auth+jwt"
 
@@ -85,20 +86,42 @@ type AgentTokenClaims struct {
 	ParentAgent  string       `json:"parent_agent,omitempty"`
 }
 
+// PersonTokenClaims are the claims of an aa-person+jwt. The token identifies
+// one person, in one person-server namespace, to one resource and is bound to
+// the agent's current signing key. It carries no authorization claims.
+type PersonTokenClaims struct {
+	Issuer       string       `json:"iss"`
+	DWK          string       `json:"dwk"`
+	Audience     string       `json:"aud"`
+	Subject      string       `json:"sub"`
+	Confirmation Confirmation `json:"cnf"`
+	JTI          string       `json:"jti"`
+	IssuedAt     int64        `json:"iat"`
+	ExpiresAt    int64        `json:"exp"`
+	MissionS256  string       `json:"mission_s256,omitempty"`
+	Tenant       string       `json:"tenant,omitempty"`
+}
+
 // ResourceTokenClaims are the claims of an aa-resource+jwt.
 type ResourceTokenClaims struct {
-	Issuer    string            `json:"iss"`
-	DWK       string            `json:"dwk"`
-	Audience  string            `json:"aud"`
-	JTI       string            `json:"jti"`
-	Agent     string            `json:"agent"`
-	AgentJKT  string            `json:"agent_jkt"`
-	IssuedAt  int64             `json:"iat"`
-	ExpiresAt int64             `json:"exp"`
-	Scope     string            `json:"scope"`
-	Mission   *MissionReference `json:"mission,omitempty"`
-	R3URI     string            `json:"r3_uri,omitempty"`
-	R3S256    string            `json:"r3_s256,omitempty"`
+	Issuer       string            `json:"iss"`
+	DWK          string            `json:"dwk"`
+	Audience     string            `json:"aud"`
+	JTI          string            `json:"jti"`
+	Agent        string            `json:"agent,omitempty"`
+	AgentJKT     string            `json:"agent_jkt"`
+	IssuedAt     int64             `json:"iat"`
+	ExpiresAt    int64             `json:"exp"`
+	Scope        string            `json:"scope"`
+	Mission      *MissionReference `json:"mission,omitempty"`
+	PersonServer string            `json:"ps,omitempty"`
+	Subject      string            `json:"sub,omitempty"`
+	PresentedJTI string            `json:"presented_jti,omitempty"`
+	Account      string            `json:"account,omitempty"`
+	MissionS256  string            `json:"mission_s256,omitempty"`
+	Tenant       string            `json:"tenant,omitempty"`
+	R3URI        string            `json:"r3_uri,omitempty"`
+	R3S256       string            `json:"r3_s256,omitempty"`
 }
 
 // Actor records one link in an AAuth delegation chain.
@@ -113,7 +136,7 @@ type AuthTokenClaims struct {
 	DWK           string            `json:"dwk"`
 	Audience      string            `json:"aud"`
 	JTI           string            `json:"jti"`
-	Agent         string            `json:"agent"`
+	Agent         string            `json:"agent,omitempty"`
 	Confirmation  Confirmation      `json:"cnf"`
 	Actor         *Actor            `json:"act,omitempty"`
 	IssuedAt      int64             `json:"iat"`
@@ -121,6 +144,9 @@ type AuthTokenClaims struct {
 	Subject       string            `json:"sub,omitempty"`
 	Scope         string            `json:"scope,omitempty"`
 	Mission       *MissionReference `json:"mission,omitempty"`
+	PersonServer  string            `json:"ps,omitempty"`
+	Account       string            `json:"account,omitempty"`
+	MissionS256   string            `json:"mission_s256,omitempty"`
 	Tenant        string            `json:"tenant,omitempty"`
 	R3URI         string            `json:"r3_uri,omitempty"`
 	R3S256        string            `json:"r3_s256,omitempty"`
@@ -191,6 +217,18 @@ func MintResourceToken(key SigningKey, claims ResourceTokenClaims) (string, erro
 	return mintToken(key, ResourceTokenType, claims)
 }
 
+// MintPersonToken performs only the cryptographic construction of a
+// proof-bound, resource-directed person token. It does not satisfy the person
+// server's retention obligation. Issuers must retain the exact corresponding
+// PersonTokenRecord before release; reference.PersonServer composes that
+// custody and recovery boundary.
+func MintPersonToken(key SigningKey, claims PersonTokenClaims) (string, error) {
+	if err := validatePersonClaims(claims, time.Unix(claims.IssuedAt, 0), false); err != nil {
+		return "", err
+	}
+	return mintToken(key, PersonTokenType, claims)
+}
+
 // MintAuthToken creates the proof-bound authorization assertion.
 func MintAuthToken(key SigningKey, claims AuthTokenClaims) (string, error) {
 	if err := validateAuthClaims(claims, time.Unix(claims.IssuedAt, 0), false); err != nil {
@@ -227,6 +265,47 @@ func VerifyAgentToken(ctx context.Context, compact string, resolver KeyResolver,
 		return claims, err
 	}
 	if err := validateAgentClaims(claims, clock.Now()); err != nil {
+		return claims, err
+	}
+	return claims, nil
+}
+
+// VerifyPersonToken verifies issuer trust, JWS integrity, structure, and time.
+func VerifyPersonToken(ctx context.Context, compact string, resolver KeyResolver, clock Clock) (PersonTokenClaims, error) {
+	var claims PersonTokenClaims
+	if resolver == nil {
+		return claims, errors.New("aauth: key resolver is required")
+	}
+	if clock == nil {
+		return claims, errors.New("aauth: clock is required")
+	}
+	header, payload, signature, signingInput, err := decodeToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	if header.Type != PersonTokenType {
+		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, PersonTokenType)
+	}
+	var names map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &names); err != nil {
+		return claims, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
+	}
+	if _, exists := names["scope"]; exists {
+		return claims, errors.New("aauth: person-token must not contain scope or account")
+	}
+	if _, exists := names["account"]; exists {
+		return claims, errors.New("aauth: person-token must not contain scope or account")
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return claims, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
+	}
+	if claims.DWK != PersonDiscoveryDocument {
+		return claims, fmt.Errorf("aauth: token dwk is %q, want %q", claims.DWK, PersonDiscoveryDocument)
+	}
+	if err := verifyResolvedTokenKey(ctx, header, claims.Issuer, claims.DWK, signingInput, signature, resolver); err != nil {
+		return claims, err
+	}
+	if err := validatePersonClaims(claims, clock.Now(), true); err != nil {
 		return claims, err
 	}
 	return claims, nil
@@ -269,7 +348,7 @@ func VerifyAuthToken(ctx context.Context, compact string, resolver KeyResolver, 
 	return claims, nil
 }
 
-func verifyAndDecodeToken[T AgentTokenClaims | ResourceTokenClaims](
+func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceTokenClaims](
 	ctx context.Context,
 	compact string,
 	expectedType string,
@@ -297,6 +376,8 @@ func verifyAndDecodeToken[T AgentTokenClaims | ResourceTokenClaims](
 	var issuer, dwk string
 	switch value := any(claims).(type) {
 	case *AgentTokenClaims:
+		issuer, dwk = value.Issuer, value.DWK
+	case *PersonTokenClaims:
 		issuer, dwk = value.Issuer, value.DWK
 	case *ResourceTokenClaims:
 		issuer, dwk = value.Issuer, value.DWK
@@ -471,6 +552,46 @@ func validateAgentClaims(claims AgentTokenClaims, now time.Time) error {
 	return nil
 }
 
+func validatePersonClaims(claims PersonTokenClaims, now time.Time, enforceCurrentTime bool) error {
+	if err := ValidateServerIdentifier(claims.Issuer); err != nil {
+		return fmt.Errorf("aauth: person-token issuer: %w", err)
+	}
+	if claims.DWK != PersonDiscoveryDocument {
+		return errors.New("aauth: person-token dwk is invalid")
+	}
+	if err := ValidateServerIdentifier(claims.Audience); err != nil {
+		return fmt.Errorf("aauth: person-token audience: %w", err)
+	}
+	if claims.Subject == "" {
+		return errors.New("aauth: person-token sub is required")
+	}
+	if claims.JTI == "" {
+		return errors.New("aauth: person-token jti is required")
+	}
+	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
+		return &TokenValidationError{
+			Code:  TokenValidationInvalidKey,
+			Cause: fmt.Errorf("aauth: person-token cnf.jwk: %w", err),
+		}
+	}
+	checkTime := time.Unix(claims.IssuedAt, 0)
+	if enforceCurrentTime {
+		checkTime = now
+	}
+	if err := validateTimes(claims.IssuedAt, claims.ExpiresAt, checkTime); err != nil {
+		return fmt.Errorf("aauth: person-token: %w", err)
+	}
+	if claims.ExpiresAt-claims.IssuedAt > int64(time.Hour.Seconds()) {
+		return errors.New("aauth: person-token lifetime exceeds one hour")
+	}
+	if claims.MissionS256 != "" {
+		if err := validateS256("person-token mission_s256", claims.MissionS256); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateResourceClaims(claims ResourceTokenClaims, now time.Time, enforceCurrentTime bool) error {
 	if err := ValidateServerIdentifier(claims.Issuer); err != nil {
 		return fmt.Errorf("aauth: resource-token issuer: %w", err)
@@ -484,7 +605,26 @@ func validateResourceClaims(claims ResourceTokenClaims, now time.Time, enforceCu
 	if claims.JTI == "" {
 		return errors.New("aauth: resource-token jti is required")
 	}
-	if err := ValidateAgentIdentifier(claims.Agent); err != nil {
+	current := claims.PersonServer != "" || claims.Subject != "" || claims.PresentedJTI != ""
+	if current {
+		if err := ValidateServerIdentifier(claims.PersonServer); err != nil {
+			return fmt.Errorf("aauth: resource-token ps: %w", err)
+		}
+		if claims.Subject == "" {
+			return errors.New("aauth: resource-token sub is required")
+		}
+		if claims.PresentedJTI == "" {
+			return errors.New("aauth: resource-token presented_jti is required")
+		}
+		if claims.Agent != "" || claims.Mission != nil {
+			return errors.New("aauth: current resource-token must not contain agent or mission")
+		}
+		if claims.MissionS256 != "" {
+			if err := validateS256("resource-token mission_s256", claims.MissionS256); err != nil {
+				return err
+			}
+		}
+	} else if err := ValidateAgentIdentifier(claims.Agent); err != nil {
 		return fmt.Errorf("aauth: resource-token agent: %w", err)
 	}
 	if claims.AgentJKT == "" {
@@ -524,7 +664,23 @@ func validateAuthClaims(claims AuthTokenClaims, now time.Time, enforceCurrentTim
 	if claims.JTI == "" {
 		return errors.New("aauth: auth-token jti is required")
 	}
-	if err := ValidateAgentIdentifier(claims.Agent); err != nil {
+	current := claims.PersonServer != ""
+	if current {
+		if err := ValidateServerIdentifier(claims.PersonServer); err != nil {
+			return fmt.Errorf("aauth: auth-token ps: %w", err)
+		}
+		if claims.Subject == "" {
+			return errors.New("aauth: current auth-token sub is required")
+		}
+		if claims.Agent != "" || claims.Actor != nil || claims.Mission != nil {
+			return errors.New("aauth: current auth-token must not contain agent, act, or mission")
+		}
+		if claims.MissionS256 != "" {
+			if err := validateS256("auth-token mission_s256", claims.MissionS256); err != nil {
+				return err
+			}
+		}
+	} else if err := ValidateAgentIdentifier(claims.Agent); err != nil {
 		return fmt.Errorf("aauth: auth-token agent: %w", err)
 	}
 	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
@@ -649,12 +805,71 @@ func ValidateAuthTokenContext(
 	if !claims.Confirmation.JWK.Equal(requestKey) {
 		return errors.New("aauth: auth-token confirmation key does not match request key")
 	}
+	return validateRequiredScopes(claims.Scope, requiredScopes)
+}
+
+// ValidatePersonTokenContext applies the resource and proof-key checks that
+// bind a verified person token to the request where it is presented.
+func ValidatePersonTokenContext(
+	claims PersonTokenClaims,
+	resourceIdentifier string,
+	requestKey JWK,
+) error {
+	if err := ValidateServerIdentifier(resourceIdentifier); err != nil {
+		return fmt.Errorf("aauth: person-token expected resource: %w", err)
+	}
+	if claims.Audience != resourceIdentifier {
+		return fmt.Errorf("aauth: person-token audience %q does not match resource %q", claims.Audience, resourceIdentifier)
+	}
+	if !claims.Confirmation.JWK.Equal(requestKey) {
+		return errors.New("aauth: person-token confirmation key does not match request key")
+	}
+	return nil
+}
+
+// ValidateCurrentAuthTokenContext applies request-context checks for the
+// current person-token topology, whose auth tokens intentionally name no
+// agent. The directed person and person-server namespace replace agent
+// identity as the resource-facing subject.
+func ValidateCurrentAuthTokenContext(
+	claims AuthTokenClaims,
+	resourceIdentifier string,
+	personServer string,
+	subject string,
+	requestKey JWK,
+	requiredScopes []string,
+) error {
+	if claims.PersonServer == "" {
+		return errors.New("aauth: current auth-token ps is required")
+	}
+	if err := ValidateServerIdentifier(resourceIdentifier); err != nil {
+		return fmt.Errorf("aauth: auth-token expected resource: %w", err)
+	}
+	if err := ValidateServerIdentifier(personServer); err != nil {
+		return fmt.Errorf("aauth: auth-token expected person server: %w", err)
+	}
+	if claims.Audience != resourceIdentifier {
+		return fmt.Errorf("aauth: auth-token audience %q does not match resource %q", claims.Audience, resourceIdentifier)
+	}
+	if claims.PersonServer != personServer {
+		return fmt.Errorf("aauth: auth-token ps %q does not match person server %q", claims.PersonServer, personServer)
+	}
+	if claims.Subject != subject {
+		return fmt.Errorf("aauth: auth-token sub %q does not match person %q", claims.Subject, subject)
+	}
+	if !claims.Confirmation.JWK.Equal(requestKey) {
+		return errors.New("aauth: auth-token confirmation key does not match request key")
+	}
+	return validateRequiredScopes(claims.Scope, requiredScopes)
+}
+
+func validateRequiredScopes(scope string, requiredScopes []string) error {
 	granted := make(map[string]bool)
-	for _, scope := range strings.Fields(claims.Scope) {
-		if granted[scope] {
-			return fmt.Errorf("aauth: auth-token contains duplicate scope %q", scope)
+	for _, value := range strings.Fields(scope) {
+		if granted[value] {
+			return fmt.Errorf("aauth: auth-token contains duplicate scope %q", value)
 		}
-		granted[scope] = true
+		granted[value] = true
 	}
 	for _, required := range requiredScopes {
 		if required == "" || !granted[required] {

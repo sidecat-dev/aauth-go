@@ -19,7 +19,11 @@ import (
 )
 
 type ResourceConfig struct {
-	Identifier          string
+	Identifier string
+	// AccessMode selects current resource behavior and discovery. The zero
+	// value preserves the legacy profile while callers migrate one journey at
+	// a time. The current reference path presently implements auth-token mode.
+	AccessMode          aauth.AccessMode
 	PersonServer        string
 	AccessServer        string
 	SigningKey          aauth.SigningKey
@@ -83,7 +87,9 @@ type agentEventMetadataResolver interface {
 
 type Resource struct {
 	identifier                 string
+	accessMode                 aauth.AccessMode
 	tokenAudience              string
+	authTokenDiscoveryDocument string
 	signingKey                 aauth.SigningKey
 	hasSigningKey              bool
 	keyResolver                aauth.KeyResolver
@@ -159,9 +165,18 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	if modeCount != 1 {
 		return nil, errors.New("reference: resource requires exactly one person server, access server, or local authorization policy")
 	}
+	if config.AccessMode != "" && config.AccessMode != aauth.AccessModeAuthToken {
+		return nil, fmt.Errorf("reference: resource access mode %q is not implemented", config.AccessMode)
+	}
+	if config.AccessMode == aauth.AccessModeAuthToken &&
+		config.PersonServer == "" && config.AccessServer == "" {
+		return nil, errors.New("reference: auth-token access mode requires a person or access server")
+	}
 	tokenAudience := config.PersonServer
+	authTokenDiscoveryDocument := aauth.PersonDiscoveryDocument
 	if tokenAudience == "" {
 		tokenAudience = config.AccessServer
+		authTokenDiscoveryDocument = aauth.AccessDiscoveryDocument
 	}
 	if tokenAudience != "" {
 		if err := aauth.ValidateServerIdentifier(tokenAudience); err != nil {
@@ -352,7 +367,9 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	}
 	return &Resource{
 		identifier:                 config.Identifier,
+		accessMode:                 config.AccessMode,
 		tokenAudience:              tokenAudience,
+		authTokenDiscoveryDocument: authTokenDiscoveryDocument,
 		signingKey:                 config.SigningKey,
 		hasSigningKey:              config.SigningKey.ID() != "",
 		keyResolver:                config.KeyResolver,
@@ -781,10 +798,32 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	}
 	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
 		RequiredComponents:     required,
-		AllowedCredentialTypes: []string{aauth.AgentTokenType},
+		AllowedCredentialTypes: []string{aauth.AgentTokenType, aauth.PersonTokenType},
 	})
 	if err != nil {
+		if resource.accessMode == aauth.AccessModeAuthToken &&
+			isPersonTokenCredentialFailure(verified, err) {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_person_token", err)
+			return
+		}
 		writeSignatureFailure(response, err)
+		return
+	}
+	if resource.accessMode == aauth.AccessModeAuthToken && verified.PersonToken == nil {
+		requirement, err := aauth.FormatRequirementHeader(aauth.Requirement{
+			Type: aauth.RequirementPersonToken,
+		})
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		response.Header().Set("AAuth-Requirement", requirement)
+		writeProblem(
+			response,
+			http.StatusUnauthorized,
+			"person_token_required",
+			errors.New("authorization endpoint requires a person token"),
+		)
 		return
 	}
 	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
@@ -793,6 +832,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	}
 	var input struct {
 		Scope        string                `json:"scope"`
+		Account      string                `json:"account,omitempty"`
 		R3Operations *aauth.R3OperationSet `json:"r3_operations,omitempty"`
 	}
 	if err := decodeJSON(response, request, &input); err != nil {
@@ -865,6 +905,20 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		}
 		mission = &parsed
 	}
+	current := verified.PersonToken != nil
+	if current {
+		if mission != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_mission", errors.New("current person-token authorization must not use AAuth-Mission"))
+			return
+		}
+		if err := aauth.ValidatePersonTokenContext(*verified.PersonToken, resource.identifier, verified.PublicKey); err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_person_token", err)
+			return
+		}
+		if personExpiry := time.Unix(verified.PersonToken.ExpiresAt, 0); personExpiry.Before(resourceTokenExpiresAt) {
+			resourceTokenExpiresAt = personExpiry
+		}
+	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
@@ -876,6 +930,13 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 			Resource: resource.identifier,
 			Scope:    append([]string(nil), scopes...),
 			Mission:  mission,
+			Account:  input.Account,
+		}
+		if current {
+			authorizationRequest.PersonServer = verified.PersonToken.Issuer
+			authorizationRequest.Subject = verified.PersonToken.Subject
+			authorizationRequest.MissionS256 = verified.PersonToken.MissionS256
+			authorizationRequest.Tenant = verified.PersonToken.Tenant
 		}
 		if resource.interactionRequired != nil {
 			required, err := resource.interactionRequired(request.Context(), authorizationRequest)
@@ -888,7 +949,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 					response,
 					authorizationRequest,
 					thumbprint,
-					time.Unix(verified.AgentToken.ExpiresAt, 0),
+					credentialExpiry(verified),
 					now,
 				); err != nil {
 					writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -906,7 +967,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 			return
 		}
 		expiresAt := now.Add(time.Hour)
-		if agentExpiry := time.Unix(verified.AgentToken.ExpiresAt, 0); agentExpiry.Before(expiresAt) {
+		if agentExpiry := credentialExpiry(verified); agentExpiry.Before(expiresAt) {
 			expiresAt = agentExpiry
 		}
 		if err := resource.writeAccessGrant(response, authorizationRequest, decision, thumbprint, expiresAt); err != nil {
@@ -915,7 +976,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		return
 	}
 
-	token, err := aauth.MintResourceToken(resource.signingKey, aauth.ResourceTokenClaims{
+	claims := aauth.ResourceTokenClaims{
 		Issuer:    resource.identifier,
 		DWK:       aauth.ResourceDiscoveryDocument,
 		Audience:  resource.tokenAudience,
@@ -926,14 +987,54 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		ExpiresAt: resourceTokenExpiresAt.Unix(),
 		Scope:     strings.Join(scopes, " "),
 		Mission:   mission,
+		Account:   input.Account,
 		R3URI:     r3URI,
 		R3S256:    r3S256,
-	})
+	}
+	if current {
+		claims.PersonServer = verified.PersonToken.Issuer
+		claims.Subject = verified.PersonToken.Subject
+		claims.PresentedJTI = verified.PersonToken.JTI
+		claims.MissionS256 = verified.PersonToken.MissionS256
+		claims.Tenant = verified.PersonToken.Tenant
+		claims.Agent = ""
+	}
+	token, err := aauth.MintResourceToken(resource.signingKey, claims)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]string{"resource_token": token})
+}
+
+func isPersonTokenCredentialFailure(verified aauth.VerifiedRequest, err error) bool {
+	if verified.SignatureKeyType != aauth.SignatureKeyJWT {
+		return false
+	}
+	var signatureError *aauth.SignatureError
+	if !errors.As(err, &signatureError) {
+		return false
+	}
+	switch signatureError.Code {
+	case aauth.SignatureErrorInvalidJWT,
+		aauth.SignatureErrorExpiredJWT,
+		aauth.SignatureErrorUnknownKey,
+		aauth.SignatureErrorIssuerMissing,
+		aauth.SignatureErrorIssuerMismatch,
+		aauth.SignatureErrorUnsupportedAlgorithm:
+		return verified.CredentialType == "" || verified.CredentialType == aauth.PersonTokenType
+	case aauth.SignatureErrorInvalidKey:
+		return verified.CredentialType == aauth.PersonTokenType
+	default:
+		return false
+	}
+}
+
+func credentialExpiry(verified aauth.VerifiedRequest) time.Time {
+	if verified.PersonToken != nil {
+		return time.Unix(verified.PersonToken.ExpiresAt, 0)
+	}
+	return time.Unix(verified.AgentToken.ExpiresAt, 0)
 }
 
 func validateAuthorizationDecision(decision aauth.AuthorizationDecision, requestedScope []string) error {
@@ -1283,8 +1384,41 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		return
 	}
 	claims := verified.AuthToken
-	if err := aauth.ValidateAuthTokenContext(*claims, resource.identifier, verified.Agent, verified.PublicKey, resource.scopes); err != nil {
-		writeProblem(response, http.StatusForbidden, "invalid_token", err)
+	if claims.Issuer != resource.tokenAudience {
+		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("auth-token issuer is not the resource authorization server"))
+		return
+	}
+	if resource.accessMode == aauth.AccessModeAuthToken {
+		if claims.PersonServer == "" {
+			writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("current auth-token ps is required"))
+			return
+		}
+		if claims.DWK != resource.authTokenDiscoveryDocument {
+			writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("auth-token issuer role does not match resource configuration"))
+			return
+		}
+	}
+	var contextErr error
+	if claims.PersonServer != "" {
+		contextErr = aauth.ValidateCurrentAuthTokenContext(
+			*claims,
+			resource.identifier,
+			claims.PersonServer,
+			claims.Subject,
+			verified.PublicKey,
+			resource.scopes,
+		)
+	} else {
+		contextErr = aauth.ValidateAuthTokenContext(
+			*claims,
+			resource.identifier,
+			verified.Agent,
+			verified.PublicKey,
+			resource.scopes,
+		)
+	}
+	if contextErr != nil {
+		writeProblem(response, http.StatusForbidden, "invalid_token", contextErr)
 		return
 	}
 	granted, err := parseScopes(claims.Scope)
@@ -1308,10 +1442,6 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		}
 	}
 	if claims.R3URI != "" {
-		if claims.Issuer != resource.tokenAudience {
-			writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("R3 auth-token issuer is not the resource access server"))
-			return
-		}
 		if resource.r3OperationForRequest == nil {
 			writeProblem(response, http.StatusForbidden, "r3_not_configured", errors.New("resource cannot map this R3 operation"))
 			return
@@ -1364,15 +1494,19 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	}
 
 	authorized := aauth.AuthorizedRequest{
-		Agent:     claims.Agent,
-		Subject:   claims.Subject,
-		Scope:     granted,
-		Mission:   claims.Mission,
-		Actor:     claims.Actor,
-		AuthToken: verified.RawCredential,
-		Method:    request.Method,
-		Path:      request.URL.Path,
-		Body:      append([]byte(nil), exactBody...),
+		Agent:        claims.Agent,
+		PersonServer: claims.PersonServer,
+		Subject:      claims.Subject,
+		Scope:        granted,
+		Mission:      claims.Mission,
+		MissionS256:  claims.MissionS256,
+		Tenant:       claims.Tenant,
+		Account:      claims.Account,
+		Actor:        claims.Actor,
+		AuthToken:    verified.RawCredential,
+		Method:       request.Method,
+		Path:         request.URL.Path,
+		Body:         append([]byte(nil), exactBody...),
 	}
 	result, err := resource.operation(request.Context(), authorized)
 	if err != nil {
@@ -1686,10 +1820,10 @@ func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.R
 		"issuer":                 resource.identifier,
 		"authorization_endpoint": resource.identifier + "/authorize",
 	}
-	if resource.authorizationPolicy != nil {
+	if resource.accessMode != "" {
+		metadata["access_mode"] = string(resource.accessMode)
+	} else if resource.authorizationPolicy != nil {
 		metadata["access_mode"] = "aauth-access-token"
-	} else {
-		metadata["access_mode"] = "auth-token"
 	}
 	if resource.hasSigningKey {
 		metadata["jwks_uri"] = resource.identifier + "/jwks"

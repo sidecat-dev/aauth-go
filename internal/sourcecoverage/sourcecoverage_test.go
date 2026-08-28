@@ -133,62 +133,95 @@ func TestCoveragePinsOneCompleteCurrentEditorFamily(t *testing.T) {
 	}
 }
 
-func TestLegacyEvidenceDoesNotClaimTheCurrentPersonTokenTopology(t *testing.T) {
+func TestCurrentPersonTokenClaimsUseCurrentEvidenceOnly(t *testing.T) {
 	bundle, err := Embedded()
 	if err != nil {
 		t.Fatal(err)
 	}
+	currentClaims := map[string]string{
+		"core\x00person-token-endpoint":                                                         StatusPartial,
+		"core\x00person-token-structure":                                                        StatusExercised,
+		"core\x00person-token-usage":                                                            StatusExercised,
+		"core\x00person-token-verification":                                                     StatusExercised,
+		"core\x00resource-tokens/authorization-endpoint-request":                                StatusExercised,
+		"core\x00resource-tokens/authorization-endpoint-responses/response-with-resource-token": StatusExercised,
+		"core\x00resource-tokens/resource-token/resource-token-structure":                       StatusExercised,
+		"core\x00resource-tokens/resource-token/resource-token-verification":                    StatusPartial,
+		"core\x00resource-tokens/resource-token/resource-challenge-verification":                StatusPartial,
+		"core\x00ps-token-endpoint/agent-token-request":                                         StatusPartial,
+		"core\x00ps-token-endpoint/ps-response":                                                 StatusPartial,
+		"core\x00mission-creation":                                                              StatusPartial,
+		"core\x00mission-approval":                                                              StatusPartial,
+		"core\x00access-server-federation":                                                      StatusPartial,
+		"core\x00as-token-endpoint/ps-to-as-token-request":                                      StatusPartial,
+		"core\x00as-token-endpoint/as-response":                                                 StatusPartial,
+		"core\x00as-token-endpoint/auth-token-delivery":                                         StatusPartial,
+		"core\x00auth-tokens/auth-token-structure":                                              StatusExercised,
+		"core\x00auth-tokens/auth-token-usage":                                                  StatusExercised,
+		"core\x00auth-tokens/auth-token-verification/jwt-trust-verification":                    StatusExercised,
+		"core\x00auth-tokens/auth-token-verification/request-context-binding":                   StatusPartial,
+		"core\x00auth-token-response-verification":                                              StatusExercised,
+	}
+	currentEvidence := map[string]bool{
+		"current_mission_recovery_test.go":     true,
+		"current_person_token_journey_test.go": true,
+		"person_token_internal_test.go":        true,
+	}
+	seenCurrent := make(map[string]bool, len(currentClaims))
 	legacyOnly := map[string]struct{}{
-		"core\x00audit-endpoint/audit-request": {},
-		"core\x00audit-endpoint/audit-response": {},
-		"core\x00covered-components": {},
+		"core\x00audit-endpoint/audit-request":             {},
+		"core\x00audit-endpoint/audit-response":            {},
+		"core\x00covered-components":                       {},
 		"core\x00interaction-endpoint/interaction-request": {},
-		"core\x00interaction-response-poll-authority": {},
-		"core\x00mission-creation-overview": {},
-		"core\x00mission-completion-overview": {},
-		"core\x00permission-endpoint/permission-request": {},
-		"core\x00permission-endpoint/permission-response": {},
-		"core\x00person-server/user-interaction": {},
-		"core\x00resource-tokens/authorization-endpoint-request": {},
-		"core\x00resource-tokens/authorization-endpoint-responses/response-with-resource-token": {},
-		"core\x00resource-tokens/resource-token/resource-token-verification": {},
-		"core\x00resource-tokens/resource-token/resource-challenge-verification": {},
-		"core\x00requirement-agent-token": {},
-		"core\x00requirement-auth-token": {},
-		"core\x00resource-initiated-interaction": {},
-		"core\x00ps-token-endpoint/agent-token-request": {},
-		"core\x00ps-token-endpoint/ps-response": {},
-		"core\x00mission-creation": {},
-		"core\x00mission-approval": {},
-		"core\x00mission-log": {},
-		"core\x00mission-completion": {},
-		"core\x00access-server-federation": {},
-		"core\x00as-token-endpoint/ps-to-as-token-request": {},
-		"core\x00as-token-endpoint/as-response": {},
-		"core\x00as-token-endpoint/auth-token-delivery": {},
-		"core\x00auth-tokens/auth-token-usage": {},
-		"core\x00auth-tokens/auth-token-verification/jwt-trust-verification": {},
-		"core\x00auth-tokens/auth-token-verification/request-context-binding": {},
-		"core\x00auth-token-response-verification": {},
-		"core\x00upstream-token-verification": {},
-		"core\x00call-chaining": {},
-		"core\x00sub-agents/sub-agent-identity": {},
+		"core\x00interaction-response-poll-authority":      {},
+		"core\x00mission-creation-overview":                {},
+		"core\x00mission-completion-overview":              {},
+		"core\x00permission-endpoint/permission-request":   {},
+		"core\x00permission-endpoint/permission-response":  {},
+		"core\x00person-server/user-interaction":           {},
+		"core\x00requirement-agent-token":                  {},
+		"core\x00requirement-auth-token":                   {},
+		"core\x00resource-initiated-interaction":           {},
+		"core\x00mission-log":                              {},
+		"core\x00mission-completion":                       {},
+		"core\x00upstream-token-verification":              {},
+		"core\x00call-chaining":                            {},
+		"core\x00sub-agents/sub-agent-identity":            {},
 		"core\x00sub-agents/parent-mediated-authorization": {},
-		"core\x00metadata-documents": {},
-		"r3\x00auth-token-extensions": {},
-		"r3\x00authorization-endpoint-extensions": {},
-		"r3\x00per-call-proposals": {},
-		"r3\x00r3-document": {},
-		"r3\x00r3-processing": {},
-		"interop-profile\x00aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response": {},
+		"core\x00metadata-documents":                       {},
+		"r3\x00auth-token-extensions":                      {},
+		"r3\x00authorization-endpoint-extensions":          {},
+		"r3\x00per-call-proposals":                         {},
+		"r3\x00r3-document":                                {},
+		"r3\x00r3-processing":                              {},
+		"interop-profile\x00aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response":        {},
 		"interop-profile\x00aauth-interoperability-demo-profile/surface-3-resource-token-issuance-and-issuer-discovery": {},
-		"interop-profile\x00aauth-interoperability-demo-profile/surface-4-auth-token-issuance-and-presentation": {},
-		"interop-profile\x00aauth-interoperability-demo-profile/surface-5-parent-mediated-sub-agent-token-handling": {},
+		"interop-profile\x00aauth-interoperability-demo-profile/surface-4-auth-token-issuance-and-presentation":         {},
+		"interop-profile\x00aauth-interoperability-demo-profile/surface-5-parent-mediated-sub-agent-token-handling":     {},
 	}
 	for _, annotation := range bundle.Manifest.Annotations {
 		key := annotation.Source + "\x00" + annotation.Section
+		if wantStatus, found := currentClaims[key]; found {
+			seenCurrent[key] = true
+			if annotation.Status != wantStatus {
+				t.Errorf("current claim %s status = %s, want %s", key, annotation.Status, wantStatus)
+			}
+			if len(annotation.Evidence) == 0 {
+				t.Errorf("current claim %s has no evidence", key)
+			}
+			for _, evidence := range annotation.Evidence {
+				if !currentEvidence[evidence.File] {
+					t.Errorf("current claim %s uses legacy evidence %s", key, evidence.File)
+				}
+			}
+		}
 		if _, found := legacyOnly[key]; found {
 			t.Errorf("legacy evidence still claims current section %s/%s as %s", annotation.Source, annotation.Section, annotation.Status)
+		}
+	}
+	for key := range currentClaims {
+		if !seenCurrent[key] {
+			t.Errorf("current claim %s is absent", key)
 		}
 	}
 }
@@ -234,13 +267,13 @@ func TestEventsPublicClaimsMatchQualifiedProfile(t *testing.T) {
 
 	wantClaims := map[string]string{
 		"signature-key\x00signature-key-http-request-header/self-issued-jwt-self-jwt": "same discovered key",
-		"events\x00protocol-overview":                    "public single-use",
-		"events\x00subscribe-token":                      "max_uses:1",
-		"events\x00subscription-registration":            "exact subscribe token",
-		"events\x00event-token":                          "payload-free",
-		"events\x00event-delivery":                       "exact event token",
-		"events\x00ap-to-agent":                          "non-normative",
-		"events\x00event-discovery":                      "AsyncAPI",
+		"events\x00protocol-overview":         "public single-use",
+		"events\x00subscribe-token":           "max_uses:1",
+		"events\x00subscription-registration": "exact subscribe token",
+		"events\x00event-token":               "payload-free",
+		"events\x00event-delivery":            "exact event token",
+		"events\x00ap-to-agent":               "non-normative",
+		"events\x00event-discovery":           "AsyncAPI",
 	}
 	seen := make(map[string]bool, len(wantClaims))
 	for _, annotation := range bundle.Manifest.Annotations {
