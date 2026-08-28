@@ -226,7 +226,7 @@ transition to an endpoint whose normative operation set no longer accepts it.
 
 ### AAG-F008 — Clarification still requires an agent claim absent from current resource tokens
 
-**Status:** new / evidence pending
+**Status:** ready / unsubmitted
 
 **Source:** current AAuth Protocol, `Clarification`, `Resource Token Claims`,
 and the current document history entry that removes the agent identifier from
@@ -236,9 +236,11 @@ resource-facing tokens.
 token, which retained binding should remain stable in place of the text's
 requirement that the token contain the same `agent`?
 
-**Evidence needed before submission:** a current person-token clarification
-journey that compares the original and updated resource-token claims and shows
-that the stated `agent` comparison cannot be performed.
+**Executable and source evidence:** the current four-party implementation
+constructs and verifies resource tokens without an `agent` claim, matching the
+current `Resource Token Structure`. A literal implementation of the updated
+request rule can therefore only compare two absent values; it cannot enforce
+the anti-substitution check the sentence appears intended to express.
 
 **Provisional alternative:** bind the update to the retained person-token
 reference and the current `ps`, directed `sub`, `presented_jti`, resource, and
@@ -246,6 +248,12 @@ mission digest values.
 
 **Consequence:** implementations must otherwise either invent a removed claim
 or omit an intended anti-substitution check during clarification.
+
+**Submission placement:** add the missing site to open AAuth issue 104, which
+is already collecting lingering agent-token references. Keep the editorial
+correction in that comment; treat any proposal to add new stable `ps` or `sub`
+bindings as a separate normative question if implementation evidence later
+shows it is needed.
 
 ### AAG-F009 — Person-token policy denial has no registered error
 
@@ -292,6 +300,32 @@ claim identity matching or establishment until that adapter and test exist.
 
 **Consequence:** keying the person by AS issuer can merge unrelated PS namespaces
 or change identity when the same PS moves between access servers.
+
+### AAG-F011 — The closed person-token endpoint resolution is absent from the current editor source
+
+**Status:** ready / unsubmitted
+
+**Source:** current AAuth Protocol at
+`a99d353cf18aee81d0c5445bac070164fb3b8bc5`, `Person Token Endpoint`;
+AAuth issues 88 and 89 and their author comments of August 11, 2026.
+
+**Question:** Were issues 88 and 89 closed before their shared resolution was
+applied to the editor source, or was the resolution later withdrawn?
+
+**Evidence:** both issue threads record the document author's resolution that
+the person-token endpoint accepts the auth-token endpoint's request parameters,
+except `resource_token`. The current repository HEAD is still `a99d353` and its
+person-token endpoint still lists only `resource`, `mission_s256`,
+`subagent_token`, and `upstream_token`. It therefore still lacks the eight
+resolved parameters: `justification`, `login_hint`, `tenant`, `domain_hint`,
+`prompt`, `platform`, `device`, and `capabilities`.
+
+**Consequence:** the two closed defects remain in the normative text. A literal
+implementation still cannot select tenant context or tell the PS that it can
+complete deferred interaction on first person-token issuance.
+
+**Submission placement:** comment once on issue 88 and cross-link issue 89.
+This is follow-through on the existing shared resolution, not a new issue.
 
 ## Adding and submitting an item
 
