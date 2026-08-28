@@ -22,22 +22,26 @@ func TestResourceReportsSignatureFailuresAsSignatureError(t *testing.T) {
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	issuer := referenceTestSigningKey(t, "issuer-key")
 	requestKey := referenceTestSigningKey(t, "request-key")
-	credential, err := aauth.MintAgentToken("https://ap.example", issuer, aauth.AgentTokenRequest{
-		Agent:     "aauth:agent@ap.example",
-		PublicKey: requestKey.PublicJWK(),
-		Lifetime:  time.Hour,
-	}, now, "agent-token")
+	credential, err := aauth.MintPersonToken(issuer, aauth.PersonTokenClaims{
+		Issuer: "https://ps.example", DWK: aauth.PersonDiscoveryDocument,
+		Audience: "https://resource.example", Subject: "person",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()},
+		JTI:          "person-token", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier: "https://resource.example",
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
 		KeyResolver: aauth.StaticKeyResolver{
-			"https://ap.example": {"issuer-key": issuer.PublicJWK()},
+			"https://ps.example": {"issuer-key": issuer.PublicJWK()},
 		},
-		Clock:  clock,
-		NewID:  func() string { return "access-token" },
-		Scopes: []string{"documents.read"},
+		Clock:                    clock,
+		NewID:                    func() string { return "access-token" },
+		Scopes:                   []string{"documents.read"},
+		RequiredScopesForRequest: referenceTestRequiredResourceScopes("documents.read"),
+		ReplayStore:              referenceTestResourceReplayStore(t, clock),
+		AuthorizationStore:       referenceTestAuthorizationStateStore(t),
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			return aauth.AuthorizationDecision{Subject: "subject", Scope: []string{"documents.read"}}, nil
 		},
@@ -112,31 +116,31 @@ func TestResourcePolicyDenialIsNotASignatureFailure(t *testing.T) {
 	issuer := referenceTestSigningKey(t, "issuer-key")
 	requestKey := referenceTestSigningKey(t, "request-key")
 	credential, err := aauth.MintAgentToken("https://ap.example", issuer, aauth.AgentTokenRequest{
-		Agent:     "aauth:agent@ap.example",
-		PublicKey: requestKey.PublicJWK(),
-		Lifetime:  time.Hour,
+		Agent: "aauth:agent@ap.example", PublicKey: requestKey.PublicJWK(), Lifetime: time.Hour,
 	}, now, "agent-token")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier: "https://resource.example",
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
 		KeyResolver: aauth.StaticKeyResolver{
 			"https://ap.example": {"issuer-key": issuer.PublicJWK()},
 		},
-		Clock:  clock,
-		NewID:  func() string { return "access-token" },
-		Scopes: []string{"documents.read"},
+		Clock:                    clock,
+		NewID:                    func() string { return "access-token" },
+		Scopes:                   []string{"documents.read"},
+		RequiredScopesForRequest: referenceTestRequiredResourceScopes("documents.read"),
+		ReplayStore:              referenceTestResourceReplayStore(t, clock),
+		AuthorizationStore:       referenceTestAuthorizationStateStore(t),
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
-			return aauth.AuthorizationDecision{}, errors.New("policy denied this agent")
+			return aauth.AuthorizationDecision{}, errors.New("secret tenant policy backend /srv/policy.db")
 		},
 		Operation: func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "https://resource.example/authorize", strings.NewReader(`{"scope":"documents.read"}`))
-	request.Header.Set("Content-Type", "application/json")
+	request := httptest.NewRequest(http.MethodGet, "https://resource.example/documents", nil)
 	if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +161,10 @@ func TestResourcePolicyDenialIsNotASignatureFailure(t *testing.T) {
 	if got := response.Header().Get("Accept-Signature-Scheme"); got != "" {
 		t.Fatalf("403 Accept-Signature-Scheme = %q, want absent", got)
 	}
+	if strings.Contains(response.Body.String(), "secret tenant") ||
+		!strings.Contains(response.Body.String(), `"detail":"authorization policy denied the request"`) {
+		t.Fatalf("policy denial leaked host detail: %s", response.Body.String())
+	}
 }
 
 func TestResourceSanitizesOperationalKeyResolutionFailure(t *testing.T) {
@@ -166,23 +174,27 @@ func TestResourceSanitizesOperationalKeyResolutionFailure(t *testing.T) {
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	issuer := referenceTestSigningKey(t, "issuer-key")
 	requestKey := referenceTestSigningKey(t, "request-key")
-	credential, err := aauth.MintAgentToken("https://ap.example", issuer, aauth.AgentTokenRequest{
-		Agent:     "aauth:agent@ap.example",
-		PublicKey: requestKey.PublicJWK(),
-		Lifetime:  time.Hour,
-	}, now, "agent-token")
+	credential, err := aauth.MintPersonToken(issuer, aauth.PersonTokenClaims{
+		Issuer: "https://ps.example", DWK: aauth.PersonDiscoveryDocument,
+		Audience: "https://resource.example", Subject: "person",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()},
+		JTI:          "person-token", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier: "https://resource.example",
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
 		KeyResolver: failingReferenceKeyResolver{err: &aauth.KeyResolutionError{
 			Code:  aauth.KeyResolutionUnavailable,
 			Cause: errors.New("private endpoint and transport detail"),
 		}},
-		Clock:  clock,
-		NewID:  func() string { return "access-token" },
-		Scopes: []string{"documents.read"},
+		Clock:                    clock,
+		NewID:                    func() string { return "access-token" },
+		Scopes:                   []string{"documents.read"},
+		RequiredScopesForRequest: referenceTestRequiredResourceScopes("documents.read"),
+		ReplayStore:              referenceTestResourceReplayStore(t, clock),
+		AuthorizationStore:       referenceTestAuthorizationStateStore(t),
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			return aauth.AuthorizationDecision{}, nil
 		},

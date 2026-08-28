@@ -84,6 +84,7 @@ type VerifiedRequest struct {
 	SubscribeToken   *SubscribeTokenClaims
 	SelfJWT          *VerifiedSelfJWT
 	Created          time.Time
+	VerifiedAt       time.Time
 	ReplayKey        string
 }
 
@@ -96,7 +97,12 @@ type SelfJWTClaimPolicy func(VerifiedSelfJWT) error
 // VerifyRequestOptions declares the message components and token forms a
 // particular endpoint accepts.
 type VerifyRequestOptions struct {
-	RequiredComponents       []string
+	RequiredComponents []string
+	// RequireExactComponents rejects any covered component outside the
+	// endpoint's required profile. Use it when the verified request will be
+	// retained for offline replay and every covered value must remain in
+	// custody.
+	RequireExactComponents   bool
 	AllowedCredentialTypes   []string
 	AllowedSignatureKeyTypes []string
 	SignatureWindow          time.Duration
@@ -291,9 +297,6 @@ func signRequestWithSignatureKey(
 			components = append(components, "content-type")
 		}
 	}
-	if request.Header.Get("AAuth-Mission") != "" {
-		components = append(components, "aauth-mission")
-	}
 	components = append(components, "signature-key")
 
 	now := clock.Now()
@@ -333,6 +336,8 @@ func VerifyRequest(
 	if clock == nil {
 		return verified, errors.New("aauth: clock is required")
 	}
+	verifiedAt := clock.Now().UTC()
+	verificationClock := ClockFunc(func() time.Time { return verifiedAt })
 
 	signatureHeader := request.Header.Get("Signature")
 	signatureInputHeader := request.Header.Get("Signature-Input")
@@ -355,10 +360,13 @@ func VerifyRequest(
 	if hasRequestBody(request) {
 		required = append(required, "content-digest")
 	}
-	if request.Header.Get("AAuth-Mission") != "" {
-		required = append(required, "aauth-mission")
-	}
 	if request.Header.Get("Authorization") != "" {
+		if options.RequireExactComponents && !contains(options.RequiredComponents, "authorization") {
+			return VerifiedRequest{}, newSignatureError(
+				SignatureErrorInvalidSignature,
+				errors.New("aauth: Authorization is outside the endpoint's exact component profile"),
+			)
+		}
 		required = append(required, "authorization")
 	}
 	for _, component := range required {
@@ -367,6 +375,40 @@ func VerifyRequest(
 				fmt.Errorf("aauth: signature does not cover required component %q", component),
 				required,
 			)
+		}
+	}
+	if options.RequireExactComponents {
+		expected := make(map[string]struct{}, len(required))
+		for _, component := range required {
+			expected[strings.ToLower(component)] = struct{}{}
+		}
+		if len(components) != len(expected) {
+			return VerifiedRequest{}, newSignatureError(
+				SignatureErrorInvalidSignature,
+				errors.New("aauth: signature does not match the endpoint's exact component profile"),
+			)
+		}
+		for _, component := range components {
+			if _, ok := expected[component]; !ok {
+				return VerifiedRequest{}, newSignatureError(
+					SignatureErrorInvalidSignature,
+					fmt.Errorf("aauth: covered component %q is outside the endpoint's exact component profile", component),
+				)
+			}
+		}
+		retainedFields := []string{"signature", "signature-input"}
+		for _, component := range components {
+			if !strings.HasPrefix(component, "@") {
+				retainedFields = append(retainedFields, component)
+			}
+		}
+		for _, field := range retainedFields {
+			if len(request.Header.Values(field)) != 1 {
+				return VerifiedRequest{}, newSignatureError(
+					SignatureErrorInvalidSignature,
+					fmt.Errorf("aauth: exact component profile field %q has multiple field lines", field),
+				)
+			}
 		}
 	}
 
@@ -381,14 +423,14 @@ func VerifyRequest(
 		)
 	}
 	createdAt := time.Unix(created, 0)
-	age := clock.Now().Sub(createdAt)
+	age := verifiedAt.Sub(createdAt)
 	if age < -window || age > window {
 		return VerifiedRequest{}, newSignatureError(
 			SignatureErrorInvalidSignature,
 			errors.New("aauth: signature created time is outside the validity window"),
 		)
 	}
-	if expires != nil && !time.Unix(*expires, 0).After(clock.Now()) {
+	if expires != nil && !time.Unix(*expires, 0).After(verifiedAt) {
 		return VerifiedRequest{}, newSignatureError(
 			SignatureErrorInvalidSignature,
 			errors.New("aauth: signature expires time is in the past"),
@@ -448,7 +490,7 @@ func VerifyRequest(
 		verified.CredentialType = header.Type
 		switch header.Type {
 		case AgentTokenType:
-			claims, verifyErr := VerifyAgentToken(ctx, verified.RawCredential, resolver, clock)
+			claims, verifyErr := VerifyAgentToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
@@ -457,14 +499,14 @@ func VerifyRequest(
 			verified.PublicKey = claims.Confirmation.JWK
 			verified.AgentToken = &claims
 		case PersonTokenType:
-			claims, verifyErr := VerifyPersonToken(ctx, verified.RawCredential, resolver, clock)
+			claims, verifyErr := VerifyPersonToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
 			verified.PublicKey = claims.Confirmation.JWK
 			verified.PersonToken = &claims
 		case AuthTokenType:
-			claims, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, clock)
+			claims, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
@@ -473,7 +515,7 @@ func VerifyRequest(
 			verified.PublicKey = claims.Confirmation.JWK
 			verified.AuthToken = &claims
 		case SubscribeTokenType:
-			claims, verifyErr := VerifySubscribeToken(ctx, verified.RawCredential, resolver, clock)
+			claims, verifyErr := VerifySubscribeToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
@@ -532,7 +574,7 @@ func VerifyRequest(
 		verified.PublicKey = inline
 		verified.IdentityKey = inline
 	case SignatureKeyJKTJWT:
-		delegation, err := VerifyJKTJWT(signatureKey.parameters["jwt"], clock)
+		delegation, err := VerifyJKTJWT(signatureKey.parameters["jwt"], verificationClock)
 		if err != nil {
 			return verified, classifyJWTVerificationError(err)
 		}
@@ -572,7 +614,7 @@ func VerifyRequest(
 		if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
 		}
-		locator, err := preflightSelfJWTClaims(payload, clock.Now())
+		locator, err := preflightSelfJWTClaims(payload, verifiedAt)
 		if err != nil {
 			return verified, err
 		}
@@ -634,6 +676,7 @@ func VerifyRequest(
 	replayMaterial := append([]byte(base), signature...)
 	replayDigest := sha256.Sum256(replayMaterial)
 	verified.Created = createdAt
+	verified.VerifiedAt = verifiedAt
 	verified.ReplayKey = rawURL.EncodeToString(replayDigest[:])
 	return verified, nil
 }
@@ -893,6 +936,14 @@ func classifyJWTVerificationError(err error) error {
 			Code:               SignatureErrorUnsupportedAlgorithm,
 			AcceptedAlgorithms: []string{Ed25519Algorithm},
 			Cause:              err,
+		}
+	}
+	var unsupportedClaim *unsupportedTokenClaimError
+	if errors.As(err, &unsupportedClaim) {
+		return &SignatureError{
+			Code:         SignatureErrorInvalidJWT,
+			publicDetail: unsupportedClaim.Error(),
+			Cause:        err,
 		}
 	}
 	return newSignatureError(SignatureErrorInvalidJWT, err)

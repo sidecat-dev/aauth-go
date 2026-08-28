@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,96 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
+
+type personServerSelectionReplayStore struct {
+	calls int
+}
+
+func (store *personServerSelectionReplayStore) Consume(context.Context, string, time.Time) error {
+	store.calls++
+	return nil
+}
+
+func TestFixedPersonServerResourceRejectsPersonTokenFromAnotherServer(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 20, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	configuredPersonKey := testSigningKey(t, "configured-person-key")
+	otherPersonKey := testSigningKey(t, "other-person-key")
+	resourceKey := testSigningKey(t, "resource-key")
+	agentKey := testSigningKey(t, "agent-key")
+	minted := false
+	replayStore := &personServerSelectionReplayStore{}
+	resource, err := reference.NewResource(reference.ResourceConfig{
+		Identifier:   "https://resource.example",
+		AccessMode:   aauth.AccessModeAuthToken,
+		PersonServer: "https://configured-ps.example",
+		SigningKey:   resourceKey,
+		KeyResolver: aauth.StaticKeyResolver{
+			"https://configured-ps.example": {configuredPersonKey.ID(): configuredPersonKey.PublicJWK()},
+			"https://other-ps.example":      {otherPersonKey.ID(): otherPersonKey.PublicJWK()},
+		},
+		Clock: clock,
+		NewID: func() string {
+			minted = true
+			return "must-not-mint"
+		},
+		Scopes:                   []string{"records.read"},
+		ScopeDescriptions:        map[string]string{"records.read": "Read records"},
+		RequiredScopesForRequest: testRequiredResourceScopes("records.read"),
+		ReplayStore:              replayStore,
+		ProtectedAuthorizationPolicy: func(context.Context, aauth.AuthorizedRequest) error {
+			return nil
+		},
+		Operation: func(context.Context, aauth.AuthorizedRequest) (any, error) {
+			return map[string]bool{"ok": true}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	personToken, err := aauth.MintPersonToken(otherPersonKey, aauth.PersonTokenClaims{
+		Issuer:       "https://other-ps.example",
+		DWK:          aauth.PersonDiscoveryDocument,
+		Audience:     "https://resource.example",
+		Subject:      "other-ps-directed-person",
+		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+		JTI:          "other-ps-person-token",
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(5 * time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"https://resource.example/authorize",
+		strings.NewReader(`{"scope":"records.read"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(request, agentKey, personToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	resource.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("other-PS person-token response = %d %s", response.Code, response.Body.String())
+	}
+	if minted {
+		t.Fatal("resource allocated a token id before refusing the wrong person server")
+	}
+	if replayStore.calls != 0 {
+		t.Fatalf("resource consumed %d request proofs before refusing the wrong person server", replayStore.calls)
+	}
+	problem, err := aauth.DecodeProblemResponse(response.Result())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if problem.Code != "invalid_person_token" || !strings.Contains(problem.Detail, "person server") {
+		t.Fatalf("other-PS person-token problem = %#v", problem)
+	}
+}
 
 // AAuth Protocol sections Person Token, Resource Access and Resource Tokens,
 // Person Server, Access Server Federation, and Auth Token.
@@ -72,11 +164,15 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 
 	var accessPolicyRequest aauth.AuthorizationRequest
 	accessServer, err := reference.NewAccessServer(reference.AccessServerConfig{
-		Identifier:  "https://as.example",
-		SigningKey:  accessKey,
-		KeyResolver: keyResolver,
-		Clock:       clock,
-		NewID:       sequentialIDs("auth-token", "auth-token-replay", "auth-token-issued-before-person-expiry"),
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "https://as.example",
+		SigningKey:         accessKey,
+		KeyResolver:        keyResolver,
+		Clock:              clock,
+		NewID: sequentialIDs(
+			"auth-token", "auth-token-replay", "auth-token-independent",
+			"auth-token-issued-before-person-expiry", "auth-token-extra-1", "auth-token-extra-2",
+		),
 		TrustedPersonServer: func(_ context.Context, identifier string) error {
 			if identifier != "https://ps.example" {
 				return fmt.Errorf("untrusted person server %s", identifier)
@@ -114,6 +210,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 			t.Fatal(err)
 		}
 		server, err := reference.NewPersonServer(reference.PersonServerConfig{
+			AuthorizationStore:   testAuthorizationStateStore(t),
 			Identifier:           "https://ps.example",
 			SigningKey:           psKey,
 			KeyResolver:          keyResolver,
@@ -125,7 +222,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 			PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
 				personTokenPolicyCalls++
 				if request.Agent != "aauth:planner@ap.example" || request.Resource != "https://resource.example" {
-					return aauth.PersonTokenDecision{}, fmt.Errorf("person binding not found")
+					return aauth.PersonTokenDecision{}, fmt.Errorf("secret person-policy backend: binding not found")
 				}
 				return aauth.PersonTokenDecision{
 					Subject:  "directed-person-7",
@@ -143,7 +240,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 			CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
 				missionEvaluations = append(missionEvaluations, evaluation)
 				if evaluation.Agent != "aauth:planner@ap.example" {
-					return aauth.MissionDecision{}, fmt.Errorf("agent is not permitted to create this mission")
+					return aauth.MissionDecision{}, fmt.Errorf("secret mission-policy backend: agent denied")
 				}
 				return aauth.MissionDecision{
 					Description:       evaluation.Proposal.Description,
@@ -165,7 +262,12 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	personServer := newPersonServer()
 
 	var operationRequest aauth.AuthorizedRequest
+	var protectedPolicyRequest aauth.AuthorizedRequest
 	operationCalls := 0
+	resourceReplayStore, err := reference.NewMemoryProofReplayStore(clock, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resource, err := reference.NewResource(reference.ResourceConfig{
 		Identifier:   "https://resource.example",
 		AccessMode:   aauth.AccessModeAuthToken,
@@ -175,6 +277,19 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		Clock:        clock,
 		NewID:        sequentialIDs("resource-token"),
 		Scopes:       []string{"records.read"},
+		ScopeDescriptions: map[string]string{
+			"records.read": "Read your records",
+		},
+		RequiredScopesForRequest: func(context.Context, *http.Request) ([]string, error) {
+			return []string{"records.read"}, nil
+		},
+		ReplayStore: resourceReplayStore,
+		ProtectedAuthorizationPolicy: func(_ context.Context, request aauth.AuthorizedRequest) error {
+			protectedPolicyRequest = request
+			protectedPolicyRequest.Scope = append([]string(nil), request.Scope...)
+			protectedPolicyRequest.Body = append([]byte(nil), request.Body...)
+			return nil
+		},
 		Operation: func(_ context.Context, request aauth.AuthorizedRequest) (any, error) {
 			operationCalls++
 			operationRequest = request
@@ -294,12 +409,13 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	}
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  protocolClient,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         protocolClient,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -354,6 +470,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		nil,
 	)
 	assertProblemCode(t, err, http.StatusForbidden, "person_token_denied")
+	assertSanitizedPolicyProblem(t, err, "person-token policy denied the request")
 	unboundAgentToken, err := aauth.MintAgentToken(
 		"https://ap.example",
 		apKey,
@@ -369,12 +486,13 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		t.Fatal(err)
 	}
 	unboundAgent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  unboundAgentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  protocolClient,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         unboundAgentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         protocolClient,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -395,12 +513,13 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		t.Fatal(err)
 	}
 	wrongPersonServerAgent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  wrongPersonServerAgentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  protocolClient,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         wrongPersonServerAgentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         protocolClient,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -450,7 +569,8 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	}
 	defer legacyResponse.Body.Close()
 	if legacyResponse.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("agent-token authorization status = %d", legacyResponse.StatusCode)
+		body, _ := io.ReadAll(legacyResponse.Body)
+		t.Fatalf("agent-token authorization response = %d %q requirement=%q", legacyResponse.StatusCode, body, legacyResponse.Header.Get("AAuth-Requirement"))
 	}
 	requirement, err := aauth.ParseRequirementHeader(legacyResponse.Header.Get("AAuth-Requirement"))
 	if err != nil {
@@ -538,18 +658,20 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		t.Fatal(err)
 	}
 	otherAgent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:other@ap.example",
-		SigningKey:  otherAgentKey,
-		AgentToken:  otherAgentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  protocolClient,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:other@ap.example",
+		SigningKey:         otherAgentKey,
+		AgentToken:         otherAgentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         protocolClient,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = otherAgent.CreateMission(context.Background(), "https://ps.example/mission", proposal)
 	assertProblemCode(t, err, http.StatusForbidden, "mission_denied")
+	assertSanitizedPolicyProblem(t, err, "mission policy denied the request")
 	mission, err := agent.CreateMission(context.Background(), "https://ps.example/mission", proposal)
 	if err != nil {
 		t.Fatal(err)
@@ -791,7 +913,8 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		"https://ps.example/token",
 		resourceGrant,
 	)
-	if err == nil || !strings.Contains(err.Error(), "outlives the resource token") {
+	if err == nil || !strings.Contains(err.Error(), "federation_failed") ||
+		strings.Contains(err.Error(), "outlives the resource token") {
 		t.Fatalf("person server forwarded overlong access-server auth token: %v", err)
 	}
 	injectedAccessServerAuthToken = ""
@@ -801,17 +924,9 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	wrongRoleClaims := baseResponseClaims
 	wrongRoleClaims.DWK = aauth.PersonDiscoveryDocument
 	wrongRoleClaims.JTI = "wrong-role-exchange-auth-token"
-	injectedPersonServerAuthToken, err = aauth.MintAuthToken(accessKey, wrongRoleClaims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = agent.ExchangeResourceToken(
-		context.Background(),
-		"https://ps.example/token-injected",
-		resourceGrant,
-	)
-	if err == nil || !strings.Contains(err.Error(), "discovery document") {
-		t.Fatalf("wrong-role auth-token response error = %v", err)
+	if _, err := aauth.MintAuthToken(accessKey, wrongRoleClaims); err == nil ||
+		!strings.Contains(err.Error(), "ps must equal issuer") {
+		t.Fatalf("person-role token with distinct ps error = %v", err)
 	}
 	grant, err := agent.ExchangeResourceToken(
 		context.Background(),
@@ -862,8 +977,29 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	if operationRequest.Agent != "" ||
 		operationRequest.PersonServer != "https://ps.example" ||
 		operationRequest.Subject != "directed-person-7" ||
-		operationRequest.MissionS256 != mission.Reference.S256 {
+		operationRequest.AuthTokenIssuer != "https://as.example" ||
+		operationRequest.AuthTokenDWK != aauth.AccessDiscoveryDocument ||
+		operationRequest.AuthTokenID != grant.Claims.JTI ||
+		!operationRequest.AuthTokenIssuedAt.Equal(time.Unix(grant.Claims.IssuedAt, 0).UTC()) ||
+		!operationRequest.AuthTokenExpiresAt.Equal(time.Unix(grant.Claims.ExpiresAt, 0).UTC()) ||
+		operationRequest.MissionS256 != mission.Reference.S256 ||
+		operationRequest.ConfirmationKey != agentKey.PublicJWK() ||
+		operationRequest.ProofReplayKey == "" ||
+		!operationRequest.ProofCreatedAt.Equal(now.Truncate(time.Second).UTC()) {
 		t.Fatalf("protected operation context = %#v", operationRequest)
+	}
+	if protectedPolicyRequest.AuthTokenIssuer != operationRequest.AuthTokenIssuer ||
+		protectedPolicyRequest.AuthTokenDWK != operationRequest.AuthTokenDWK ||
+		protectedPolicyRequest.AuthTokenID != operationRequest.AuthTokenID ||
+		!protectedPolicyRequest.AuthTokenIssuedAt.Equal(operationRequest.AuthTokenIssuedAt) ||
+		!protectedPolicyRequest.AuthTokenExpiresAt.Equal(operationRequest.AuthTokenExpiresAt) ||
+		protectedPolicyRequest.PersonServer != operationRequest.PersonServer ||
+		protectedPolicyRequest.Subject != operationRequest.Subject ||
+		protectedPolicyRequest.ConfirmationKey != operationRequest.ConfirmationKey ||
+		protectedPolicyRequest.ProofReplayKey != operationRequest.ProofReplayKey ||
+		!protectedPolicyRequest.ProofCreatedAt.Equal(operationRequest.ProofCreatedAt) ||
+		strings.Join(protectedPolicyRequest.Scope, " ") != "records.read" {
+		t.Fatalf("protected policy context = %#v, operation = %#v", protectedPolicyRequest, operationRequest)
 	}
 	if operationCalls != 1 {
 		t.Fatalf("protected operation calls = %d", operationCalls)
@@ -872,33 +1008,22 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	for _, test := range []struct {
 		name   string
 		claims aauth.AuthTokenClaims
+		key    aauth.SigningKey
 	}{
-		{
-			name: "legacy auth-token shape",
-			claims: aauth.AuthTokenClaims{
-				Issuer:       "https://as.example",
-				DWK:          aauth.AccessDiscoveryDocument,
-				Audience:     "https://resource.example",
-				JTI:          "legacy-auth-token",
-				Agent:        "aauth:planner@ap.example",
-				Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
-				IssuedAt:     now.Unix(),
-				ExpiresAt:    now.Add(5 * time.Minute).Unix(),
-				Scope:        "records.read",
-			},
-		},
 		{
 			name: "person-server discovery role from access server",
 			claims: func() aauth.AuthTokenClaims {
 				claims := grant.Claims
+				claims.Issuer = "https://ps.example"
 				claims.DWK = aauth.PersonDiscoveryDocument
 				claims.JTI = "wrong-auth-token-role"
 				return claims
 			}(),
+			key: psKey,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			compact, err := aauth.MintAuthToken(accessKey, test.claims)
+			compact, err := aauth.MintAuthToken(test.key, test.claims)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -959,24 +1084,32 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	}
 
 	baseClaims := resourceGrant.Claims
+	_, err = agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", reference.ResourceGrant{
+		Resource:      resourceGrant.Resource,
+		ResourceToken: personToken,
+		Claims:        baseClaims,
+	})
+	if err == nil || !strings.Contains(err.Error(), `token typ is "aa-person+jwt", want "aa-resource+jwt"`) {
+		t.Fatalf("wrong resource-token type preflight error = %v", err)
+	}
+	expiredClaims := baseClaims
+	expiredClaims.JTI = "resource-token-expired"
+	expiredClaims.IssuedAt = now.Add(-10 * time.Minute).Unix()
+	expiredClaims.ExpiresAt = now.Add(-5 * time.Minute).Unix()
+	_, err = agent.ExchangeResourceToken(
+		context.Background(),
+		"https://ps.example/token",
+		mintCurrentResourceGrant(t, resourceKey, expiredClaims, resourceGrant.Resource),
+	)
+	if err == nil || !strings.Contains(err.Error(), "token validation expired") {
+		t.Fatalf("expired resource-token preflight error = %v", err)
+	}
 	for _, test := range []struct {
 		name   string
 		status int
 		code   aauth.PollingErrorCode
 		make   func() reference.ResourceGrant
 	}{
-		{
-			name:   "wrong token type",
-			status: http.StatusBadRequest,
-			code:   "invalid_resource_token",
-			make: func() reference.ResourceGrant {
-				return reference.ResourceGrant{
-					Resource:      resourceGrant.Resource,
-					ResourceToken: personToken,
-					Claims:        baseClaims,
-				}
-			},
-		},
 		{
 			name:   "unknown presented jti",
 			status: http.StatusBadRequest,
@@ -1022,18 +1155,6 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 			},
 		},
 		{
-			name:   "expired resource token",
-			status: http.StatusBadRequest,
-			code:   "expired_resource_token",
-			make: func() reference.ResourceGrant {
-				claims := baseClaims
-				claims.JTI = "resource-token-expired"
-				claims.IssuedAt = now.Add(-10 * time.Minute).Unix()
-				claims.ExpiresAt = now.Add(-5 * time.Minute).Unix()
-				return mintCurrentResourceGrant(t, resourceKey, claims, resourceGrant.Resource)
-			},
-		},
-		{
 			name:   "resource token exceeds accepted lifetime",
 			status: http.StatusBadRequest,
 			code:   "invalid_resource_token",
@@ -1057,8 +1178,9 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	if _, err := agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", replayGrant); err != nil {
 		t.Fatal(err)
 	}
-	_, err = agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", replayGrant)
-	assertProblemCode(t, err, http.StatusUnauthorized, "invalid_signature")
+	if _, err = agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", replayGrant); err != nil {
+		t.Fatalf("independent same-token exchange failed: %v", err)
+	}
 
 	personExpiredAt := time.Unix(directPersonGrant.Claims.ExpiresAt, 0).UTC()
 	now = personExpiredAt.Add(time.Second)
@@ -1085,6 +1207,17 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		invalidLateGrant,
 	)
 	assertProblemCode(t, err, http.StatusBadRequest, "invalid_resource_token")
+}
+
+func assertSanitizedPolicyProblem(t *testing.T, err error, wantDetail string) {
+	t.Helper()
+	var problem *aauth.ProblemError
+	if !errors.As(err, &problem) {
+		t.Fatalf("error = %v, want AAuth problem", err)
+	}
+	if problem.Detail != wantDetail || strings.Contains(problem.Detail, "secret") {
+		t.Fatalf("problem detail = %q, want %q without host diagnostic", problem.Detail, wantDetail)
+	}
 }
 
 func mintCurrentResourceGrant(
@@ -1128,5 +1261,25 @@ func assertTokenOmitsClaims(t *testing.T, compact string, names ...string) {
 		if _, exists := claims[name]; exists {
 			t.Fatalf("token unexpectedly contains %q: %s", name, payload)
 		}
+	}
+}
+
+func TestCurrentPersonIssuedAuthTokenRequiresPSEqualsIssuer(t *testing.T) {
+	t.Parallel()
+	key := testSigningKey(t, "ps-key")
+	_, err := aauth.MintAuthToken(key, aauth.AuthTokenClaims{
+		Issuer:       "https://ps.example",
+		DWK:          aauth.PersonDiscoveryDocument,
+		Audience:     "https://resource.example",
+		JTI:          "auth-token",
+		PersonServer: "https://different-ps.example",
+		Subject:      "directed-person",
+		Confirmation: aauth.Confirmation{JWK: testSigningKey(t, "agent-key").PublicJWK()},
+		IssuedAt:     time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC).Unix(),
+		ExpiresAt:    time.Date(2026, 8, 28, 13, 0, 0, 0, time.UTC).Unix(),
+		Scope:        "records.read",
+	})
+	if err == nil || !strings.Contains(err.Error(), "ps must equal issuer") {
+		t.Fatalf("PS-issued auth-token mismatch error = %v", err)
 	}
 }

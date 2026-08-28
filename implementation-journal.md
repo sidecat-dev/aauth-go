@@ -30,6 +30,22 @@ comparators. Unexercised BEAM source may be consulted as code archaeology, but
 provides no conformance evidence. Neither defines compatibility requirements
 for this library.
 
+## 2026-08-28
+
+### Incomplete callable R3 authorization removed
+
+- Current R3 authorization remains unclaimed. The public token, policy,
+  Resource, Person Server, Access Server, and Agent APIs expose no direct-R3
+  authorization path.
+- Correctly signed tokens that carry unsupported R3 authorization members are
+  rejected before policy, replay admission, or an operation effect. Removing
+  typed fields does not turn an R3-bearing token into a scope-only token.
+- The module retains current neutral R3 document values, exact-byte digests,
+  and the document store used by Events. Those values do not authorize a call.
+- A future R3 implementation must enter as one complete current path with
+  PS-and-AS document retrieval, per-call proposal custody, grant enforcement,
+  and audit-atomic issuance.
+
 ## 2026-08-03
 
 ### Protected one-use JSON Events profile
@@ -60,10 +76,10 @@ for this library.
   contract digest and selection, media type, payload digest, JSON syntax, and
   schema before durable dispatch. Reconstruction preserves pending and unknown
   action outcomes, and terminal duplicates perform no second action.
-- Protected ticket support is a separate optional authority interface, so an
-  M5-only deployment store remains source-compatible. The included AP,
-  resource, and agent file stores write v2 records, reopen their M5 v1 records,
-  and upgrade on the next successful commit. Resource identity is atomically
+- Protected ticket support is a separate optional authority interface. The
+  included AP, resource, and agent file stores accept and write only their
+  current canonical records; obsolete record versions are rejected rather
+  than migrated or upgraded. Resource identity is atomically
   compared during ticket consumption, and constructor-time route validation
   prevents conflicting or templated deployment endpoints from reaching
   `ServeMux`.
@@ -76,135 +92,7 @@ for this library.
   reconciliation, general AsyncAPI/YAML/external-reference support, and
   distributed or multi-writer host stores.
 
-## 2026-08-02
-
-### R3 conditional per-call authorization
-
-- **Status: implemented as one narrow MCP, scope-plus-R3, immediate-policy
-  vertical; not full R3 and not exactly-once effects.** A class authorization
-  decision may split verified operations into disjoint `r3_granted` and
-  `r3_conditional` subsets. The union remains within both the exact class
-  document and the agent's persisted request. An operation in neither set is
-  refused.
-- The first signed conditional call captures one bounded exact body, requires
-  signed `Content-Type`, rejects query parameters, maps the HTTP method and path
-  to exactly one operation, and executes nothing. A deployment callback supplies inline JSON parameters
-  and/or full presented bytes for digest parameters. The resource serializes a
-  strict one-operation proposal once, verifies it against that same call, and
-  durably retains the exact bytes before exposing a signed resource token that
-  contains only the proposal URI/hash.
-- Proposal documents are distinguished by a required top-level `parameters`
-  object. A proposal with zero or multiple operations, malformed or ambiguous
-  JSON names, an invalid digest object, missing parameters, or an operation
-  other than the mapped call is refused. Inline parameters compare as JSON
-  values. Digest parameters compare the full presented bytes and media type;
-  `excerpt` is display-only.
-- The AS repeats admission even for a warm cache, authenticates to the existing
-  AS-only endpoint, verifies the exact hash before policy, and requires policy
-  to directly grant exactly the proposal's one operation. Recursive
-  conditional results, empty/partial decisions, vocabulary changes, and
-  overgrant fail closed. A bounded issuance store requires a private custody
-  directory and atomically retains mode-0600 exact compact tokens plus a candidate semantic audit keyed by resource
-  issuer and challenge-token JTI/fingerprint. A separate deployment audit must
-  durably and idempotently accept that stable token identity before release;
-  its retention outlives and is independent of the recovery store. Commit or
-  audit failure releases no token. Reconstruction retries the audit and
-  duplicate exchange returns the exact committed token without re-running
-  policy or minting another token.
-- The retry reloads and rehashes the proposal, remaps the actual signed call,
-  compares every parameter, and durably consumes `(proposal digest, per-call
-  auth-token JTI)` immediately before invoking the operation. Missing, extra,
-  or changed parameters fail without consuming a matching request. One fresh
-  valid call is admitted; identical-proof replay and later fresh-proof reuse
-  are refused, including after resource reconstruction. Concurrent store
-  consumption has one winner.
-- Consumption before the operation gives **at-most-once admission**, not
-  exactly-once external consequence. A crash after durable consumption and
-  before the effect can lose the opportunity. Identical proposal bytes may be
-  shared by independently approved tokens because the per-token JTI, not the
-  content hash, is the one-shot identity.
-- The pinned draft says the PS fetches proposals for display while also saying
-  the resource accepts only its one AS signature. This implementation preserves
-  the accepted AS-only boundary, proves PS and unsigned fetch refusal without
-  data leakage, and does not claim informed PS-rendered user consent or invent
-  an AS-to-PS transfer.
-
-### R3 direct-grant hardening correction
-
-- The one-vocabulary, scope-plus-R3 immediate direct-grant vertical now uses a
-  deployment-owned `R3DocumentStore` before resource-token release. The
-  included single-writer file implementation atomically retains mode-0600
-  exact bytes across resource reconstruction, enforces document/count/byte
-  limits, rejects non-canonical digest paths, and removes only expired
-  documents. Its guarantee ends at the referencing resource token's expiry;
-  permanent historical retrieval and multi-process coordination remain open.
-- The AS document read is admitted before transport, deadline-bounded,
-  redirect-free, body-bounded, nonce-distinct across same-second retries, and
-  cancellation-isolated for concurrent callers. Completed cache entries use
-  least-recently-used eviction; active fetches are never evicted, and an
-  all-active cache refuses additional work until capacity returns.
-- `ResourceGrant.RequestedR3` is now a serializable, cloned agent-state
-  association. It survives JSON reconstruction and is required before an R3
-  exchange, preventing silent overgrant when the selected document is broader
-  than the request. This is not a new protocol claim, cryptographic binding,
-  or built-in durable agent store.
-- Scope-only tokens cannot invoke operations that deployment policy marks as
-  R3-required. Conditional grants and every deferred R3 result are refused,
-  including a valid external HTTP 202, before the agent exposes usable or
-  pending authorization state.
-- Token headers, token payloads, R3 documents, and reference endpoint request
-  bodies reject exact duplicate JSON member names and names that Go's decoder
-  would case-fold onto the same struct field. This is parser hardening across
-  AAuth token and reference request types, not an R3 wire extension.
-- The 2026-07-29 entry's “durable external document storage” item is therefore
-  superseded only for the included bounded single-writer file implementation.
-  The conditional and per-call items from this intermediate checkpoint are
-  superseded by the entry above. Deployment-specific multi-process custody,
-  PS document use, scope-free R3, multi-definition composition, and live
-  adapters for every vocabulary remain open.
-
 ## 2026-07-29
-
-### R3 one-vocabulary direct grant
-
-- **Status: implemented and qualified as one narrow but complete vertical, not
-  as full R3.** A signed agent request carries one MCP operation plus ordinary
-  scope through the real resource → PS → AS flow. The resource validates the
-  operation at a caller-owned authoritative-definition boundary, retains the
-  selected exact document bytes, and issues one URI/hash pair.
-- The R3 endpoint accepts only a valid `jwks_uri` HTTP signature from the
-  resource's configured AS. The AS requires same-resource hosting, forbids
-  redirects, bounds the body, hashes the received bytes before parsing or
-  policy, and coalesces a hash-keyed cache. Every cache read recomputes the
-  digest over retained exact bytes.
-- Policy sees a defensive copy of the verified exact bytes and parsed
-  document. It may narrow to a direct subset. Resource-token, auth-token, PS,
-  and agent checks preserve the same URI/hash pair; the agent additionally
-  refuses operations outside its request. The protected resource maps the real
-  call back to one vocabulary entry, applies ordinary scope independently, and
-  invokes only a matching direct grant without fetching at enforcement time.
-- Token release is fail-closed behind a synchronous deployment-owned audit
-  callback containing URI, hash, agent, resource, token ID, and issuance time.
-  A callback error exposes no auth token. A deployment must make a successful
-  callback durable; the reference ordering prevents a delivered-token-without-
-  audit gap but may leave an orphan audit if response delivery fails.
-- Executable negative paths cover unsigned document access, one-byte response
-  mutation before policy, an operation absent from the authoritative
-  definition, an audit-store failure, an ungranted protected call, no fetch at
-  enforcement time, and repeated issuance from a re-hashed cache.
-- **Still open:** `r3_conditional`, per-call proposal documents and parameter
-  binding, scope-free R3, PS display/consent fetching, multi-document
-  composition, durable external document storage, live discovery validation
-  adapters, and full journeys for the other seven standard vocabularies.
-- **Draft ambiguities exposed, not silently resolved:** R3 says both PS and AS
-  fetch while also requiring every fetch to be signed by the resource's single
-  AS; its JWT `typ` examples conflict with core's `aa-*+jwt` values; it both
-  requires stable bytes and discusses updating one URI; and the AS receives
-  the document but not the agent's original operation request. This
-  implementation follows the explicit AS-only access-control rule, retains
-  core token types, uses a hash-derived URI, and has the agent reject an
-  overbroad returned grant. These choices are implementation boundaries, not
-  assertions that the draft contradictions are resolved.
 
 ### HTTP signature error wire contract
 
@@ -385,9 +273,8 @@ for this library.
   run for the deferred request until trusted PS approval; the sub-agent then
   uses the terminal token at the protected resource.
 - `RequestChainedTokenAuthorization` likewise preserves a `202` instead of
-  collapsing it into an error. The older immediate convenience methods remain
-  source-compatible and return an explicit instruction when a caller must use
-  the continuation API.
+  collapsing it into an error. Immediate methods refuse a deferred result and
+  direct callers to the continuation API.
 - Full call-chaining deferral still requires the intermediary resource to
   create its own caller-facing pending URL, propagate the downstream
   interaction, finish the downstream operation, and deliver the original
@@ -600,7 +487,7 @@ for this library.
 
 ### Historical Elixir interoperability fixtures
 
-- **Status: retained negative compatibility evidence; no current
+- **Status: retained historical negative evidence; no current
   bidirectional-interoperability claim.**
 - At the exact historical BEAM revision
   `6fc87c6316583e94088cb7c72722d65fe5f11edc`, the two implementations exchanged

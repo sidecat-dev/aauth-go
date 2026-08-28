@@ -411,13 +411,13 @@ func (provider *AgentProvider) acceptEvent(response http.ResponseWriter, request
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrEventPayloadNotAllowed):
-			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("event payload is not allowed"))
 		case errors.Is(err, ErrEventSubscriptionMismatch):
-			writeProblem(response, http.StatusForbidden, "subscription_mismatch", err)
+			writeProblem(response, http.StatusForbidden, "subscription_mismatch", errors.New("event subscription does not match the request"))
 		case errors.Is(err, ErrEventSubscriptionNotFound):
-			writeProblem(response, http.StatusNotFound, "subscription_not_found", err)
+			writeProblem(response, http.StatusNotFound, "subscription_not_found", errors.New("event subscription was not found"))
 		case errors.Is(err, ErrEventSubscriptionExhausted):
-			writeProblem(response, http.StatusTooManyRequests, "subscription_exhausted", err)
+			writeProblem(response, http.StatusTooManyRequests, "subscription_exhausted", errors.New("event subscription has no remaining uses"))
 		default:
 			writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		}
@@ -496,7 +496,7 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 	enrollment, err := provider.enrollments.LookupEnrollment(request.Context(), durableThumbprint)
 	if err != nil {
 		if errors.Is(err, ErrUnknownEnrollment) {
-			writeProblem(response, http.StatusForbidden, "unknown_enrollment", err)
+			writeProblem(response, http.StatusForbidden, "unknown_enrollment", errors.New("the durable identity is not enrolled"))
 			return
 		}
 		writeProblem(response, http.StatusInternalServerError, "enrollment_lookup_failed", err)
@@ -529,7 +529,7 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 	}
 	if provider.refreshPolicy != nil {
 		if err := provider.refreshPolicy(request.Context(), evaluation); err != nil {
-			writeProblem(response, http.StatusForbidden, "refresh_denied", err)
+			writeHostPolicyRefusal(response, "refresh_denied", "agent refresh policy denied the request")
 			return
 		}
 	}

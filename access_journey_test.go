@@ -1,6 +1,7 @@
 package aauth_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,11 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
-func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
+type bodyAwareAccessAgent interface {
+	DoWithAccess(context.Context, reference.AuthorizedCall, *reference.AccessGrant) (*http.Response, error)
+}
+
+func TestCurrentResourceManagedAccessStartsAtProtectedEndpoint(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
@@ -69,11 +74,15 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 	var operationRequest aauth.AuthorizedRequest
 	var executionCount int
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:  "https://resource.example",
-		KeyResolver: resolver,
-		Clock:       clock,
-		NewID:       ids,
-		Scopes:      []string{"documents.read"},
+		Identifier:               "https://resource.example",
+		AccessMode:               aauth.AccessModeSessionToken,
+		KeyResolver:              resolver,
+		Clock:                    clock,
+		NewID:                    ids,
+		Scopes:                   []string{"documents.read"},
+		RequiredScopesForRequest: testRequiredResourceScopes("documents.read"),
+		ReplayStore:              testResourceReplayStore(t, clock),
+		AuthorizationStore:       testAuthorizationStateStore(t),
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			policyRequest = request
 			return aauth.AuthorizationDecision{
@@ -107,7 +116,7 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 	if err := json.NewDecoder(metadataResponse.Body).Decode(&metadata); err != nil {
 		t.Fatal(err)
 	}
-	if metadata["access_mode"] != "aauth-access-token" {
+	if metadata["access_mode"] != string(aauth.AccessModeSessionToken) {
 		t.Fatalf("resource access_mode = %#v", metadata["access_mode"])
 	}
 	if _, exists := metadata["jwks_uri"]; exists {
@@ -115,32 +124,65 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 	}
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:reader@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:reader@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	other, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:other@ap.example",
-		SigningKey:  otherKey,
-		AgentToken:  otherToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:other@ap.example",
+		SigningKey:         otherKey,
+		AgentToken:         otherToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	agentAuthorize, err := http.NewRequest(http.MethodPost, "https://resource.example/authorize", strings.NewReader(`{"scope":"documents.read"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentAuthorize.Header.Set("Content-Type", "application/json")
+	if err := aauth.SignRequest(agentAuthorize, agentKey, agentToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	agentAuthorizeResponse, err := client.Do(agentAuthorize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agentAuthorizeResponse.Body.Close()
+	if agentAuthorizeResponse.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(agentAuthorizeResponse.Body)
+		t.Fatalf("agent-token /authorize response = %d %q requirement=%q", agentAuthorizeResponse.StatusCode, body, agentAuthorizeResponse.Header.Get("AAuth-Requirement"))
+	}
+	agentAuthorizeRequirement, err := aauth.ParseRequirementHeader(agentAuthorizeResponse.Header.Get("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentAuthorizeResponse.StatusCode != http.StatusUnauthorized || agentAuthorizeRequirement.Type != aauth.RequirementPersonToken {
+		t.Fatalf("agent-token /authorize response = %d %#v", agentAuthorizeResponse.StatusCode, agentAuthorizeRequirement)
+	}
+
+	protectedBody := []byte(`{"query":"current payload"}`)
+	protectedCall := reference.AuthorizedCall{
+		Method:      http.MethodPost,
+		Endpoint:    "https://resource.example/documents",
+		Body:        protectedBody,
+		ContentType: "application/json",
+	}
 	authorization, err := agent.RequestResourceManagedAccess(
 		context.Background(),
-		"https://resource.example/authorize",
-		[]string{"documents.read"},
+		protectedCall,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -156,16 +198,16 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 		t.Fatalf("access scope = %q", grant.Scope)
 	}
 	if policyRequest.Agent != "aauth:reader@ap.example" ||
+		policyRequest.PersonServer != "" || policyRequest.Subject != "" ||
 		policyRequest.Resource != "https://resource.example" ||
 		strings.Join(policyRequest.Scope, " ") != "documents.read" {
 		t.Fatalf("local policy request = %#v", policyRequest)
 	}
-	response, err := agent.DoWithAccess(
-		context.Background(),
-		http.MethodGet,
-		"https://resource.example/documents",
-		&grant,
-	)
+	bodyAware, ok := any(agent).(bodyAwareAccessAgent)
+	if !ok {
+		t.Fatal("Agent.DoWithAccess does not accept one body-aware AuthorizedCall")
+	}
+	response, err := bodyAware.DoWithAccess(context.Background(), protectedCall, &grant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,8 +221,48 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 	}
 	if operationRequest.Agent != "aauth:reader@ap.example" ||
 		operationRequest.Subject != "person-123" ||
-		strings.Join(operationRequest.Scope, " ") != "documents.read" {
+		strings.Join(operationRequest.Scope, " ") != "documents.read" ||
+		!bytes.Equal(operationRequest.Body, protectedBody) ||
+		operationRequest.ContentType != "application/json" {
 		t.Fatalf("authorized operation request = %#v", operationRequest)
+	}
+
+	tamperedBodyRequest, err := http.NewRequest(
+		http.MethodPost,
+		"https://resource.example/documents",
+		bytes.NewReader(protectedBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedBodyRequest.Header.Set("Content-Type", "application/json")
+	authorizationHeader, err := aauth.AccessAuthorization(grant.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedBodyRequest.Header.Set("Authorization", authorizationHeader)
+	if err := aauth.SignRequestWithOptions(
+		tamperedBodyRequest,
+		agentKey,
+		agentToken,
+		clock,
+		aauth.SignRequestOptions{Nonce: "captured-immediate-body"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	tamperedBodyRequest.Body = io.NopCloser(strings.NewReader(`{"query":"tampered"}`))
+	tamperedBodyRequest.ContentLength = int64(len(`{"query":"tampered"}`))
+	tamperedResponse, err := client.Do(tamperedBodyRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tamperedResponse.Body.Close()
+	if tamperedResponse.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(tamperedResponse.Body)
+		t.Fatalf("tampered body status = %d, body = %s", tamperedResponse.StatusCode, body)
+	}
+	if executionCount != 1 {
+		t.Fatalf("tampered immediate body reached operation; execution count = %d", executionCount)
 	}
 
 	unsignedRequest, err := http.NewRequest(
@@ -300,8 +382,7 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 	stolenGrant := grant
 	stolen, err := other.DoWithAccess(
 		context.Background(),
-		http.MethodGet,
-		"https://resource.example/documents",
+		reference.AuthorizedCall{Method: http.MethodGet, Endpoint: "https://resource.example/documents"},
 		&stolenGrant,
 	)
 	if err != nil {
@@ -319,8 +400,7 @@ func TestResourceManagedAAuthAccessIsProofBound(t *testing.T) {
 	now = now.Add(time.Hour + time.Minute)
 	expired, err := agent.DoWithAccess(
 		context.Background(),
-		http.MethodGet,
-		"https://resource.example/documents",
+		reference.AuthorizedCall{Method: http.MethodGet, Endpoint: "https://resource.example/documents"},
 		&grant,
 	)
 	if err != nil {

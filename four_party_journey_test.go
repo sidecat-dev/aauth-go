@@ -14,12 +14,12 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
-func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
+func TestCurrentFourPartyPersonServerAccessServerJourney(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 8, 30, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	ids := sequentialIDs("agent-token", "resource-token", "auth-token")
+	ids := sequentialIDs("agent-token", "person-token", "resource-token", "auth-token")
 	apKey := testSigningKey(t, "ap-key")
 	psKey := testSigningKey(t, "ps-key")
 	accessKey := testSigningKey(t, "access-key")
@@ -69,11 +69,12 @@ func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
 
 	var accessPolicyRequest aauth.AuthorizationRequest
 	accessServer, err := reference.NewAccessServer(reference.AccessServerConfig{
-		Identifier:  "https://as.example",
-		SigningKey:  accessKey,
-		KeyResolver: keyResolver,
-		Clock:       clock,
-		NewID:       ids,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "https://as.example",
+		SigningKey:         accessKey,
+		KeyResolver:        keyResolver,
+		Clock:              clock,
+		NewID:              ids,
 		TrustedPersonServer: func(_ context.Context, identifier string) error {
 			if identifier != "https://ps.example" {
 				return fmt.Errorf("untrusted person server %s", identifier)
@@ -83,7 +84,7 @@ func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			accessPolicyRequest = request
 			return aauth.AuthorizationDecision{
-				Subject: "federated-pairwise-user",
+				Subject: request.Subject,
 				Scope:   request.Scope,
 			}, nil
 		},
@@ -93,26 +94,33 @@ func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
 	}
 
 	var personPolicyRequest aauth.AuthorizationRequest
+	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
 	personServer, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier:       "https://ps.example",
-		SigningKey:       psKey,
-		KeyResolver:      keyResolver,
-		Clock:            clock,
-		NewID:            ids,
-		FederationClient: protocolClient,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "https://ps.example",
+		SigningKey:         psKey,
+		KeyResolver:        keyResolver,
+		Clock:              clock,
+		NewID:              ids,
+		FederationClient:   protocolClient,
 		AccessServerEndpoint: func(_ context.Context, identifier string) (string, error) {
 			if identifier != "https://as.example" {
 				return "", fmt.Errorf("unknown access server %s", identifier)
 			}
 			return identifier + "/token", nil
 		},
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
-			return aauth.MissionDecision{Description: proposal.Description}, nil
+		PersonTokenStore:     personTokenStore,
+		MissionIssuanceStore: missionIssuanceStore,
+		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			return aauth.PersonTokenDecision{Subject: "federated-pairwise-user", Lifetime: time.Hour}, nil
+		},
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
 		},
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			personPolicyRequest = request
 			return aauth.AuthorizationDecision{
-				Subject: "person-server-user",
+				Subject: request.Subject,
 				Scope:   request.Scope,
 			}, nil
 		},
@@ -123,13 +131,18 @@ func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
 
 	var operationRequest aauth.AuthorizedRequest
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:   "https://resource.example",
-		AccessServer: "https://as.example",
-		SigningKey:   resourceKey,
-		KeyResolver:  keyResolver,
-		Clock:        clock,
-		NewID:        ids,
-		Scopes:       []string{"records.read"},
+		Identifier:                   "https://resource.example",
+		AccessMode:                   aauth.AccessModeAuthToken,
+		AccessServer:                 "https://as.example",
+		SigningKey:                   resourceKey,
+		KeyResolver:                  keyResolver,
+		Clock:                        clock,
+		NewID:                        ids,
+		Scopes:                       []string{"records.read"},
+		ScopeDescriptions:            map[string]string{"records.read": "Read records"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("records.read"),
+		ReplayStore:                  testResourceReplayStore(t, clock),
+		ProtectedAuthorizationPolicy: func(context.Context, aauth.AuthorizedRequest) error { return nil },
 		Operation: func(_ context.Context, request aauth.AuthorizedRequest) (any, error) {
 			operationRequest = request
 			return map[string]any{"records": []string{"one"}}, nil
@@ -157,33 +170,32 @@ func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
 	if err := json.NewDecoder(metadataResponse.Body).Decode(&metadata); err != nil {
 		t.Fatal(err)
 	}
-	if value, exists := metadata["access_mode"]; exists {
-		t.Fatalf("legacy resource advertised current access_mode %#v", value)
+	if value := metadata["access_mode"]; value != string(aauth.AccessModeAuthToken) {
+		t.Fatalf("resource access_mode = %#v", value)
 	}
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  protocolClient,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         protocolClient,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mission, err := agent.CreateMission(context.Background(), "https://ps.example/mission", aauth.MissionProposal{
-		Description: "Read the federated records needed for the report.",
-	})
+	person, err := agent.RequestPersonToken(context.Background(), "https://ps.example/person", "https://resource.example", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := agent.Authorize(
+	grant, err := agent.AuthorizeWithPersonToken(
 		context.Background(),
 		"https://resource.example/authorize",
 		"https://ps.example/token",
 		[]string{"records.read"},
-		mission,
+		person.PersonToken,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +224,8 @@ func TestFourPartyPersonServerAccessServerJourney(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("federated protected operation status = %d, body = %s", response.StatusCode, body)
 	}
-	if operationRequest.Agent != "aauth:planner@ap.example" ||
+	if operationRequest.Agent != "" ||
+		operationRequest.PersonServer != "https://ps.example" ||
 		operationRequest.Subject != "federated-pairwise-user" {
 		t.Fatalf("protected operation context = %#v", operationRequest)
 	}

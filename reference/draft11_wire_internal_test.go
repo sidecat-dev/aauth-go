@@ -1,6 +1,7 @@
 package reference
 
 import (
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -27,5 +28,27 @@ func TestSignatureFailureEmitsDraft08NegotiationHeaders(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "supported_algorithms") {
 		t.Fatalf("legacy supported_algorithms leaked: %s", response.Body.String())
+	}
+}
+
+func TestSignatureFailureDoesNotEmitUnclassifiedCause(t *testing.T) {
+	t.Parallel()
+
+	for _, cause := range []error{
+		errors.New("private parse diagnostic"),
+		&aauth.KeyResolutionError{Code: aauth.KeyResolutionUnknown, Cause: errors.New("private key identifier")},
+		&aauth.TokenValidationError{Code: aauth.TokenValidationInvalidKey, Cause: errors.New("private trust configuration")},
+	} {
+		response := httptest.NewRecorder()
+		writeSignatureFailure(response, &aauth.SignatureError{
+			Code:  aauth.SignatureErrorInvalidJWT,
+			Cause: cause,
+		})
+		if strings.Contains(response.Body.String(), "private") {
+			t.Fatalf("signature response leaked cause: %s", response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), `"detail":"invalid_jwt"`) {
+			t.Fatalf("signature response detail = %s", response.Body.String())
+		}
 	}
 }

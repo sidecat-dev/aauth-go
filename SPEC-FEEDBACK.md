@@ -327,6 +327,80 @@ complete deferred interaction on first person-token issuance.
 **Submission placement:** comment once on issue 88 and cross-link issue 89.
 This is follow-through on the existing shared resolution, not a new issue.
 
+### AAG-F012 — A lost initial deferred response has no recovery identity
+
+**Status:** new / evidence pending
+
+**Source:** current AAuth Protocol, `Deferred Responses`, `Initial Request`,
+`Polling with GET`, and pending URL security.
+
+**Question:** When the server has accepted and retained a deferred operation but
+the caller loses the initial `202 Accepted` response and its random pending URL,
+which proof-covered request identity lets a fresh-proof retry recover that exact
+operation without creating a duplicate or orphan?
+
+**Evidence needed before submission:** an end-to-end transport-loss test that
+commits the initial deferred operation, drops the `202` response, reconstructs
+the caller, and demonstrates that the current request fields cannot identify
+the retained operation. This is distinct from terminal-response recovery after
+the caller already owns the pending URL.
+
+**Provisional clean-current design:** require a client-generated
+`AAuth-Request-ID` covered by the request proof and retained before the first
+send. A retry with a fresh proof and the same identifier recovers the exact
+retained operation; reuse of that identifier for different authenticated
+semantics returns `409 Conflict`.
+
+**Implementation disposition:** accepted as the next interaction and recovery
+slice, outside the current authorization-state repair. The extension is not yet
+implemented or submitted upstream.
+
+**Consequence:** without a stable recovery identity, a caller that loses the
+initial `202` cannot distinguish recovery from a new operation, while an exact
+wire retransmission conflicts with proof replay protection.
+
+### AAG-F013 — Restored deferred state can lose the verified request authority
+
+**Status:** ready / unsubmitted
+
+**Source:** current AAuth Protocol, `Covered Components`, `Verification`,
+`Deferred Responses`, and `Non-Repudiation and Audit After Key Rotation`.
+
+**Question:** When a PS or AS retains a pending authorization, should restart
+recovery be required to re-establish every policy- and continuation-bearing
+field from the verified signed request or from an authenticated receipt that
+binds the same fields?
+
+**Executable evidence:**
+
+- `reference/authorization_state_reconciliation_test.go:TestPersonAndAccessServersRejectSemanticallyCorruptCanonicalStateAfterReopen`
+  mutates the PS's signed `justification`, and separately replaces both the
+  AS polling key and its self-consistent thumbprint. Without retained request
+  evidence, those canonical mutations survive restart even though neither
+  value was authorized by the original signer.
+- The current repair retains a bounded exact request body, covered headers,
+  signature, exact verification key, and original verification instant. It
+  re-verifies offline without network discovery, current policy, or current
+  wall-clock authorization.
+
+**Source gap:** request-time signature verification is normative. Archiving
+the verified artifacts is only a `SHOULD`, is framed as durable audit guidance,
+and is not connected to the semantics of restored pending state.
+
+**Provisional choice:** a durable deferred record must contain either the exact
+verified request evidence or a locally authenticated receipt binding every
+authority-bearing projection. Recovery must validate that evidence before the
+record becomes callable.
+
+**Consequence:** otherwise an implementation can authenticate the live request
+correctly but transfer policy input or polling authority through a rewritten
+canonical state record after restart.
+
+**Submission placement:** check the current issue tracker for an existing
+deferred-recovery or audit-evidence issue. If none covers restored authority,
+open a focused new issue rather than attaching it to the lost-initial-response
+question in AAG-F012.
+
 ## Adding and submitting an item
 
 1. Pin the exact source commit, document, section, and shortest relevant
@@ -335,7 +409,7 @@ This is follow-through on the existing shared resolution, not a new issue.
 3. Reconcile the observation against the submitted history above.
 4. Ask one neutral question and name the provisional choice plus a plausible
    alternative.
-5. Explain the security, compatibility, or interoperability consequence.
+5. Explain the security or interoperability consequence.
 6. Submit under the responsible human maintainer's identity and link the
    upstream issue or discussion here.
 7. Record the authors' answer and update implementation and coverage separately.

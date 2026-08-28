@@ -22,10 +22,20 @@ type names, Git history, or a rendered IETF snapshot.
 - One refresh pins one exact commit per upstream repository and updates
   `PROVENANCE.md`, the retained files, and the generated coverage manifest
   together.
-- Existing behavior remains regression evidence, but it does not count as
-  current coverage when the source changed its wire topology or trust model.
+- Existing behavior is evidence only while it still implements the pinned
+  current sources. When the source changes a wire topology or trust model,
+  rewrite or remove the old behavior and its tests.
 - Never turn an unclaimed section into partial or exercised coverage without an
   executable test that demonstrates the current section's observable behavior.
+
+## Clean-current rule
+
+This project has no released users or supported old deployment format. Build
+one clear implementation of the pinned current sources. Do not add or retain a
+compatibility parser, migration reader, dual mode, deprecated alias, fallback,
+or old wire journey merely because earlier repository code used it. Preserve a
+negative vector only when it proves that the current implementation rejects an
+obsolete or invalid form. Source history belongs in Git, not runtime branches.
 
 ## Architecture boundaries
 
@@ -43,12 +53,11 @@ type names, Git history, or a rendered IETF snapshot.
 - Preserve exact bytes wherever a digest, signature, replay identity, or
   retained record binds them.
 
-## Current migration boundary
+## Current implementation boundary
 
 The retained source family uses directed person tokens as the center of its
-three- and four-party authorization topology. Older resource-token and
-auth-token journeys in this repository do not establish current conformance.
-The active walking skeleton must include:
+three- and four-party authorization topology. The active walking skeleton must
+include:
 
 1. mission approval;
 2. `aa-person+jwt` issuance and retained lookup by issuer plus JTI;
@@ -117,5 +126,5 @@ accepting them mechanically.
 State the exact source revision, roles, journey, stores, and exclusions. Do not
 describe a feature as supported because types compile or one role accepts a
 message. A release-quality claim requires deterministic source provenance,
-full and race suites, clean-consumer examples, compatibility notes, and
-independent interoperability evidence appropriate to the claim.
+full and race suites, clean-consumer examples, and independent interoperability
+evidence appropriate to the claim.

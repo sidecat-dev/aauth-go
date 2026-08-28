@@ -28,34 +28,6 @@ The generator reads the comparator commit itself and refuses tracked changes
 to its AAuth source or dependency files, so the recorded revision identifies
 the code that actually emitted the vector.
 
-`go-agent-request.json` proves the reciprocal direction. It is generated
-entirely through the public Go package:
-
-```sh
-go run ./internal/interop/cmd/generate interop/go-agent-request.json
-```
-
-Run the independent Elixir verifier from the checked-out `sidecat-beam`
-implementation:
-
-```sh
-cd /absolute/path/to/sidecat-beam
-mix run /absolute/path/to/aauth-go/interop/verify_go_agent_request.exs \
-  /absolute/path/to/aauth-go/interop/go-agent-request.json
-```
-
-That verifier checks the Go-minted agent token with the Elixir token
-implementation, binds its confirmation key, verifies the Go-created HTTP
-signature and mission reference, and runs the same two mutation controls. The
-Go generator itself has an executable test which verifies its emitted request
-before it becomes comparator input.
-
-The reciprocal Go vector is now emitted with `Ed25519`. It cannot become
-implementation-to-implementation evidence until the comparator itself migrates
-to draft-08 and a clean-checkout run verifies the new bytes. In either state,
-these narrow vectors cannot establish that every token, Signature-Key scheme,
-HTTP component, response, or server role interoperates.
-
 The JKT-JWT pair retains the same boundary. The active Go-origin vector carries
 a fully specified `Ed25519` durable key and delegated request key and passes the
 Go verifier. The historical Elixir-origin vector carries `EdDSA` in its signed

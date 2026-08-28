@@ -212,6 +212,44 @@ func TestPersonProcessRejectsUnprotectedProfile(t *testing.T) {
 	}
 }
 
+func TestPersonDeploymentReleasesAuthorizationStoreLockOnCompositionFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	trustedKey, _ := processTestSigningKey(t, "trusted-key")
+	personKey, personPrivate := processTestSigningKey(t, "person-key")
+	certificatePath, tlsKeyPath, _ := writeProcessTestTLSIdentity(t, tempDir, "person.example")
+	governancePath := filepath.Join(tempDir, "state", "person-governance.json")
+	profilePath := filepath.Join(tempDir, "person-profile.json")
+	writeProcessTestJSON(t, profilePath, map[string]any{
+		"format":          "aauth.reference.person-profile.v0",
+		"identifier":      "https://person.example",
+		"listen":          "127.0.0.1:0",
+		"key_id":          personKey.ID(),
+		"signing_key":     []byte(personPrivate),
+		"tls_certificate": certificatePath,
+		"tls_private_key": tlsKeyPath,
+		"governance_file": governancePath,
+		"trusted_keys": map[string][]aauth.JWK{
+			"not-a-server-identifier": {trustedKey.PublicJWK()},
+		},
+		"allowed_actions": []string{"store.backup.create"},
+	}, 0o600)
+
+	if _, err := loadPersonDeployment(profilePath); err == nil {
+		t.Fatal("invalid trusted issuer unexpectedly composed a person deployment")
+	}
+	authorizationStore, err := reference.OpenFileAuthorizationStateStore(reference.FileAuthorizationStateStoreConfig{
+		Directory:  governancePath + ".authorization-state",
+		MaxEntries: 4096,
+		MaxBytes:   8 << 20,
+	})
+	if err != nil {
+		t.Fatalf("composition failure retained authorization-store lock: %v", err)
+	}
+	if err := authorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProtectedFileCustodyRefusesAliases(t *testing.T) {
 	tempDir := t.TempDir()
 	source := filepath.Join(tempDir, "source")
@@ -356,9 +394,14 @@ func processTestAgent(
 		},
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	authorizationStore, err := reference.NewMemoryAuthorizationStateStore(128, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier: "aauth:operator@ap.example",
-		SigningKey: key, AgentToken: token, KeyResolver: resolver,
+		AuthorizationStore: authorizationStore,
+		Identifier:         "aauth:operator@ap.example",
+		SigningKey:         key, AgentToken: token, KeyResolver: resolver,
 		HTTPClient: client, Clock: aauth.SystemClock{},
 	})
 	if err != nil {

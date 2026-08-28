@@ -13,3 +13,5 @@ func acquireEventFileLock(string) (*eventFileLock, error) {
 func (*eventFileLock) Close() error { return nil }
 
 func eventFileHasSingleLink(os.FileInfo) bool { return true }
+
+func eventFileOwnedByCurrentUser(os.FileInfo) bool { return false }

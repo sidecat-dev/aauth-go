@@ -2,17 +2,17 @@
 
 This generated source coverage is not a full-conformance claim. It binds the implementation's explicit claims and omissions to pinned source bytes and executable Go evidence.
 
-Profile: AAuth Go current-editor transition profile: draft-hardt-oauth-aauth-protocol-latest, draft-hardt-httpbis-signature-key-latest, draft-hardt-aauth-r3-latest, draft-hardt-aauth-events-latest, draft-hardt-aauth-bootstrap-latest, draft-hardt-aauth-budgets-latest, and interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 and HTTP Signature Keys 0ff751b571e7fe51336bcc1e526954a202317cc0; every unsupported current behavior remains explicit or unclaimed
+Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protocol-latest, draft-hardt-httpbis-signature-key-latest, draft-hardt-aauth-r3-latest, draft-hardt-aauth-events-latest, draft-hardt-aauth-bootstrap-latest, draft-hardt-aauth-budgets-latest, and interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 and HTTP Signature Keys 0ff751b571e7fe51336bcc1e526954a202317cc0; every unsupported current behavior remains explicit or unclaimed
 
 ## Summary
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 31 |
+| Exercised | 34 |
 | Partial | 28 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 535 |
+| Unclaimed | 532 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,7 +20,7 @@ Profile: AAuth Go current-editor transition profile: draft-hardt-oauth-aauth-pro
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 22 | 17 | 3 | 0 | 214 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 17 | 3 | 0 | 211 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 0 | 0 | 0 | 0 | 56 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
@@ -67,11 +67,13 @@ Evidence:
 
 ### `core/access-server-federation` — Partial
 
-The immediate four-party path carries one PS-retained person binding through an independently authenticated AS policy decision. Deferred trust establishment and richer requirement composition remains open.
+The four-party path carries one PS-retained person binding through an independently authenticated AS policy decision for immediate, deferred, and upstream-auth-token call-chain authorization. Dynamic trust establishment and richer requirement composition remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `deferred_four_party_journey_test.go:TestCurrentFourPartyDeferredAuthorizationJourney`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
 
 ### `core/agent-tokens/agent-token-usage` — Exercised
 
@@ -79,7 +81,7 @@ Agent tokens are presented through Signature-Key and bound to the signing key du
 
 Evidence:
 
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
+- `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 
 ### `core/agent-tokens/agent-token-verification` — Exercised
 
@@ -92,27 +94,31 @@ Evidence:
 
 ### `core/as-token-endpoint/as-response` — Partial
 
-The AS returns a direct current auth token after verifying the sending PS, resource token, agent token, proof key, and policy result. Deferred and payment responses remain open.
+The AS returns a current auth token after verifying the sending PS, resource token, agent token, proof key, optional upstream auth token, and policy result. Immediate and deferred results are exercised; payment responses remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `deferred_four_party_journey_test.go:TestCurrentFourPartyDeferredAuthorizationJourney`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
 
 ### `core/as-token-endpoint/auth-token-delivery` — Partial
 
-The PS verifies the AS issuer, audience, confirmation key, directed person, scope, mission, tenant, account, and resource-token expiry ceiling before delivering the direct grant. Deferred delivery remains open.
+The PS verifies the AS issuer, audience, confirmation key, directed person, scope, mission, tenant, account, and resource-token expiry ceiling before delivering immediate or deferred grants.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `deferred_four_party_journey_test.go:TestCurrentFourPartyDeferredAuthorizationJourney`
 
 ### `core/as-token-endpoint/ps-to-as-token-request` — Partial
 
-The PS signs the AS request under its discovered server key and sends the verified resource and agent tokens. Current sub-agent and upstream-token parameters remain open.
+The PS signs the AS request under its discovered server key and sends the verified current resource and agent tokens. The exercised federated call-chain adds a separately verified upstream auth token; richer optional request parameters remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
 
 ### `core/auth-token-response-verification` — Exercised
 
@@ -154,22 +160,36 @@ Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 
-### `core/deferred-responses/deferred-response-state-machine` — Partial
+### `core/call-chaining` — Exercised
 
-Pending, slowdown, success, denial, expiry, one-shot terminal delivery, and replay refusal are exercised; not every endpoint persists this state across restart.
+An intermediary presents a current upstream auth token to obtain a new directed person token, then carries that exact upstream authorization through either the person server or a federated access server while the downstream resource receives only current ps/sub authority and the proof key. Every PS and AS receive boundary requires the upstream token confirmation key to equal the verified intermediary key.
 
 Evidence:
 
-- `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
-- `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServer`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServerRejectsSubstitutedUpstreamKey`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServerRejectsSubstitutedUpstreamKey`
+
+### `core/deferred-responses/deferred-response-state-machine` — Partial
+
+After the caller receives and retains the pending URL, pending, success, denial, expiry, polling refusal, reconstructed server/client continuations, transient issuance and federation retry, and exact terminal-response recovery are exercised for protected-first session authorization and current person-server/access-server authorization. Recovery from loss of the initial 202 response is not implemented because the current wire request carries no stable recovery identity.
+
+Evidence:
+
+- `deferred_access_journey_test.go:TestCurrentResourceManagedDeferredAccessStartsAtProtectedEndpoint`
+- `deferred_person_server_journey_test.go:TestCurrentPersonServerDeferredAuthorizationJourney`
+- `deferred_four_party_journey_test.go:TestCurrentFourPartyDeferredAuthorizationJourney`
 
 ### `core/deferred-responses/initial-request` — Exercised
 
-A supported initial request can return a protected continuation and interaction requirement.
+A protected request signed with an agent token can enter the resource-managed deferred state machine; current person-server and federated access-server token requests can also return signed pending continuations.
 
 Evidence:
 
-- `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
+- `deferred_access_journey_test.go:TestCurrentResourceManagedDeferredAccessStartsAtProtectedEndpoint`
+- `deferred_person_server_journey_test.go:TestCurrentPersonServerDeferredAuthorizationJourney`
+- `deferred_four_party_journey_test.go:TestCurrentFourPartyDeferredAuthorizationJourney`
 
 ### `core/deferred-responses/pending-response` — Exercised
 
@@ -198,12 +218,13 @@ Evidence:
 
 ### `core/freshness-and-replay` — Exercised
 
-The supported endpoints enforce a bounded signature window and reject exact proof replay within one live process. Governance endpoints backed by GovernanceStore retain applicable replay decisions across restart; token, access-server, and resource replay caches remain process-local.
+The verifier enforces a bounded signature window. Public Agent signing gives independently initiated same-second calls distinct proof identifiers while captured retransmission remains replayable only as the exact same proof. Governance endpoints retain applicable replay decisions across restart, and current protected resources atomically consume exact proof keys in an explicitly supplied replay store whose file adapter refuses the same proof after reopen.
 
 Evidence:
 
-- `journey_test.go:TestThreePartyMissionAuthorizationJourney`
-- `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
+- `http_signature_inline_internal_test.go:TestVerifyRequestRejectsPreflightFailuresBeforeKeyResolution`
+- `reference/resource_replay_store_test.go:TestCurrentProtectedResourceDurablyConsumesExactProof`
+- `access_client_test.go:TestPublicAgentUsesUniqueProofsForIndependentSameSecondProtectedCalls`
 - `governance_restart_test.go:TestPersonServerGovernanceSurvivesRestart`
 
 ### `core/identifiers-and-discovery` — Partial
@@ -229,7 +250,7 @@ Evidence:
 
 ### `core/mission-creation` — Partial
 
-A current mission proposal is validated before policy, and policy receives the authenticated agent, proof key, token expiry, and person-server binding. The resulting exact digest-bound approval can be recovered after restart. Current mission update, completion, control, and log migration remains open.
+A current mission proposal is validated before policy, and policy receives the authenticated agent, proof key, token expiry, and person-server binding. The resulting exact digest-bound approval can be recovered after restart. Current mission update, completion, control, and log behavior remains open.
 
 Evidence:
 
@@ -238,20 +259,22 @@ Evidence:
 
 ### `core/overview-resource-managed` — Exercised
 
-The supported profile implements proof-bound resource-managed access, opaque credential rotation, and protected operation enforcement.
+A protected request signed with the agent token enters the resource-managed authorization state machine. An immediate or deferred result returns an opaque proof-bound AAuth-Access credential, and the protected retry presents that credential with an agent-token proof before the operation runs.
 
 Evidence:
 
-- `access_journey_test.go:TestResourceManagedAAuthAccessIsProofBound`
+- `access_journey_test.go:TestCurrentResourceManagedAccessStartsAtProtectedEndpoint`
 
 ### `core/person-token-endpoint` — Partial
 
-Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance also recovers one exact response across partial or uncertain journal, person-token, and mission commits. Deferred, sub-agent, upstream-token, and metadata-fetch behavior remains open.
+Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. Deferred person-token issuance and metadata-fetch behavior remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 - `current_mission_recovery_test.go:TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries`
+- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServer`
 
 ### `core/person-token-structure` — Exercised
 
@@ -280,19 +303,23 @@ Evidence:
 
 ### `core/ps-token-endpoint/agent-token-request` — Partial
 
-The immediate current request is agent-token signed, key-bound to the resource token, and verified against retained person-token custody. Current optional request parameters and delegation modes remain open.
+The current request is agent-token signed, key-bound to the resource token, and verified against retained person-token custody. Direct, parent-mediated sub-agent, and upstream-auth-token forms are exercised; claims, clarification, and payment composition remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServer`
 
 ### `core/ps-token-endpoint/ps-response` — Partial
 
-The immediate four-party response returns a current auth token after PS and AS policy. Current claims, clarification, payment, and interaction composition remains open.
+The direct and federated paths return a current auth token after PS and optional AS policy, including immediate and deferred decisions. Current claims, clarification, payment, and broader interaction composition remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `deferred_person_server_journey_test.go:TestCurrentPersonServerDeferredAuthorizationJourney`
+- `deferred_four_party_journey_test.go:TestCurrentFourPartyDeferredAuthorizationJourney`
 
 ### `core/requirement-responses/aauth-requirement-header-structure` — Exercised
 
@@ -312,11 +339,11 @@ Evidence:
 
 ### `core/requirement-responses/interaction-required` — Partial
 
-The supported person-server authorization continuation represents an interaction requirement; the current interaction family remains incomplete.
+The supported session-token resource authorization continuation represents an interaction requirement; the current interaction family remains incomplete.
 
 Evidence:
 
-- `deferred_person_server_journey_test.go:TestPersonServerDeferredAuthorizationVertical`
+- `deferred_access_journey_test.go:TestCurrentResourceManagedDeferredAccessStartsAtProtectedEndpoint`
 
 ### `core/resource-tokens/authorization-endpoint-request` — Exercised
 
@@ -352,11 +379,13 @@ Evidence:
 
 ### `core/resource-tokens/resource-token/resource-token-verification` — Partial
 
-The PS resolves presented_jti from durable custody and compares ps, resource, sub, mission_s256, and tenant; the AS verifies that ps is the signing PS. Current sub-agent and call-chaining modes remain open.
+The PS resolves presented_jti from durable custody and compares ps, resource, sub, mission_s256, and tenant; the AS verifies that ps is the signing PS. Parent-mediated sub-agent and upstream-auth-token call-chain journeys exercise the same current resource-token checks without restoring agent or actor claims.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
 
 ### `core/security-considerations/tls-requirements` — Exercised
 
@@ -374,13 +403,29 @@ Evidence:
 
 - `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
 
-### `core/sub-agents/single-level-depth` — Exercised
+### `core/sub-agents/parent-mediated-authorization` — Exercised
 
-The person server permits one delegation level and refuses deeper sub-agent chains.
+The verified parent requests the sub-agent's resource-directed person token and mediates immediate or deferred authorization, while the resulting auth token and protected request are bound to the sub-agent confirmation key and current ps/sub authority.
 
 Evidence:
 
-- `subagent_journey_test.go:TestParentMediatesSubagentAuthorization`
+- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
+
+### `core/sub-agents/single-level-depth` — Exercised
+
+The exercised profile admits one direct parent/sub-agent relationship and refuses the sub-agent's attempt to exchange its resource token without parent mediation.
+
+Evidence:
+
+- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
+
+### `core/sub-agents/sub-agent-identity` — Exercised
+
+A sub-agent has its own current agent token, identifier, and confirmation key, with the direct parent bound by the verified token rather than inferred from auth-token subject claims.
+
+Evidence:
+
+- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
 
 ### `core/third-party-login` — Unsupported
 

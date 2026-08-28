@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,18 @@ func TestSignatureErrorWireContract(t *testing.T) {
 				t.Fatalf("parsed Signature-Error = %#v", parsed)
 			}
 		})
+	}
+}
+
+func TestSignatureErrorPublicDetailIsReadOnly(t *testing.T) {
+	t.Parallel()
+
+	valueType := reflect.TypeOf(aauth.SignatureError{})
+	if _, exists := valueType.FieldByName("PublicDetail"); exists {
+		t.Fatal("SignatureError exposes mutable PublicDetail state")
+	}
+	if _, exists := reflect.TypeOf(&aauth.SignatureError{}).MethodByName("PublicDetail"); !exists {
+		t.Fatal("SignatureError is missing the read-only PublicDetail accessor")
 	}
 }
 

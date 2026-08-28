@@ -74,13 +74,18 @@ func TestPersonServerGovernanceSurvivesRestart(t *testing.T) {
 	}
 	store := &toggleGovernanceStore{inner: fileStore}
 	config := reference.PersonServerConfig{
-		Identifier:      "https://ps.example",
-		SigningKey:      psKey,
-		KeyResolver:     resolver,
-		Clock:           clock,
-		NewID:           sequentialIDs(),
-		GovernanceStore: store,
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
+		AuthorizationStore:   testAuthorizationStateStore(t),
+		Identifier:           "https://ps.example",
+		SigningKey:           psKey,
+		KeyResolver:          resolver,
+		Clock:                clock,
+		NewID:                sequentialIDs(),
+		GovernanceStore:      store,
+		PersonTokenStore:     testPersonTokenStore(t),
+		MissionIssuanceStore: testMissionIssuanceStore(t),
+		PersonTokenPolicy:    testPersonTokenPolicy,
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			proposal := evaluation.Proposal
 			return aauth.MissionDecision{
 				Description: proposal.Description,
 				Tools:       proposal.Tools,
@@ -119,12 +124,13 @@ func TestPersonServerGovernanceSurvivesRestart(t *testing.T) {
 	defer gateway.Close()
 	client.Transport = gateway.Client().Transport
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:operator@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:operator@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,15 +207,6 @@ func TestPersonServerGovernanceSurvivesRestart(t *testing.T) {
 		history[0].PendingID != pending.ID ||
 		history[0].Proof == nil {
 		t.Fatalf("restored permission history = %#v", history)
-	}
-	if _, err := agent.RequestPermission(
-		context.Background(),
-		"https://ps.example/permission",
-		permissionRequest,
-	); err == nil {
-		t.Fatal("exact permission proof replay succeeded after restart")
-	} else {
-		assertProblemCode(t, err, http.StatusUnauthorized, "invalid_signature")
 	}
 	waiting, err := agent.PollPermission(context.Background(), pending)
 	if err != nil {
@@ -598,13 +595,17 @@ func TestPersonServerRejectsCorruptGovernanceState(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = reference.NewPersonServer(reference.PersonServerConfig{
-				Identifier:      "https://ps.example",
-				SigningKey:      testSigningKey(t, "ps-key"),
-				KeyResolver:     rejectingKeyResolver{},
-				Clock:           aauth.ClockFunc(time.Now),
-				NewID:           sequentialIDs(),
-				GovernanceStore: store,
-				MissionPolicy: func(context.Context, aauth.MissionProposal) (aauth.MissionDecision, error) {
+				AuthorizationStore:   testAuthorizationStateStore(t),
+				Identifier:           "https://ps.example",
+				SigningKey:           testSigningKey(t, "ps-key"),
+				KeyResolver:          rejectingKeyResolver{},
+				Clock:                aauth.ClockFunc(time.Now),
+				NewID:                sequentialIDs(),
+				GovernanceStore:      store,
+				PersonTokenStore:     testPersonTokenStore(t),
+				MissionIssuanceStore: testMissionIssuanceStore(t),
+				PersonTokenPolicy:    testPersonTokenPolicy,
+				CurrentMissionPolicy: func(context.Context, aauth.MissionEvaluation) (aauth.MissionDecision, error) {
 					return aauth.MissionDecision{}, nil
 				},
 				AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {

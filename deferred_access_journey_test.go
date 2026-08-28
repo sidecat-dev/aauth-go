@@ -15,7 +15,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
-func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
+func TestCurrentResourceManagedDeferredAccessStartsAtProtectedEndpoint(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
@@ -68,12 +68,19 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 
 	var policyCalls int
 	var executionCount int
-	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:  "https://resource.example",
-		KeyResolver: resolver,
-		Clock:       clock,
-		NewID:       ids,
-		Scopes:      []string{"documents.read"},
+	exactBody := []byte(`{"query":"deferred current payload"}`)
+	resourceAuthorizationDirectory := t.TempDir() + "/resource-authorization"
+	resourceAuthorizationStore := openTestFileAuthorizationStateStore(t, resourceAuthorizationDirectory)
+	resourceConfig := reference.ResourceConfig{
+		Identifier:               "https://resource.example",
+		AccessMode:               aauth.AccessModeSessionToken,
+		KeyResolver:              resolver,
+		Clock:                    clock,
+		NewID:                    ids,
+		Scopes:                   []string{"documents.read"},
+		RequiredScopesForRequest: testRequiredResourceScopes("documents.read"),
+		ReplayStore:              testResourceReplayStore(t, clock),
+		AuthorizationStore:       resourceAuthorizationStore,
 		InteractionRequired: func(_ context.Context, request aauth.AuthorizationRequest) (bool, error) {
 			return request.Agent == "aauth:reader@ap.example", nil
 		},
@@ -97,12 +104,17 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 		PendingLifetime: time.Minute,
 		Operation: func(_ context.Context, request aauth.AuthorizedRequest) (any, error) {
 			executionCount++
+			if request.Method != http.MethodPost || request.Path != "/documents" ||
+				!bytes.Equal(request.Body, exactBody) || request.ContentType != "application/json" {
+				t.Fatalf("authorized body context = %#v", request)
+			}
 			return map[string]any{
 				"agent":   request.Agent,
 				"subject": request.Subject,
 			}, nil
 		},
-	})
+	}
+	resource, err := reference.NewResource(resourceConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +123,8 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"ap.example": ap.Handler(),
 		"resource.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-			if request.Method == http.MethodPost && request.URL.Path == "/authorize" &&
+			if request.Method == http.MethodGet && request.URL.Path == "/documents" &&
+				request.Header.Get("Authorization") == "" &&
 				request.Header.Get("Prefer") != "wait=0" {
 				http.Error(response, "missing Prefer wait", http.StatusBadRequest)
 				return
@@ -122,24 +135,29 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 	defer gateway.Close()
 	client.Transport = gateway.Client().Transport
 
-	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:reader@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
-	})
+	agentAuthorizationDirectory := t.TempDir() + "/agent-authorization"
+	agentAuthorizationStore := openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig := reference.AgentConfig{
+		AuthorizationStore: agentAuthorizationStore,
+		Identifier:         "aauth:reader@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
+	}
+	agent, err := reference.NewAgent(agentConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:other@ap.example",
-		SigningKey:  otherKey,
-		AgentToken:  otherToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:other@ap.example",
+		SigningKey:         otherKey,
+		AgentToken:         otherToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -147,8 +165,10 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 
 	authorization, err := agent.RequestResourceManagedAccess(
 		context.Background(),
-		"https://resource.example/authorize",
-		[]string{"documents.read"},
+		reference.AuthorizedCall{
+			Method: http.MethodPost, Endpoint: "https://resource.example/documents",
+			Body: exactBody, ContentType: "application/json",
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +192,28 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 	if _, err := other.PollResourceManagedAccess(context.Background(), &otherPending); err == nil {
 		t.Fatal("another agent polled the pending authorization")
 	}
+
+	if err := resourceAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resourceAuthorizationStore = openTestFileAuthorizationStateStore(t, resourceAuthorizationDirectory)
+	resourceConfig.AuthorizationStore = resourceAuthorizationStore
+	if err := agentAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	agentAuthorizationStore = openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig.AuthorizationStore = agentAuthorizationStore
+
+	resource, err = reference.NewResource(resourceConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceHandler = resource.Handler()
+	agent, err = reference.NewAgent(agentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending = &reference.PendingAccessAuthorization{ID: pending.ID}
 
 	beforeInteraction, err := agent.PollResourceManagedAccess(context.Background(), pending)
 	if err != nil {
@@ -235,15 +277,47 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 		strings.Join(approved.Grant.Scope, " ") != "documents.read" {
 		t.Fatalf("approved grant = %#v", approved.Grant)
 	}
+	if err := resourceAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resourceAuthorizationStore = openTestFileAuthorizationStateStore(t, resourceAuthorizationDirectory)
+	resourceConfig.AuthorizationStore = resourceAuthorizationStore
+	resource, err = reference.NewResource(resourceConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceHandler = resource.Handler()
+	lostResponsePoll, err := http.NewRequest(http.MethodGet, pending.Location, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := aauth.SignRequestWithOptions(lostResponsePoll, agentKey, agentToken, clock, aauth.SignRequestOptions{Nonce: "lost-terminal-resource-response"}); err != nil {
+		t.Fatal(err)
+	}
+	lostResponse, err := client.Do(lostResponsePoll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lostResponse.Body.Close()
+	if lostResponse.StatusCode != http.StatusOK || lostResponse.Header.Get("AAuth-Access") != approved.Grant.Token {
+		body, _ := io.ReadAll(lostResponse.Body)
+		t.Fatalf("restarted terminal poll = %d access=%q body=%s", lostResponse.StatusCode, lostResponse.Header.Get("AAuth-Access"), body)
+	}
 
-	if _, err := agent.PollResourceManagedAccess(context.Background(), pending); err == nil {
-		t.Fatal("terminal pending URL remained reusable")
+	recovered, err := agent.PollResourceManagedAccess(context.Background(), &reference.PendingAccessAuthorization{ID: pending.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Grant == nil || recovered.Grant.Token != approved.Grant.Token {
+		t.Fatalf("lost terminal response recovery = %#v", recovered)
 	}
 
 	protected, err := agent.DoWithAccess(
 		context.Background(),
-		http.MethodGet,
-		"https://resource.example/documents",
+		reference.AuthorizedCall{
+			Method: http.MethodPost, Endpoint: "https://resource.example/documents",
+			Body: exactBody, ContentType: "application/json",
+		},
 		approved.Grant,
 	)
 	if err != nil {
@@ -258,11 +332,48 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 		t.Fatalf("protected operation executions = %d", executionCount)
 	}
 
+	tampered, err := http.NewRequest(
+		http.MethodPost,
+		"https://resource.example/documents",
+		bytes.NewReader(exactBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered.Header.Set("Content-Type", "application/json")
+	accessAuthorization, err := aauth.AccessAuthorization(approved.Grant.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered.Header.Set("Authorization", accessAuthorization)
+	if err := aauth.SignRequestWithOptions(
+		tampered,
+		agentKey,
+		agentToken,
+		clock,
+		aauth.SignRequestOptions{Nonce: "captured-deferred-body"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	tampered.Body = io.NopCloser(strings.NewReader(`{"query":"tampered"}`))
+	tampered.ContentLength = int64(len(`{"query":"tampered"}`))
+	tamperedResponse, err := client.Do(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tamperedResponse.Body.Close()
+	if tamperedResponse.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(tamperedResponse.Body)
+		t.Fatalf("tampered body status = %d, body = %s", tamperedResponse.StatusCode, body)
+	}
+	if executionCount != 1 {
+		t.Fatalf("tampered protected body reached operation; executions = %d", executionCount)
+	}
+
 	now = now.Add(time.Second)
 	expiring, err := agent.RequestResourceManagedAccess(
 		context.Background(),
-		"https://resource.example/authorize",
-		[]string{"documents.read"},
+		reference.AuthorizedCall{Method: http.MethodGet, Endpoint: "https://resource.example/documents"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -284,8 +395,7 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 	now = now.Add(time.Second)
 	attacked, err := agent.RequestResourceManagedAccess(
 		context.Background(),
-		"https://resource.example/authorize",
-		[]string{"documents.read"},
+		reference.AuthorizedCall{Method: http.MethodGet, Endpoint: "https://resource.example/documents"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -317,8 +427,7 @@ func TestResourceManagedDeferredInteractionVertical(t *testing.T) {
 	now = now.Add(time.Second)
 	denied, err := agent.RequestResourceManagedAccess(
 		context.Background(),
-		"https://resource.example/authorize",
-		[]string{"documents.read"},
+		reference.AuthorizedCall{Method: http.MethodGet, Endpoint: "https://resource.example/documents"},
 	)
 	if err != nil {
 		t.Fatal(err)

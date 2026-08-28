@@ -133,6 +133,7 @@ type ProtectedEventTicketConsumption struct {
 }
 
 type ProtectedEventTicketRequest struct {
+	Agent            string
 	ResourceRevision string
 	ActiveUntil      time.Time
 }

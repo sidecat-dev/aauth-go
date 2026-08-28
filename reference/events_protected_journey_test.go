@@ -52,11 +52,15 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 		metadata: aauth.AgentEventMetadata{Issuer: "https://ap.example", EventEndpoint: "https://ap.example/events"},
 	}
 	resource := newProtectedJourneyResource(t, resourceKey, resourceResolver, clock, resourceStore, contractStore, document, transport, func(_ context.Context, authorized aauth.AuthorizedRequest) (any, error) {
-		if authorized.Agent != "aauth:subscriber@ap.example" || authorized.Method != http.MethodPost || authorized.Path != "/appointments/search" {
+		if authorized.Agent != "" || authorized.PersonServer != "https://ps.example" ||
+			authorized.Subject != "pairwise-user" || authorized.ConfirmationKey != agentKey.PublicJWK() ||
+			authorized.Method != http.MethodPost || authorized.Path != "/appointments/search" {
 			t.Fatalf("authorized ticket operation = %#v", authorized)
 		}
 		return ProtectedEventOperationResult{
-			Ticket:   ProtectedEventTicketRequest{ResourceRevision: "appointments-r17", ActiveUntil: activeUntil},
+			Ticket: ProtectedEventTicketRequest{
+				Agent: "aauth:subscriber@ap.example", ResourceRevision: "appointments-r17", ActiveUntil: activeUntil,
+			},
 			Response: func(grant ProtectedEventTicketGrant) (any, error) { return grant, nil },
 		}, nil
 	})
@@ -294,9 +298,14 @@ func newProtectedJourneyResource(
 ) *Resource {
 	t.Helper()
 	resource, err := NewResource(ResourceConfig{
-		Identifier: "https://resource.example", AccessServer: "https://as.example",
-		SigningKey: key, KeyResolver: resolver, Clock: clock, NewID: func() string { return "unused" },
-		Scopes: []string{"events.read"}, Operation: operation,
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeAuthToken,
+		AccessServer: "https://as.example",
+		SigningKey:   key, KeyResolver: resolver, Clock: clock, NewID: func() string { return "unused" },
+		Scopes: []string{"events.read"}, ScopeDescriptions: map[string]string{"events.read": "Read protected appointment events"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("events.read"),
+		ReplayStore:                  testResourceReplayStore(t, clock),
+		ProtectedAuthorizationPolicy: testProtectedAuthorizationPolicy,
+		Operation:                    operation,
 		Events: &ResourceEventsConfig{
 			PublicSubscriptionPath: "/events/subscriptions", Store: store,
 			HTTPClient: &http.Client{Transport: client},
@@ -325,7 +334,8 @@ func newJourneyAgent(
 ) *Agent {
 	t.Helper()
 	agent, err := NewAgent(AgentConfig{
-		Identifier: "aauth:subscriber@ap.example", SigningKey: key,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:subscriber@ap.example", SigningKey: key,
 		AgentToken: "unused-agent-token", KeyResolver: resolver,
 		HTTPClient: &http.Client{Transport: transport}, Clock: clock,
 		Events: &AgentEventsConfig{Store: store, Action: action},

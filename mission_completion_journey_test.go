@@ -78,6 +78,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	}
 	store := &toggleGovernanceStore{inner: fileStore}
 	config := reference.PersonServerConfig{
+		AuthorizationStore:      testAuthorizationStateStore(t),
 		Identifier:              "https://ps.example",
 		SigningKey:              psKey,
 		KeyResolver:             resolver,
@@ -85,7 +86,11 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 		NewID:                   sequentialIDs(),
 		GovernanceStore:         store,
 		CompletionReviewEnabled: true,
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
+		PersonTokenStore:        testPersonTokenStore(t),
+		MissionIssuanceStore:    testMissionIssuanceStore(t),
+		PersonTokenPolicy:       testPersonTokenPolicy,
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			proposal := evaluation.Proposal
 			return aauth.MissionDecision{Description: proposal.Description}, nil
 		},
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
@@ -111,23 +116,25 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	defer gateway.Close()
 	client.Transport = gateway.Client().Transport
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:operator@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:operator@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	otherAgent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:other@ap.example",
-		SigningKey:  otherAgentKey,
-		AgentToken:  otherAgentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:other@ap.example",
+		SigningKey:         otherAgentKey,
+		AgentToken:         otherAgentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +229,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	); err == nil {
 		t.Fatal("exact clarification proof replay succeeded")
 	} else {
-		assertProblemCode(t, err, http.StatusUnauthorized, "invalid_signature")
+		assertProblemCode(t, err, http.StatusConflict, "invalid_request")
 	}
 
 	personServer = newPersonServer()

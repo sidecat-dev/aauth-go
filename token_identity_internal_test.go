@@ -56,6 +56,46 @@ func TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain(t *testing.T) {
 	}
 }
 
+func TestCurrentResourceAndAuthTokensRequirePersonTopology(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC)
+	issuerKey := internalTestSigningKey(t, "issuer-key")
+	agentKey := internalTestSigningKey(t, "agent-key")
+	thumbprint, err := agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := MintResourceToken(issuerKey, ResourceTokenClaims{
+		Issuer:    "https://resource.example",
+		DWK:       ResourceDiscoveryDocument,
+		Audience:  "https://ps.example",
+		JTI:       "resource-token-without-person-topology",
+		Agent:     "aauth:planner@ap.example",
+		AgentJKT:  thumbprint,
+		Scope:     "documents.read",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(5 * time.Minute).Unix(),
+	}); err == nil || !strings.Contains(err.Error(), "resource-token ps") {
+		t.Fatalf("resource token without ps/sub/presented_jti error = %v", err)
+	}
+
+	if _, err := MintAuthToken(issuerKey, AuthTokenClaims{
+		Issuer:       "https://ps.example",
+		DWK:          PersonDiscoveryDocument,
+		Audience:     "https://resource.example",
+		JTI:          "auth-token-without-person-topology",
+		Agent:        "aauth:planner@ap.example",
+		Confirmation: Confirmation{JWK: agentKey.PublicJWK()},
+		Scope:        "documents.read",
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(5 * time.Minute).Unix(),
+	}); err == nil || !strings.Contains(err.Error(), "auth-token ps") {
+		t.Fatalf("person-server auth token without ps/sub error = %v", err)
+	}
+}
+
 func TestVerifyAgentTokenRejectsCaseVariantClaimAlias(t *testing.T) {
 	t.Parallel()
 

@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,39 +22,37 @@ import (
 
 type ResourceConfig struct {
 	Identifier string
-	// AccessMode selects current resource behavior and discovery. The zero
-	// value preserves the legacy profile while callers migrate one journey at
-	// a time. The current reference path presently implements auth-token mode.
-	AccessMode          aauth.AccessMode
-	PersonServer        string
-	AccessServer        string
-	SigningKey          aauth.SigningKey
-	KeyResolver         aauth.KeyResolver
-	Clock               aauth.Clock
-	NewID               func() string
-	Scopes              []string
-	AuthorizationPolicy aauth.AuthorizationPolicy
-	InteractionRequired func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	Random              io.Reader
-	PendingLifetime     time.Duration
-	Operation           func(context.Context, aauth.AuthorizedRequest) (any, error)
-	// R3Vocabularies is the exact discovery-value map advertised by the
-	// resource. R3DocumentStore owns exact-byte retention across resource
-	// restarts. The selection, required-operation, and request-mapping callbacks
-	// are deployment policy boundaries for the authoritative definitions.
-	R3Vocabularies          map[string]json.RawMessage
-	R3DocumentStore         R3DocumentStore
-	R3DocumentForOperations func(context.Context, aauth.R3OperationSet) ([]byte, error)
-	R3RequiredForRequest    func(context.Context, *http.Request) (bool, error)
-	R3OperationForRequest   func(context.Context, *http.Request) (aauth.R3OperationSet, error)
-	// R3ProposalForRequest maps one authenticated, bounded request body into
-	// the complete security-relevant parameters and display of a conditional
-	// call. Omitting an input leaves it unbound; deployments should include a
-	// full exact-body digest when the operation consumes fields beyond a strict
-	// typed mapping. The resource serializes and retains the returned proposal
-	// before exposing a challenge.
-	R3ProposalForRequest func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
-	Events               *ResourceEventsConfig
+	// AccessMode explicitly selects one implemented current registry flow.
+	AccessMode   aauth.AccessMode
+	PersonServer string
+	AccessServer string
+	SigningKey   aauth.SigningKey
+	KeyResolver  aauth.KeyResolver
+	Clock        aauth.Clock
+	NewID        func() string
+	// Scopes is the canonical issuance allowlist. Auth-token resources must
+	// describe every exact entry in ScopeDescriptions.
+	Scopes            []string
+	ScopeDescriptions map[string]string
+	// RequiredScopesForRequest maps one protected request to a canonical,
+	// nonempty subset of Scopes before context validation or replay admission.
+	RequiredScopesForRequest func(context.Context, *http.Request) ([]string, error)
+	// ReplayStore is the required atomic proof-admission authority for every
+	// signed Resource endpoint.
+	ReplayStore ProofReplayStore
+	// AuthorizationStore is required for resource-managed authorization. It
+	// retains pending decisions, terminal access artifacts, and live grants.
+	AuthorizationStore AuthorizationStateStore
+	// ProtectedAuthorizationPolicy is required in auth-token mode. It receives
+	// a defensive copy of the fully verified current request after replay
+	// admission and before any protected response or Operation consequence.
+	ProtectedAuthorizationPolicy aauth.ProtectedAuthorizationPolicy
+	AuthorizationPolicy          aauth.AuthorizationPolicy
+	InteractionRequired          func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	Random                       io.Reader
+	PendingLifetime              time.Duration
+	Operation                    func(context.Context, aauth.AuthorizedRequest) (any, error)
+	Events                       *ResourceEventsConfig
 }
 
 // ResourceEventsConfig enables public registration and supplies the external
@@ -86,91 +86,141 @@ type agentEventMetadataResolver interface {
 }
 
 type Resource struct {
-	identifier                 string
-	accessMode                 aauth.AccessMode
-	tokenAudience              string
-	authTokenDiscoveryDocument string
-	signingKey                 aauth.SigningKey
-	hasSigningKey              bool
-	keyResolver                aauth.KeyResolver
-	clock                      aauth.Clock
-	newID                      func() string
-	scopes                     []string
-	authorizationPolicy        aauth.AuthorizationPolicy
-	interactionRequired        func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	random                     io.Reader
-	pendingLifetime            time.Duration
-	operation                  func(context.Context, aauth.AuthorizedRequest) (any, error)
-	r3Vocabularies             map[string]json.RawMessage
-	r3DocumentStore            R3DocumentStore
-	r3ProposalDocumentStore    R3ProposalDocumentStore
-	r3DocumentForOperations    func(context.Context, aauth.R3OperationSet) ([]byte, error)
-	r3RequiredForRequest       func(context.Context, *http.Request) (bool, error)
-	r3OperationForRequest      func(context.Context, *http.Request) (aauth.R3OperationSet, error)
-	r3ProposalForRequest       func(context.Context, *http.Request, []byte) (aauth.R3Proposal, error)
-	eventSubscriptionPath      string
-	eventStore                 ResourceEventStore
-	eventTicketStore           ProtectedEventTicketStore
-	eventHTTPClient            *http.Client
-	eventActiveUntil           func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
-	eventAsyncAPIPath          string
-	eventAsyncAPIDocument      []byte
-	eventAsyncAPIContract      *aauth.EventsAsyncAPIContract
-	eventProtectedOperation    string
-	eventProtectedMessage      aauth.EventsAsyncAPIMessage
-	eventProtectedPath         string
-	eventContractStore         EventContractStore
-	eventTicketLifetime        time.Duration
-	eventRegistrationValidator func(context.Context, ProtectedEventRegistration) error
-	randomMu                   sync.Mutex
-	pendingMu                  sync.Mutex
-	pending                    map[string]*pendingAuthorization
-	accessMu                   sync.Mutex
-	access                     map[string]localAccessGrant
-	replayMu                   sync.Mutex
-	replayedProof              map[string]time.Time
+	identifier                   string
+	accessMode                   aauth.AccessMode
+	tokenAudience                string
+	authTokenDiscoveryDocument   string
+	signingKey                   aauth.SigningKey
+	hasSigningKey                bool
+	keyResolver                  aauth.KeyResolver
+	clock                        aauth.Clock
+	newID                        func() string
+	scopes                       []string
+	scopeDescriptions            map[string]string
+	requiredScopesForRequest     func(context.Context, *http.Request) ([]string, error)
+	replayStore                  ProofReplayStore
+	authorizationStore           AuthorizationStateStore
+	protectedAuthorizationPolicy aauth.ProtectedAuthorizationPolicy
+	authorizationPolicy          aauth.AuthorizationPolicy
+	interactionRequired          func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	random                       io.Reader
+	pendingLifetime              time.Duration
+	operation                    func(context.Context, aauth.AuthorizedRequest) (any, error)
+	r3Vocabularies               map[string]json.RawMessage
+	eventSubscriptionPath        string
+	eventStore                   ResourceEventStore
+	eventTicketStore             ProtectedEventTicketStore
+	eventHTTPClient              *http.Client
+	eventActiveUntil             func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
+	eventAsyncAPIPath            string
+	eventAsyncAPIDocument        []byte
+	eventAsyncAPIContract        *aauth.EventsAsyncAPIContract
+	eventProtectedOperation      string
+	eventProtectedMessage        aauth.EventsAsyncAPIMessage
+	eventProtectedPath           string
+	eventContractStore           EventContractStore
+	eventTicketLifetime          time.Duration
+	eventRegistrationValidator   func(context.Context, ProtectedEventRegistration) error
+	randomMu                     sync.Mutex
+	pendingMu                    sync.Mutex
+	authorizationErr             error
+	authorizationBody            []byte
+	authorizationRecovery        []byte
+	pending                      map[string]*pendingAuthorization
+	access                       map[string]localAccessGrant
 }
 
 type localAccessGrant struct {
-	agent      string
-	subject    string
-	thumbprint string
-	scope      []string
-	mission    *aauth.MissionReference
-	expiresAt  time.Time
+	agent           string
+	subject         string
+	thumbprint      string
+	scope           []string
+	mission         *aauth.MissionReference
+	expiresAt       time.Time
+	sourcePendingID string
 }
 
 type pendingAuthorization struct {
 	pendingInteraction
-	request         aauth.AuthorizationRequest
-	decision        aauth.AuthorizationDecision
-	agentThumbprint string
-	agentExpiresAt  time.Time
+	request                aauth.AuthorizationRequest
+	requestBody            []byte
+	requestProof           *aauth.RequestProof
+	requestVerificationKey aauth.JWK
+	decision               aauth.AuthorizationDecision
+	agentThumbprint        string
+	agentExpiresAt         time.Time
+	terminalAccessToken    string
+}
+
+const resourceAuthorizationStateSchema = "aauth.reference.resource-authorization-state"
+
+type resourceAuthorizationStateRecord struct {
+	Kind    string                              `json:"kind"`
+	Key     string                              `json:"key"`
+	Pending *resourcePendingAuthorizationRecord `json:"pending,omitempty"`
+	Grant   *resourceAccessGrantRecord          `json:"grant,omitempty"`
+}
+
+type resourcePendingAuthorizationRecord struct {
+	ID                     string                      `json:"id"`
+	Code                   string                      `json:"code"`
+	NormalizedCode         string                      `json:"normalized_code"`
+	CodeConsumed           bool                        `json:"code_consumed"`
+	FailedCodeAttempts     int                         `json:"failed_code_attempts"`
+	State                  pendingAuthorizationState   `json:"state"`
+	PollingError           aauth.PollingErrorCode      `json:"polling_error,omitempty"`
+	ExpiresAt              time.Time                   `json:"expires_at"`
+	Request                aauth.AuthorizationRequest  `json:"request"`
+	RequestBody            []byte                      `json:"request_body"`
+	RequestProof           *aauth.RequestProof         `json:"request_proof"`
+	RequestVerificationKey aauth.JWK                   `json:"request_verification_key"`
+	Decision               aauth.AuthorizationDecision `json:"decision"`
+	AgentThumbprint        string                      `json:"agent_thumbprint"`
+	AgentExpiresAt         time.Time                   `json:"agent_expires_at"`
+	TerminalAccessToken    string                      `json:"terminal_access_token,omitempty"`
+}
+
+type resourceAccessGrantRecord struct {
+	Agent           string                  `json:"agent,omitempty"`
+	Subject         string                  `json:"subject"`
+	Thumbprint      string                  `json:"thumbprint"`
+	Scope           []string                `json:"scope"`
+	Mission         *aauth.MissionReference `json:"mission,omitempty"`
+	ExpiresAt       time.Time               `json:"expires_at"`
+	SourcePendingID string                  `json:"source_pending_id,omitempty"`
+}
+
+type resourceAuthorizationInput struct {
+	Scope   string `json:"scope"`
+	Account string `json:"account,omitempty"`
 }
 
 func NewResource(config ResourceConfig) (*Resource, error) {
 	if err := aauth.ValidateServerIdentifier(config.Identifier); err != nil {
 		return nil, err
 	}
-	modeCount := 0
-	if config.PersonServer != "" {
-		modeCount++
-	}
-	if config.AccessServer != "" {
-		modeCount++
-	}
-	if config.AuthorizationPolicy != nil {
-		modeCount++
-	}
-	if modeCount != 1 {
-		return nil, errors.New("reference: resource requires exactly one person server, access server, or local authorization policy")
-	}
-	if config.AccessMode != "" && config.AccessMode != aauth.AccessModeAuthToken {
+	switch config.AccessMode {
+	case "":
+		return nil, errors.New("reference: resource access mode is required")
+	case aauth.AccessModeAuthToken:
+		if (config.PersonServer == "") == (config.AccessServer == "") || config.AuthorizationPolicy != nil {
+			return nil, errors.New("reference: auth-token resource requires exactly one person or access server")
+		}
+		if config.ProtectedAuthorizationPolicy == nil {
+			return nil, errors.New("reference: auth-token resource requires a protected authorization policy")
+		}
+	case aauth.AccessModeSessionToken:
+		if config.AuthorizationPolicy == nil || config.PersonServer != "" || config.AccessServer != "" {
+			return nil, errors.New("reference: session-token resource requires local authorization policy")
+		}
+		if config.AuthorizationStore == nil {
+			return nil, errors.New("reference: session-token resource requires an authorization state store")
+		}
+		if config.ProtectedAuthorizationPolicy != nil {
+			return nil, errors.New("reference: session-token resource does not use an auth-token protected authorization policy")
+		}
+	default:
 		return nil, fmt.Errorf("reference: resource access mode %q is not implemented", config.AccessMode)
-	}
-	if config.AccessMode == aauth.AccessModeAuthToken &&
-		config.PersonServer == "" && config.AccessServer == "" {
-		return nil, errors.New("reference: auth-token access mode requires a person or access server")
 	}
 	tokenAudience := config.PersonServer
 	authTokenDiscoveryDocument := aauth.PersonDiscoveryDocument
@@ -193,38 +243,11 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		len(config.Scopes) == 0 || config.Operation == nil {
 		return nil, errors.New("reference: resource requires resolver, clock, id source, scopes, and operation")
 	}
-	r3Parts := 0
-	if len(config.R3Vocabularies) != 0 {
-		r3Parts++
+	if config.ReplayStore == nil {
+		return nil, errors.New("reference: resource requires a proof replay store")
 	}
-	if config.R3DocumentStore != nil {
-		r3Parts++
-	}
-	if config.R3DocumentForOperations != nil {
-		r3Parts++
-	}
-	if config.R3RequiredForRequest != nil {
-		r3Parts++
-	}
-	if config.R3OperationForRequest != nil {
-		r3Parts++
-	}
-	if r3Parts != 0 && r3Parts != 5 {
-		return nil, errors.New("reference: R3 requires vocabularies, durable document custody, document selection, required-operation policy, and request mapping")
-	}
-	if r3Parts != 0 && config.AccessServer == "" {
-		return nil, errors.New("reference: R3 requires an access server")
-	}
-	if config.R3ProposalForRequest != nil && r3Parts != 5 {
-		return nil, errors.New("reference: R3 proposal policy requires complete R3 configuration")
-	}
-	var r3ProposalDocumentStore R3ProposalDocumentStore
-	if config.R3ProposalForRequest != nil {
-		var ok bool
-		r3ProposalDocumentStore, ok = config.R3DocumentStore.(R3ProposalDocumentStore)
-		if !ok {
-			return nil, errors.New("reference: R3 proposal policy requires durable proposal custody and consumption")
-		}
+	if config.RequiredScopesForRequest == nil {
+		return nil, errors.New("reference: current resource requires a required-scope mapper")
 	}
 	var eventSubscriptionPath string
 	var eventStore ResourceEventStore
@@ -330,24 +353,11 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	if err := validateResourceRoutePatterns(eventSubscriptionPath, eventAsyncAPIPath, eventProtectedPath); err != nil {
 		return nil, err
 	}
-	r3Vocabularies := make(map[string]json.RawMessage, len(config.R3Vocabularies))
-	for vocabulary, discovery := range config.R3Vocabularies {
-		if err := aauth.ValidateR3VocabularyURI(vocabulary); err != nil {
-			return nil, err
-		}
-		if len(discovery) == 0 || !json.Valid(discovery) {
-			return nil, errors.New("reference: R3 discovery value must be valid JSON")
-		}
-		r3Vocabularies[vocabulary] = append(json.RawMessage(nil), discovery...)
-	}
+	r3Vocabularies := make(map[string]json.RawMessage)
 	if eventAsyncAPIPath != "" {
 		discovery, err := json.Marshal(eventAsyncAPIPath)
 		if err != nil {
 			return nil, err
-		}
-		if existing, exists := r3Vocabularies[aauth.R3VocabularyAsyncAPI]; exists &&
-			!bytes.Equal(bytes.TrimSpace(existing), discovery) {
-			return nil, errors.New("reference: resource Events AsyncAPI discovery conflicts with R3 vocabularies")
 		}
 		r3Vocabularies[aauth.R3VocabularyAsyncAPI] = discovery
 	}
@@ -362,50 +372,457 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	if random == nil {
 		random = rand.Reader
 	}
-	if _, err := parseScopes(strings.Join(config.Scopes, " ")); err != nil {
+	if _, err := canonicalRequiredScopes(config.Scopes, config.Scopes); err != nil {
 		return nil, err
 	}
-	return &Resource{
-		identifier:                 config.Identifier,
-		accessMode:                 config.AccessMode,
-		tokenAudience:              tokenAudience,
-		authTokenDiscoveryDocument: authTokenDiscoveryDocument,
-		signingKey:                 config.SigningKey,
-		hasSigningKey:              config.SigningKey.ID() != "",
-		keyResolver:                config.KeyResolver,
-		clock:                      config.Clock,
-		newID:                      config.NewID,
-		scopes:                     append([]string(nil), config.Scopes...),
-		authorizationPolicy:        config.AuthorizationPolicy,
-		interactionRequired:        config.InteractionRequired,
-		random:                     random,
-		pendingLifetime:            pendingLifetime,
-		operation:                  config.Operation,
-		r3Vocabularies:             r3Vocabularies,
-		r3DocumentStore:            config.R3DocumentStore,
-		r3ProposalDocumentStore:    r3ProposalDocumentStore,
-		r3DocumentForOperations:    config.R3DocumentForOperations,
-		r3RequiredForRequest:       config.R3RequiredForRequest,
-		r3OperationForRequest:      config.R3OperationForRequest,
-		r3ProposalForRequest:       config.R3ProposalForRequest,
-		eventSubscriptionPath:      eventSubscriptionPath,
-		eventStore:                 eventStore,
-		eventTicketStore:           eventTicketStore,
-		eventHTTPClient:            eventHTTPClient,
-		eventActiveUntil:           eventActiveUntil,
-		eventAsyncAPIPath:          eventAsyncAPIPath,
-		eventAsyncAPIDocument:      eventAsyncAPIDocument,
-		eventAsyncAPIContract:      eventAsyncAPIContract,
-		eventProtectedOperation:    eventProtectedOperation,
-		eventProtectedMessage:      eventProtectedMessage,
-		eventProtectedPath:         eventProtectedPath,
-		eventContractStore:         eventContractStore,
-		eventTicketLifetime:        eventTicketLifetime,
-		eventRegistrationValidator: eventRegistrationValidator,
-		pending:                    make(map[string]*pendingAuthorization),
-		access:                     make(map[string]localAccessGrant),
-		replayedProof:              make(map[string]time.Time),
-	}, nil
+	if config.AccessMode == aauth.AccessModeAuthToken || config.ScopeDescriptions != nil {
+		if err := validateScopeDescriptions(config.Scopes, config.ScopeDescriptions); err != nil {
+			return nil, err
+		}
+	}
+	resource := &Resource{
+		identifier:                   config.Identifier,
+		accessMode:                   config.AccessMode,
+		tokenAudience:                tokenAudience,
+		authTokenDiscoveryDocument:   authTokenDiscoveryDocument,
+		signingKey:                   config.SigningKey,
+		hasSigningKey:                config.SigningKey.ID() != "",
+		keyResolver:                  config.KeyResolver,
+		clock:                        config.Clock,
+		newID:                        config.NewID,
+		scopes:                       append([]string(nil), config.Scopes...),
+		scopeDescriptions:            cloneScopeDescriptions(config.ScopeDescriptions),
+		requiredScopesForRequest:     config.RequiredScopesForRequest,
+		replayStore:                  config.ReplayStore,
+		authorizationStore:           config.AuthorizationStore,
+		protectedAuthorizationPolicy: config.ProtectedAuthorizationPolicy,
+		authorizationPolicy:          config.AuthorizationPolicy,
+		interactionRequired:          config.InteractionRequired,
+		random:                       random,
+		pendingLifetime:              pendingLifetime,
+		operation:                    config.Operation,
+		r3Vocabularies:               r3Vocabularies,
+		eventSubscriptionPath:        eventSubscriptionPath,
+		eventStore:                   eventStore,
+		eventTicketStore:             eventTicketStore,
+		eventHTTPClient:              eventHTTPClient,
+		eventActiveUntil:             eventActiveUntil,
+		eventAsyncAPIPath:            eventAsyncAPIPath,
+		eventAsyncAPIDocument:        eventAsyncAPIDocument,
+		eventAsyncAPIContract:        eventAsyncAPIContract,
+		eventProtectedOperation:      eventProtectedOperation,
+		eventProtectedMessage:        eventProtectedMessage,
+		eventProtectedPath:           eventProtectedPath,
+		eventContractStore:           eventContractStore,
+		eventTicketLifetime:          eventTicketLifetime,
+		eventRegistrationValidator:   eventRegistrationValidator,
+		pending:                      make(map[string]*pendingAuthorization),
+		access:                       make(map[string]localAccessGrant),
+	}
+	if resource.authorizationStore != nil {
+		if err := resource.loadAuthorizationState(context.Background()); err != nil {
+			return nil, fmt.Errorf("reference: load resource authorization state: %w", err)
+		}
+	}
+	return resource, nil
+}
+
+func (resource *Resource) loadAuthorizationState(ctx context.Context) error {
+	body, err := resource.authorizationStore.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		resource.pendingMu.Lock()
+		defer resource.pendingMu.Unlock()
+		return resource.persistAuthorizationStateLocked(ctx)
+	}
+	if err := resource.restoreAuthorizationStateLocked(body); err != nil {
+		return err
+	}
+	resource.authorizationBody = append([]byte(nil), body...)
+	return nil
+}
+
+func (resource *Resource) restoreAuthorizationStateLocked(body []byte) error {
+	rawRecords, err := decodeAuthorizationStateRecords(body, resourceAuthorizationStateSchema)
+	if err != nil {
+		return err
+	}
+	pending := make(map[string]*pendingAuthorization)
+	access := make(map[string]localAccessGrant)
+	previous := ""
+	for _, raw := range rawRecords {
+		var record resourceAuthorizationStateRecord
+		if err := decodeAuthorizationStateRecord(raw, &record); err != nil {
+			return err
+		}
+		sortKey := record.Kind + "\x00" + record.Key
+		if record.Key == "" || sortKey <= previous {
+			return ErrAuthorizationStateIntegrity
+		}
+		previous = sortKey
+		switch record.Kind {
+		case "grant":
+			if record.Grant == nil || record.Pending != nil ||
+				validateResourceAccessGrantRecord(record.Key, *record.Grant) != nil {
+				return ErrAuthorizationStateIntegrity
+			}
+			access[record.Key] = localAccessGrant{
+				agent: record.Grant.Agent, subject: record.Grant.Subject,
+				thumbprint: record.Grant.Thumbprint, scope: append([]string(nil), record.Grant.Scope...),
+				mission: cloneMissionReference(record.Grant.Mission), expiresAt: record.Grant.ExpiresAt.UTC(),
+				sourcePendingID: record.Grant.SourcePendingID,
+			}
+		case "pending":
+			if record.Pending == nil || record.Grant != nil || record.Pending.ID != record.Key ||
+				resource.validateResourcePendingAuthorizationRecord(*record.Pending) != nil {
+				return ErrAuthorizationStateIntegrity
+			}
+			stored := record.Pending
+			pending[record.Key] = &pendingAuthorization{
+				pendingInteraction: pendingInteraction{
+					id: stored.ID, code: stored.Code, normalizedCode: stored.NormalizedCode,
+					codeConsumed: stored.CodeConsumed, failedCodeAttempts: stored.FailedCodeAttempts,
+					state: stored.State, pollingError: stored.PollingError, expiresAt: stored.ExpiresAt.UTC(),
+				},
+				request:                copyAuthorizationRequest(stored.Request),
+				requestBody:            append([]byte(nil), stored.RequestBody...),
+				requestProof:           copyRequestProof(stored.RequestProof),
+				requestVerificationKey: stored.RequestVerificationKey,
+				decision:               stored.Decision,
+				agentThumbprint:        stored.AgentThumbprint, agentExpiresAt: stored.AgentExpiresAt.UTC(),
+				terminalAccessToken: stored.TerminalAccessToken,
+			}
+		default:
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	for _, stored := range pending {
+		if stored.terminalAccessToken != "" {
+			if _, exists := access[stored.terminalAccessToken]; !exists {
+				return ErrAuthorizationStateIntegrity
+			}
+		}
+	}
+	if err := resource.validateResourceAuthorizationGraph(pending, access); err != nil {
+		return err
+	}
+	resource.pending = pending
+	resource.access = access
+	return nil
+}
+
+func validateResourceAccessGrantRecord(key string, record resourceAccessGrantRecord) error {
+	if aauth.ValidateAccessToken(key) != nil || record.Subject == "" ||
+		record.Thumbprint == "" || len(record.Scope) == 0 || record.ExpiresAt.IsZero() {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Agent != "" && aauth.ValidateAgentIdentifier(record.Agent) != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if !validRetainedThumbprint(record.Thumbprint) {
+		return ErrAuthorizationStateIntegrity
+	}
+	if scopes, err := parseScopes(strings.Join(record.Scope, " ")); err != nil || len(scopes) != len(record.Scope) {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Mission != nil && record.Mission.Validate() != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.SourcePendingID != "" && !validPendingID(record.SourcePendingID) {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func (resource *Resource) validateResourcePendingAuthorizationRecord(record resourcePendingAuthorizationRecord) error {
+	interaction := pendingInteractionRecord{
+		ID: record.ID, Code: record.Code, NormalizedCode: record.NormalizedCode,
+		CodeConsumed: record.CodeConsumed, FailedCodeAttempts: record.FailedCodeAttempts,
+		State: record.State, PollingError: record.PollingError, ExpiresAt: record.ExpiresAt,
+	}
+	if _, err := restorePendingInteraction(interaction); err != nil {
+		return err
+	}
+	if !validPendingID(record.ID) || validateLocalAuthorizationInteraction(interaction) != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	terminalExpiry := int64(0)
+	if record.TerminalAccessToken != "" {
+		terminalExpiry = 1
+	}
+	if err := validateAuthorizationTerminalState(interaction, record.TerminalAccessToken, terminalExpiry, 0, "", ""); err != nil {
+		return err
+	}
+	if !validRetainedThumbprint(record.AgentThumbprint) || record.AgentExpiresAt.IsZero() ||
+		record.Request.Resource != resource.identifier ||
+		record.ExpiresAt.After(record.AgentExpiresAt) {
+		return ErrAuthorizationStateIntegrity
+	}
+	if err := resource.validateResourceAuthorizationRequestEvidence(record); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if !record.ExpiresAt.After(record.RequestProof.VerifiedAt) {
+		return ErrAuthorizationStateIntegrity
+	}
+	decisionPresent := record.Decision.Subject != "" || len(record.Decision.Scope) != 0
+	if record.State == pendingAuthorizationApproved ||
+		record.State == pendingAuthorizationExpired && decisionPresent {
+		if record.Decision.Subject == "" || validateAuthorizationDecision(record.Decision, record.Request.Scope) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		if record.Request.Subject != "" && record.Decision.Subject != record.Request.Subject {
+			return ErrAuthorizationStateIntegrity
+		}
+	} else if decisionPresent {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.TerminalAccessToken != "" && record.State != pendingAuthorizationApproved {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func (resource *Resource) validateResourceAuthorizationRequestEvidence(
+	record resourcePendingAuthorizationRecord,
+) error {
+	if len(record.RequestBody) > maxJSONBody || record.RequestProof == nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	proof := record.RequestProof
+	if proof.Authority == "" || proof.Target == "" || proof.SignatureInput == "" || proof.Signature == "" ||
+		proof.SignatureKey == "" || proof.SignatureKeyType != aauth.SignatureKeyJWT ||
+		proof.CredentialIssuer == "" || proof.Created.IsZero() || proof.VerifiedAt.IsZero() ||
+		proof.ReplayKey == "" || proof.Authorization != "" {
+		return ErrAuthorizationStateIntegrity
+	}
+	identifier, err := endpointIdentifier("https://" + proof.Authority)
+	if err != nil || identifier != resource.identifier {
+		return ErrAuthorizationStateIntegrity
+	}
+	request, err := http.NewRequest(proof.Method, resource.identifier+proof.Target, bytes.NewReader(record.RequestBody))
+	if err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	request.Host = proof.Authority
+	request.Header.Set("Content-Digest", proof.ContentDigest)
+	if proof.ContentType != "" {
+		request.Header.Set("Content-Type", proof.ContentType)
+	}
+	request.Header.Set("Signature-Input", proof.SignatureInput)
+	request.Header.Set("Signature", proof.Signature)
+	request.Header.Set("Signature-Key", proof.SignatureKey)
+	requiredComponents := []string(nil)
+	if proof.ContentType != "" {
+		requiredComponents = append(requiredComponents, "content-type")
+	}
+	verified, err := aauth.VerifyRequest(
+		context.Background(),
+		request,
+		aauth.StaticKeyResolver{proof.CredentialIssuer: {record.RequestVerificationKey.Kid: record.RequestVerificationKey}},
+		aauth.ClockFunc(func() time.Time { return proof.VerifiedAt.UTC() }),
+		aauth.VerifyRequestOptions{
+			RequiredComponents: requiredComponents, RequireExactComponents: true,
+			AllowedCredentialTypes: []string{aauth.AgentTokenType, aauth.PersonTokenType},
+		},
+	)
+	if err != nil || verified.CredentialType != proof.CredentialType ||
+		!verified.PublicKey.Equal(proof.PublicKey) || !verified.Created.Equal(proof.Created) ||
+		!verified.VerifiedAt.Equal(proof.VerifiedAt) || verified.ReplayKey != proof.ReplayKey {
+		return ErrAuthorizationStateIntegrity
+	}
+	thumbprint, err := verified.PublicKey.Thumbprint()
+	if err != nil || thumbprint != record.AgentThumbprint {
+		return ErrAuthorizationStateIntegrity
+	}
+	switch proof.CredentialType {
+	case aauth.PersonTokenType:
+		if proof.Target != "/authorize" || proof.Method != http.MethodPost || verified.PersonToken == nil ||
+			proof.CredentialIssuer != verified.PersonToken.Issuer || proof.Agent != "" || proof.Signer != "" ||
+			record.Request.Agent != "" || record.Request.PersonServer != verified.PersonToken.Issuer ||
+			record.Request.Subject != verified.PersonToken.Subject ||
+			record.Request.MissionS256 != verified.PersonToken.MissionS256 ||
+			record.Request.Tenant != verified.PersonToken.Tenant || record.Request.Mission != nil ||
+			record.Request.Upstream != nil ||
+			record.AgentExpiresAt.Unix() != verified.PersonToken.ExpiresAt ||
+			aauth.ValidatePersonTokenContext(*verified.PersonToken, resource.identifier, verified.PublicKey) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		var input resourceAuthorizationInput
+		if err := decodeJSONBytes(bytes.NewReader(record.RequestBody), &input); err != nil ||
+			record.Request.Account != input.Account {
+			return ErrAuthorizationStateIntegrity
+		}
+		scopes, err := parseScopes(input.Scope)
+		if err != nil || !reflect.DeepEqual(scopes, record.Request.Scope) {
+			return ErrAuthorizationStateIntegrity
+		}
+	case aauth.AgentTokenType:
+		if proof.Target == "/authorize" || verified.AgentToken == nil ||
+			proof.CredentialIssuer != verified.AgentToken.Issuer || proof.Agent != verified.Agent ||
+			proof.Signer != verified.Agent || record.Request.Agent != verified.Agent ||
+			record.Request.PersonServer != "" || record.Request.Subject != "" || record.Request.Account != "" ||
+			record.Request.Tenant != "" || record.Request.Mission != nil || record.Request.Upstream != nil ||
+			record.AgentExpiresAt.Unix() != verified.AgentToken.ExpiresAt {
+			return ErrAuthorizationStateIntegrity
+		}
+		if resource.requiredScopesForRequest != nil {
+			required, err := resource.requiredScopes(request)
+			if err != nil || !reflect.DeepEqual(required, record.Request.Scope) {
+				return ErrAuthorizationStateIntegrity
+			}
+		}
+	default:
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func (resource *Resource) validateResourceAuthorizationGraph(
+	pending map[string]*pendingAuthorization,
+	access map[string]localAccessGrant,
+) error {
+	referenced := make(map[string]string)
+	for pendingID, authorization := range pending {
+		if authorization.terminalAccessToken == "" {
+			continue
+		}
+		if previous, duplicate := referenced[authorization.terminalAccessToken]; duplicate && previous != pendingID {
+			return ErrAuthorizationStateIntegrity
+		}
+		referenced[authorization.terminalAccessToken] = pendingID
+		grant, exists := access[authorization.terminalAccessToken]
+		if !exists || grant.sourcePendingID != pendingID || grant.agent != authorization.request.Agent ||
+			grant.subject != authorization.decision.Subject || grant.thumbprint != authorization.agentThumbprint ||
+			!reflect.DeepEqual(grant.scope, authorization.decision.Scope) ||
+			!reflect.DeepEqual(grant.mission, authorization.request.Mission) ||
+			grant.expiresAt.After(authorization.agentExpiresAt) {
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	for token, grant := range access {
+		if grant.sourcePendingID == "" {
+			continue
+		}
+		authorization, exists := pending[grant.sourcePendingID]
+		if !exists || authorization.terminalAccessToken != token {
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	return nil
+}
+
+func (resource *Resource) persistAuthorizationStateLocked(ctx context.Context) error {
+	if resource.authorizationStore == nil {
+		return nil
+	}
+	if resource.authorizationErr != nil {
+		return resource.authorizationErr
+	}
+	if err := resource.settleAuthorizationStateLocked(ctx); err != nil {
+		return err
+	}
+	if err := resource.validateResourceAuthorizationGraph(resource.pending, resource.access); err != nil {
+		return err
+	}
+	records := make([]resourceAuthorizationStateRecord, 0, len(resource.pending)+len(resource.access))
+	for key, pending := range resource.pending {
+		record := resourcePendingAuthorizationRecord{
+			ID: pending.id, Code: pending.code, NormalizedCode: pending.normalizedCode,
+			CodeConsumed: pending.codeConsumed, FailedCodeAttempts: pending.failedCodeAttempts,
+			State: pending.state, PollingError: pending.pollingError, ExpiresAt: pending.expiresAt.UTC(),
+			Request: copyAuthorizationRequest(pending.request), Decision: pending.decision,
+			RequestBody:            append([]byte(nil), pending.requestBody...),
+			RequestProof:           copyRequestProof(pending.requestProof),
+			RequestVerificationKey: pending.requestVerificationKey,
+			AgentThumbprint:        pending.agentThumbprint, AgentExpiresAt: pending.agentExpiresAt.UTC(),
+			TerminalAccessToken: pending.terminalAccessToken,
+		}
+		if record.ID != key || resource.validateResourcePendingAuthorizationRecord(record) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		records = append(records, resourceAuthorizationStateRecord{Kind: "pending", Key: key, Pending: &record})
+	}
+	for key, grant := range resource.access {
+		record := resourceAccessGrantRecord{
+			Agent: grant.agent, Subject: grant.subject, Thumbprint: grant.thumbprint,
+			Scope: append([]string(nil), grant.scope...), Mission: cloneMissionReference(grant.mission),
+			ExpiresAt: grant.expiresAt.UTC(), SourcePendingID: grant.sourcePendingID,
+		}
+		if validateResourceAccessGrantRecord(key, record) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		records = append(records, resourceAuthorizationStateRecord{Kind: "grant", Key: key, Grant: &record})
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Kind+"\x00"+records[i].Key < records[j].Kind+"\x00"+records[j].Key
+	})
+	raw := make([]json.RawMessage, 0, len(records))
+	for _, record := range records {
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			return resource.reconcileAuthorizationStateLocked(ctx, nil, err)
+		}
+		raw = append(raw, encoded)
+	}
+	body, err := marshalAuthorizationStateRecords(resourceAuthorizationStateSchema, raw)
+	if err != nil {
+		return resource.reconcileAuthorizationStateLocked(ctx, nil, err)
+	}
+	if err := resource.authorizationStore.Replace(ctx, body); err != nil {
+		return resource.reconcileAuthorizationStateLocked(ctx, body, err)
+	}
+	resource.authorizationBody = append(resource.authorizationBody[:0], body...)
+	return nil
+}
+
+func (resource *Resource) reconcileAuthorizationStateLocked(ctx context.Context, candidate []byte, commitErr error) error {
+	body, published, err := reconcileAuthorizationState(ctx, resource.authorizationStore, resource.authorizationBody, candidate)
+	if err != nil || len(body) == 0 {
+		resource.pending = make(map[string]*pendingAuthorization)
+		resource.access = make(map[string]localAccessGrant)
+		resource.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
+		return resource.authorizationErr
+	}
+	if err := resource.restoreAuthorizationStateLocked(body); err != nil {
+		resource.pending = make(map[string]*pendingAuthorization)
+		resource.access = make(map[string]localAccessGrant)
+		resource.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
+		return resource.authorizationErr
+	}
+	if published {
+		resource.authorizationRecovery = append(resource.authorizationRecovery[:0], body...)
+		return authorizationStatePublishedUncertain(commitErr)
+	}
+	resource.authorizationBody = append(resource.authorizationBody[:0], body...)
+	return commitErr
+}
+
+func (resource *Resource) settleAuthorizationStateLocked(ctx context.Context) error {
+	if resource.authorizationErr != nil {
+		return resource.authorizationErr
+	}
+	if len(resource.authorizationRecovery) == 0 {
+		return nil
+	}
+	candidate := append([]byte(nil), resource.authorizationRecovery...)
+	if err := resource.authorizationStore.Replace(ctx, candidate); err != nil {
+		body, published, reconcileErr := reconcileAuthorizationState(ctx, resource.authorizationStore, nil, candidate)
+		if reconcileErr == nil && published {
+			reconcileErr = resource.restoreAuthorizationStateLocked(body)
+		}
+		if reconcileErr != nil || !published {
+			resource.pending = make(map[string]*pendingAuthorization)
+			resource.access = make(map[string]localAccessGrant)
+			resource.authorizationErr = authorizationStateReconciliationFailure(err, reconcileErr)
+			return resource.authorizationErr
+		}
+		return authorizationStatePublishedUncertain(err)
+	}
+	resource.authorizationBody = append(resource.authorizationBody[:0], candidate...)
+	resource.authorizationRecovery = nil
+	return nil
 }
 
 func (resource *Resource) Handler() http.Handler {
@@ -424,8 +841,6 @@ func (resource *Resource) Handler() http.Handler {
 	mux.HandleFunc("GET /interaction/{id}", resource.handleInteraction)
 	mux.HandleFunc("GET /.well-known/aauth-resource.json", resource.handleMetadata)
 	mux.HandleFunc("GET /jwks", resource.handleJWKS)
-	mux.HandleFunc("GET /r3/proposals/{s256}", resource.handleR3Document)
-	mux.HandleFunc("GET /r3/{s256}", resource.handleR3Document)
 	mux.HandleFunc("/", resource.handleProtected)
 	return mux
 }
@@ -485,7 +900,7 @@ func (resource *Resource) handlePublicEventSubscription(response http.ResponseWr
 	})
 	if err != nil {
 		if errors.Is(err, ErrEventSubscriptionConflict) {
-			writeProblem(response, http.StatusConflict, "subscription_conflict", err)
+			writeProblem(response, http.StatusConflict, "subscription_conflict", errors.New("event subscription conflicts with retained state"))
 			return
 		}
 		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
@@ -553,7 +968,7 @@ func (resource *Resource) handleProtectedEventRegistration(response http.Respons
 			ContentType: request.Header.Get("Content-Type"), Body: append([]byte(nil), exactBody...),
 		}
 		if err := resource.eventRegistrationValidator(request.Context(), registration); err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_registration", err)
+			writeProblem(response, http.StatusBadRequest, "invalid_registration", errors.New("event registration policy denied the request"))
 			return
 		}
 	}
@@ -564,11 +979,11 @@ func (resource *Resource) handleProtectedEventRegistration(response http.Respons
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrProtectedEventTicketNotFound):
-			writeProblem(response, http.StatusNotFound, "event_ticket_not_found", err)
+			writeProblem(response, http.StatusNotFound, "event_ticket_not_found", errors.New("event ticket was not found"))
 		case errors.Is(err, ErrProtectedEventTicketMismatch):
-			writeProblem(response, http.StatusForbidden, "event_ticket_mismatch", err)
+			writeProblem(response, http.StatusForbidden, "event_ticket_mismatch", errors.New("event ticket does not match the request"))
 		case errors.Is(err, ErrEventSubscriptionConflict):
-			writeProblem(response, http.StatusConflict, "event_subscription_conflict", err)
+			writeProblem(response, http.StatusConflict, "event_subscription_conflict", errors.New("event subscription conflicts with retained state"))
 		default:
 			writeProblem(response, http.StatusInternalServerError, "event_registration_failed", err)
 		}
@@ -774,8 +1189,6 @@ func validateResourceRoutePatterns(publicEvents, asyncAPI, protectedEvents strin
 		"GET /interaction/{id}",
 		"GET /.well-known/aauth-resource.json",
 		"GET /jwks",
-		"GET /r3/{s256}",
-		"GET /r3/proposals/{s256}",
 	} {
 		mux.HandleFunc(pattern, dummy)
 	}
@@ -792,13 +1205,27 @@ func validateResourceRoutePatterns(publicEvents, asyncAPI, protectedEvents strin
 }
 
 func (resource *Resource) handleAuthorize(response http.ResponseWriter, request *http.Request) {
-	required := []string{"content-digest"}
-	if request.Header.Get("AAuth-Mission") != "" {
-		required = append(required, "aauth-mission")
+	if len(request.Header.Values("AAuth-Mission")) != 0 {
+		writeProblem(
+			response,
+			http.StatusBadRequest,
+			"invalid_mission",
+			errors.New("AAuth-Mission is not supported; mission must be carried by the person token"),
+		)
+		return
 	}
-	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
-		RequiredComponents:     required,
-		AllowedCredentialTypes: []string{aauth.AgentTokenType, aauth.PersonTokenType},
+	resource.pendingMu.Lock()
+	stateErr := resource.settleAuthorizationStateLocked(request.Context())
+	resource.pendingMu.Unlock()
+	if stateErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
+	credentialKeyCapture, verificationResolver := newRetainedKeyCapture(resource.keyResolver)
+	verified, err := aauth.VerifyRequest(request.Context(), request, verificationResolver, resource.clock, aauth.VerifyRequestOptions{
+		RequiredComponents:     []string{"content-type"},
+		RequireExactComponents: true,
+		AllowedCredentialTypes: []string{aauth.PersonTokenType, aauth.AgentTokenType},
 	})
 	if err != nil {
 		if resource.accessMode == aauth.AccessModeAuthToken &&
@@ -809,33 +1236,39 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		writeSignatureFailure(response, err)
 		return
 	}
-	if resource.accessMode == aauth.AccessModeAuthToken && verified.PersonToken == nil {
-		requirement, err := aauth.FormatRequirementHeader(aauth.Requirement{
-			Type: aauth.RequirementPersonToken,
-		})
-		if err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			return
-		}
-		response.Header().Set("AAuth-Requirement", requirement)
+	if verified.PersonToken == nil {
+		writePersonTokenRequired(response, "authorization endpoint requires a person token")
+		return
+	}
+	if resource.authTokenDiscoveryDocument == aauth.PersonDiscoveryDocument &&
+		verified.PersonToken.Issuer != resource.tokenAudience {
 		writeProblem(
 			response,
-			http.StatusUnauthorized,
-			"person_token_required",
-			errors.New("authorization endpoint requires a person token"),
+			http.StatusBadRequest,
+			"invalid_person_token",
+			fmt.Errorf(
+				"person-token issuer %q does not match configured person server %q",
+				verified.PersonToken.Issuer,
+				resource.tokenAudience,
+			),
 		)
 		return
 	}
-	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeSignatureFailure(response, errors.New("request proof was replayed"))
+	requestVerificationKey, err := credentialKeyCapture.retainedKey()
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	var input struct {
-		Scope        string                `json:"scope"`
-		Account      string                `json:"account,omitempty"`
-		R3Operations *aauth.R3OperationSet `json:"r3_operations,omitempty"`
+	if !resource.consumeProof(response, request, verified) {
+		return
 	}
-	if err := decodeJSON(response, request, &input); err != nil {
+	requestBody, err := readBoundedRequestBody(request)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	var input resourceAuthorizationInput
+	if err := decodeJSONBytes(bytes.NewReader(requestBody), &input); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
@@ -844,80 +1277,14 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		writeProblem(response, http.StatusBadRequest, "invalid_scope", err)
 		return
 	}
-	var r3URI string
-	var r3S256 string
-	now := resource.clock.Now()
+	now := verified.VerifiedAt
 	resourceTokenExpiresAt := now.Add(5 * time.Minute)
-	if input.R3Operations != nil {
-		if resource.r3DocumentForOperations == nil {
-			writeProblem(response, http.StatusBadRequest, "unsupported_r3_vocabulary", errors.New("resource does not advertise R3"))
-			return
-		}
-		if err := input.R3Operations.Validate(); err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_r3_operations", err)
-			return
-		}
-		if _, advertised := resource.r3Vocabularies[input.R3Operations.Vocabulary]; !advertised {
-			writeProblem(response, http.StatusBadRequest, "unsupported_r3_vocabulary", errors.New("requested R3 vocabulary is not advertised"))
-			return
-		}
-		exactBytes, err := resource.r3DocumentForOperations(
-			request.Context(),
-			input.R3Operations.Clone(),
-		)
-		if err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_r3_operations", err)
-			return
-		}
-		document, err := aauth.ParseR3Document(exactBytes)
-		if err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			return
-		}
-		if document.Parameters != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("R3 class document contains per-call parameters"))
-			return
-		}
-		documentOperations := document.OperationSet()
-		if documentOperations.Vocabulary != input.R3Operations.Vocabulary ||
-			!documentOperations.ContainsSet(*input.R3Operations) {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("R3 document does not cover the requested operations"))
-			return
-		}
-		r3S256 = aauth.R3S256(exactBytes)
-		if err := resource.r3DocumentStore.Retain(
-			request.Context(),
-			r3S256,
-			exactBytes,
-			resourceTokenExpiresAt,
-		); err != nil {
-			writeProblem(response, http.StatusServiceUnavailable, "r3_custody_unavailable", err)
-			return
-		}
-		r3URI = resource.identifier + "/r3/" + r3S256
+	if err := aauth.ValidatePersonTokenContext(*verified.PersonToken, resource.identifier, verified.PublicKey); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_person_token", err)
+		return
 	}
-	var mission *aauth.MissionReference
-	if header := request.Header.Get("AAuth-Mission"); header != "" {
-		parsed, err := aauth.ParseMissionHeader(header)
-		if err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_mission", err)
-			return
-		}
-		mission = &parsed
-	}
-	current := verified.PersonToken != nil
-	if current {
-		if mission != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_mission", errors.New("current person-token authorization must not use AAuth-Mission"))
-			return
-		}
-		if err := aauth.ValidatePersonTokenContext(*verified.PersonToken, resource.identifier, verified.PublicKey); err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_person_token", err)
-			return
-		}
-		if personExpiry := time.Unix(verified.PersonToken.ExpiresAt, 0); personExpiry.Before(resourceTokenExpiresAt) {
-			resourceTokenExpiresAt = personExpiry
-		}
+	if personExpiry := time.Unix(verified.PersonToken.ExpiresAt, 0); personExpiry.Before(resourceTokenExpiresAt) {
+		resourceTokenExpiresAt = personExpiry
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
@@ -929,50 +1296,16 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 			Agent:    verified.Agent,
 			Resource: resource.identifier,
 			Scope:    append([]string(nil), scopes...),
-			Mission:  mission,
 			Account:  input.Account,
 		}
-		if current {
-			authorizationRequest.PersonServer = verified.PersonToken.Issuer
-			authorizationRequest.Subject = verified.PersonToken.Subject
-			authorizationRequest.MissionS256 = verified.PersonToken.MissionS256
-			authorizationRequest.Tenant = verified.PersonToken.Tenant
-		}
-		if resource.interactionRequired != nil {
-			required, err := resource.interactionRequired(request.Context(), authorizationRequest)
-			if err != nil {
-				writeProblem(response, http.StatusForbidden, "access_denied", err)
-				return
-			}
-			if required {
-				if err := resource.beginPendingAuthorization(
-					response,
-					authorizationRequest,
-					thumbprint,
-					credentialExpiry(verified),
-					now,
-				); err != nil {
-					writeProblem(response, http.StatusInternalServerError, "server_error", err)
-				}
-				return
-			}
-		}
-		decision, err := resource.authorizationPolicy(request.Context(), authorizationRequest)
-		if err != nil {
-			writeProblem(response, http.StatusForbidden, "access_denied", err)
-			return
-		}
-		if err := validateAuthorizationDecision(decision, scopes); err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("local authorization policy returned an invalid grant"))
-			return
-		}
-		expiresAt := now.Add(time.Hour)
-		if agentExpiry := credentialExpiry(verified); agentExpiry.Before(expiresAt) {
-			expiresAt = agentExpiry
-		}
-		if err := resource.writeAccessGrant(response, authorizationRequest, decision, thumbprint, expiresAt); err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		}
+		authorizationRequest.PersonServer = verified.PersonToken.Issuer
+		authorizationRequest.Subject = verified.PersonToken.Subject
+		authorizationRequest.MissionS256 = verified.PersonToken.MissionS256
+		authorizationRequest.Tenant = verified.PersonToken.Tenant
+		resource.handleLocalAuthorization(
+			response, request, requestBody, requestVerificationKey,
+			authorizationRequest, verified, thumbprint, now,
+		)
 		return
 	}
 
@@ -986,19 +1319,14 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		IssuedAt:  now.Unix(),
 		ExpiresAt: resourceTokenExpiresAt.Unix(),
 		Scope:     strings.Join(scopes, " "),
-		Mission:   mission,
 		Account:   input.Account,
-		R3URI:     r3URI,
-		R3S256:    r3S256,
 	}
-	if current {
-		claims.PersonServer = verified.PersonToken.Issuer
-		claims.Subject = verified.PersonToken.Subject
-		claims.PresentedJTI = verified.PersonToken.JTI
-		claims.MissionS256 = verified.PersonToken.MissionS256
-		claims.Tenant = verified.PersonToken.Tenant
-		claims.Agent = ""
-	}
+	claims.PersonServer = verified.PersonToken.Issuer
+	claims.Subject = verified.PersonToken.Subject
+	claims.PresentedJTI = verified.PersonToken.JTI
+	claims.MissionS256 = verified.PersonToken.MissionS256
+	claims.Tenant = verified.PersonToken.Tenant
+	claims.Agent = ""
 	token, err := aauth.MintResourceToken(resource.signingKey, claims)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -1038,10 +1366,70 @@ func credentialExpiry(verified aauth.VerifiedRequest) time.Time {
 }
 
 func validateAuthorizationDecision(decision aauth.AuthorizationDecision, requestedScope []string) error {
+	seen := make(map[string]struct{}, len(decision.Scope))
+	for _, scope := range decision.Scope {
+		if scope == "" || strings.TrimSpace(scope) != scope {
+			return errors.New("authorization decision contains an invalid scope")
+		}
+		if _, exists := seen[scope]; exists {
+			return errors.New("authorization decision contains an invalid scope")
+		}
+		seen[scope] = struct{}{}
+	}
 	if len(decision.Scope) == 0 || !scopesContained(decision.Scope, requestedScope) {
 		return errors.New("authorization decision contains an invalid scope")
 	}
 	return nil
+}
+
+func (resource *Resource) handleLocalAuthorization(
+	response http.ResponseWriter,
+	request *http.Request,
+	requestBody []byte,
+	requestVerificationKey aauth.JWK,
+	authorizationRequest aauth.AuthorizationRequest,
+	verified aauth.VerifiedRequest,
+	thumbprint string,
+	now time.Time,
+) {
+	if resource.interactionRequired != nil {
+		required, err := resource.interactionRequired(request.Context(), copyAuthorizationRequest(authorizationRequest))
+		if err != nil {
+			writeHostPolicyRefusal(response, "access_denied", "authorization policy denied the request")
+			return
+		}
+		if required {
+			if err := resource.beginPendingAuthorization(
+				response,
+				authorizationRequest,
+				requestBody,
+				requestProof(request, verified),
+				requestVerificationKey,
+				thumbprint,
+				credentialExpiry(verified),
+				now,
+			); err != nil {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			}
+			return
+		}
+	}
+	decision, err := resource.authorizationPolicy(request.Context(), copyAuthorizationRequest(authorizationRequest))
+	if err != nil {
+		writeHostPolicyRefusal(response, "access_denied", "authorization policy denied the request")
+		return
+	}
+	if err := validateAuthorizationDecision(decision, authorizationRequest.Scope); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("local authorization policy returned an invalid grant"))
+		return
+	}
+	expiresAt := now.Add(time.Hour)
+	if credentialExpiresAt := credentialExpiry(verified); credentialExpiresAt.Before(expiresAt) {
+		expiresAt = credentialExpiresAt
+	}
+	if err := resource.writeAccessGrant(response, authorizationRequest, decision, thumbprint, expiresAt); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+	}
 }
 
 func (resource *Resource) writeAccessGrant(
@@ -1069,22 +1457,50 @@ func (resource *Resource) storeAccessGrant(
 	thumbprint string,
 	expiresAt time.Time,
 ) (string, error) {
+	resource.pendingMu.Lock()
+	defer resource.pendingMu.Unlock()
+	return resource.storeAccessGrantLocked(context.Background(), request, decision, thumbprint, expiresAt)
+}
+
+func (resource *Resource) storeAccessGrantLocked(
+	ctx context.Context,
+	request aauth.AuthorizationRequest,
+	decision aauth.AuthorizationDecision,
+	thumbprint string,
+	expiresAt time.Time,
+) (string, error) {
+	accessToken, err := resource.addAccessGrantLocked(request, decision, thumbprint, expiresAt, "")
+	if err != nil {
+		return "", err
+	}
+	if err := resource.persistAuthorizationStateLocked(ctx); err != nil {
+		return "", err
+	}
+	return accessToken, nil
+}
+
+func (resource *Resource) addAccessGrantLocked(
+	request aauth.AuthorizationRequest,
+	decision aauth.AuthorizationDecision,
+	thumbprint string,
+	expiresAt time.Time,
+	sourcePendingID string,
+) (string, error) {
 	accessToken := resource.newID()
 	if err := aauth.ValidateAccessToken(accessToken); err != nil {
 		return "", err
 	}
-	resource.accessMu.Lock()
-	defer resource.accessMu.Unlock()
 	if _, exists := resource.access[accessToken]; exists {
 		return "", errors.New("access token source returned a duplicate value")
 	}
 	resource.access[accessToken] = localAccessGrant{
-		agent:      request.Agent,
-		subject:    decision.Subject,
-		thumbprint: thumbprint,
-		scope:      append([]string(nil), decision.Scope...),
-		mission:    request.Mission,
-		expiresAt:  expiresAt,
+		agent:           request.Agent,
+		subject:         decision.Subject,
+		thumbprint:      thumbprint,
+		scope:           append([]string(nil), decision.Scope...),
+		mission:         request.Mission,
+		expiresAt:       expiresAt,
+		sourcePendingID: sourcePendingID,
 	}
 	return accessToken, nil
 }
@@ -1092,6 +1508,9 @@ func (resource *Resource) storeAccessGrant(
 func (resource *Resource) beginPendingAuthorization(
 	response http.ResponseWriter,
 	request aauth.AuthorizationRequest,
+	requestBody []byte,
+	requestProof *aauth.RequestProof,
+	requestVerificationKey aauth.JWK,
 	thumbprint string,
 	agentExpiresAt time.Time,
 	now time.Time,
@@ -1107,10 +1526,13 @@ func (resource *Resource) beginPendingAuthorization(
 		return err
 	}
 	pending := &pendingAuthorization{
-		pendingInteraction: interaction,
-		request:            copyAuthorizationRequest(request),
-		agentThumbprint:    thumbprint,
-		agentExpiresAt:     agentExpiresAt,
+		pendingInteraction:     interaction,
+		request:                copyAuthorizationRequest(request),
+		requestBody:            append([]byte(nil), requestBody...),
+		requestProof:           copyRequestProof(requestProof),
+		requestVerificationKey: requestVerificationKey,
+		agentThumbprint:        thumbprint,
+		agentExpiresAt:         agentExpiresAt,
 	}
 	resource.pendingMu.Lock()
 	if _, exists := resource.pending[interaction.id]; exists {
@@ -1118,6 +1540,10 @@ func (resource *Resource) beginPendingAuthorization(
 		return errors.New("pending identifier source returned a duplicate value")
 	}
 	resource.pending[interaction.id] = pending
+	if err := resource.persistAuthorizationStateLocked(context.Background()); err != nil {
+		resource.pendingMu.Unlock()
+		return err
+	}
 	resource.pendingMu.Unlock()
 	return resource.writePendingAuthorization(
 		response,
@@ -1130,7 +1556,6 @@ func (resource *Resource) beginPendingAuthorization(
 func copyAuthorizationRequest(request aauth.AuthorizationRequest) aauth.AuthorizationRequest {
 	copied := request
 	copied.Scope = append([]string(nil), request.Scope...)
-	copied.R3 = request.R3.Clone()
 	if request.Mission != nil {
 		mission := *request.Mission
 		copied.Mission = &mission
@@ -1144,6 +1569,18 @@ func copyAuthorizationRequest(request aauth.AuthorizationRequest) aauth.Authoriz
 		}
 		copied.Upstream = &upstream
 	}
+	return copied
+}
+
+func copyAuthorizedRequest(request aauth.AuthorizedRequest) aauth.AuthorizedRequest {
+	copied := request
+	copied.Scope = append([]string(nil), request.Scope...)
+	copied.Body = append([]byte(nil), request.Body...)
+	if request.Mission != nil {
+		mission := *request.Mission
+		copied.Mission = &mission
+	}
+	copied.Actor = copyActor(request.Actor)
 	return copied
 }
 
@@ -1173,6 +1610,10 @@ func (resource *Resource) writePendingAuthorization(
 // the grant; deployment policy is evaluated again at approval time.
 func (resource *Resource) ApproveAuthorization(ctx context.Context, pendingID string) error {
 	resource.pendingMu.Lock()
+	if err := resource.settleAuthorizationStateLocked(ctx); err != nil {
+		resource.pendingMu.Unlock()
+		return err
+	}
 	pending, exists := resource.pending[pendingID]
 	if !exists {
 		resource.pendingMu.Unlock()
@@ -1181,6 +1622,10 @@ func (resource *Resource) ApproveAuthorization(ctx context.Context, pendingID st
 	now := resource.clock.Now()
 	if !pending.expiresAt.After(now) {
 		pending.state = pendingAuthorizationExpired
+		if err := resource.persistAuthorizationStateLocked(ctx); err != nil {
+			resource.pendingMu.Unlock()
+			return err
+		}
 		resource.pendingMu.Unlock()
 		return errors.New("reference: pending authorization expired")
 	}
@@ -1201,11 +1646,19 @@ func (resource *Resource) ApproveAuthorization(ctx context.Context, pendingID st
 
 	resource.pendingMu.Lock()
 	defer resource.pendingMu.Unlock()
-	if pending.state != pendingAuthorizationInteracting {
+	if err := resource.settleAuthorizationStateLocked(context.Background()); err != nil {
+		return err
+	}
+	current, exists := resource.pending[pendingID]
+	if !exists || current != pending || current.state != pendingAuthorizationInteracting {
 		return errors.New("reference: pending authorization changed while approval was evaluated")
 	}
+	pending = current
 	if !pending.expiresAt.After(resource.clock.Now()) {
 		pending.state = pendingAuthorizationExpired
+		if err := resource.persistAuthorizationStateLocked(ctx); err != nil {
+			return err
+		}
 		return errors.New("reference: pending authorization expired")
 	}
 	pending.decision = aauth.AuthorizationDecision{
@@ -1213,7 +1666,7 @@ func (resource *Resource) ApproveAuthorization(ctx context.Context, pendingID st
 		Scope:   append([]string(nil), decision.Scope...),
 	}
 	pending.state = pendingAuthorizationApproved
-	return nil
+	return resource.persistAuthorizationStateLocked(ctx)
 }
 
 // RejectAuthorization records a trusted terminal denial or abandonment. The
@@ -1229,12 +1682,18 @@ func (resource *Resource) RejectAuthorization(
 	}
 	resource.pendingMu.Lock()
 	defer resource.pendingMu.Unlock()
+	if err := resource.settleAuthorizationStateLocked(context.Background()); err != nil {
+		return err
+	}
 	pending, exists := resource.pending[pendingID]
 	if !exists {
 		return errors.New("reference: pending authorization does not exist")
 	}
 	if !pending.expiresAt.After(resource.clock.Now()) {
 		pending.state = pendingAuthorizationExpired
+		if err := resource.persistAuthorizationStateLocked(context.Background()); err != nil {
+			return err
+		}
 		return errors.New("reference: pending authorization expired")
 	}
 	if pending.state != pendingAuthorizationInteracting {
@@ -1242,10 +1701,17 @@ func (resource *Resource) RejectAuthorization(
 	}
 	pending.pollingError = code
 	pending.state = pendingAuthorizationRejected
-	return nil
+	return resource.persistAuthorizationStateLocked(context.Background())
 }
 
 func (resource *Resource) handlePendingAuthorization(response http.ResponseWriter, request *http.Request) {
+	resource.pendingMu.Lock()
+	stateErr := resource.settleAuthorizationStateLocked(request.Context())
+	resource.pendingMu.Unlock()
+	if stateErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
 	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
@@ -1266,7 +1732,8 @@ func (resource *Resource) handlePendingAuthorization(response http.ResponseWrite
 		writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization is unknown"))
 		return
 	}
-	if pending.request.Agent != verified.Agent || pending.agentThumbprint != thumbprint {
+	if pending.agentThumbprint != thumbprint ||
+		pending.request.Agent != "" && pending.request.Agent != verified.Agent {
 		resource.pendingMu.Unlock()
 		writeProblem(response, http.StatusForbidden, "invalid_pending", errors.New("pending authorization belongs to a different agent key"))
 		return
@@ -1275,6 +1742,11 @@ func (resource *Resource) handlePendingAuthorization(response http.ResponseWrite
 		pending.state == pendingAuthorizationInteracting) &&
 		!pending.expiresAt.After(resource.clock.Now()) {
 		pending.state = pendingAuthorizationExpired
+		if err := resource.persistAuthorizationStateLocked(request.Context()); err != nil {
+			resource.pendingMu.Unlock()
+			writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+			return
+		}
 	}
 
 	switch pending.state {
@@ -1287,23 +1759,41 @@ func (resource *Resource) handlePendingAuthorization(response http.ResponseWrite
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 	case pendingAuthorizationApproved:
-		expiresAt := resource.clock.Now().Add(time.Hour)
-		if pending.agentExpiresAt.Before(expiresAt) {
-			expiresAt = pending.agentExpiresAt
-		}
-		token, err := resource.storeAccessGrant(
-			pending.request,
-			pending.decision,
-			pending.agentThumbprint,
-			expiresAt,
-		)
-		if err != nil {
+		token := pending.terminalAccessToken
+		if token == "" && !pending.agentExpiresAt.After(resource.clock.Now()) {
+			pending.state = pendingAuthorizationExpired
+			if err := resource.persistAuthorizationStateLocked(request.Context()); err != nil {
+				resource.pendingMu.Unlock()
+				writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+				return
+			}
 			resource.pendingMu.Unlock()
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending authorization credential expired"))
 			return
 		}
+		if token == "" {
+			expiresAt := resource.clock.Now().Add(time.Hour)
+			if pending.agentExpiresAt.Before(expiresAt) {
+				expiresAt = pending.agentExpiresAt
+			}
+			var err error
+			token, err = resource.addAccessGrantLocked(
+				pending.request, pending.decision,
+				pending.agentThumbprint, expiresAt, pending.id,
+			)
+			if err != nil {
+				resource.pendingMu.Unlock()
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				return
+			}
+			pending.terminalAccessToken = token
+			if err := resource.persistAuthorizationStateLocked(request.Context()); err != nil {
+				resource.pendingMu.Unlock()
+				writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+				return
+			}
+		}
 		decision := pending.decision
-		pending.state = pendingAuthorizationServed
 		resource.pendingMu.Unlock()
 		response.Header().Set("AAuth-Access", token)
 		writeJSON(response, http.StatusOK, map[string]any{
@@ -1311,12 +1801,10 @@ func (resource *Resource) handlePendingAuthorization(response http.ResponseWrite
 			"scope":  strings.Join(decision.Scope, " "),
 		})
 	case pendingAuthorizationExpired:
-		pending.state = pendingAuthorizationServed
 		resource.pendingMu.Unlock()
 		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending authorization expired"))
 	case pendingAuthorizationRejected:
 		code := pending.pollingError
-		pending.state = pendingAuthorizationServed
 		resource.pendingMu.Unlock()
 		status := http.StatusForbidden
 		if code == aauth.PollingServerError {
@@ -1324,16 +1812,22 @@ func (resource *Resource) handlePendingAuthorization(response http.ResponseWrite
 		}
 		writeProblem(response, status, string(code), errors.New("pending authorization was not approved"))
 	case pendingAuthorizationInvalidCode:
-		pending.state = pendingAuthorizationServed
 		resource.pendingMu.Unlock()
 		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code validation failed"))
 	default:
 		resource.pendingMu.Unlock()
-		writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization already returned a terminal response"))
+		writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization has an invalid state"))
 	}
 }
 
 func (resource *Resource) handleInteraction(response http.ResponseWriter, request *http.Request) {
+	resource.pendingMu.Lock()
+	stateErr := resource.settleAuthorizationStateLocked(request.Context())
+	resource.pendingMu.Unlock()
+	if stateErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
 	resource.pendingMu.Lock()
 	pending, exists := resource.pending[request.PathValue("id")]
 	if !exists {
@@ -1345,6 +1839,11 @@ func (resource *Resource) handleInteraction(response http.ResponseWriter, reques
 		request.URL.Query()["code"],
 		resource.clock.Now(),
 	)
+	if persistErr := resource.persistAuthorizationStateLocked(request.Context()); persistErr != nil {
+		resource.pendingMu.Unlock()
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", persistErr)
+		return
+	}
 	if err != nil {
 		resource.pendingMu.Unlock()
 		writeProblem(response, status, code, err)
@@ -1366,6 +1865,15 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		resource.handleAccessProtected(response, request)
 		return
 	}
+	if resource.accessMode == aauth.AccessModeSessionToken {
+		resource.pendingMu.Lock()
+		stateErr := resource.settleAuthorizationStateLocked(request.Context())
+		resource.pendingMu.Unlock()
+		if stateErr != nil {
+			writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+			return
+		}
+	}
 	exactBody, err := readBoundedRequestBody(request)
 	if err != nil {
 		writeProblem(response, http.StatusRequestEntityTooLarge, "request_too_large", err)
@@ -1375,48 +1883,85 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	if len(exactBody) != 0 {
 		requiredComponents = append(requiredComponents, "content-type")
 	}
-	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
+	allowedCredentialTypes := []string{aauth.AuthTokenType}
+	if resource.accessMode == aauth.AccessModeSessionToken {
+		allowedCredentialTypes = []string{aauth.AgentTokenType}
+	}
+	credentialKeyCapture, verificationResolver := newRetainedKeyCapture(resource.keyResolver)
+	verified, err := aauth.VerifyRequest(request.Context(), request, verificationResolver, resource.clock, aauth.VerifyRequestOptions{
 		RequiredComponents:     requiredComponents,
-		AllowedCredentialTypes: []string{aauth.AuthTokenType},
+		RequireExactComponents: true,
+		AllowedCredentialTypes: allowedCredentialTypes,
 	})
 	if err != nil {
 		writeSignatureFailure(response, err)
 		return
 	}
+	if resource.accessMode == aauth.AccessModeSessionToken {
+		requestVerificationKey, err := credentialKeyCapture.retainedKey()
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		requiredScopes, err := resource.requiredScopes(request)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "scope_mapping_failed", err)
+			return
+		}
+		if !resource.consumeProof(response, request, verified) {
+			return
+		}
+		thumbprint, err := verified.PublicKey.Thumbprint()
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", nil)
+			return
+		}
+		resource.handleLocalAuthorization(
+			response,
+			request,
+			exactBody,
+			requestVerificationKey,
+			aauth.AuthorizationRequest{
+				Agent:    verified.Agent,
+				Resource: resource.identifier,
+				Scope:    append([]string(nil), requiredScopes...),
+			},
+			verified,
+			thumbprint,
+			verified.VerifiedAt,
+		)
+		return
+	}
 	claims := verified.AuthToken
+	if resource.accessMode != aauth.AccessModeAuthToken {
+		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("resource does not accept auth tokens for protected operations"))
+		return
+	}
 	if claims.Issuer != resource.tokenAudience {
 		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("auth-token issuer is not the resource authorization server"))
 		return
 	}
-	if resource.accessMode == aauth.AccessModeAuthToken {
-		if claims.PersonServer == "" {
-			writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("current auth-token ps is required"))
-			return
-		}
-		if claims.DWK != resource.authTokenDiscoveryDocument {
-			writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("auth-token issuer role does not match resource configuration"))
-			return
-		}
+	if claims.PersonServer == "" {
+		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("current auth-token ps is required"))
+		return
 	}
-	var contextErr error
-	if claims.PersonServer != "" {
-		contextErr = aauth.ValidateCurrentAuthTokenContext(
-			*claims,
-			resource.identifier,
-			claims.PersonServer,
-			claims.Subject,
-			verified.PublicKey,
-			resource.scopes,
-		)
-	} else {
-		contextErr = aauth.ValidateAuthTokenContext(
-			*claims,
-			resource.identifier,
-			verified.Agent,
-			verified.PublicKey,
-			resource.scopes,
-		)
+	if claims.DWK != resource.authTokenDiscoveryDocument {
+		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("auth-token issuer role does not match resource configuration"))
+		return
 	}
+	requiredScopes, err := resource.requiredScopes(request)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "scope_mapping_failed", err)
+		return
+	}
+	contextErr := aauth.ValidateCurrentAuthTokenContext(
+		*claims,
+		resource.identifier,
+		claims.PersonServer,
+		claims.Subject,
+		verified.PublicKey,
+		requiredScopes,
+	)
 	if contextErr != nil {
 		writeProblem(response, http.StatusForbidden, "invalid_token", contextErr)
 		return
@@ -1426,87 +1971,39 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		writeProblem(response, http.StatusForbidden, "insufficient_scope", err)
 		return
 	}
-	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeSignatureFailure(response, errors.New("request proof was replayed"))
+	if !resource.consumeProof(response, request, verified) {
 		return
 	}
-	if resource.r3RequiredForRequest != nil {
-		required, err := resource.r3RequiredForRequest(request.Context(), request)
-		if err != nil {
-			writeProblem(response, http.StatusInternalServerError, "r3_mapping_failed", err)
-			return
-		}
-		if required && claims.R3URI == "" {
-			writeProblem(response, http.StatusForbidden, "r3_required", errors.New("this resource operation requires an R3 grant"))
-			return
-		}
-	}
-	if claims.R3URI != "" {
-		if resource.r3OperationForRequest == nil {
-			writeProblem(response, http.StatusForbidden, "r3_not_configured", errors.New("resource cannot map this R3 operation"))
-			return
-		}
-		mapped, err := resource.r3OperationForRequest(request.Context(), request)
-		if err != nil {
-			writeProblem(response, http.StatusForbidden, "r3_operation_unknown", err)
-			return
-		}
-		if err := mapped.Validate(); err != nil || len(mapped.Operations) != 1 {
-			writeProblem(response, http.StatusForbidden, "r3_operation_unknown", errors.New("resource request mapping must return one valid R3 operation"))
-			return
-		}
-		proposalToken, err := classifyR3ProposalReference(resource.identifier, claims.R3URI, claims.R3S256)
-		if err != nil {
-			writeProblem(response, http.StatusForbidden, "invalid_per_call_token", err)
-			return
-		}
-		if proposalToken && claims.R3Conditional != nil {
-			writeProblem(response, http.StatusForbidden, "invalid_per_call_token", errors.New("per-call R3 token cannot contain conditional operations"))
-			return
-		}
-		if claims.R3Granted != nil &&
-			mapped.Vocabulary == claims.R3Granted.Vocabulary &&
-			claims.R3Granted.Contains(mapped.Operations[0]) {
-			if proposalToken {
-				if err := resource.enforceR3Proposal(request, exactBody, *claims, mapped); err != nil {
-					status := http.StatusForbidden
-					code := "r3_parameter_mismatch"
-					if errors.Is(err, ErrR3DocumentNotFound) || errors.Is(err, ErrR3DocumentIntegrity) {
-						status = http.StatusServiceUnavailable
-						code = "r3_custody_unavailable"
-					}
-					if errors.Is(err, ErrR3ProposalConsumed) {
-						code = "r3_per_call_replayed"
-					}
-					writeProblem(response, status, code, err)
-					return
-				}
-			}
-		} else if claims.R3Conditional != nil &&
-			mapped.Vocabulary == claims.R3Conditional.Vocabulary &&
-			claims.R3Conditional.Contains(mapped.Operations[0]) {
-			resource.challengeR3Conditional(response, request, exactBody, verified, *claims, mapped)
-			return
-		} else {
-			writeProblem(response, http.StatusForbidden, "r3_operation_denied", errors.New("R3 operation is not granted or conditional"))
-			return
-		}
-	}
-
 	authorized := aauth.AuthorizedRequest{
-		Agent:        claims.Agent,
-		PersonServer: claims.PersonServer,
-		Subject:      claims.Subject,
-		Scope:        granted,
-		Mission:      claims.Mission,
-		MissionS256:  claims.MissionS256,
-		Tenant:       claims.Tenant,
-		Account:      claims.Account,
-		Actor:        claims.Actor,
-		AuthToken:    verified.RawCredential,
-		Method:       request.Method,
-		Path:         request.URL.Path,
-		Body:         append([]byte(nil), exactBody...),
+		Agent:              claims.Agent,
+		PersonServer:       claims.PersonServer,
+		Subject:            claims.Subject,
+		AuthTokenIssuer:    claims.Issuer,
+		AuthTokenDWK:       claims.DWK,
+		AuthTokenID:        claims.JTI,
+		AuthTokenIssuedAt:  time.Unix(claims.IssuedAt, 0).UTC(),
+		AuthTokenExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+		ConfirmationKey:    verified.PublicKey,
+		ProofReplayKey:     verified.ReplayKey,
+		ProofCreatedAt:     verified.Created.UTC(),
+		Scope:              granted,
+		Mission:            claims.Mission,
+		MissionS256:        claims.MissionS256,
+		Tenant:             claims.Tenant,
+		Account:            claims.Account,
+		Actor:              claims.Actor,
+		AuthToken:          verified.RawCredential,
+		Method:             request.Method,
+		Path:               request.URL.Path,
+		Body:               append([]byte(nil), exactBody...),
+		ContentType:        request.Header.Get("Content-Type"),
+	}
+	if err := resource.protectedAuthorizationPolicy(
+		request.Context(),
+		copyAuthorizedRequest(authorized),
+	); err != nil {
+		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("protected request was denied by resource policy"))
+		return
 	}
 	result, err := resource.operation(request.Context(), authorized)
 	if err != nil {
@@ -1518,6 +2015,16 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		return
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func writePersonTokenRequired(response http.ResponseWriter, detail string) {
+	requirement, err := aauth.FormatRequirementHeader(aauth.Requirement{Type: aauth.RequirementPersonToken})
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	response.Header().Set("AAuth-Requirement", requirement)
+	writeProblem(response, http.StatusUnauthorized, "person_token_required", errors.New(detail))
 }
 
 func protectedEventOperationResult(value any) (ProtectedEventOperationResult, bool) {
@@ -1542,6 +2049,10 @@ func (resource *Resource) issueProtectedEventTicket(
 		resource.eventTicketStore == nil || result.Response == nil ||
 		result.Ticket.ResourceRevision == "" {
 		writeProblem(response, http.StatusInternalServerError, "event_ticket_not_configured", errors.New("reference: protected event ticket is not configured"))
+		return
+	}
+	if err := aauth.ValidateAgentIdentifier(result.Ticket.Agent); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "invalid_event_ticket", fmt.Errorf("reference: protected event ticket agent: %w", err))
 		return
 	}
 	now := resource.clock.Now()
@@ -1570,7 +2081,7 @@ func (resource *Resource) issueProtectedEventTicket(
 	rawTicket := base64.RawURLEncoding.EncodeToString(rawBytes)
 	ticket := ProtectedEventTicket{
 		TicketDigest: protectedEventTicketDigest(rawTicket), Resource: resource.identifier,
-		Agent: authorized.Agent, AuthorizedMethod: authorized.Method, AuthorizedPath: authorized.Path,
+		Agent: result.Ticket.Agent, AuthorizedMethod: authorized.Method, AuthorizedPath: authorized.Path,
 		ResourceRevision: result.Ticket.ResourceRevision,
 		ContractDigest:   resource.eventAsyncAPIContract.Digest(),
 		OperationID:      resource.eventProtectedMessage.OperationID,
@@ -1599,156 +2110,30 @@ func (resource *Resource) issueProtectedEventTicket(
 	writeJSON(response, http.StatusOK, rendered)
 }
 
-func classifyR3ProposalReference(resourceIdentifier, uri, s256 string) (bool, error) {
-	prefix := resourceIdentifier + "/r3/proposals/"
-	if !strings.HasPrefix(uri, prefix) {
-		return false, nil
-	}
-	if uri != prefix+s256 {
-		return false, errors.New("reference: R3 proposal URI does not match its digest claim")
-	}
-	return true, nil
-}
-
-func (resource *Resource) enforceR3Proposal(
-	request *http.Request,
-	exactBody []byte,
-	claims aauth.AuthTokenClaims,
-	operation aauth.R3OperationSet,
-) error {
-	if resource.r3ProposalForRequest == nil || resource.r3ProposalDocumentStore == nil {
-		return errors.New("reference: R3 proposal enforcement is not configured")
-	}
-	exactProposal, err := resource.r3ProposalDocumentStore.LoadProposal(
-		request.Context(),
-		claims.R3S256,
-	)
-	if err != nil {
-		return err
-	}
-	if aauth.R3S256(exactProposal) != claims.R3S256 {
-		return ErrR3DocumentIntegrity
-	}
-	document, err := aauth.ParseR3Document(exactProposal)
-	if err != nil {
-		return err
-	}
-	actual, err := resource.r3ProposalForRequest(
-		request.Context(),
-		request,
-		append([]byte(nil), exactBody...),
-	)
-	if err != nil {
-		return err
-	}
-	if err := document.MatchR3Call(operation, actual.Parameters); err != nil {
-		return err
-	}
-	return resource.r3ProposalDocumentStore.ConsumeProposal(
-		request.Context(),
-		claims.R3S256,
-		claims.JTI,
-		time.Unix(claims.ExpiresAt, 0),
-	)
-}
-
-func (resource *Resource) challengeR3Conditional(
-	response http.ResponseWriter,
-	request *http.Request,
-	exactBody []byte,
-	verified aauth.VerifiedRequest,
-	claims aauth.AuthTokenClaims,
-	operation aauth.R3OperationSet,
-) {
-	if resource.r3ProposalForRequest == nil {
-		writeProblem(response, http.StatusForbidden, "r3_conditional_not_configured", errors.New("resource has no R3 proposal policy"))
-		return
-	}
-	if request.URL.RawQuery != "" {
-		writeProblem(response, http.StatusBadRequest, "r3_conditional_query_unsupported", errors.New("conditional R3 calls must not use query parameters"))
-		return
-	}
-	proposal, err := resource.r3ProposalForRequest(
-		request.Context(),
-		request,
-		append([]byte(nil), exactBody...),
-	)
-	if err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_r3_proposal", err)
-		return
-	}
-	exactProposal, err := aauth.BuildR3Proposal(operation, proposal)
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "invalid_r3_proposal", err)
-		return
-	}
-	parsedProposal, err := aauth.ParseR3Document(exactProposal)
-	if err != nil || parsedProposal.MatchR3Call(operation, proposal.Parameters) != nil {
-		writeProblem(response, http.StatusInternalServerError, "invalid_r3_proposal", errors.New("resource proposal does not bind the authenticated call"))
-		return
-	}
-	now := resource.clock.Now()
-	expiresAt := now.Add(5 * time.Minute)
-	if parentExpiry := time.Unix(claims.ExpiresAt, 0); parentExpiry.Before(expiresAt) {
-		expiresAt = parentExpiry
-	}
-	if !expiresAt.After(now) {
-		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("conditional R3 token expires before a proposal can be issued"))
-		return
-	}
-	digest := aauth.R3S256(exactProposal)
-	if err := resource.r3ProposalDocumentStore.RetainProposal(
-		request.Context(),
-		digest,
-		exactProposal,
-		expiresAt,
-	); err != nil {
-		writeProblem(response, http.StatusServiceUnavailable, "r3_custody_unavailable", err)
-		return
-	}
-	thumbprint, err := verified.PublicKey.Thumbprint()
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
-		return
-	}
-	resourceToken, err := aauth.MintResourceToken(resource.signingKey, aauth.ResourceTokenClaims{
-		Issuer:    resource.identifier,
-		DWK:       aauth.ResourceDiscoveryDocument,
-		Audience:  resource.tokenAudience,
-		JTI:       resource.newID(),
-		Agent:     claims.Agent,
-		AgentJKT:  thumbprint,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: expiresAt.Unix(),
-		Scope:     claims.Scope,
-		Mission:   claims.Mission,
-		R3URI:     resource.identifier + "/r3/proposals/" + digest,
-		R3S256:    digest,
-	})
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	requirement, err := aauth.FormatRequirementHeader(aauth.Requirement{
-		Type:          aauth.RequirementAuthToken,
-		ResourceToken: resourceToken,
-	})
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	response.Header().Set("AAuth-Requirement", requirement)
-	writeProblem(response, http.StatusUnauthorized, "r3_conditional", errors.New("conditional R3 call requires per-call authorization"))
-}
-
 func usesAAuthScheme(header string) bool {
 	separator := strings.IndexByte(header, ' ')
 	return separator > 0 && strings.EqualFold(header[:separator], "AAuth")
 }
 
 func (resource *Resource) handleAccessProtected(response http.ResponseWriter, request *http.Request) {
+	resource.pendingMu.Lock()
+	stateErr := resource.settleAuthorizationStateLocked(request.Context())
+	resource.pendingMu.Unlock()
+	if stateErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
+	exactBody, err := readBoundedRequestBody(request)
+	if err != nil {
+		writeProblem(response, http.StatusRequestEntityTooLarge, "request_too_large", err)
+		return
+	}
+	requiredComponents := []string{"authorization"}
+	if len(exactBody) != 0 {
+		requiredComponents = append(requiredComponents, "content-type")
+	}
 	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
-		RequiredComponents:     []string{"authorization"},
+		RequiredComponents:     requiredComponents,
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
 	if err != nil {
@@ -1760,37 +2145,52 @@ func (resource *Resource) handleAccessProtected(response http.ResponseWriter, re
 		writeProblem(response, http.StatusBadRequest, "invalid_access", err)
 		return
 	}
-	resource.accessMu.Lock()
+	resource.pendingMu.Lock()
 	grant, exists := resource.access[accessToken]
 	if exists && !grant.expiresAt.After(resource.clock.Now()) {
 		delete(resource.access, accessToken)
+		if err := resource.persistAuthorizationStateLocked(request.Context()); err != nil {
+			resource.pendingMu.Unlock()
+			writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+			return
+		}
 		exists = false
 	}
-	resource.accessMu.Unlock()
+	resource.pendingMu.Unlock()
 	if !exists {
 		writeProblem(response, http.StatusForbidden, "invalid_access", errors.New("access token is unknown or expired"))
 		return
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
-	if err != nil || grant.agent != verified.Agent || grant.thumbprint != thumbprint {
+	if err != nil || grant.thumbprint != thumbprint ||
+		grant.agent != "" && grant.agent != verified.Agent {
 		writeProblem(response, http.StatusForbidden, "invalid_access", errors.New("access token is bound to a different agent key"))
 		return
 	}
-	if !scopesContained(resource.scopes, grant.scope) {
+	requiredScopes, err := resource.requiredScopes(request)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "scope_mapping_failed", err)
+		return
+	}
+	if !scopesContained(requiredScopes, grant.scope) {
 		writeProblem(response, http.StatusForbidden, "insufficient_scope", errors.New("access token does not grant the operation scope"))
 		return
 	}
-	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeSignatureFailure(response, errors.New("request proof was replayed"))
+	if !resource.consumeProof(response, request, verified) {
 		return
 	}
 	result, err := resource.operation(request.Context(), aauth.AuthorizedRequest{
-		Agent:   grant.agent,
-		Subject: grant.subject,
-		Scope:   append([]string(nil), grant.scope...),
-		Mission: grant.mission,
-		Method:  request.Method,
-		Path:    request.URL.Path,
+		Agent:           verified.Agent,
+		Subject:         grant.subject,
+		ConfirmationKey: verified.PublicKey,
+		ProofReplayKey:  verified.ReplayKey,
+		ProofCreatedAt:  verified.Created.UTC(),
+		Scope:           append([]string(nil), grant.scope...),
+		Mission:         grant.mission,
+		Method:          request.Method,
+		Path:            request.URL.Path,
+		Body:            append([]byte(nil), exactBody...),
+		ContentType:     request.Header.Get("Content-Type"),
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "operation_failed", err)
@@ -1799,20 +2199,100 @@ func (resource *Resource) handleAccessProtected(response http.ResponseWriter, re
 	writeJSON(response, http.StatusOK, result)
 }
 
-func (resource *Resource) seenReplay(key string, expiresAt time.Time) bool {
-	resource.replayMu.Lock()
-	defer resource.replayMu.Unlock()
-	now := resource.clock.Now()
-	for existing, expiry := range resource.replayedProof {
-		if !expiry.After(now) {
-			delete(resource.replayedProof, existing)
-		}
-	}
-	if _, exists := resource.replayedProof[key]; exists {
+func (resource *Resource) consumeProof(
+	response http.ResponseWriter,
+	request *http.Request,
+	verified aauth.VerifiedRequest,
+) bool {
+	err := resource.replayStore.Consume(
+		request.Context(),
+		verified.ReplayKey,
+		verified.Created.Add(aauth.DefaultSignatureWindow),
+	)
+	if err == nil {
 		return true
 	}
-	resource.replayedProof[key] = expiresAt
+	if errors.Is(err, ErrProofReplay) {
+		writeSignatureFailure(response, ErrProofReplay)
+		return false
+	}
+	writeProblem(response, http.StatusServiceUnavailable, "proof_replay_unavailable", err)
 	return false
+}
+
+func (resource *Resource) requiredScopes(request *http.Request) ([]string, error) {
+	if resource.requiredScopesForRequest == nil {
+		return nil, errors.New("reference: current resource required-scope mapper is unavailable")
+	}
+	required, err := resource.requiredScopesForRequest(request.Context(), request)
+	if err != nil {
+		return nil, fmt.Errorf("reference: map protected request scopes: %w", err)
+	}
+	return canonicalRequiredScopes(required, resource.scopes)
+}
+
+func canonicalRequiredScopes(required, allowlist []string) ([]string, error) {
+	positions := make(map[string]int, len(allowlist))
+	for index, scope := range allowlist {
+		if scope == "" || strings.TrimSpace(scope) != scope || len(strings.Fields(scope)) != 1 {
+			return nil, fmt.Errorf("reference: resource scope %q is not canonical", scope)
+		}
+		if _, duplicate := positions[scope]; duplicate {
+			return nil, fmt.Errorf("reference: resource scope %q is duplicated", scope)
+		}
+		positions[scope] = index
+	}
+	if len(required) == 0 {
+		return nil, errors.New("reference: protected request requires at least one scope")
+	}
+	canonical := make([]string, len(required))
+	previous := -1
+	for index, scope := range required {
+		position, allowed := positions[scope]
+		if scope == "" || strings.TrimSpace(scope) != scope || len(strings.Fields(scope)) != 1 {
+			return nil, fmt.Errorf("reference: required scope %q is not canonical", scope)
+		}
+		if !allowed {
+			return nil, fmt.Errorf("reference: required scope %q is outside the issuance allowlist", scope)
+		}
+		if position <= previous {
+			return nil, errors.New("reference: required scopes are duplicated or not in canonical allowlist order")
+		}
+		canonical[index] = scope
+		previous = position
+	}
+	return canonical, nil
+}
+
+func validateScopeDescriptions(scopes []string, descriptions map[string]string) error {
+	if len(descriptions) != len(scopes) {
+		return errors.New("reference: scope descriptions must exactly cover the issuance allowlist")
+	}
+	allowed := make(map[string]struct{}, len(scopes))
+	for _, scope := range scopes {
+		allowed[scope] = struct{}{}
+		description, exists := descriptions[scope]
+		if !exists || description == "" || strings.TrimSpace(description) != description {
+			return fmt.Errorf("reference: scope descriptions must contain a canonical nonempty description for %q", scope)
+		}
+	}
+	for scope := range descriptions {
+		if _, exists := allowed[scope]; !exists {
+			return fmt.Errorf("reference: scope descriptions contain scope %q outside the issuance allowlist", scope)
+		}
+	}
+	return nil
+}
+
+func cloneScopeDescriptions(descriptions map[string]string) map[string]string {
+	if descriptions == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(descriptions))
+	for scope, description := range descriptions {
+		cloned[scope] = description
+	}
+	return cloned
 }
 
 func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.Request) {
@@ -1820,10 +2300,9 @@ func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.R
 		"issuer":                 resource.identifier,
 		"authorization_endpoint": resource.identifier + "/authorize",
 	}
-	if resource.accessMode != "" {
-		metadata["access_mode"] = string(resource.accessMode)
-	} else if resource.authorizationPolicy != nil {
-		metadata["access_mode"] = "aauth-access-token"
+	metadata["access_mode"] = string(resource.accessMode)
+	if len(resource.scopeDescriptions) != 0 {
+		metadata["scope_descriptions"] = cloneScopeDescriptions(resource.scopeDescriptions)
 	}
 	if resource.hasSigningKey {
 		metadata["jwks_uri"] = resource.identifier + "/jwks"
@@ -1836,43 +2315,6 @@ func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.R
 		metadata["r3_vocabularies"] = vocabularies
 	}
 	writeJSON(response, http.StatusOK, metadata)
-}
-
-func (resource *Resource) handleR3Document(response http.ResponseWriter, request *http.Request) {
-	verified, err := aauth.VerifyRequest(request.Context(), request, resource.keyResolver, resource.clock, aauth.VerifyRequestOptions{
-		AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
-	})
-	if err != nil {
-		writeSignatureFailure(response, err)
-		return
-	}
-	if verified.Signer != resource.tokenAudience {
-		writeSignatureFailure(response, errors.New("R3 document request is not signed by the resource access server"))
-		return
-	}
-	if resource.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeSignatureFailure(response, errors.New("request proof was replayed"))
-		return
-	}
-	if resource.r3DocumentStore == nil {
-		writeProblem(response, http.StatusNotFound, "not_found", errors.New("R3 documents are not configured"))
-		return
-	}
-	s256 := request.PathValue("s256")
-	document, err := resource.r3DocumentStore.Load(request.Context(), s256)
-	if errors.Is(err, ErrR3DocumentNotFound) {
-		writeProblem(response, http.StatusNotFound, "not_found", errors.New("R3 document is unknown"))
-		return
-	}
-	if err != nil || aauth.R3S256(document) != s256 {
-		writeProblem(response, http.StatusInternalServerError, "r3_custody_failed", err)
-		return
-	}
-	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set("Cache-Control", "private, immutable")
-	response.Header().Set("X-Content-Type-Options", "nosniff")
-	response.WriteHeader(http.StatusOK)
-	_, _ = response.Write(document)
 }
 
 func (resource *Resource) handleJWKS(response http.ResponseWriter, _ *http.Request) {

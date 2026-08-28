@@ -75,12 +75,17 @@ func TestMissionPermissionAndAuditVertical(t *testing.T) {
 	var policyCalls int
 	var evaluated aauth.PermissionEvaluation
 	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier:  "https://ps.example",
-		SigningKey:  psKey,
-		KeyResolver: resolver,
-		Clock:       clock,
-		NewID:       ids,
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
+		AuthorizationStore:   testAuthorizationStateStore(t),
+		Identifier:           "https://ps.example",
+		SigningKey:           psKey,
+		KeyResolver:          resolver,
+		Clock:                clock,
+		NewID:                ids,
+		PersonTokenStore:     testPersonTokenStore(t),
+		MissionIssuanceStore: testMissionIssuanceStore(t),
+		PersonTokenPolicy:    testPersonTokenPolicy,
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			proposal := evaluation.Proposal
 			return aauth.MissionDecision{
 				Description: proposal.Description,
 				Tools:       proposal.Tools,
@@ -129,23 +134,25 @@ func TestMissionPermissionAndAuditVertical(t *testing.T) {
 	client.Transport = gateway.Client().Transport
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:operator@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:operator@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	other, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:other@ap.example",
-		SigningKey:  otherKey,
-		AgentToken:  otherToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:other@ap.example",
+		SigningKey:         otherKey,
+		AgentToken:         otherToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)

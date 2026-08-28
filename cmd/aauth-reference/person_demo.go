@@ -544,13 +544,19 @@ func newDemoAgent(
 		Transport: transport,
 		Timeout:   5 * time.Second,
 	}
+	authorizationStore, err := reference.NewMemoryAuthorizationStateStore(128, 1<<20)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return nil, func() {}, errors.New("compose demonstration authorization custody")
+	}
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:demo@ap.example",
-		SigningKey:  material.agentKey,
-		AgentToken:  material.agentToken,
-		KeyResolver: material.resolver,
-		HTTPClient:  client,
-		Clock:       aauth.SystemClock{},
+		AuthorizationStore: authorizationStore,
+		Identifier:         "aauth:demo@ap.example",
+		SigningKey:         material.agentKey,
+		AgentToken:         material.agentToken,
+		KeyResolver:        material.resolver,
+		HTTPClient:         client,
+		Clock:              aauth.SystemClock{},
 	})
 	if err != nil {
 		transport.CloseIdleConnections()

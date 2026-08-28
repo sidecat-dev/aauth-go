@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +26,6 @@ type PersonServerConfig struct {
 	KeyResolver                   aauth.KeyResolver
 	Clock                         aauth.Clock
 	NewID                         func() string
-	MissionPolicy                 aauth.MissionPolicy
 	CurrentMissionPolicy          aauth.CurrentMissionPolicy
 	AuthorizationPolicy           aauth.AuthorizationPolicy
 	PermissionPolicy              aauth.PermissionPolicy
@@ -37,6 +38,7 @@ type PersonServerConfig struct {
 	InteractionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	Random                        io.Reader
 	PendingLifetime               time.Duration
+	AuthorizationStore            AuthorizationStateStore
 	FederationClient              *http.Client
 	AccessServerEndpoint          func(context.Context, string) (string, error)
 	TrustedUpstreamIssuer         func(context.Context, string) error
@@ -48,7 +50,6 @@ type PersonServer struct {
 	keyResolver                   aauth.KeyResolver
 	clock                         aauth.Clock
 	newID                         func() string
-	missionPolicy                 aauth.MissionPolicy
 	currentMissionPolicy          aauth.CurrentMissionPolicy
 	authorizationPolicy           aauth.AuthorizationPolicy
 	permissionPolicy              aauth.PermissionPolicy
@@ -61,23 +62,59 @@ type PersonServer struct {
 	interactionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	random                        io.Reader
 	pendingLifetime               time.Duration
+	authorizationStore            AuthorizationStateStore
 	federationClient              *http.Client
 	accessServerEndpoint          func(context.Context, string) (string, error)
 	trustedUpstreamIssuer         func(context.Context, string) error
 
-	mu                 sync.RWMutex
-	missionIssuanceMu  sync.Mutex
-	missions           map[string]storedMission
-	randomMu           sync.Mutex
-	governanceReplays  map[string]time.Time
-	permissionHistory  []aauth.PermissionRecord
-	interactionHistory []aauth.InteractionRecord
-	completionPending  map[string]pendingCompletion
-	pendingMu          sync.Mutex
-	pending            map[string]*pendingPersonAuthorization
-	permissionPending  map[string]pendingPersonPermission
-	replayMu           sync.Mutex
-	replayedProof      map[string]time.Time
+	mu                    sync.RWMutex
+	missionIssuanceMu     sync.Mutex
+	missions              map[string]storedMission
+	randomMu              sync.Mutex
+	governanceReplays     map[string]time.Time
+	permissionHistory     []aauth.PermissionRecord
+	interactionHistory    []aauth.InteractionRecord
+	completionPending     map[string]pendingCompletion
+	pendingMu             sync.Mutex
+	authorizationErr      error
+	authorizationBody     []byte
+	authorizationRecovery []byte
+	pending               map[string]*pendingPersonAuthorization
+	permissionPending     map[string]pendingPersonPermission
+	replayMu              sync.Mutex
+	replayedProof         map[string]time.Time
+}
+
+type personTokenPolicyDenialError struct{ cause error }
+
+func (err *personTokenPolicyDenialError) Error() string {
+	if err == nil || err.cause == nil {
+		return "reference: person-token policy denied the request"
+	}
+	return "reference: person-token policy denied the request: " + err.cause.Error()
+}
+
+func (err *personTokenPolicyDenialError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
+type personTokenCustodyError struct{ cause error }
+
+func (err *personTokenCustodyError) Error() string {
+	if err == nil || err.cause == nil {
+		return "reference: person-token custody failed"
+	}
+	return "reference: person-token custody failed: " + err.cause.Error()
+}
+
+func (err *personTokenCustodyError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
 }
 
 type storedMission struct {
@@ -110,6 +147,7 @@ type personAuthorizationContext struct {
 	agentTokenCompact      string
 	subagentTokenCompact   string
 	upstreamTokenCompact   string
+	tokenVerificationKeys  retainedAuthorizationTokenKeys
 	targetAgent            string
 	targetKey              aauth.JWK
 	parentAgent            string
@@ -117,14 +155,23 @@ type personAuthorizationContext struct {
 	pollingAgentThumbprint string
 	targetTokenExpiresAt   int64
 	resourceToken          aauth.ResourceTokenClaims
+	personTokenRecord      PersonTokenRecord
+	requestBody            []byte
+	requestProof           *aauth.RequestProof
 }
 
 type pendingPersonAuthorization struct {
 	pendingInteraction
-	context           personAuthorizationContext
-	decision          aauth.AuthorizationDecision
-	federated         *pendingFederatedAuthorization
-	pollingFederation bool
+	context                 personAuthorizationContext
+	decision                aauth.AuthorizationDecision
+	federated               *pendingFederatedAuthorization
+	pollingFederation       bool
+	terminalAuthToken       string
+	terminalVerificationKey *aauth.JWK
+	terminalExpiresAt       int64
+	terminalStatus          int
+	terminalCode            string
+	terminalDetail          string
 }
 
 type pendingFederatedAuthorization struct {
@@ -146,9 +193,133 @@ type pendingPersonPermission struct {
 }
 
 type accessServerExchange struct {
-	authToken string
-	claims    aauth.AuthTokenClaims
-	deferred  *aauth.DeferredResponse
+	authToken       string
+	claims          aauth.AuthTokenClaims
+	verificationKey *aauth.JWK
+	deferred        *aauth.DeferredResponse
+}
+
+// retainedKeyResolver records the exact key material returned to token
+// verification. A resolver may refresh a same-kid key after the first
+// signature check fails, so recovery custody must retain the key from the
+// successful resolution path rather than perform a second lookup.
+type retainedKeyResolver struct {
+	resolver aauth.KeyResolver
+	key      aauth.JWK
+	found    bool
+}
+
+func (resolver *retainedKeyResolver) ResolveKey(
+	ctx context.Context,
+	issuer string,
+	discoveryDocument string,
+	keyID string,
+) (aauth.JWK, error) {
+	key, err := resolver.resolver.ResolveKey(ctx, issuer, discoveryDocument, keyID)
+	if err == nil {
+		resolver.key = key
+		resolver.found = true
+	}
+	return key, err
+}
+
+type retainedRefreshingKeyResolver struct {
+	*retainedKeyResolver
+	refresher aauth.KeyRefresher
+}
+
+func newRetainedKeyCapture(resolver aauth.KeyResolver) (*retainedKeyResolver, aauth.KeyResolver) {
+	capture := &retainedKeyResolver{resolver: resolver}
+	if refresher, ok := resolver.(aauth.KeyRefresher); ok {
+		return capture, &retainedRefreshingKeyResolver{
+			retainedKeyResolver: capture,
+			refresher:           refresher,
+		}
+	}
+	return capture, capture
+}
+
+func (resolver *retainedKeyResolver) retainedKey() (aauth.JWK, error) {
+	if resolver == nil || !resolver.found {
+		return aauth.JWK{}, errors.New("reference: verified token key material was not retained")
+	}
+	return resolver.key, nil
+}
+
+func (resolver *retainedRefreshingKeyResolver) RefreshKey(
+	ctx context.Context,
+	issuer string,
+	discoveryDocument string,
+	keyID string,
+) (aauth.JWK, error) {
+	key, err := resolver.refresher.RefreshKey(ctx, issuer, discoveryDocument, keyID)
+	if err == nil {
+		resolver.key = key
+		resolver.found = true
+	}
+	return key, err
+}
+
+func (server *PersonServer) signFederationRequest(request *http.Request) error {
+	nonceBytes := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, nonceBytes); err != nil {
+		return fmt.Errorf("reference: generate federation proof nonce: %w", err)
+	}
+	return aauth.SignRequestWithJWKSURIOptions(
+		request, server.signingKey, server.identifier, aauth.PersonDiscoveryDocument, server.clock,
+		aauth.SignRequestOptions{Nonce: base64.RawURLEncoding.EncodeToString(nonceBytes)},
+	)
+}
+
+const personAuthorizationStateSchema = "aauth.reference.person-authorization-state"
+
+type personAuthorizationStateRecord struct {
+	Key                     string                           `json:"key"`
+	Interaction             pendingInteractionRecord         `json:"interaction"`
+	Context                 personAuthorizationContextRecord `json:"context"`
+	Decision                aauth.AuthorizationDecision      `json:"decision"`
+	Federated               *pendingFederatedRecord          `json:"federated,omitempty"`
+	TerminalAuthToken       string                           `json:"terminal_auth_token,omitempty"`
+	TerminalVerificationKey *aauth.JWK                       `json:"terminal_verification_key,omitempty"`
+	TerminalExpiresAt       int64                            `json:"terminal_expires_at,omitempty"`
+	TerminalStatus          int                              `json:"terminal_status,omitempty"`
+	TerminalCode            string                           `json:"terminal_code,omitempty"`
+	TerminalDetail          string                           `json:"terminal_detail,omitempty"`
+}
+
+type personAuthorizationContextRecord struct {
+	Request                aauth.AuthorizationRequest     `json:"request"`
+	ResourceTokenCompact   string                         `json:"resource_token"`
+	AgentTokenCompact      string                         `json:"agent_token"`
+	SubagentTokenCompact   string                         `json:"subagent_token,omitempty"`
+	UpstreamTokenCompact   string                         `json:"upstream_token,omitempty"`
+	TokenVerificationKeys  retainedAuthorizationTokenKeys `json:"token_verification_keys"`
+	TargetAgent            string                         `json:"target_agent"`
+	TargetKey              aauth.JWK                      `json:"target_key"`
+	ParentAgent            string                         `json:"parent_agent,omitempty"`
+	PollingAgent           string                         `json:"polling_agent"`
+	PollingAgentThumbprint string                         `json:"polling_agent_thumbprint"`
+	TargetTokenExpiresAt   int64                          `json:"target_token_expires_at"`
+	ResourceToken          aauth.ResourceTokenClaims      `json:"resource_token_claims"`
+	PersonTokenRecord      PersonTokenRecord              `json:"person_token_record"`
+	RequestBody            []byte                         `json:"request_body"`
+	RequestProof           *aauth.RequestProof            `json:"request_proof"`
+}
+
+type personAuthorizationTokenInput struct {
+	ResourceToken string `json:"resource_token"`
+	SubagentToken string `json:"subagent_token,omitempty"`
+	UpstreamToken string `json:"upstream_token,omitempty"`
+	Justification string `json:"justification,omitempty"`
+}
+
+type pendingFederatedRecord struct {
+	AccessServer string             `json:"access_server"`
+	Location     string             `json:"location"`
+	RetryAfter   time.Duration      `json:"retry_after"`
+	NotBefore    time.Time          `json:"not_before"`
+	Status       string             `json:"status"`
+	Requirement  *aauth.Requirement `json:"requirement,omitempty"`
 }
 
 var (
@@ -170,16 +341,12 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 	if (config.FederationClient == nil) != (config.AccessServerEndpoint == nil) {
 		return nil, errors.New("reference: federation client and access-server endpoint resolver must be configured together")
 	}
-	if (config.PersonTokenStore == nil) != (config.PersonTokenPolicy == nil) {
-		return nil, errors.New("reference: person-token store and policy must be configured together")
+	if config.PersonTokenStore == nil || config.PersonTokenPolicy == nil ||
+		config.CurrentMissionPolicy == nil || config.MissionIssuanceStore == nil {
+		return nil, errors.New("reference: person server requires person-token custody and policy, current mission policy, and mission issuance custody")
 	}
-	current := config.PersonTokenStore != nil
-	if current {
-		if config.CurrentMissionPolicy == nil || config.MissionIssuanceStore == nil {
-			return nil, errors.New("reference: current person-token server requires current mission policy and mission issuance store")
-		}
-	} else if config.MissionPolicy == nil {
-		return nil, errors.New("reference: legacy person server requires mission policy")
+	if config.AuthorizationStore == nil {
+		return nil, errors.New("reference: person server requires an authorization state store")
 	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
@@ -198,7 +365,6 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		keyResolver:                   config.KeyResolver,
 		clock:                         config.Clock,
 		newID:                         config.NewID,
-		missionPolicy:                 config.MissionPolicy,
 		currentMissionPolicy:          config.CurrentMissionPolicy,
 		authorizationPolicy:           config.AuthorizationPolicy,
 		permissionPolicy:              config.PermissionPolicy,
@@ -211,6 +377,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		interactionRequired:           config.InteractionRequired,
 		random:                        random,
 		pendingLifetime:               pendingLifetime,
+		authorizationStore:            config.AuthorizationStore,
 		federationClient:              config.FederationClient,
 		accessServerEndpoint:          config.AccessServerEndpoint,
 		trustedUpstreamIssuer:         config.TrustedUpstreamIssuer,
@@ -240,7 +407,591 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		server.completionPending = pendingCompletions
 		server.governanceReplays = replays
 	}
+	if err := server.loadAuthorizationState(context.Background()); err != nil {
+		return nil, fmt.Errorf("reference: load person authorization state: %w", err)
+	}
 	return server, nil
+}
+
+func (server *PersonServer) loadAuthorizationState(ctx context.Context) error {
+	body, err := server.authorizationStore.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		server.pendingMu.Lock()
+		defer server.pendingMu.Unlock()
+		return server.persistAuthorizationStateLocked(ctx)
+	}
+	if err := server.restoreAuthorizationStateLocked(body); err != nil {
+		return err
+	}
+	server.authorizationBody = append([]byte(nil), body...)
+	return nil
+}
+
+func (server *PersonServer) restoreAuthorizationStateLocked(body []byte) error {
+	rawRecords, err := decodeAuthorizationStateRecords(body, personAuthorizationStateSchema)
+	if err != nil {
+		return err
+	}
+	pending := make(map[string]*pendingPersonAuthorization, len(rawRecords))
+	terminalIdentities := make(map[string]string)
+	previous := ""
+	for _, raw := range rawRecords {
+		var record personAuthorizationStateRecord
+		if err := decodeAuthorizationStateRecord(raw, &record); err != nil {
+			return err
+		}
+		if record.Key == "" || record.Key <= previous || record.Interaction.ID != record.Key {
+			return ErrAuthorizationStateIntegrity
+		}
+		previous = record.Key
+		interaction, err := restorePendingInteraction(record.Interaction)
+		if err != nil {
+			return err
+		}
+		if err := server.validatePersonAuthorizationStateRecord(record); err != nil {
+			return err
+		}
+		if err := retainUniqueTerminalIdentity(terminalIdentities, record.Key, record.TerminalAuthToken); err != nil {
+			return err
+		}
+		contextValue := restorePersonAuthorizationContext(record.Context)
+		var federated *pendingFederatedAuthorization
+		if record.Federated != nil {
+			federated = &pendingFederatedAuthorization{
+				accessServer: record.Federated.AccessServer, location: record.Federated.Location,
+				retryAfter: record.Federated.RetryAfter, notBefore: record.Federated.NotBefore.UTC(),
+				status: record.Federated.Status, requirement: copyRequirement(record.Federated.Requirement),
+			}
+		}
+		pending[record.Key] = &pendingPersonAuthorization{
+			pendingInteraction: interaction, context: contextValue, decision: record.Decision,
+			federated:               federated,
+			terminalAuthToken:       record.TerminalAuthToken,
+			terminalVerificationKey: copyJWK(record.TerminalVerificationKey),
+			terminalExpiresAt:       record.TerminalExpiresAt,
+			terminalStatus:          record.TerminalStatus, terminalCode: record.TerminalCode, terminalDetail: record.TerminalDetail,
+		}
+	}
+	server.pending = pending
+	return nil
+}
+
+func (server *PersonServer) validatePersonAuthorizationStateRecord(record personAuthorizationStateRecord) error {
+	if err := validateAuthorizationTerminalState(
+		record.Interaction,
+		record.TerminalAuthToken,
+		record.TerminalExpiresAt,
+		record.TerminalStatus,
+		record.TerminalCode,
+		record.TerminalDetail,
+	); err != nil {
+		return err
+	}
+	if record.Federated == nil {
+		if validateLocalAuthorizationInteraction(record.Interaction) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+	} else if record.Federated.AccessServer == "" || record.Federated.Location == "" ||
+		record.Federated.RetryAfter < 0 || record.Federated.NotBefore.IsZero() ||
+		(record.Federated.Status != "pending" && record.Federated.Status != "interacting") ||
+		record.Interaction.Code != "" || record.Interaction.NormalizedCode != "" {
+		return ErrAuthorizationStateIntegrity
+	}
+	if !validPendingID(record.Key) ||
+		(record.Federated == nil && (record.TerminalStatus != 0 || record.TerminalCode != "" || record.TerminalDetail != "")) {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Federated != nil {
+		if aauth.ValidateServerIdentifier(record.Federated.AccessServer) != nil ||
+			aauth.ValidatePollingEndpoint(record.Federated.Location) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		locationServer, err := endpointIdentifier(record.Federated.Location)
+		federatedPendingID, pendingIDErr := pendingIDFromLocation(record.Federated.Location)
+		if err != nil || pendingIDErr != nil || federatedPendingID != record.Key ||
+			locationServer != record.Federated.AccessServer ||
+			record.Interaction.CodeConsumed || record.Interaction.FailedCodeAttempts != 0 ||
+			record.Interaction.PollingError != "" {
+			return ErrAuthorizationStateIntegrity
+		}
+		if record.Federated.Requirement != nil {
+			if _, err := aauth.FormatRequirementHeader(*record.Federated.Requirement); err != nil {
+				return ErrAuthorizationStateIntegrity
+			}
+		}
+		if (record.Interaction.State == pendingAuthorizationWaiting && record.Federated.Status != "pending") ||
+			(record.Interaction.State == pendingAuthorizationInteracting && record.Federated.Status != "interacting") {
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	if record.Interaction.State == pendingAuthorizationApproved && record.Decision.Subject == "" {
+		return ErrAuthorizationStateIntegrity
+	}
+	if err := server.validatePersonAuthorizationContext(record); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Decision.Subject == "" {
+		if len(record.Decision.Scope) != 0 {
+			return ErrAuthorizationStateIntegrity
+		}
+	} else if record.Decision.Subject != record.Context.ResourceToken.Subject ||
+		validateAuthorizationDecision(record.Decision, record.Context.Request.Scope) != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Federated != nil && record.Decision.Subject == "" {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Federated == nil {
+		if (record.Interaction.State == pendingAuthorizationApproved) != (record.Decision.Subject != "") {
+			return ErrAuthorizationStateIntegrity
+		}
+	} else {
+		if record.Interaction.State == pendingAuthorizationInvalidCode ||
+			(record.Interaction.State == pendingAuthorizationApproved && record.TerminalAuthToken == "") {
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	if err := server.validatePersonTerminalToken(record); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func (server *PersonServer) validatePersonAuthorizationContext(record personAuthorizationStateRecord) error {
+	value := record.Context
+	if err := server.validatePersonAuthorizationRequestEvidence(value); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	verifiedAt := value.RequestProof.VerifiedAt
+	if value.ResourceTokenCompact == "" || value.AgentTokenCompact == "" {
+		return ErrAuthorizationStateIntegrity
+	}
+	resource, err := verifyRetainedResourceTokenAt(
+		value.ResourceTokenCompact,
+		value.TokenVerificationKeys.Resource,
+		verifiedAt,
+	)
+	if err != nil || !reflect.DeepEqual(resource, value.ResourceToken) {
+		return ErrAuthorizationStateIntegrity
+	}
+	resource = value.ResourceToken
+	latestInputIssuedAt := resource.IssuedAt
+	if resource.PersonServer != server.identifier {
+		return ErrAuthorizationStateIntegrity
+	}
+	if resource.ExpiresAt-resource.IssuedAt > int64(currentResourceTokenLifetime/time.Second) {
+		return ErrAuthorizationStateIntegrity
+	}
+	personToken := value.PersonTokenRecord
+	if validatePersonTokenRecord(personToken) != nil ||
+		personToken.JTI != resource.PresentedJTI ||
+		personToken.PersonServer != resource.PersonServer ||
+		personToken.Resource != resource.Issuer ||
+		personToken.Subject != resource.Subject ||
+		personToken.MissionS256 != resource.MissionS256 ||
+		personToken.Tenant != resource.Tenant ||
+		resource.IssuedAt >= personToken.ExpiresAt.Unix() {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Federated == nil {
+		if resource.Audience != server.identifier {
+			return ErrAuthorizationStateIntegrity
+		}
+	} else if resource.Audience != record.Federated.AccessServer || resource.Audience == server.identifier {
+		return ErrAuthorizationStateIntegrity
+	}
+	scopes, err := parseScopes(resource.Scope)
+	if err != nil || !reflect.DeepEqual(scopes, value.Request.Scope) ||
+		value.Request.PersonServer != resource.PersonServer || value.Request.Subject != resource.Subject ||
+		value.Request.Resource != resource.Issuer || !reflect.DeepEqual(value.Request.Mission, resource.Mission) ||
+		value.Request.MissionS256 != resource.MissionS256 || value.Request.Tenant != resource.Tenant ||
+		value.Request.Account != resource.Account {
+		return ErrAuthorizationStateIntegrity
+	}
+	agent, err := verifyRetainedAgentTokenAt(
+		value.AgentTokenCompact,
+		value.TokenVerificationKeys.Agent,
+		verifiedAt,
+	)
+	if err != nil || agent.ParentAgent != "" ||
+		(value.UpstreamTokenCompact == "" && agent.PersonServer != server.identifier) ||
+		value.PollingAgent != agent.Subject {
+		return ErrAuthorizationStateIntegrity
+	}
+	if agent.IssuedAt > latestInputIssuedAt {
+		latestInputIssuedAt = agent.IssuedAt
+	}
+	pollingThumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	if err != nil || pollingThumbprint != value.PollingAgentThumbprint {
+		return ErrAuthorizationStateIntegrity
+	}
+	targetAgent := agent.Subject
+	targetKey := agent.Confirmation.JWK
+	parentAgent := ""
+	targetExpiresAt := agent.ExpiresAt
+	if value.SubagentTokenCompact != "" {
+		if value.TokenVerificationKeys.Subagent == nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		subagent, err := verifyRetainedAgentTokenAt(
+			value.SubagentTokenCompact,
+			*value.TokenVerificationKeys.Subagent,
+			verifiedAt,
+		)
+		if err != nil ||
+			subagent.ParentAgent != agent.Subject ||
+			(value.UpstreamTokenCompact == "" && subagent.PersonServer != server.identifier) {
+			return ErrAuthorizationStateIntegrity
+		}
+		targetAgent = subagent.Subject
+		targetKey = subagent.Confirmation.JWK
+		parentAgent = agent.Subject
+		if subagent.ExpiresAt < targetExpiresAt {
+			targetExpiresAt = subagent.ExpiresAt
+		}
+		if subagent.IssuedAt > latestInputIssuedAt {
+			latestInputIssuedAt = subagent.IssuedAt
+		}
+	} else if value.TokenVerificationKeys.Subagent != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if value.UpstreamTokenCompact == "" {
+		if value.Request.Upstream != nil || value.TokenVerificationKeys.Upstream != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+	} else {
+		if value.TokenVerificationKeys.Upstream == nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		upstream, err := verifyRetainedAuthTokenAt(
+			value.UpstreamTokenCompact,
+			*value.TokenVerificationKeys.Upstream,
+			verifiedAt,
+		)
+		if err != nil ||
+			!reflect.DeepEqual(value.Request.Upstream, &upstream) || upstream.Audience != agent.Issuer ||
+			upstream.PersonServer != server.identifier || !upstream.Confirmation.JWK.Equal(agent.Confirmation.JWK) ||
+			upstream.MissionS256 != resource.MissionS256 {
+			return ErrAuthorizationStateIntegrity
+		}
+		if upstream.ExpiresAt < targetExpiresAt {
+			targetExpiresAt = upstream.ExpiresAt
+		}
+		if upstream.IssuedAt > latestInputIssuedAt {
+			latestInputIssuedAt = upstream.IssuedAt
+		}
+	}
+	targetThumbprint, err := value.TargetKey.Thumbprint()
+	if err != nil || !value.TargetKey.Equal(targetKey) || targetThumbprint != resource.AgentJKT ||
+		value.TargetAgent != targetAgent || value.ParentAgent != parentAgent ||
+		value.Request.Agent != targetAgent || value.Request.ParentAgent != parentAgent ||
+		value.TargetTokenExpiresAt != targetExpiresAt ||
+		!record.Interaction.ExpiresAt.After(time.Unix(latestInputIssuedAt, 0)) ||
+		record.Interaction.ExpiresAt.After(time.Unix(targetExpiresAt, 0)) ||
+		record.Interaction.ExpiresAt.After(time.Unix(resource.ExpiresAt, 0)) {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func (server *PersonServer) validatePersonAuthorizationRequestEvidence(
+	value personAuthorizationContextRecord,
+) error {
+	if len(value.RequestBody) == 0 || len(value.RequestBody) > maxJSONBody || value.RequestProof == nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	var input personAuthorizationTokenInput
+	if err := decodeJSONBytes(bytes.NewReader(value.RequestBody), &input); err != nil ||
+		input.ResourceToken != value.ResourceTokenCompact ||
+		input.SubagentToken != value.SubagentTokenCompact ||
+		input.UpstreamToken != value.UpstreamTokenCompact ||
+		input.Justification != value.Request.Justification {
+		return ErrAuthorizationStateIntegrity
+	}
+	proof := value.RequestProof
+	if proof.Method != http.MethodPost || proof.Target != "/token" || proof.Authority == "" ||
+		proof.ContentDigest == "" || proof.ContentType == "" || proof.SignatureInput == "" || proof.Signature == "" ||
+		proof.SignatureKey == "" || proof.SignatureKeyType != aauth.SignatureKeyJWT ||
+		proof.CredentialType != aauth.AgentTokenType || proof.CredentialIssuer == "" ||
+		proof.Authorization != "" || proof.VerifiedAt.IsZero() {
+		return ErrAuthorizationStateIntegrity
+	}
+	identifier, err := endpointIdentifier("https://" + proof.Authority)
+	if err != nil || identifier != server.identifier {
+		return ErrAuthorizationStateIntegrity
+	}
+	request, err := http.NewRequest(
+		proof.Method,
+		server.identifier+proof.Target,
+		bytes.NewReader(value.RequestBody),
+	)
+	if err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	request.Host = proof.Authority
+	request.Header.Set("Content-Digest", proof.ContentDigest)
+	request.Header.Set("Content-Type", proof.ContentType)
+	request.Header.Set("Signature-Input", proof.SignatureInput)
+	request.Header.Set("Signature", proof.Signature)
+	request.Header.Set("Signature-Key", proof.SignatureKey)
+	if proof.Authorization != "" {
+		request.Header.Set("Authorization", proof.Authorization)
+	}
+	agent, err := decodeRetainedAgentToken(value.AgentTokenCompact)
+	if err != nil || proof.CredentialIssuer != agent.Issuer {
+		return ErrAuthorizationStateIntegrity
+	}
+	header, err := aauth.PeekTokenHeader(value.AgentTokenCompact)
+	if err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	verified, err := aauth.VerifyRequest(
+		context.Background(),
+		request,
+		aauth.StaticKeyResolver{
+			agent.Issuer: {header.KeyID: value.TokenVerificationKeys.Agent},
+		},
+		aauth.ClockFunc(func() time.Time { return proof.VerifiedAt.UTC() }),
+		aauth.VerifyRequestOptions{
+			RequiredComponents:     []string{"content-type"},
+			RequireExactComponents: true,
+			AllowedCredentialTypes: []string{aauth.AgentTokenType},
+		},
+	)
+	if err != nil || verified.RawCredential != value.AgentTokenCompact ||
+		verified.Signer != proof.Signer || verified.Agent != proof.Agent ||
+		verified.SignatureKeyType != proof.SignatureKeyType ||
+		verified.CredentialType != proof.CredentialType ||
+		!verified.PublicKey.Equal(proof.PublicKey) ||
+		!verified.Created.Equal(proof.Created) || !verified.VerifiedAt.Equal(proof.VerifiedAt) ||
+		verified.ReplayKey != proof.ReplayKey {
+		return ErrAuthorizationStateIntegrity
+	}
+	if !reflect.DeepEqual(requestProof(request, verified), proof) {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func (server *PersonServer) validatePersonTerminalToken(record personAuthorizationStateRecord) error {
+	if record.TerminalAuthToken == "" {
+		if record.TerminalVerificationKey != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		return nil
+	}
+	if record.TerminalVerificationKey == nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	key := *record.TerminalVerificationKey
+	expectedIssuer := server.identifier
+	expectedDWK := aauth.PersonDiscoveryDocument
+	if record.Federated != nil {
+		expectedIssuer = record.Federated.AccessServer
+		expectedDWK = aauth.AccessDiscoveryDocument
+	}
+	claims, err := verifyRetainedAuthToken(record.TerminalAuthToken, key)
+	if err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	latestInputIssuedAt, err := latestRetainedAuthorizationInputIssuedAt(
+		record.Context.ResourceTokenCompact,
+		record.Context.AgentTokenCompact,
+		record.Context.SubagentTokenCompact,
+		record.Context.UpstreamTokenCompact,
+	)
+	if err != nil || claims.IssuedAt < latestInputIssuedAt {
+		return ErrAuthorizationStateIntegrity
+	}
+	resource := record.Context.ResourceToken
+	expectedExpiresAt := claims.IssuedAt + int64(time.Hour/time.Second)
+	if record.Context.TargetTokenExpiresAt < expectedExpiresAt {
+		expectedExpiresAt = record.Context.TargetTokenExpiresAt
+	}
+	if resource.ExpiresAt < expectedExpiresAt {
+		expectedExpiresAt = resource.ExpiresAt
+	}
+	if record.Federated == nil && claims.JTI != record.Key {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.Federated != nil {
+		if err := validateFederatedTerminalBinding(record.Federated.Location, claims); err != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	grantedScopes, err := parseScopes(claims.Scope)
+	if err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	scopeMatches := claims.Scope == strings.Join(record.Decision.Scope, " ")
+	expiryMatches := claims.ExpiresAt == expectedExpiresAt
+	if record.Federated != nil {
+		scopeMatches = scopesContained(grantedScopes, record.Decision.Scope)
+		expiryMatches = claims.ExpiresAt <= expectedExpiresAt
+	}
+	if claims.Issuer != expectedIssuer || claims.DWK != expectedDWK || claims.Audience != resource.Issuer ||
+		!expiryMatches || record.TerminalExpiresAt != claims.ExpiresAt ||
+		claims.Subject != resource.Subject || claims.Subject != record.Decision.Subject ||
+		!scopeMatches ||
+		!claims.Confirmation.JWK.Equal(record.Context.TargetKey) ||
+		claims.PersonServer != resource.PersonServer || claims.Account != resource.Account ||
+		claims.MissionS256 != resource.MissionS256 || claims.Tenant != resource.Tenant ||
+		claims.Agent != "" || claims.Actor != nil || claims.Mission != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func copyJWK(value *aauth.JWK) *aauth.JWK {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+func (server *PersonServer) persistAuthorizationStateLocked(ctx context.Context) error {
+	if server.authorizationErr != nil {
+		return server.authorizationErr
+	}
+	if err := server.settleAuthorizationStateLocked(ctx); err != nil {
+		return err
+	}
+	records := make([]personAuthorizationStateRecord, 0, len(server.pending))
+	for key, pending := range server.pending {
+		var federated *pendingFederatedRecord
+		if pending.federated != nil {
+			federated = &pendingFederatedRecord{
+				AccessServer: pending.federated.accessServer, Location: pending.federated.location,
+				RetryAfter: pending.federated.retryAfter, NotBefore: pending.federated.notBefore.UTC(),
+				Status: pending.federated.status, Requirement: copyRequirement(pending.federated.requirement),
+			}
+		}
+		records = append(records, personAuthorizationStateRecord{
+			Key: key, Interaction: snapshotPendingInteraction(pending.pendingInteraction),
+			Context: snapshotPersonAuthorizationContext(pending.context), Decision: pending.decision,
+			Federated:               federated,
+			TerminalAuthToken:       pending.terminalAuthToken,
+			TerminalVerificationKey: copyJWK(pending.terminalVerificationKey),
+			TerminalExpiresAt:       pending.terminalExpiresAt,
+			TerminalStatus:          pending.terminalStatus, TerminalCode: pending.terminalCode, TerminalDetail: pending.terminalDetail,
+		})
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].Key < records[j].Key })
+	raw := make([]json.RawMessage, 0, len(records))
+	terminalIdentities := make(map[string]string)
+	for _, record := range records {
+		if err := server.validatePersonAuthorizationStateRecord(record); err != nil {
+			return server.reconcileAuthorizationStateLocked(ctx, nil, err)
+		}
+		if err := retainUniqueTerminalIdentity(terminalIdentities, record.Key, record.TerminalAuthToken); err != nil {
+			return server.reconcileAuthorizationStateLocked(ctx, nil, err)
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			return server.reconcileAuthorizationStateLocked(ctx, nil, err)
+		}
+		raw = append(raw, encoded)
+	}
+	body, err := marshalAuthorizationStateRecords(personAuthorizationStateSchema, raw)
+	if err != nil {
+		return server.reconcileAuthorizationStateLocked(ctx, nil, err)
+	}
+	if err := server.authorizationStore.Replace(ctx, body); err != nil {
+		return server.reconcileAuthorizationStateLocked(ctx, body, err)
+	}
+	server.authorizationBody = append(server.authorizationBody[:0], body...)
+	return nil
+}
+
+func retainUniqueTerminalIdentity(seen map[string]string, recordKey string, compact string) error {
+	if compact == "" {
+		return nil
+	}
+	claims, err := decodeRetainedAuthToken(compact)
+	if err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	identity := claims.Issuer + "\x00" + claims.JTI
+	if existing, ok := seen[identity]; ok && existing != recordKey {
+		return ErrAuthorizationStateIntegrity
+	}
+	seen[identity] = recordKey
+	return nil
+}
+
+func (server *PersonServer) reconcileAuthorizationStateLocked(ctx context.Context, candidate []byte, commitErr error) error {
+	body, published, err := reconcileAuthorizationState(ctx, server.authorizationStore, server.authorizationBody, candidate)
+	if err != nil || len(body) == 0 {
+		server.pending = make(map[string]*pendingPersonAuthorization)
+		server.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
+		return server.authorizationErr
+	}
+	if err := server.restoreAuthorizationStateLocked(body); err != nil {
+		server.pending = make(map[string]*pendingPersonAuthorization)
+		server.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
+		return server.authorizationErr
+	}
+	if published {
+		server.authorizationRecovery = append(server.authorizationRecovery[:0], body...)
+		return authorizationStatePublishedUncertain(commitErr)
+	}
+	server.authorizationBody = append(server.authorizationBody[:0], body...)
+	return commitErr
+}
+
+func (server *PersonServer) settleAuthorizationStateLocked(ctx context.Context) error {
+	if server.authorizationErr != nil {
+		return server.authorizationErr
+	}
+	if len(server.authorizationRecovery) == 0 {
+		return nil
+	}
+	candidate := append([]byte(nil), server.authorizationRecovery...)
+	if err := server.authorizationStore.Replace(ctx, candidate); err != nil {
+		body, published, reconcileErr := reconcileAuthorizationState(ctx, server.authorizationStore, nil, candidate)
+		if reconcileErr == nil && published {
+			reconcileErr = server.restoreAuthorizationStateLocked(body)
+		}
+		if reconcileErr != nil || !published {
+			server.pending = make(map[string]*pendingPersonAuthorization)
+			server.authorizationErr = authorizationStateReconciliationFailure(err, reconcileErr)
+			return server.authorizationErr
+		}
+		return authorizationStatePublishedUncertain(err)
+	}
+	server.authorizationBody = append(server.authorizationBody[:0], candidate...)
+	server.authorizationRecovery = nil
+	return nil
+}
+
+func snapshotPersonAuthorizationContext(value personAuthorizationContext) personAuthorizationContextRecord {
+	return personAuthorizationContextRecord{
+		Request: copyAuthorizationRequest(value.request), ResourceTokenCompact: value.resourceTokenCompact,
+		AgentTokenCompact: value.agentTokenCompact, SubagentTokenCompact: value.subagentTokenCompact,
+		UpstreamTokenCompact:  value.upstreamTokenCompact,
+		TokenVerificationKeys: copyRetainedAuthorizationTokenKeys(value.tokenVerificationKeys), TargetAgent: value.targetAgent,
+		TargetKey: value.targetKey, ParentAgent: value.parentAgent, PollingAgent: value.pollingAgent,
+		PollingAgentThumbprint: value.pollingAgentThumbprint, TargetTokenExpiresAt: value.targetTokenExpiresAt,
+		ResourceToken: value.resourceToken, PersonTokenRecord: value.personTokenRecord,
+		RequestBody: append([]byte(nil), value.requestBody...), RequestProof: copyRequestProof(value.requestProof),
+	}
+}
+
+func restorePersonAuthorizationContext(value personAuthorizationContextRecord) personAuthorizationContext {
+	return personAuthorizationContext{
+		request: copyAuthorizationRequest(value.Request), resourceTokenCompact: value.ResourceTokenCompact,
+		agentTokenCompact: value.AgentTokenCompact, subagentTokenCompact: value.SubagentTokenCompact,
+		upstreamTokenCompact:  value.UpstreamTokenCompact,
+		tokenVerificationKeys: copyRetainedAuthorizationTokenKeys(value.TokenVerificationKeys), targetAgent: value.TargetAgent,
+		targetKey: value.TargetKey, parentAgent: value.ParentAgent, pollingAgent: value.PollingAgent,
+		pollingAgentThumbprint: value.PollingAgentThumbprint, targetTokenExpiresAt: value.TargetTokenExpiresAt,
+		resourceToken: value.ResourceToken, personTokenRecord: value.PersonTokenRecord,
+		requestBody: append([]byte(nil), value.RequestBody...), requestProof: copyRequestProof(value.RequestProof),
+	}
 }
 
 func (server *PersonServer) persistGovernanceLocked() error {
@@ -272,9 +1023,7 @@ func governanceSaveDefinitelyFailed(err error) bool {
 func (server *PersonServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mission", server.handleMission)
-	if server.personTokenPolicy != nil {
-		mux.HandleFunc("POST /person", server.handlePersonToken)
-	}
+	mux.HandleFunc("POST /person", server.handlePersonToken)
 	mux.HandleFunc("POST /token", server.handleToken)
 	if server.permissionPolicy != nil {
 		mux.HandleFunc("POST /permission", server.handlePermission)
@@ -303,20 +1052,18 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		writeSignatureFailure(response, err)
 		return
 	}
-	if server.personTokenPolicy != nil && !server.requireCurrentPersonServer(response, verified) {
+	if !server.requireCurrentPersonServer(response, verified) {
 		return
 	}
-	if server.personTokenPolicy != nil {
-		server.missionIssuanceMu.Lock()
-		defer server.missionIssuanceMu.Unlock()
-		if server.recoverCurrentMissionIssuance(
-			response,
-			request.Context(),
-			verified.ReplayKey,
-			verified.Agent,
-		) {
-			return
-		}
+	server.missionIssuanceMu.Lock()
+	defer server.missionIssuanceMu.Unlock()
+	if server.recoverCurrentMissionIssuance(
+		response,
+		request.Context(),
+		verified.ReplayKey,
+		verified.Agent,
+	) {
+		return
 	}
 	if server.governanceReplayExists(verified.ReplayKey) {
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
@@ -331,92 +1078,22 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	var decision aauth.MissionDecision
-	if server.personTokenPolicy != nil {
-		decision, err = server.currentMissionPolicy(request.Context(), aauth.MissionEvaluation{
-			Agent:          verified.Agent,
-			Proposal:       copyMissionProposal(proposal),
-			Confirmation:   verified.PublicKey,
-			AgentExpiresAt: time.Unix(verified.AgentToken.ExpiresAt, 0).UTC(),
-			PersonServer:   server.identifier,
-		})
-	} else {
-		decision, err = server.missionPolicy(request.Context(), proposal)
-	}
+	decision, err := server.currentMissionPolicy(request.Context(), aauth.MissionEvaluation{
+		Agent:          verified.Agent,
+		Proposal:       copyMissionProposal(proposal),
+		Confirmation:   verified.PublicKey,
+		AgentExpiresAt: time.Unix(verified.AgentToken.ExpiresAt, 0).UTC(),
+		PersonServer:   server.identifier,
+	})
 	if err != nil {
-		writeProblem(response, http.StatusForbidden, "mission_denied", err)
+		writeHostPolicyRefusal(response, "mission_denied", "mission policy denied the request")
 		return
 	}
 	if strings.TrimSpace(decision.Description) == "" {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("mission policy returned an empty description"))
 		return
 	}
-	if server.personTokenPolicy != nil {
-		server.completeCurrentMission(response, request.Context(), verified, proposal, decision)
-		return
-	}
-	blob, err := json.Marshal(missionBlob{
-		Approver:      server.identifier,
-		Agent:         verified.Agent,
-		ApprovedAt:    server.clock.Now().UTC().Format(time.RFC3339Nano),
-		Description:   decision.Description,
-		ApprovedTools: append([]aauth.Tool(nil), decision.Tools...),
-		Capabilities:  append([]string(nil), decision.Capabilities...),
-	})
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	reference := aauth.MissionReference{
-		Approver: server.identifier,
-		S256:     aauth.S256(blob),
-	}
-	header, err := reference.Header()
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	server.mu.Lock()
-	if _, replayed := server.governanceReplays[verified.ReplayKey]; replayed {
-		server.mu.Unlock()
-		writeSignatureFailure(response, errors.New("request proof was replayed"))
-		return
-	}
-	previousReplays := copyGovernanceReplays(server.governanceReplays)
-	server.addGovernanceReplayLocked(
-		verified.ReplayKey,
-		verified.Created.Add(aauth.DefaultSignatureWindow),
-	)
-	previous, replaced := server.missions[reference.S256]
-	server.missions[reference.S256] = storedMission{
-		reference:     reference,
-		agent:         verified.Agent,
-		bytes:         append([]byte(nil), blob...),
-		description:   decision.Description,
-		approvedTools: append([]aauth.Tool(nil), decision.Tools...),
-		capabilities:  append([]string(nil), decision.Capabilities...),
-		status:        aauth.MissionActive,
-	}
-	if err := server.persistGovernanceLocked(); err != nil {
-		if governanceSaveDefinitelyFailed(err) {
-			server.governanceReplays = previousReplays
-			if replaced {
-				server.missions[reference.S256] = previous
-			} else {
-				delete(server.missions, reference.S256)
-			}
-		}
-		server.mu.Unlock()
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	server.mu.Unlock()
-
-	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("AAuth-Mission", header)
-	response.WriteHeader(http.StatusOK)
-	_, _ = response.Write(blob)
+	server.completeCurrentMission(response, request.Context(), verified, proposal, decision)
 }
 
 func copyMissionProposal(proposal aauth.MissionProposal) aauth.MissionProposal {
@@ -469,14 +1146,16 @@ func (server *PersonServer) completeCurrentMission(
 		prepared, _, err := server.preparePersonToken(
 			ctx,
 			verified.Agent,
+			"",
 			verified.PublicKey,
 			verified.AgentToken.ExpiresAt,
 			resource,
 			reference.S256,
 			expiresAt,
+			nil,
 		)
 		if err != nil {
-			writeProblem(response, http.StatusForbidden, "person_token_denied", err)
+			writePersonTokenIssuanceFailure(response, err)
 			return
 		}
 		preparedPersonTokens = append(preparedPersonTokens, prepared)
@@ -652,20 +1331,20 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		writeSignatureFailure(response, err)
 		return
 	}
-	if !server.requireCurrentPersonServer(response, verified) {
-		return
-	}
+	verificationClock := aauth.ClockFunc(func() time.Time { return verified.VerifiedAt })
 	if verified.AgentToken.ParentAgent != "" {
 		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request a person token directly"))
 		return
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
+	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow), verified.VerifiedAt) {
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	var input struct {
-		Resource    string `json:"resource"`
-		MissionS256 string `json:"mission_s256,omitempty"`
+		Resource      string `json:"resource"`
+		MissionS256   string `json:"mission_s256,omitempty"`
+		SubagentToken string `json:"subagent_token,omitempty"`
+		UpstreamToken string `json:"upstream_token,omitempty"`
 	}
 	if err := decodeJSON(response, request, &input); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
@@ -673,6 +1352,66 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 	}
 	if err := aauth.ValidateServerIdentifier(input.Resource); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	targetAgent := verified.Agent
+	targetKey := verified.PublicKey
+	parentAgent := ""
+	targetExpiresAt := verified.AgentToken.ExpiresAt
+	if input.SubagentToken != "" {
+		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, server.keyResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
+			return
+		}
+		if subagent.ParentAgent == "" || subagent.ParentAgent != verified.Agent {
+			writeProblem(response, http.StatusForbidden, "invalid_subagent_token", errors.New("sub-agent token does not name the signing parent"))
+			return
+		}
+		if input.UpstreamToken == "" && subagent.PersonServer != server.identifier {
+			writeProblem(response, http.StatusForbidden, "invalid_subagent_token", errors.New("sub-agent token names a different person server"))
+			return
+		}
+		targetAgent = subagent.Subject
+		targetKey = subagent.Confirmation.JWK
+		parentAgent = verified.Agent
+		if subagent.ExpiresAt < targetExpiresAt {
+			targetExpiresAt = subagent.ExpiresAt
+		}
+	}
+	var upstream *aauth.AuthTokenClaims
+	if input.UpstreamToken != "" {
+		if server.trustedUpstreamIssuer == nil {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("call chaining is not configured"))
+			return
+		}
+		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			return
+		}
+		if err := server.trustedUpstreamIssuer(request.Context(), claims.Issuer); err != nil {
+			writeHostPolicyRefusal(response, "invalid_upstream_token", "upstream token issuer is not trusted")
+			return
+		}
+		if claims.Audience != verified.AgentToken.Issuer || claims.PersonServer != server.identifier {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth token does not route the intermediary to this person server"))
+			return
+		}
+		if !claims.Confirmation.JWK.Equal(verified.PublicKey) {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth-token confirmation key does not match intermediary request key"))
+			return
+		}
+		if input.MissionS256 != claims.MissionS256 {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission_s256 does not match upstream authorization"))
+			return
+		}
+		upstream = &claims
+		if claims.ExpiresAt < targetExpiresAt {
+			targetExpiresAt = claims.ExpiresAt
+		}
+	}
+	if upstream == nil && !server.requireCurrentPersonServer(response, verified) {
 		return
 	}
 	var missionExpiry *time.Time
@@ -685,17 +1424,19 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		}
 		missionExpiry = copyTimePointer(mission.ExpiresAt)
 	}
-	compact, claims, err := server.issuePersonToken(
+	compact, claims, err := server.issuePersonTokenForContext(
 		request.Context(),
-		verified.Agent,
-		verified.PublicKey,
-		verified.AgentToken.ExpiresAt,
+		targetAgent,
+		parentAgent,
+		targetKey,
+		targetExpiresAt,
 		input.Resource,
 		input.MissionS256,
 		missionExpiry,
+		upstream,
 	)
 	if err != nil {
-		writeProblem(response, http.StatusForbidden, "person_token_denied", err)
+		writePersonTokenIssuanceFailure(response, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{
@@ -729,20 +1470,36 @@ func (server *PersonServer) issuePersonToken(
 	missionS256 string,
 	missionExpiresAt *time.Time,
 ) (string, aauth.PersonTokenClaims, error) {
+	return server.issuePersonTokenForContext(ctx, agent, "", confirmation, agentExpiresAt, resource, missionS256, missionExpiresAt, nil)
+}
+
+func (server *PersonServer) issuePersonTokenForContext(
+	ctx context.Context,
+	agent string,
+	parentAgent string,
+	confirmation aauth.JWK,
+	agentExpiresAt int64,
+	resource string,
+	missionS256 string,
+	missionExpiresAt *time.Time,
+	upstream *aauth.AuthTokenClaims,
+) (string, aauth.PersonTokenClaims, error) {
 	prepared, claims, err := server.preparePersonToken(
 		ctx,
 		agent,
+		parentAgent,
 		confirmation,
 		agentExpiresAt,
 		resource,
 		missionS256,
 		missionExpiresAt,
+		upstream,
 	)
 	if err != nil {
 		return "", aauth.PersonTokenClaims{}, err
 	}
 	if err := server.personTokenStore.Commit(ctx, prepared.Record); err != nil {
-		return "", aauth.PersonTokenClaims{}, err
+		return "", aauth.PersonTokenClaims{}, &personTokenCustodyError{cause: err}
 	}
 	return prepared.Compact, claims, nil
 }
@@ -750,23 +1507,31 @@ func (server *PersonServer) issuePersonToken(
 func (server *PersonServer) preparePersonToken(
 	ctx context.Context,
 	agent string,
+	parentAgent string,
 	confirmation aauth.JWK,
 	agentExpiresAt int64,
 	resource string,
 	missionS256 string,
 	missionExpiresAt *time.Time,
+	upstream *aauth.AuthTokenClaims,
 ) (MissionIssuancePersonToken, aauth.PersonTokenClaims, error) {
 	var prepared MissionIssuancePersonToken
 	var claims aauth.PersonTokenClaims
+	var policyUpstream *aauth.AuthTokenClaims
+	if upstream != nil {
+		policyUpstream = copyAuthorizationRequest(aauth.AuthorizationRequest{Upstream: upstream}).Upstream
+	}
 	decision, err := server.personTokenPolicy(ctx, aauth.PersonTokenRequest{
 		Agent:          agent,
+		ParentAgent:    parentAgent,
 		Resource:       resource,
 		MissionS256:    missionS256,
 		Confirmation:   confirmation,
 		AgentExpiresAt: time.Unix(agentExpiresAt, 0).UTC(),
+		Upstream:       policyUpstream,
 	})
 	if err != nil {
-		return prepared, claims, err
+		return prepared, claims, &personTokenPolicyDenialError{cause: err}
 	}
 	if decision.Subject == "" {
 		return prepared, claims, errors.New("person-token policy returned an empty subject")
@@ -818,6 +1583,20 @@ func (server *PersonServer) preparePersonToken(
 		},
 	}
 	return prepared, claims, nil
+}
+
+func writePersonTokenIssuanceFailure(response http.ResponseWriter, err error) {
+	var policyDenial *personTokenPolicyDenialError
+	if errors.As(err, &policyDenial) {
+		writeHostPolicyRefusal(response, "person_token_denied", "person-token policy denied the request")
+		return
+	}
+	var custodyFailure *personTokenCustodyError
+	if errors.As(err, &custodyFailure) {
+		writeProblem(response, http.StatusServiceUnavailable, "person_token_custody_unavailable", err)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
 // MissionSnapshot returns a defensive copy for host policy, inspection, and
@@ -921,8 +1700,7 @@ func (server *PersonServer) handlePermission(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	recordedAt := server.clock.Now().UTC()
-	proof := requestProof(request, verified, recordedAt)
+	proof := requestProof(request, verified)
 
 	evaluation := aauth.PermissionEvaluation{
 		Agent:   verified.Agent,
@@ -1682,7 +2460,7 @@ func (server *PersonServer) handleAudit(
 			Agent:          verified.Agent,
 			RequestProofID: verified.ReplayKey,
 			Request:        append([]byte(nil), body...),
-			Proof:          requestProof(request, verified, server.clock.Now()),
+			Proof:          requestProof(request, verified),
 		},
 		verified.ReplayKey,
 		verified.Created.Add(aauth.DefaultSignatureWindow),
@@ -1872,8 +2650,20 @@ func copyPermissionRequest(request aauth.PermissionRequest) aauth.PermissionRequ
 func requestProof(
 	request *http.Request,
 	verified aauth.VerifiedRequest,
-	verifiedAt time.Time,
 ) *aauth.RequestProof {
+	credentialIssuer := ""
+	switch {
+	case verified.AgentToken != nil:
+		credentialIssuer = verified.AgentToken.Issuer
+	case verified.PersonToken != nil:
+		credentialIssuer = verified.PersonToken.Issuer
+	case verified.AuthToken != nil:
+		credentialIssuer = verified.AuthToken.Issuer
+	case verified.SubscribeToken != nil:
+		credentialIssuer = verified.SubscribeToken.Issuer
+	case verified.SelfJWT != nil:
+		credentialIssuer = verified.SelfJWT.Issuer
+	}
 	authority := request.Host
 	if authority == "" && request.URL != nil {
 		authority = request.URL.Host
@@ -1887,18 +2677,19 @@ func requestProof(
 		Authority:        authority,
 		Target:           target,
 		ContentDigest:    request.Header.Get("Content-Digest"),
+		ContentType:      request.Header.Get("Content-Type"),
 		SignatureInput:   request.Header.Get("Signature-Input"),
 		Signature:        request.Header.Get("Signature"),
 		SignatureKey:     request.Header.Get("Signature-Key"),
-		AAuthMission:     request.Header.Get("AAuth-Mission"),
 		Authorization:    request.Header.Get("Authorization"),
 		SignatureKeyType: verified.SignatureKeyType,
 		CredentialType:   verified.CredentialType,
+		CredentialIssuer: credentialIssuer,
 		Signer:           verified.Signer,
 		Agent:            verified.Agent,
 		PublicKey:        verified.PublicKey,
 		Created:          verified.Created.UTC(),
-		VerifiedAt:       verifiedAt.UTC(),
+		VerifiedAt:       verified.VerifiedAt.UTC(),
 		ReplayKey:        verified.ReplayKey,
 	}
 }
@@ -1912,25 +2703,36 @@ func copyRequestProof(proof *aauth.RequestProof) *aauth.RequestProof {
 }
 
 func (server *PersonServer) handleToken(response http.ResponseWriter, request *http.Request) {
-	verified, err := aauth.VerifyRequest(request.Context(), request, server.keyResolver, server.clock, aauth.VerifyRequestOptions{
-		RequiredComponents:     []string{"content-digest"},
+	server.pendingMu.Lock()
+	stateErr := server.settleAuthorizationStateLocked(request.Context())
+	server.pendingMu.Unlock()
+	if stateErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
+	agentKeyCapture, agentVerificationResolver := newRetainedKeyCapture(server.keyResolver)
+	verified, err := aauth.VerifyRequest(request.Context(), request, agentVerificationResolver, server.clock, aauth.VerifyRequestOptions{
+		RequiredComponents:     []string{"content-type"},
+		RequireExactComponents: true,
 		AllowedCredentialTypes: []string{aauth.AgentTokenType},
 	})
 	if err != nil {
 		writeSignatureFailure(response, err)
 		return
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow)) {
-		writeSignatureFailure(response, errors.New("request proof was replayed"))
+	verificationClock := aauth.ClockFunc(func() time.Time { return verified.VerifiedAt })
+	agentVerificationKey, err := agentKeyCapture.retainedKey()
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	var input struct {
-		ResourceToken string `json:"resource_token"`
-		SubagentToken string `json:"subagent_token,omitempty"`
-		UpstreamToken string `json:"upstream_token,omitempty"`
-		Justification string `json:"justification,omitempty"`
+	requestBody, err := readBoundedRequestBody(request)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
 	}
-	if err := decodeJSON(response, request, &input); err != nil || input.ResourceToken == "" {
+	var input personAuthorizationTokenInput
+	if err := decodeJSONBytes(bytes.NewReader(requestBody), &input); err != nil || input.ResourceToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
@@ -1942,17 +2744,25 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	targetKey := verified.PublicKey
 	parentAgent := ""
 	targetTokenExpiry := verified.AgentToken.ExpiresAt
+	var subagentVerificationKey *aauth.JWK
 	if input.SubagentToken != "" {
-		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, server.keyResolver, server.clock)
+		subagentKeyCapture, subagentVerificationResolver := newRetainedKeyCapture(server.keyResolver)
+		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, subagentVerificationResolver, verificationClock)
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
 		}
+		key, err := subagentKeyCapture.retainedKey()
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		subagentVerificationKey = &key
 		if subagent.ParentAgent == "" || subagent.ParentAgent != verified.Agent {
 			writeProblem(response, http.StatusForbidden, "invalid_subagent_token", errors.New("sub-agent token does not name the signing parent"))
 			return
 		}
-		if subagent.PersonServer != "" && subagent.PersonServer != server.identifier {
+		if input.UpstreamToken == "" && subagent.PersonServer != server.identifier {
 			writeProblem(response, http.StatusForbidden, "invalid_subagent_token", errors.New("sub-agent token names a different person server"))
 			return
 		}
@@ -1964,34 +2774,38 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 	}
 	var upstream *aauth.AuthTokenClaims
+	var upstreamVerificationKey *aauth.JWK
 	if input.UpstreamToken != "" {
 		if server.trustedUpstreamIssuer == nil {
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("call chaining is not configured"))
 			return
 		}
-		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, server.clock)
+		upstreamKeyCapture, upstreamVerificationResolver := newRetainedKeyCapture(server.keyResolver)
+		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, upstreamVerificationResolver, verificationClock)
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
 		}
-		if err := server.trustedUpstreamIssuer(request.Context(), claims.Issuer); err != nil {
-			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", err)
+		key, err := upstreamKeyCapture.retainedKey()
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		// The upstream token's agent and confirmation key identify the
-		// upstream caller. The intermediary resource is bound by the
-		// token audience and its agent-token issuer.
+		upstreamVerificationKey = &key
+		if err := server.trustedUpstreamIssuer(request.Context(), claims.Issuer); err != nil {
+			writeHostPolicyRefusal(response, "invalid_upstream_token", "upstream token issuer is not trusted")
+			return
+		}
 		if claims.Audience != verified.AgentToken.Issuer {
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth-token audience does not match intermediary issuer"))
 			return
 		}
-		if claims.Mission != nil {
-			if claims.Mission.Approver != server.identifier {
-				writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream mission names a different person server"))
-				return
-			}
-		} else if claims.Issuer != server.identifier {
-			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("missionless upstream token must route to its issuer"))
+		if claims.PersonServer != server.identifier {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth token ps does not match person server"))
+			return
+		}
+		if !claims.Confirmation.JWK.Equal(verified.PublicKey) {
+			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth-token confirmation key does not match intermediary request key"))
 			return
 		}
 		upstream = &claims
@@ -2000,9 +2814,19 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 	}
 
-	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, server.clock)
+	resourceKeyCapture, resourceVerificationResolver := newRetainedKeyCapture(server.keyResolver)
+	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, resourceVerificationResolver, verificationClock)
 	if err != nil {
 		writeResourceTokenVerificationFailure(response, err)
+		return
+	}
+	resourceVerificationKey, err := resourceKeyCapture.retainedKey()
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow), verified.VerifiedAt) {
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
 	if resourceToken.Audience != server.identifier {
@@ -2015,25 +2839,19 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 	}
-	current := resourceToken.PersonServer != ""
-	if current {
-		if !server.requireCurrentPersonServer(response, verified) {
-			return
-		}
-		if server.personTokenStore == nil || resourceToken.PersonServer != server.identifier {
-			writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token ps does not match person server"))
-			return
-		}
-		if input.SubagentToken != "" || input.UpstreamToken != "" {
-			writeProblem(response, http.StatusNotImplemented, "unsupported_current_delegation", errors.New("current person-token sub-agent and call-chaining exchange is not implemented"))
-			return
-		}
-		if resourceToken.ExpiresAt-resourceToken.IssuedAt > int64(currentResourceTokenLifetime/time.Second) {
-			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token lifetime exceeds the person server retention bound"))
-			return
-		}
-	} else if resourceToken.Agent != targetAgent {
-		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token agent does not match requester"))
+	if resourceToken.PersonServer == "" {
+		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("current resource-token ps is required"))
+		return
+	}
+	if upstream == nil && !server.requireCurrentPersonServer(response, verified) {
+		return
+	}
+	if server.personTokenStore == nil || resourceToken.PersonServer != server.identifier {
+		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("resource-token ps does not match person server"))
+		return
+	}
+	if resourceToken.ExpiresAt-resourceToken.IssuedAt > int64(currentResourceTokenLifetime/time.Second) {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token lifetime exceeds the person server retention bound"))
 		return
 	}
 	thumbprint, err := targetKey.Thumbprint()
@@ -2047,55 +2865,36 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
-	if current {
-		record, err := server.personTokenStore.Load(request.Context(), server.identifier, resourceToken.PresentedJTI)
-		if errors.Is(err, ErrPersonTokenNotFound) || err == nil && !record.RetainUntil.After(server.clock.Now()) {
-			writeProblem(response, http.StatusBadRequest, "unknown_person_token", errors.New("resource token names an unknown retained person token"))
-			return
-		}
-		if err != nil {
-			writeProblem(response, http.StatusServiceUnavailable, "person_token_custody_unavailable", err)
-			return
-		}
-		if resourceToken.IssuedAt >= record.ExpiresAt.Unix() ||
-			record.PersonServer != resourceToken.PersonServer ||
-			record.Resource != resourceToken.Issuer ||
-			record.Subject != resourceToken.Subject ||
-			record.MissionS256 != resourceToken.MissionS256 ||
-			record.Tenant != resourceToken.Tenant {
-			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained person-token record"))
-			return
-		}
-		if resourceToken.MissionS256 != "" {
-			reference := aauth.MissionReference{Approver: server.identifier, S256: resourceToken.MissionS256}
-			if _, err := server.activeMissionForAgent(verified.Agent, reference); err != nil {
-				server.writeMissionError(response, err)
-				return
-			}
-		}
-	} else if upstream != nil {
-		if (upstream.Mission == nil) != (resourceToken.Mission == nil) {
-			writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream and upstream mission presence differs"))
-			return
-		}
+	record, err := server.personTokenStore.Load(request.Context(), server.identifier, resourceToken.PresentedJTI)
+	if errors.Is(err, ErrPersonTokenNotFound) || err == nil && !record.RetainUntil.After(server.clock.Now()) {
+		writeProblem(response, http.StatusBadRequest, "unknown_person_token", errors.New("resource token names an unknown retained person token"))
+		return
 	}
-	if resourceToken.Mission != nil {
-		if resourceToken.Mission.Approver != server.identifier {
-			writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("mission approver does not match person server"))
-			return
-		}
-		missionOwner := verified.Agent
-		if upstream != nil {
-			missionOwner = delegationOriginAgent(*upstream)
-			if upstream.Mission == nil || *upstream.Mission != *resourceToken.Mission {
-				writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream mission does not match upstream authorization"))
-				return
-			}
-		}
-		if _, err := server.activeMissionForAgent(missionOwner, *resourceToken.Mission); err != nil {
+	if err != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "person_token_custody_unavailable", err)
+		return
+	}
+	if validatePersonTokenRecord(record) != nil ||
+		record.JTI != resourceToken.PresentedJTI ||
+		resourceToken.IssuedAt >= record.ExpiresAt.Unix() ||
+		record.PersonServer != resourceToken.PersonServer ||
+		record.Resource != resourceToken.Issuer ||
+		record.Subject != resourceToken.Subject ||
+		record.MissionS256 != resourceToken.MissionS256 ||
+		record.Tenant != resourceToken.Tenant {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained person-token record"))
+		return
+	}
+	if resourceToken.MissionS256 != "" {
+		reference := aauth.MissionReference{Approver: server.identifier, S256: resourceToken.MissionS256}
+		if _, err := server.activeMissionForAgent(verified.Agent, reference); err != nil {
 			server.writeMissionError(response, err)
 			return
 		}
+	}
+	if upstream != nil && upstream.MissionS256 != resourceToken.MissionS256 {
+		writeProblem(response, http.StatusForbidden, "invalid_mission", errors.New("downstream mission_s256 does not match upstream authorization"))
+		return
 	}
 
 	pollingAgentThumbprint, err := verified.PublicKey.Thumbprint()
@@ -2113,10 +2912,18 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			Justification: input.Justification,
 			Upstream:      upstream,
 		},
-		resourceTokenCompact:   input.ResourceToken,
-		agentTokenCompact:      verified.RawCredential,
-		subagentTokenCompact:   input.SubagentToken,
-		upstreamTokenCompact:   input.UpstreamToken,
+		resourceTokenCompact: input.ResourceToken,
+		agentTokenCompact:    verified.RawCredential,
+		subagentTokenCompact: input.SubagentToken,
+		upstreamTokenCompact: input.UpstreamToken,
+		tokenVerificationKeys: retainedAuthorizationTokenKeys{
+			Resource: resourceVerificationKey,
+			Agent:    agentVerificationKey,
+			Subagent: subagentVerificationKey,
+			Upstream: upstreamVerificationKey,
+		},
+		requestBody:            append([]byte(nil), requestBody...),
+		requestProof:           requestProof(request, verified),
 		targetAgent:            targetAgent,
 		targetKey:              targetKey,
 		parentAgent:            parentAgent,
@@ -2124,35 +2931,27 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		pollingAgentThumbprint: pollingAgentThumbprint,
 		targetTokenExpiresAt:   targetTokenExpiry,
 		resourceToken:          resourceToken,
+		personTokenRecord:      record,
 	}
-	if current {
-		authorizationContext.request.PersonServer = resourceToken.PersonServer
-		authorizationContext.request.Subject = resourceToken.Subject
-		authorizationContext.request.MissionS256 = resourceToken.MissionS256
-		authorizationContext.request.Tenant = resourceToken.Tenant
-		authorizationContext.request.Account = resourceToken.Account
-	}
+	authorizationContext.request.PersonServer = resourceToken.PersonServer
+	authorizationContext.request.Subject = resourceToken.Subject
+	authorizationContext.request.MissionS256 = resourceToken.MissionS256
+	authorizationContext.request.Tenant = resourceToken.Tenant
+	authorizationContext.request.Account = resourceToken.Account
 	if server.interactionRequired != nil {
 		required, err := server.interactionRequired(
 			request.Context(),
 			copyAuthorizationRequest(authorizationContext.request),
 		)
 		if err != nil {
-			writeProblem(response, http.StatusForbidden, "access_denied", err)
+			writeHostPolicyRefusal(response, "access_denied", "authorization policy denied the request")
 			return
 		}
 		if required {
-			if resourceToken.R3URI != "" {
-				writeProblem(
-					response,
-					http.StatusNotImplemented,
-					"unsupported_r3_deferred",
-					errors.New("deferred R3 authorization is not implemented"),
-				)
-				return
-			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
-				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				if !writeAuthorizationStateFailure(response, err) {
+					writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				}
 			}
 			return
 		}
@@ -2163,14 +2962,14 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		copyAuthorizationRequest(authorizationContext.request),
 	)
 	if err != nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		writeHostPolicyRefusal(response, "access_denied", "authorization policy denied the request")
 		return
 	}
 	if err := validatePersonAuthorizationDecision(decision, scopes); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization policy returned an invalid grant"))
 		return
 	}
-	if current && decision.Subject != resourceToken.Subject {
+	if decision.Subject != resourceToken.Subject {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization policy changed the retained directed subject"))
 		return
 	}
@@ -2186,10 +2985,6 @@ func (server *PersonServer) completeAuthorization(
 	resourceToken := authorizationContext.resourceToken
 	now := server.clock.Now()
 	if resourceToken.Audience != server.identifier {
-		expectedActor := authorizationActor(
-			authorizationContext.request.Upstream,
-			authorizationContext.parentAgent,
-		)
 		exchange, err := server.exchangeWithAccessServer(
 			ctx,
 			resourceToken.Audience,
@@ -2197,9 +2992,8 @@ func (server *PersonServer) completeAuthorization(
 			authorizationContext.agentTokenCompact,
 			authorizationContext.subagentTokenCompact,
 			authorizationContext.upstreamTokenCompact,
-			authorizationContext.targetAgent,
 			authorizationContext.targetKey,
-			expectedActor,
+			authorizationContext.targetTokenExpiresAt,
 			resourceToken,
 			decision,
 		)
@@ -2208,13 +3002,8 @@ func (server *PersonServer) completeAuthorization(
 			return
 		}
 		if exchange.deferred != nil {
-			if resourceToken.R3URI != "" {
-				writeProblem(
-					response,
-					http.StatusNotImplemented,
-					"unsupported_r3_deferred",
-					errors.New("deferred R3 authorization is not implemented"),
-				)
+			if _, err := pendingIDFromLocation(exchange.deferred.Location); err != nil {
+				writeProblem(response, http.StatusBadGateway, "federation_failed", err)
 				return
 			}
 			if err := server.beginFederatedAuthorization(
@@ -2224,7 +3013,9 @@ func (server *PersonServer) completeAuthorization(
 				resourceToken.Audience,
 				*exchange.deferred,
 			); err != nil {
-				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				if !writeAuthorizationStateFailure(response, err) {
+					writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				}
 			}
 			return
 		}
@@ -2235,42 +3026,7 @@ func (server *PersonServer) completeAuthorization(
 		return
 	}
 
-	expiresAt := now.Add(time.Hour).Unix()
-	if authorizationContext.targetTokenExpiresAt < expiresAt {
-		expiresAt = authorizationContext.targetTokenExpiresAt
-	}
-	if resourceToken.PersonServer != "" && resourceToken.ExpiresAt < expiresAt {
-		expiresAt = resourceToken.ExpiresAt
-	}
-	actor := authorizationActor(
-		authorizationContext.request.Upstream,
-		authorizationContext.parentAgent,
-	)
-	claims := aauth.AuthTokenClaims{
-		Issuer:       server.identifier,
-		DWK:          aauth.PersonDiscoveryDocument,
-		Audience:     resourceToken.Issuer,
-		JTI:          server.newID(),
-		Agent:        authorizationContext.targetAgent,
-		Confirmation: aauth.Confirmation{JWK: authorizationContext.targetKey},
-		Actor:        actor,
-		IssuedAt:     now.Unix(),
-		ExpiresAt:    expiresAt,
-		Subject:      decision.Subject,
-		Scope:        strings.Join(decision.Scope, " "),
-		Mission:      resourceToken.Mission,
-	}
-	if resourceToken.PersonServer != "" {
-		claims.Agent = ""
-		claims.Actor = nil
-		claims.Subject = resourceToken.Subject
-		claims.PersonServer = resourceToken.PersonServer
-		claims.Account = resourceToken.Account
-		claims.Mission = nil
-		claims.MissionS256 = resourceToken.MissionS256
-		claims.Tenant = resourceToken.Tenant
-	}
-	authToken, err := aauth.MintAuthToken(server.signingKey, claims)
+	authToken, expiresAt, err := server.mintLocalAuthToken(authorizationContext, decision, "")
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -2279,6 +3035,45 @@ func (server *PersonServer) completeAuthorization(
 		"auth_token": authToken,
 		"expires_in": expiresAt - now.Unix(),
 	})
+}
+
+func (server *PersonServer) mintLocalAuthToken(
+	authorizationContext personAuthorizationContext,
+	decision aauth.AuthorizationDecision,
+	tokenID string,
+) (string, int64, error) {
+	resourceToken := authorizationContext.resourceToken
+	now := server.clock.Now()
+	expiresAt := now.Add(time.Hour).Unix()
+	if authorizationContext.targetTokenExpiresAt < expiresAt {
+		expiresAt = authorizationContext.targetTokenExpiresAt
+	}
+	if resourceToken.ExpiresAt < expiresAt {
+		expiresAt = resourceToken.ExpiresAt
+	}
+	if tokenID == "" {
+		tokenID = server.newID()
+	}
+	claims := aauth.AuthTokenClaims{
+		Issuer:       server.identifier,
+		DWK:          aauth.PersonDiscoveryDocument,
+		Audience:     resourceToken.Issuer,
+		JTI:          tokenID,
+		Confirmation: aauth.Confirmation{JWK: authorizationContext.targetKey},
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    expiresAt,
+		Subject:      resourceToken.Subject,
+		Scope:        strings.Join(decision.Scope, " "),
+		PersonServer: resourceToken.PersonServer,
+		Account:      resourceToken.Account,
+		MissionS256:  resourceToken.MissionS256,
+		Tenant:       resourceToken.Tenant,
+	}
+	authToken, err := aauth.MintAuthToken(server.signingKey, claims)
+	if err != nil {
+		return "", 0, err
+	}
+	return authToken, expiresAt, nil
 }
 
 func (server *PersonServer) beginPendingAuthorization(
@@ -2315,6 +3110,10 @@ func (server *PersonServer) beginPendingAuthorization(
 		return errors.New("reference: pending identifier source returned a duplicate value")
 	}
 	server.pending[interaction.id] = pending
+	if err := server.persistAuthorizationStateLocked(context.Background()); err != nil {
+		server.pendingMu.Unlock()
+		return err
+	}
 	server.pendingMu.Unlock()
 	return server.writePendingAuthorization(
 		response,
@@ -2331,9 +3130,7 @@ func (server *PersonServer) beginFederatedAuthorization(
 	accessServer string,
 	deferred aauth.DeferredResponse,
 ) error {
-	server.randomMu.Lock()
-	pendingID, err := aauth.GeneratePendingID(server.random)
-	server.randomMu.Unlock()
+	pendingID, err := pendingIDFromLocation(deferred.Location)
 	if err != nil {
 		return err
 	}
@@ -2382,6 +3179,10 @@ func (server *PersonServer) beginFederatedAuthorization(
 		return errors.New("reference: pending identifier source returned a duplicate value")
 	}
 	server.pending[pendingID] = pending
+	if err := server.persistAuthorizationStateLocked(context.Background()); err != nil {
+		server.pendingMu.Unlock()
+		return err
+	}
 	server.pendingMu.Unlock()
 	return server.writeFederatedPendingAuthorization(response, pendingID, federated, now)
 }
@@ -2465,16 +3266,14 @@ func (server *PersonServer) writePendingAuthorization(
 // method or choose the resulting subject or scope.
 func (server *PersonServer) ApproveAuthorization(ctx context.Context, pendingID string) error {
 	server.pendingMu.Lock()
+	if err := server.settleAuthorizationStateLocked(ctx); err != nil {
+		server.pendingMu.Unlock()
+		return err
+	}
 	pending, exists := server.pending[pendingID]
 	if !exists {
 		server.pendingMu.Unlock()
 		return errors.New("reference: pending authorization does not exist")
-	}
-	now := server.clock.Now()
-	if !pending.expiresAt.After(now) {
-		pending.state = pendingAuthorizationExpired
-		server.pendingMu.Unlock()
-		return errors.New("reference: pending authorization expired")
 	}
 	if pending.federated != nil {
 		server.pendingMu.Unlock()
@@ -2483,6 +3282,16 @@ func (server *PersonServer) ApproveAuthorization(ctx context.Context, pendingID 
 	if pending.state != pendingAuthorizationInteracting {
 		server.pendingMu.Unlock()
 		return errors.New("reference: pending authorization is not awaiting a trusted decision")
+	}
+	now := server.clock.Now()
+	if !pending.expiresAt.After(now) {
+		pending.state = pendingAuthorizationExpired
+		persistErr := server.persistAuthorizationStateLocked(ctx)
+		server.pendingMu.Unlock()
+		if persistErr != nil {
+			return persistErr
+		}
+		return errors.New("reference: pending authorization expired")
 	}
 	authorizationRequest := copyAuthorizationRequest(pending.context.request)
 	server.pendingMu.Unlock()
@@ -2494,14 +3303,22 @@ func (server *PersonServer) ApproveAuthorization(ctx context.Context, pendingID 
 	if err := validatePersonAuthorizationDecision(decision, authorizationRequest.Scope); err != nil {
 		return err
 	}
+	if decision.Subject != authorizationRequest.Subject {
+		return errors.New("reference: authorization decision changed the retained directed subject")
+	}
 
 	server.pendingMu.Lock()
 	defer server.pendingMu.Unlock()
-	if pending.state != pendingAuthorizationInteracting {
+	current, exists := server.pending[pendingID]
+	if !exists || current != pending || current.state != pendingAuthorizationInteracting {
 		return errors.New("reference: pending authorization changed while approval was evaluated")
 	}
+	pending = current
 	if !pending.expiresAt.After(server.clock.Now()) {
 		pending.state = pendingAuthorizationExpired
+		if err := server.persistAuthorizationStateLocked(ctx); err != nil {
+			return err
+		}
 		return errors.New("reference: pending authorization expired")
 	}
 	pending.decision = aauth.AuthorizationDecision{
@@ -2509,7 +3326,7 @@ func (server *PersonServer) ApproveAuthorization(ctx context.Context, pendingID 
 		Scope:   append([]string(nil), decision.Scope...),
 	}
 	pending.state = pendingAuthorizationApproved
-	return nil
+	return server.persistAuthorizationStateLocked(ctx)
 }
 
 // RejectAuthorization records a trusted terminal denial or abandonment.
@@ -2524,13 +3341,12 @@ func (server *PersonServer) RejectAuthorization(
 	}
 	server.pendingMu.Lock()
 	defer server.pendingMu.Unlock()
+	if err := server.settleAuthorizationStateLocked(context.Background()); err != nil {
+		return err
+	}
 	pending, exists := server.pending[pendingID]
 	if !exists {
 		return errors.New("reference: pending authorization does not exist")
-	}
-	if !pending.expiresAt.After(server.clock.Now()) {
-		pending.state = pendingAuthorizationExpired
-		return errors.New("reference: pending authorization expired")
 	}
 	if pending.federated != nil {
 		return errors.New("reference: access-server authorization requires an access-server decision")
@@ -2538,15 +3354,29 @@ func (server *PersonServer) RejectAuthorization(
 	if pending.state != pendingAuthorizationInteracting {
 		return errors.New("reference: pending authorization is not awaiting a trusted decision")
 	}
+	if !pending.expiresAt.After(server.clock.Now()) {
+		pending.state = pendingAuthorizationExpired
+		if err := server.persistAuthorizationStateLocked(context.Background()); err != nil {
+			return err
+		}
+		return errors.New("reference: pending authorization expired")
+	}
 	pending.pollingError = code
 	pending.state = pendingAuthorizationRejected
-	return nil
+	return server.persistAuthorizationStateLocked(context.Background())
 }
 
 func (server *PersonServer) handlePendingAuthorization(
 	response http.ResponseWriter,
 	request *http.Request,
 ) {
+	server.pendingMu.Lock()
+	stateErr := server.settleAuthorizationStateLocked(request.Context())
+	server.pendingMu.Unlock()
+	if stateErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
 	verified, err := aauth.VerifyRequest(
 		request.Context(),
 		request,
@@ -2583,6 +3413,11 @@ func (server *PersonServer) handlePendingAuthorization(
 		pending.state == pendingAuthorizationInteracting) &&
 		!pending.expiresAt.After(server.clock.Now()) {
 		pending.state = pendingAuthorizationExpired
+		if err := server.persistAuthorizationStateLocked(request.Context()); err != nil {
+			server.pendingMu.Unlock()
+			writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+			return
+		}
 	}
 
 	switch pending.state {
@@ -2604,6 +3439,11 @@ func (server *PersonServer) handlePendingAuthorization(
 				return
 			}
 			pending.pollingFederation = true
+			if err := server.persistAuthorizationStateLocked(request.Context()); err != nil {
+				server.pendingMu.Unlock()
+				writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+				return
+			}
 			id := pending.id
 			federated := copyPendingFederation(pending.federated)
 			authorizationContext := copyPersonAuthorizationContext(pending.context)
@@ -2630,34 +3470,74 @@ func (server *PersonServer) handlePendingAuthorization(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 	case pendingAuthorizationApproved:
+		if pending.terminalAuthToken != "" {
+			token := pending.terminalAuthToken
+			expiresAt := pending.terminalExpiresAt
+			server.pendingMu.Unlock()
+			writeJSON(response, http.StatusOK, map[string]any{
+				"auth_token": token,
+				"expires_in": expiresAt - server.clock.Now().Unix(),
+			})
+			return
+		}
 		authorizationContext := copyPersonAuthorizationContext(pending.context)
 		decision := aauth.AuthorizationDecision{
 			Subject: pending.decision.Subject,
 			Scope:   append([]string(nil), pending.decision.Scope...),
 		}
-		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
-		server.completeAuthorization(response, request.Context(), authorizationContext, decision)
+		token, expiresAt, err := server.mintLocalAuthToken(authorizationContext, decision, pending.id)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		server.pendingMu.Lock()
+		current, exists := server.pending[pending.id]
+		if !exists || current.state != pendingAuthorizationApproved {
+			server.pendingMu.Unlock()
+			writeProblem(response, http.StatusConflict, "authorization_changed", errors.New("pending authorization changed while token was minted"))
+			return
+		}
+		if current.terminalAuthToken == "" {
+			current.terminalAuthToken = token
+			verificationKey := server.signingKey.PublicJWK()
+			current.terminalVerificationKey = &verificationKey
+			current.terminalExpiresAt = expiresAt
+			if err := server.persistAuthorizationStateLocked(request.Context()); err != nil {
+				server.pendingMu.Unlock()
+				writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+				return
+			}
+		} else {
+			token = current.terminalAuthToken
+			expiresAt = current.terminalExpiresAt
+		}
+		server.pendingMu.Unlock()
+		writeJSON(response, http.StatusOK, map[string]any{"auth_token": token, "expires_in": expiresAt - server.clock.Now().Unix()})
 	case pendingAuthorizationExpired:
-		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
 		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending authorization expired"))
 	case pendingAuthorizationRejected:
 		code := pending.pollingError
-		pending.state = pendingAuthorizationServed
+		terminalStatus := pending.terminalStatus
+		terminalCode := pending.terminalCode
+		terminalDetail := pending.terminalDetail
 		server.pendingMu.Unlock()
+		if terminalStatus != 0 {
+			writeProblem(response, terminalStatus, terminalCode, errors.New(terminalDetail))
+			return
+		}
 		status := http.StatusForbidden
 		if code == aauth.PollingServerError {
 			status = http.StatusInternalServerError
 		}
 		writeProblem(response, status, string(code), errors.New("pending authorization was not approved"))
 	case pendingAuthorizationInvalidCode:
-		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
 		writeProblem(response, http.StatusGone, "invalid_code", errors.New("interaction code validation failed"))
 	default:
 		server.pendingMu.Unlock()
-		writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization already returned a terminal response"))
+		writeProblem(response, http.StatusGone, "gone", errors.New("pending authorization has an invalid state"))
 	}
 }
 
@@ -2677,16 +3557,17 @@ func (server *PersonServer) handleAuthorizationInteraction(
 	request *http.Request,
 ) {
 	server.pendingMu.Lock()
+	stateErr := server.settleAuthorizationStateLocked(request.Context())
+	server.pendingMu.Unlock()
+	if stateErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
+	server.pendingMu.Lock()
 	pending, exists := server.pending[request.PathValue("id")]
 	if !exists {
 		server.pendingMu.Unlock()
 		writeProblem(response, http.StatusGone, "invalid_code", errors.New("pending interaction is unknown"))
-		return
-	}
-	if !pending.expiresAt.After(server.clock.Now()) {
-		pending.state = pendingAuthorizationExpired
-		server.pendingMu.Unlock()
-		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending interaction expired"))
 		return
 	}
 	if pending.federated != nil {
@@ -2698,6 +3579,11 @@ func (server *PersonServer) handleAuthorizationInteraction(
 		request.URL.Query()["code"],
 		server.clock.Now(),
 	)
+	if persistErr := server.persistAuthorizationStateLocked(request.Context()); persistErr != nil {
+		server.pendingMu.Unlock()
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", persistErr)
+		return
+	}
 	if err != nil {
 		server.pendingMu.Unlock()
 		writeProblem(response, status, code, err)
@@ -2742,12 +3628,11 @@ func copyGovernanceReplays(source map[string]time.Time) map[string]time.Time {
 	return copied
 }
 
-func (server *PersonServer) seenReplay(key string, expiresAt time.Time) bool {
+func (server *PersonServer) seenReplay(key string, expiresAt time.Time, verifiedAt time.Time) bool {
 	server.replayMu.Lock()
 	defer server.replayMu.Unlock()
-	now := server.clock.Now()
 	for existing, expiry := range server.replayedProof {
-		if !expiry.After(now) {
+		if expiry.Before(verifiedAt) {
 			delete(server.replayedProof, existing)
 		}
 	}
@@ -2782,13 +3667,7 @@ func (server *PersonServer) pollFederatedAuthorization(
 		return
 	}
 	request.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequestWithJWKSURI(
-		request,
-		server.signingKey,
-		server.identifier,
-		aauth.PersonDiscoveryDocument,
-		server.clock,
-	); err != nil {
+	if err := server.signFederationRequest(request); err != nil {
 		server.failFederatedAuthorization(responseWriter, pendingID, http.StatusInternalServerError, "server_error", err)
 		return
 	}
@@ -2801,17 +3680,12 @@ func (server *PersonServer) pollFederatedAuthorization(
 
 	switch response.StatusCode {
 	case http.StatusOK:
-		expectedActor := authorizationActor(
-			authorizationContext.request.Upstream,
-			authorizationContext.parentAgent,
-		)
 		exchange, err := server.parseAccessServerGrant(
 			ctx,
 			response,
 			federated.accessServer,
-			authorizationContext.targetAgent,
 			authorizationContext.targetKey,
-			expectedActor,
+			authorizationContext.targetTokenExpiresAt,
 			authorizationContext.resourceToken,
 			personDecision,
 		)
@@ -2819,7 +3693,16 @@ func (server *PersonServer) pollFederatedAuthorization(
 			server.failFederatedAuthorization(responseWriter, pendingID, http.StatusBadGateway, "federation_failed", err)
 			return
 		}
-		if !server.serveFederatedAuthorization(pendingID) {
+		if err := validateFederatedTerminalBinding(federated.location, exchange.claims); err != nil {
+			server.failFederatedAuthorization(responseWriter, pendingID, http.StatusBadGateway, "federation_failed", err)
+			return
+		}
+		retained, err := server.retainFederatedAuthorization(pendingID, exchange)
+		if err != nil {
+			writeProblem(responseWriter, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+			return
+		}
+		if !retained {
 			server.writeFederatedTransitionFailure(responseWriter, pendingID)
 			return
 		}
@@ -2844,6 +3727,17 @@ func (server *PersonServer) pollFederatedAuthorization(
 			)
 			return
 		}
+		continuationID, continuationErr := pendingIDFromLocation(deferred.Location)
+		if continuationErr != nil || continuationID != pendingID {
+			server.failFederatedAuthorization(
+				responseWriter,
+				pendingID,
+				http.StatusBadGateway,
+				"federation_failed",
+				errors.New("access-server pending continuation changed its identifier"),
+			)
+			return
+		}
 		next := &pendingFederatedAuthorization{
 			accessServer: federated.accessServer,
 			location:     deferred.Location,
@@ -2852,7 +3746,12 @@ func (server *PersonServer) pollFederatedAuthorization(
 			status:       deferred.Status,
 			requirement:  copyRequirement(deferred.Requirement),
 		}
-		if !server.updateFederatedAuthorization(pendingID, next) {
+		updated, err := server.updateFederatedAuthorization(pendingID, next)
+		if err != nil {
+			writeProblem(responseWriter, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+			return
+		}
+		if !updated {
 			server.writeFederatedTransitionFailure(responseWriter, pendingID)
 			return
 		}
@@ -2867,7 +3766,7 @@ func (server *PersonServer) pollFederatedAuthorization(
 	case http.StatusTooManyRequests:
 		delay := federated.retryAfter + 5*time.Second
 		server.retryFederatedAuthorization(responseWriter, pendingID, federated, delay)
-	case http.StatusServiceUnavailable:
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		delay, err := responseRetryAfter(response.Header.Values("Retry-After"), server.clock.Now())
 		if err != nil {
 			delay = 5 * time.Second
@@ -2877,6 +3776,9 @@ func (server *PersonServer) pollFederatedAuthorization(
 		status := response.StatusCode
 		code := "federation_failed"
 		detail := errors.New("access server returned a terminal response")
+		if status < http.StatusBadRequest {
+			status = http.StatusBadGateway
+		}
 		if response.StatusCode == http.StatusUnauthorized {
 			// The agent authenticated successfully to this person server.
 			// A PS-to-AS authentication failure is an upstream federation
@@ -2889,7 +3791,9 @@ func (server *PersonServer) pollFederatedAuthorization(
 			problem, decodeErr := aauth.DecodeProblemResponse(response)
 			if decodeErr == nil {
 				code = string(problem.Code)
-				detail = errors.New(problem.Detail)
+				if problem.Detail != "" {
+					detail = errors.New(problem.Detail)
+				}
 			} else {
 				detail = decodeErr
 			}
@@ -2907,7 +3811,12 @@ func (server *PersonServer) retryFederatedAuthorization(
 	next := copyPendingFederation(federated)
 	next.retryAfter = delay
 	next.notBefore = server.clock.Now().Add(delay)
-	if !server.updateFederatedAuthorization(pendingID, next) {
+	updated, err := server.updateFederatedAuthorization(pendingID, next)
+	if err != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+		return
+	}
+	if !updated {
 		server.writeFederatedTransitionFailure(response, pendingID)
 		return
 	}
@@ -2924,18 +3833,21 @@ func (server *PersonServer) retryFederatedAuthorization(
 func (server *PersonServer) updateFederatedAuthorization(
 	pendingID string,
 	federated *pendingFederatedAuthorization,
-) bool {
+) (bool, error) {
 	server.pendingMu.Lock()
 	defer server.pendingMu.Unlock()
 	pending, exists := server.pending[pendingID]
 	if !exists || !pending.pollingFederation || pending.federated == nil ||
 		(pending.state != pendingAuthorizationWaiting && pending.state != pendingAuthorizationInteracting) {
-		return false
+		return false, nil
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
 		pending.pollingFederation = false
 		pending.state = pendingAuthorizationExpired
-		return false
+		if err := server.persistAuthorizationStateLocked(context.Background()); err != nil {
+			return false, err
+		}
+		return false, nil
 	}
 	pending.federated = copyPendingFederation(federated)
 	pending.pollingFederation = false
@@ -2944,25 +3856,60 @@ func (server *PersonServer) updateFederatedAuthorization(
 	} else {
 		pending.state = pendingAuthorizationWaiting
 	}
-	return true
+	if err := server.persistAuthorizationStateLocked(context.Background()); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-func (server *PersonServer) serveFederatedAuthorization(pendingID string) bool {
+func (server *PersonServer) retainFederatedAuthorization(
+	pendingID string,
+	exchange accessServerExchange,
+) (bool, error) {
 	server.pendingMu.Lock()
 	defer server.pendingMu.Unlock()
 	pending, exists := server.pending[pendingID]
 	if !exists || !pending.pollingFederation || pending.federated == nil ||
 		(pending.state != pendingAuthorizationWaiting && pending.state != pendingAuthorizationInteracting) {
-		return false
+		return false, nil
 	}
 	if !pending.expiresAt.After(server.clock.Now()) {
 		pending.pollingFederation = false
 		pending.state = pendingAuthorizationExpired
-		return false
+		if err := server.persistAuthorizationStateLocked(context.Background()); err != nil {
+			return false, err
+		}
+		return false, nil
 	}
 	pending.pollingFederation = false
-	pending.state = pendingAuthorizationServed
-	return true
+	pending.state = pendingAuthorizationApproved
+	pending.terminalAuthToken = exchange.authToken
+	pending.terminalVerificationKey = copyJWK(exchange.verificationKey)
+	pending.terminalExpiresAt = exchange.claims.ExpiresAt
+	if err := server.persistAuthorizationStateLocked(context.Background()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func validateFederatedTerminalBinding(location string, claims aauth.AuthTokenClaims) error {
+	pendingID, err := pendingIDFromLocation(location)
+	if err != nil || pendingID != claims.JTI {
+		return errors.New("access-server auth-token jti does not match the retained pending continuation")
+	}
+	return nil
+}
+
+func pendingIDFromLocation(location string) (string, error) {
+	parsed, err := url.Parse(location)
+	if err != nil || parsed.RawPath != "" || !strings.HasPrefix(parsed.Path, "/pending/") {
+		return "", errors.New("access-server pending continuation has an invalid path")
+	}
+	pendingID := strings.TrimPrefix(parsed.Path, "/pending/")
+	if strings.Contains(pendingID, "/") || !validPendingID(pendingID) {
+		return "", errors.New("access-server pending continuation has an invalid identifier")
+	}
+	return pendingID, nil
 }
 
 func (server *PersonServer) writeFederatedTransitionFailure(
@@ -2972,7 +3919,6 @@ func (server *PersonServer) writeFederatedTransitionFailure(
 	server.pendingMu.Lock()
 	pending, exists := server.pending[pendingID]
 	if exists && pending.state == pendingAuthorizationExpired {
-		pending.state = pendingAuthorizationServed
 		server.pendingMu.Unlock()
 		writeProblem(response, http.StatusRequestTimeout, "expired", errors.New("pending authorization expired"))
 		return
@@ -2989,11 +3935,36 @@ func (server *PersonServer) failFederatedAuthorization(
 	err error,
 ) {
 	server.pendingMu.Lock()
-	if pending, exists := server.pending[pendingID]; exists {
-		pending.pollingFederation = false
-		pending.state = pendingAuthorizationServed
+	pending, exists := server.pending[pendingID]
+	if !exists || !pending.pollingFederation || pending.federated == nil ||
+		(pending.state != pendingAuthorizationWaiting && pending.state != pendingAuthorizationInteracting) {
+		server.pendingMu.Unlock()
+		server.writeFederatedTransitionFailure(response, pendingID)
+		return
 	}
+	if !pending.expiresAt.After(server.clock.Now()) {
+		pending.pollingFederation = false
+		pending.state = pendingAuthorizationExpired
+		persistErr := server.persistAuthorizationStateLocked(context.Background())
+		server.pendingMu.Unlock()
+		if persistErr != nil {
+			writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", persistErr)
+			return
+		}
+		server.writeFederatedTransitionFailure(response, pendingID)
+		return
+	}
+	pending.pollingFederation = false
+	pending.state = pendingAuthorizationRejected
+	pending.terminalStatus = status
+	pending.terminalCode = code
+	pending.terminalDetail = err.Error()
+	persistErr := server.persistAuthorizationStateLocked(context.Background())
 	server.pendingMu.Unlock()
+	if persistErr != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", persistErr)
+		return
+	}
 	writeProblem(response, status, code, err)
 }
 
@@ -3004,9 +3975,8 @@ func (server *PersonServer) exchangeWithAccessServer(
 	agentTokenCompact string,
 	subagentTokenCompact string,
 	upstreamTokenCompact string,
-	targetAgent string,
 	targetKey aauth.JWK,
-	expectedActor *aauth.Actor,
+	targetTokenExpiresAt int64,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
 ) (accessServerExchange, error) {
@@ -3045,13 +4015,7 @@ func (server *PersonServer) exchangeWithAccessServer(
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequestWithJWKSURI(
-		request,
-		server.signingKey,
-		server.identifier,
-		aauth.PersonDiscoveryDocument,
-		server.clock,
-	); err != nil {
+	if err := server.signFederationRequest(request); err != nil {
 		return exchange, err
 	}
 	response, err := server.federationClient.Do(request)
@@ -3072,9 +4036,8 @@ func (server *PersonServer) exchangeWithAccessServer(
 			ctx,
 			response,
 			accessServerIdentifier,
-			targetAgent,
 			targetKey,
-			expectedActor,
+			targetTokenExpiresAt,
 			resourceToken,
 			personDecision,
 		)
@@ -3088,9 +4051,8 @@ func (server *PersonServer) parseAccessServerGrant(
 	ctx context.Context,
 	response *http.Response,
 	accessServerIdentifier string,
-	targetAgent string,
 	targetKey aauth.JWK,
-	expectedActor *aauth.Actor,
+	targetTokenExpiresAt int64,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
 ) (accessServerExchange, error) {
@@ -3101,45 +4063,42 @@ func (server *PersonServer) parseAccessServerGrant(
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
 		return exchange, err
 	}
-	claims, err := aauth.VerifyAuthToken(ctx, result.AuthToken, server.keyResolver, server.clock)
+	capturedResolver := &retainedKeyResolver{resolver: server.keyResolver}
+	var verificationResolver aauth.KeyResolver = capturedResolver
+	if refresher, ok := server.keyResolver.(aauth.KeyRefresher); ok {
+		verificationResolver = &retainedRefreshingKeyResolver{
+			retainedKeyResolver: capturedResolver,
+			refresher:           refresher,
+		}
+	}
+	claims, err := aauth.VerifyAuthToken(ctx, result.AuthToken, verificationResolver, server.clock)
 	if err != nil {
 		return exchange, err
 	}
 	if claims.Issuer != accessServerIdentifier || claims.DWK != aauth.AccessDiscoveryDocument {
 		return exchange, errors.New("access-server auth token has the wrong issuer or discovery document")
 	}
-	current := resourceToken.PersonServer != ""
-	if current {
-		if claims.ExpiresAt > resourceToken.ExpiresAt {
-			return exchange, errors.New("access-server auth token outlives the resource token")
-		}
-		if err := aauth.ValidateCurrentAuthTokenContext(
-			claims,
-			resourceToken.Issuer,
-			resourceToken.PersonServer,
-			resourceToken.Subject,
-			targetKey,
-			nil,
-		); err != nil {
-			return exchange, err
-		}
-		if claims.MissionS256 != resourceToken.MissionS256 ||
-			claims.Tenant != resourceToken.Tenant ||
-			claims.Account != resourceToken.Account ||
-			claims.Agent != "" || claims.Actor != nil {
-			return exchange, errors.New("access-server auth token changed the retained person context")
-		}
-	} else if err := aauth.ValidateAuthTokenContext(
+	if claims.ExpiresAt > resourceToken.ExpiresAt {
+		return exchange, errors.New("access-server auth token outlives the resource token")
+	}
+	if claims.ExpiresAt > targetTokenExpiresAt {
+		return exchange, errors.New("access-server auth token outlives the target agent credentials")
+	}
+	if err := aauth.ValidateCurrentAuthTokenContext(
 		claims,
 		resourceToken.Issuer,
-		targetAgent,
+		resourceToken.PersonServer,
+		resourceToken.Subject,
 		targetKey,
 		nil,
 	); err != nil {
 		return exchange, err
 	}
-	if claims.R3URI != resourceToken.R3URI || claims.R3S256 != resourceToken.R3S256 {
-		return exchange, errors.New("access-server auth token changed the R3 reference")
+	if claims.MissionS256 != resourceToken.MissionS256 ||
+		claims.Tenant != resourceToken.Tenant ||
+		claims.Account != resourceToken.Account ||
+		claims.Agent != "" || claims.Actor != nil {
+		return exchange, errors.New("access-server auth token changed the retained person context")
 	}
 	grantedScopes, err := parseScopes(claims.Scope)
 	if err != nil {
@@ -3148,16 +4107,17 @@ func (server *PersonServer) parseAccessServerGrant(
 	if !scopesContained(grantedScopes, personDecision.Scope) {
 		return exchange, errors.New("access-server auth token exceeds the person-server grant")
 	}
-	if resourceToken.Mission != nil {
-		if claims.Mission == nil || *claims.Mission != *resourceToken.Mission {
-			return exchange, errors.New("access-server auth token changed the mission reference")
-		}
+	if !capturedResolver.found {
+		return exchange, errors.New("access-server auth token verification key was not retained")
 	}
-	if !current && !actorsEqual(claims.Actor, expectedActor) {
-		return exchange, errors.New("access-server auth token contains an unexpected act chain")
+	retainedClaims, err := verifyRetainedAuthToken(result.AuthToken, capturedResolver.key)
+	if err != nil || !reflect.DeepEqual(retainedClaims, claims) {
+		return exchange, errors.New("access-server auth token cannot be verified from retained key material")
 	}
 	exchange.authToken = result.AuthToken
 	exchange.claims = claims
+	verificationKey := capturedResolver.key
+	exchange.verificationKey = &verificationKey
 	return exchange, nil
 }
 
@@ -3169,11 +4129,7 @@ func (server *PersonServer) handleMetadata(response http.ResponseWriter, _ *http
 		"auth_token_endpoint": server.identifier + "/token",
 		"audit_endpoint":      server.identifier + "/audit",
 	}
-	if server.personTokenPolicy != nil {
-		metadata["person_token_endpoint"] = server.identifier + "/person"
-	} else {
-		metadata["token_endpoint"] = server.identifier + "/token"
-	}
+	metadata["person_token_endpoint"] = server.identifier + "/person"
 	if server.permissionPolicy != nil {
 		metadata["permission_endpoint"] = server.identifier + "/permission"
 	}

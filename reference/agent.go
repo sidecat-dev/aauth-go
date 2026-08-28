@@ -3,6 +3,7 @@ package reference
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,13 +23,14 @@ import (
 )
 
 type AgentConfig struct {
-	Identifier  string
-	SigningKey  aauth.SigningKey
-	AgentToken  string
-	KeyResolver aauth.KeyResolver
-	HTTPClient  *http.Client
-	Clock       aauth.Clock
-	Events      *AgentEventsConfig
+	Identifier         string
+	SigningKey         aauth.SigningKey
+	AgentToken         string
+	KeyResolver        aauth.KeyResolver
+	HTTPClient         *http.Client
+	Clock              aauth.Clock
+	AuthorizationStore AuthorizationStateStore
+	Events             *AgentEventsConfig
 }
 
 // AgentEventsConfig supplies replaceable local custody and action execution
@@ -37,15 +41,32 @@ type AgentEventsConfig struct {
 }
 
 type Agent struct {
-	identifier  string
-	signingKey  aauth.SigningKey
-	agentToken  string
-	keyResolver aauth.KeyResolver
-	httpClient  *http.Client
-	clock       aauth.Clock
-	eventStore  AgentEventStore
-	eventAction EventAction
-	eventMu     sync.Mutex
+	identifier            string
+	signingKey            aauth.SigningKey
+	agentToken            string
+	keyResolver           aauth.KeyResolver
+	httpClient            *http.Client
+	clock                 aauth.Clock
+	authorizationStore    AuthorizationStateStore
+	authorizationMu       sync.Mutex
+	authorizationErr      error
+	authorizationBody     []byte
+	authorizationRecovery []byte
+	pendingTokens         map[string]agentPendingTokenRecord
+	pendingAccess         map[string]agentPendingAccessRecord
+	eventStore            AgentEventStore
+	eventAction           EventAction
+	eventMu               sync.Mutex
+}
+
+func (agent *Agent) signRequest(request *http.Request, credential string) error {
+	nonceBytes := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, nonceBytes); err != nil {
+		return fmt.Errorf("reference: generate request proof nonce: %w", err)
+	}
+	return aauth.SignRequestWithOptions(request, agent.signingKey, credential, agent.clock, aauth.SignRequestOptions{
+		Nonce: base64.RawURLEncoding.EncodeToString(nonceBytes),
+	})
 }
 
 type Grant struct {
@@ -77,13 +98,6 @@ type ResourceGrant struct {
 	Resource      string                    `json:"resource"`
 	ResourceToken string                    `json:"resource_token"`
 	Claims        aauth.ResourceTokenClaims `json:"claims"`
-	// RequestedR3 is persisted alongside the resource token because the R3
-	// draft does not bind the agent's requested operation subset into that
-	// token. Omitting it for an R3 grant fails closed before token exchange.
-	RequestedR3 *aauth.R3OperationSet `json:"requested_r3,omitempty"`
-	// R3Proposal is local agent custody identifying a conditional challenge
-	// exchange. It is not an R3 wire claim.
-	R3Proposal bool `json:"r3_proposal,omitempty"`
 }
 
 // TokenAuthorization is either an auth-token grant or a signed-poll
@@ -104,11 +118,10 @@ type PendingTokenAuthorization struct {
 	Status       string
 	Requirement  *aauth.Requirement
 
-	resourceGrant  ResourceGrant
-	expectedIssuer string
-	expectedAgent  string
-	expectedKey    aauth.JWK
-	expectedActor  *aauth.Actor
+	resourceGrant           ResourceGrant
+	resourceVerificationKey aauth.JWK
+	expectedIssuer          string
+	expectedKey             aauth.JWK
 }
 
 // AccessGrant is a resource-managed authorization result. Token is opaque to
@@ -136,6 +149,43 @@ type PendingAccessAuthorization struct {
 	Status         string
 	Requirement    *aauth.Requirement
 	requestedScope []string
+}
+
+const agentAuthorizationStateSchema = "aauth.reference.agent-authorization-state"
+
+type agentAuthorizationStateRecord struct {
+	Kind   string                    `json:"kind"`
+	Key    string                    `json:"key"`
+	Token  *agentPendingTokenRecord  `json:"token,omitempty"`
+	Access *agentPendingAccessRecord `json:"access,omitempty"`
+}
+
+type agentPendingTokenRecord struct {
+	ID                      string             `json:"id"`
+	PersonServer            string             `json:"person_server"`
+	Location                string             `json:"location"`
+	RetryAfter              time.Duration      `json:"retry_after"`
+	NotBefore               time.Time          `json:"not_before"`
+	Status                  string             `json:"status"`
+	Requirement             *aauth.Requirement `json:"requirement,omitempty"`
+	ResourceGrant           ResourceGrant      `json:"resource_grant"`
+	ResourceVerificationKey aauth.JWK          `json:"resource_verification_key"`
+	ExpectedIssuer          string             `json:"expected_issuer"`
+	ExpectedKey             aauth.JWK          `json:"expected_key"`
+	TerminalGrant           *Grant             `json:"terminal_grant,omitempty"`
+	TerminalVerificationKey *aauth.JWK         `json:"terminal_verification_key,omitempty"`
+}
+
+type agentPendingAccessRecord struct {
+	ID             string             `json:"id"`
+	Resource       string             `json:"resource"`
+	Location       string             `json:"location"`
+	RetryAfter     time.Duration      `json:"retry_after"`
+	NotBefore      time.Time          `json:"not_before"`
+	Status         string             `json:"status"`
+	Requirement    *aauth.Requirement `json:"requirement,omitempty"`
+	RequestedScope []string           `json:"requested_scope"`
+	TerminalGrant  *AccessGrant       `json:"terminal_grant,omitempty"`
 }
 
 // PermissionAuthorization is either a terminal permission decision or a
@@ -186,8 +236,8 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		return nil, err
 	}
 	if config.SigningKey.ID() == "" || config.AgentToken == "" || config.KeyResolver == nil ||
-		config.HTTPClient == nil || config.Clock == nil {
-		return nil, errors.New("reference: agent requires key, token, resolver, HTTP client, and clock")
+		config.HTTPClient == nil || config.Clock == nil || config.AuthorizationStore == nil {
+		return nil, errors.New("reference: agent requires key, token, resolver, HTTP client, clock, and authorization state store")
 	}
 	var eventStore AgentEventStore
 	var eventAction EventAction
@@ -198,16 +248,359 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		eventStore = config.Events.Store
 		eventAction = config.Events.Action
 	}
-	return &Agent{
-		identifier:  config.Identifier,
-		signingKey:  config.SigningKey,
-		agentToken:  config.AgentToken,
-		keyResolver: config.KeyResolver,
-		httpClient:  config.HTTPClient,
-		clock:       config.Clock,
-		eventStore:  eventStore,
-		eventAction: eventAction,
-	}, nil
+	agent := &Agent{
+		identifier:         config.Identifier,
+		signingKey:         config.SigningKey,
+		agentToken:         config.AgentToken,
+		keyResolver:        config.KeyResolver,
+		httpClient:         config.HTTPClient,
+		clock:              config.Clock,
+		authorizationStore: config.AuthorizationStore,
+		pendingTokens:      make(map[string]agentPendingTokenRecord),
+		pendingAccess:      make(map[string]agentPendingAccessRecord),
+		eventStore:         eventStore,
+		eventAction:        eventAction,
+	}
+	if err := agent.loadAuthorizationState(context.Background()); err != nil {
+		return nil, fmt.Errorf("reference: load agent authorization state: %w", err)
+	}
+	return agent, nil
+}
+
+func (agent *Agent) loadAuthorizationState(ctx context.Context) error {
+	body, err := agent.authorizationStore.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		agent.authorizationMu.Lock()
+		defer agent.authorizationMu.Unlock()
+		return agent.persistAuthorizationStateLocked(ctx)
+	}
+	if err := agent.restoreAuthorizationStateLocked(body); err != nil {
+		return err
+	}
+	agent.authorizationBody = append([]byte(nil), body...)
+	return nil
+}
+
+func (agent *Agent) restoreAuthorizationStateLocked(body []byte) error {
+	rawRecords, err := decodeAuthorizationStateRecords(body, agentAuthorizationStateSchema)
+	if err != nil {
+		return err
+	}
+	pendingTokens := make(map[string]agentPendingTokenRecord)
+	pendingAccess := make(map[string]agentPendingAccessRecord)
+	terminalTokenIDs := make(map[string]struct{})
+	terminalAccessTokens := make(map[string]struct{})
+	previous := ""
+	for _, raw := range rawRecords {
+		var record agentAuthorizationStateRecord
+		if err := decodeAuthorizationStateRecord(raw, &record); err != nil {
+			return err
+		}
+		sortKey := record.Kind + "\x00" + record.Key
+		if record.Key == "" || sortKey <= previous {
+			return ErrAuthorizationStateIntegrity
+		}
+		previous = sortKey
+		switch record.Kind {
+		case "access":
+			if record.Access == nil || record.Token != nil || record.Access.ID != record.Key ||
+				validateAgentPendingAccessRecord(*record.Access) != nil {
+				return ErrAuthorizationStateIntegrity
+			}
+			if record.Access.TerminalGrant != nil {
+				if _, duplicate := terminalAccessTokens[record.Access.TerminalGrant.Token]; duplicate {
+					return ErrAuthorizationStateIntegrity
+				}
+				terminalAccessTokens[record.Access.TerminalGrant.Token] = struct{}{}
+			}
+			pendingAccess[record.Key] = cloneAgentPendingAccessRecord(*record.Access)
+		case "token":
+			if record.Token == nil || record.Access != nil || record.Token.ID != record.Key ||
+				validateAgentPendingTokenRecord(*record.Token) != nil {
+				return ErrAuthorizationStateIntegrity
+			}
+			if record.Token.TerminalGrant != nil {
+				terminalID := record.Token.TerminalGrant.Claims.Issuer + "\x00" + record.Token.TerminalGrant.Claims.JTI
+				if _, duplicate := terminalTokenIDs[terminalID]; duplicate {
+					return ErrAuthorizationStateIntegrity
+				}
+				terminalTokenIDs[terminalID] = struct{}{}
+			}
+			pendingTokens[record.Key] = cloneAgentPendingTokenRecord(*record.Token)
+		default:
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	agent.pendingTokens = pendingTokens
+	agent.pendingAccess = pendingAccess
+	return nil
+}
+
+func validateAgentPendingAccessRecord(record agentPendingAccessRecord) error {
+	if record.ID == "" || record.Resource == "" || record.Location == "" || record.NotBefore.IsZero() ||
+		record.RetryAfter < 0 || (record.Status != "pending" && record.Status != "interacting") {
+		return ErrAuthorizationStateIntegrity
+	}
+	if err := aauth.ValidateServerIdentifier(record.Resource); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if err := aauth.ValidatePollingEndpoint(record.Location); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	resource, err := endpointIdentifier(record.Location)
+	if err != nil || resource != record.Resource || path.Base(mustParseURLPath(record.Location)) != record.ID {
+		return ErrAuthorizationStateIntegrity
+	}
+	if len(record.RequestedScope) != 0 {
+		if scopes, err := parseScopes(strings.Join(record.RequestedScope, " ")); err != nil || len(scopes) != len(record.RequestedScope) {
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	if record.TerminalGrant != nil {
+		if aauth.ValidateAccessToken(record.TerminalGrant.Token) != nil ||
+			record.TerminalGrant.Resource != record.Resource {
+			return ErrAuthorizationStateIntegrity
+		}
+		granted, err := parseScopes(strings.Join(record.TerminalGrant.Scope, " "))
+		if err != nil || len(granted) != len(record.TerminalGrant.Scope) ||
+			len(record.RequestedScope) != 0 && !scopesContained(granted, record.RequestedScope) {
+			return ErrAuthorizationStateIntegrity
+		}
+	}
+	return nil
+}
+
+func validateAgentPendingTokenRecord(record agentPendingTokenRecord) error {
+	if record.ID == "" || record.PersonServer == "" || record.Location == "" || record.NotBefore.IsZero() ||
+		record.RetryAfter < 0 || (record.Status != "pending" && record.Status != "interacting") ||
+		record.ExpectedIssuer == "" {
+		return ErrAuthorizationStateIntegrity
+	}
+	if err := aauth.ValidateServerIdentifier(record.PersonServer); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if err := aauth.ValidatePollingEndpoint(record.Location); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	server, err := endpointIdentifier(record.Location)
+	if err != nil || server != record.PersonServer || path.Base(mustParseURLPath(record.Location)) != record.ID {
+		return ErrAuthorizationStateIntegrity
+	}
+	if _, err := record.ExpectedKey.PublicKey(); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if err := validateAgentRetainedResourceGrant(record); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	if (record.TerminalGrant == nil) != (record.TerminalVerificationKey == nil) {
+		return ErrAuthorizationStateIntegrity
+	}
+	if record.TerminalGrant != nil && validateAgentRetainedTerminalGrant(record) != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func validateAgentRetainedResourceGrant(record agentPendingTokenRecord) error {
+	grant := record.ResourceGrant
+	if aauth.ValidateServerIdentifier(grant.Resource) != nil || grant.ResourceToken == "" ||
+		grant.Claims.Issuer != grant.Resource || grant.Claims.PersonServer != record.PersonServer ||
+		grant.Claims.Audience != record.ExpectedIssuer || grant.Claims.Agent != "" || grant.Claims.Subject == "" {
+		return ErrAuthorizationStateIntegrity
+	}
+	verified, err := verifyRetainedResourceToken(grant.ResourceToken, record.ResourceVerificationKey)
+	if err != nil || !reflect.DeepEqual(verified, grant.Claims) {
+		return ErrAuthorizationStateIntegrity
+	}
+	thumbprint, err := record.ExpectedKey.Thumbprint()
+	if err != nil || grant.Claims.AgentJKT != thumbprint {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func validateAgentRetainedTerminalGrant(record agentPendingTokenRecord) error {
+	grant := record.TerminalGrant
+	if grant == nil || record.TerminalVerificationKey == nil || grant.AuthToken == "" ||
+		grant.Resource != record.ResourceGrant.Resource {
+		return ErrAuthorizationStateIntegrity
+	}
+	claims, err := verifyRetainedAuthToken(grant.AuthToken, *record.TerminalVerificationKey)
+	if err != nil || !reflect.DeepEqual(claims, grant.Claims) || claims.JTI != record.ID {
+		return ErrAuthorizationStateIntegrity
+	}
+	resourceClaims := record.ResourceGrant.Claims
+	if claims.Issuer != record.ExpectedIssuer || claims.ExpiresAt > resourceClaims.ExpiresAt ||
+		claims.IssuedAt < resourceClaims.IssuedAt {
+		return ErrAuthorizationStateIntegrity
+	}
+	expectedDiscoveryDocument := aauth.AccessDiscoveryDocument
+	if record.ExpectedIssuer == resourceClaims.PersonServer {
+		expectedDiscoveryDocument = aauth.PersonDiscoveryDocument
+	}
+	if claims.DWK != expectedDiscoveryDocument || claims.PersonServer != resourceClaims.PersonServer ||
+		claims.Subject != resourceClaims.Subject || claims.MissionS256 != resourceClaims.MissionS256 ||
+		claims.Tenant != resourceClaims.Tenant || claims.Account != resourceClaims.Account ||
+		claims.Agent != "" || claims.Actor != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	requiredScopes, err := parseScopes(resourceClaims.Scope)
+	if err != nil || aauth.ValidateCurrentAuthTokenContext(
+		claims,
+		record.ResourceGrant.Resource,
+		resourceClaims.PersonServer,
+		resourceClaims.Subject,
+		record.ExpectedKey,
+		requiredScopes,
+	) != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	return nil
+}
+
+func mustParseURLPath(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return parsed.Path
+}
+
+func (agent *Agent) persistAuthorizationStateLocked(ctx context.Context) error {
+	if agent.authorizationErr != nil {
+		return agent.authorizationErr
+	}
+	if err := agent.settleAuthorizationStateLocked(ctx); err != nil {
+		return err
+	}
+	records := make([]agentAuthorizationStateRecord, 0, len(agent.pendingTokens)+len(agent.pendingAccess))
+	terminalTokenIDs := make(map[string]struct{})
+	terminalAccessTokens := make(map[string]struct{})
+	for key, pending := range agent.pendingTokens {
+		if pending.ID != key || validateAgentPendingTokenRecord(pending) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		if pending.TerminalGrant != nil {
+			terminalID := pending.TerminalGrant.Claims.Issuer + "\x00" + pending.TerminalGrant.Claims.JTI
+			if _, duplicate := terminalTokenIDs[terminalID]; duplicate {
+				return ErrAuthorizationStateIntegrity
+			}
+			terminalTokenIDs[terminalID] = struct{}{}
+		}
+		copied := cloneAgentPendingTokenRecord(pending)
+		records = append(records, agentAuthorizationStateRecord{Kind: "token", Key: key, Token: &copied})
+	}
+	for key, pending := range agent.pendingAccess {
+		if pending.ID != key || validateAgentPendingAccessRecord(pending) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		if pending.TerminalGrant != nil {
+			if _, duplicate := terminalAccessTokens[pending.TerminalGrant.Token]; duplicate {
+				return ErrAuthorizationStateIntegrity
+			}
+			terminalAccessTokens[pending.TerminalGrant.Token] = struct{}{}
+		}
+		copied := cloneAgentPendingAccessRecord(pending)
+		records = append(records, agentAuthorizationStateRecord{Kind: "access", Key: key, Access: &copied})
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Kind+"\x00"+records[i].Key < records[j].Kind+"\x00"+records[j].Key
+	})
+	raw := make([]json.RawMessage, 0, len(records))
+	for _, record := range records {
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			return agent.reconcileAuthorizationStateLocked(ctx, nil, err)
+		}
+		raw = append(raw, encoded)
+	}
+	body, err := marshalAuthorizationStateRecords(agentAuthorizationStateSchema, raw)
+	if err != nil {
+		return agent.reconcileAuthorizationStateLocked(ctx, nil, err)
+	}
+	if err := agent.authorizationStore.Replace(ctx, body); err != nil {
+		return agent.reconcileAuthorizationStateLocked(ctx, body, err)
+	}
+	agent.authorizationBody = append(agent.authorizationBody[:0], body...)
+	return nil
+}
+
+func (agent *Agent) reconcileAuthorizationStateLocked(ctx context.Context, candidate []byte, commitErr error) error {
+	body, published, err := reconcileAuthorizationState(ctx, agent.authorizationStore, agent.authorizationBody, candidate)
+	if err != nil || len(body) == 0 {
+		agent.pendingTokens = make(map[string]agentPendingTokenRecord)
+		agent.pendingAccess = make(map[string]agentPendingAccessRecord)
+		agent.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
+		return agent.authorizationErr
+	}
+	if err := agent.restoreAuthorizationStateLocked(body); err != nil {
+		agent.pendingTokens = make(map[string]agentPendingTokenRecord)
+		agent.pendingAccess = make(map[string]agentPendingAccessRecord)
+		agent.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
+		return agent.authorizationErr
+	}
+	if published {
+		agent.authorizationRecovery = append(agent.authorizationRecovery[:0], body...)
+		return authorizationStatePublishedUncertain(commitErr)
+	}
+	agent.authorizationBody = append(agent.authorizationBody[:0], body...)
+	return commitErr
+}
+
+func (agent *Agent) settleAuthorizationStateLocked(ctx context.Context) error {
+	if agent.authorizationErr != nil {
+		return agent.authorizationErr
+	}
+	if len(agent.authorizationRecovery) == 0 {
+		return nil
+	}
+	candidate := append([]byte(nil), agent.authorizationRecovery...)
+	if err := agent.authorizationStore.Replace(ctx, candidate); err != nil {
+		body, published, reconcileErr := reconcileAuthorizationState(ctx, agent.authorizationStore, nil, candidate)
+		if reconcileErr == nil && published {
+			reconcileErr = agent.restoreAuthorizationStateLocked(body)
+		}
+		if reconcileErr != nil || !published {
+			agent.pendingTokens = make(map[string]agentPendingTokenRecord)
+			agent.pendingAccess = make(map[string]agentPendingAccessRecord)
+			agent.authorizationErr = authorizationStateReconciliationFailure(err, reconcileErr)
+			return agent.authorizationErr
+		}
+		return authorizationStatePublishedUncertain(err)
+	}
+	agent.authorizationBody = append(agent.authorizationBody[:0], candidate...)
+	agent.authorizationRecovery = nil
+	return nil
+}
+
+func (agent *Agent) ensureAuthorizationState(ctx context.Context) error {
+	agent.authorizationMu.Lock()
+	defer agent.authorizationMu.Unlock()
+	return agent.settleAuthorizationStateLocked(ctx)
+}
+
+func cloneAgentPendingTokenRecord(value agentPendingTokenRecord) agentPendingTokenRecord {
+	value.Requirement = copyRequirement(value.Requirement)
+	value.TerminalVerificationKey = copyJWK(value.TerminalVerificationKey)
+	if value.TerminalGrant != nil {
+		grant := *value.TerminalGrant
+		value.TerminalGrant = &grant
+	}
+	return value
+}
+
+func cloneAgentPendingAccessRecord(value agentPendingAccessRecord) agentPendingAccessRecord {
+	value.Requirement = copyRequirement(value.Requirement)
+	value.RequestedScope = append([]string(nil), value.RequestedScope...)
+	if value.TerminalGrant != nil {
+		grant := *value.TerminalGrant
+		grant.Scope = append([]string(nil), value.TerminalGrant.Scope...)
+		value.TerminalGrant = &grant
+	}
+	return value
 }
 
 // RegisterPublicEventSubscription retains the local continuation context
@@ -284,7 +677,7 @@ func (agent *Agent) registerEventSubscription(
 	if err != nil {
 		return err
 	}
-	if err := aauth.SignRequest(request, agent.signingKey, compact, agent.clock); err != nil {
+	if err := agent.signRequest(request, compact); err != nil {
 		return err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -607,7 +1000,7 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 		return approved, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return approved, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -625,36 +1018,24 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 	if len(responseBytes) > maxJSONBody {
 		return approved, errors.New("reference: mission response is too large")
 	}
-	missionBytes := responseBytes
-	if header := response.Header.Get("AAuth-Mission"); header != "" {
-		reference, err := aauth.ParseMissionHeader(header)
-		if err != nil {
-			return approved, err
-		}
-		approved = aauth.ApprovedMission{
-			Reference: reference,
-			Bytes:     append([]byte(nil), missionBytes...),
-		}
-	} else {
-		var result struct {
-			S256         string            `json:"s256"`
-			Mission      string            `json:"mission"`
-			Capabilities []string          `json:"capabilities,omitempty"`
-			PersonTokens map[string]string `json:"person_tokens,omitempty"`
-		}
-		if err := json.Unmarshal(responseBytes, &result); err != nil {
-			return approved, fmt.Errorf("reference: decode mission approval: %w", err)
-		}
-		missionBytes, err = base64.RawURLEncoding.DecodeString(result.Mission)
-		if err != nil {
-			return approved, fmt.Errorf("reference: decode approved mission bytes: %w", err)
-		}
-		approved = aauth.ApprovedMission{
-			Reference:    aauth.MissionReference{Approver: personServer, S256: result.S256},
-			Bytes:        append([]byte(nil), missionBytes...),
-			Capabilities: append([]string(nil), result.Capabilities...),
-			PersonTokens: copyStringMap(result.PersonTokens),
-		}
+	var result struct {
+		S256         string            `json:"s256"`
+		Mission      string            `json:"mission"`
+		Capabilities []string          `json:"capabilities,omitempty"`
+		PersonTokens map[string]string `json:"person_tokens,omitempty"`
+	}
+	if err := json.Unmarshal(responseBytes, &result); err != nil {
+		return approved, fmt.Errorf("reference: decode mission approval: %w", err)
+	}
+	missionBytes, err := base64.RawURLEncoding.DecodeString(result.Mission)
+	if err != nil {
+		return approved, fmt.Errorf("reference: decode approved mission bytes: %w", err)
+	}
+	approved = aauth.ApprovedMission{
+		Reference:    aauth.MissionReference{Approver: personServer, S256: result.S256},
+		Bytes:        append([]byte(nil), missionBytes...),
+		Capabilities: append([]string(nil), result.Capabilities...),
+		PersonTokens: copyStringMap(result.PersonTokens),
 	}
 	if err := approved.ValidateExactBytes(); err != nil {
 		return approved, err
@@ -692,6 +1073,65 @@ func (agent *Agent) RequestPersonToken(
 	resource string,
 	mission *aauth.ApprovedMission,
 ) (PersonGrant, error) {
+	return agent.requestPersonToken(ctx, endpoint, resource, mission, "", "")
+}
+
+// RequestPersonTokenForSubagent lets a top-level parent obtain a current
+// resource-directed person token bound to one direct sub-agent's key.
+func (agent *Agent) RequestPersonTokenForSubagent(
+	ctx context.Context,
+	endpoint string,
+	resource string,
+	subagentToken string,
+) (PersonGrant, error) {
+	if strings.TrimSpace(subagentToken) == "" {
+		return PersonGrant{}, errors.New("reference: sub-agent token is required")
+	}
+	return agent.requestPersonToken(ctx, endpoint, resource, nil, subagentToken, "")
+}
+
+// RequestPersonTokenForUpstream obtains the downstream-directed person token
+// that begins one current call-chain hop. The upstream auth token is context
+// for the person server; the intermediary still signs with its own agent token.
+func (agent *Agent) RequestPersonTokenForUpstream(
+	ctx context.Context,
+	endpoint string,
+	resource string,
+	upstreamToken string,
+) (PersonGrant, error) {
+	if strings.TrimSpace(upstreamToken) == "" {
+		return PersonGrant{}, errors.New("reference: upstream auth token is required")
+	}
+	return agent.requestPersonToken(ctx, endpoint, resource, nil, "", upstreamToken)
+}
+
+// RequestPersonTokenForChainedSubagent obtains a downstream person token for
+// one direct sub-agent while the parent's upstream authorization selects the
+// person server and supplies the authorization context.
+func (agent *Agent) RequestPersonTokenForChainedSubagent(
+	ctx context.Context,
+	endpoint string,
+	resource string,
+	subagentToken string,
+	upstreamToken string,
+) (PersonGrant, error) {
+	if strings.TrimSpace(subagentToken) == "" {
+		return PersonGrant{}, errors.New("reference: sub-agent token is required")
+	}
+	if strings.TrimSpace(upstreamToken) == "" {
+		return PersonGrant{}, errors.New("reference: upstream auth token is required")
+	}
+	return agent.requestPersonToken(ctx, endpoint, resource, nil, subagentToken, upstreamToken)
+}
+
+func (agent *Agent) requestPersonToken(
+	ctx context.Context,
+	endpoint string,
+	resource string,
+	mission *aauth.ApprovedMission,
+	subagentToken string,
+	upstreamToken string,
+) (PersonGrant, error) {
 	var grant PersonGrant
 	if err := aauth.ValidateEndpoint(endpoint); err != nil {
 		return grant, err
@@ -704,9 +1144,11 @@ func (agent *Agent) RequestPersonToken(
 		return grant, err
 	}
 	input := struct {
-		Resource    string `json:"resource"`
-		MissionS256 string `json:"mission_s256,omitempty"`
-	}{Resource: resource}
+		Resource      string `json:"resource"`
+		MissionS256   string `json:"mission_s256,omitempty"`
+		SubagentToken string `json:"subagent_token,omitempty"`
+		UpstreamToken string `json:"upstream_token,omitempty"`
+	}{Resource: resource, SubagentToken: subagentToken, UpstreamToken: upstreamToken}
 	if mission != nil {
 		if err := mission.ValidateExactBytes(); err != nil {
 			return grant, err
@@ -715,6 +1157,45 @@ func (agent *Agent) RequestPersonToken(
 			return grant, errors.New("reference: person-token mission approver does not match endpoint")
 		}
 		input.MissionS256 = mission.Reference.S256
+	}
+	expectedKey := agent.signingKey.PublicJWK()
+	if subagentToken != "" {
+		parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		if parentClaims.ParentAgent != "" {
+			return grant, errors.New("reference: sub-agent cannot mediate another sub-agent")
+		}
+		subagentClaims, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		if subagentClaims.ParentAgent != agent.identifier ||
+			(upstreamToken == "" && subagentClaims.PersonServer != personServer) {
+			return grant, errors.New("reference: sub-agent token does not name this parent and person server")
+		}
+		expectedKey = subagentClaims.Confirmation.JWK
+	}
+	if upstreamToken != "" {
+		agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		if agentClaims.ParentAgent != "" {
+			return grant, errors.New("reference: sub-agent cannot perform call chaining")
+		}
+		upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		if upstream.Audience != agentClaims.Issuer || upstream.PersonServer != personServer {
+			return grant, errors.New("reference: upstream auth token does not route this intermediary to the person server")
+		}
+		if !upstream.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+			return grant, errors.New("reference: upstream auth-token confirmation key does not match intermediary signing key")
+		}
+		input.MissionS256 = upstream.MissionS256
 	}
 	body, err := json.Marshal(input)
 	if err != nil {
@@ -725,7 +1206,7 @@ func (agent *Agent) RequestPersonToken(
 		return grant, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return grant, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -748,7 +1229,7 @@ func (agent *Agent) RequestPersonToken(
 	}
 	if claims.Issuer != personServer || claims.Audience != resource ||
 		claims.MissionS256 != input.MissionS256 ||
-		!claims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+		!claims.Confirmation.JWK.Equal(expectedKey) {
 		return grant, errors.New("reference: person token does not match its request")
 	}
 	return PersonGrant{Resource: resource, PersonToken: result.PersonToken, Claims: claims}, nil
@@ -795,7 +1276,7 @@ func (agent *Agent) RequestPermission(
 		return authorization, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -873,7 +1354,7 @@ func (agent *Agent) PollPermission(
 		return authorization, err
 	}
 	request.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -975,7 +1456,7 @@ func (agent *Agent) RecordAudit(
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -1033,7 +1514,7 @@ func (agent *Agent) RequestInteraction(
 		return authorization, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -1071,7 +1552,7 @@ func (agent *Agent) PollInteraction(
 		return authorization, err
 	}
 	request.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -1121,7 +1602,7 @@ func (agent *Agent) RespondToClarification(
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -1238,30 +1719,6 @@ func decodeInteractionAuthorization(
 	}
 }
 
-func (agent *Agent) Authorize(
-	ctx context.Context,
-	resourceEndpoint string,
-	personServerEndpoint string,
-	scopes []string,
-	mission aauth.ApprovedMission,
-) (Grant, error) {
-	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
-		return Grant{}, err
-	}
-	personServerID, err := endpointIdentifier(personServerEndpoint)
-	if err != nil {
-		return Grant{}, err
-	}
-	if mission.Reference.Approver != personServerID {
-		return Grant{}, errors.New("reference: mission approver does not match person-server endpoint")
-	}
-	resourceGrant, err := agent.RequestResourceToken(ctx, resourceEndpoint, scopes, mission)
-	if err != nil {
-		return Grant{}, err
-	}
-	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
-}
-
 // AuthorizeWithPersonToken performs the current authorization-endpoint and
 // person-server exchange using one resource-directed aa-person+jwt.
 func (agent *Agent) AuthorizeWithPersonToken(
@@ -1339,7 +1796,7 @@ func (agent *Agent) requestCurrentResourceToken(
 		return grant, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agent.signingKey, personToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, personToken); err != nil {
 		return grant, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -1380,165 +1837,6 @@ func (agent *Agent) requestCurrentResourceToken(
 	}, nil
 }
 
-// AuthorizeR3 performs the ordinary four-party authorization journey while
-// asking the resource for one content-addressed R3 operation set.
-func (agent *Agent) AuthorizeR3(
-	ctx context.Context,
-	resourceEndpoint string,
-	personServerEndpoint string,
-	scopes []string,
-	mission aauth.ApprovedMission,
-	operations aauth.R3OperationSet,
-) (Grant, error) {
-	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
-		return Grant{}, err
-	}
-	personServerID, err := endpointIdentifier(personServerEndpoint)
-	if err != nil {
-		return Grant{}, err
-	}
-	if mission.Reference.Approver != personServerID {
-		return Grant{}, errors.New("reference: mission approver does not match person-server endpoint")
-	}
-	resourceGrant, err := agent.RequestResourceTokenR3(ctx, resourceEndpoint, scopes, mission, operations)
-	if err != nil {
-		return Grant{}, err
-	}
-	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
-}
-
-func (agent *Agent) RequestResourceToken(
-	ctx context.Context,
-	resourceEndpoint string,
-	scopes []string,
-	mission aauth.ApprovedMission,
-) (ResourceGrant, error) {
-	if err := mission.ValidateExactBytes(); err != nil {
-		return ResourceGrant{}, err
-	}
-	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission.Reference, nil)
-}
-
-// RequestResourceTokenR3 asks the resource to validate an R3 operation set and
-// return a resource token that identifies the resulting exact document.
-func (agent *Agent) RequestResourceTokenR3(
-	ctx context.Context,
-	resourceEndpoint string,
-	scopes []string,
-	mission aauth.ApprovedMission,
-	operations aauth.R3OperationSet,
-) (ResourceGrant, error) {
-	if err := mission.ValidateExactBytes(); err != nil {
-		return ResourceGrant{}, err
-	}
-	if err := operations.Validate(); err != nil {
-		return ResourceGrant{}, err
-	}
-	cloned := operations.Clone()
-	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission.Reference, &cloned)
-}
-
-// RequestResourceTokenForReference is used by an intermediary resource, which
-// receives the mission reference in an upstream auth token but never receives
-// or dereferences the mission body.
-func (agent *Agent) RequestResourceTokenForReference(
-	ctx context.Context,
-	resourceEndpoint string,
-	scopes []string,
-	mission aauth.MissionReference,
-) (ResourceGrant, error) {
-	if err := mission.Validate(); err != nil {
-		return ResourceGrant{}, err
-	}
-	return agent.requestResourceToken(ctx, resourceEndpoint, scopes, mission, nil)
-}
-
-func (agent *Agent) requestResourceToken(
-	ctx context.Context,
-	resourceEndpoint string,
-	scopes []string,
-	mission aauth.MissionReference,
-	r3Operations *aauth.R3OperationSet,
-) (ResourceGrant, error) {
-	var grant ResourceGrant
-	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
-		return grant, err
-	}
-	requestedScopes, err := parseScopes(strings.Join(scopes, " "))
-	if err != nil {
-		return grant, err
-	}
-	resourceID, err := endpointIdentifier(resourceEndpoint)
-	if err != nil {
-		return grant, err
-	}
-	resourceInput := struct {
-		Scope        string                `json:"scope"`
-		R3Operations *aauth.R3OperationSet `json:"r3_operations,omitempty"`
-	}{
-		Scope:        strings.Join(requestedScopes, " "),
-		R3Operations: r3Operations,
-	}
-	resourceBody, err := json.Marshal(resourceInput)
-	if err != nil {
-		return grant, err
-	}
-	resourceRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, resourceEndpoint, bytes.NewReader(resourceBody))
-	if err != nil {
-		return grant, err
-	}
-	resourceRequest.Header.Set("Content-Type", "application/json")
-	missionHeader, err := mission.Header()
-	if err != nil {
-		return grant, err
-	}
-	resourceRequest.Header.Set("AAuth-Mission", missionHeader)
-	if err := aauth.SignRequest(resourceRequest, agent.signingKey, agent.agentToken, agent.clock); err != nil {
-		return grant, err
-	}
-	resourceResponse, err := agent.httpClient.Do(resourceRequest)
-	if err != nil {
-		return grant, err
-	}
-	defer resourceResponse.Body.Close()
-	if resourceResponse.StatusCode != http.StatusOK {
-		return grant, responseError(resourceResponse)
-	}
-	var resourceResult struct {
-		ResourceToken string `json:"resource_token"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resourceResponse.Body, maxJSONBody)).Decode(&resourceResult); err != nil {
-		return grant, err
-	}
-	resourceClaims, err := aauth.VerifyResourceToken(ctx, resourceResult.ResourceToken, agent.keyResolver, agent.clock)
-	if err != nil {
-		return grant, err
-	}
-	agentThumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
-	if err != nil {
-		return grant, err
-	}
-	if resourceClaims.Issuer != resourceID ||
-		resourceClaims.Agent != agent.identifier || resourceClaims.AgentJKT != agentThumbprint ||
-		resourceClaims.Mission == nil || *resourceClaims.Mission != mission {
-		return grant, errors.New("reference: resource token does not match the authorization request")
-	}
-	if r3Operations != nil && (resourceClaims.R3URI == "" || resourceClaims.R3S256 == "") {
-		return grant, errors.New("reference: resource token omitted the requested R3 reference")
-	}
-	var requestedR3 *aauth.R3OperationSet
-	if r3Operations != nil {
-		cloned := r3Operations.Clone()
-		requestedR3 = &cloned
-	}
-	return ResourceGrant{
-		Resource:      resourceID,
-		ResourceToken: resourceResult.ResourceToken,
-		Claims:        resourceClaims,
-		RequestedR3:   requestedR3,
-	}, nil
-}
-
 func (agent *Agent) ExchangeResourceToken(
 	ctx context.Context,
 	personServerEndpoint string,
@@ -1558,67 +1856,6 @@ func (agent *Agent) ExchangeResourceToken(
 	return *authorization.Grant, nil
 }
 
-// ParseR3ConditionalChallenge verifies and binds one protected-resource 401
-// challenge to the initial conditional grant and attempted operation.
-func (agent *Agent) ParseR3ConditionalChallenge(
-	ctx context.Context,
-	response *http.Response,
-	classGrant Grant,
-	operation aauth.R3OperationSet,
-) (ResourceGrant, error) {
-	if response == nil || response.StatusCode != http.StatusUnauthorized {
-		return ResourceGrant{}, errors.New("reference: R3 conditional challenge must be a 401 response")
-	}
-	if err := operation.Validate(); err != nil || len(operation.Operations) != 1 {
-		return ResourceGrant{}, errors.New("reference: R3 conditional challenge requires one valid operation")
-	}
-	if classGrant.AuthToken == "" || classGrant.Resource == "" ||
-		classGrant.Claims.R3Conditional == nil ||
-		classGrant.Claims.R3Conditional.Vocabulary != operation.Vocabulary ||
-		!classGrant.Claims.R3Conditional.Contains(operation.Operations[0]) {
-		return ResourceGrant{}, errors.New("reference: attempted operation is not conditional in the class grant")
-	}
-	requirement, err := aauth.ParseRequirementHeader(response.Header.Get("AAuth-Requirement"))
-	if err != nil {
-		return ResourceGrant{}, err
-	}
-	if requirement.Type != aauth.RequirementAuthToken || requirement.ResourceToken == "" {
-		return ResourceGrant{}, errors.New("reference: R3 conditional challenge does not require an auth token")
-	}
-	claims, err := aauth.VerifyResourceToken(ctx, requirement.ResourceToken, agent.keyResolver, agent.clock)
-	if err != nil {
-		return ResourceGrant{}, err
-	}
-	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
-	if err != nil {
-		return ResourceGrant{}, err
-	}
-	proposalReference, proposalReferenceErr := classifyR3ProposalReference(
-		classGrant.Resource,
-		claims.R3URI,
-		claims.R3S256,
-	)
-	if claims.Issuer != classGrant.Resource || claims.Audience != classGrant.Claims.Issuer ||
-		claims.Agent != classGrant.Claims.Agent || claims.AgentJKT != thumbprint ||
-		claims.Scope != classGrant.Claims.Scope || claims.ExpiresAt > classGrant.Claims.ExpiresAt ||
-		claims.R3URI == "" || claims.R3S256 == "" || proposalReferenceErr != nil ||
-		!proposalReference {
-		return ResourceGrant{}, errors.New("reference: proposal resource token does not match the class grant")
-	}
-	if (claims.Mission == nil) != (classGrant.Claims.Mission == nil) ||
-		claims.Mission != nil && *claims.Mission != *classGrant.Claims.Mission {
-		return ResourceGrant{}, errors.New("reference: proposal resource token mission does not match the class grant")
-	}
-	requested := operation.Clone()
-	return ResourceGrant{
-		Resource:      classGrant.Resource,
-		ResourceToken: requirement.ResourceToken,
-		Claims:        claims,
-		RequestedR3:   &requested,
-		R3Proposal:    true,
-	}, nil
-}
-
 // RequestTokenAuthorization exchanges a resource token at a person server and
 // returns either the immediate auth-token grant or a deferred continuation.
 func (agent *Agent) RequestTokenAuthorization(
@@ -1626,6 +1863,9 @@ func (agent *Agent) RequestTokenAuthorization(
 	personServerEndpoint string,
 	resourceGrant ResourceGrant,
 ) (TokenAuthorization, error) {
+	if _, err := preflightResourceGrantPersonServer(personServerEndpoint, resourceGrant); err != nil {
+		return TokenAuthorization{}, err
+	}
 	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
 	if err != nil {
 		return TokenAuthorization{}, err
@@ -1637,21 +1877,16 @@ func (agent *Agent) RequestTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	if resourceGrant.Claims.PersonServer != "" {
-		if resourceGrant.Claims.Agent != "" || resourceGrant.Claims.AgentJKT != thumbprint {
-			return TokenAuthorization{}, errors.New("reference: current resource token is not bound to the requesting key")
-		}
-	} else if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
-		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the requesting agent")
+	if resourceGrant.Claims.Agent != "" || resourceGrant.Claims.Subject == "" ||
+		resourceGrant.Claims.AgentJKT != thumbprint {
+		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the requesting key")
 	}
 	return agent.requestTokenAuthorization(
 		ctx,
 		personServerEndpoint,
 		resourceGrant,
 		"",
-		agent.identifier,
 		agent.signingKey.PublicJWK(),
-		nil,
 		"",
 	)
 }
@@ -1749,6 +1984,10 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 	subagentToken string,
 	upstreamToken string,
 ) (TokenAuthorization, error) {
+	personServerID, err := preflightResourceGrantPersonServer(personServerEndpoint, resourceGrant)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
 	parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
 	if err != nil {
 		return TokenAuthorization{}, err
@@ -1763,15 +2002,17 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 	if subagentClaims.ParentAgent != agent.identifier {
 		return TokenAuthorization{}, errors.New("reference: sub-agent token does not name the signing parent")
 	}
+	if upstreamToken == "" && subagentClaims.PersonServer != personServerID {
+		return TokenAuthorization{}, errors.New("reference: sub-agent token names a different person server")
+	}
 	subagentThumbprint, err := subagentClaims.Confirmation.JWK.Thumbprint()
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	if resourceGrant.Claims.Agent != subagentClaims.Subject ||
+	if resourceGrant.Claims.Agent != "" || resourceGrant.Claims.Subject == "" ||
 		resourceGrant.Claims.AgentJKT != subagentThumbprint {
 		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the sub-agent")
 	}
-	expectedActor := &aauth.Actor{Agent: agent.identifier}
 	if upstreamToken != "" {
 		upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
 		if err != nil {
@@ -1780,27 +2021,16 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 		if upstream.Audience != parentClaims.Issuer {
 			return TokenAuthorization{}, errors.New("reference: upstream auth-token audience does not match intermediary issuer")
 		}
-		personServerID, err := endpointIdentifier(personServerEndpoint)
-		if err != nil {
-			return TokenAuthorization{}, err
+		if upstream.PersonServer != personServerID {
+			return TokenAuthorization{}, errors.New("reference: upstream auth token ps routes to a different person server")
 		}
-		if upstream.Mission != nil {
-			if upstream.Mission.Approver != personServerID {
-				return TokenAuthorization{}, errors.New("reference: upstream mission routes to a different person server")
-			}
-		} else if upstream.Issuer != personServerID {
-			return TokenAuthorization{}, errors.New("reference: upstream token without a mission routes to its issuer")
-		}
-		expectedActor = authorizationActor(&upstream, agent.identifier)
 	}
 	return agent.requestTokenAuthorization(
 		ctx,
 		personServerEndpoint,
 		resourceGrant,
 		subagentToken,
-		subagentClaims.Subject,
 		subagentClaims.Confirmation.JWK,
-		expectedActor,
 		upstreamToken,
 	)
 }
@@ -1835,6 +2065,10 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 	resourceGrant ResourceGrant,
 	upstreamToken string,
 ) (TokenAuthorization, error) {
+	personServerID, err := preflightResourceGrantPersonServer(personServerEndpoint, resourceGrant)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
 	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
 	if err != nil {
 		return TokenAuthorization{}, err
@@ -1846,28 +2080,21 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	// The upstream token remains bound to the upstream caller. The
-	// intermediary resource is selected by its audience and proves its own
-	// identity with the separately presented agent token and request key.
 	if upstream.Audience != agentClaims.Issuer {
 		return TokenAuthorization{}, errors.New("reference: upstream auth-token audience does not match intermediary issuer")
 	}
-	personServerID, err := endpointIdentifier(personServerEndpoint)
-	if err != nil {
-		return TokenAuthorization{}, err
+	if upstream.PersonServer != personServerID {
+		return TokenAuthorization{}, errors.New("reference: upstream auth token ps routes to a different person server")
 	}
-	if upstream.Mission != nil {
-		if upstream.Mission.Approver != personServerID {
-			return TokenAuthorization{}, errors.New("reference: upstream mission routes to a different person server")
-		}
-	} else if upstream.Issuer != personServerID {
-		return TokenAuthorization{}, errors.New("reference: upstream token without a mission routes to its issuer")
+	if !upstream.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+		return TokenAuthorization{}, errors.New("reference: upstream auth-token confirmation key does not match intermediary signing key")
 	}
 	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	if resourceGrant.Claims.Agent != agent.identifier || resourceGrant.Claims.AgentJKT != thumbprint {
+	if resourceGrant.Claims.Agent != "" || resourceGrant.Claims.Subject == "" ||
+		resourceGrant.Claims.AgentJKT != thumbprint {
 		return TokenAuthorization{}, errors.New("reference: downstream resource token is not bound to the intermediary")
 	}
 	return agent.requestTokenAuthorization(
@@ -1875,40 +2102,9 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 		personServerEndpoint,
 		resourceGrant,
 		"",
-		agent.identifier,
 		agent.signingKey.PublicJWK(),
-		authorizationActor(&upstream, ""),
 		upstreamToken,
 	)
-}
-
-func (agent *Agent) exchangeResourceToken(
-	ctx context.Context,
-	personServerEndpoint string,
-	resourceGrant ResourceGrant,
-	subagentToken string,
-	expectedAgent string,
-	expectedKey aauth.JWK,
-	expectedActor *aauth.Actor,
-	upstreamToken string,
-) (Grant, error) {
-	authorization, err := agent.requestTokenAuthorization(
-		ctx,
-		personServerEndpoint,
-		resourceGrant,
-		subagentToken,
-		expectedAgent,
-		expectedKey,
-		expectedActor,
-		upstreamToken,
-	)
-	if err != nil {
-		return Grant{}, err
-	}
-	if authorization.Grant == nil {
-		return Grant{}, errors.New("reference: authorization is pending; use a deferred token-authorization method")
-	}
-	return *authorization.Grant, nil
 }
 
 func (agent *Agent) requestTokenAuthorization(
@@ -1916,34 +2112,22 @@ func (agent *Agent) requestTokenAuthorization(
 	personServerEndpoint string,
 	resourceGrant ResourceGrant,
 	subagentToken string,
-	expectedAgent string,
 	expectedKey aauth.JWK,
-	expectedActor *aauth.Actor,
 	upstreamToken string,
 ) (TokenAuthorization, error) {
 	var authorization TokenAuthorization
-	if err := validateResourceGrantR3Request(resourceGrant); err != nil {
-		return authorization, err
-	}
-	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
-		return authorization, err
-	}
-	personServerID, err := endpointIdentifier(personServerEndpoint)
+	personServerID, err := preflightResourceGrantPersonServer(personServerEndpoint, resourceGrant)
 	if err != nil {
 		return authorization, err
 	}
-	expectedIssuer := personServerID
-	if resourceGrant.Claims.Audience != personServerID {
-		if resourceGrant.Claims.PersonServer != "" {
-			if resourceGrant.Claims.PersonServer != personServerID {
-				return authorization, errors.New("reference: federated resource token names a different person server")
-			}
-		} else if resourceGrant.Claims.Mission == nil ||
-			resourceGrant.Claims.Mission.Approver != personServerID {
-			return authorization, errors.New("reference: federated resource token is not governed by the person server")
-		}
-		expectedIssuer = resourceGrant.Claims.Audience
+	if err := agent.ensureAuthorizationState(ctx); err != nil {
+		return authorization, err
 	}
+	resourceVerificationKey, err := agent.verifyResourceGrantForContinuation(ctx, resourceGrant)
+	if err != nil {
+		return authorization, err
+	}
+	expectedIssuer := resourceGrant.Claims.Audience
 	tokenInput := map[string]string{"resource_token": resourceGrant.ResourceToken}
 	if subagentToken != "" {
 		tokenInput["subagent_token"] = subagentToken
@@ -1961,7 +2145,7 @@ func (agent *Agent) requestTokenAuthorization(
 	}
 	tokenRequest.Header.Set("Content-Type", "application/json")
 	tokenRequest.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequest(tokenRequest, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(tokenRequest, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	tokenResponse, err := agent.httpClient.Do(tokenRequest)
@@ -1971,14 +2155,13 @@ func (agent *Agent) requestTokenAuthorization(
 	defer tokenResponse.Body.Close()
 	switch tokenResponse.StatusCode {
 	case http.StatusOK:
-		grant, err := agent.parseTokenGrantResponse(
+		grant, _, err := agent.parseTokenGrantResponse(
 			ctx,
 			tokenResponse,
 			resourceGrant,
 			expectedIssuer,
-			expectedAgent,
 			expectedKey,
-			expectedActor,
+			"",
 		)
 		if err != nil {
 			return authorization, err
@@ -1986,9 +2169,6 @@ func (agent *Agent) requestTokenAuthorization(
 		authorization.Grant = &grant
 		return authorization, nil
 	case http.StatusAccepted:
-		if resourceGrant.Claims.R3URI != "" {
-			return authorization, errors.New("reference: deferred R3 authorization is not implemented")
-		}
 		deferred, err := aauth.ParseDeferredResponse(tokenResponse)
 		if err != nil {
 			return authorization, err
@@ -1996,14 +2176,16 @@ func (agent *Agent) requestTokenAuthorization(
 		pending, err := newPendingTokenAuthorization(
 			personServerID,
 			resourceGrant,
+			resourceVerificationKey,
 			expectedIssuer,
-			expectedAgent,
 			expectedKey,
-			expectedActor,
 			deferred,
 			agent.clock.Now(),
 		)
 		if err != nil {
+			return authorization, err
+		}
+		if err := agent.retainPendingTokenAuthorization(ctx, pending, nil, nil); err != nil {
 			return authorization, err
 		}
 		authorization.Pending = &pending
@@ -2013,140 +2195,197 @@ func (agent *Agent) requestTokenAuthorization(
 	}
 }
 
+func preflightResourceGrantPersonServer(
+	personServerEndpoint string,
+	resourceGrant ResourceGrant,
+) (string, error) {
+	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+		return "", err
+	}
+	personServerID, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return "", err
+	}
+	if resourceGrant.Claims.PersonServer == "" {
+		return "", errors.New("reference: current resource token ps is required")
+	}
+	if resourceGrant.Claims.PersonServer != personServerID {
+		return "", errors.New("reference: resource token ps does not match selected person server")
+	}
+	return personServerID, nil
+}
+
+func (agent *Agent) verifyResourceGrantForContinuation(
+	ctx context.Context,
+	resourceGrant ResourceGrant,
+) (aauth.JWK, error) {
+	capture, resolver := newRetainedKeyCapture(agent.keyResolver)
+	claims, err := aauth.VerifyResourceToken(ctx, resourceGrant.ResourceToken, resolver, agent.clock)
+	if err != nil {
+		return aauth.JWK{}, err
+	}
+	if !reflect.DeepEqual(claims, resourceGrant.Claims) {
+		return aauth.JWK{}, errors.New("reference: resource token compact value does not match its retained claims")
+	}
+	if claims.Issuer != resourceGrant.Resource {
+		return aauth.JWK{}, errors.New("reference: resource token issuer does not match its resource grant")
+	}
+	return capture.retainedKey()
+}
+
+func (agent *Agent) retainPendingTokenAuthorization(
+	ctx context.Context,
+	pending PendingTokenAuthorization,
+	terminal *Grant,
+	terminalVerificationKey *aauth.JWK,
+) error {
+	record := agentPendingTokenRecord{
+		ID: pending.ID, PersonServer: pending.PersonServer, Location: pending.Location,
+		RetryAfter: pending.RetryAfter, NotBefore: pending.NotBefore.UTC(), Status: pending.Status,
+		Requirement: copyRequirement(pending.Requirement), ResourceGrant: pending.resourceGrant,
+		ResourceVerificationKey: pending.resourceVerificationKey,
+		ExpectedIssuer:          pending.expectedIssuer, ExpectedKey: pending.expectedKey,
+	}
+	if terminal != nil {
+		if terminalVerificationKey == nil {
+			return errors.New("reference: terminal auth-token verification key is required")
+		}
+		grant := *terminal
+		record.TerminalGrant = &grant
+		record.TerminalVerificationKey = copyJWK(terminalVerificationKey)
+	} else if terminalVerificationKey != nil {
+		return errors.New("reference: terminal auth-token verification key has no terminal grant")
+	}
+	if err := validateAgentPendingTokenRecord(record); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	agent.authorizationMu.Lock()
+	defer agent.authorizationMu.Unlock()
+	if current, exists := agent.pendingTokens[pending.ID]; exists {
+		if !sameAgentPendingTokenContext(current, record) {
+			return ErrAuthorizationStateIntegrity
+		}
+		if current.TerminalGrant != nil {
+			if record.TerminalGrant == nil ||
+				!reflect.DeepEqual(current.TerminalGrant, record.TerminalGrant) ||
+				current.TerminalVerificationKey == nil || record.TerminalVerificationKey == nil ||
+				!current.TerminalVerificationKey.Equal(*record.TerminalVerificationKey) {
+				return ErrAuthorizationStateIntegrity
+			}
+			return nil
+		}
+	}
+	agent.pendingTokens[pending.ID] = record
+	if err := agent.persistAuthorizationStateLocked(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sameAgentPendingTokenContext(first, second agentPendingTokenRecord) bool {
+	return first.ID == second.ID && first.PersonServer == second.PersonServer &&
+		first.Location == second.Location && reflect.DeepEqual(first.ResourceGrant, second.ResourceGrant) &&
+		first.ResourceVerificationKey.Equal(second.ResourceVerificationKey) &&
+		first.ExpectedIssuer == second.ExpectedIssuer && first.ExpectedKey.Equal(second.ExpectedKey)
+}
+
+func (agent *Agent) restorePendingTokenAuthorization(ctx context.Context, pending *PendingTokenAuthorization) (*Grant, error) {
+	if pending.ID == "" {
+		return nil, errors.New("reference: pending token authorization id is required")
+	}
+	agent.authorizationMu.Lock()
+	defer agent.authorizationMu.Unlock()
+	if err := agent.settleAuthorizationStateLocked(ctx); err != nil {
+		return nil, err
+	}
+	record, exists := agent.pendingTokens[pending.ID]
+	if !exists {
+		return nil, errors.New("reference: pending token authorization is not retained")
+	}
+	*pending = PendingTokenAuthorization{
+		ID: record.ID, PersonServer: record.PersonServer, Location: record.Location,
+		RetryAfter: record.RetryAfter, NotBefore: record.NotBefore.UTC(), Status: record.Status,
+		Requirement: copyRequirement(record.Requirement), resourceGrant: record.ResourceGrant,
+		resourceVerificationKey: record.ResourceVerificationKey,
+		expectedIssuer:          record.ExpectedIssuer, expectedKey: record.ExpectedKey,
+	}
+	if record.TerminalGrant == nil {
+		return nil, nil
+	}
+	grant := *record.TerminalGrant
+	return &grant, nil
+}
+
 func (agent *Agent) parseTokenGrantResponse(
 	ctx context.Context,
 	tokenResponse *http.Response,
 	resourceGrant ResourceGrant,
 	expectedIssuer string,
-	expectedAgent string,
 	expectedKey aauth.JWK,
-	expectedActor *aauth.Actor,
-) (Grant, error) {
+	expectedJTI string,
+) (Grant, aauth.JWK, error) {
 	var tokenResult struct {
 		AuthToken string `json:"auth_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(tokenResponse.Body, maxJSONBody)).Decode(&tokenResult); err != nil {
-		return Grant{}, err
+		return Grant{}, aauth.JWK{}, err
 	}
-	authClaims, err := aauth.VerifyAuthToken(ctx, tokenResult.AuthToken, agent.keyResolver, agent.clock)
+	capture, resolver := newRetainedKeyCapture(agent.keyResolver)
+	authClaims, err := aauth.VerifyAuthToken(ctx, tokenResult.AuthToken, resolver, agent.clock)
 	if err != nil {
-		return Grant{}, err
+		return Grant{}, aauth.JWK{}, err
+	}
+	if expectedJTI != "" && authClaims.JTI != expectedJTI {
+		return Grant{}, aauth.JWK{}, errors.New("reference: deferred auth-token jti does not match its pending authorization")
 	}
 	requiredScopes, err := parseScopes(resourceGrant.Claims.Scope)
 	if err != nil {
-		return Grant{}, err
+		return Grant{}, aauth.JWK{}, err
 	}
-	current := resourceGrant.Claims.PersonServer != ""
-	if current {
-		if authClaims.ExpiresAt > resourceGrant.Claims.ExpiresAt {
-			return Grant{}, errors.New("reference: auth token outlives the resource token")
-		}
-		expectedDiscoveryDocument := aauth.AccessDiscoveryDocument
-		if expectedIssuer == resourceGrant.Claims.PersonServer {
-			expectedDiscoveryDocument = aauth.PersonDiscoveryDocument
-		}
-		if authClaims.Issuer != expectedIssuer ||
-			authClaims.DWK != expectedDiscoveryDocument ||
-			authClaims.PersonServer != resourceGrant.Claims.PersonServer ||
-			authClaims.Subject != resourceGrant.Claims.Subject ||
-			authClaims.MissionS256 != resourceGrant.Claims.MissionS256 ||
-			authClaims.Tenant != resourceGrant.Claims.Tenant ||
-			authClaims.Account != resourceGrant.Claims.Account ||
-			authClaims.Agent != "" || authClaims.Actor != nil {
-			return Grant{}, errors.New("reference: current auth token issuer, discovery document, or person context does not match the resource token")
-		}
-	} else if authClaims.Issuer != expectedIssuer ||
-		authClaims.Mission == nil ||
-		resourceGrant.Claims.Mission == nil ||
-		*authClaims.Mission != *resourceGrant.Claims.Mission {
-		return Grant{}, errors.New("reference: auth token does not match the resource token")
+	if authClaims.ExpiresAt > resourceGrant.Claims.ExpiresAt {
+		return Grant{}, aauth.JWK{}, errors.New("reference: auth token outlives the resource token")
 	}
-	if authClaims.R3URI != resourceGrant.Claims.R3URI ||
-		authClaims.R3S256 != resourceGrant.Claims.R3S256 {
-		return Grant{}, errors.New("reference: auth token R3 reference does not match the resource token")
+	expectedDiscoveryDocument := aauth.AccessDiscoveryDocument
+	if expectedIssuer == resourceGrant.Claims.PersonServer {
+		expectedDiscoveryDocument = aauth.PersonDiscoveryDocument
 	}
-	if resourceGrant.RequestedR3 != nil {
-		if authClaims.R3Granted == nil ||
-			!resourceGrant.RequestedR3.ContainsSet(*authClaims.R3Granted) {
-			return Grant{}, errors.New("reference: auth token grants R3 operations outside the agent request")
-		}
-		if authClaims.R3Conditional != nil &&
-			!resourceGrant.RequestedR3.ContainsSet(*authClaims.R3Conditional) {
-			return Grant{}, errors.New("reference: auth token makes R3 operations conditional outside the agent request")
-		}
+	if authClaims.Issuer != expectedIssuer ||
+		authClaims.DWK != expectedDiscoveryDocument ||
+		authClaims.PersonServer != resourceGrant.Claims.PersonServer ||
+		authClaims.Subject != resourceGrant.Claims.Subject ||
+		authClaims.MissionS256 != resourceGrant.Claims.MissionS256 ||
+		authClaims.Tenant != resourceGrant.Claims.Tenant ||
+		authClaims.Account != resourceGrant.Claims.Account ||
+		authClaims.Agent != "" || authClaims.Actor != nil {
+		return Grant{}, aauth.JWK{}, errors.New("reference: current auth token issuer, discovery document, or person context does not match the resource token")
 	}
-	if resourceGrant.R3Proposal {
-		if resourceGrant.RequestedR3 == nil || len(resourceGrant.RequestedR3.Operations) != 1 ||
-			authClaims.R3Conditional != nil || authClaims.R3Granted == nil ||
-			!authClaims.R3Granted.Equal(*resourceGrant.RequestedR3) {
-			return Grant{}, errors.New("reference: per-call auth token does not grant exactly the proposed operation")
-		}
+	if err := aauth.ValidateCurrentAuthTokenContext(
+		authClaims,
+		resourceGrant.Resource,
+		resourceGrant.Claims.PersonServer,
+		resourceGrant.Claims.Subject,
+		expectedKey,
+		requiredScopes,
+	); err != nil {
+		return Grant{}, aauth.JWK{}, err
 	}
-	if current {
-		if err := aauth.ValidateCurrentAuthTokenContext(
-			authClaims,
-			resourceGrant.Resource,
-			resourceGrant.Claims.PersonServer,
-			resourceGrant.Claims.Subject,
-			expectedKey,
-			requiredScopes,
-		); err != nil {
-			return Grant{}, err
-		}
-	} else {
-		if err := aauth.ValidateAuthTokenContext(
-			authClaims,
-			resourceGrant.Resource,
-			expectedAgent,
-			expectedKey,
-			requiredScopes,
-		); err != nil {
-			return Grant{}, err
-		}
-		if !actorsEqual(authClaims.Actor, expectedActor) {
-			return Grant{}, errors.New("reference: auth token contains an unexpected act chain")
-		}
+	verificationKey, err := capture.retainedKey()
+	if err != nil {
+		return Grant{}, aauth.JWK{}, err
 	}
 	return Grant{
 		Resource:  resourceGrant.Resource,
 		AuthToken: tokenResult.AuthToken,
 		Claims:    authClaims,
-	}, nil
-}
-
-func validateResourceGrantR3Request(resourceGrant ResourceGrant) error {
-	if resourceGrant.Claims.R3URI == "" {
-		if resourceGrant.RequestedR3 != nil {
-			return errors.New("reference: resource grant has an R3 request without an R3 reference")
-		}
-		return nil
-	}
-	if resourceGrant.RequestedR3 == nil {
-		return errors.New("reference: resource grant is missing the requested R3 operation binding")
-	}
-	if err := resourceGrant.RequestedR3.Validate(); err != nil {
-		return fmt.Errorf("reference: resource grant requested R3 operations: %w", err)
-	}
-	if resourceGrant.R3Proposal {
-		proposalReference, err := classifyR3ProposalReference(
-			resourceGrant.Resource,
-			resourceGrant.Claims.R3URI,
-			resourceGrant.Claims.R3S256,
-		)
-		if len(resourceGrant.RequestedR3.Operations) != 1 || err != nil || !proposalReference {
-			return errors.New("reference: proposal resource grant has an invalid stage binding")
-		}
-	}
-	return nil
+	}, verificationKey, nil
 }
 
 func newPendingTokenAuthorization(
 	personServer string,
 	resourceGrant ResourceGrant,
+	resourceVerificationKey aauth.JWK,
 	expectedIssuer string,
-	expectedAgent string,
 	expectedKey aauth.JWK,
-	expectedActor *aauth.Actor,
 	deferred aauth.DeferredResponse,
 	now time.Time,
 ) (PendingTokenAuthorization, error) {
@@ -2162,18 +2401,17 @@ func newPendingTokenAuthorization(
 		return PendingTokenAuthorization{}, errors.New("reference: pending token authorization moved to another person server")
 	}
 	return PendingTokenAuthorization{
-		ID:             path.Base(parsed.Path),
-		PersonServer:   personServer,
-		Location:       deferred.Location,
-		RetryAfter:     deferred.RetryAfter,
-		NotBefore:      now.Add(deferred.RetryAfter),
-		Status:         deferred.Status,
-		Requirement:    deferred.Requirement,
-		resourceGrant:  resourceGrant,
-		expectedIssuer: expectedIssuer,
-		expectedAgent:  expectedAgent,
-		expectedKey:    expectedKey,
-		expectedActor:  copyActor(expectedActor),
+		ID:                      path.Base(parsed.Path),
+		PersonServer:            personServer,
+		Location:                deferred.Location,
+		RetryAfter:              deferred.RetryAfter,
+		NotBefore:               now.Add(deferred.RetryAfter),
+		Status:                  deferred.Status,
+		Requirement:             deferred.Requirement,
+		resourceGrant:           resourceGrant,
+		resourceVerificationKey: resourceVerificationKey,
+		expectedIssuer:          expectedIssuer,
+		expectedKey:             expectedKey,
 	}, nil
 }
 
@@ -2187,6 +2425,14 @@ func (agent *Agent) PollTokenAuthorization(
 	var authorization TokenAuthorization
 	if pending == nil {
 		return authorization, errors.New("reference: pending token authorization is required")
+	}
+	terminal, err := agent.restorePendingTokenAuthorization(ctx, pending)
+	if err != nil {
+		return authorization, err
+	}
+	if terminal != nil {
+		authorization.Grant = terminal
+		return authorization, nil
 	}
 	if agent.clock.Now().Before(pending.NotBefore) {
 		return authorization, errors.New("reference: pending token authorization is not ready to poll")
@@ -2206,7 +2452,7 @@ func (agent *Agent) PollTokenAuthorization(
 		return authorization, err
 	}
 	request.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -2217,16 +2463,18 @@ func (agent *Agent) PollTokenAuthorization(
 
 	switch response.StatusCode {
 	case http.StatusOK:
-		grant, err := agent.parseTokenGrantResponse(
+		grant, verificationKey, err := agent.parseTokenGrantResponse(
 			ctx,
 			response,
 			pending.resourceGrant,
 			pending.expectedIssuer,
-			pending.expectedAgent,
 			pending.expectedKey,
-			pending.expectedActor,
+			pending.ID,
 		)
 		if err != nil {
+			return authorization, err
+		}
+		if err := agent.retainPendingTokenAuthorization(ctx, *pending, &grant, &verificationKey); err != nil {
 			return authorization, err
 		}
 		authorization.Grant = &grant
@@ -2239,10 +2487,9 @@ func (agent *Agent) PollTokenAuthorization(
 		next, err := newPendingTokenAuthorization(
 			pending.PersonServer,
 			pending.resourceGrant,
+			pending.resourceVerificationKey,
 			pending.expectedIssuer,
-			pending.expectedAgent,
 			pending.expectedKey,
-			pending.expectedActor,
 			deferred,
 			agent.clock.Now(),
 		)
@@ -2250,6 +2497,9 @@ func (agent *Agent) PollTokenAuthorization(
 			return authorization, err
 		}
 		*pending = next
+		if err := agent.retainPendingTokenAuthorization(ctx, *pending, nil, nil); err != nil {
+			return authorization, err
+		}
 		authorization.Pending = pending
 		return authorization, nil
 	default:
@@ -2260,6 +2510,9 @@ func (agent *Agent) PollTokenAuthorization(
 			&pending.NotBefore,
 			agent.clock.Now(),
 		)
+		if err := agent.retainPendingTokenAuthorization(ctx, *pending, nil, nil); err != nil {
+			return authorization, err
+		}
 		return authorization, responseErr
 	}
 }
@@ -2272,48 +2525,6 @@ func copyActor(actor *aauth.Actor) *aauth.Actor {
 		Agent: actor.Agent,
 		Actor: copyActor(actor.Actor),
 	}
-}
-
-// authorizationActor preserves delegation order. A parent-mediated sub-agent
-// records its parent first; call-chain delegation then records the upstream
-// token's agent followed by any actor links that token already carried.
-func authorizationActor(upstream *aauth.AuthTokenClaims, parentAgent string) *aauth.Actor {
-	if upstream != nil {
-		upstreamActor := &aauth.Actor{
-			Agent: upstream.Agent,
-			Actor: copyActor(upstream.Actor),
-		}
-		if parentAgent != "" {
-			return &aauth.Actor{
-				Agent: parentAgent,
-				Actor: upstreamActor,
-			}
-		}
-		return upstreamActor
-	}
-	if parentAgent != "" {
-		return &aauth.Actor{Agent: parentAgent}
-	}
-	return nil
-}
-
-func delegationOriginAgent(upstream aauth.AuthTokenClaims) string {
-	agent := upstream.Agent
-	for actor := upstream.Actor; actor != nil; actor = actor.Actor {
-		agent = actor.Agent
-	}
-	return agent
-}
-
-func actorsEqual(left, right *aauth.Actor) bool {
-	for left != nil && right != nil {
-		if left.Agent != right.Agent {
-			return false
-		}
-		left = left.Actor
-		right = right.Actor
-	}
-	return left == nil && right == nil
 }
 
 func (agent *Agent) DoAuthorized(
@@ -2358,38 +2569,47 @@ func (agent *Agent) DoAuthorizedRequest(
 	if call.ContentType != "" {
 		request.Header.Set("Content-Type", call.ContentType)
 	}
-	if err := aauth.SignRequest(request, agent.signingKey, grant.AuthToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, grant.AuthToken); err != nil {
 		return nil, err
 	}
 	return agent.httpClient.Do(request)
 }
 
-// RequestResourceManagedAccess asks a resource to authorize immediately or
-// return a deferred continuation.
+// RequestResourceManagedAccess starts the current resource-managed flow at the
+// protected endpoint with the agent token. A successful local decision returns
+// an opaque session credential; a deferred decision returns a signed-poll
+// continuation. The protected consequence is retried separately with the
+// resulting credential.
 func (agent *Agent) RequestResourceManagedAccess(
 	ctx context.Context,
-	resourceEndpoint string,
-	scopes []string,
+	call AuthorizedCall,
 ) (AccessAuthorization, error) {
 	var authorization AccessAuthorization
-	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
+	if err := agent.ensureAuthorizationState(ctx); err != nil {
 		return authorization, err
 	}
-	requestedScopes, err := parseScopes(strings.Join(scopes, " "))
+	if err := aauth.ValidateEndpoint(call.Endpoint); err != nil {
+		return authorization, err
+	}
+	if strings.TrimSpace(call.Method) == "" {
+		return authorization, errors.New("reference: resource-managed authorization method is required")
+	}
+	if len(call.Body) != 0 && strings.TrimSpace(call.ContentType) == "" {
+		return authorization, errors.New("reference: resource-managed authorization body requires a content type")
+	}
+	var body io.Reader
+	if call.Body != nil {
+		body = bytes.NewReader(append([]byte(nil), call.Body...))
+	}
+	request, err := http.NewRequestWithContext(ctx, call.Method, call.Endpoint, body)
 	if err != nil {
 		return authorization, err
 	}
-	body, err := json.Marshal(map[string]string{"scope": strings.Join(requestedScopes, " ")})
-	if err != nil {
-		return authorization, err
+	if call.ContentType != "" {
+		request.Header.Set("Content-Type", call.ContentType)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, resourceEndpoint, bytes.NewReader(body))
-	if err != nil {
-		return authorization, err
-	}
-	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -2397,13 +2617,13 @@ func (agent *Agent) RequestResourceManagedAccess(
 		return authorization, err
 	}
 	defer response.Body.Close()
-	resourceID, err := endpointIdentifier(resourceEndpoint)
+	resourceID, err := endpointIdentifier(call.Endpoint)
 	if err != nil {
 		return authorization, err
 	}
 	switch response.StatusCode {
 	case http.StatusOK:
-		grant, err := parseAccessGrantResponse(response, resourceID, requestedScopes)
+		grant, err := parseAccessGrantResponse(response, resourceID, nil)
 		if err != nil {
 			return authorization, err
 		}
@@ -2414,8 +2634,11 @@ func (agent *Agent) RequestResourceManagedAccess(
 		if err != nil {
 			return authorization, err
 		}
-		pending, err := newPendingAccessAuthorization(resourceID, requestedScopes, deferred, agent.clock.Now())
+		pending, err := newPendingAccessAuthorization(resourceID, nil, deferred, agent.clock.Now())
 		if err != nil {
+			return authorization, err
+		}
+		if err := agent.retainPendingAccessAuthorization(ctx, pending, nil); err != nil {
 			return authorization, err
 		}
 		authorization.Pending = &pending
@@ -2456,7 +2679,7 @@ func parseAccessGrantResponse(
 	if err != nil {
 		return grant, fmt.Errorf("reference: invalid granted scope: %w", err)
 	}
-	if result.Status != "authorized" || !scopesContained(grantedScopes, requestedScopes) {
+	if result.Status != "authorized" || len(requestedScopes) != 0 && !scopesContained(grantedScopes, requestedScopes) {
 		return grant, errors.New("reference: authorization response contains an invalid status or scope")
 	}
 	return AccessGrant{
@@ -2495,6 +2718,71 @@ func newPendingAccessAuthorization(
 	}, nil
 }
 
+func (agent *Agent) retainPendingAccessAuthorization(ctx context.Context, pending PendingAccessAuthorization, terminal *AccessGrant) error {
+	record := agentPendingAccessRecord{
+		ID: pending.ID, Resource: pending.Resource, Location: pending.Location,
+		RetryAfter: pending.RetryAfter, NotBefore: pending.NotBefore.UTC(), Status: pending.Status,
+		Requirement: copyRequirement(pending.Requirement), RequestedScope: append([]string(nil), pending.requestedScope...),
+	}
+	if terminal != nil {
+		grant := *terminal
+		grant.Scope = append([]string(nil), terminal.Scope...)
+		record.TerminalGrant = &grant
+	}
+	if err := validateAgentPendingAccessRecord(record); err != nil {
+		return ErrAuthorizationStateIntegrity
+	}
+	agent.authorizationMu.Lock()
+	defer agent.authorizationMu.Unlock()
+	if current, exists := agent.pendingAccess[pending.ID]; exists {
+		if !sameAgentPendingAccessContext(current, record) {
+			return ErrAuthorizationStateIntegrity
+		}
+		if current.TerminalGrant != nil {
+			if record.TerminalGrant == nil || !reflect.DeepEqual(current.TerminalGrant, record.TerminalGrant) {
+				return ErrAuthorizationStateIntegrity
+			}
+			return nil
+		}
+	}
+	agent.pendingAccess[pending.ID] = record
+	if err := agent.persistAuthorizationStateLocked(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sameAgentPendingAccessContext(first, second agentPendingAccessRecord) bool {
+	return first.ID == second.ID && first.Resource == second.Resource && first.Location == second.Location &&
+		reflect.DeepEqual(first.RequestedScope, second.RequestedScope)
+}
+
+func (agent *Agent) restorePendingAccessAuthorization(ctx context.Context, pending *PendingAccessAuthorization) (*AccessGrant, error) {
+	if pending.ID == "" {
+		return nil, errors.New("reference: pending access authorization id is required")
+	}
+	agent.authorizationMu.Lock()
+	defer agent.authorizationMu.Unlock()
+	if err := agent.settleAuthorizationStateLocked(ctx); err != nil {
+		return nil, err
+	}
+	record, exists := agent.pendingAccess[pending.ID]
+	if !exists {
+		return nil, errors.New("reference: pending access authorization is not retained")
+	}
+	*pending = PendingAccessAuthorization{
+		ID: record.ID, Resource: record.Resource, Location: record.Location,
+		RetryAfter: record.RetryAfter, NotBefore: record.NotBefore.UTC(), Status: record.Status,
+		Requirement: copyRequirement(record.Requirement), requestedScope: append([]string(nil), record.RequestedScope...),
+	}
+	if record.TerminalGrant == nil {
+		return nil, nil
+	}
+	grant := *record.TerminalGrant
+	grant.Scope = append([]string(nil), record.TerminalGrant.Scope...)
+	return &grant, nil
+}
+
 // PollResourceManagedAccess makes one signed GET to a pending resource
 // authorization. It returns another pending continuation or the terminal grant.
 func (agent *Agent) PollResourceManagedAccess(
@@ -2504,6 +2792,14 @@ func (agent *Agent) PollResourceManagedAccess(
 	var authorization AccessAuthorization
 	if pending == nil {
 		return authorization, errors.New("reference: pending access authorization is required")
+	}
+	terminal, err := agent.restorePendingAccessAuthorization(ctx, pending)
+	if err != nil {
+		return authorization, err
+	}
+	if terminal != nil {
+		authorization.Grant = terminal
+		return authorization, nil
 	}
 	if agent.clock.Now().Before(pending.NotBefore) {
 		return authorization, errors.New("reference: pending authorization is not ready to poll")
@@ -2523,7 +2819,7 @@ func (agent *Agent) PollResourceManagedAccess(
 		return authorization, err
 	}
 	request.Header.Set("Prefer", "wait=0")
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return authorization, err
 	}
 	response, err := agent.httpClient.Do(request)
@@ -2535,6 +2831,9 @@ func (agent *Agent) PollResourceManagedAccess(
 	case http.StatusOK:
 		grant, err := parseAccessGrantResponse(response, pending.Resource, pending.requestedScope)
 		if err != nil {
+			return authorization, err
+		}
+		if err := agent.retainPendingAccessAuthorization(ctx, *pending, &grant); err != nil {
 			return authorization, err
 		}
 		authorization.Grant = &grant
@@ -2554,6 +2853,9 @@ func (agent *Agent) PollResourceManagedAccess(
 			return authorization, err
 		}
 		*pending = next
+		if err := agent.retainPendingAccessAuthorization(ctx, *pending, nil); err != nil {
+			return authorization, err
+		}
 		authorization.Pending = pending
 		return authorization, nil
 	default:
@@ -2564,6 +2866,9 @@ func (agent *Agent) PollResourceManagedAccess(
 			&pending.NotBefore,
 			agent.clock.Now(),
 		)
+		if err := agent.retainPendingAccessAuthorization(ctx, *pending, nil); err != nil {
+			return authorization, err
+		}
 		return authorization, responseErr
 	}
 }
@@ -2610,17 +2915,19 @@ func responseRetryAfter(values []string, now time.Time) (time.Duration, error) {
 // grant is updated in place when the resource rotates AAuth-Access.
 func (agent *Agent) DoWithAccess(
 	ctx context.Context,
-	method string,
-	endpoint string,
+	call AuthorizedCall,
 	grant *AccessGrant,
 ) (*http.Response, error) {
 	if grant == nil {
 		return nil, errors.New("reference: access grant is required")
 	}
-	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+	if err := aauth.ValidateEndpoint(call.Endpoint); err != nil {
 		return nil, err
 	}
-	resourceID, err := endpointIdentifier(endpoint)
+	if len(call.Body) != 0 && strings.TrimSpace(call.ContentType) == "" {
+		return nil, errors.New("reference: body-bearing authorized call requires content type")
+	}
+	resourceID, err := endpointIdentifier(call.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -2631,12 +2938,15 @@ func (agent *Agent) DoWithAccess(
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	request, err := http.NewRequestWithContext(ctx, call.Method, call.Endpoint, bytes.NewReader(call.Body))
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("Authorization", authorization)
-	if err := aauth.SignRequest(request, agent.signingKey, agent.agentToken, agent.clock); err != nil {
+	if call.ContentType != "" {
+		request.Header.Set("Content-Type", call.ContentType)
+	}
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
 		return nil, err
 	}
 	response, err := agent.httpClient.Do(request)

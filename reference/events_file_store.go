@@ -61,15 +61,6 @@ const (
 	fileAgentContextSchema      = "aauth.reference.events.agent-context.v2"
 	fileAgentProcessingSchema   = "aauth.reference.events.agent-processing.v2"
 	fileAgentDispositionSchema  = "aauth.reference.events.agent-disposition.v1"
-
-	fileAPSnapshotSchemaV1        = "aauth.reference.events.ap-store.v1"
-	fileAPSubscriptionSchemaV1    = "aauth.reference.events.ap-subscription.v1"
-	fileAPDeliverySchemaV1        = "aauth.reference.events.ap-delivery.v1"
-	fileResourceSnapshotSchemaV1  = "aauth.reference.events.resource-store.v1"
-	fileResourceAuthoritySchemaV1 = "aauth.reference.events.resource-authority.v1"
-	fileAgentSnapshotSchemaV1     = "aauth.reference.events.agent-store.v1"
-	fileAgentContextSchemaV1      = "aauth.reference.events.agent-context.v1"
-	fileAgentProcessingSchemaV1   = "aauth.reference.events.agent-processing.v1"
 )
 
 type eventFileCommitPhase uint8
@@ -166,6 +157,9 @@ func prepareEventFileDirectory(directory string) (string, error) {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
 		return "", ErrEventStoreUnsafe
 	}
+	if !eventFileOwnedByCurrentUser(info) {
+		return "", ErrEventStoreUnsafe
+	}
 	return directory, nil
 }
 
@@ -225,7 +219,7 @@ func (engine *eventFileEngine) cleanAndValidateEntries() error {
 func validatePrivateEventFile(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
-		info.Mode().Perm() != 0o600 || !eventFileHasSingleLink(info) {
+		info.Mode().Perm() != 0o600 || !eventFileHasSingleLink(info) || !eventFileOwnedByCurrentUser(info) {
 		return ErrEventStoreUnsafe
 	}
 	return nil
@@ -252,7 +246,7 @@ func (engine *eventFileEngine) readState() ([]byte, error) {
 	}
 	linked, err := os.Lstat(path)
 	if err != nil || !os.SameFile(opened, linked) || opened.Mode().Perm() != 0o600 ||
-		!opened.Mode().IsRegular() || !eventFileHasSingleLink(opened) {
+		!opened.Mode().IsRegular() || !eventFileHasSingleLink(opened) || !eventFileOwnedByCurrentUser(opened) {
 		return nil, ErrEventStoreUnsafe
 	}
 	body, err := io.ReadAll(io.LimitReader(file, engine.limits.maxBytes+1))
@@ -287,6 +281,10 @@ func (engine *eventFileEngine) commit(body []byte, records [][]byte) (published 
 	}()
 	if err := temporary.Chmod(0o600); err != nil {
 		return false, fmt.Errorf("reference: protect event state temporary: %w", err)
+	}
+	temporaryInfo, err := temporary.Stat()
+	if err != nil || !eventFileOwnedByCurrentUser(temporaryInfo) || !eventFileHasSingleLink(temporaryInfo) {
+		return false, ErrEventStoreUnsafe
 	}
 	if _, err := temporary.Write(body); err != nil {
 		return false, fmt.Errorf("reference: write event state: %w", err)
@@ -663,15 +661,8 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
-	legacy := snapshot.Schema == fileAPSnapshotSchemaV1
-	if snapshot.Schema != fileAPSnapshotSchema && !legacy || snapshot.Issuer != issuer {
+	if snapshot.Schema != fileAPSnapshotSchema || snapshot.Issuer != issuer {
 		return nil, ErrEventStoreIntegrity
-	}
-	subscriptionSchema := fileAPSubscriptionSchema
-	deliverySchema := fileAPDeliverySchema
-	if legacy {
-		subscriptionSchema = fileAPSubscriptionSchemaV1
-		deliverySchema = fileAPDeliverySchemaV1
 	}
 	if len(snapshot.Subscriptions)+len(snapshot.Inbox) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
 		return nil, ErrEventStoreCapacity
@@ -685,8 +676,7 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != subscriptionSchema || record.Subscription.APIssuer != issuer ||
-			legacy && hasEventContractBinding(record.Subscription.ContractDigest, record.Subscription.OperationID, record.Subscription.MessageID) {
+		if record.Schema != fileAPSubscriptionSchema || record.Subscription.APIssuer != issuer {
 			return nil, ErrEventStoreIntegrity
 		}
 		validation := record.Subscription
@@ -708,8 +698,7 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != deliverySchema || validateStoredAcceptedEvent(record.Accepted, issuer) != nil ||
-			legacy && hasEventPayload(record.Accepted.ContentType, record.Accepted.Payload, record.Accepted.PayloadDigest) {
+		if record.Schema != fileAPDeliverySchema || validateStoredAcceptedEvent(record.Accepted, issuer) != nil {
 			return nil, ErrEventStoreIntegrity
 		}
 		deliveryID := record.Accepted.Delivery.DeliveryID
@@ -997,16 +986,8 @@ func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryRes
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
-	legacy := snapshot.Schema == fileResourceSnapshotSchemaV1
-	if snapshot.Schema != fileResourceSnapshotSchema && !legacy {
+	if snapshot.Schema != fileResourceSnapshotSchema {
 		return nil, ErrEventStoreIntegrity
-	}
-	if legacy && len(snapshot.Tickets) != 0 {
-		return nil, ErrEventStoreIntegrity
-	}
-	authoritySchema := fileResourceAuthoritySchema
-	if legacy {
-		authoritySchema = fileResourceAuthoritySchemaV1
 	}
 	if len(snapshot.Authorities)+len(snapshot.Tickets) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
 		return nil, ErrEventStoreCapacity
@@ -1020,21 +1001,19 @@ func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryRes
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != authoritySchema || record.Subscription == nil ||
+		if record.Schema != fileResourceAuthoritySchema || record.Subscription == nil ||
 			validateEventSubscriptionKey(record.APIssuer, record.EventID) != nil {
 			return nil, ErrEventStoreIntegrity
 		}
 		key := eventSubscriptionKey{APIssuer: record.APIssuer, EventID: record.EventID}
 		if _, exists := memory.subscriptions[key]; exists || validateResourceEventSubscription(*record.Subscription) != nil ||
-			record.Subscription.APIssuer != key.APIssuer || record.Subscription.EventID != key.EventID ||
-			legacy && hasEventContractBinding(record.Subscription.ContractDigest, record.Subscription.OperationID, record.Subscription.MessageID) {
+			record.Subscription.APIssuer != key.APIssuer || record.Subscription.EventID != key.EventID {
 			return nil, ErrEventStoreIntegrity
 		}
 		memory.subscriptions[key] = *record.Subscription
 		if record.Pending != nil {
 			if validatePendingEventDelivery(*record.Pending) != nil || record.Pending.APIssuer != key.APIssuer ||
-				record.Pending.EventID != key.EventID ||
-				legacy && hasEventPayload(record.Pending.ContentType, record.Pending.Payload, record.Pending.PayloadDigest) {
+				record.Pending.EventID != key.EventID {
 				return nil, ErrEventStoreIntegrity
 			}
 			memory.pending[key] = clonePendingEventDelivery(*record.Pending)
@@ -1358,15 +1337,8 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
 	}
-	legacy := snapshot.Schema == fileAgentSnapshotSchemaV1
-	if snapshot.Schema != fileAgentSnapshotSchema && !legacy {
+	if snapshot.Schema != fileAgentSnapshotSchema {
 		return nil, ErrEventStoreIntegrity
-	}
-	contextSchema := fileAgentContextSchema
-	processingSchema := fileAgentProcessingSchema
-	if legacy {
-		contextSchema = fileAgentContextSchemaV1
-		processingSchema = fileAgentProcessingSchemaV1
 	}
 	if len(snapshot.Contexts)+len(snapshot.Processing)+len(snapshot.Dispositions) > limits.maxRecords ||
 		int64(len(body)) > limits.maxBytes {
@@ -1381,8 +1353,7 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		if err := decodeEventFileSnapshot(body, &record); err != nil {
 			return nil, err
 		}
-		if record.Schema != contextSchema || validateAgentEventContext(record.Context) != nil ||
-			legacy && (len(record.Context.Contract) != 0 || hasEventContractBinding(record.Context.ContractDigest, record.Context.OperationID, record.Context.MessageID)) {
+		if record.Schema != fileAgentContextSchema || validateAgentEventContext(record.Context) != nil {
 			return nil, ErrEventStoreIntegrity
 		}
 		key := eventSubscriptionKey{APIssuer: record.Context.APIssuer, EventID: record.Context.EventID}
@@ -1404,9 +1375,8 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		validation := record.Processing
 		state := validation.State
 		validation.State = EventPending
-		if record.Schema != processingSchema || validateAgentEventProcessing(validation) != nil ||
-			!validEventProcessingState(state) ||
-			legacy && hasEventPayload(validation.ContentType, validation.Payload, validation.PayloadDigest) {
+		if record.Schema != fileAgentProcessingSchema || validateAgentEventProcessing(validation) != nil ||
+			!validEventProcessingState(state) {
 			return nil, ErrEventStoreIntegrity
 		}
 		if state == EventRefused {

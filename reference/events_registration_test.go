@@ -499,12 +499,16 @@ func TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer(t *testing.T) {
 func newRegistrationTestResource(t *testing.T, resolver aauth.KeyResolver, clock aauth.Clock, store ResourceEventStore, activeUntil time.Time) *Resource {
 	t.Helper()
 	resource, err := NewResource(ResourceConfig{
-		Identifier:  "https://resource.example",
-		SigningKey:  eventsProviderTestSigningKey(t, "resource-events-key"),
-		KeyResolver: resolver,
-		Clock:       clock,
-		NewID:       func() string { return "unused" },
-		Scopes:      []string{"qualification.read"},
+		Identifier:               "https://resource.example",
+		AccessMode:               aauth.AccessModeSessionToken,
+		SigningKey:               eventsProviderTestSigningKey(t, "resource-events-key"),
+		KeyResolver:              resolver,
+		Clock:                    clock,
+		NewID:                    func() string { return "unused" },
+		Scopes:                   []string{"qualification.read"},
+		RequiredScopesForRequest: testRequiredResourceScopes("qualification.read"),
+		ReplayStore:              testResourceReplayStore(t, clock),
+		AuthorizationStore:       testAuthorizationStateStore(t),
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			return aauth.AuthorizationDecision{}, errors.New("unused")
 		},
@@ -527,13 +531,14 @@ func newRegistrationTestResource(t *testing.T, resolver aauth.KeyResolver, clock
 func newRegistrationTestAgent(t *testing.T, resolver aauth.KeyResolver, clock aauth.Clock, key aauth.SigningKey, store AgentEventStore, transport http.RoundTripper) *Agent {
 	t.Helper()
 	agent, err := NewAgent(AgentConfig{
-		Identifier:  "aauth:subscriber@ap.example",
-		SigningKey:  key,
-		AgentToken:  "unused-agent-token",
-		KeyResolver: resolver,
-		HTTPClient:  &http.Client{Transport: transport},
-		Clock:       clock,
-		Events:      &AgentEventsConfig{Store: store, Action: unusedEventAction{}},
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:subscriber@ap.example",
+		SigningKey:         key,
+		AgentToken:         "unused-agent-token",
+		KeyResolver:        resolver,
+		HTTPClient:         &http.Client{Transport: transport},
+		Clock:              clock,
+		Events:             &AgentEventsConfig{Store: store, Action: unusedEventAction{}},
 	})
 	if err != nil {
 		t.Fatal(err)

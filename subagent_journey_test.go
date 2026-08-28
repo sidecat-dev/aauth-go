@@ -14,7 +14,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
-func TestParentMediatesSubagentAuthorization(t *testing.T) {
+func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 7, 0, 0, 0, time.UTC)
@@ -22,6 +22,7 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 	ids := sequentialIDs(
 		"parent-agent-token",
 		"subagent-token",
+		"subagent-person-token",
 		"subagent-resource-token",
 		"subagent-auth-token",
 		"deferred-subagent-resource-token",
@@ -84,25 +85,34 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 	}
 
 	var policyRequest aauth.AuthorizationRequest
+	var personPolicyRequest aauth.PersonTokenRequest
 	var policyCalls int
 	var deferSubagent bool
+	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
 	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier:  "https://ps.example",
-		SigningKey:  psKey,
-		KeyResolver: keyResolver,
-		Clock:       clock,
-		NewID:       ids,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "https://ps.example",
+		SigningKey:         psKey,
+		KeyResolver:        keyResolver,
+		Clock:              clock,
+		NewID:              ids,
 		InteractionRequired: func(_ context.Context, request aauth.AuthorizationRequest) (bool, error) {
 			return deferSubagent && request.ParentAgent == "aauth:planner@ap.example", nil
 		},
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
-			return aauth.MissionDecision{Description: proposal.Description}, nil
+		PersonTokenStore:     personTokenStore,
+		MissionIssuanceStore: missionIssuanceStore,
+		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			personPolicyRequest = request
+			return aauth.PersonTokenDecision{Subject: "pairwise-user-for-resource", Lifetime: time.Hour}, nil
+		},
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
 		},
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			policyCalls++
 			policyRequest = request
 			return aauth.AuthorizationDecision{
-				Subject: "pairwise-user-for-resource",
+				Subject: request.Subject,
 				Scope:   request.Scope,
 			}, nil
 		},
@@ -118,13 +128,18 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 
 	var operationRequest aauth.AuthorizedRequest
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:   "https://resource.example",
-		PersonServer: "https://ps.example",
-		SigningKey:   resourceKey,
-		KeyResolver:  keyResolver,
-		Clock:        clock,
-		NewID:        ids,
-		Scopes:       []string{"search.read"},
+		Identifier:                   "https://resource.example",
+		AccessMode:                   aauth.AccessModeAuthToken,
+		PersonServer:                 "https://ps.example",
+		SigningKey:                   resourceKey,
+		KeyResolver:                  keyResolver,
+		Clock:                        clock,
+		NewID:                        ids,
+		Scopes:                       []string{"search.read"},
+		ScopeDescriptions:            map[string]string{"search.read": "Search"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("search.read"),
+		ReplayStore:                  testResourceReplayStore(t, clock),
+		ProtectedAuthorizationPolicy: func(context.Context, aauth.AuthorizedRequest) error { return nil },
 		Operation: func(_ context.Context, request aauth.AuthorizedRequest) (any, error) {
 			operationRequest = request
 			return map[string]any{"results": []string{"match"}}, nil
@@ -143,39 +158,49 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 	discoveryClient.Transport = gateway.Client().Transport
 
 	parent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  parentKey,
-		AgentToken:  parentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  gateway.Client(),
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         parentKey,
+		AgentToken:         parentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         gateway.Client(),
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	subagent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner+search1@ap.example",
-		SigningKey:  subagentKey,
-		AgentToken:  subagentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  gateway.Client(),
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:planner+search1@ap.example",
+		SigningKey:         subagentKey,
+		AgentToken:         subagentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         gateway.Client(),
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	mission, err := parent.CreateMission(context.Background(), "https://ps.example/mission", aauth.MissionProposal{
-		Description: "Find relevant documents using a bounded search worker.",
-	})
+	person, err := parent.RequestPersonTokenForSubagent(
+		context.Background(),
+		"https://ps.example/person",
+		"https://resource.example",
+		subagentToken,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceGrant, err := subagent.RequestResourceToken(
+	if personPolicyRequest.Agent != "aauth:planner+search1@ap.example" ||
+		personPolicyRequest.ParentAgent != "aauth:planner@ap.example" ||
+		!personPolicyRequest.Confirmation.Equal(subagentKey.PublicJWK()) {
+		t.Fatalf("person-token policy context = %#v", personPolicyRequest)
+	}
+	resourceGrant, err := subagent.RequestResourceTokenWithPersonToken(
 		context.Background(),
 		"https://resource.example/authorize",
 		[]string{"search.read"},
-		mission,
+		person.PersonToken,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -198,9 +223,9 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grant.Claims.Agent != "aauth:planner+search1@ap.example" ||
-		grant.Claims.Actor == nil ||
-		grant.Claims.Actor.Agent != "aauth:planner@ap.example" ||
+	if grant.Claims.Agent != "" || grant.Claims.Actor != nil ||
+		grant.Claims.PersonServer != "https://ps.example" ||
+		grant.Claims.Subject != "pairwise-user-for-resource" ||
 		!grant.Claims.Confirmation.JWK.Equal(subagentKey.PublicJWK()) {
 		t.Fatalf("sub-agent grant claims = %#v", grant.Claims)
 	}
@@ -223,17 +248,18 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("sub-agent protected operation status = %d, body = %s", response.StatusCode, body)
 	}
-	if operationRequest.Agent != "aauth:planner+search1@ap.example" {
-		t.Fatalf("protected operation agent = %q", operationRequest.Agent)
+	if operationRequest.Agent != "" || operationRequest.PersonServer != "https://ps.example" ||
+		operationRequest.Subject != "pairwise-user-for-resource" {
+		t.Fatalf("protected operation person context = %#v", operationRequest)
 	}
 
 	deferSubagent = true
 	now = now.Add(time.Second)
-	deferredResourceGrant, err := subagent.RequestResourceToken(
+	deferredResourceGrant, err := subagent.RequestResourceTokenWithPersonToken(
 		context.Background(),
 		"https://resource.example/authorize",
 		[]string{"search.read"},
-		mission,
+		person.PersonToken,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -279,9 +305,9 @@ func TestParentMediatesSubagentAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	if deferred.Grant == nil ||
-		deferred.Grant.Claims.Agent != "aauth:planner+search1@ap.example" ||
-		deferred.Grant.Claims.Actor == nil ||
-		deferred.Grant.Claims.Actor.Agent != "aauth:planner@ap.example" ||
+		deferred.Grant.Claims.Agent != "" || deferred.Grant.Claims.Actor != nil ||
+		deferred.Grant.Claims.PersonServer != "https://ps.example" ||
+		deferred.Grant.Claims.Subject != "pairwise-user-for-resource" ||
 		!deferred.Grant.Claims.Confirmation.JWK.Equal(subagentKey.PublicJWK()) {
 		t.Fatalf("deferred sub-agent grant = %#v", deferred.Grant)
 	}

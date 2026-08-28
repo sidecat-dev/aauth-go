@@ -19,7 +19,7 @@ func acquireEventFileLock(directory string) (*eventFileLock, error) {
 	switch {
 	case err == nil:
 		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
-			info.Mode().Perm() != 0o600 || !eventFileHasSingleLink(info) {
+			info.Mode().Perm() != 0o600 || !eventFileHasSingleLink(info) || !eventFileOwnedByCurrentUser(info) {
 			return nil, ErrEventStoreUnsafe
 		}
 	case errors.Is(err, os.ErrNotExist):
@@ -50,7 +50,7 @@ func acquireEventFileLock(directory string) (*eventFileLock, error) {
 	}
 	linked, err := os.Lstat(path)
 	if err != nil || !os.SameFile(opened, linked) || !opened.Mode().IsRegular() ||
-		opened.Mode().Perm() != 0o600 || !eventFileHasSingleLink(opened) {
+		opened.Mode().Perm() != 0o600 || !eventFileHasSingleLink(opened) || !eventFileOwnedByCurrentUser(opened) {
 		return nil, ErrEventStoreUnsafe
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -76,4 +76,9 @@ func (lock *eventFileLock) Close() error {
 func eventFileHasSingleLink(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && stat.Nlink == 1
+}
+
+func eventFileOwnedByCurrentUser(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Geteuid())
 }

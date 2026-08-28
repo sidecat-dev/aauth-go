@@ -142,13 +142,14 @@ type RequestProof struct {
 	Authority        string    `json:"authority"`
 	Target           string    `json:"target"`
 	ContentDigest    string    `json:"content_digest,omitempty"`
+	ContentType      string    `json:"content_type,omitempty"`
 	SignatureInput   string    `json:"signature_input"`
 	Signature        string    `json:"signature"`
 	SignatureKey     string    `json:"signature_key"`
-	AAuthMission     string    `json:"aauth_mission,omitempty"`
 	Authorization    string    `json:"authorization,omitempty"`
 	SignatureKeyType string    `json:"signature_key_type"`
 	CredentialType   string    `json:"credential_type,omitempty"`
+	CredentialIssuer string    `json:"credential_issuer,omitempty"`
 	Signer           string    `json:"signer"`
 	Agent            string    `json:"agent,omitempty"`
 	PublicKey        JWK       `json:"public_key"`

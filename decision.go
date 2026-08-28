@@ -13,7 +13,6 @@ type AuthorizationRequest struct {
 	Subject       string
 	Resource      string
 	Scope         []string
-	R3            *R3Authorization
 	Mission       *MissionReference
 	MissionS256   string
 	Tenant        string
@@ -24,38 +23,55 @@ type AuthorizationRequest struct {
 
 // AuthorizationDecision is the authority's granted identity and scope.
 type AuthorizationDecision struct {
-	Subject       string
-	Scope         []string
-	R3Granted     *R3OperationSet
-	R3Conditional *R3OperationSet
+	Subject string
+	Scope   []string
 }
 
-// AuthorizedRequest is supplied to a protected operation only after protocol
-// proof and authorization checks have passed.
+// AuthorizedRequest is supplied to protected authorization policy and then a
+// protected operation only after protocol proof, scope, and replay-admission
+// checks have passed. In the current auth-token flow Agent is empty: the host
+// resolves its local principal from the exact copy-safe ConfirmationKey while
+// retaining PersonServer and Subject as the separately asserted person
+// identity.
 type AuthorizedRequest struct {
-	Agent        string
-	PersonServer string
-	Subject      string
-	Scope        []string
-	Mission      *MissionReference
-	MissionS256  string
-	Tenant       string
-	Account      string
-	Actor        *Actor
-	AuthToken    string
-	Method       string
-	Path         string
-	Body         []byte
+	Agent              string
+	PersonServer       string
+	Subject            string
+	AuthTokenIssuer    string
+	AuthTokenDWK       string
+	AuthTokenID        string
+	AuthTokenIssuedAt  time.Time
+	AuthTokenExpiresAt time.Time
+	ConfirmationKey    JWK
+	ProofReplayKey     string
+	ProofCreatedAt     time.Time
+	Scope              []string
+	Mission            *MissionReference
+	MissionS256        string
+	Tenant             string
+	Account            string
+	Actor              *Actor
+	AuthToken          string
+	Method             string
+	Path               string
+	Body               []byte
+	ContentType        string
 }
+
+// ProtectedAuthorizationPolicy applies deployment-owned authorization to one
+// fully verified, replay-admitted current protected request.
+type ProtectedAuthorizationPolicy func(context.Context, AuthorizedRequest) error
 
 // PersonTokenRequest is the verified context a person server presents to its
 // deployment-owned person binding policy before issuing a directed token.
 type PersonTokenRequest struct {
 	Agent          string
+	ParentAgent    string
 	Resource       string
 	MissionS256    string
 	Confirmation   JWK
 	AgentExpiresAt time.Time
+	Upstream       *AuthTokenClaims
 }
 
 // PersonTokenDecision binds one agent key to one resource-directed person.
@@ -82,10 +98,6 @@ type MissionEvaluation struct {
 // CurrentMissionPolicy decides a current-profile mission with its verified
 // agent identity and person-server binding.
 type CurrentMissionPolicy func(context.Context, MissionEvaluation) (MissionDecision, error)
-
-// MissionPolicy is the caller-owned policy seam for the retained legacy
-// mission profile. Current person-token servers use CurrentMissionPolicy.
-type MissionPolicy func(context.Context, MissionProposal) (MissionDecision, error)
 
 // AuthorizationPolicy is intentionally caller-owned.
 type AuthorizationPolicy func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)

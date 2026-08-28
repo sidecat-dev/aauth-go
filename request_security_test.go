@@ -70,6 +70,20 @@ func TestSignedRequestRejectsMissionAddedOutsideCoveredComponents(t *testing.T) 
 	}
 }
 
+func TestSignRequestDoesNotCoverObsoleteMissionHeader(t *testing.T) {
+	t.Parallel()
+
+	fixture := newAuthRequestFixture(t)
+	request := fixture.request(t, http.MethodGet, nil)
+	request.Header.Set("AAuth-Mission", "obsolete-wire-value")
+	if err := aauth.SignRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.ToLower(request.Header.Get("Signature-Input")); strings.Contains(got, "aauth-mission") {
+		t.Fatalf("Signature-Input covers obsolete AAuth-Mission header: %s", got)
+	}
+}
+
 func TestSignedRequestRejectsAdditionalCoveredFieldValue(t *testing.T) {
 	t.Parallel()
 
@@ -101,10 +115,11 @@ func TestAuthTokenRejectsWrongAudienceAtResourceBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = aauth.ValidateAuthTokenContext(
+	err = aauth.ValidateCurrentAuthTokenContext(
 		claims,
 		"https://other-resource.example",
-		"aauth:planner@ap.example",
+		"https://ps.example",
+		"pairwise-subject",
 		fixture.agentKey.PublicJWK(),
 		[]string{"documents.read"},
 	)
@@ -132,7 +147,7 @@ func newAuthRequestFixture(t *testing.T) authRequestFixture {
 		DWK:          aauth.PersonDiscoveryDocument,
 		Audience:     "https://resource.example",
 		JTI:          "auth-token-1",
-		Agent:        "aauth:planner@ap.example",
+		PersonServer: "https://ps.example",
 		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
 		IssuedAt:     now.Unix(),
 		ExpiresAt:    now.Add(time.Hour).Unix(),

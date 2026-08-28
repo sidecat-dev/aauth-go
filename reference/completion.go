@@ -121,7 +121,7 @@ func (server *PersonServer) handleAgentInteraction(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	proof := requestProof(request, verified, now)
+	proof := requestProof(request, verified)
 	pending := pendingCompletion{
 		id:                     pendingID,
 		agent:                  verified.Agent,
@@ -399,7 +399,7 @@ func (server *PersonServer) receiveCompletionClarification(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("clarification_response action and answer are required"))
 		return
 	}
-	proof := requestProof(request, verified, server.clock.Now())
+	proof := requestProof(request, verified)
 	server.mu.Lock()
 	pending, exists := server.completionPending[request.PathValue("id")]
 	if !exists {

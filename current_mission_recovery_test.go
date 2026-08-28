@@ -124,6 +124,7 @@ func TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries(t *tes
 				issuances reference.MissionIssuanceStore,
 			) *reference.PersonServer {
 				server, err := reference.NewPersonServer(reference.PersonServerConfig{
+					AuthorizationStore:   testAuthorizationStateStore(t),
 					Identifier:           "https://ps.example",
 					SigningKey:           psKey,
 					KeyResolver:          resolver,

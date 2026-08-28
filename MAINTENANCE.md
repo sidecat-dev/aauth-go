@@ -37,14 +37,20 @@ finding as new.
 - A finding enters the journal only after executable evidence exists: a
   failing test, a wire capture, or a journey demonstrating the ambiguity.
 - Each interpretation records the exact source revision and section, chosen
-  behavior, plausible alternatives, reason, executable evidence, compatibility
-  effect, and later disposition.
+  behavior, plausible alternatives, reason, executable evidence,
+  current-product effect, and later disposition.
 - Each upstream feedback item starts from executable evidence, asks one neutral
   question, links its upstream thread, and records the authors' disposition.
 - Feedback is submitted to the authors as Joshua Gay, never as "we" and
   never as an agent.
 
 ## 3. Updating aauth-go
+
+This unreleased implementation is clean-current only. Replace or remove an
+obsolete schema, wire shape, package contract, or behavior in the same change;
+do not add or retain migration readers, compatibility modes, deprecated
+aliases, fallbacks, or dual paths. An obsolete form may remain only as raw
+negative test input proving that the current implementation rejects it.
 
 1. **Re-pin.** Copy the new exact source bytes into
    `internal/sourcecoverage/sources/` and update the coverage manifest's
@@ -56,11 +62,12 @@ finding as new.
    verify with `go run ./cmd/aauth-reference verify coverage`.
 3. **Implement** per the working method in `AGENTS.md`: a failing
    externally visible behavior test first, then complete paths through
-   real HTTP handlers and cryptographic verification. Migration order
+   real HTTP handlers and cryptographic verification. Dependency order
    follows the dependency analysis: Signature-Key wire format first,
-   then person-token topology, then missions and chaining, then R3
-   per-call semantics. Each phase regenerates its current Go fixtures and
-   journey evidence. Historical cross-language fixtures remain compatibility
-   evidence only until an independently generated current-profile exchange is
-   added.
-4. **Close** with the full suite and `go vet`, then commit and push.
+   then person-token topology, then missions and chaining, then a separately
+   reviewed current R3 implementation. Each phase regenerates its current Go fixtures and
+   journey evidence. Historical cross-language fixtures remain raw negative
+   vectors only; they do not earn an alternate runtime path.
+4. **Close** with the full suite, race suite, coverage verification, `go vet`,
+   and a clean diff check before handing the exact diff to the authorized
+   integration path.

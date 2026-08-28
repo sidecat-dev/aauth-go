@@ -19,7 +19,7 @@ func TestAgentEnforcesRetryAfterAndSlowDown(t *testing.T) {
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"resource.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			switch {
-			case request.Method == http.MethodPost && request.URL.Path == "/authorize":
+			case request.Method == http.MethodGet && request.URL.Path == "/documents" && request.Header.Get("Authorization") == "":
 				response.Header().Set("Location", "/pending/request-123")
 				response.Header().Set("Retry-After", "2")
 				response.Header().Set("Cache-Control", "no-store")
@@ -47,12 +47,13 @@ func TestAgentEnforcesRetryAfterAndSlowDown(t *testing.T) {
 	now := time.Date(2026, 7, 27, 13, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:reader@ap.example",
-		SigningKey:  testSigningKey(t, "agent-key"),
-		AgentToken:  "agent-token",
-		KeyResolver: aauth.StaticKeyResolver{},
-		HTTPClient:  gateway.Client(),
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:reader@ap.example",
+		SigningKey:         testSigningKey(t, "agent-key"),
+		AgentToken:         "agent-token",
+		KeyResolver:        aauth.StaticKeyResolver{},
+		HTTPClient:         gateway.Client(),
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,8 +61,7 @@ func TestAgentEnforcesRetryAfterAndSlowDown(t *testing.T) {
 
 	authorization, err := agent.RequestResourceManagedAccess(
 		context.Background(),
-		"https://resource.example/authorize",
-		[]string{"documents.read"},
+		reference.AuthorizedCall{Method: http.MethodGet, Endpoint: "https://resource.example/documents"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestAgentBacksOffAfterServiceUnavailable(t *testing.T) {
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"resource.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			switch {
-			case request.Method == http.MethodPost && request.URL.Path == "/authorize":
+			case request.Method == http.MethodGet && request.URL.Path == "/documents" && request.Header.Get("Authorization") == "":
 				response.Header().Set("Location", "/pending/request-503")
 				response.Header().Set("Retry-After", "0")
 				response.Header().Set("Cache-Control", "no-store")
@@ -143,12 +143,13 @@ func TestAgentBacksOffAfterServiceUnavailable(t *testing.T) {
 	now := time.Date(2026, 7, 27, 15, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:reader@ap.example",
-		SigningKey:  testSigningKey(t, "agent-key"),
-		AgentToken:  "agent-token",
-		KeyResolver: aauth.StaticKeyResolver{},
-		HTTPClient:  gateway.Client(),
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:reader@ap.example",
+		SigningKey:         testSigningKey(t, "agent-key"),
+		AgentToken:         "agent-token",
+		KeyResolver:        aauth.StaticKeyResolver{},
+		HTTPClient:         gateway.Client(),
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -156,8 +157,7 @@ func TestAgentBacksOffAfterServiceUnavailable(t *testing.T) {
 
 	authorization, err := agent.RequestResourceManagedAccess(
 		context.Background(),
-		"https://resource.example/authorize",
-		[]string{"documents.read"},
+		reference.AuthorizedCall{Method: http.MethodGet, Endpoint: "https://resource.example/documents"},
 	)
 	if err != nil {
 		t.Fatal(err)

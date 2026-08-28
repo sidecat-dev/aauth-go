@@ -3,11 +3,16 @@ package aauth_test
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,7 +20,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
-func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
+func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 14, 0, 0, 0, time.UTC)
@@ -23,6 +28,7 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 	ids := sequentialIDs(
 		"agent-token",
 		"other-agent-token",
+		"person-token",
 		"resource-token",
 		"auth-token",
 		"resource-token-denied",
@@ -30,7 +36,15 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 		"resource-token-invalid-code",
 	)
 	apKey := testSigningKey(t, "ap-key")
-	psKey := testSigningKey(t, "ps-key")
+	_, psPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psSigner := &failOnceEd25519Signer{privateKey: psPrivateKey}
+	psKey, err := aauth.NewSigningKey("ps-key", psSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resourceKey := testSigningKey(t, "resource-key")
 	agentKey := testSigningKey(t, "agent-key")
 	otherKey := testSigningKey(t, "other-key")
@@ -85,14 +99,23 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 	}
 
 	var policyCalls int
-	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier:  "https://ps.example",
-		SigningKey:  psKey,
-		KeyResolver: resolver,
-		Clock:       clock,
-		NewID:       ids,
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
-			return aauth.MissionDecision{Description: proposal.Description}, nil
+	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
+	personAuthorizationDirectory := t.TempDir() + "/person-authorization"
+	personAuthorizationStore := openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig := reference.PersonServerConfig{
+		AuthorizationStore:   personAuthorizationStore,
+		Identifier:           "https://ps.example",
+		SigningKey:           psKey,
+		KeyResolver:          resolver,
+		Clock:                clock,
+		NewID:                ids,
+		PersonTokenStore:     personTokenStore,
+		MissionIssuanceStore: missionIssuanceStore,
+		PersonTokenPolicy: func(_ context.Context, _ aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			return aauth.PersonTokenDecision{Subject: "pairwise-user-for-resource", Lifetime: time.Hour}, nil
+		},
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
 		},
 		InteractionRequired: func(_ context.Context, request aauth.AuthorizationRequest) (bool, error) {
 			return request.Agent == "aauth:planner@ap.example", nil
@@ -100,7 +123,7 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			policyCalls++
 			return aauth.AuthorizationDecision{
-				Subject: "pairwise-user-for-resource",
+				Subject: request.Subject,
 				Scope:   request.Scope,
 			}, nil
 		},
@@ -115,20 +138,26 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 			{15, 16, 17, 18, 19},
 		}, nil)),
 		PendingLifetime: time.Minute,
-	})
+	}
+	ps, err := reference.NewPersonServer(personConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var executionCount int
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:   "https://resource.example",
-		PersonServer: "https://ps.example",
-		SigningKey:   resourceKey,
-		KeyResolver:  resolver,
-		Clock:        clock,
-		NewID:        ids,
-		Scopes:       []string{"documents.read"},
+		Identifier:                   "https://resource.example",
+		AccessMode:                   aauth.AccessModeAuthToken,
+		PersonServer:                 "https://ps.example",
+		SigningKey:                   resourceKey,
+		KeyResolver:                  resolver,
+		Clock:                        clock,
+		NewID:                        ids,
+		Scopes:                       []string{"documents.read"},
+		ScopeDescriptions:            map[string]string{"documents.read": "Read documents"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("documents.read"),
+		ReplayStore:                  testResourceReplayStore(t, clock),
+		ProtectedAuthorizationPolicy: func(context.Context, aauth.AuthorizedRequest) error { return nil },
 		Operation: func(_ context.Context, request aauth.AuthorizedRequest) (any, error) {
 			executionCount++
 			return map[string]string{
@@ -157,40 +186,43 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 	defer gateway.Close()
 	client.Transport = gateway.Client().Transport
 
-	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
-	})
+	agentAuthorizationDirectory := t.TempDir() + "/agent-authorization"
+	agentAuthorizationStore := openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig := reference.AgentConfig{
+		AuthorizationStore: agentAuthorizationStore,
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
+	}
+	agent, err := reference.NewAgent(agentConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:other@ap.example",
-		SigningKey:  otherKey,
-		AgentToken:  otherToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:other@ap.example",
+		SigningKey:         otherKey,
+		AgentToken:         otherToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	mission, err := agent.CreateMission(context.Background(), "https://ps.example/mission", aauth.MissionProposal{
-		Description: "Read the design document after explicit approval.",
-	})
+	person, err := agent.RequestPersonToken(context.Background(), "https://ps.example/person", "https://resource.example", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceGrant, err := agent.RequestResourceToken(
+	resourceGrant, err := agent.RequestResourceTokenWithPersonToken(
 		context.Background(),
 		"https://resource.example/authorize",
 		[]string{"documents.read"},
-		mission,
+		person.PersonToken,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -221,23 +253,30 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 	if err := ps.ApproveAuthorization(context.Background(), pending.ID); err == nil {
 		t.Fatal("person server approved before the interaction code was correlated")
 	}
-	if _, err := agent.RequestTokenAuthorization(
-		context.Background(),
-		"https://ps.example/token",
-		resourceGrant,
-	); err == nil {
-		t.Fatal("person server accepted an exact replay of the initial token request")
-	} else {
-		var problem *aauth.ProblemError
-		if !errors.As(err, &problem) || problem.Code != "invalid_signature" {
-			t.Fatalf("replayed token-request error = %#v", err)
-		}
-	}
-
 	otherPending := *pending
 	if _, err := other.PollTokenAuthorization(context.Background(), &otherPending); err == nil {
 		t.Fatal("another agent polled the person-server authorization")
 	}
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	ps, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
+	if err := agentAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	agentAuthorizationStore = openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig.AuthorizationStore = agentAuthorizationStore
+	agent, err = reference.NewAgent(agentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending = &reference.PendingTokenAuthorization{ID: pending.ID}
 
 	waiting, err := agent.PollTokenAuthorization(context.Background(), pending)
 	if err != nil {
@@ -293,6 +332,25 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 	if policyCalls != 1 {
 		t.Fatalf("authorization policy calls after approval = %d", policyCalls)
 	}
+	psSigner.failNext.Store(true)
+	if _, err := agent.PollTokenAuthorization(context.Background(), pending); err == nil {
+		t.Fatal("transient auth-token mint failure was hidden")
+	} else {
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) || problem.Status != http.StatusInternalServerError || problem.Code != "server_error" {
+			t.Fatalf("transient mint error = %v", err)
+		}
+	}
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	ps, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
 
 	approved, err := agent.PollTokenAuthorization(context.Background(), pending)
 	if err != nil {
@@ -302,11 +360,51 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 		t.Fatalf("approved poll = %#v", approved)
 	}
 	if approved.Grant.Claims.Subject != "pairwise-user-for-resource" ||
-		approved.Grant.Claims.Agent != "aauth:planner@ap.example" {
+		approved.Grant.Claims.PersonServer != "https://ps.example" ||
+		approved.Grant.Claims.Agent != "" {
 		t.Fatalf("approved grant = %#v", approved.Grant)
 	}
-	if _, err := agent.PollTokenAuthorization(context.Background(), pending); err == nil {
-		t.Fatal("terminal pending URL remained reusable")
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	ps, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
+	lostResponsePoll, err := http.NewRequest(http.MethodGet, pending.Location, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := aauth.SignRequestWithOptions(lostResponsePoll, agentKey, agentToken, clock, aauth.SignRequestOptions{Nonce: "lost-terminal-person-response"}); err != nil {
+		t.Fatal(err)
+	}
+	lostResponse, err := client.Do(lostResponsePoll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lostResponse.Body.Close()
+	var lostResult struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if lostResponse.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(lostResponse.Body)
+		t.Fatalf("restarted terminal poll = %d body=%s", lostResponse.StatusCode, body)
+	}
+	if err := json.NewDecoder(lostResponse.Body).Decode(&lostResult); err != nil {
+		t.Fatal(err)
+	}
+	if lostResult.AuthToken != approved.Grant.AuthToken {
+		t.Fatalf("restarted terminal auth token changed")
+	}
+	recovered, err := agent.PollTokenAuthorization(context.Background(), &reference.PendingTokenAuthorization{ID: pending.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Grant == nil || recovered.Grant.AuthToken != approved.Grant.AuthToken {
+		t.Fatalf("lost terminal response recovery = %#v", recovered)
 	}
 
 	protected, err := agent.DoAuthorized(
@@ -330,11 +428,11 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 	newPending := func() *reference.PendingTokenAuthorization {
 		t.Helper()
 		now = now.Add(time.Second)
-		nextResourceGrant, err := agent.RequestResourceToken(
+		nextResourceGrant, err := agent.RequestResourceTokenWithPersonToken(
 			context.Background(),
 			"https://resource.example/authorize",
 			[]string{"documents.read"},
-			mission,
+			person.PersonToken,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -432,4 +530,24 @@ func TestPersonServerDeferredAuthorizationVertical(t *testing.T) {
 			t.Fatalf("invalid-code polling error = %#v", err)
 		}
 	}
+}
+
+type failOnceEd25519Signer struct {
+	privateKey ed25519.PrivateKey
+	failNext   atomic.Bool
+}
+
+func (signer *failOnceEd25519Signer) Public() crypto.PublicKey {
+	return signer.privateKey.Public()
+}
+
+func (signer *failOnceEd25519Signer) Sign(
+	_ io.Reader,
+	message []byte,
+	_ crypto.SignerOpts,
+) ([]byte, error) {
+	if signer.failNext.CompareAndSwap(true, false) {
+		return nil, errors.New("injected transient signing failure")
+	}
+	return ed25519.Sign(signer.privateKey, message), nil
 }

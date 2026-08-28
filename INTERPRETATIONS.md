@@ -44,9 +44,9 @@ reviewable and reproducible.
 - `internal/sourcecoverage/sourcecoverage_test.go:TestCoveragePinsOneCompleteCurrentEditorFamily`
 - `go run ./cmd/aauth-reference verify coverage`
 
-**Compatibility effect:** A source refresh may deliberately expose previously
-implemented behavior as legacy or unclaimed. A green test against an older
-wire shape is not relabeled as current conformance.
+**Current-product effect:** A source refresh may deliberately expose
+implemented behavior as obsolete or unclaimed. A green negative-vector test
+against an old wire shape is not relabeled as current conformance.
 
 ## AAG-I002 — Emit and accept fully specified `Ed25519`, not `EdDSA`
 
@@ -55,18 +55,18 @@ wire shape is not relabeled as current conformance.
 **Source:** AAuth Protocol, `Signature Algorithms`; HTTP Signature Keys,
 `Algorithm Determination` and `Unsupported Algorithm`.
 
-**Question:** Should Ed25519 keys and JWTs use the polymorphic JOSE name
-`EdDSA` for compatibility with older implementations?
+**Question:** Should Ed25519 keys and JWTs accept the polymorphic JOSE name
+`EdDSA` used by retained historical peers?
 
 **Chosen behavior:** Emit `alg: Ed25519`. Reject missing algorithms,
 polymorphic `EdDSA`, `none`, symmetric algorithms, and structurally invalid
 Ed25519 keys on the applicable current paths. Return the specified negotiable
 unsupported-algorithm response where the HTTP protocol permits it.
 
-**Alternative considered:** Accept `EdDSA` while emitting `Ed25519`. That can
-ease a transition, but it weakens the current algorithm-determination rule and
-makes the accepted cryptographic operation depend on key shape outside the
-declared algorithm.
+**Alternative considered:** Accept `EdDSA` while emitting `Ed25519`. That would
+admit historical peer input, but it weakens the current algorithm-determination
+rule and makes the accepted cryptographic operation depend on key shape outside
+the declared algorithm.
 
 **Why:** A fully specified algorithm makes the cryptographic operation explicit
 and follows both current author sources.
@@ -77,25 +77,26 @@ and follows both current author sources.
 - `draft08_discovery_test.go:TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope`
 - `elixir_interop_test.go:TestHistoricalElixirFixturesUseUnsupportedPolymorphicEdDSA`
 
-**Compatibility effect:** Historical `EdDSA` fixtures remain retained as
-negative compatibility evidence. They are not current interoperability vectors.
+**Current-product effect:** Historical `EdDSA` fixtures remain retained only as
+negative evidence. They are not current interoperability vectors.
 
-## AAG-I003 — Legacy token journeys do not count as current person-token coverage
+## AAG-I003 — Only the current person-token topology is supported
 
-**Status:** adopted migration boundary
+**Status:** adopted current boundary
 
 **Source:** AAuth Protocol, `Person Token`, `Resource Access and Resource
 Tokens`, `Person Server`, `Auth Tokens`, and `Sub-Agents`; interoperability
 profile surfaces 1 through 5.
 
-**Question:** Can the earlier agent/resource/auth-token journey be treated as a
-partial implementation of the current topology because several endpoints and
-JWT type names are unchanged?
+**Question:** Can an agent/resource/auth-token journey that omits the current
+person-token claims remain as an alternate runtime path because several
+endpoints and JWT type names are unchanged?
 
-**Chosen behavior:** No. Current coverage stays unclaimed until a real journey
-issues and retains an `aa-person+jwt`, derives `ps`, `sub`, `presented_jti`, and
-`mission_s256` into the resource token, resolves the retained person-token
-record at the PS, and issues and presents the current auth-token shape.
+**Chosen behavior:** No. Resource and auth tokens structurally require the
+current person topology. The implementation issues and retains an
+`aa-person+jwt`, derives `ps`, `sub`, `presented_jti`, and `mission_s256` into
+the resource token, resolves the retained person-token record at the PS, and
+issues and presents only the current auth-token shape.
 
 **Alternative considered:** Keep the old journey marked exercised and describe
 the new claims as a later enhancement. That would hide a security-relevant
@@ -109,13 +110,12 @@ and what the PS must retain and compare.
 
 **Evidence:**
 
-- `internal/sourcecoverage/sourcecoverage_test.go:TestLegacyEvidenceDoesNotClaimTheCurrentPersonTokenTopology`
-- `SOURCE-COVERAGE.md` leaves the affected current sections unclaimed
+- `internal/sourcecoverage/sourcecoverage_test.go:TestCurrentClaimsUseCurrentEvidenceOnly`
+- `token_identity_internal_test.go:TestCurrentResourceAndAuthTokensRequirePersonTopology`
+- `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 
-**Compatibility effect:** Existing APIs and tests remain regression evidence
-while the migration is in progress, but they are not advertised as current
-protocol coverage. Compatibility policy for legacy public types will be decided
-before the current journey replaces them.
+**Current-product effect:** Obsolete issuance methods and conditional runtime
+branches are removed. Old wire forms may remain only as raw rejection vectors.
 
 ## AAG-I004 — Current R3 proposal retrieval must admit both the PS and AS
 
@@ -141,12 +141,14 @@ retrieval contract.
 
 **Evidence:**
 
-- `internal/sourcecoverage/sourcecoverage_test.go:TestLegacyEvidenceDoesNotClaimTheCurrentPersonTokenTopology`
+- `internal/sourcecoverage/sourcecoverage_test.go:TestCurrentClaimsUseCurrentEvidenceOnly`
 - current R3 sections remain unclaimed in `SOURCE-COVERAGE.md`
 
-**Compatibility effect:** The existing AS-only reference handler and
-`r3_conditional` token fields remain legacy behavior during migration. They are
-not described as current R3 support.
+**Current-product effect:** Current R3 remains unclaimed, and no callable R3
+authorization path remains. Neutral current-source document values and digests
+remain for Events. A future implementation must add PS-and-AS retrieval,
+per-call proposal custody, grant enforcement, and audit-atomic issuance as one
+complete path before any R3 conformance claim.
 
 ## AAG-I005 — Person-token policy denial is an explicit extension
 
@@ -174,7 +176,7 @@ preserves the distinction without silently assigning another code new meaning.
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 - `SPEC-FEEDBACK.md`, AAG-F009
 
-**Compatibility effect:** Clients must treat an unrecognized terminal `403` as
+**Current-product effect:** Clients must treat an unrecognized terminal `403` as
 denial. The code may change if the editors add or select a registered result.
 
 ## AAG-I006 — Mission approval is released only after recoverable cross-store custody
@@ -206,7 +208,7 @@ stores a recoverable state machine without pretending they share a transaction.
 
 - `current_mission_recovery_test.go:TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries`
 
-**Compatibility effect:** Current person-token server compositions must supply a
+**Current-product effect:** Current person-token server compositions must supply a
 `MissionIssuanceStore`. Exact recovery requires the original signed request
 within its accepted signature window; a newly signed request is a new proposal.
 
@@ -215,7 +217,7 @@ within its accepted signature window; a newly signed request is a new proposal.
 1. Pin the exact source revision and section.
 2. Add an externally observable failing test or interoperability capture.
 3. Record the chosen behavior and at least one plausible alternative.
-4. Explain the security and compatibility effect in plain language.
+4. Explain the security and interoperability effect in plain language.
 5. Update source coverage only after the evidence passes.
 6. Preserve a superseded entry with its disposition instead of rewriting
    history to make the old choice look current.

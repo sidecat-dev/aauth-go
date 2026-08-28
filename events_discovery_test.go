@@ -143,9 +143,13 @@ func TestResourceEventsAsyncAPIDiscoveryServesExactDocument(t *testing.T) {
 	document := eventsDiscoveryTestDocument("1.0.0")
 	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier: "https://resource.example", SigningKey: testSigningKey(t, "resource-key"),
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
+		SigningKey:  testSigningKey(t, "resource-key"),
 		KeyResolver: aauth.StaticKeyResolver{}, Clock: aauth.ClockFunc(func() time.Time { return now }),
 		NewID: func() string { return "unused" }, Scopes: []string{"events.read"},
+		RequiredScopesForRequest: testRequiredResourceScopes("events.read"),
+		ReplayStore:              testResourceReplayStore(t, aauth.ClockFunc(func() time.Time { return now })),
+		AuthorizationStore:       testAuthorizationStateStore(t),
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			return aauth.AuthorizationDecision{}, nil
 		},

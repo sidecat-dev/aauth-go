@@ -144,15 +144,17 @@ func TestHTTPKeyResolverAppliesUnknownKeyRefreshFloor(t *testing.T) {
 
 	differentKey := testSigningKey(t, "known-key")
 	token, err := aauth.MintResourceToken(differentKey, aauth.ResourceTokenClaims{
-		Issuer:    "https://issuer.example",
-		DWK:       aauth.ResourceDiscoveryDocument,
-		Audience:  "https://ps.example",
-		JTI:       "resource-token-with-bad-signature",
-		Agent:     "aauth:planner@ap.example",
-		AgentJKT:  "agent-thumbprint",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(5 * time.Minute).Unix(),
-		Scope:     "documents.read",
+		Issuer:       "https://issuer.example",
+		DWK:          aauth.ResourceDiscoveryDocument,
+		Audience:     "https://ps.example",
+		JTI:          "resource-token-with-bad-signature",
+		PersonServer: "https://ps.example",
+		Subject:      "pairwise-subject",
+		PresentedJTI: "person-token-1",
+		AgentJKT:     "agent-thumbprint",
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(5 * time.Minute).Unix(),
+		Scope:        "documents.read",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -297,15 +299,17 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 	now = now.Add(61 * time.Second)
 	currentKey = newKey.PublicJWK()
 	token, err := aauth.MintResourceToken(newKey, aauth.ResourceTokenClaims{
-		Issuer:    "https://issuer.example",
-		DWK:       aauth.ResourceDiscoveryDocument,
-		Audience:  "https://ps.example",
-		JTI:       "resource-token-after-rotation",
-		Agent:     "aauth:planner@ap.example",
-		AgentJKT:  "agent-thumbprint",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(5 * time.Minute).Unix(),
-		Scope:     "documents.read",
+		Issuer:       "https://issuer.example",
+		DWK:          aauth.ResourceDiscoveryDocument,
+		Audience:     "https://ps.example",
+		JTI:          "resource-token-after-rotation",
+		PersonServer: "https://ps.example",
+		Subject:      "pairwise-subject",
+		PresentedJTI: "person-token-1",
+		AgentJKT:     "agent-thumbprint",
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(5 * time.Minute).Unix(),
+		Scope:        "documents.read",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -321,15 +325,17 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 	failRefresh = true
 	anotherKey := testSigningKey(t, "rotating-key")
 	token, err = aauth.MintResourceToken(anotherKey, aauth.ResourceTokenClaims{
-		Issuer:    "https://issuer.example",
-		DWK:       aauth.ResourceDiscoveryDocument,
-		Audience:  "https://ps.example",
-		JTI:       "resource-token-after-failed-rotation",
-		Agent:     "aauth:planner@ap.example",
-		AgentJKT:  "agent-thumbprint",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(5 * time.Minute).Unix(),
-		Scope:     "documents.read",
+		Issuer:       "https://issuer.example",
+		DWK:          aauth.ResourceDiscoveryDocument,
+		Audience:     "https://ps.example",
+		JTI:          "resource-token-after-failed-rotation",
+		PersonServer: "https://ps.example",
+		Subject:      "pairwise-subject",
+		PresentedJTI: "person-token-1",
+		AgentJKT:     "agent-thumbprint",
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(5 * time.Minute).Unix(),
+		Scope:        "documents.read",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -469,15 +475,17 @@ func TestTokenVerificationPreservesOperationalRefreshFailure(t *testing.T) {
 	oldKey := testSigningKey(t, "rotating-key")
 	newKey := testSigningKey(t, "rotating-key")
 	token, err := aauth.MintResourceToken(newKey, aauth.ResourceTokenClaims{
-		Issuer:    "https://issuer.example",
-		DWK:       aauth.ResourceDiscoveryDocument,
-		Audience:  "https://ps.example",
-		JTI:       "resource-token-after-failed-refresh",
-		Agent:     "aauth:planner@ap.example",
-		AgentJKT:  "agent-thumbprint",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(5 * time.Minute).Unix(),
-		Scope:     "documents.read",
+		Issuer:       "https://issuer.example",
+		DWK:          aauth.ResourceDiscoveryDocument,
+		Audience:     "https://ps.example",
+		JTI:          "resource-token-after-failed-refresh",
+		PersonServer: "https://ps.example",
+		Subject:      "pairwise-subject",
+		PresentedJTI: "person-token-1",
+		AgentJKT:     "agent-thumbprint",
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(5 * time.Minute).Unix(),
+		Scope:        "documents.read",
 	})
 	if err != nil {
 		t.Fatal(err)

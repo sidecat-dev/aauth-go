@@ -653,7 +653,8 @@ func newAgentEventTestAgentWithResolver(t *testing.T, store AgentEventStore, act
 	t.Helper()
 	agentKey := eventsProviderTestSigningKey(t, "agent-events-key")
 	agent, err := NewAgent(AgentConfig{
-		Identifier: "aauth:subscriber@ap.example", SigningKey: agentKey,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:subscriber@ap.example", SigningKey: agentKey,
 		AgentToken: "test-agent-token", KeyResolver: resolver,
 		HTTPClient: &http.Client{}, Clock: clock,
 		Events: &AgentEventsConfig{Store: store, Action: action},

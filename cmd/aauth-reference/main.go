@@ -187,12 +187,13 @@ type personReady struct {
 }
 
 type personDeployment struct {
-	profile   personProfile
-	server    *reference.PersonServer
-	tlsConfig *tls.Config
-	signer    *protectedSigner
-	publicKey aauth.JWK
-	tlsLeaf   *x509.Certificate
+	profile            personProfile
+	server             *reference.PersonServer
+	tlsConfig          *tls.Config
+	signer             *protectedSigner
+	authorizationStore *reference.FileAuthorizationStateStore
+	publicKey          aauth.JWK
+	tlsLeaf            *x509.Certificate
 }
 
 func servePerson(profilePath string, stdout io.Writer, stderr io.Writer) error {
@@ -329,6 +330,31 @@ func loadPersonDeployment(profilePath string) (*personDeployment, error) {
 		_ = signer.Close()
 		return nil, errors.New("governance custody is invalid")
 	}
+	personTokenStore, err := reference.NewFilePersonTokenStore(profile.GovernanceFile + ".person-tokens")
+	if err != nil {
+		_ = signer.Close()
+		return nil, errors.New("person-token custody is invalid")
+	}
+	missionIssuanceStore, err := reference.NewFileMissionIssuanceStore(profile.GovernanceFile + ".mission-issuances")
+	if err != nil {
+		_ = signer.Close()
+		return nil, errors.New("mission-issuance custody is invalid")
+	}
+	authorizationStore, err := reference.OpenFileAuthorizationStateStore(reference.FileAuthorizationStateStoreConfig{
+		Directory:  profile.GovernanceFile + ".authorization-state",
+		MaxEntries: 4096,
+		MaxBytes:   8 << 20,
+	})
+	if err != nil {
+		_ = signer.Close()
+		return nil, errors.New("authorization custody is invalid")
+	}
+	authorizationStoreTransferred := false
+	defer func() {
+		if !authorizationStoreTransferred {
+			_ = authorizationStore.Close()
+		}
+	}()
 	resolver, err := personKeyResolver(profile.TrustedKeys)
 	if err != nil {
 		_ = signer.Close()
@@ -343,17 +369,24 @@ func loadPersonDeployment(profilePath string) (*personDeployment, error) {
 	}
 	pendingLifetime := time.Duration(profile.PendingLifetime) * time.Second
 	server, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier:      profile.Identifier,
-		SigningKey:      signingKey,
-		KeyResolver:     resolver,
-		Clock:           aauth.SystemClock{},
-		NewID:           idSource.next,
-		GovernanceStore: store,
-		PendingLifetime: pendingLifetime,
-		MissionPolicy: func(
+		Identifier:           profile.Identifier,
+		SigningKey:           signingKey,
+		KeyResolver:          resolver,
+		Clock:                aauth.SystemClock{},
+		NewID:                idSource.next,
+		GovernanceStore:      store,
+		PersonTokenStore:     personTokenStore,
+		MissionIssuanceStore: missionIssuanceStore,
+		AuthorizationStore:   authorizationStore,
+		PendingLifetime:      pendingLifetime,
+		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			return aauth.PersonTokenDecision{Subject: request.Agent, Lifetime: time.Hour}, nil
+		},
+		CurrentMissionPolicy: func(
 			_ context.Context,
-			proposal aauth.MissionProposal,
+			evaluation aauth.MissionEvaluation,
 		) (aauth.MissionDecision, error) {
+			proposal := evaluation.Proposal
 			seen := make(map[string]struct{}, len(proposal.Tools))
 			for _, tool := range proposal.Tools {
 				if _, allowed := actions[tool.Name]; !allowed {
@@ -410,17 +443,20 @@ func loadPersonDeployment(profilePath string) (*personDeployment, error) {
 		_ = signer.Close()
 		return nil, errors.New("person server configuration is invalid")
 	}
-	return &personDeployment{
+	deployment := &personDeployment{
 		profile: profile,
 		server:  server,
 		tlsConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS13,
 			Certificates: []tls.Certificate{certificate},
 		},
-		signer:    signer,
-		publicKey: signingKey.PublicJWK(),
-		tlsLeaf:   tlsLeaf,
-	}, nil
+		signer:             signer,
+		authorizationStore: authorizationStore,
+		publicKey:          signingKey.PublicJWK(),
+		tlsLeaf:            tlsLeaf,
+	}
+	authorizationStoreTransferred = true
+	return deployment, nil
 }
 
 func validateTLSIdentity(
@@ -449,10 +485,15 @@ func validateTLSIdentity(
 }
 
 func (deployment *personDeployment) close() {
-	if deployment == nil || deployment.signer == nil {
+	if deployment == nil {
 		return
 	}
-	_ = deployment.signer.Close()
+	if deployment.authorizationStore != nil {
+		_ = deployment.authorizationStore.Close()
+	}
+	if deployment.signer != nil {
+		_ = deployment.signer.Close()
+	}
 }
 
 func validatePersonProfile(profile personProfile) error {

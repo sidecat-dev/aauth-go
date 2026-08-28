@@ -8,13 +8,13 @@ the module has no dependency on a particular product or deployment.
 
 The repository pins the complete current Dick Hardt editor-source family at
 AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5` and Signature-Key
-`0ff751b571e7fe51336bcc1e526954a202317cc0`. The implementation is transitional:
+`0ff751b571e7fe51336bcc1e526954a202317cc0`. The implementation is bounded:
 its fully specified `Ed25519`, selected Signature-Key behavior, and one
-distinct-server immediate person-token journey use the current topology. Older
-resource, governance, delegation, and R3 journeys remain useful regression
-evidence, but [the source coverage report](SOURCE-COVERAGE.md) does not count
-them as current-protocol conformance. This is a community-oriented standalone
-Go implementation; it does not claim an official AAuth designation.
+distinct-server immediate person-token journey use the current topology.
+[The source coverage report](SOURCE-COVERAGE.md) names the exact current claims;
+sections without current executable evidence remain unclaimed. This is a
+community-oriented standalone Go implementation; it does not claim an official
+AAuth designation.
 
 ## Install
 
@@ -25,13 +25,13 @@ go get gitlab.com/sidecat-dev/aauth-go
 The public API is the root `aauth` package. Deployable reference role handlers,
 host-owned storage interfaces, and an agent client are in `reference`. The
 [implementation interpretation register](INTERPRETATIONS.md) records observable
-choices, alternatives, reasons, evidence, and compatibility effects in one
+choices, alternatives, reasons, and evidence in one
 place. [Retained-source provenance](PROVENANCE.md) makes every current input
 reproducible, and the [specification feedback journal](SPEC-FEEDBACK.md) tracks
 evidence-backed questions and their upstream dispositions. Runnable package
-examples are part of the current person-token migration.
+examples exercise the current person-token path.
 
-## Implemented behavior during the current migration
+## Implemented current behavior
 
 The current walking skeleton is a real four-party path. A person server
 validates a mission proposal before policy and gives policy the authenticated
@@ -51,156 +51,104 @@ multiple processes or compact expired records; long-running or high-volume
 deployments should supply their own store implementations.
 
 This slice is deliberately bounded. `reference.Resource` implements explicit
-`auth-token` mode, not every registered access mode. Protected-resource 401
-challenge handling, resource-owned person identity matching, current deferred
-approval, current sub-agent and call-chain behavior, collocated PS/AS roles,
-general three-party PS selection, and account ownership remain open. Exact
+`auth-token` and `session-token` modes, not every registered access mode.
+Auth-token discovery from a protected-resource 401 challenge, resource-owned
+person identity matching, collocated PS/AS roles, dynamic three-party PS
+selection, and account ownership remain open. The exercised current profile
+includes immediate and deferred PS/AS authorization, one-level parent-mediated
+sub-agents, and upstream-auth-token call chaining through either a PS or AS. Exact
 mission recovery requires replay of the original signed request inside its
 signature window. See [AAG-I005 and AAG-I006](INTERPRETATIONS.md) for the
 person-token denial extension and cross-store recovery contract.
 
-Unless a paragraph explicitly says otherwise, the journeys in this section are
-implemented behavior from the preceding profile and are retained as migration
-and regression evidence. `SOURCE-COVERAGE.md` is the authority for current
-section claims.
+`reference.Resource` requires an explicit current `access_mode`. Its
+`auth-token` mode accepts only current auth tokens carrying `ps` and `sub` and
+omitting `agent`, `act`, and `mission`. Its `session-token` mode applies a
+caller-owned local authorization policy, issues an opaque `AAuth-Access`
+credential, and binds the retained grant to the verified agent identity and
+confirmation key. The initial protected request is signed with the agent token
+and enters that local policy directly; `/authorize` remains person-token-only.
+The protected retry presents `Authorization: AAuth` with another agent-token
+proof. The agent adopts downscoped grants and rotated credentials, and the
+resource refuses unsigned, substituted, replayed, expired, or differently-keyed
+use before invoking the protected operation.
 
-Resource-managed access is implemented as a complete legacy two-party path. A
-resource can apply caller-owned authorization policy without a signing key or
-another AAuth server, advertise the earlier
-`access_mode=aauth-access-token`, issue an opaque `AAuth-Access` credential,
-and bind its retained grant to the verified agent identity and confirmation
-key. The current editor source renames that metadata value to `session-token`;
-the reference resource has not migrated that advertisement and does not claim
-current resource-metadata conformance. The agent signs `Authorization: AAuth`
-as a covered component, adopts downscoped grants and rotated credentials, and
-the resource refuses unsigned, substituted, replayed, expired, or
-differently-keyed use before invoking the protected operation.
+Resource configuration supplies one canonical issuance allowlist in `Scopes`,
+one human-readable `ScopeDescriptions` entry for each advertised auth-token
+scope, and a `RequiredScopesForRequest` callback that maps each protected path
+to the exact nonempty subset it needs. Auth-token mode also requires a
+`ProtectedAuthorizationPolicy` that decides the fully verified person and
+token context before any protected response or Operation consequence. A policy
+denial returns a fixed non-leaking 403 response. Resource configuration also
+supplies a `ProofReplayStore`; there is no in-process fallback. The memory
+adapter is bounded and explicitly non-durable. The bounded file adapter retains
+canonical exact replay state under private single-writer custody, refuses
+corrupt or unsafe state, and rejects the same proof after close and reopen.
+
+After verification and durable proof consumption, the protected Operation
+receives `ps` and `sub` separately from the exact confirmation JWK. It also
+receives the proof replay key and creation time plus normalized auth-token
+issuer, issuer role (`dwk`), token ID, issued-at time, and expiry. The required
+protected policy receives a defensive copy of that same context. Current auth
+tokens do not name the agent; a host resolves its separately enrolled local
+principal from the verified confirmation key. The raw auth token remains
+available for exact authorization-evidence custody.
 
 That path can also defer for resource-hosted user interaction. Pending
 continuations use 128-bit random URLs, 40-bit Crockford codes, same-origin
 signed polling, enforced `Retry-After`/`slow_down`, bounded code attempts,
 single-use interaction entry, a separate trusted approval or rejection
-boundary, expiry, and one-shot terminal delivery. Merely presenting the
-interaction code cannot approve a grant.
+boundary, and expiry. After the caller receives and retains the pending URL,
+approved terminal artifacts are committed before release and remain exactly
+recoverable after a lost terminal response or process restart. Loss of the
+initial `202 Accepted` and its pending URL is not recoverable in the current
+wire shape; AAG-F012 in `SPEC-FEEDBACK.md` records the accepted next
+interaction/recovery slice. Merely presenting the interaction code cannot
+approve a grant.
 
-The three-party mission flow is also implemented end to end:
+Every deferred-capable reference role requires an explicit
+`AuthorizationStateStore`: each Agent, PersonServer, AccessServer, and
+session-token Resource receives a distinct store instance for its own canonical
+current schema. `NewMemoryAuthorizationStateStore` is bounded ephemeral
+custody. `OpenFileAuthorizationStateStore` provides bounded private
+single-writer custody with canonical decoding and atomic fsync-backed replace;
+corrupt, ambiguous, oversized, or unsafe state fails closed. There is no
+implicit in-process store.
 
-1. an agent provider issues an Ed25519-bound `aa-agent+jwt`;
-2. the agent signs a mission proposal to a person server;
-3. the person server returns and retains exact approved mission bytes;
-4. a resource verifies the agent proof and issues a mission-bound
-   `aa-resource+jwt`;
-5. the person server verifies the resource token, mission, agent, request key,
-   audience, and scope before issuing an `aa-auth+jwt`;
-6. the resource verifies the JWT trust and request-context proof before calling
-   the protected operation.
+Body-bearing resource-managed consequences use one call shape. The Agent signs
+the exact body and media type, and the Resource passes defensive copies to the
+Operation callback:
 
-The person server can defer that token exchange for its own user interaction.
-Its pending state is bound to the initiating agent and key, retains the
-already-verified resource and mission context, and invokes deployment policy
-only after a separate trusted approval. Success, denial, expiry, invalid-code
-failure, replay refusal, and one-shot terminal delivery run through the actual
-person-server, agent, and resource handlers. Polling clients honor both
-`429` linear slowdown and `503 Retry-After`.
+```go
+response, err := agent.DoWithAccess(ctx, reference.AuthorizedCall{
+	Method:      http.MethodPost,
+	Endpoint:    "https://resource.example/documents",
+	Body:        []byte(`{"query":"current"}`),
+	ContentType: "application/json",
+}, &grant)
+```
 
 HTTP request bodies use `Content-Digest`, all AAuth requests use the mandatory
-RFC 9421 components, and protected operations reject an exact proof replay.
+RFC 9421 components, and protected operations durably consume an exact proof
+before their host callback.
 Issuer keys use admitted two-hop metadata/JWKS discovery with bounded reads,
 cache lifetimes, unknown-key refresh throttling, and same-`kid` rotation
 recovery.
-
-Parent-mediated sub-agents also run through the complete resource-token,
-person-server, auth-token, and protected-operation path. The person server
-enforces single-level delegation and emits an auth token bound to the
-sub-agent's key with the parent in `act.agent`. The parent can retain and poll
-a deferred PS continuation on the sub-agent's behalf; the sub-agent never gains
-authority to call or poll the PS directly.
-
-The four-party path is live as well: resources can target an access server,
-the person server applies user policy and signs the federated request with its
-discoverable `jwks_uri` identity, the access server applies independent trust
-and resource policy, and both the person server and agent verify the returned
-proof-bound auth token before it reaches the resource.
-
-The access server may also defer for resource-owner interaction. It binds its
-pending state and signed polls to the initiating person-server identity and
-key. The person server retains a distinct agent-facing pending URL, relays the
-AS interaction requirement without exposing AS polling authority, polls the AS
-with its own key, and validates the terminal AS token before returning it to
-the agent. Slowdown, denial, expiry, invalid-code failure, and one-shot terminal
-delivery cross both continuation boundaries.
-
-One R3 direct-grant path and one conditional per-call path are implemented
-through that real four-party flow. A
-resource advertises an MCP vocabulary, validates an agent's `r3_operations`
-through a deployment-owned authoritative-definition boundary, serializes and
-durably retains one exact R3 document through a deployment-owned store, and
-issues its URI plus unpadded SHA-256 hash in the resource token only after that
-retention succeeds. The included bounded file store preserves exact bytes
-across resource reconstruction, requires a private custody directory, and
-never evicts a document while its resource token is live. The AS alone performs a signed, admitted, deadline-bounded,
-no-redirect fetch; verifies the exact bytes before parsing or policy;
-coalesces a hash-keyed cache with recoverable least-recently-used eviction; and
-requires a successful issuance-audit write before releasing an auth token.
-The resource independently enforces both ordinary scope and semantic
-membership in `r3_granted`, without fetching class R3 at call time. The agent retains
-its requested operation set in the persistable resource-grant value and fails
-closed if that binding is absent after reconstruction.
-
-Access policy may instead place a verified operation in `r3_conditional`. The
-first signed call then executes nothing: the resource captures the bounded
-exact body, builds and durably retains a strict one-operation proposal, and
-returns an auth-token requirement containing a signed resource token with only
-the proposal URI/hash. Query-bearing conditional calls are refused, and
-`Content-Type` is signed whenever a protected body is present. The AS alone
-fetches and hash-verifies the proposal, policy must directly grant exactly its
-one operation, and a bounded file issuance store in a private custody
-directory atomically commits the exact auth token plus proposal, operation, agent, resource, mission, challenge-token,
-and issued-token audit identities. A deployment-owned audit callback must then
-durably and idempotently record that stable issuance identity before release;
-its retention is independent of the short-lived recovery store. If either
-step fails, no token is released. Repeating the exchange after AS
-reconstruction retries the audit and returns the same committed token.
-
-On retry, the resource reloads the exact proposal and compares every actual
-parameter. Inline parameters compare as JSON values; digest parameters compare
-the full presented bytes and media type, never the display excerpt. Durable
-consumption keyed by proposal digest and per-call token JTI happens immediately
-before the operation, survives resource reconstruction, and admits only one
-use. This is at-most-once operation admission: a crash after consumption but
-before the external consequence can lose the opportunity, so the library does
-not claim exactly-once effects.
-
-The included store guarantees exact-byte availability through the resource
-token's expiry; it is not permanent historical custody after that expiry.
 Token JSON and reference endpoint request JSON reject exact duplicate member
 names and names that Go would case-fold onto the same struct field before
 decoding.
 
-These R3 journeys implement an earlier profile and remain regression evidence,
-not current R3 coverage. The current source uses `r3_per_call`, builds on the
-person-token topology, and permits both the PS and AS to retrieve the exact R3
-document. The existing `r3_conditional` and AS-only handler behavior must
-migrate before the repository claims any current R3 section. Scope-free R3,
-multi-definition composition, live discovery adapters for every standard
-vocabulary, multi-process file-store coordination, and deferred R3 also remain
-open. The [source coverage report](SOURCE-COVERAGE.md) keeps that boundary
-explicit, and [AAG-I004](INTERPRETATIONS.md#aag-i004--current-r3-proposal-retrieval-must-admit-both-the-ps-and-as)
-records why the older endpoint interpretation was withdrawn.
+Current R3 authorization remains unclaimed, and the module exposes no callable
+R3 authorization path. It retains current neutral R3 document values and
+digests used by Events. Bounded current sub-agent and call-chain behavior is
+claimed only for the exact runnable journeys listed in the source coverage
+report; broader delegation and interaction chaining remain explicit gaps.
 
-### Legacy governance and delegation evidence
+### Governance surfaces
 
-The following governance, completion, call-chaining, and sub-agent journeys
-exercise an earlier protocol profile. They remain valuable regression evidence,
-but they do not establish coverage of the corresponding current-editor
-sections. The current profile uses `mission_s256`, completes missions at the
-mission endpoint, and depends on the person-token topology described above.
-
-Three-party call chaining is exercised through two real protected resources.
-The intermediary signs as its own agent, carries the upstream auth token only
-as evidence, obtains a downstream token bound to its own key, and the person
-server verifies issuer trust, upstream audience, mission continuity, and the
-delegation chain before issuing the downstream grant.
+Permission, audit, and mission-completion APIs remain separate from the current
+Resource auth-token boundary. Their exact current claims and runnable evidence
+are listed section by section in `SOURCE-COVERAGE.md`.
 
 The person server also implements a host-integrated local-action governance
 path. An agent can make a signed permission request with or without
@@ -389,14 +337,13 @@ interoperability profile—and the pinned bytes themselves are retained in
 clone. Each positive claim names a Go test; explicit omissions remain
 unsupported or unclaimed instead of being inferred from nearby work.
 
-The implemented profile is transitional and is named precisely in the report.
+The implemented profile is bounded and is named precisely in the report.
 Active JWT, JWK, HTTP-signature algorithm, negotiation, and selected discovery
 surfaces use fully specified `Ed25519`, require the same fully specified
 algorithm on applicable JWKs, and return `Accept-Signature-Alg` and
-`Accept-Signature-Scheme` negotiation. The report claims only the exercised
-parts of the immediate current person-token journey. Challenge handling,
-resource identity continuity, current delegation and deferred paths, and every
-other unevidenced current section remain partial or unclaimed.
+`Accept-Signature-Scheme` negotiation. The report claims only behavior tied to
+current executable evidence. Every other unevidenced current section remains
+partial or unclaimed.
 
 Verify the source digests, complete heading inventory, evidence test names,
 and embedded coverage contract with:
@@ -427,8 +374,8 @@ certification and not an upstream submission.
 The repository retains [historical wire fixtures](interop/README.md) attributed
 to an earlier Elixir prototype. Those exact compact JWS bytes use the now
 prohibited polymorphic `EdDSA` identifier. Go tests retain and deliberately
-reject them with `unsupported_algorithm`; they are historical compatibility
-boundary evidence, not current evidence of a running peer implementation.
+reject them with `unsupported_algorithm`; they are retained historical
+rejection vectors, not current evidence of a running peer implementation.
 The active Go-origin fixtures are regenerated with fully specified `Ed25519`
 and execute through the public verifier.
 
@@ -477,9 +424,11 @@ they are not enterprise or distributed storage conformance.
 
 The selected protected Events profile is implemented and qualified as a
 separate one-use vertical. An authenticated resource operation commits an
-opaque ticket capability while retaining only its SHA-256 digest and exact
-agent, operation, resource-revision, contract, message, expiry, and use
-bindings. A bodyless signed registration atomically consumes that ticket and
+opaque ticket capability after the host resolves the verified confirmation key
+to its separately enrolled local agent. The resource retains only its SHA-256
+digest and the exact agent, operation, resource-revision, contract, message,
+expiry, and use bindings. A bodyless signed registration atomically consumes
+that ticket and
 creates the subscription. A deployment may opt into a bounded registration
 body validator, but no registration-body schema mapping is inferred from the
 AsyncAPI document.
@@ -503,9 +452,9 @@ do not claim distributed, multi-writer, federated, or enterprise storage.
 
 Missionless direct-AS call chaining, resource-owned interaction chaining,
 interaction/payment relay and callbacks, question delivery,
-updated-request/cancel clarification actions, restart custody for
-token/AS/resource continuations, broader R3 vocabularies and PS proposal use,
-platform enrollment/attestation, x509, additional Signature-Key schemes, and
+updated-request/cancel clarification actions, complete PS-and-AS R3 document
+retrieval, per-call proposal custody, grant enforcement, audit-atomic R3
+issuance, platform enrollment/attestation, x509, additional Signature-Key schemes, and
 broader challenge-selection behavior still require implementation and
 qualification. The Phase-1 `Accept-Signature-Alg` and
 `Accept-Signature-Scheme` failure envelopes are implemented and qualified.

@@ -34,7 +34,18 @@ type SignatureError struct {
 	RequiredInput      []string
 	AcceptedAlgorithms []string
 	AcceptedSchemes    []string
+	publicDetail       string
 	Cause              error
+}
+
+// PublicDetail returns an optional diagnostic that is safe to include in a
+// remote Problem Details response. Cause remains local-only diagnostic
+// evidence and must not be exposed by protocol adapters.
+func (err *SignatureError) PublicDetail() string {
+	if err == nil {
+		return ""
+	}
+	return err.publicDetail
 }
 
 func (err *SignatureError) Error() string {

@@ -481,8 +481,12 @@ func newPayloadDeliveryTestResource(
 ) *Resource {
 	t.Helper()
 	resource, err := NewResource(ResourceConfig{
-		Identifier: "https://resource.example", SigningKey: key, KeyResolver: resolver,
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
+		SigningKey: key, KeyResolver: resolver,
 		Clock: clock, NewID: func() string { return "unused" }, Scopes: []string{"qualification.read"},
+		RequiredScopesForRequest: testRequiredResourceScopes("qualification.read"),
+		ReplayStore:              testResourceReplayStore(t, clock),
+		AuthorizationStore:       testAuthorizationStateStore(t),
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			return aauth.AuthorizationDecision{}, errors.New("unused")
 		},

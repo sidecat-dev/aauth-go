@@ -41,8 +41,20 @@ type TokenValidationError struct {
 
 type unsupportedTokenAlgorithmError struct{ algorithm string }
 
+type unsupportedTokenClaimError struct {
+	tokenType string
+	claim     string
+}
+
 func (err *unsupportedTokenAlgorithmError) Error() string {
 	return fmt.Sprintf("aauth: unsupported token algorithm %q", err.algorithm)
+}
+
+func (err *unsupportedTokenClaimError) Error() string {
+	if err == nil {
+		return "aauth: token contains an unsupported claim"
+	}
+	return fmt.Sprintf("aauth: %s contains unsupported %s claim", err.tokenType, err.claim)
 }
 
 func (err *TokenValidationError) Error() string {
@@ -120,8 +132,6 @@ type ResourceTokenClaims struct {
 	Account      string            `json:"account,omitempty"`
 	MissionS256  string            `json:"mission_s256,omitempty"`
 	Tenant       string            `json:"tenant,omitempty"`
-	R3URI        string            `json:"r3_uri,omitempty"`
-	R3S256       string            `json:"r3_s256,omitempty"`
 }
 
 // Actor records one link in an AAuth delegation chain.
@@ -132,26 +142,22 @@ type Actor struct {
 
 // AuthTokenClaims are the claims of an aa-auth+jwt.
 type AuthTokenClaims struct {
-	Issuer        string            `json:"iss"`
-	DWK           string            `json:"dwk"`
-	Audience      string            `json:"aud"`
-	JTI           string            `json:"jti"`
-	Agent         string            `json:"agent,omitempty"`
-	Confirmation  Confirmation      `json:"cnf"`
-	Actor         *Actor            `json:"act,omitempty"`
-	IssuedAt      int64             `json:"iat"`
-	ExpiresAt     int64             `json:"exp"`
-	Subject       string            `json:"sub,omitempty"`
-	Scope         string            `json:"scope,omitempty"`
-	Mission       *MissionReference `json:"mission,omitempty"`
-	PersonServer  string            `json:"ps,omitempty"`
-	Account       string            `json:"account,omitempty"`
-	MissionS256   string            `json:"mission_s256,omitempty"`
-	Tenant        string            `json:"tenant,omitempty"`
-	R3URI         string            `json:"r3_uri,omitempty"`
-	R3S256        string            `json:"r3_s256,omitempty"`
-	R3Granted     *R3OperationSet   `json:"r3_granted,omitempty"`
-	R3Conditional *R3OperationSet   `json:"r3_conditional,omitempty"`
+	Issuer       string            `json:"iss"`
+	DWK          string            `json:"dwk"`
+	Audience     string            `json:"aud"`
+	JTI          string            `json:"jti"`
+	Agent        string            `json:"agent,omitempty"`
+	Confirmation Confirmation      `json:"cnf"`
+	Actor        *Actor            `json:"act,omitempty"`
+	IssuedAt     int64             `json:"iat"`
+	ExpiresAt    int64             `json:"exp"`
+	Subject      string            `json:"sub,omitempty"`
+	Scope        string            `json:"scope,omitempty"`
+	Mission      *MissionReference `json:"mission,omitempty"`
+	PersonServer string            `json:"ps,omitempty"`
+	Account      string            `json:"account,omitempty"`
+	MissionS256  string            `json:"mission_s256,omitempty"`
+	Tenant       string            `json:"tenant,omitempty"`
 }
 
 // TokenHeader is the protected JWS header common to AAuth tokens.
@@ -314,7 +320,17 @@ func VerifyPersonToken(ctx context.Context, compact string, resolver KeyResolver
 // VerifyResourceToken verifies issuer trust, JWS integrity, structure, and time.
 func VerifyResourceToken(ctx context.Context, compact string, resolver KeyResolver, clock Clock) (ResourceTokenClaims, error) {
 	var claims ResourceTokenClaims
-	if err := verifyAndDecodeToken(ctx, compact, ResourceTokenType, ResourceDiscoveryDocument, resolver, clock, &claims); err != nil {
+	if err := verifyAndDecodeToken(
+		ctx,
+		compact,
+		ResourceTokenType,
+		ResourceDiscoveryDocument,
+		resolver,
+		clock,
+		&claims,
+		"r3_uri",
+		"r3_s256",
+	); err != nil {
 		return claims, err
 	}
 	if err := validateResourceClaims(claims, clock.Now(), true); err != nil {
@@ -332,6 +348,17 @@ func VerifyAuthToken(ctx context.Context, compact string, resolver KeyResolver, 
 	}
 	if header.Type != AuthTokenType {
 		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, AuthTokenType)
+	}
+	if err := rejectUnsupportedTokenMembers(
+		payload,
+		AuthTokenType,
+		"r3_uri",
+		"r3_s256",
+		"r3_granted",
+		"r3_per_call",
+		"r3_conditional",
+	); err != nil {
+		return claims, err
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return claims, fmt.Errorf("aauth: decode auth-token claims: %w", err)
@@ -356,6 +383,7 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	resolver KeyResolver,
 	clock Clock,
 	claims *T,
+	unsupportedMembers ...string,
 ) error {
 	if resolver == nil {
 		return errors.New("aauth: key resolver is required")
@@ -369,6 +397,9 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	}
 	if header.Type != expectedType {
 		return fmt.Errorf("aauth: token typ is %q, want %q", header.Type, expectedType)
+	}
+	if err := rejectUnsupportedTokenMembers(payload, expectedType, unsupportedMembers...); err != nil {
+		return err
 	}
 	if err := json.Unmarshal(payload, claims); err != nil {
 		return fmt.Errorf("aauth: decode %s claims: %w", expectedType, err)
@@ -387,6 +418,22 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	}
 	if err := verifyResolvedTokenKey(ctx, header, issuer, dwk, signingInput, signature, resolver); err != nil {
 		return err
+	}
+	return nil
+}
+
+func rejectUnsupportedTokenMembers(payload []byte, tokenType string, unsupportedMembers ...string) error {
+	if len(unsupportedMembers) == 0 {
+		return nil
+	}
+	var names map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &names); err != nil {
+		return fmt.Errorf("aauth: decode %s claims: %w", tokenType, err)
+	}
+	for _, member := range unsupportedMembers {
+		if _, exists := names[member]; exists {
+			return &unsupportedTokenClaimError{tokenType: tokenType, claim: member}
+		}
 	}
 	return nil
 }
@@ -605,27 +652,22 @@ func validateResourceClaims(claims ResourceTokenClaims, now time.Time, enforceCu
 	if claims.JTI == "" {
 		return errors.New("aauth: resource-token jti is required")
 	}
-	current := claims.PersonServer != "" || claims.Subject != "" || claims.PresentedJTI != ""
-	if current {
-		if err := ValidateServerIdentifier(claims.PersonServer); err != nil {
-			return fmt.Errorf("aauth: resource-token ps: %w", err)
+	if err := ValidateServerIdentifier(claims.PersonServer); err != nil {
+		return fmt.Errorf("aauth: resource-token ps: %w", err)
+	}
+	if claims.Subject == "" {
+		return errors.New("aauth: resource-token sub is required")
+	}
+	if claims.PresentedJTI == "" {
+		return errors.New("aauth: resource-token presented_jti is required")
+	}
+	if claims.Agent != "" || claims.Mission != nil {
+		return errors.New("aauth: resource-token must not contain agent or mission")
+	}
+	if claims.MissionS256 != "" {
+		if err := validateS256("resource-token mission_s256", claims.MissionS256); err != nil {
+			return err
 		}
-		if claims.Subject == "" {
-			return errors.New("aauth: resource-token sub is required")
-		}
-		if claims.PresentedJTI == "" {
-			return errors.New("aauth: resource-token presented_jti is required")
-		}
-		if claims.Agent != "" || claims.Mission != nil {
-			return errors.New("aauth: current resource-token must not contain agent or mission")
-		}
-		if claims.MissionS256 != "" {
-			if err := validateS256("resource-token mission_s256", claims.MissionS256); err != nil {
-				return err
-			}
-		}
-	} else if err := ValidateAgentIdentifier(claims.Agent); err != nil {
-		return fmt.Errorf("aauth: resource-token agent: %w", err)
 	}
 	if claims.AgentJKT == "" {
 		return errors.New("aauth: resource-token agent_jkt is required")
@@ -638,14 +680,6 @@ func validateResourceClaims(claims ResourceTokenClaims, now time.Time, enforceCu
 		checkTime = now
 	}
 	if err := validateTimes(claims.IssuedAt, claims.ExpiresAt, checkTime); err != nil {
-		return fmt.Errorf("aauth: resource-token: %w", err)
-	}
-	if claims.Mission != nil {
-		if err := claims.Mission.Validate(); err != nil {
-			return fmt.Errorf("aauth: resource-token mission: %w", err)
-		}
-	}
-	if err := validateR3Reference(claims.R3URI, claims.R3S256); err != nil {
 		return fmt.Errorf("aauth: resource-token: %w", err)
 	}
 	return nil
@@ -664,33 +698,28 @@ func validateAuthClaims(claims AuthTokenClaims, now time.Time, enforceCurrentTim
 	if claims.JTI == "" {
 		return errors.New("aauth: auth-token jti is required")
 	}
-	current := claims.PersonServer != ""
-	if current {
-		if err := ValidateServerIdentifier(claims.PersonServer); err != nil {
-			return fmt.Errorf("aauth: auth-token ps: %w", err)
+	if err := ValidateServerIdentifier(claims.PersonServer); err != nil {
+		return fmt.Errorf("aauth: auth-token ps: %w", err)
+	}
+	if claims.DWK == PersonDiscoveryDocument && claims.PersonServer != claims.Issuer {
+		return errors.New("aauth: person-server-issued auth-token ps must equal issuer")
+	}
+	if claims.Subject == "" {
+		return errors.New("aauth: auth-token sub is required")
+	}
+	if claims.Agent != "" || claims.Actor != nil || claims.Mission != nil {
+		return errors.New("aauth: auth-token must not contain agent, act, or mission")
+	}
+	if claims.MissionS256 != "" {
+		if err := validateS256("auth-token mission_s256", claims.MissionS256); err != nil {
+			return err
 		}
-		if claims.Subject == "" {
-			return errors.New("aauth: current auth-token sub is required")
-		}
-		if claims.Agent != "" || claims.Actor != nil || claims.Mission != nil {
-			return errors.New("aauth: current auth-token must not contain agent, act, or mission")
-		}
-		if claims.MissionS256 != "" {
-			if err := validateS256("auth-token mission_s256", claims.MissionS256); err != nil {
-				return err
-			}
-		}
-	} else if err := ValidateAgentIdentifier(claims.Agent); err != nil {
-		return fmt.Errorf("aauth: auth-token agent: %w", err)
 	}
 	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
 		return &TokenValidationError{
 			Code:  TokenValidationInvalidKey,
 			Cause: fmt.Errorf("aauth: auth-token cnf.jwk: %w", err),
 		}
-	}
-	if claims.Subject == "" && claims.Scope == "" {
-		return errors.New("aauth: auth-token requires sub or scope")
 	}
 	checkTime := time.Unix(claims.IssuedAt, 0)
 	if enforceCurrentTime {
@@ -701,42 +730,6 @@ func validateAuthClaims(claims AuthTokenClaims, now time.Time, enforceCurrentTim
 	}
 	if claims.ExpiresAt-claims.IssuedAt > int64(time.Hour.Seconds()) {
 		return errors.New("aauth: auth-token lifetime exceeds one hour")
-	}
-	if claims.Mission != nil {
-		if err := claims.Mission.Validate(); err != nil {
-			return fmt.Errorf("aauth: auth-token mission: %w", err)
-		}
-	}
-	if err := validateR3Reference(claims.R3URI, claims.R3S256); err != nil {
-		return fmt.Errorf("aauth: auth-token: %w", err)
-	}
-	hasR3Reference := claims.R3URI != ""
-	if !hasR3Reference && (claims.R3Granted != nil || claims.R3Conditional != nil) {
-		return errors.New("aauth: auth-token R3 grants require an R3 reference")
-	}
-	if hasR3Reference {
-		if claims.R3Granted == nil {
-			return errors.New("aauth: auth-token R3 reference requires r3_granted")
-		}
-		if err := claims.R3Granted.validate(true); err != nil {
-			return fmt.Errorf("aauth: auth-token r3_granted: %w", err)
-		}
-		if len(claims.R3Granted.Operations) == 0 && claims.R3Conditional == nil {
-			return errors.New("aauth: auth-token R3 grant contains no operations")
-		}
-		if claims.R3Conditional != nil {
-			if err := claims.R3Conditional.Validate(); err != nil {
-				return fmt.Errorf("aauth: auth-token r3_conditional: %w", err)
-			}
-			if claims.R3Granted.Vocabulary != claims.R3Conditional.Vocabulary {
-				return errors.New("aauth: auth-token R3 grant vocabularies differ")
-			}
-			for _, operation := range claims.R3Conditional.Operations {
-				if claims.R3Granted.Contains(operation) {
-					return errors.New("aauth: auth-token R3 operation is both granted and conditional")
-				}
-			}
-		}
 	}
 	for actor := claims.Actor; actor != nil; actor = actor.Actor {
 		if err := ValidateAgentIdentifier(actor.Agent); err != nil {
@@ -779,33 +772,6 @@ func validateAgentIssuerDomain(agent string, issuer string) error {
 		)
 	}
 	return nil
-}
-
-// ValidateAuthTokenContext applies the request-context checks that are distinct
-// from JWT trust: audience, agent identity, proof key, and required scopes.
-func ValidateAuthTokenContext(
-	claims AuthTokenClaims,
-	resourceIdentifier string,
-	agentIdentifier string,
-	requestKey JWK,
-	requiredScopes []string,
-) error {
-	if err := ValidateServerIdentifier(resourceIdentifier); err != nil {
-		return fmt.Errorf("aauth: auth-token expected resource: %w", err)
-	}
-	if err := ValidateAgentIdentifier(agentIdentifier); err != nil {
-		return fmt.Errorf("aauth: auth-token signing-context agent: %w", err)
-	}
-	if claims.Audience != resourceIdentifier {
-		return fmt.Errorf("aauth: auth-token audience %q does not match resource %q", claims.Audience, resourceIdentifier)
-	}
-	if claims.Agent != agentIdentifier {
-		return fmt.Errorf("aauth: auth-token agent %q does not match signing context %q", claims.Agent, agentIdentifier)
-	}
-	if !claims.Confirmation.JWK.Equal(requestKey) {
-		return errors.New("aauth: auth-token confirmation key does not match request key")
-	}
-	return validateRequiredScopes(claims.Scope, requiredScopes)
 }
 
 // ValidatePersonTokenContext applies the resource and proof-key checks that

@@ -680,7 +680,7 @@ func TestFileEventStoresRefuseCorruptTruncatedAndUnknownVersions(t *testing.T) {
 	_ = reopened.Close()
 }
 
-func TestFileEventStoresReopenM5V1AndUpgradeOnNextCommit(t *testing.T) {
+func TestFileEventStoresRejectObsoleteV1Snapshots(t *testing.T) {
 	t.Run("AP", func(t *testing.T) {
 		directory := filepath.Join(t.TempDir(), "ap")
 		config := FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"}
@@ -691,31 +691,16 @@ func TestFileEventStoresReopenM5V1AndUpgradeOnNextCommit(t *testing.T) {
 		if err := store.CreateSubscription(context.Background(), fileEventTestAPSubscription("event-one")); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.AcceptEvent(context.Background(), AcceptedEventInput{
-			Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-			EventID: "event-one", Token: "legacy-event-token", AcceptedAt: fileEventTestNow,
-		}); err != nil {
-			t.Fatal(err)
-		}
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
-		downgradeEventStateForTest(t, directory, map[string]string{
+		rewriteEventStateSchemaForRejection(t, directory, map[string]string{
 			"aauth.reference.events.ap-store.v2":        "aauth.reference.events.ap-store.v1",
 			"aauth.reference.events.ap-subscription.v2": "aauth.reference.events.ap-subscription.v1",
-			"aauth.reference.events.ap-delivery.v2":     "aauth.reference.events.ap-delivery.v1",
 		})
-		store, err = OpenFileAPEventStore(config)
-		if err != nil {
-			t.Fatalf("reopen AP v1 state: %v", err)
+		if reopened, err := OpenFileAPEventStore(config); reopened != nil || !errors.Is(err, ErrEventStoreIntegrity) {
+			t.Fatalf("obsolete AP snapshot open = %#v, %v", reopened, err)
 		}
-		if err := store.CreateSubscription(context.Background(), fileEventTestAPSubscription("event-two")); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-		assertEventStateSchemaForTest(t, directory, "aauth.reference.events.ap-store.v2")
 	})
 
 	t.Run("resource", func(t *testing.T) {
@@ -728,30 +713,16 @@ func TestFileEventStoresReopenM5V1AndUpgradeOnNextCommit(t *testing.T) {
 		if err := store.Register(context.Background(), fileEventTestResourceSubscription("event-one")); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.RetainPending(context.Background(), PendingEventDelivery{
-			APIssuer: "https://ap.example", EventID: "event-one",
-			Token: "legacy-event-token", CreatedAt: fileEventTestNow,
-		}); err != nil {
-			t.Fatal(err)
-		}
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
-		downgradeEventStateForTest(t, directory, map[string]string{
+		rewriteEventStateSchemaForRejection(t, directory, map[string]string{
 			"aauth.reference.events.resource-store.v2":     "aauth.reference.events.resource-store.v1",
 			"aauth.reference.events.resource-authority.v2": "aauth.reference.events.resource-authority.v1",
 		})
-		store, err = OpenFileResourceEventStore(config)
-		if err != nil {
-			t.Fatalf("reopen resource v1 state: %v", err)
+		if reopened, err := OpenFileResourceEventStore(config); reopened != nil || !errors.Is(err, ErrEventStoreIntegrity) {
+			t.Fatalf("obsolete resource snapshot open = %#v, %v", reopened, err)
 		}
-		if err := store.Register(context.Background(), fileEventTestResourceSubscription("event-two")); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-		assertEventStateSchemaForTest(t, directory, "aauth.reference.events.resource-store.v2")
 	})
 
 	t.Run("agent", func(t *testing.T) {
@@ -766,39 +737,18 @@ func TestFileEventStoresReopenM5V1AndUpgradeOnNextCommit(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		resourceKey := eventsProviderTestSigningKey(t, "legacy-file-agent-resource")
-		accepted, claims := acceptedAgentEventTest(t, resourceKey, fileEventTestNow, "event-one", "legacy-delivery")
-		if err := store.AdmitProcessing(context.Background(), AgentEventProcessing{
-			Delivery: accepted.Delivery, Action: eventActionKeyForTest(claims, accepted),
-			State: EventPending, ExpiresAt: time.Unix(claims.ExpiresAt, 0),
-			Token: accepted.Token, Event: claims,
-		}); err != nil {
-			t.Fatal(err)
-		}
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
-		downgradeEventStateForTest(t, directory, map[string]string{
-			"aauth.reference.events.agent-store.v2":      "aauth.reference.events.agent-store.v1",
-			"aauth.reference.events.agent-context.v2":    "aauth.reference.events.agent-context.v1",
-			"aauth.reference.events.agent-processing.v2": "aauth.reference.events.agent-processing.v1",
+		rewriteEventStateSchemaForRejection(t, directory, map[string]string{
+			"aauth.reference.events.agent-store.v2":   "aauth.reference.events.agent-store.v1",
+			"aauth.reference.events.agent-context.v2": "aauth.reference.events.agent-context.v1",
 		})
-		store, err = OpenFileAgentEventStore(config)
-		if err != nil {
-			t.Fatalf("reopen agent v1 state: %v", err)
+		if reopened, err := OpenFileAgentEventStore(config); reopened != nil || !errors.Is(err, ErrEventStoreIntegrity) {
+			t.Fatalf("obsolete agent snapshot open = %#v, %v", reopened, err)
 		}
-		if err := store.PutContext(context.Background(), AgentEventContext{
-			APIssuer: "https://ap.example", EventID: "event-two", Value: json.RawMessage(`{"local":2}`),
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-		assertEventStateSchemaForTest(t, directory, "aauth.reference.events.agent-store.v2")
 	})
 }
-
 func TestFileAgentEventStoreDefaultRetainsMaximumAdmittedContract(t *testing.T) {
 	document := protectedEventsTestDocument()
 	const admittedSize = 1 << 20
@@ -843,7 +793,7 @@ func TestFileAgentEventStoreDefaultRetainsMaximumAdmittedContract(t *testing.T) 
 	}
 }
 
-func downgradeEventStateForTest(t *testing.T, directory string, replacements map[string]string) {
+func rewriteEventStateSchemaForRejection(t *testing.T, directory string, replacements map[string]string) {
 	t.Helper()
 	path := filepath.Join(directory, eventFileStateName)
 	body, err := os.ReadFile(path)
@@ -855,22 +805,11 @@ func downgradeEventStateForTest(t *testing.T, directory string, replacements map
 			t.Fatalf("current state does not contain schema %q: %s", current, body)
 		}
 	}
-	for current, legacy := range replacements {
-		body = bytes.ReplaceAll(body, []byte(current), []byte(legacy))
+	for current, obsolete := range replacements {
+		body = bytes.ReplaceAll(body, []byte(current), []byte(obsolete))
 	}
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func assertEventStateSchemaForTest(t *testing.T, directory, schema string) {
-	t.Helper()
-	body, err := os.ReadFile(filepath.Join(directory, eventFileStateName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(body, []byte(schema)) {
-		t.Fatalf("upgraded state does not contain schema %q: %s", schema, body)
 	}
 }
 

@@ -133,12 +133,13 @@ func TestCoveragePinsOneCompleteCurrentEditorFamily(t *testing.T) {
 	}
 }
 
-func TestCurrentPersonTokenClaimsUseCurrentEvidenceOnly(t *testing.T) {
+func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 	bundle, err := Embedded()
 	if err != nil {
 		t.Fatal(err)
 	}
 	currentClaims := map[string]string{
+		"core\x00overview-resource-managed":                                                     StatusExercised,
 		"core\x00person-token-endpoint":                                                         StatusPartial,
 		"core\x00person-token-structure":                                                        StatusExercised,
 		"core\x00person-token-usage":                                                            StatusExercised,
@@ -161,14 +162,28 @@ func TestCurrentPersonTokenClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"core\x00auth-tokens/auth-token-verification/jwt-trust-verification":                    StatusExercised,
 		"core\x00auth-tokens/auth-token-verification/request-context-binding":                   StatusPartial,
 		"core\x00auth-token-response-verification":                                              StatusExercised,
+		"core\x00call-chaining":                                                                 StatusExercised,
+		"core\x00sub-agents/sub-agent-identity":                                                 StatusExercised,
+		"core\x00sub-agents/single-level-depth":                                                 StatusExercised,
+		"core\x00sub-agents/parent-mediated-authorization":                                      StatusExercised,
+		"core\x00requirement-responses/interaction-required":                                    StatusPartial,
+		"core\x00deferred-responses/initial-request":                                            StatusExercised,
+		"core\x00deferred-responses/deferred-response-state-machine":                            StatusPartial,
 	}
 	currentEvidence := map[string]bool{
-		"current_mission_recovery_test.go":     true,
-		"current_person_token_journey_test.go": true,
-		"person_token_internal_test.go":        true,
+		"access_client_test.go":                  true,
+		"access_journey_test.go":                 true,
+		"call_chaining_journey_test.go":          true,
+		"current_mission_recovery_test.go":       true,
+		"current_person_token_journey_test.go":   true,
+		"deferred_access_journey_test.go":        true,
+		"deferred_four_party_journey_test.go":    true,
+		"deferred_person_server_journey_test.go": true,
+		"person_token_internal_test.go":          true,
+		"subagent_journey_test.go":               true,
 	}
 	seenCurrent := make(map[string]bool, len(currentClaims))
-	legacyOnly := map[string]struct{}{
+	obsoleteOnly := map[string]struct{}{
 		"core\x00audit-endpoint/audit-request":             {},
 		"core\x00audit-endpoint/audit-response":            {},
 		"core\x00covered-components":                       {},
@@ -185,9 +200,6 @@ func TestCurrentPersonTokenClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"core\x00mission-log":                              {},
 		"core\x00mission-completion":                       {},
 		"core\x00upstream-token-verification":              {},
-		"core\x00call-chaining":                            {},
-		"core\x00sub-agents/sub-agent-identity":            {},
-		"core\x00sub-agents/parent-mediated-authorization": {},
 		"core\x00metadata-documents":                       {},
 		"r3\x00auth-token-extensions":                      {},
 		"r3\x00authorization-endpoint-extensions":          {},
@@ -211,12 +223,12 @@ func TestCurrentPersonTokenClaimsUseCurrentEvidenceOnly(t *testing.T) {
 			}
 			for _, evidence := range annotation.Evidence {
 				if !currentEvidence[evidence.File] {
-					t.Errorf("current claim %s uses legacy evidence %s", key, evidence.File)
+					t.Errorf("current claim %s uses obsolete evidence %s", key, evidence.File)
 				}
 			}
 		}
-		if _, found := legacyOnly[key]; found {
-			t.Errorf("legacy evidence still claims current section %s/%s as %s", annotation.Source, annotation.Section, annotation.Status)
+		if _, found := obsoleteOnly[key]; found {
+			t.Errorf("obsolete evidence still claims current section %s/%s as %s", annotation.Source, annotation.Section, annotation.Status)
 		}
 	}
 	for key := range currentClaims {

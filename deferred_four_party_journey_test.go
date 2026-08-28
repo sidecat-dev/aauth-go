@@ -15,13 +15,14 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
-func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
+func TestCurrentFourPartyDeferredAuthorizationJourney(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 16, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	ids := sequentialIDs(
 		"agent-token",
+		"person-token",
 		"resource-token",
 		"auth-token",
 		"resource-token-denied",
@@ -76,12 +77,15 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 	}
 
 	var accessPolicyCalls int
-	accessServer, err := reference.NewAccessServer(reference.AccessServerConfig{
-		Identifier:  "https://as.example",
-		SigningKey:  asKey,
-		KeyResolver: resolver,
-		Clock:       clock,
-		NewID:       ids,
+	accessAuthorizationDirectory := t.TempDir() + "/access-authorization"
+	accessAuthorizationStore := openTestFileAuthorizationStateStore(t, accessAuthorizationDirectory)
+	accessConfig := reference.AccessServerConfig{
+		AuthorizationStore: accessAuthorizationStore,
+		Identifier:         "https://as.example",
+		SigningKey:         asKey,
+		KeyResolver:        resolver,
+		Clock:              clock,
+		NewID:              ids,
 		TrustedPersonServer: func(_ context.Context, identifier string) error {
 			if identifier != "https://ps.example" {
 				return fmt.Errorf("untrusted person server %s", identifier)
@@ -109,18 +113,23 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 			{15, 16, 17, 18, 19},
 		}, nil)),
 		PendingLifetime: time.Minute,
-	})
+	}
+	accessServer, err := reference.NewAccessServer(accessConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var personPolicyCalls int
-	personServer, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier:  "https://ps.example",
-		SigningKey:  psKey,
-		KeyResolver: resolver,
-		Clock:       clock,
-		NewID:       ids,
+	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
+	personAuthorizationDirectory := t.TempDir() + "/person-authorization"
+	personAuthorizationStore := openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig := reference.PersonServerConfig{
+		AuthorizationStore: personAuthorizationStore,
+		Identifier:         "https://ps.example",
+		SigningKey:         psKey,
+		KeyResolver:        resolver,
+		Clock:              clock,
+		NewID:              ids,
 		Random: bytes.NewReader(bytes.Join([][]byte{
 			bytes.Repeat([]byte{7}, 16),
 			bytes.Repeat([]byte{8}, 16),
@@ -135,30 +144,41 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 			}
 			return identifier + "/token", nil
 		},
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
-			return aauth.MissionDecision{Description: proposal.Description}, nil
+		PersonTokenStore:     personTokenStore,
+		MissionIssuanceStore: missionIssuanceStore,
+		PersonTokenPolicy: func(_ context.Context, _ aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			return aauth.PersonTokenDecision{Subject: "federated-pairwise-user", Lifetime: time.Hour}, nil
+		},
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
 		},
 		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			personPolicyCalls++
 			return aauth.AuthorizationDecision{
-				Subject: "person-server-user",
+				Subject: request.Subject,
 				Scope:   request.Scope,
 			}, nil
 		},
-	})
+	}
+	personServer, err := reference.NewPersonServer(personConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var operationCalls int
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:   "https://resource.example",
-		AccessServer: "https://as.example",
-		SigningKey:   resourceKey,
-		KeyResolver:  resolver,
-		Clock:        clock,
-		NewID:        ids,
-		Scopes:       []string{"records.read"},
+		Identifier:                   "https://resource.example",
+		AccessMode:                   aauth.AccessModeAuthToken,
+		AccessServer:                 "https://as.example",
+		SigningKey:                   resourceKey,
+		KeyResolver:                  resolver,
+		Clock:                        clock,
+		NewID:                        ids,
+		Scopes:                       []string{"records.read"},
+		ScopeDescriptions:            map[string]string{"records.read": "Read records"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("records.read"),
+		ReplayStore:                  testResourceReplayStore(t, clock),
+		ProtectedAuthorizationPolicy: func(context.Context, aauth.AuthorizedRequest) error { return nil },
 		Operation: func(_ context.Context, request aauth.AuthorizedRequest) (any, error) {
 			operationCalls++
 			return map[string]string{
@@ -172,10 +192,13 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 	}
 
 	accessHandler := accessServer.Handler()
+	personHandler := personServer.Handler()
 	var accessServerPolls int
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"ap.example": ap.Handler(),
-		"ps.example": personServer.Handler(),
+		"ps.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			personHandler.ServeHTTP(response, request)
+		}),
 		"as.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			if request.Method == http.MethodGet &&
 				strings.HasPrefix(request.URL.Path, "/pending/") &&
@@ -195,28 +218,30 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 	defer gateway.Close()
 	client.Transport = gateway.Client().Transport
 
-	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: resolver,
-		HTTPClient:  client,
-		Clock:       clock,
-	})
+	agentAuthorizationDirectory := t.TempDir() + "/agent-authorization"
+	agentAuthorizationStore := openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig := reference.AgentConfig{
+		AuthorizationStore: agentAuthorizationStore,
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         client,
+		Clock:              clock,
+	}
+	agent, err := reference.NewAgent(agentConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mission, err := agent.CreateMission(context.Background(), "https://ps.example/mission", aauth.MissionProposal{
-		Description: "Read federated records after resource-owner approval.",
-	})
+	person, err := agent.RequestPersonToken(context.Background(), "https://ps.example/person", "https://resource.example", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceGrant, err := agent.RequestResourceToken(
+	resourceGrant, err := agent.RequestResourceTokenWithPersonToken(
 		context.Background(),
 		"https://resource.example/authorize",
 		[]string{"records.read"},
-		mission,
+		person.PersonToken,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -263,6 +288,8 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 		pending.Requirement.InteractionURL,
 		"https://as.example/interaction/",
 	)
+	interactionURL := pending.Requirement.InteractionURL
+	interactionCode := pending.Requirement.InteractionCode
 	unsignedASPoll, err := client.Get("https://as.example/pending/" + asPendingID)
 	if err != nil {
 		t.Fatal(err)
@@ -291,10 +318,39 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 		t.Fatalf("AS polls before slowdown elapsed = %d", accessServerPolls)
 	}
 	now = now.Add(5 * time.Second)
+	if err := accessAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	accessAuthorizationStore = openTestFileAuthorizationStateStore(t, accessAuthorizationDirectory)
+	accessConfig.AuthorizationStore = accessAuthorizationStore
+	accessServer, err = reference.NewAccessServer(accessConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessHandler = accessServer.Handler()
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	personServer, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personHandler = personServer.Handler()
+	if err := agentAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	agentAuthorizationStore = openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig.AuthorizationStore = agentAuthorizationStore
+	agent, err = reference.NewAgent(agentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending = &reference.PendingTokenAuthorization{ID: pending.ID}
 
 	interaction, err := client.Get(
-		pending.Requirement.InteractionURL +
-			"?code=" + pending.Requirement.InteractionCode,
+		interactionURL + "?code=" + interactionCode,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -359,11 +415,11 @@ func TestAccessServerDeferredAuthorizationThroughPersonServer(t *testing.T) {
 	newPending := func() *reference.PendingTokenAuthorization {
 		t.Helper()
 		now = now.Add(time.Second)
-		nextResourceGrant, err := agent.RequestResourceToken(
+		nextResourceGrant, err := agent.RequestResourceTokenWithPersonToken(
 			context.Background(),
 			"https://resource.example/authorize",
 			[]string{"records.read"},
-			mission,
+			person.PersonToken,
 		)
 		if err != nil {
 			t.Fatal(err)

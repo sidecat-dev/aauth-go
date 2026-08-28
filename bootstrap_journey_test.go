@@ -48,14 +48,19 @@ func TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity(t *test
 		t.Fatal(err)
 	}
 	person, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier: "https://ps.example",
-		SigningKey: psKey,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "https://ps.example",
+		SigningKey:         psKey,
 		KeyResolver: aauth.StaticKeyResolver{
 			"https://ap.example": {"ap-key": apKey.PublicJWK()},
 		},
-		Clock: clock,
-		NewID: ids,
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
+		Clock:                clock,
+		NewID:                ids,
+		PersonTokenStore:     testPersonTokenStore(t),
+		MissionIssuanceStore: testMissionIssuanceStore(t),
+		PersonTokenPolicy:    testPersonTokenPolicy,
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
+			proposal := evaluation.Proposal
 			return aauth.MissionDecision{
 				Description: proposal.Description,
 				Tools:       proposal.Tools,
@@ -127,12 +132,13 @@ func TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity(t *test
 	}
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  second.Identifier,
-		SigningKey:  secondEphemeral,
-		AgentToken:  second.AgentToken,
-		KeyResolver: resolver,
-		HTTPClient:  gateway.Client(),
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         second.Identifier,
+		SigningKey:         secondEphemeral,
+		AgentToken:         second.AgentToken,
+		KeyResolver:        resolver,
+		HTTPClient:         gateway.Client(),
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +348,63 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 	if second.StatusCode != http.StatusUnauthorized {
 		body, _ := io.ReadAll(second.Body)
 		t.Fatalf("replayed refresh status = %d, body = %s", second.StatusCode, body)
+	}
+}
+
+func TestBootstrapRefreshPolicyRefusalDoesNotLeakHostDetail(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 23, 45, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	apKey := testSigningKey(t, "ap-key")
+	durable := testSigningKey(t, "known-install")
+	ephemeral := testSigningKey(t, "ephemeral")
+	thumbprint, err := durable.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := reference.NewAgentProvider(reference.AgentProviderConfig{
+		Identifier: "https://ap.example",
+		SigningKey: apKey,
+		Clock:      clock,
+		NewID:      sequentialIDs("unused-agent-token"),
+		Enrollments: reference.StaticEnrollmentStore{
+			thumbprint: {
+				Agent:        "aauth:known-install@ap.example",
+				PersonServer: "https://ps.example",
+			},
+		},
+		RefreshPolicy: func(context.Context, reference.AgentRefreshEvaluation) error {
+			return errors.New("secret enrollment database /srv/enrollments.db")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newLogicalGateway(t, map[string]http.Handler{"ap.example": provider.Handler()})
+	defer server.Close()
+	client, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
+		DurableKey: durable,
+		KeyResolver: aauth.StaticKeyResolver{
+			"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
+		},
+		HTTPClient: server.Client(),
+		Clock:      clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Refresh(
+		context.Background(),
+		"https://ap.example/refresh",
+		"https://ps.example",
+		ephemeral,
+	)
+	var problem *aauth.ProblemError
+	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden ||
+		problem.Code != "refresh_denied" || problem.Detail != "agent refresh policy denied the request" ||
+		strings.Contains(problem.Detail, "secret") {
+		t.Fatalf("refresh-policy refusal = %v (%#v)", err, problem)
 	}
 }
 

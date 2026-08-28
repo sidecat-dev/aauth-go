@@ -89,55 +89,6 @@ func TestLegacyDraft06ElixirAgentRequestIsRetainedButRejected(t *testing.T) {
 	}
 }
 
-func TestElixirSignedAgentRequestRefusesWireMutation(t *testing.T) {
-	fixture := loadElixirRequestFixture(t)
-	resolver := aauth.StaticKeyResolver{
-		fixture.Issuer: {
-			fixture.IssuerKey.Kid: fixture.IssuerKey,
-		},
-	}
-	clock := aauth.ClockFunc(func() time.Time {
-		return time.Unix(fixture.Now, 0)
-	})
-	verify := func(request *http.Request) error {
-		_, err := aauth.VerifyRequest(
-			context.Background(),
-			request,
-			resolver,
-			clock,
-			aauth.VerifyRequestOptions{
-				RequiredComponents:     []string{"aauth-mission"},
-				AllowedCredentialTypes: []string{aauth.AgentTokenType},
-			},
-		)
-		return err
-	}
-
-	t.Run("mission", func(t *testing.T) {
-		request := elixirFixtureRequest(t, fixture)
-		value := request.Header.Get("AAuth-Mission")
-		request.Header.Set(
-			"AAuth-Mission",
-			strings.Replace(value, "s256=\"", "s256=\"A", 1),
-		)
-		if err := verify(request); err == nil {
-			t.Fatal("mutated Elixir mission header was accepted")
-		}
-	})
-
-	t.Run("signature key", func(t *testing.T) {
-		request := elixirFixtureRequest(t, fixture)
-		value := request.Header.Get("Signature-Key")
-		request.Header.Set(
-			"Signature-Key",
-			strings.Replace(value, "sig=jwt;jwt=\"", "sig=jwt;jwt=\"A", 1),
-		)
-		if err := verify(request); err == nil {
-			t.Fatal("mutated Elixir Signature-Key was accepted")
-		}
-	})
-}
-
 func TestLegacyDraft06ElixirJKTJWTRequestIsRetainedButRejected(t *testing.T) {
 	body, err := os.ReadFile(elixirJKTJWTRequestVector)
 	if err != nil {
@@ -185,28 +136,6 @@ func TestLegacyDraft06ElixirJKTJWTRequestIsRetainedButRejected(t *testing.T) {
 	if !errors.As(err, &signatureError) ||
 		signatureError.Code != aauth.SignatureErrorUnsupportedAlgorithm {
 		t.Fatalf("legacy draft-06 jkt-jwt error = %v, want unsupported_algorithm", err)
-	}
-
-	mutated := request.Clone(context.Background())
-	mutated.Header.Set(
-		"Signature-Key",
-		strings.Replace(
-			request.Header.Get("Signature-Key"),
-			`sig=jkt-jwt;jwt="`,
-			`sig=jkt-jwt;jwt="A`,
-			1,
-		),
-	)
-	if _, err := aauth.VerifyRequest(
-		context.Background(),
-		mutated,
-		nil,
-		clock,
-		aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJKTJWT},
-		},
-	); err == nil {
-		t.Fatal("mutated Elixir jkt-jwt Signature-Key was accepted")
 	}
 }
 

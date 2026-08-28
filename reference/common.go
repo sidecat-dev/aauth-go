@@ -4,19 +4,36 @@ package reference
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
 
 const maxJSONBody = 1 << 20
+
+type retainedAuthorizationTokenKeys struct {
+	Resource aauth.JWK  `json:"resource"`
+	Agent    aauth.JWK  `json:"agent"`
+	Subagent *aauth.JWK `json:"subagent,omitempty"`
+	Upstream *aauth.JWK `json:"upstream,omitempty"`
+}
+
+func copyRetainedAuthorizationTokenKeys(value retainedAuthorizationTokenKeys) retainedAuthorizationTokenKeys {
+	value.Subagent = copyJWK(value.Subagent)
+	value.Upstream = copyJWK(value.Upstream)
+	return value
+}
 
 func decodeJSON(response http.ResponseWriter, request *http.Request, destination any) error {
 	request.Body = http.MaxBytesReader(response, request.Body, maxJSONBody)
@@ -81,6 +98,10 @@ func writeProblem(response http.ResponseWriter, status int, code string, err err
 	writeProblemBody(response, status, problemBody(status, code, err, nil))
 }
 
+func writeHostPolicyRefusal(response http.ResponseWriter, code string, publicDetail string) {
+	writeProblem(response, http.StatusForbidden, code, errors.New(publicDetail))
+}
+
 // writeSignatureFailure emits the AAuth HTTP-signature profile's 401 response.
 // Authentication failure is distinct from policy denial: callers use this only
 // before an endpoint has successfully authenticated the request.
@@ -120,8 +141,13 @@ func writeSignatureFailure(response http.ResponseWriter, err error) {
 	}
 	// Causes can contain admitted endpoints, trust configuration, and
 	// transport diagnostics. They remain available to the local caller but
-	// are never copied into a remote Problem Details response.
-	body := problemBody(http.StatusUnauthorized, string(signatureError.Code), nil, extensions)
+	// are never copied into a remote Problem Details response. PublicDetail is
+	// set only by the verifier for diagnostics it has classified as safe.
+	var publicDetail error
+	if signatureError.PublicDetail() != "" {
+		publicDetail = errors.New(signatureError.PublicDetail())
+	}
+	body := problemBody(http.StatusUnauthorized, string(signatureError.Code), publicDetail, extensions)
 	var problem map[string]any
 	if err := json.Unmarshal(body, &problem); err == nil {
 		problem["type"] = signatureError.ProblemType()
@@ -141,6 +167,24 @@ func writeOperationalResolutionFailure(response http.ResponseWriter, err error) 
 	}
 	writeProblem(response, http.StatusServiceUnavailable, "server_error", nil)
 	return true
+}
+
+func writeAuthorizationStateFailure(response http.ResponseWriter, err error) bool {
+	for _, target := range []error{
+		ErrAuthorizationStateStoreConfig,
+		ErrAuthorizationStateCapacity,
+		ErrAuthorizationStateUnsafe,
+		ErrAuthorizationStateLocked,
+		ErrAuthorizationStateIntegrity,
+		ErrAuthorizationStateUncertain,
+		ErrAuthorizationStateClosed,
+	} {
+		if errors.Is(err, target) {
+			writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+			return true
+		}
+	}
+	return false
 }
 
 func writeTokenVerificationFailure(
@@ -176,7 +220,9 @@ func problemBody(
 	extensions map[string]any,
 ) []byte {
 	detail := code
-	if err != nil {
+	if status >= http.StatusInternalServerError {
+		detail = publicServerProblemDetail(code)
+	} else if err != nil {
 		detail = err.Error()
 	}
 	value := map[string]any{
@@ -191,9 +237,34 @@ func problemBody(
 	}
 	body, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
-		return []byte(`{"type":"about:blank","title":"Internal Server Error","status":500,"error":"server_error","detail":"reference: encode problem response"}`)
+		return []byte(`{"type":"about:blank","title":"Internal Server Error","status":500,"error":"server_error","detail":"the server could not complete the request"}`)
 	}
 	return body
+}
+
+func publicServerProblemDetail(code string) string {
+	switch code {
+	case "authorization_state_unavailable":
+		return "authorization state is temporarily unavailable"
+	case "proof_replay_unavailable":
+		return "proof replay protection is temporarily unavailable"
+	case "person_token_custody_unavailable":
+		return "person-token custody is temporarily unavailable"
+	case "event_ticket_unavailable":
+		return "event-ticket custody is temporarily unavailable"
+	case "replay_custody_failed":
+		return "replay custody is temporarily unavailable"
+	case "federation_failed":
+		return "authorization federation failed"
+	case "server_error":
+		return "the server could not complete the request"
+	default:
+		public := strings.TrimSpace(strings.ReplaceAll(code, "_", " "))
+		if public == "" {
+			return "the server could not complete the request"
+		}
+		return public
+	}
 }
 
 func writeProblemBody(response http.ResponseWriter, status int, body []byte) {
@@ -242,6 +313,333 @@ func scopesContained(granted, requested []string) bool {
 		}
 	}
 	return true
+}
+
+func decodeRetainedCompactToken(compact string, tokenType string, destination any) error {
+	header, err := aauth.PeekTokenHeader(compact)
+	if err != nil {
+		return err
+	}
+	if header.Type != tokenType {
+		return fmt.Errorf("reference: retained token typ is %q, want %q", header.Type, tokenType)
+	}
+	parts := strings.Split(compact, ".")
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return fmt.Errorf("reference: decode retained token header: %w", err)
+	}
+	var strictHeader aauth.TokenHeader
+	if err := decodeJSONBytes(bytes.NewReader(headerBytes), &strictHeader); err != nil {
+		return fmt.Errorf("reference: decode retained token header: %w", err)
+	}
+	if strictHeader != header || header.Algorithm != aauth.Ed25519Algorithm || header.KeyID == "" {
+		return errors.New("reference: retained token header is invalid")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return fmt.Errorf("reference: decode retained token payload: %w", err)
+	}
+	if err := decodeJSONBytes(bytes.NewReader(payload), destination); err != nil {
+		return fmt.Errorf("reference: decode retained token claims: %w", err)
+	}
+	return nil
+}
+
+func decodeRetainedAgentToken(compact string) (aauth.AgentTokenClaims, error) {
+	var claims aauth.AgentTokenClaims
+	if err := decodeRetainedCompactToken(compact, aauth.AgentTokenType, &claims); err != nil {
+		return claims, err
+	}
+	if err := validateRetainedAgentClaims(claims); err != nil {
+		return claims, err
+	}
+	return claims, nil
+}
+
+func decodeRetainedResourceToken(compact string) (aauth.ResourceTokenClaims, error) {
+	var claims aauth.ResourceTokenClaims
+	if err := decodeRetainedCompactToken(compact, aauth.ResourceTokenType, &claims); err != nil {
+		return claims, err
+	}
+	if err := validateRetainedResourceClaims(claims); err != nil {
+		return claims, err
+	}
+	return claims, nil
+}
+
+func decodeRetainedAuthToken(compact string) (aauth.AuthTokenClaims, error) {
+	var claims aauth.AuthTokenClaims
+	if err := decodeRetainedCompactToken(compact, aauth.AuthTokenType, &claims); err != nil {
+		return claims, err
+	}
+	if err := validateRetainedAuthClaims(claims); err != nil {
+		return claims, err
+	}
+	return claims, nil
+}
+
+func validateRetainedAgentClaims(claims aauth.AgentTokenClaims) error {
+	if aauth.ValidateServerIdentifier(claims.Issuer) != nil || claims.DWK != aauth.AgentDiscoveryDocument ||
+		aauth.ValidateAgentIdentifier(claims.Subject) != nil || claims.JTI == "" ||
+		claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt ||
+		claims.ExpiresAt-claims.IssuedAt > int64((24*time.Hour)/time.Second) ||
+		aauth.ValidateAgentRelationship(claims.Subject, claims.ParentAgent) != nil {
+		return errors.New("reference: retained agent-token claims are invalid")
+	}
+	_, agentDomain, ok := strings.Cut(strings.TrimPrefix(claims.Subject, "aauth:"), "@")
+	if !ok || claims.Issuer != "https://"+agentDomain {
+		return errors.New("reference: retained agent-token issuer does not match its subject")
+	}
+	if claims.PersonServer != "" && aauth.ValidateServerIdentifier(claims.PersonServer) != nil {
+		return errors.New("reference: retained agent-token person server is invalid")
+	}
+	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
+		return errors.New("reference: retained agent-token confirmation key is invalid")
+	}
+	return nil
+}
+
+func validateRetainedResourceClaims(claims aauth.ResourceTokenClaims) error {
+	if aauth.ValidateServerIdentifier(claims.Issuer) != nil || claims.DWK != aauth.ResourceDiscoveryDocument ||
+		aauth.ValidateServerIdentifier(claims.Audience) != nil || claims.JTI == "" ||
+		aauth.ValidateServerIdentifier(claims.PersonServer) != nil || claims.Subject == "" ||
+		claims.PresentedJTI == "" || claims.Agent != "" || claims.Mission != nil ||
+		claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt ||
+		!validRetainedThumbprint(claims.AgentJKT) {
+		return errors.New("reference: retained resource-token claims are invalid")
+	}
+	if _, err := parseScopes(claims.Scope); err != nil {
+		return errors.New("reference: retained resource-token scope is invalid")
+	}
+	if claims.MissionS256 != "" && !validRetainedThumbprint(claims.MissionS256) {
+		return errors.New("reference: retained resource-token mission digest is invalid")
+	}
+	return nil
+}
+
+func validateRetainedAuthClaims(claims aauth.AuthTokenClaims) error {
+	if aauth.ValidateServerIdentifier(claims.Issuer) != nil ||
+		(claims.DWK != aauth.PersonDiscoveryDocument && claims.DWK != aauth.AccessDiscoveryDocument) ||
+		aauth.ValidateServerIdentifier(claims.Audience) != nil || claims.JTI == "" ||
+		aauth.ValidateServerIdentifier(claims.PersonServer) != nil || claims.Subject == "" ||
+		claims.Agent != "" || claims.Actor != nil || claims.Mission != nil ||
+		claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt ||
+		claims.ExpiresAt-claims.IssuedAt > int64(time.Hour/time.Second) {
+		return errors.New("reference: retained auth-token claims are invalid")
+	}
+	if claims.DWK == aauth.PersonDiscoveryDocument && claims.PersonServer != claims.Issuer {
+		return errors.New("reference: retained person-server auth-token identity is invalid")
+	}
+	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
+		return errors.New("reference: retained auth-token confirmation key is invalid")
+	}
+	if claims.MissionS256 != "" && !validRetainedThumbprint(claims.MissionS256) {
+		return errors.New("reference: retained auth-token mission digest is invalid")
+	}
+	return nil
+}
+
+func retainedResourceTokenMatches(compact string, expected aauth.ResourceTokenClaims) bool {
+	claims, err := decodeRetainedResourceToken(compact)
+	return err == nil && reflect.DeepEqual(claims, expected)
+}
+
+func latestRetainedAuthorizationInputIssuedAt(
+	resourceTokenCompact string,
+	agentTokenCompact string,
+	subagentTokenCompact string,
+	upstreamTokenCompact string,
+) (int64, error) {
+	resource, err := decodeRetainedResourceToken(resourceTokenCompact)
+	if err != nil {
+		return 0, err
+	}
+	agent, err := decodeRetainedAgentToken(agentTokenCompact)
+	if err != nil {
+		return 0, err
+	}
+	latest := resource.IssuedAt
+	if agent.IssuedAt > latest {
+		latest = agent.IssuedAt
+	}
+	if subagentTokenCompact != "" {
+		subagent, err := decodeRetainedAgentToken(subagentTokenCompact)
+		if err != nil {
+			return 0, err
+		}
+		if subagent.IssuedAt > latest {
+			latest = subagent.IssuedAt
+		}
+	}
+	if upstreamTokenCompact != "" {
+		upstream, err := decodeRetainedAuthToken(upstreamTokenCompact)
+		if err != nil {
+			return 0, err
+		}
+		if upstream.IssuedAt > latest {
+			latest = upstream.IssuedAt
+		}
+	}
+	return latest, nil
+}
+
+// verifyRetainedAuthToken verifies a terminal token from retained key material
+// at its own issuance instant. Recovery therefore rechecks structure,
+// signature, and lifetime construction without consulting discovery, current
+// policy, or the wall clock.
+func verifyRetainedAuthToken(compact string, key aauth.JWK) (aauth.AuthTokenClaims, error) {
+	claims, err := decodeRetainedAuthToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	return verifyRetainedAuthTokenClaimsAt(
+		compact,
+		key,
+		claims,
+		time.Unix(claims.IssuedAt, 0).UTC(),
+	)
+}
+
+func verifyRetainedAuthTokenAt(
+	compact string,
+	key aauth.JWK,
+	verifiedAt time.Time,
+) (aauth.AuthTokenClaims, error) {
+	claims, err := decodeRetainedAuthToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	return verifyRetainedAuthTokenClaimsAt(compact, key, claims, verifiedAt.UTC())
+}
+
+func verifyRetainedAuthTokenClaimsAt(
+	compact string,
+	key aauth.JWK,
+	claims aauth.AuthTokenClaims,
+	verifiedAt time.Time,
+) (aauth.AuthTokenClaims, error) {
+	header, err := aauth.PeekTokenHeader(compact)
+	if err != nil {
+		return claims, err
+	}
+	verified, err := aauth.VerifyAuthToken(
+		context.Background(),
+		compact,
+		aauth.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
+		aauth.ClockFunc(func() time.Time { return verifiedAt }),
+	)
+	if err != nil {
+		return claims, err
+	}
+	if !reflect.DeepEqual(verified, claims) {
+		return claims, errors.New("reference: retained auth-token claims changed during verification")
+	}
+	return claims, nil
+}
+
+func verifyRetainedAgentToken(compact string, key aauth.JWK) (aauth.AgentTokenClaims, error) {
+	claims, err := decodeRetainedAgentToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	return verifyRetainedAgentTokenClaimsAt(
+		compact,
+		key,
+		claims,
+		time.Unix(claims.IssuedAt, 0).UTC(),
+	)
+}
+
+func verifyRetainedAgentTokenAt(
+	compact string,
+	key aauth.JWK,
+	verifiedAt time.Time,
+) (aauth.AgentTokenClaims, error) {
+	claims, err := decodeRetainedAgentToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	return verifyRetainedAgentTokenClaimsAt(compact, key, claims, verifiedAt.UTC())
+}
+
+func verifyRetainedAgentTokenClaimsAt(
+	compact string,
+	key aauth.JWK,
+	claims aauth.AgentTokenClaims,
+	verifiedAt time.Time,
+) (aauth.AgentTokenClaims, error) {
+	header, err := aauth.PeekTokenHeader(compact)
+	if err != nil {
+		return claims, err
+	}
+	verified, err := aauth.VerifyAgentToken(
+		context.Background(),
+		compact,
+		aauth.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
+		aauth.ClockFunc(func() time.Time { return verifiedAt }),
+	)
+	if err != nil {
+		return claims, err
+	}
+	if !reflect.DeepEqual(verified, claims) {
+		return claims, errors.New("reference: retained agent-token claims changed during verification")
+	}
+	return claims, nil
+}
+
+func verifyRetainedResourceToken(compact string, key aauth.JWK) (aauth.ResourceTokenClaims, error) {
+	claims, err := decodeRetainedResourceToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	return verifyRetainedResourceTokenClaimsAt(
+		compact,
+		key,
+		claims,
+		time.Unix(claims.IssuedAt, 0).UTC(),
+	)
+}
+
+func verifyRetainedResourceTokenAt(
+	compact string,
+	key aauth.JWK,
+	verifiedAt time.Time,
+) (aauth.ResourceTokenClaims, error) {
+	claims, err := decodeRetainedResourceToken(compact)
+	if err != nil {
+		return claims, err
+	}
+	return verifyRetainedResourceTokenClaimsAt(compact, key, claims, verifiedAt.UTC())
+}
+
+func verifyRetainedResourceTokenClaimsAt(
+	compact string,
+	key aauth.JWK,
+	claims aauth.ResourceTokenClaims,
+	verifiedAt time.Time,
+) (aauth.ResourceTokenClaims, error) {
+	header, err := aauth.PeekTokenHeader(compact)
+	if err != nil {
+		return claims, err
+	}
+	verified, err := aauth.VerifyResourceToken(
+		context.Background(),
+		compact,
+		aauth.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
+		aauth.ClockFunc(func() time.Time { return verifiedAt }),
+	)
+	if err != nil {
+		return claims, err
+	}
+	if !reflect.DeepEqual(verified, claims) {
+		return claims, errors.New("reference: retained resource-token claims changed during verification")
+	}
+	return claims, nil
+}
+
+func validRetainedThumbprint(value string) bool {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	return err == nil && len(decoded) == 32
 }
 
 func endpointIdentifier(endpoint string) (string, error) {

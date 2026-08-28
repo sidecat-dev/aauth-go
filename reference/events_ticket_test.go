@@ -35,9 +35,14 @@ func TestProtectedEventTicketIssueFollowsAuthenticatedOperationCommit(t *testing
 		resolver: aauth.StaticKeyResolver{"https://as.example": {accessKey.ID(): accessKey.PublicJWK()}},
 		store:    store, contracts: contracts, document: document,
 		operation: func(_ context.Context, authorized aauth.AuthorizedRequest) (any, error) {
+			if authorized.Agent != "" || authorized.PersonServer != "https://ps.example" ||
+				authorized.Subject != "pairwise-user" ||
+				authorized.ConfirmationKey != agentKey.PublicJWK() {
+				t.Fatalf("current protected event authority = %#v", authorized)
+			}
 			return ProtectedEventOperationResult{
 				Ticket: ProtectedEventTicketRequest{
-					ResourceRevision: "appointment-state-17", ActiveUntil: activeUntil,
+					Agent: "aauth:subscriber@ap.example", ResourceRevision: "appointment-state-17", ActiveUntil: activeUntil,
 				},
 				Response: func(grant ProtectedEventTicketGrant) (any, error) {
 					return map[string]any{
@@ -126,10 +131,15 @@ func TestProtectedEventsConfigurationRejectsWildcardPublicRouteConflict(t *testi
 	resourceKey := eventsProviderTestSigningKey(t, "resource-key")
 	store := NewMemoryResourceEventStore()
 	_, err := NewResource(ResourceConfig{
-		Identifier: "https://resource.example", AccessServer: "https://as.example",
-		SigningKey: resourceKey, KeyResolver: aauth.StaticKeyResolver{}, Clock: clock,
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeAuthToken,
+		AccessServer: "https://as.example",
+		SigningKey:   resourceKey, KeyResolver: aauth.StaticKeyResolver{}, Clock: clock,
 		NewID: func() string { return "unused" }, Scopes: []string{"events.read"},
-		Operation: func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
+		ScopeDescriptions:            map[string]string{"events.read": "Read protected appointment events"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("events.read"),
+		ReplayStore:                  testResourceReplayStore(t, clock),
+		ProtectedAuthorizationPolicy: testProtectedAuthorizationPolicy,
+		Operation:                    func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
 		Events: &ResourceEventsConfig{
 			PublicSubscriptionPath: "/appointments/waitlist/{subscriptionTicket}",
 			Store:                  store, HTTPClient: &http.Client{},
@@ -162,10 +172,15 @@ func TestEventsConfigurationRejectsReservedOrTemplatedRoutes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store := NewMemoryResourceEventStore()
 			_, err := NewResource(ResourceConfig{
-				Identifier: "https://resource.example", AccessServer: "https://as.example",
-				SigningKey: resourceKey, KeyResolver: aauth.StaticKeyResolver{}, Clock: clock,
+				Identifier: "https://resource.example", AccessMode: aauth.AccessModeAuthToken,
+				AccessServer: "https://as.example",
+				SigningKey:   resourceKey, KeyResolver: aauth.StaticKeyResolver{}, Clock: clock,
 				NewID: func() string { return "unused" }, Scopes: []string{"events.read"},
-				Operation: func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
+				ScopeDescriptions:            map[string]string{"events.read": "Read protected appointment events"},
+				RequiredScopesForRequest:     testRequiredResourceScopes("events.read"),
+				ReplayStore:                  testResourceReplayStore(t, clock),
+				ProtectedAuthorizationPolicy: testProtectedAuthorizationPolicy,
+				Operation:                    func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
 				Events: &ResourceEventsConfig{
 					PublicSubscriptionPath: test.publicPath, Store: store, HTTPClient: &http.Client{},
 					ActiveUntil: func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error) {
@@ -201,7 +216,9 @@ func TestProtectedEventTicketIssueFailureReleasesNoURL(t *testing.T) {
 		store:    store, contracts: NewMemoryEventContractStore(clock), document: protectedEventsTestDocument(),
 		operation: func(context.Context, aauth.AuthorizedRequest) (any, error) {
 			return ProtectedEventOperationResult{
-				Ticket: ProtectedEventTicketRequest{ResourceRevision: "state-1", ActiveUntil: now.Add(time.Hour)},
+				Ticket: ProtectedEventTicketRequest{
+					Agent: "aauth:subscriber@ap.example", ResourceRevision: "state-1", ActiveUntil: now.Add(time.Hour),
+				},
 				Response: func(ProtectedEventTicketGrant) (any, error) {
 					rendered = true
 					return map[string]string{"unexpected": "ticket"}, nil
@@ -446,7 +463,7 @@ func TestProtectedEventRegistrationValidatorRunsAfterCoveredBodyProofAndBeforeCo
 				t.Fatalf("validated registration = %#v", registration)
 			}
 			if bytes.Equal(registration.Body, []byte(`{"event_types":[]}`)) {
-				return errors.New("test: registration selection required")
+				return errors.New("secret event-policy backend /srv/events.db")
 			}
 			if !bytes.Equal(registration.Body, []byte(`{"event_types":["slot.available"]}`)) {
 				t.Fatalf("validated registration body = %q", registration.Body)
@@ -486,7 +503,9 @@ func TestProtectedEventRegistrationValidatorRunsAfterCoveredBodyProofAndBeforeCo
 	}
 	invalidResponse := httptest.NewRecorder()
 	resource.Handler().ServeHTTP(invalidResponse, invalid)
-	if invalidResponse.Code != http.StatusBadRequest || validatorCalls != 2 {
+	if invalidResponse.Code != http.StatusBadRequest || validatorCalls != 2 ||
+		strings.Contains(invalidResponse.Body.String(), "secret event-policy") ||
+		!strings.Contains(invalidResponse.Body.String(), `"detail":"event registration policy denied the request"`) {
 		t.Fatalf("invalid registration = %d %q, validator calls %d", invalidResponse.Code, invalidResponse.Body.Bytes(), validatorCalls)
 	}
 	if _, err := store.LoadTicket(ctx, invalidTicket.TicketDigest); err != nil {
@@ -639,9 +658,15 @@ type protectedEventsTestResourceInput struct {
 func newProtectedEventsTestResource(t *testing.T, input protectedEventsTestResourceInput) *Resource {
 	t.Helper()
 	resource, err := NewResource(ResourceConfig{
-		Identifier: "https://resource.example", AccessServer: "https://as.example",
-		SigningKey: input.resourceKey, KeyResolver: input.resolver, Clock: input.clock,
-		NewID: func() string { return "unused" }, Scopes: []string{"events.read"}, Operation: input.operation,
+		Identifier: "https://resource.example", AccessMode: aauth.AccessModeAuthToken,
+		AccessServer: "https://as.example",
+		SigningKey:   input.resourceKey, KeyResolver: input.resolver, Clock: input.clock,
+		NewID: func() string { return "unused" }, Scopes: []string{"events.read"},
+		ScopeDescriptions:            map[string]string{"events.read": "Read protected appointment events"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("events.read"),
+		ReplayStore:                  testResourceReplayStore(t, input.clock),
+		ProtectedAuthorizationPolicy: testProtectedAuthorizationPolicy,
+		Operation:                    input.operation,
 		Events: &ResourceEventsConfig{
 			PublicSubscriptionPath: "/events/subscriptions", Store: input.store,
 			HTTPClient: &http.Client{}, ActiveUntil: func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error) {
@@ -664,9 +689,9 @@ func protectedEventsTestAuthToken(t *testing.T, accessKey, agentKey aauth.Signin
 	compact, err := aauth.MintAuthToken(accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://as.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-protected-events",
-		Agent: "aauth:subscriber@ap.example", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
-		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
-		Subject: "pairwise-user", Scope: "events.read",
+		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+		IssuedAt:     now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		PersonServer: "https://ps.example", Subject: "pairwise-user", Scope: "events.read",
 	})
 	if err != nil {
 		t.Fatal(err)

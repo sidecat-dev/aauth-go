@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -49,6 +52,218 @@ func TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "HTTP message signature is invalid") {
 		t.Fatalf("durable-key HTTP proof error = %v", err)
 	}
+}
+
+func TestJWTVerificationClassifierPublishesOnlyUnsupportedClaim(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "wrapped unsupported claim",
+			err: fmt.Errorf(
+				"private outer diagnostic: %w",
+				&unsupportedTokenClaimError{tokenType: AuthTokenType, claim: "r3_uri"},
+			),
+			want: "aauth: aa-auth+jwt contains unsupported r3_uri claim",
+		},
+		{name: "ordinary invalid JWT", err: errors.New("private parse diagnostic")},
+		{
+			name: "expired JWT",
+			err:  &TokenValidationError{Code: TokenValidationExpired, Cause: errors.New("private clock diagnostic")},
+		},
+		{
+			name: "unknown key",
+			err:  &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("private issuer diagnostic")},
+		},
+		{name: "unsupported algorithm", err: &unsupportedTokenAlgorithmError{algorithm: "private-algorithm"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var signatureError *SignatureError
+			if err := classifyJWTVerificationError(test.err); !errors.As(err, &signatureError) {
+				t.Fatalf("classified error = %T %v", err, err)
+			}
+			if got := signatureError.PublicDetail(); got != test.want {
+				t.Fatalf("PublicDetail = %q, want %q", got, test.want)
+			}
+			if strings.Contains(signatureError.PublicDetail(), "private") {
+				t.Fatalf("PublicDetail leaked private diagnostic: %q", signatureError.PublicDetail())
+			}
+		})
+	}
+}
+
+func TestVerifyRequestExactComponentProfileRejectsAdditionalCoveredHeader(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	clock := ClockFunc(func() time.Time { return now })
+	issuer := internalTestSigningKey(t, "issuer-key")
+	agent := internalTestSigningKey(t, "agent-key")
+	credential, err := mintToken(issuer, AgentTokenType, AgentTokenClaims{
+		Issuer:       "https://ap.example",
+		DWK:          AgentDiscoveryDocument,
+		Subject:      "aauth:agent@ap.example",
+		JTI:          "agent-token",
+		Confirmation: Confirmation{JWK: agent.PublicJWK()},
+		IssuedAt:     now.Add(-time.Minute).Unix(),
+		ExpiresAt:    now.Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, "https://ps.example/token", strings.NewReader(`{"resource_token":"token"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Retained-Only-In-Live-Request", "covered value")
+	request.Header.Set("Signature-Key", `sig=jwt;jwt="`+credential+`"`)
+	components := []string{
+		"@method", "@authority", "@path", "content-digest", "content-type",
+		"x-retained-only-in-live-request", "signature-key",
+	}
+	body, err := readRequestBody(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(body)
+	request.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
+	params := signatureParams(components, now.Unix(), time.Time{}, "")
+	base, err := signatureBase(request, components, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature, err := agent.sign([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Signature-Input", "sig="+params)
+	request.Header.Set("Signature", "sig=:"+base64.StdEncoding.EncodeToString(signature)+":")
+
+	_, err = VerifyRequest(
+		context.Background(),
+		request,
+		StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
+		clock,
+		VerifyRequestOptions{
+			RequiredComponents:     []string{"content-type"},
+			AllowedCredentialTypes: []string{AgentTokenType},
+			RequireExactComponents: true,
+		},
+	)
+	var signatureError *SignatureError
+	if !errors.As(err, &signatureError) || signatureError.Code != SignatureErrorInvalidSignature ||
+		!strings.Contains(err.Error(), "exact component profile") {
+		t.Fatalf("additional covered component error = %v (%#v)", err, signatureError)
+	}
+}
+
+func TestVerifyRequestUsesOneTrustedInstantForTheWholeVerification(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	issuer := internalTestSigningKey(t, "issuer-key")
+	agent := internalTestSigningKey(t, "agent-key")
+	credential, err := mintToken(issuer, AgentTokenType, AgentTokenClaims{
+		Issuer: "https://ap.example", DWK: AgentDiscoveryDocument,
+		Subject: "aauth:agent@ap.example", JTI: "agent-token",
+		Confirmation: Confirmation{JWK: agent.PublicJWK()},
+		IssuedAt:     now.Add(-time.Minute).Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://resource.example/data", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SignRequest(request, agent, credential, ClockFunc(func() time.Time { return now })); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	verificationClock := ClockFunc(func() time.Time {
+		calls++
+		return now.Add(time.Duration(calls-1) * time.Hour)
+	})
+	verified, err := VerifyRequest(
+		context.Background(),
+		request,
+		StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
+		verificationClock,
+		VerifyRequestOptions{AllowedCredentialTypes: []string{AgentTokenType}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !verified.VerifiedAt.Equal(now) {
+		t.Fatalf("verification clock calls/instant = %d/%s", calls, verified.VerifiedAt)
+	}
+}
+
+func TestVerifyRequestExactComponentProfileRejectsUndeclaredAndSplitFields(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	clock := ClockFunc(func() time.Time { return now })
+	issuer := internalTestSigningKey(t, "issuer-key")
+	agent := internalTestSigningKey(t, "agent-key")
+	credential, err := mintToken(issuer, AgentTokenType, AgentTokenClaims{
+		Issuer: "https://ap.example", DWK: AgentDiscoveryDocument,
+		Subject: "aauth:agent@ap.example", JTI: "agent-token",
+		Confirmation: Confirmation{JWK: agent.PublicJWK()},
+		IssuedAt:     now.Add(-time.Minute).Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := func(request *http.Request) error {
+		_, err := VerifyRequest(
+			context.Background(),
+			request,
+			StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
+			clock,
+			VerifyRequestOptions{
+				RequiredComponents:     []string{"content-type"},
+				AllowedCredentialTypes: []string{AgentTokenType},
+				RequireExactComponents: true,
+			},
+		)
+		return err
+	}
+
+	t.Run("covered authorization was not declared by the endpoint", func(t *testing.T) {
+		request, err := http.NewRequest(http.MethodPost, "https://ps.example/token", strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer foreign")
+		if err := SignRequest(request, agent, credential, clock); err != nil {
+			t.Fatal(err)
+		}
+		if err := verify(request); err == nil || !strings.Contains(err.Error(), "exact component profile") {
+			t.Fatalf("undeclared covered authorization error = %v", err)
+		}
+	})
+
+	t.Run("split retained field", func(t *testing.T) {
+		request, err := http.NewRequest(http.MethodPost, "https://ps.example/token", strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if err := SignRequest(request, agent, credential, clock); err != nil {
+			t.Fatal(err)
+		}
+		request.Header["Content-Type"] = append(request.Header["Content-Type"], "application/problem+json")
+		if err := verify(request); err == nil || !strings.Contains(err.Error(), "multiple field lines") {
+			t.Fatalf("split retained field error = %v", err)
+		}
+	})
 }
 
 func TestJKTJWTRefusesInvalidProtectedMaterial(t *testing.T) {

@@ -530,12 +530,16 @@ type eventResourceInput struct {
 func newEventResource(t *testing.T, input eventResourceInput) *reference.Resource {
 	t.Helper()
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:  input.identifier,
-		SigningKey:  input.signingKey,
-		KeyResolver: input.resolver,
-		Clock:       input.clock,
-		NewID:       eventJourneySequentialIDs("unused-resource-id"),
-		Scopes:      []string{"qualification.read"},
+		Identifier:               input.identifier,
+		AccessMode:               aauth.AccessModeSessionToken,
+		SigningKey:               input.signingKey,
+		KeyResolver:              input.resolver,
+		Clock:                    input.clock,
+		NewID:                    eventJourneySequentialIDs("unused-resource-id"),
+		Scopes:                   []string{"qualification.read"},
+		RequiredScopesForRequest: testRequiredResourceScopes("qualification.read"),
+		ReplayStore:              testResourceReplayStore(t, input.clock),
+		AuthorizationStore:       testAuthorizationStateStore(t),
 		AuthorizationPolicy: func(context.Context, aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
 			return aauth.AuthorizationDecision{}, errors.New("ordinary authorization is outside this Events journey")
 		},
@@ -571,12 +575,13 @@ type eventAgentInput struct {
 func newEventAgent(t *testing.T, input eventAgentInput) *reference.Agent {
 	t.Helper()
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  input.identifier,
-		SigningKey:  input.signingKey,
-		AgentToken:  input.agentToken,
-		KeyResolver: input.resolver,
-		HTTPClient:  input.client,
-		Clock:       input.clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         input.identifier,
+		SigningKey:         input.signingKey,
+		AgentToken:         input.agentToken,
+		KeyResolver:        input.resolver,
+		HTTPClient:         input.client,
+		Clock:              input.clock,
 		Events: &reference.AgentEventsConfig{
 			Store:  input.store,
 			Action: input.action,

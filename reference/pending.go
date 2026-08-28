@@ -61,12 +61,12 @@ func (pending *pendingInteraction) correlate(
 	codeValues []string,
 	now time.Time,
 ) (int, string, error) {
+	if pending.codeConsumed || pending.state != pendingAuthorizationWaiting {
+		return http.StatusGone, "invalid_code", errors.New("interaction code is already consumed")
+	}
 	if !pending.expiresAt.After(now) {
 		pending.state = pendingAuthorizationExpired
 		return http.StatusRequestTimeout, "expired", errors.New("pending interaction expired")
-	}
-	if pending.codeConsumed || pending.state != pendingAuthorizationWaiting {
-		return http.StatusGone, "invalid_code", errors.New("interaction code is already consumed")
 	}
 	var normalizedCode string
 	var err error

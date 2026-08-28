@@ -19,13 +19,14 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
 
-func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
+func TestCurrentThreePartyMissionAuthorizationJourney(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 27, 6, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	ids := sequentialIDs(
 		"agent-token-1",
+		"person-token-1",
 		"resource-token-1",
 		"auth-token-1",
 	)
@@ -76,16 +77,23 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
 	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
-		Identifier:  "https://ps.example",
-		SigningKey:  psKey,
-		KeyResolver: keyResolver,
-		Clock:       clock,
-		NewID:       ids,
-		MissionPolicy: func(_ context.Context, proposal aauth.MissionProposal) (aauth.MissionDecision, error) {
+		AuthorizationStore:   testAuthorizationStateStore(t),
+		Identifier:           "https://ps.example",
+		SigningKey:           psKey,
+		KeyResolver:          keyResolver,
+		Clock:                clock,
+		NewID:                ids,
+		PersonTokenStore:     personTokenStore,
+		MissionIssuanceStore: missionIssuanceStore,
+		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			return aauth.PersonTokenDecision{Subject: "pairwise-user-for-resource", Lifetime: time.Hour}, nil
+		},
+		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
 			return aauth.MissionDecision{
-				Description:  proposal.Description,
-				Tools:        proposal.Tools,
+				Description:  evaluation.Proposal.Description,
+				Tools:        evaluation.Proposal.Tools,
 				Capabilities: []string{"interaction"},
 			}, nil
 		},
@@ -102,17 +110,23 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 
 	var executionCount int
 	resource, err := reference.NewResource(reference.ResourceConfig{
-		Identifier:   "https://resource.example",
-		PersonServer: "https://ps.example",
-		SigningKey:   resourceKey,
-		KeyResolver:  keyResolver,
-		Clock:        clock,
-		NewID:        ids,
-		Scopes:       []string{"documents.read"},
+		Identifier:                   "https://resource.example",
+		AccessMode:                   aauth.AccessModeAuthToken,
+		PersonServer:                 "https://ps.example",
+		SigningKey:                   resourceKey,
+		KeyResolver:                  keyResolver,
+		Clock:                        clock,
+		NewID:                        ids,
+		Scopes:                       []string{"documents.read"},
+		ScopeDescriptions:            map[string]string{"documents.read": "Read documents"},
+		RequiredScopesForRequest:     testRequiredResourceScopes("documents.read"),
+		ReplayStore:                  testResourceReplayStore(t, clock),
+		ProtectedAuthorizationPolicy: func(context.Context, aauth.AuthorizedRequest) error { return nil },
 		Operation: func(_ context.Context, request aauth.AuthorizedRequest) (any, error) {
 			executionCount++
 			return map[string]any{
-				"agent": request.Agent,
+				"ps":    request.PersonServer,
+				"sub":   request.Subject,
 				"items": []string{"design.md"},
 			}, nil
 		},
@@ -130,37 +144,33 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 	discoveryClient.Transport = gateway.Client().Transport
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
-		Identifier:  "aauth:planner@ap.example",
-		SigningKey:  agentKey,
-		AgentToken:  agentToken,
-		KeyResolver: keyResolver,
-		HTTPClient:  gateway.Client(),
-		Clock:       clock,
+		AuthorizationStore: testAuthorizationStateStore(t),
+		Identifier:         "aauth:planner@ap.example",
+		SigningKey:         agentKey,
+		AgentToken:         agentToken,
+		KeyResolver:        keyResolver,
+		HTTPClient:         gateway.Client(),
+		Clock:              clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	mission, err := agent.CreateMission(context.Background(), "https://ps.example/mission", aauth.MissionProposal{
-		Description: "Read the design document and summarize it.",
-		Tools: []aauth.Tool{{
-			Name:        "Read",
-			Description: "Read documents.",
-		}},
-	})
+	person, err := agent.RequestPersonToken(
+		context.Background(),
+		"https://ps.example/person",
+		"https://resource.example",
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := mission.Reference.S256, aauth.S256(mission.Bytes); got != want {
-		t.Fatalf("mission hash = %q, want exact-byte hash %q", got, want)
-	}
-
-	grant, err := agent.Authorize(
+	grant, err := agent.AuthorizeWithPersonToken(
 		context.Background(),
 		"https://resource.example/authorize",
 		"https://ps.example/token",
 		[]string{"documents.read"},
-		mission,
+		person.PersonToken,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -185,20 +195,21 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 	}
 
 	var result struct {
-		Agent string   `json:"agent"`
+		PS    string   `json:"ps"`
+		Sub   string   `json:"sub"`
 		Items []string `json:"items"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Agent != "aauth:planner@ap.example" {
-		t.Fatalf("authorized agent = %q", result.Agent)
+	if result.PS != "https://ps.example" || result.Sub != "pairwise-user-for-resource" {
+		t.Fatalf("authorized person = (%q, %q)", result.PS, result.Sub)
 	}
 	if len(result.Items) != 1 || result.Items[0] != "design.md" {
 		t.Fatalf("unexpected protected result: %#v", result.Items)
 	}
 
-	replayed, err := agent.DoAuthorized(
+	second, err := agent.DoAuthorized(
 		context.Background(),
 		http.MethodGet,
 		"https://resource.example/documents",
@@ -207,13 +218,13 @@ func TestThreePartyMissionAuthorizationJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replayed.Body.Close()
-	if replayed.StatusCode != http.StatusUnauthorized {
-		body, _ := io.ReadAll(replayed.Body)
-		t.Fatalf("replayed operation status = %d, want 401; body = %s", replayed.StatusCode, body)
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(second.Body)
+		t.Fatalf("independent operation status = %d, want 200; body = %s", second.StatusCode, body)
 	}
-	if executionCount != 1 {
-		t.Fatalf("replayed proof invoked operation; execution count = %d", executionCount)
+	if executionCount != 2 {
+		t.Fatalf("independent operation execution count = %d", executionCount)
 	}
 }
 
@@ -228,6 +239,63 @@ func testSigningKey(t *testing.T, id string) aauth.SigningKey {
 		t.Fatal(err)
 	}
 	return key
+}
+
+func testCurrentPersonServerCustody(t *testing.T) (reference.PersonTokenStore, reference.MissionIssuanceStore) {
+	t.Helper()
+	personTokens, err := reference.NewFilePersonTokenStore(t.TempDir() + "/person-tokens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionIssuances, err := reference.NewFileMissionIssuanceStore(t.TempDir() + "/mission-issuances.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return personTokens, missionIssuances
+}
+
+func testPersonTokenStore(t *testing.T) reference.PersonTokenStore {
+	t.Helper()
+	store, _ := testCurrentPersonServerCustody(t)
+	return store
+}
+
+func testMissionIssuanceStore(t *testing.T) reference.MissionIssuanceStore {
+	t.Helper()
+	_, store := testCurrentPersonServerCustody(t)
+	return store
+}
+
+func testPersonTokenPolicy(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+	return aauth.PersonTokenDecision{Subject: request.Agent, Lifetime: time.Hour}, nil
+}
+
+func testRoleDiscoveryHandler(
+	t *testing.T,
+	issuer string,
+	discoveryDocument string,
+	key aauth.SigningKey,
+) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/"+discoveryDocument, func(response http.ResponseWriter, _ *http.Request) {
+		writeTestJSON(t, response, map[string]string{
+			"issuer":   issuer,
+			"jwks_uri": issuer + "/jwks",
+		})
+	})
+	mux.HandleFunc("GET /jwks", func(response http.ResponseWriter, _ *http.Request) {
+		writeTestJSON(t, response, map[string]any{"keys": []aauth.JWK{key.PublicJWK()}})
+	})
+	return mux
+}
+
+func writeTestJSON(t *testing.T, response http.ResponseWriter, value any) {
+	t.Helper()
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(value); err != nil {
+		t.Error(err)
+	}
 }
 
 func privateTestDirectory(t *testing.T) string {
@@ -274,6 +342,42 @@ func newLogicalGateway(t *testing.T, handlers map[string]http.Handler) *httptest
 	}
 	server.Client().Transport = transport
 	return server
+}
+
+func testResourceReplayStore(t *testing.T, clock aauth.Clock) reference.ProofReplayStore {
+	t.Helper()
+	store, err := reference.NewMemoryProofReplayStore(clock, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func testAuthorizationStateStore(t *testing.T) reference.AuthorizationStateStore {
+	t.Helper()
+	store, err := reference.NewMemoryAuthorizationStateStore(1024, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func openTestFileAuthorizationStateStore(t *testing.T, directory string) *reference.FileAuthorizationStateStore {
+	t.Helper()
+	store, err := reference.OpenFileAuthorizationStateStore(reference.FileAuthorizationStateStoreConfig{
+		Directory: directory, MaxEntries: 1024, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func testRequiredResourceScopes(scopes ...string) func(context.Context, *http.Request) ([]string, error) {
+	return func(context.Context, *http.Request) ([]string, error) {
+		return append([]string(nil), scopes...), nil
+	}
 }
 
 type logicalTransport struct {

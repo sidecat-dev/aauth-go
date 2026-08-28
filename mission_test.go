@@ -1,10 +1,36 @@
 package aauth_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"reflect"
 	"testing"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
+
+func TestCurrentMissionAPIHasNoHeaderSurface(t *testing.T) {
+	t.Parallel()
+
+	if method, ok := reflect.TypeOf(aauth.MissionReference{}).MethodByName("Header"); ok {
+		t.Fatalf("MissionReference still exports obsolete header method: %s", method.Name)
+	}
+	if field, ok := reflect.TypeOf(aauth.RequestProof{}).FieldByName("AAuthMission"); ok {
+		t.Fatalf("RequestProof still retains obsolete mission header field: %s", field.Name)
+	}
+
+	file, err := parser.ParseFile(token.NewFileSet(), "mission.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Recv == nil && function.Name.Name == "ParseMissionHeader" {
+			t.Fatal("aauth still exports obsolete ParseMissionHeader")
+		}
+	}
+}
 
 const missionGoldenBytes = `{"approver":"https://ps.sidecat.example","agent":"aauth:planner@agent.sidecat.example","approved_at":"2026-07-23T00:00:00Z","description":"# Golden Surface 1 vector\n\nA fixed mission blob whose bytes are pinned so any AAuth implementation can check its s256 without a live PS. The bytes are authoritative: do not reformat this file.","approved_tools":[{"name":"WebSearch","description":"Search the web"},{"name":"Read","description":"Read files and web pages"}],"capabilities":["interaction"]}`
 
