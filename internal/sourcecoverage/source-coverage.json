@@ -1555,6 +1555,18 @@
     },
     {
       "source": "budgets",
+      "section": "budget-units",
+      "status": "partial",
+      "claim": "Resource-declared BudgetUnit values validate canonical unit, scale, optional maximum, and description fields; the reference resource emits a deterministic budget_units metadata array and refuses offers outside the declaration. Usage-endpoint advertisement and proactive client discovery remain unclaimed.",
+      "evidence": [
+        {"file": "budgets/external_module_test.go", "test": "TestBudgetUnitDeclarationsValidateAndBoundOffers"},
+        {"file": "reference/budgets_test.go", "test": "TestResourceBudgetUnitsAreAdvertisedAndEnforced"},
+        {"file": "reference/budgets_test.go", "test": "TestNewResourceValidatesAndCanonicalizesBudgetUnits"},
+        {"file": "budget_journey_test.go", "test": "TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary"}
+      ]
+    },
+    {
+      "source": "budgets",
       "section": "authorization-endpoint",
       "status": "partial",
       "claim": "The reference agent can request one Budget beside scope, and the resource policy may change denomination and lower amount before issuing its resource token. Metadata-driven proactive discovery remains unclaimed.",

@@ -85,6 +85,10 @@ type ResourceBudgetConfig struct {
 	MaximumCost        func(context.Context, aauth.AuthorizedRequest) (int64, error)
 	CallKey            func(context.Context, aauth.AuthorizedRequest) (string, error)
 	Operation          func(context.Context, aauth.AuthorizedRequest, string) (BudgetOperationResult, error)
+	// Units are the optional canonical denominations this resource declares in
+	// its metadata. A configured declaration constrains every offer produced by
+	// the resource's Budget policy.
+	Units []budgets.BudgetUnit
 }
 
 // BudgetOperationResult carries the provider value and exact metered cost.
@@ -165,6 +169,7 @@ type Resource struct {
 	pendingLifetime              time.Duration
 	operation                    func(context.Context, aauth.AuthorizedRequest) (any, error)
 	budgetOffer                  func(context.Context, *budgets.Budget) (budgets.Budget, error)
+	budgetUnits                  []budgets.BudgetUnit
 	budgetStore                  BudgetStore
 	budgetMaximumCost            func(context.Context, aauth.AuthorizedRequest) (int64, error)
 	budgetCallKey                func(context.Context, aauth.AuthorizedRequest) (string, error)
@@ -280,6 +285,9 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		if config.AccessMode != aauth.AccessModeAuthToken || config.Budget.Offer == nil || config.Budget.Store == nil || config.Budget.ResourceTokenStore == nil ||
 			config.Budget.MaximumCost == nil || config.Budget.CallKey == nil || config.Budget.Operation == nil {
 			return nil, errors.New("reference: Budgets requires auth-token mode, offer policy, resource-token lineage, reservation custody, cost bound, stable call key, and metered operation")
+		}
+		if err := budgets.ValidateBudgetUnits(config.Budget.Units); err != nil {
+			return nil, fmt.Errorf("reference: Budget unit declarations: %w", err)
 		}
 	}
 	if config.DeferredProtected != nil {
@@ -543,6 +551,13 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 			return nil, err
 		}
 	}
+	var budgetUnits []budgets.BudgetUnit
+	if config.Budget != nil && config.Budget.Units != nil {
+		budgetUnits = cloneBudgetUnits(config.Budget.Units)
+		sort.Slice(budgetUnits, func(left, right int) bool {
+			return budgetUnits[left].Unit < budgetUnits[right].Unit
+		})
+	}
 	resource := &Resource{
 		identifier:                   config.Identifier,
 		accessMode:                   config.AccessMode,
@@ -567,6 +582,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		pendingLifetime:              pendingLifetime,
 		operation:                    config.Operation,
 		budgetOffer:                  nil,
+		budgetUnits:                  budgetUnits,
 		deferredProtectedStore:       nil,
 		r3Vocabularies:               r3Vocabularies,
 		r3DocumentStore:              r3DocumentStore,
@@ -1488,8 +1504,8 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 			writeHostPolicyRefusal(response, "invalid_budget", "resource budget policy denied the request")
 			return
 		}
-		if offer.Validate() != nil {
-			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("resource budget policy returned an invalid offer"))
+		if err := resource.validateBudgetOffer(offer); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("resource budget policy returned an invalid or undeclared offer"))
 			return
 		}
 		budgetOffer = &offer
@@ -2680,6 +2696,28 @@ func cloneScopeDescriptions(descriptions map[string]string) map[string]string {
 	return cloned
 }
 
+func cloneBudgetUnits(units []budgets.BudgetUnit) []budgets.BudgetUnit {
+	if units == nil {
+		return nil
+	}
+	cloned := make([]budgets.BudgetUnit, len(units))
+	for index, unit := range units {
+		cloned[index] = unit
+		if unit.Max != nil {
+			max := *unit.Max
+			cloned[index].Max = &max
+		}
+	}
+	return cloned
+}
+
+func (resource *Resource) validateBudgetOffer(offer budgets.Budget) error {
+	if resource == nil {
+		return errors.New("reference: resource is not initialized")
+	}
+	return budgets.ValidateDeclaredBudget(resource.budgetUnits, offer)
+}
+
 func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.Request) {
 	metadata := map[string]any{
 		"issuer":                 resource.identifier,
@@ -2688,6 +2726,9 @@ func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.R
 	metadata["access_mode"] = string(resource.accessMode)
 	if len(resource.scopeDescriptions) != 0 {
 		metadata["scope_descriptions"] = cloneScopeDescriptions(resource.scopeDescriptions)
+	}
+	if resource.budgetUnits != nil {
+		metadata["budget_units"] = cloneBudgetUnits(resource.budgetUnits)
 	}
 	if resource.hasSigningKey {
 		metadata["jwks_uri"] = resource.identifier + "/jwks"

@@ -122,6 +122,7 @@ func TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary(t *testing.T)
 	protectedPolicyCalls := 0
 	denyFreshPolicy := false
 	changedPricing := false
+	invalidDeclaredOffer := false
 	blockBudgetOperation := false
 	budgetOperationStarted := make(chan struct{}, 1)
 	budgetOperationContinue := make(chan struct{})
@@ -150,10 +151,16 @@ func TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary(t *testing.T)
 				return nil
 			},
 			Budget: &reference.ResourceBudgetConfig{
+				Units: []budgets.BudgetUnit{{
+					Unit: "USD", Decimals: 6, Max: budgets.OptionalInteger(5_000_000), Description: "US dollars",
+				}},
 				Offer: func(_ context.Context, requested *budgets.Budget) (budgets.Budget, error) {
 					resourceOfferCalls++
 					if requested != nil && requested.Amount != 10_000_000 {
 						return budgets.Budget{}, errors.New("missing requested budget")
+					}
+					if invalidDeclaredOffer {
+						return budgets.Budget{Amount: 1, Unit: "EUR", Decimals: 2}, nil
 					}
 					return budgets.Budget{Amount: 5_000_000, Unit: "USD", Decimals: 6}, nil
 				},
@@ -294,6 +301,15 @@ func TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary(t *testing.T)
 		problemErr != nil || problem.Code != "insufficient_budget" || budgetOperationCalls != 1 {
 		t.Fatalf("insufficient response = %d header=%#v requirement=%#v problem=%#v errors=%v/%v/%v calls=%d",
 			response.StatusCode, header, requirement, problem, headerErr, requirementErr, problemErr, budgetOperationCalls)
+	}
+	invalidDeclaredOffer = true
+	resource = newResource()
+	resourceHandler = resource.Handler()
+	if _, err := agent.RequestBudgetedResourceTokenWithPersonToken(
+		context.Background(), "https://resource.example/authorize", []string{"inference.completions"}, personGrant.PersonToken,
+		budgets.Budget{Amount: 10_000_000, Unit: "tokens", Decimals: 0},
+	); err == nil {
+		t.Fatal("resource released an offer outside its declared Budget units")
 	}
 }
 

@@ -9,10 +9,10 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | Status | Sections |
 | --- | ---: |
 | Exercised | 47 |
-| Partial | 59 |
+| Partial | 60 |
 | Unsupported | 5 |
 | Informational | 0 |
-| Unclaimed | 489 |
+| Unclaimed | 488 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -25,7 +25,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` | 1 | 2 | 2 | 0 | 38 |
-| `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 8 | 11 | 0 | 0 | 72 |
+| `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 8 | 12 | 0 | 0 | 71 |
 | `interop-profile` | interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195` | 0 | 0 | 0 | 0 | 8 |
 
 ## Explicit section dispositions
@@ -134,6 +134,17 @@ The public Budget value strictly requires amount, nonempty unit, and decimals an
 Evidence:
 
 - `budgets/external_module_test.go:TestBudgetValuesNarrowWithoutChangingDenomination`
+
+### `budgets/budget-units` — Partial
+
+Resource-declared BudgetUnit values validate canonical unit, scale, optional maximum, and description fields; the reference resource emits a deterministic budget_units metadata array and refuses offers outside the declaration. Usage-endpoint advertisement and proactive client discovery remain unclaimed.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetUnitDeclarationsValidateAndBoundOffers`
+- `reference/budgets_test.go:TestResourceBudgetUnitsAreAdvertisedAndEnforced`
+- `reference/budgets_test.go:TestNewResourceValidatesAndCanonicalizesBudgetUnits`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
 
 ### `budgets/concurrency` — Exercised
 

@@ -132,6 +132,12 @@ for this library.
   token binder uses it before serializing `budget_consumed`. This enforces the
   draft's size bound without claiming that the package owns a consumption
   ledger or knows record recency beyond the supplied order.
+- `budgets.BudgetUnit` now validates resource-declared denominations and the
+  reference resource emits a sorted `budget_units` metadata array. When a
+  resource configures declarations, every offer must use a declared unit and
+  scale and stay within its optional maximum; nil declarations preserve the
+  prior unconfigured behavior. `usage_endpoint` and proactive client
+  discovery remain separate work.
 - Metadata-driven Budget discovery, durable per-person ledger production and
   lookup, usage counters, streaming trailers, billing interaction, deferred
   Budget authorization, and broader deployment topologies remain unclaimed.

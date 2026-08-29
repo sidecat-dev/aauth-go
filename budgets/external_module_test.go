@@ -41,6 +41,42 @@ func TestBudgetValuesNarrowWithoutChangingDenomination(t *testing.T) {
 	}
 }
 
+func TestBudgetUnitDeclarationsValidateAndBoundOffers(t *testing.T) {
+	max := budgets.OptionalInteger(5_000_000)
+	units := []budgets.BudgetUnit{{
+		Unit: "USD", Decimals: 6, Max: max, Description: "US dollars",
+	}}
+	if err := budgets.ValidateBudgetUnits(units); err != nil {
+		t.Fatal(err)
+	}
+	if err := budgets.ValidateDeclaredBudget(units, budgets.Budget{Amount: 5_000_000, Unit: "USD", Decimals: 6}); err != nil {
+		t.Fatalf("valid declared budget refused: %v", err)
+	}
+	if err := budgets.ValidateDeclaredBudget(nil, budgets.Budget{Amount: 1, Unit: "any", Decimals: 0}); err != nil {
+		t.Fatalf("unconfigured declarations changed behavior: %v", err)
+	}
+	for _, budget := range []budgets.Budget{
+		{Amount: 1, Unit: "EUR", Decimals: 2},
+		{Amount: 1, Unit: "USD", Decimals: 0},
+		{Amount: 5_000_001, Unit: "USD", Decimals: 6},
+	} {
+		if err := budgets.ValidateDeclaredBudget(units, budget); err == nil {
+			t.Fatalf("undeclared or over-bound budget accepted: %#v", budget)
+		}
+	}
+	for _, invalid := range [][]budgets.BudgetUnit{
+		{{Unit: "USD", Decimals: 6}, {Unit: "USD", Decimals: 6}},
+		{{Unit: "", Decimals: 6}},
+		{{Unit: "USD", Decimals: -1}},
+		{{Unit: "USD", Decimals: 6, Max: budgets.OptionalInteger(-1)}},
+		{{Unit: "USD", Decimals: 6, Description: " "}},
+	} {
+		if err := budgets.ValidateBudgetUnits(invalid); err == nil {
+			t.Fatalf("invalid Budget units accepted: %#v", invalid)
+		}
+	}
+}
+
 func TestBudgetConsumptionSelectionKeepsNewestTwentyAndRejectsInvalidHistory(t *testing.T) {
 	records := make([]budgets.Consumption, budgets.MaxConsumptionRecords+3)
 	for index := range records {

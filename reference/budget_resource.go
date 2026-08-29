@@ -129,7 +129,7 @@ func (resource *Resource) writeBudgetChallenge(
 		return errors.New("reference: Budget challenge cannot resolve the person token retained for this authorization")
 	}
 	offer, err := resource.budgetOffer(request.Context(), nil)
-	if err != nil || offer.Validate() != nil {
+	if err != nil || resource.validateBudgetOffer(offer) != nil {
 		return errors.New("reference: resource Budget policy cannot construct a reauthorization offer")
 	}
 	now := resource.clock.Now().UTC()

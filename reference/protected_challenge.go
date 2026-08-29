@@ -44,8 +44,8 @@ func (resource *Resource) challengeProtectedWithPersonToken(
 			writeHostPolicyRefusal(response, "invalid_budget", "resource budget policy denied the request")
 			return
 		}
-		if selected.Validate() != nil {
-			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("resource budget policy returned an invalid offer"))
+		if err := resource.validateBudgetOffer(selected); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("resource budget policy returned an invalid or undeclared offer"))
 			return
 		}
 		offer = &selected
