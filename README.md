@@ -81,13 +81,17 @@ stores are private, single-writer reference adapters. They do not coordinate
 multiple processes or compact expired records; long-running or high-volume
 deployments should supply their own store implementations.
 
-The same current path can begin at an ordinary protected operation. The agent
-signs the exact call with its resource-directed person token. The resource maps
-the required scope, performs no host consequence, and returns an auth-token
-challenge carrying its resource token. The agent verifies that token against
-the resource, its own key, and the person token's exact namespace and context;
-exchanges it through the ordinary PS and AS path; then retries the same method,
-target, body, and media type once under the resulting auth token.
+The same current path can begin with one `reference.Agent.Do` call at an
+ordinary protected operation. The agent starts with its agent token, follows a
+runtime person-token requirement through issuer-matched PS metadata, and
+retries with the directed token. A person-token resource may serve that request
+directly. An auth-token resource instead maps the required scope, performs no
+host consequence, and returns an auth-token challenge carrying its resource
+token. The agent verifies that token against the resource, its own key, and the
+person token's exact namespace and context; exchanges it through the ordinary
+PS and AS path; then retries the same method, target, body, and media type once
+under the resulting auth token. Missionless person tokens are reused for the
+same resource until their trusted expiry and reacquired lazily afterward.
 
 A resource may instead select the current stateful `202 Accepted` form. It
 retains the exact invocation before releasing a same-origin pending URL. The

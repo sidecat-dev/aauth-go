@@ -213,6 +213,13 @@ for this library.
   follows the existing PS/AS exchange, and retries the exact call under the
   returned auth token. One journey observes both requirements in order and
   proves PS policy, AS policy, and the host consequence each run once.
+- The automatic missionless path keeps one verified person token per resource
+  in the agent process. Every lookup rechecks the current agent token's person
+  server, resource audience, confirmation key, absent mission, and trusted
+  expiry. A second call reuses the token without contacting `/person`; the
+  first call after expiry reacquires one and then proceeds through the same
+  requirement checks. Restart safely loses this optimization and reacquires a
+  token; no authorization or consequence result is cached.
 
 ## 2026-08-28
 

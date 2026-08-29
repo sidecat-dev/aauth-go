@@ -15,6 +15,22 @@ import (
 // by that verified token. Other responses are returned unchanged for the caller
 // to handle.
 func (agent *Agent) Do(ctx context.Context, call AuthorizedCall) (*http.Response, error) {
+	resource, err := endpointIdentifier(call.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	agentClaims, err := agent.currentAgentClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if person, ok := agent.cachedPersonGrant(resource, agentClaims); ok {
+		response, err := agent.DoWithPersonToken(ctx, call, person.PersonToken)
+		if err != nil {
+			return nil, err
+		}
+		return agent.followAuthTokenRequirement(ctx, call, resource, agentClaims.PersonServer, "", person, response)
+	}
+
 	request, err := agent.newAuthorizedCallRequest(ctx, call, agent.agentToken)
 	if err != nil {
 		return nil, err
@@ -33,23 +49,8 @@ func (agent *Agent) Do(ctx context.Context, call AuthorizedCall) (*http.Response
 	}
 	response.Body.Close()
 
-	agentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
-	if err != nil {
-		return nil, err
-	}
-	agentClaims, err := claimsWithoutAuthorization(agentEvidence)
-	if err != nil {
-		return nil, err
-	}
-	if agentClaims.Subject != agent.identifier || !agentClaims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
-		return nil, errors.New("reference: agent token does not identify this agent and signing key")
-	}
 	if agentClaims.PersonServer == "" {
 		return nil, errors.New("reference: agent has no person server and cannot satisfy person-token requirement")
-	}
-	resource, err := endpointIdentifier(call.Endpoint)
-	if err != nil {
-		return nil, err
 	}
 	endpoints, err := agent.resolvePersonServerEndpoints(ctx, agentClaims.PersonServer)
 	if err != nil {
@@ -59,11 +60,24 @@ func (agent *Agent) Do(ctx context.Context, call AuthorizedCall) (*http.Response
 	if err != nil {
 		return nil, err
 	}
+	agent.rememberPersonGrant(person)
 	response, err = agent.DoWithPersonToken(ctx, call, person.PersonToken)
 	if err != nil {
 		return nil, err
 	}
-	requirement, present, err = responseRequirement(response)
+	return agent.followAuthTokenRequirement(ctx, call, resource, agentClaims.PersonServer, endpoints.AuthToken, person, response)
+}
+
+func (agent *Agent) followAuthTokenRequirement(
+	ctx context.Context,
+	call AuthorizedCall,
+	resource string,
+	personServer string,
+	authTokenEndpoint string,
+	person PersonGrant,
+	response *http.Response,
+) (*http.Response, error) {
+	requirement, present, err := responseRequirement(response)
 	if err != nil {
 		response.Body.Close()
 		return nil, err
@@ -72,15 +86,57 @@ func (agent *Agent) Do(ctx context.Context, call AuthorizedCall) (*http.Response
 		return response, nil
 	}
 	response.Body.Close()
+	if authTokenEndpoint == "" {
+		endpoints, err := agent.resolvePersonServerEndpoints(ctx, personServer)
+		if err != nil {
+			return nil, err
+		}
+		authTokenEndpoint = endpoints.AuthToken
+	}
 	resourceGrant, err := agent.resourceGrantFromChallenge(ctx, resource, person.Claims, requirement.ResourceToken)
 	if err != nil {
 		return nil, err
 	}
-	grant, err := agent.ExchangeResourceToken(ctx, endpoints.AuthToken, resourceGrant)
+	grant, err := agent.ExchangeResourceToken(ctx, authTokenEndpoint, resourceGrant)
 	if err != nil {
 		return nil, err
 	}
 	return agent.DoAuthorizedRequest(ctx, call, grant)
+}
+
+func (agent *Agent) currentAgentClaims(ctx context.Context) (aauth.AgentTokenClaims, error) {
+	evidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return aauth.AgentTokenClaims{}, err
+	}
+	claims, err := claimsWithoutAuthorization(evidence)
+	if err != nil {
+		return aauth.AgentTokenClaims{}, err
+	}
+	if claims.Subject != agent.identifier || !claims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+		return aauth.AgentTokenClaims{}, errors.New("reference: agent token does not identify this agent and signing key")
+	}
+	return claims, nil
+}
+
+func (agent *Agent) cachedPersonGrant(resource string, current aauth.AgentTokenClaims) (PersonGrant, bool) {
+	agent.personMu.Lock()
+	defer agent.personMu.Unlock()
+	grant, ok := agent.personGrants[resource]
+	if !ok || grant.PersonToken == "" || grant.Resource != resource || grant.Claims.Audience != resource ||
+		grant.Claims.Issuer != current.PersonServer || grant.Claims.MissionS256 != "" ||
+		grant.Claims.ExpiresAt <= agent.clock.Now().Unix() ||
+		!grant.Claims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+		delete(agent.personGrants, resource)
+		return PersonGrant{}, false
+	}
+	return grant, true
+}
+
+func (agent *Agent) rememberPersonGrant(grant PersonGrant) {
+	agent.personMu.Lock()
+	defer agent.personMu.Unlock()
+	agent.personGrants[grant.Resource] = grant
 }
 
 type personServerEndpoints struct {

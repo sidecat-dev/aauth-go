@@ -455,7 +455,7 @@ Evidence:
 
 ### `core/person-token-endpoint` — Partial
 
-Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. An agent follows a runtime requirement through issuer-matched person-server metadata to this endpoint. Deferred person-token issuance remains open.
+Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. An agent follows a runtime requirement through issuer-matched person-server metadata to this endpoint, reuses the verified missionless token for the same resource while valid, and reacquires it lazily after expiry. Deferred person-token issuance remains open.
 
 Evidence:
 

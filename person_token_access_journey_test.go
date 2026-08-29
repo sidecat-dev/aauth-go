@@ -148,10 +148,10 @@ func TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer(t *test
 	personTokens, issuance := testCurrentPersonServerCustody(t)
 	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
 		Identifier: "https://ps.example", SigningKey: psKey, KeyResolver: resolver, Clock: clock,
-		NewID: sequentialIDs("person-token"), AuthorizationStore: testAuthorizationStateStore(t),
+		NewID: sequentialIDs("person-token", "renewed-person-token"), AuthorizationStore: testAuthorizationStateStore(t),
 		PersonTokenStore: personTokens, MissionIssuanceStore: issuance,
 		PersonTokenPolicy: func(context.Context, aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
-			return aauth.PersonTokenDecision{Subject: "directed-person", Tenant: "example-org", Lifetime: time.Hour}, nil
+			return aauth.PersonTokenDecision{Subject: "directed-person", Tenant: "example-org", Lifetime: 5 * time.Minute}, nil
 		},
 		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
 			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
@@ -184,11 +184,14 @@ func TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	psRequests := 0
+	psRequests, personTokenRequests := 0, 0
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"ap.example": ap.Handler(),
 		"ps.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			psRequests++
+			if request.URL.Path == "/person" {
+				personTokenRequests++
+			}
 			ps.Handler().ServeHTTP(response, request)
 		}),
 		"resource.example": resource.Handler(),
@@ -216,8 +219,25 @@ func TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer(t *test
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK || result["target"] != "/profile?view=current" ||
-		result["body"] != `{"include":"summary"}` || policyCalls != 1 || operationCalls != 1 {
+		result["body"] != `{"include":"summary"}` || policyCalls != 1 || operationCalls != 1 || personTokenRequests != 1 {
 		t.Fatalf("automatic person-token result = %d %#v policy/operation=%d/%d", response.StatusCode, result, policyCalls, operationCalls)
+	}
+	response, err = agent.Do(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if policyCalls != 2 || operationCalls != 2 || personTokenRequests != 1 {
+		t.Fatalf("cached person-token policy/operation/issuance = %d/%d/%d, want 2/2/1", policyCalls, operationCalls, personTokenRequests)
+	}
+	now = now.Add(6 * time.Minute)
+	response, err = agent.Do(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if policyCalls != 3 || operationCalls != 3 || personTokenRequests != 2 {
+		t.Fatalf("renewed person-token policy/operation/issuance = %d/%d/%d, want 3/3/2", policyCalls, operationCalls, personTokenRequests)
 	}
 
 	requestsBeforePSLessCall := psRequests
