@@ -119,7 +119,7 @@ branches are removed. Old wire forms may remain only as raw rejection vectors.
 
 ## AAG-I004 — Current R3 proposal retrieval must admit both the PS and AS
 
-**Status:** adopted; direct, protected-person, and `401` per-call retrieval implemented
+**Status:** adopted; direct, protected-person, `401` per-call retrieval, and one-hop existing-auth-token step-up handling implemented
 
 **Source:** R3, `Per-Call Proposals`, `R3 Document`, and `R3 Processing` at the
 current AAuth revision above.
@@ -149,9 +149,11 @@ retrieval contract.
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart`
 
 **Current-product effect:** One immediate four-party direct, protected-person,
-and `401` per-call path is callable and partially claimed. Deferred `202` R3,
-existing-auth-token step-up, three-party R3, caching, and broader R3 topologies
-remain explicit gaps.
+and `401` per-call path is callable and partially claimed. The reference agent
+also follows one existing-auth-token step-up challenge and refuses recursive
+challenge loops. Resource-side step-up policy and lineage construction,
+deferred `202` R3, three-party R3, caching, and broader R3 topologies remain
+explicit gaps.
 
 ## AAG-I005 — Person-token policy denial is an explicit extension
 
@@ -399,6 +401,48 @@ same method, authority, and path.
 **Current-product effect:** Query-free requests preserve their existing exact
 component set. Query-bearing requests require `@query`; peers following only
 the draft's minimum receive a typed missing-component refusal.
+
+## AAG-I012 — Existing auth-token step-up is one exact retry
+
+**Status:** adopted reference-agent behavior pending editor clarification
+
+**Source:** AAuth Protocol, `Auth Token Required` and `Resource Challenge
+Verification`; R3, `Resource Token Structure` and `Resource Enforcement` at the
+current AAuth revision above.
+
+**Question:** When a resource returns a fresh `requirement=auth-token` resource
+token to a request that already carries an auth token, how should an agent
+follow that step-up without changing the protected call or entering an
+unbounded challenge loop?
+
+**Chosen behavior:** The reference agent verifies the fresh resource token
+against the existing auth-token context, including resource, auth issuer,
+person-server namespace, directed subject, account, mission, tenant, and proof
+key. It exchanges the token through the ordinary PS/AS path and retries the
+same call once. Both `401` and stateful `202` challenge delivery are parsed. If
+the retry returns another auth-token challenge, the response is returned to the
+caller rather than followed recursively.
+
+**Alternative considered:** Treat an auth-token challenge received while using
+an auth token as a terminal refusal, or automatically repeat the exchange until
+the resource accepts the request. The first drops a protocol-defined step-up;
+the second can loop and repeatedly invoke policy or token issuance.
+
+**Why:** The current protocol explicitly permits a higher authorization level
+to be requested at runtime and requires agents to be prepared for it. One
+bounded retry preserves exact request semantics and gives the caller a stable
+boundary when policy continues to require more authority.
+
+**Evidence:**
+
+- `auth_token_step_up_journey_test.go:TestCurrentAuthTokenStepUpRetriesTheExactCall`
+- `reference/agent_step_up_test.go:TestAgentAuthTokenStepUpDoesNotFollowASecondChallenge`
+- `reference/agent_step_up_test.go:TestResourceGrantFromAuthChallengeRejectsChangedAuthorizationContext`
+
+**Current-product effect:** The reference client handles one existing-token
+step-up. The resource-side policy that decides when to issue the new resource
+token, and the durable mapping that supplies its `presented_jti`, remain
+deployment-owned and are not claimed by this interpretation.
 
 ## Adding or changing an interpretation
 

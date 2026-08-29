@@ -576,13 +576,15 @@ Evidence:
 
 ### `core/requirement-auth-token` — Partial
 
-An auth-token resource accepts either a person-token-signed protected call or an agent-token-signed entry that first receives requirement=person-token. After the directed person token is presented, it maps the required scope and performs no protected consequence before returning either the baseline 401 or stateful 202 with a verified resource token; an R3 resource also selects and retains the exact document for the mapped operation. The reference agent exchanges it through the ordinary PS and AS path and completes the exact invocation. Existing-auth-token step-up remains unclaimed.
+An auth-token resource accepts either a person-token-signed protected call or an agent-token-signed entry that first receives requirement=person-token. After the directed person token is presented, it maps the required scope and performs no protected consequence before returning either the baseline 401 or stateful 202 with a verified resource token; an R3 resource also selects and retains the exact document for the mapped operation. The reference agent exchanges it through the ordinary PS and AS path and completes the exact invocation. The reference agent also follows one existing-auth-token step-up challenge and returns a second challenge without recursive exchange; resource-side step-up selection remains deployment-owned.
 
 Evidence:
 
 - `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
 - `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
 - `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
+- `auth_token_step_up_journey_test.go:TestCurrentAuthTokenStepUpRetriesTheExactCall`
+- `reference/agent_step_up_test.go:TestAgentAuthTokenStepUpDoesNotFollowASecondChallenge`
 
 ### `core/requirement-person-token` — Exercised
 
@@ -635,7 +637,7 @@ Evidence:
 
 ### `core/resource-tokens/resource-token/resource-challenge-verification` — Partial
 
-The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on proactive, protected-resource 401, and held-invocation 202 resource tokens before contacting the PS. Distinct-server journeys complete the exact protected call under the resulting grant, including immediate R3 document selection from a person-token challenge. Step-up from an existing auth token remains open.
+The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on proactive, protected-resource 401, and held-invocation 202 resource tokens before contacting the PS. Distinct-server journeys complete the exact protected call under the resulting grant, including immediate R3 document selection from a person-token challenge. An existing auth-token grant can follow one fresh 401 or 202 step-up challenge after exact context validation; a second challenge is returned rather than followed recursively.
 
 Evidence:
 
@@ -644,6 +646,8 @@ Evidence:
 - `reference/protected_challenge_test.go:TestAgentRejectsSubstitutedProtectedResourceChallengeContext`
 - `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
 - `r3_challenge_journey_test.go:TestResourceSelectsAndRetainsR3DocumentForPersonChallenge`
+- `auth_token_step_up_journey_test.go:TestCurrentAuthTokenStepUpRetriesTheExactCall`
+- `reference/agent_step_up_test.go:TestResourceGrantFromAuthChallengeRejectsChangedAuthorizationContext`
 
 ### `core/resource-tokens/resource-token/resource-token-structure` — Exercised
 

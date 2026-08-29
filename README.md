@@ -93,6 +93,16 @@ PS and AS path; then retries the same method, target, body, and media type once
 under the resulting auth token. Missionless person tokens are reused for the
 same resource until their trusted expiry and reacquired lazily afterward.
 
+When a call already carries an auth token and the resource returns a fresh
+auth-token requirement, the agent can follow one step-up through
+`DoWithAuthTokenAuthorization`. It verifies the new resource token against the
+existing resource, person, account, mission, tenant, and proof-key context,
+exchanges it through the same PS/AS path, and retries the exact call once. The
+automatic `Do` path applies this behavior to its cached missionless auth grant;
+a second challenge is returned rather than followed recursively. The resource's
+policy for deciding when a step-up is needed and its durable lineage for
+constructing `presented_jti` remain deployment-owned.
+
 A person server may defer person-token issuance for trusted user interaction.
 The typed client result then carries a signed-poll continuation rather than a
 placeholder grant. Both the agent and PS retain the continuation across
@@ -607,8 +617,8 @@ do not claim distributed, multi-writer, federated, or enterprise storage.
 
 Resource-owned interaction chaining, interaction/payment relay and callbacks,
 question delivery, updated-request/cancel clarification actions,
-existing-token step-up, deferred `202` and three-party
-R3, R3 caching and multiple-definition composition,
+resource-side step-up policy and lineage construction, deferred `202` and
+three-party R3, R3 caching and multiple-definition composition,
 platform enrollment/attestation, x509, and additional Signature-Key schemes
 still require implementation and qualification.
 The Phase-1 `Accept-Signature-Alg` and

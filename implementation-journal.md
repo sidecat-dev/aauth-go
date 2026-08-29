@@ -169,7 +169,28 @@ for this library.
 - A configured R3 resource maps a protected person-token request to exactly one
   operation, retains its exact document for the PS and AS before releasing the
   auth-token requirement, and the ordinary agent path completes the direct
-  four-party grant. Existing-auth-token step-up remains unclaimed.
+  four-party grant. Resource-side step-up policy and lineage construction remain
+  deployment-owned.
+
+### Existing auth-token step-up
+
+- `reference.Agent` now handles one fresh `requirement=auth-token` response to a
+  call that already carries an auth token. It verifies the new resource token
+  against the existing Resource, auth issuer, person-server namespace, directed
+  subject, account, mission, tenant, and confirmation-key context before sending
+  it through the ordinary PS/AS exchange.
+- The original method, target, query, body bytes, and content type are retried
+  once under the resulting auth token. Both direct `401` and stateful `202`
+  challenge delivery are parsed; a second challenge is returned rather than
+  followed recursively.
+- `auth_token_step_up_journey_test.go` exercises the automatic cached-grant
+  path through the real AP, PS, AS, Resource boundary, logical gateway, and
+  exact protected consequence. `reference/agent_step_up_test.go` covers
+  changed-context refusal, malformed/other requirements, deferred parsing, and
+  the no-recursion boundary.
+- The reference Resource does not choose when to step up or persist the
+  Resource-to-person lineage needed to construct `presented_jti` for a generic
+  step-up. Those remain deployment policy and custody work.
 
 ### Deferred protected-call delivery
 

@@ -194,6 +194,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 	currentEvidence := map[string]bool{
 		"access_client_test.go":                               true,
 		"access_journey_test.go":                              true,
+		"auth_token_step_up_journey_test.go":                  true,
 		"call_chaining_journey_test.go":                       true,
 		"current_mission_recovery_test.go":                    true,
 		"current_person_token_journey_test.go":                true,
@@ -213,6 +214,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"reference/r3_document_store_test.go":                 true,
 		"reference/protected_challenge_test.go":               true,
 		"reference/deferred_protected_store_test.go":          true,
+		"reference/agent_step_up_test.go":                     true,
 		"reference/resource_metadata_test.go":                 true,
 		"reference/person_token_resource_limit_test.go":       true,
 		"mission_update_journey_test.go":                      true,

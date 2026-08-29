@@ -24,7 +24,31 @@ func (agent *Agent) Do(ctx context.Context, call AuthorizedCall) (*http.Response
 		return nil, err
 	}
 	if grant, ok := agent.cachedAuthGrant(resource, agentClaims); ok {
-		return agent.DoAuthorizedRequest(ctx, call, grant)
+		response, err := agent.DoAuthorizedRequest(ctx, call, grant)
+		if err != nil {
+			return nil, err
+		}
+		challenge, present, challengeErr := parseAuthTokenChallenge(response)
+		if challengeErr != nil {
+			response.Body.Close()
+			return nil, challengeErr
+		}
+		if !present {
+			return response, nil
+		}
+		response.Body.Close()
+		endpoints, endpointErr := agent.resolvePersonServerEndpoints(ctx, grant.Claims.PersonServer)
+		if endpointErr != nil {
+			return nil, endpointErr
+		}
+		upgradedResponse, upgraded, stepUpErr := agent.finishAuthTokenStepUp(
+			ctx, call, resource, endpoints.AuthToken, grant, challenge,
+		)
+		if stepUpErr != nil {
+			return nil, stepUpErr
+		}
+		agent.rememberAuthGrant(upgraded)
+		return upgradedResponse, nil
 	}
 	if person, ok := agent.cachedPersonGrant(resource, agentClaims); ok {
 		response, err := agent.DoWithPersonToken(ctx, call, person.PersonToken)
