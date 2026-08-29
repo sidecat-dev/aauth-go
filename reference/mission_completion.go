@@ -29,7 +29,7 @@ func (server *PersonServer) handleMissionCompletion(
 		writeSignatureFailure(response, err)
 		return
 	}
-	if !server.requireCurrentPersonServer(response, verified) {
+	if !server.requireCurrentPersonServer(response, request.Context(), verified) {
 		return
 	}
 	reference := aauth.MissionReference{Approver: server.identifier, S256: request.PathValue("s256")}

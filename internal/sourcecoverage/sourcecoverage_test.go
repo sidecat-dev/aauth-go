@@ -159,6 +159,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"core\x00mission-creation":                                                              StatusPartial,
 		"core\x00mission-completion":                                                            StatusPartial,
 		"core\x00mission-approval":                                                              StatusPartial,
+		"core\x00token-revocation":                                                              StatusPartial,
 		"core\x00access-server-federation":                                                      StatusPartial,
 		"core\x00as-token-endpoint/ps-to-as-token-request":                                      StatusPartial,
 		"core\x00as-token-endpoint/as-response":                                                 StatusPartial,
@@ -216,6 +217,9 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"mission_update_journey_test.go":                true,
 		"mission_completion_journey_test.go":            true,
 		"mission_test.go":                               true,
+		"revocation_journey_test.go":                    true,
+		"revocation_test.go":                            true,
+		"reference/token_revocation_test.go":            true,
 		"signaturekey/request_external_test.go":         true,
 		"subagent_journey_test.go":                      true,
 	}

@@ -668,6 +668,25 @@ for this library.
   standalone public package and reference package; consuming applications are
   not dependencies.
 
+### Current token revocation boundary
+
+- **Status: the reference Person Server's agent-token revocation path is
+  implemented and qualified across restart.**
+- The public request value contains only the protocol's `(iss, jti)` pair. A
+  signed `POST /revoke` is accepted only after the request body and agent
+  credential are verified; a deployment policy may admit the issuer or a
+  trusted administrative caller. Unknown pairs return `404`, repeated new
+  proofs for a known pair return `200`, and an exact proof replay is refused.
+- The reference store records observed token identities, revocation timestamps,
+  and replay keys in one checksum-bound snapshot. The Person Server checks the
+  store on each authenticated agent-token path, so a revoked credential is
+  refused after the server is reconstructed. The journey covers malformed,
+  query-bearing, unknown, unauthorized, replayed, restart, and post-revocation
+  requests.
+- Resource and access-server token revocation, mission-wide propagation, and
+  provider fan-out remain unclaimed; this increment does not imply complete
+  revocation coverage for every token issuer.
+
 ### Protected host signing boundary
 
 - **Status: the standalone library can sign through caller-owned protected key

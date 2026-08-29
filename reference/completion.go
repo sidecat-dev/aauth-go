@@ -73,6 +73,9 @@ func (server *PersonServer) handleAgentInteraction(
 		writeSignatureFailure(response, err)
 		return
 	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
+		return
+	}
 	if server.governanceReplayExists(verified.ReplayKey) {
 		writeSignatureFailure(response, errGovernanceReplay)
 		return
@@ -221,6 +224,9 @@ func (server *PersonServer) handlePendingAgentInteraction(
 	)
 	if err != nil {
 		writeSignatureFailure(response, err)
+		return
+	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
 		return
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()

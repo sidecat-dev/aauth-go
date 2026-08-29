@@ -50,7 +50,7 @@ func (server *PersonServer) handleMissionUpdate(
 		writeSignatureFailure(response, err)
 		return
 	}
-	if !server.requireCurrentPersonServer(response, verified) {
+	if !server.requireCurrentPersonServer(response, request.Context(), verified) {
 		return
 	}
 	reference := aauth.MissionReference{

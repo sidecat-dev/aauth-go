@@ -772,8 +772,22 @@
     {
       "source": "core",
       "section": "token-revocation",
-      "status": "unsupported",
-      "claim": "Token revocation is not implemented."
+      "status": "partial",
+      "claim": "The reference Person Server implements the current signed (iss, jti) revocation request for observed agent credentials. A checksum-bound file store retains observations, revocation state, and proof replay keys; issuer-or-deployment policy authorizes the request; repeated new proofs are idempotent; restart preserves the refusal of a revoked agent token. Resource and access-server revocation, mission-wide propagation, and provider fan-out remain open.",
+      "evidence": [
+        {
+          "file": "revocation_journey_test.go",
+          "test": "TestCurrentAgentTokenRevocationSurvivesPersonServerRestart"
+        },
+        {
+          "file": "reference/token_revocation_test.go",
+          "test": "TestFileTokenRevocationStoreSurvivesRestart"
+        },
+        {
+          "file": "revocation_test.go",
+          "test": "TestTokenRevocationRequestValidation"
+        }
+      ]
     },
     {
       "source": "core",

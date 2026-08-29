@@ -302,6 +302,13 @@ interaction/clarification log survive restart. The client accepts the draft's
 empty `200 OK` completion response as well as the reference server's optional
 `{"status":"completed"}` body.
 
+When configured, the person server also advertises a revocation endpoint. A
+signed `POST /revoke` names a token by its issuer and JTI; the reference
+implementation retains observed agent-token identities, authorizes the token
+issuer or deployment policy, and durably refuses the revoked credential on
+later requests. Resource and access-server revocation remain separate profile
+work.
+
 Governance custody can be injected through the small `GovernanceStore`
 interface. The included single-writer file adapter writes private `0600`
 checksum-bound snapshots by synced temporary-file replacement and refuses

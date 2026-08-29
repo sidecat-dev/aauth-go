@@ -41,6 +41,8 @@ type PersonServerConfig struct {
 	PersonTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
 	ResourceMetadata               ResourceMetadataResolver
 	PersonTokenResourceLimiter     PersonTokenResourceLimiter
+	TokenRevocationStore           TokenRevocationStore
+	TokenRevocationPolicy          aauth.TokenRevocationPolicy
 	MissionIssuanceStore           MissionIssuanceStore
 	MissionUpdatePolicy            aauth.MissionUpdatePolicy
 	CompletionReviewEnabled        bool
@@ -74,6 +76,8 @@ type PersonServer struct {
 	personTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
 	resourceMetadata               ResourceMetadataResolver
 	personTokenResourceLimiter     PersonTokenResourceLimiter
+	tokenRevocationStore           TokenRevocationStore
+	tokenRevocationPolicy          aauth.TokenRevocationPolicy
 	missionIssuanceStore           MissionIssuanceStore
 	missionUpdatePolicy            aauth.MissionUpdatePolicy
 	completionReviewEnabled        bool
@@ -377,6 +381,9 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 	if config.AuthorizationStore == nil {
 		return nil, errors.New("reference: person server requires an authorization state store")
 	}
+	if config.TokenRevocationPolicy != nil && config.TokenRevocationStore == nil {
+		return nil, errors.New("reference: token revocation policy requires a token revocation store")
+	}
 	r3Parts := 0
 	if config.R3HTTPClient != nil {
 		r3Parts++
@@ -423,6 +430,8 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		personTokenInteractionRequired: config.PersonTokenInteractionRequired,
 		resourceMetadata:               config.ResourceMetadata,
 		personTokenResourceLimiter:     config.PersonTokenResourceLimiter,
+		tokenRevocationStore:           config.TokenRevocationStore,
+		tokenRevocationPolicy:          config.TokenRevocationPolicy,
 		missionIssuanceStore:           config.MissionIssuanceStore,
 		missionUpdatePolicy:            config.MissionUpdatePolicy,
 		completionReviewEnabled:        config.CompletionReviewEnabled,
@@ -1136,6 +1145,9 @@ func (server *PersonServer) Handler() http.Handler {
 		mux.HandleFunc("GET /interaction/pending/{id}", server.handlePendingAgentInteraction)
 		mux.HandleFunc("POST /interaction/pending/{id}", server.handlePendingAgentInteraction)
 	}
+	if server.tokenRevocationStore != nil {
+		mux.HandleFunc("POST /revoke", server.handleTokenRevocation)
+	}
 	mux.HandleFunc("GET /.well-known/aauth-person.json", server.handleMetadata)
 	mux.HandleFunc("GET /jwks", server.handleJWKS)
 	return mux
@@ -1155,7 +1167,7 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		writeSignatureFailure(response, err)
 		return
 	}
-	if !server.requireCurrentPersonServer(response, verified) {
+	if !server.requireCurrentPersonServer(response, request.Context(), verified) {
 		return
 	}
 	server.missionIssuanceMu.Lock()
@@ -1446,6 +1458,9 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		writeSignatureFailure(response, err)
 		return
 	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
+		return
+	}
 	if agentClaims.ParentAgent != "" {
 		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request a person token directly"))
 		return
@@ -1531,7 +1546,10 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 			targetExpiresAt = claims.ExpiresAt
 		}
 	}
-	if upstream == nil && !server.requireCurrentPersonServer(response, verified) {
+	if upstream == nil && !server.requireCurrentPersonServer(response, request.Context(), verified) {
+		return
+	}
+	if upstream != nil && !server.checkAgentToken(response, request.Context(), verified) {
 		return
 	}
 	var missionExpiry *time.Time
@@ -1611,19 +1629,20 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 
 func (server *PersonServer) requireCurrentPersonServer(
 	response http.ResponseWriter,
+	ctx context.Context,
 	verified aauth.VerifiedRequest,
 ) bool {
 	claims, err := verified.AgentClaims()
-	if err == nil && claims.PersonServer == server.identifier {
-		return true
+	if err != nil || claims.PersonServer != server.identifier {
+		writeProblem(
+			response,
+			http.StatusBadRequest,
+			"invalid_agent_token",
+			errors.New("agent token ps does not match person server"),
+		)
+		return false
 	}
-	writeProblem(
-		response,
-		http.StatusBadRequest,
-		"invalid_agent_token",
-		errors.New("agent token ps does not match person server"),
-	)
-	return false
+	return server.checkAgentToken(response, ctx, verified)
 }
 
 func (server *PersonServer) issuePersonToken(
@@ -1857,6 +1876,9 @@ func (server *PersonServer) handlePermission(
 	)
 	if err != nil {
 		writeSignatureFailure(response, err)
+		return
+	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
 		return
 	}
 	agentClaims, err := verified.AgentClaims()
@@ -2482,6 +2504,9 @@ func (server *PersonServer) handlePendingPermission(
 		writeSignatureFailure(response, err)
 		return
 	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
+		return
+	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
@@ -2612,6 +2637,9 @@ func (server *PersonServer) handleAudit(
 	)
 	if err != nil {
 		writeSignatureFailure(response, err)
+		return
+	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
 		return
 	}
 	if server.governanceReplayExists(verified.ReplayKey) {
@@ -2899,6 +2927,9 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeSignatureFailure(response, err)
 		return
 	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
+		return
+	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return verified.VerifiedAt })
 	agentClaims, err := verified.AgentClaims()
 	if err != nil {
@@ -3072,7 +3103,10 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("current resource-token ps is required"))
 		return
 	}
-	if upstream == nil && !server.requireCurrentPersonServer(response, verified) {
+	if upstream == nil && !server.requireCurrentPersonServer(response, request.Context(), verified) {
+		return
+	}
+	if upstream != nil && !server.checkAgentToken(response, request.Context(), verified) {
 		return
 	}
 	if server.personTokenStore == nil || resourceToken.PersonServer != server.identifier {
@@ -3676,6 +3710,9 @@ func (server *PersonServer) handlePendingAuthorization(
 	)
 	if err != nil {
 		writeSignatureFailure(response, err)
+		return
+	}
+	if !server.checkAgentToken(response, request.Context(), verified) {
 		return
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
@@ -4517,6 +4554,9 @@ func (server *PersonServer) handleMetadata(response http.ResponseWriter, _ *http
 	}
 	if server.completionReviewEnabled {
 		metadata["interaction_endpoint"] = server.identifier + "/interaction"
+	}
+	if server.tokenRevocationStore != nil {
+		metadata["revocation_endpoint"] = server.identifier + "/revoke"
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }

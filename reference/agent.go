@@ -1509,6 +1509,43 @@ func (agent *Agent) RecordAudit(
 	return nil
 }
 
+// RevokeToken submits one signed issuer/JTI revocation request to a server's
+// revocation endpoint. The server decides whether this caller is authorized;
+// the client preserves its typed problem response on refusal.
+func (agent *Agent) RevokeToken(
+	ctx context.Context,
+	endpoint string,
+	input aauth.TokenRevocationRequest,
+) error {
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return err
+	}
+	if err := input.Validate(); err != nil {
+		return err
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
+		return err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return responseError(response)
+	}
+	return nil
+}
+
 // ProposeMissionCompletion submits the current mission-endpoint completion
 // action and returns the person-server review continuation.
 func (agent *Agent) ProposeMissionCompletion(

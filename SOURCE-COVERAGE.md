@@ -9,8 +9,8 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | Status | Sections |
 | --- | ---: |
 | Exercised | 47 |
-| Partial | 58 |
-| Unsupported | 6 |
+| Partial | 59 |
+| Unsupported | 5 |
 | Informational | 0 |
 | Unclaimed | 489 |
 
@@ -20,7 +20,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 28 | 21 | 3 | 0 | 204 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 28 | 22 | 2 | 0 | 204 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
@@ -669,9 +669,15 @@ Evidence:
 
 Third-party login is not implemented.
 
-### `core/token-revocation` — Unsupported
+### `core/token-revocation` — Partial
 
-Token revocation is not implemented.
+The reference Person Server implements the current signed (iss, jti) revocation request for observed agent credentials. A checksum-bound file store retains observations, revocation state, and proof replay keys; issuer-or-deployment policy authorizes the request; repeated new proofs are idempotent; restart preserves the refusal of a revoked agent token. Resource and access-server revocation, mission-wide propagation, and provider fan-out remain open.
+
+Evidence:
+
+- `revocation_journey_test.go:TestCurrentAgentTokenRevocationSurvivesPersonServerRestart`
+- `reference/token_revocation_test.go:TestFileTokenRevocationStoreSurvivesRestart`
+- `revocation_test.go:TestTokenRevocationRequestValidation`
 
 ### `core/verification` — Partial
 
