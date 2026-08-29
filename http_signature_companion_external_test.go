@@ -53,10 +53,10 @@ func TestVerifyRequestRequiresAnExplicitAuthTokenCompanion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := r3.NewDirectGrant(verifiedReference, r3.OperationSet{
+	grant, err := r3.NewAuthorizationGrant(verifiedReference, r3.AuthorizationDecision{Granted: r3.OperationSet{
 		Vocabulary: r3.VocabularyMCP,
 		Operations: []json.RawMessage{json.RawMessage(`{"tool":"read"}`)},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

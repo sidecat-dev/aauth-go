@@ -376,7 +376,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		return nil, errors.New("reference: person-server R3 requires HTTP client, egress admission, and review policy")
 	}
 	if r3Parts == 3 && config.FederationClient == nil {
-		return nil, errors.New("reference: direct R3 person-server review requires access-server federation")
+		return nil, errors.New("reference: four-party R3 person-server review requires access-server federation")
 	}
 	if config.R3FetchTimeout < 0 {
 		return nil, errors.New("reference: person-server R3 fetch timeout is invalid")
@@ -2945,7 +2945,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 	}
 	if resourceR3.Valid() && resourceToken.Audience == server.identifier {
-		writeProblem(response, http.StatusNotImplemented, "r3_topology_not_implemented", errors.New("direct R3 requires a distinct access server"))
+		writeProblem(response, http.StatusNotImplemented, "r3_topology_not_implemented", errors.New("four-party R3 requires a distinct access server"))
 		return
 	}
 	if resourceToken.PersonServer == "" {
@@ -3084,7 +3084,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 		if required {
 			if resourceR3.Valid() {
-				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("direct R3 authorization does not support deferred interaction"))
+				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("immediate R3 authorization does not support deferred interaction"))
 				return
 			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
@@ -4171,7 +4171,7 @@ func (server *PersonServer) exchangeWithAccessServer(
 	switch response.StatusCode {
 	case http.StatusAccepted:
 		if resourceR3 != nil {
-			return exchange, errors.New("access server deferred a direct R3 authorization")
+			return exchange, errors.New("access server deferred an immediate R3 authorization")
 		}
 		deferred, err := aauth.ParseDeferredResponse(response)
 		if err != nil {
@@ -4247,12 +4247,13 @@ func (server *PersonServer) parseAccessServerGrant(
 		}
 		granted, present := authR3.Granted()
 		if !present {
-			return exchange, errors.New("access-server auth token omitted the direct R3 grant")
+			return exchange, errors.New("access-server auth token omitted the R3 grant")
 		}
-		if _, perCall := authR3.PerCall(); perCall {
-			return exchange, errors.New("access-server returned a per-call grant to the direct R3 path")
+		decision := r3.AuthorizationDecision{Granted: granted}
+		if perCall, present := authR3.PerCall(); present {
+			decision.PerCall = &perCall
 		}
-		if _, grantErr := r3.NewDirectGrant(*r3Document, granted); grantErr != nil {
+		if _, grantErr := r3.NewAuthorizationGrant(*r3Document, decision); grantErr != nil {
 			return exchange, grantErr
 		}
 	}

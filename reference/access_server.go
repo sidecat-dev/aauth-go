@@ -40,7 +40,7 @@ type AccessServerConfig struct {
 	AuthorizationStore    AuthorizationStateStore
 	R3HTTPClient          *http.Client
 	R3Admit               func(context.Context, string) error
-	R3GrantPolicy         R3GrantPolicy
+	R3AuthorizationPolicy R3AuthorizationPolicy
 	R3FetchTimeout        time.Duration
 	R3IssuanceStore       R3IssuanceStore
 }
@@ -60,7 +60,7 @@ type AccessServer struct {
 	authorizationStore    AuthorizationStateStore
 	r3HTTPClient          *http.Client
 	r3Admit               func(context.Context, string) error
-	r3GrantPolicy         R3GrantPolicy
+	r3AuthorizationPolicy R3AuthorizationPolicy
 	r3FetchTimeout        time.Duration
 	r3IssuanceStore       R3IssuanceStore
 	replayMu              sync.Mutex
@@ -90,7 +90,7 @@ type accessServerAuthorizationContext struct {
 	pollingServer         string
 	pollingKey            jose.JWK
 	pollingKeyThumbprint  string
-	r3Grant               *r3.DirectGrant
+	r3Grant               *r3.AuthorizationGrant
 	r3RequestKey          string
 	r3RequestBodySHA256   string
 }
@@ -164,7 +164,7 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 	if config.R3Admit != nil {
 		r3Parts++
 	}
-	if config.R3GrantPolicy != nil {
+	if config.R3AuthorizationPolicy != nil {
 		r3Parts++
 	}
 	if config.R3IssuanceStore != nil {
@@ -202,7 +202,7 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		authorizationStore:    config.AuthorizationStore,
 		r3HTTPClient:          config.R3HTTPClient,
 		r3Admit:               config.R3Admit,
-		r3GrantPolicy:         config.R3GrantPolicy,
+		r3AuthorizationPolicy: config.R3AuthorizationPolicy,
 		r3FetchTimeout:        config.R3FetchTimeout,
 		r3IssuanceStore:       config.R3IssuanceStore,
 		replayedProof:         make(map[string]time.Time),
@@ -835,7 +835,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		err = memberErr
 	} else if len(members) == 0 {
 		resourceToken, err = resourceTokenEvidence.Claims()
-	} else if server.r3GrantPolicy == nil {
+	} else if server.r3AuthorizationPolicy == nil {
 		err = resourceTokenEvidence.RequireNoAuthorizationMembers()
 	} else {
 		resourceR3, err = r3.ValidateResourceToken(resourceTokenEvidence)
@@ -943,14 +943,14 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			writeProblem(response, http.StatusBadGateway, "r3_document_verification_failed", fetchErr)
 			return
 		}
-		granted, policyErr := server.r3GrantPolicy(
+		decision, policyErr := server.r3AuthorizationPolicy(
 			request.Context(), copyAuthorizationRequest(authorizationContext.request), document,
 		)
 		if policyErr != nil {
 			writeHostPolicyRefusal(response, "r3_grant_denied", "access-server R3 policy denied the request")
 			return
 		}
-		direct, grantErr := r3.NewDirectGrant(document, granted)
+		direct, grantErr := r3.NewAuthorizationGrant(document, decision)
 		if grantErr != nil {
 			writeProblem(response, http.StatusInternalServerError, "invalid_r3_grant", grantErr)
 			return
@@ -968,7 +968,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		}
 		if required {
 			if resourceR3.Valid() {
-				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("direct R3 authorization does not support deferred interaction"))
+				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("immediate R3 authorization does not support deferred interaction"))
 				return
 			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {

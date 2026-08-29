@@ -21,9 +21,11 @@ import (
 // the exact document fetched for one verified authorization request.
 type R3Review func(context.Context, aauth.AuthorizationRequest, r3.DocumentReference) error
 
-// R3GrantPolicy is the access-server deployment's direct-grant policy over the
-// exact document fetched for one verified authorization request.
-type R3GrantPolicy func(context.Context, aauth.AuthorizationRequest, r3.DocumentReference) (r3.OperationSet, error)
+// R3AuthorizationPolicy is the access-server deployment's policy over the
+// exact document fetched for one verified authorization request. It partitions
+// document operations into direct grants and operations requiring per-call
+// approval.
+type R3AuthorizationPolicy func(context.Context, aauth.AuthorizationRequest, r3.DocumentReference) (r3.AuthorizationDecision, error)
 
 type r3FetchConfig struct {
 	client            *http.Client
@@ -35,7 +37,7 @@ type r3FetchConfig struct {
 	timeout           time.Duration
 }
 
-func selectDirectR3Document(
+func selectR3Document(
 	resourceIdentifier string,
 	requested r3.OperationSet,
 	exact []byte,
@@ -50,7 +52,7 @@ func selectDirectR3Document(
 	}
 	document, _ := reference.Document()
 	if !document.OperationSet().Equal(requested) {
-		return r3.DocumentReference{}, errors.New("selected direct R3 document must contain exactly the requested operations")
+		return r3.DocumentReference{}, errors.New("selected R3 document must contain exactly the requested operations")
 	}
 	return reference, nil
 }

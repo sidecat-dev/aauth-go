@@ -61,7 +61,7 @@ type ResourceConfig struct {
 	R3                           *ResourceR3Config
 }
 
-// ResourceR3Config composes the current direct R3 resource boundary. Every
+// ResourceR3Config composes the current immediate four-party R3 resource boundary. Every
 // protected request is mapped to one operation and therefore requires an R3
 // auth-token grant when this configuration is present.
 type ResourceR3Config struct {
@@ -69,6 +69,11 @@ type ResourceR3Config struct {
 	DocumentStore         R3RestrictedDocumentStore
 	DocumentForOperations func(context.Context, r3.OperationSet) ([]byte, error)
 	OperationForRequest   func(context.Context, *http.Request) (r3.OperationSet, error)
+	ResourceTokenStore    R3ResourceTokenStore
+	ProposalForRequest    func(context.Context, *http.Request, []byte) ([]byte, error)
+	ParametersForRequest  func(context.Context, *http.Request, []byte) (r3.PresentedParameters, error)
+	PerCallStore          R3PerCallStore
+	PerCallOperation      func(context.Context, aauth.AuthorizedRequest, string) (any, error)
 }
 
 // ResourceEventsConfig enables public registration and supplies the external
@@ -129,6 +134,11 @@ type Resource struct {
 	r3DocumentStore              R3RestrictedDocumentStore
 	r3DocumentForOperations      func(context.Context, r3.OperationSet) ([]byte, error)
 	r3OperationForRequest        func(context.Context, *http.Request) (r3.OperationSet, error)
+	r3ResourceTokenStore         R3ResourceTokenStore
+	r3ProposalForRequest         func(context.Context, *http.Request, []byte) ([]byte, error)
+	r3ParametersForRequest       func(context.Context, *http.Request, []byte) (r3.PresentedParameters, error)
+	r3PerCallStore               R3PerCallStore
+	r3PerCallOperation           func(context.Context, aauth.AuthorizedRequest, string) (any, error)
 	eventSubscriptionPath        string
 	eventStore                   ResourceEventStore
 	eventTicketStore             ProtectedEventTicketStore
@@ -277,24 +287,51 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	var r3DocumentStore R3RestrictedDocumentStore
 	var r3DocumentForOperations func(context.Context, r3.OperationSet) ([]byte, error)
 	var r3OperationForRequest func(context.Context, *http.Request) (r3.OperationSet, error)
+	var r3ResourceTokenStore R3ResourceTokenStore
+	var r3ProposalForRequest func(context.Context, *http.Request, []byte) ([]byte, error)
+	var r3ParametersForRequest func(context.Context, *http.Request, []byte) (r3.PresentedParameters, error)
+	var r3PerCallStore R3PerCallStore
+	var r3PerCallOperation func(context.Context, aauth.AuthorizedRequest, string) (any, error)
 	if config.R3 != nil {
 		if config.AccessMode != aauth.AccessModeAuthToken || config.AccessServer == "" {
-			return nil, errors.New("reference: direct R3 requires a four-party auth-token resource")
+			return nil, errors.New("reference: R3 requires a four-party auth-token resource")
 		}
 		if len(config.R3.Vocabularies) == 0 || config.R3.DocumentStore == nil ||
 			config.R3.DocumentForOperations == nil || config.R3.OperationForRequest == nil {
-			return nil, errors.New("reference: direct R3 requires vocabularies, restricted document custody, document selection, and request mapping")
+			return nil, errors.New("reference: R3 requires vocabularies, restricted document custody, document selection, and request mapping")
 		}
 		directR3Vocabularies = make(map[string]json.RawMessage, len(config.R3.Vocabularies))
 		for vocabulary, discovery := range config.R3.Vocabularies {
 			if err := r3.ValidateVocabularyURI(vocabulary); err != nil || len(discovery) == 0 || !json.Valid(discovery) {
-				return nil, errors.New("reference: direct R3 vocabulary discovery is invalid")
+				return nil, errors.New("reference: R3 vocabulary discovery is invalid")
 			}
 			directR3Vocabularies[vocabulary] = append(json.RawMessage(nil), discovery...)
 		}
 		r3DocumentStore = config.R3.DocumentStore
 		r3DocumentForOperations = config.R3.DocumentForOperations
 		r3OperationForRequest = config.R3.OperationForRequest
+		perCallParts := 0
+		for _, present := range []bool{
+			config.R3.ResourceTokenStore != nil,
+			config.R3.ProposalForRequest != nil,
+			config.R3.ParametersForRequest != nil,
+			config.R3.PerCallStore != nil,
+			config.R3.PerCallOperation != nil,
+		} {
+			if present {
+				perCallParts++
+			}
+		}
+		if perCallParts != 0 && perCallParts != 5 {
+			return nil, errors.New("reference: R3 per-call requires resource-token lineage, proposal construction, parameter projection, single-use result custody, and a provider-keyed operation")
+		}
+		if perCallParts == 5 {
+			r3ResourceTokenStore = config.R3.ResourceTokenStore
+			r3ProposalForRequest = config.R3.ProposalForRequest
+			r3ParametersForRequest = config.R3.ParametersForRequest
+			r3PerCallStore = config.R3.PerCallStore
+			r3PerCallOperation = config.R3.PerCallOperation
+		}
 	}
 	var eventSubscriptionPath string
 	var eventStore ResourceEventStore
@@ -460,6 +497,11 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		r3DocumentStore:              r3DocumentStore,
 		r3DocumentForOperations:      r3DocumentForOperations,
 		r3OperationForRequest:        r3OperationForRequest,
+		r3ResourceTokenStore:         r3ResourceTokenStore,
+		r3ProposalForRequest:         r3ProposalForRequest,
+		r3ParametersForRequest:       r3ParametersForRequest,
+		r3PerCallStore:               r3PerCallStore,
+		r3PerCallOperation:           r3PerCallOperation,
 		eventSubscriptionPath:        eventSubscriptionPath,
 		eventStore:                   eventStore,
 		eventTicketStore:             eventTicketStore,
@@ -899,6 +941,7 @@ func (resource *Resource) Handler() http.Handler {
 	}
 	if resource.r3DocumentStore != nil {
 		mux.HandleFunc("GET /r3/{s256}", resource.handleR3Document)
+		mux.HandleFunc("GET /r3/per-call/{s256}", resource.handleR3Document)
 	}
 	mux.HandleFunc("POST /authorize", resource.handleAuthorize)
 	mux.HandleFunc("GET /pending/{id}", resource.handlePendingAuthorization)
@@ -1358,12 +1401,12 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	var r3Reference r3.DocumentReference
 	if resource.r3DocumentStore == nil {
 		if input.R3Operations != nil {
-			writeProblem(response, http.StatusBadRequest, "unsupported_r3", errors.New("resource does not publish direct R3 authorization"))
+			writeProblem(response, http.StatusBadRequest, "unsupported_r3", errors.New("resource does not publish R3 authorization"))
 			return
 		}
 	} else {
 		if input.R3Operations == nil {
-			writeProblem(response, http.StatusBadRequest, "r3_operations_required", errors.New("direct R3 resource requires r3_operations"))
+			writeProblem(response, http.StatusBadRequest, "r3_operations_required", errors.New("R3 resource requires r3_operations"))
 			return
 		}
 		requested := input.R3Operations.Clone()
@@ -1376,7 +1419,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 			writeHostPolicyRefusal(response, "r3_operations_denied", "requested R3 operations are not available")
 			return
 		}
-		r3Reference, err = selectDirectR3Document(resource.identifier, requested, exact)
+		r3Reference, err = selectR3Document(resource.identifier, requested, exact)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "invalid_r3_document", err)
 			return
@@ -1436,7 +1479,7 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	claims.Agent = ""
 	var token string
 	if r3Reference.Valid() {
-		token, err = r3.MintResourceToken(resource.signingKey, claims, r3Reference)
+		token, err = resource.mintAndRetainR3ResourceToken(request.Context(), claims, r3Reference, now)
 	} else {
 		token, err = aauth.MintResourceToken(resource.signingKey, claims)
 	}
@@ -2100,7 +2143,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	}
 	if resource.r3DocumentStore != nil {
 		if !r3Result.Valid() {
-			writeProblem(response, http.StatusForbidden, "r3_required", errors.New("protected operation requires a direct R3 grant"))
+			writeProblem(response, http.StatusForbidden, "r3_required", errors.New("protected operation requires an R3 grant"))
 			return
 		}
 		origin, originErr := endpointIdentifier(r3Result.URI())
@@ -2118,12 +2161,16 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 			return
 		}
 		r3Granted, present := r3Result.Granted()
-		if !present || !r3Granted.ContainsSet(operation) {
-			writeProblem(response, http.StatusForbidden, "r3_operation_not_granted", errors.New("auth token does not grant this R3 operation"))
+		if present && r3Granted.ContainsSet(operation) {
+			if resource.r3PerCallStore != nil && resource.isR3PerCallReference(r3Result) {
+				resource.completeR3PerCall(response, request, exactBody, verified, claims, r3Result, operation)
+				return
+			}
+		} else if perCall, present := r3Result.PerCall(); present && perCall.ContainsSet(operation) {
+			resource.challengeR3PerCall(response, request, exactBody, verified, claims, r3Result, operation)
 			return
-		}
-		if _, perCall := r3Result.PerCall(); perCall {
-			writeProblem(response, http.StatusNotImplemented, "r3_per_call_not_implemented", errors.New("direct R3 resource does not execute per-call grants"))
+		} else {
+			writeProblem(response, http.StatusForbidden, "r3_operation_not_granted", errors.New("auth token does not grant this R3 operation"))
 			return
 		}
 	}

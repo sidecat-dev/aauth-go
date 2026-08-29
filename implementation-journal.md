@@ -63,7 +63,7 @@ for this library.
   failures, while reference endpoints without an R3 consumer continue to fail
   closed before policy or consequence.
 
-### Immediate four-party direct R3
+### Immediate four-party R3
 
 - `AuthTokenCompanion` requires invalid-zero companion evidence carrying the
   same Core evidence identity. Core rejects nil and wrong-token results; the
@@ -75,15 +75,28 @@ for this library.
 - The PS and AS fetch independently with signed `jwks_uri` server requests and
   verify the exact SHA-256 digest before review or grant policy. Changed bytes
   fail before either policy can issue authority.
-- The AS can issue only a direct grant drawn from the verified document. The
-  agent rejects grants outside its request, and the resource refuses an
-  ungranted operation before replay consumption or host consequence.
+- The AS partitions only operations drawn from the verified document into
+  direct and per-call sets. The agent rejects either set outside its request,
+  and the resource refuses an ungranted operation before replay consumption or
+  host consequence.
 - Direct AS issuance commits the required audit fields and exact auth-token
   response in one private record before release. Exact retry after a lost
   response and AS reconstruction returns the same token without rerunning
   trust or grant policy; a conflicting record refuses.
-- Deferred interaction, a same-process PS/AS topology, R3 caching, and per-call
-  proposals and retained results remain unclaimed.
+- One `401` per-call journey constructs and retains an exact one-operation
+  proposal before challenge release. The PS and AS retrieve and evaluate that
+  proposal through the same signed-reader boundary as the initial document.
+- The resource recovers the exact earlier person-token JTI from its retained
+  resource-token lineage. Inline JSON parameters compare structurally; digest
+  parameters compare against the exact presented bytes. Changed parameters
+  fail before the provider is called.
+- The provider receives one deterministic execution key. The resource retains
+  the successful JSON response before release, prevents a concurrent retry
+  from invoking the provider, and returns the exact result after response loss
+  and resource reconstruction. A pending record can be reclaimed after restart
+  with the same provider key.
+- Deferred `202` delivery, a same-process PS/AS topology, R3 caching, and
+  three-party R3 remain unclaimed.
 
 ## 2026-08-28
 

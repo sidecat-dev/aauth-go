@@ -121,7 +121,7 @@ func TestR3TokenEvidence(t *testing.T) {
 	}
 }
 
-func TestR3DirectGrant(t *testing.T) {
+func TestR3AuthorizationGrant(t *testing.T) {
 	now := time.Date(2026, 8, 29, 6, 30, 0, 0, time.UTC)
 	resourceKey, _ := jose.NewEd25519SigningKey("resource", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x34}, ed25519.SeedSize)))
 	accessKey, _ := jose.NewEd25519SigningKey("access", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x35}, ed25519.SeedSize)))
@@ -153,7 +153,7 @@ func TestR3DirectGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	requested := r3.OperationSet{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(` + "`" + `{"tool":"read"}` + "`" + `)}}
-	grant, err := r3.NewDirectGrant(verifiedDocument, requested)
+	grant, err := r3.NewAuthorizationGrant(verifiedDocument, r3.AuthorizationDecision{Granted: requested})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestR3DirectGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	authResult, err := r3.ValidateAuthToken(authCore)
-	if err != nil || r3.ValidateDirectGrant(resourceResult, authResult, requested) != nil {
+	if err != nil || r3.ValidateAuthorizationGrant(resourceResult, authResult, requested) != nil {
 		t.Fatalf("direct result = %#v, %v", authResult, err)
 	}
 }

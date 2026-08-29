@@ -156,7 +156,7 @@ func TestR3AuthTokenValidationRefusesMalformedMembers(t *testing.T) {
 	}
 }
 
-func TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest(t *testing.T) {
+func TestR3AuthorizationGrantPartitionsTheExactAgentRequest(t *testing.T) {
 	now := time.Date(2026, 8, 29, 6, 30, 0, 0, time.UTC)
 	resourceKey := r3SigningKey(t, "resource", 0x77)
 	accessKey := r3SigningKey(t, "access", 0x78)
@@ -167,8 +167,8 @@ func TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest(t *testing.T) {
 		t.Fatalf("document reference = %#v, %v", reference, err)
 	}
 	requested := r3.OperationSet{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(`{"tool":"read"}`)}}
-	if _, err := r3.NewDirectGrant(reference, requested); err == nil {
-		t.Fatal("direct grant used a document that was not bound to Core token evidence")
+	if _, err := r3.NewAuthorizationGrant(reference, r3.AuthorizationDecision{Granted: requested}); err == nil {
+		t.Fatal("authorization grant used a document that was not bound to Core token evidence")
 	}
 	resourceToken, err := r3.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
@@ -199,9 +199,11 @@ func TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest(t *testing.T) {
 		t.Fatal("document reference aliases exact bytes")
 	}
 
-	grant, err := r3.NewDirectGrant(verifiedDocument, requested)
+	perCall := r3.OperationSet{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(`{"tool":"write"}`)}}
+	decision := r3.AuthorizationDecision{Granted: requested, PerCall: &perCall}
+	grant, err := r3.NewAuthorizationGrant(verifiedDocument, decision)
 	if err != nil || !grant.Valid() {
-		t.Fatalf("direct grant = %#v, %v", grant, err)
+		t.Fatalf("authorization grant = %#v, %v", grant, err)
 	}
 	authToken, err := r3.MintAuthToken(accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
@@ -220,12 +222,16 @@ func TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	authResult, err := r3.ValidateAuthToken(authCore)
-	if err != nil || r3.ValidateDirectGrant(resourceResult, authResult, requested) != nil {
+	requestedBoth := r3.OperationSet{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(`{"tool":"read"}`), json.RawMessage(`{"tool":"write"}`)}}
+	if err != nil || r3.ValidateAuthorizationGrant(resourceResult, authResult, requestedBoth) != nil {
 		t.Fatalf("auth R3 result = %#v, %v", authResult, err)
 	}
 	outOfRequest := r3.OperationSet{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(`{"tool":"write"}`)}}
-	if err := r3.ValidateDirectGrant(resourceResult, authResult, outOfRequest); err == nil {
-		t.Fatal("direct grant escaped the agent request")
+	if err := r3.ValidateAuthorizationGrant(resourceResult, authResult, outOfRequest); err == nil {
+		t.Fatal("authorization grant escaped the agent request")
+	}
+	if _, err := r3.NewAuthorizationGrant(verifiedDocument, r3.AuthorizationDecision{Granted: requested, PerCall: &requested}); err == nil {
+		t.Fatal("overlapping direct and per-call grants were accepted")
 	}
 	if _, err := r3.VerifyDocument(resourceResult, append(exact, ' ')); err == nil {
 		t.Fatal("changed exact document passed hash verification")

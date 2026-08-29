@@ -39,7 +39,7 @@ type R3IssuanceRecord struct {
 	Audit             r3.IssuanceAudit `json:"audit"`
 }
 
-// R3IssuanceStore commits the exact direct grant and its audit atomically.
+// R3IssuanceStore commits the exact authorization partition and its audit atomically.
 // Recommitting an exact record is idempotent; any different record under the
 // same request identity conflicts.
 type R3IssuanceStore interface {
@@ -205,11 +205,20 @@ func validateR3IssuanceToken(record R3IssuanceRecord, expiresIn int64) error {
 		claims.ExpiresAt-claims.IssuedAt != expiresIn || uri != record.Audit.URI || digest != record.Audit.Digest {
 		return errors.New("reference: R3 issuance auth token does not match its audit")
 	}
-	if _, err := r3.ParseOperationSet(members["r3_granted"]); err != nil {
-		return errors.New("reference: R3 issuance auth token has an invalid direct grant")
+	granted, err := r3.ParseOperationSet(members["r3_granted"])
+	if err != nil {
+		return errors.New("reference: R3 issuance auth token has an invalid grant")
 	}
-	if _, perCall := members["r3_per_call"]; perCall {
-		return errors.New("reference: R3 direct issuance contains r3_per_call")
+	if raw, present := members["r3_per_call"]; present {
+		perCall, parseErr := r3.ParseOperationSet(raw)
+		if parseErr != nil || perCall.Vocabulary != granted.Vocabulary {
+			return errors.New("reference: R3 issuance auth token has an invalid per-call grant")
+		}
+		for _, operation := range perCall.Operations {
+			if granted.Contains(operation) {
+				return errors.New("reference: R3 issuance auth token overlaps direct and per-call grants")
+			}
+		}
 	}
 	return nil
 }

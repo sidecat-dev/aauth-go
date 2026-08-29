@@ -32,7 +32,7 @@ func TestR3CompanionOwnsAuthorizationWithoutExpandingCoreClaims(t *testing.T) {
 		name  string
 	}{
 		{reference.ResourceConfig{}, "R3"},
-		{reference.AccessServerConfig{}, "R3GrantPolicy"},
+		{reference.AccessServerConfig{}, "R3AuthorizationPolicy"},
 		{reference.PersonServerConfig{}, "R3Review"},
 		{reference.ResourceGrant{}, "RequestedR3"},
 	} {

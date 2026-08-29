@@ -111,51 +111,87 @@ func (reference DocumentReference) CoreEvidenceID() aauth.EvidenceID {
 	return reference.coreID
 }
 
-// DirectGrant is invalid-zero evidence that every granted operation belongs to
-// one exact R3 document and no operation remains per-call.
-type DirectGrant struct {
+// AuthorizationDecision partitions one policy result into operations granted
+// directly and operations that require a proposal for each call. PerCall is
+// nil when no operation requires per-call approval.
+type AuthorizationDecision struct {
+	Granted OperationSet  `json:"r3_granted"`
+	PerCall *OperationSet `json:"r3_per_call,omitempty"`
+}
+
+// AuthorizationGrant is invalid-zero evidence that every directly granted or
+// per-call operation belongs to one exact verified R3 document and that the two
+// sets are disjoint.
+type AuthorizationGrant struct {
 	reference DocumentReference
-	granted   OperationSet
+	decision  AuthorizationDecision
 	seal      [sha256.Size]byte
 }
 
-func NewDirectGrant(reference DocumentReference, granted OperationSet) (DirectGrant, error) {
+func NewAuthorizationGrant(reference DocumentReference, decision AuthorizationDecision) (AuthorizationGrant, error) {
 	if !reference.Valid() {
-		return DirectGrant{}, errors.New("aauth: R3 document reference is invalid")
+		return AuthorizationGrant{}, errors.New("aauth: R3 document reference is invalid")
 	}
 	if reference.CoreEvidenceID().String() == "" {
-		return DirectGrant{}, errors.New("aauth: R3 direct grant requires a document verified against Core token evidence")
+		return AuthorizationGrant{}, errors.New("aauth: R3 authorization grant requires a document verified against Core token evidence")
 	}
-	if err := granted.Validate(); err != nil {
-		return DirectGrant{}, err
+	if err := decision.Granted.Validate(); err != nil {
+		return AuthorizationGrant{}, err
 	}
 	document, _ := reference.Document()
-	if !document.OperationSet().ContainsSet(granted) {
-		return DirectGrant{}, errors.New("aauth: R3 direct grant contains an operation outside the exact document")
+	if !document.OperationSet().ContainsSet(decision.Granted) {
+		return AuthorizationGrant{}, errors.New("aauth: R3 authorization grant contains an operation outside the exact document")
 	}
-	grant := DirectGrant{reference: reference, granted: granted.Clone()}
+	cloned := AuthorizationDecision{Granted: decision.Granted.Clone()}
+	if decision.PerCall != nil {
+		perCall := decision.PerCall.Clone()
+		if err := perCall.Validate(); err != nil {
+			return AuthorizationGrant{}, err
+		}
+		if perCall.Vocabulary != cloned.Granted.Vocabulary {
+			return AuthorizationGrant{}, errors.New("aauth: R3 direct and per-call vocabularies differ")
+		}
+		if !document.OperationSet().ContainsSet(perCall) {
+			return AuthorizationGrant{}, errors.New("aauth: R3 per-call grant contains an operation outside the exact document")
+		}
+		for _, operation := range perCall.Operations {
+			if cloned.Granted.Contains(operation) {
+				return AuthorizationGrant{}, errors.New("aauth: R3 operation cannot be both direct and per-call")
+			}
+		}
+		cloned.PerCall = &perCall
+	}
+	grant := AuthorizationGrant{reference: reference, decision: cloned}
 	grant.seal = grant.sealValue()
 	return grant, nil
 }
 
 // Valid reports whether the grant retains one self-consistent verified
-// document and operation set.
-func (grant DirectGrant) Valid() bool {
+// document and policy partition.
+func (grant AuthorizationGrant) Valid() bool {
 	return grant.seal != [sha256.Size]byte{} && grant.seal == grant.sealValue()
 }
 
 // Granted returns an independent operation-set projection.
-func (grant DirectGrant) Granted() (OperationSet, error) {
+func (grant AuthorizationGrant) Granted() (OperationSet, error) {
 	if !grant.Valid() {
-		return OperationSet{}, errors.New("aauth: R3 direct grant is invalid")
+		return OperationSet{}, errors.New("aauth: R3 authorization grant is invalid")
 	}
-	return grant.granted.Clone(), nil
+	return grant.decision.Granted.Clone(), nil
+}
+
+// PerCall returns an independent per-call set and reports whether one exists.
+func (grant AuthorizationGrant) PerCall() (OperationSet, bool) {
+	if !grant.Valid() || grant.decision.PerCall == nil {
+		return OperationSet{}, false
+	}
+	return grant.decision.PerCall.Clone(), true
 }
 
 // Reference returns the exact document evidence on which the grant was based.
-func (grant DirectGrant) Reference() (DocumentReference, error) {
+func (grant AuthorizationGrant) Reference() (DocumentReference, error) {
 	if !grant.Valid() {
-		return DocumentReference{}, errors.New("aauth: R3 direct grant is invalid")
+		return DocumentReference{}, errors.New("aauth: R3 authorization grant is invalid")
 	}
 	return grant.reference, nil
 }
@@ -176,10 +212,11 @@ func MintResourceToken(key jose.SigningKey, claims aauth.ResourceTokenClaims, re
 	})
 }
 
-// MintAuthToken validates the Core claims and carries one exact direct grant.
-func MintAuthToken(key jose.SigningKey, claims aauth.AuthTokenClaims, grant DirectGrant) (string, error) {
+// MintAuthToken validates the Core claims and carries one exact R3 policy
+// partition.
+func MintAuthToken(key jose.SigningKey, claims aauth.AuthTokenClaims, grant AuthorizationGrant) (string, error) {
 	if !grant.Valid() {
-		return "", errors.New("aauth: R3 direct grant is invalid")
+		return "", errors.New("aauth: R3 authorization grant is invalid")
 	}
 	base, err := aauth.MintAuthToken(key, claims)
 	if err != nil {
@@ -190,16 +227,25 @@ func MintAuthToken(key jose.SigningKey, claims aauth.AuthTokenClaims, grant Dire
 	if err != nil {
 		return "", err
 	}
-	return extendToken(key, base, map[string]json.RawMessage{
+	members := map[string]json.RawMessage{
 		"r3_uri":     mustJSON(grant.reference.uri),
 		"r3_s256":    mustJSON(grant.reference.digest),
 		"r3_granted": grantedJSON,
-	})
+	}
+	if perCall, present := grant.PerCall(); present {
+		perCallJSON, err := json.Marshal(perCall)
+		if err != nil {
+			return "", err
+		}
+		members["r3_per_call"] = perCallJSON
+	}
+	return extendToken(key, base, members)
 }
 
-// ValidateDirectGrant binds an auth-token grant to the preceding resource
-// token and the exact operation set the agent requested.
-func ValidateDirectGrant(resource TokenResult, auth TokenResult, requested OperationSet) error {
+// ValidateAuthorizationGrant binds an auth-token policy partition to the
+// preceding resource token and refuses any operation outside the exact set the
+// agent requested.
+func ValidateAuthorizationGrant(resource TokenResult, auth TokenResult, requested OperationSet) error {
 	if !resource.Valid() || !auth.Valid() {
 		return errors.New("aauth: R3 token result is invalid")
 	}
@@ -213,8 +259,10 @@ func ValidateDirectGrant(resource TokenResult, auth TokenResult, requested Opera
 	if !present || granted.Vocabulary != requested.Vocabulary || !requested.ContainsSet(granted) {
 		return errors.New("aauth: R3 auth token grants an operation outside the agent request")
 	}
-	if _, perCall := auth.PerCall(); perCall {
-		return errors.New("aauth: R3 auth token is not a direct-only grant")
+	if perCall, present := auth.PerCall(); present {
+		if perCall.Vocabulary != requested.Vocabulary || !requested.ContainsSet(perCall) {
+			return errors.New("aauth: R3 auth token marks an operation outside the agent request as per-call")
+		}
 	}
 	return nil
 }
@@ -284,15 +332,15 @@ func (reference DocumentReference) sealValue() [sha256.Size]byte {
 	return sha256.Sum256(material)
 }
 
-func (grant DirectGrant) sealValue() [sha256.Size]byte {
-	if !grant.reference.Valid() || grant.granted.Validate() != nil {
+func (grant AuthorizationGrant) sealValue() [sha256.Size]byte {
+	if !grant.reference.Valid() || grant.decision.Granted.Validate() != nil {
 		return [sha256.Size]byte{}
 	}
 	material, err := json.Marshal(struct {
-		Domain    string       `json:"domain"`
-		Reference string       `json:"reference"`
-		Granted   OperationSet `json:"granted"`
-	}{"gitlab.com/sidecat-dev/aauth-go/r3-direct-grant/v1", grant.reference.digest, grant.granted})
+		Domain    string                `json:"domain"`
+		Reference string                `json:"reference"`
+		Decision  AuthorizationDecision `json:"decision"`
+	}{"gitlab.com/sidecat-dev/aauth-go/r3-authorization-grant/v1", grant.reference.digest, grant.decision})
 	if err != nil {
 		return [sha256.Size]byte{}
 	}

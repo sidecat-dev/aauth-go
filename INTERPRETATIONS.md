@@ -119,7 +119,7 @@ branches are removed. Old wire forms may remain only as raw rejection vectors.
 
 ## AAG-I004 — Current R3 proposal retrieval must admit both the PS and AS
 
-**Status:** adopted; direct-document retrieval implemented, per-call pending
+**Status:** adopted; direct and `401` per-call retrieval implemented
 
 **Source:** R3, `Per-Call Proposals`, `R3 Document`, and `R3 Processing` at the
 current AAuth revision above.
@@ -127,11 +127,10 @@ current AAuth revision above.
 **Question:** May a resource expose an exact proposal only to its access server,
 leaving the person server unable to retrieve it?
 
-**Chosen behavior:** A direct R3 resource retains the exact PS and AS reader
-identities with the document before releasing the resource token. Both roles
-fetch it independently with authenticated server requests and bind the exact
-bytes to Core token evidence. Per-call proposal retrieval must use the same
-two-reader rule before that path can make a conformance claim.
+**Chosen behavior:** An R3 resource retains the exact PS and AS reader
+identities with every initial document and per-call proposal before releasing
+the resource token. Both roles fetch independently with authenticated server
+requests and bind the exact bytes to Core token evidence.
 
 **Alternative considered:** Preserve the earlier AS-only endpoint rule because
 an older draft combined PS display language with AS-only retrieval text. The
@@ -143,13 +142,12 @@ retrieval contract.
 
 **Evidence:**
 
-- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart`
 
-**Current-product effect:** One immediate four-party direct path is callable and
-partially claimed. Per-call proposal custody, deferred R3, three-party R3,
-caching, and broader R3 topologies remain explicit gaps; direct-document and
-direct audit proof do not imply those paths.
+**Current-product effect:** One immediate four-party direct and `401` per-call
+path is callable and partially claimed. Deferred `202` R3, three-party R3,
+caching, and broader R3 topologies remain explicit gaps.
 
 ## AAG-I005 — Person-token policy denial is an explicit extension
 
@@ -255,10 +253,48 @@ prevents ordinary endpoints from silently treating the token as scope-only.
 - `reference/resource_token_preflight_replay_test.go:TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay`
 - `reference/resource_token_preflight_replay_test.go:TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay`
 
-**Current-product effect:** Callable R3 authorization and Budgets remain
-unclaimed. R3 token-member validation is now implemented as a side-effect-free
-companion result; defined claims still cannot be downgraded into the current
-Core scope-only path.
+**Current-product effect:** R3 outside the bounded four-party direct and `401`
+per-call profile, and all Budgets behavior, remain unclaimed. R3 token-member
+validation is a side-effect-free companion result; defined claims still cannot
+be downgraded into the Core scope-only path.
+
+## AAG-I008 — A per-call challenge resolves one retained person-token lineage
+
+**Status:** adopted pending editor clarification
+
+**Source:** AAuth Protocol, `Resource Token Structure` and `Resource Token
+Verification`; R3, `Per-Call Proposals / Flow`.
+
+**Question:** When a per-call request presents an auth token that does not carry
+`presented_jti`, which earlier resource-token record supplies the person-token
+JTI required in the new challenge token?
+
+**Chosen behavior:** Before releasing any R3 resource token, retain its exact
+compact value and person-token JTI under a lineage derived from the context
+shared with the later auth token. At per-call time, resolve the latest active
+generation no later than the auth token's trusted issuance instant. Repeated
+issuance for the same person-token JTI and requested scope within one clock
+second returns the retained token. Distinct person-token JTIs or resource-token
+scopes at the same generation remain distinct and make later resolution fail
+closed as ambiguous.
+
+**Alternative considered:** Select any retained token whose visible claims
+match. That loses the exact person-token binding the current protocol uses to
+detect mission substitution when several person tokens share the same subject
+and proof key.
+
+**Why:** The auth token deliberately omits both `presented_jti` and its source
+resource-token identifier. The resource still must reproduce the earlier JTI;
+an explicit retained lineage makes that recovery deterministic and fail-closed.
+
+**Evidence:**
+
+- `reference/r3_resource_token_store_test.go:TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage`
+- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+
+**Current-product effect:** The `401` per-call profile requires a durable
+`R3ResourceTokenStore`. A missing, expired, substituted, or ambiguous lineage
+is rejected before a proposal or provider consequence.
 
 ## Adding or changing an interpretation
 

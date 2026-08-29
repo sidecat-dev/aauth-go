@@ -24,7 +24,7 @@ import (
 
 // R3 sections Resource Token Extensions, R3 Processing, Auth Token
 // Extensions, Resource Enforcement, and R3 Document Access Restriction.
-func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
+func TestCurrentFourPartyR3JourneySurvivesReconstruction(t *testing.T) {
 	now := time.Date(2026, 8, 29, 8, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	apKey := testSigningKey(t, "ap-key")
@@ -74,10 +74,10 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 		return nil
 	}
 
-	documentBytes := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"list_records"}],"display":{"summary":"Use the selected records"}}`)
+	documentBytes := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"list_records"},{"tool":"delete_record"}],"display":{"summary":"Use the selected records"}}`)
 	requested := r3.OperationSet{
 		Vocabulary: r3.VocabularyMCP,
-		Operations: []json.RawMessage{json.RawMessage(`{"tool":"list_records"}`)},
+		Operations: []json.RawMessage{json.RawMessage(`{"tool":"list_records"}`), json.RawMessage(`{"tool":"delete_record"}`)},
 	}
 	personReviews := 0
 	denyReview := false
@@ -111,8 +111,23 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 		R3Admit:      admitR3,
 		R3Review: func(_ context.Context, request aauth.AuthorizationRequest, document r3.DocumentReference) error {
 			personReviews++
-			if request.Resource != "https://resource.example" || !document.Valid() || document.Digest() != r3.S256(documentBytes) {
+			if request.Resource != "https://resource.example" || !document.Valid() {
 				return errors.New("unexpected R3 review context")
+			}
+			parsed, parseErr := document.Document()
+			if parseErr != nil || parsed.Vocabulary != r3.VocabularyMCP {
+				return errors.New("unexpected R3 review document")
+			}
+			parsedOperations := r3.OperationSet{Vocabulary: parsed.Vocabulary, Operations: parsed.Operations}
+			initial := document.Digest() == r3.S256(documentBytes) && parsedOperations.Equal(requested)
+			proposal, proposalErr := r3.ParsePerCallProposal(document.ExactBytes())
+			proposalOperation, operationErr := proposal.Operation()
+			perCall := proposalErr == nil && operationErr == nil && proposalOperation.Equal(r3.OperationSet{
+				Vocabulary: r3.VocabularyMCP,
+				Operations: []json.RawMessage{json.RawMessage(`{"tool":"delete_record"}`)},
+			})
+			if !initial && !perCall {
+				return errors.New("unexpected R3 review document")
 			}
 			if denyReview {
 				return errors.New("person denied")
@@ -157,16 +172,28 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 			R3HTTPClient:    protocolClient,
 			R3Admit:         admitR3,
 			R3IssuanceStore: issuanceStore,
-			R3GrantPolicy: func(_ context.Context, _ aauth.AuthorizationRequest, document r3.DocumentReference) (r3.OperationSet, error) {
+			R3AuthorizationPolicy: func(_ context.Context, _ aauth.AuthorizationRequest, document r3.DocumentReference) (r3.AuthorizationDecision, error) {
 				accessPolicies++
 				parsed, err := document.Document()
 				if err != nil {
-					return r3.OperationSet{}, err
+					return r3.AuthorizationDecision{}, err
 				}
-				return r3.OperationSet{
+				deleteOperation := r3.OperationSet{
+					Vocabulary: parsed.Vocabulary,
+					Operations: []json.RawMessage{json.RawMessage(`{"tool":"delete_record"}`)},
+				}
+				parsedOperations := r3.OperationSet{Vocabulary: parsed.Vocabulary, Operations: parsed.Operations}
+				if parsedOperations.Equal(deleteOperation) {
+					return r3.AuthorizationDecision{Granted: deleteOperation}, nil
+				}
+				perCall := r3.OperationSet{
+					Vocabulary: parsed.Vocabulary,
+					Operations: []json.RawMessage{json.RawMessage(`{"tool":"delete_record"}`)},
+				}
+				return r3.AuthorizationDecision{Granted: r3.OperationSet{
 					Vocabulary: parsed.Vocabulary,
 					Operations: []json.RawMessage{json.RawMessage(`{"tool":"list_records"}`)},
-				}, nil
+				}, PerCall: &perCall}, nil
 			},
 		})
 		if serverErr != nil {
@@ -184,13 +211,27 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 		Directory: documentDirectory, Clock: clock,
 		MaxDocuments: 4, MaxBytes: 1 << 20, MaxDocumentBytes: 1 << 18,
 	}
+	resourceTokenPath := filepath.Join(t.TempDir(), "r3-resource-tokens.json")
+	perCallPath := filepath.Join(t.TempDir(), "r3-per-call.json")
 	replayStore, err := reference.NewMemoryProofReplayStore(clock, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
 	operationCalls := 0
+	perCallCalls := 0
+	blockPerCall := false
+	perCallStarted := make(chan struct{}, 1)
+	perCallContinue := make(chan struct{})
 	newResource := func() *reference.Resource {
 		documents, openErr := reference.OpenFileR3DocumentStore(documentConfig)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		resourceTokens, openErr := reference.NewFileR3ResourceTokenStore(resourceTokenPath)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		perCallStore, openErr := reference.NewFileR3PerCallStore(perCallPath)
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
@@ -205,8 +246,10 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 			ReplayStore:                  replayStore,
 			ProtectedAuthorizationPolicy: func(context.Context, aauth.AuthorizedRequest) error { return nil },
 			R3: &reference.ResourceR3Config{
-				Vocabularies:  map[string]json.RawMessage{r3.VocabularyMCP: json.RawMessage(`"https://resource.example/mcp"`)},
-				DocumentStore: documents,
+				Vocabularies:       map[string]json.RawMessage{r3.VocabularyMCP: json.RawMessage(`"https://resource.example/mcp"`)},
+				DocumentStore:      documents,
+				ResourceTokenStore: resourceTokens,
+				PerCallStore:       perCallStore,
 				DocumentForOperations: func(_ context.Context, operations r3.OperationSet) ([]byte, error) {
 					if !operations.Equal(requested) {
 						return nil, errors.New("unexpected operation request")
@@ -219,6 +262,35 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 						tool = "delete_record"
 					}
 					return r3.OperationSet{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(`{"tool":"` + tool + `"}`)}}, nil
+				},
+				ProposalForRequest: func(_ context.Context, request *http.Request, body []byte) ([]byte, error) {
+					if request.Method != http.MethodDelete || request.URL.Path != "/records/delete" {
+						return nil, errors.New("unexpected per-call request")
+					}
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(body, &fields); err != nil || fields["record"] == nil || fields["note"] == nil {
+						return nil, errors.New("invalid delete parameters")
+					}
+					return []byte(fmt.Sprintf(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"delete_record"}],"parameters":{"note":{"s256":%q,"excerpt":"private note","media_type":"application/json"},"record":%s},"display":{"summary":"Delete one record","detail":"## Action\nDelete the selected record"}}`, r3.S256(fields["note"]), fields["record"])), nil
+				},
+				ParametersForRequest: func(_ context.Context, _ *http.Request, body []byte) (r3.PresentedParameters, error) {
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(body, &fields); err != nil || fields["record"] == nil || fields["note"] == nil {
+						return nil, errors.New("invalid delete parameters")
+					}
+					return r3.PresentedParameters{"record": r3.PresentedJSON(fields["record"]), "note": r3.PresentedBytes(fields["note"])}, nil
+				},
+				PerCallOperation: func(_ context.Context, request aauth.AuthorizedRequest, _ string) (any, error) {
+					perCallCalls++
+					if blockPerCall {
+						perCallStarted <- struct{}{}
+						<-perCallContinue
+					}
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(request.Body, &fields); err != nil {
+						return nil, err
+					}
+					return map[string]json.RawMessage{"deleted": fields["record"]}, nil
 				},
 			},
 			Operation: func(context.Context, aauth.AuthorizedRequest) (any, error) {
@@ -272,8 +344,9 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 		}),
 	})
 	defer gateway.Close()
+	dropResourceResponse := false
 	protocolClient.Transport = &r3LostResponseTransport{
-		base: gateway.Client().Transport, drop: &dropAccessResponse,
+		base: gateway.Client().Transport, dropAccess: &dropAccessResponse, dropResource: &dropResourceResponse,
 	}
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
@@ -381,10 +454,14 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 	denyFreshAccessTrust = true
 	grant, err := agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", resourceGrant)
 	if err != nil || grant.R3 == nil || !grant.R3.Valid() {
-		t.Fatalf("direct R3 grant = %#v, %v", grant.R3, err)
+		t.Fatalf("initial R3 grant = %#v, %v", grant.R3, err)
 	}
 	if grant.AuthToken != retained.AuthToken {
 		t.Fatal("R3 retry after AS reconstruction returned a different auth token")
+	}
+	perCall, present := grant.R3.PerCall()
+	if !present || !perCall.Contains(json.RawMessage(`{"tool":"delete_record"}`)) {
+		t.Fatalf("R3 per-call partition = %#v, %t", perCall, present)
 	}
 	if accessTrustCalls != trustCallsBeforeRecovery {
 		t.Fatal("R3 recovery reran access-server trust policy")
@@ -392,6 +469,7 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 	if personReviews != 3 || accessPolicies != 1 || r3Fetches != 6 || authIDCalls != 1 {
 		t.Fatalf("review/policy/fetch/id counts = %d/%d/%d/%d", personReviews, accessPolicies, r3Fetches, authIDCalls)
 	}
+	denyFreshAccessTrust = false
 
 	response, err := agent.DoAuthorized(context.Background(), http.MethodGet, "https://resource.example/records", grant)
 	if err != nil {
@@ -401,32 +479,84 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 	if response.StatusCode != http.StatusOK || operationCalls != 1 {
 		t.Fatalf("granted operation = %d, calls %d", response.StatusCode, operationCalls)
 	}
-	response, err = agent.DoAuthorized(context.Background(), http.MethodDelete, "https://resource.example/records/delete", grant)
+	call := reference.AuthorizedCall{Method: http.MethodDelete, Endpoint: "https://resource.example/records/delete", Body: []byte(`{"record":{"z":1,"a":2},"note":"private note bytes"}`), ContentType: "application/json"}
+	challenge, err := agent.RequestR3PerCall(context.Background(), call, grant, perCall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perCallGrant, err := agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := call
+	changed.Body = []byte(`{"record":{"a":2,"z":1},"note":"changed note bytes"}`)
+	response, err = agent.DoAuthorizedRequest(context.Background(), changed, perCallGrant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	problem, problemErr := aauth.DecodeProblemResponse(response)
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || problemErr != nil || problem.Code != "r3_per_call_parameters_mismatch" || perCallCalls != 0 {
+		t.Fatalf("changed retry = %d %#v %v calls=%d", response.StatusCode, problem, problemErr, perCallCalls)
+	}
+	equivalent := call
+	equivalent.Body = []byte(`{"record":{"a":2,"z":1},"note":"private note bytes"}`)
+	blockPerCall = true
+	dropResourceResponse = true
+	lostResult := make(chan error, 1)
+	go func() {
+		_, requestErr := agent.DoAuthorizedRequest(context.Background(), equivalent, perCallGrant)
+		lostResult <- requestErr
+	}()
+	<-perCallStarted
+	response, err = agent.DoAuthorizedRequest(context.Background(), equivalent, perCallGrant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	problem, problemErr = aauth.DecodeProblemResponse(response)
+	response.Body.Close()
+	if response.StatusCode != http.StatusConflict || problemErr != nil || problem.Code != "r3_per_call_in_progress" || perCallCalls != 1 {
+		t.Fatalf("concurrent retry = %d %#v %v calls=%d", response.StatusCode, problem, problemErr, perCallCalls)
+	}
+	close(perCallContinue)
+	if err := <-lostResult; !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("lost per-call result = %v", err)
+	}
+	resource = newResource()
+	resourceHandler = resource.Handler()
+	response, err = agent.DoAuthorizedRequest(context.Background(), equivalent, perCallGrant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusForbidden || operationCalls != 1 {
-		t.Fatalf("ungranted operation = %d, calls %d", response.StatusCode, operationCalls)
-	}
-	problem, err := aauth.DecodeProblemResponse(response)
-	if err != nil || problem.Code != "r3_operation_not_granted" {
-		t.Fatalf("ungranted problem = %#v, %v", problem, err)
+	var completed map[string]json.RawMessage
+	if err := json.NewDecoder(response.Body).Decode(&completed); err != nil || string(completed["deleted"]) != `{"a":2,"z":1}` || perCallCalls != 1 {
+		t.Fatalf("retained per-call result = %#v, %v calls=%d", completed, err, perCallCalls)
 	}
 }
 
 type r3LostResponseTransport struct {
-	base http.RoundTripper
-	drop *bool
+	base         http.RoundTripper
+	dropAccess   *bool
+	dropResource *bool
 }
 
 func (transport *r3LostResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := transport.base.RoundTrip(request)
-	if err != nil || transport.drop == nil || !*transport.drop ||
-		request.URL.Host != "as.example" || request.URL.Path != "/token" {
+	if err != nil {
 		return response, err
 	}
-	*transport.drop = false
+	drop := transport.dropAccess != nil && *transport.dropAccess && request.URL.Host == "as.example" && request.URL.Path == "/token"
+	if transport.dropResource != nil && *transport.dropResource && request.URL.Host == "resource.example" && request.URL.Path == "/records/delete" && response.StatusCode == http.StatusOK {
+		drop = true
+		*transport.dropResource = false
+	}
+	if !drop {
+		return response, err
+	}
+	if transport.dropAccess != nil && request.URL.Host == "as.example" {
+		*transport.dropAccess = false
+	}
 	_, _ = io.Copy(io.Discard, response.Body)
 	_ = response.Body.Close()
 	return nil, io.ErrUnexpectedEOF

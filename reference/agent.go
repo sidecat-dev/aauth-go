@@ -1784,8 +1784,9 @@ func (agent *Agent) AuthorizeWithPersonToken(
 	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
 }
 
-// AuthorizeR3WithPersonToken performs one immediate four-party direct R3
-// authorization journey. Deferred and per-call R3 are separate flows.
+// AuthorizeR3WithPersonToken performs one immediate four-party initial R3
+// authorization journey. Deferred and concrete per-call execution are separate
+// flows.
 func (agent *Agent) AuthorizeR3WithPersonToken(
 	ctx context.Context,
 	resourceEndpoint string,
@@ -1841,7 +1842,7 @@ func (agent *Agent) RequestResourceTokenWithPersonToken(
 	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, nil)
 }
 
-// RequestR3ResourceTokenWithPersonToken requests one exact direct R3 operation
+// RequestR3ResourceTokenWithPersonToken requests one exact R3 operation
 // set and retains that request beside the returned resource token.
 func (agent *Agent) RequestR3ResourceTokenWithPersonToken(
 	ctx context.Context,
@@ -1862,6 +1863,76 @@ func (agent *Agent) RequestR3ResourceTokenWithPersonToken(
 		return ResourceGrant{}, err
 	}
 	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, &requested)
+}
+
+// RequestR3PerCall presents one operation that the current auth token marks as
+// per-call and validates the resource's step-up challenge. The returned
+// ResourceGrant can be exchanged through the ordinary person-server token
+// path; the resulting auth token applies only to the supplied operation.
+func (agent *Agent) RequestR3PerCall(
+	ctx context.Context,
+	call AuthorizedCall,
+	grant Grant,
+	operation r3.OperationSet,
+) (ResourceGrant, error) {
+	if err := operation.Validate(); err != nil || len(operation.Operations) != 1 {
+		return ResourceGrant{}, errors.New("reference: R3 per-call request requires exactly one valid operation")
+	}
+	if grant.R3 == nil || !grant.R3.Valid() {
+		return ResourceGrant{}, errors.New("reference: R3 per-call request requires a current R3 grant")
+	}
+	perCall, present := grant.R3.PerCall()
+	if !present || !perCall.ContainsSet(operation) {
+		return ResourceGrant{}, errors.New("reference: current R3 grant does not mark this operation as per-call")
+	}
+	response, err := agent.DoAuthorizedRequest(ctx, call, grant)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		return ResourceGrant{}, responseError(response)
+	}
+	requirement, err := aauth.ParseRequirementHeader(response.Header.Get("AAuth-Requirement"))
+	if err != nil || requirement.Type != aauth.RequirementAuthToken {
+		return ResourceGrant{}, errors.New("reference: R3 per-call response is not an auth-token challenge")
+	}
+	evidence, err := aauth.VerifyResourceToken(ctx, requirement.ResourceToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	proposalR3, err := r3.ValidateResourceToken(evidence)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	claims, err := evidence.Claims()
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	resource, err := endpointIdentifier(call.Endpoint)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	if claims.Issuer != resource || claims.Audience != grant.Claims.Issuer ||
+		claims.PersonServer != grant.Claims.PersonServer || claims.Subject != grant.Claims.Subject ||
+		claims.AgentJKT != thumbprint || claims.Scope != grant.Claims.Scope ||
+		claims.MissionS256 != grant.Claims.MissionS256 || claims.Tenant != grant.Claims.Tenant ||
+		claims.Account != grant.Claims.Account || claims.Agent != "" {
+		return ResourceGrant{}, errors.New("reference: R3 per-call challenge changed the current authorization context")
+	}
+	origin, err := endpointIdentifier(proposalR3.URI())
+	if err != nil || origin != resource {
+		return ResourceGrant{}, errors.New("reference: R3 per-call proposal is outside the resource")
+	}
+	requested := operation.Clone()
+	return ResourceGrant{
+		Resource: resource, ResourceToken: requirement.ResourceToken,
+		Claims: claims, RequestedR3: &requested,
+	}, nil
 }
 
 func (agent *Agent) requestCurrentResourceToken(
@@ -2324,7 +2395,7 @@ func (agent *Agent) requestTokenAuthorization(
 		return authorization, nil
 	case http.StatusAccepted:
 		if resourceGrant.RequestedR3 != nil {
-			return authorization, errors.New("reference: deferred direct R3 authorization is not implemented")
+			return authorization, errors.New("reference: deferred R3 authorization is not implemented")
 		}
 		deferred, err := aauth.ParseDeferredResponse(tokenResponse)
 		if err != nil {
@@ -2570,7 +2641,7 @@ func (agent *Agent) parseTokenGrantResponse(
 		if resourceErr != nil {
 			return Grant{}, jose.JWK{}, resourceErr
 		}
-		if resourceErr := r3.ValidateDirectGrant(resourceR3, authR3, resourceGrant.RequestedR3.Clone()); resourceErr != nil {
+		if resourceErr := r3.ValidateAuthorizationGrant(resourceR3, authR3, resourceGrant.RequestedR3.Clone()); resourceErr != nil {
 			return Grant{}, jose.JWK{}, resourceErr
 		}
 	}

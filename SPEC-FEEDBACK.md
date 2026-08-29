@@ -126,14 +126,50 @@ that does not perform that client-side check.
 
 **Evidence:**
 
-- `reference/r3_direct_test.go:TestDirectR3DocumentSelectionIsExactlyTheAgentRequest`
-- `r3/token_external_test.go:TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest`
-- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+- `reference/r3_direct_test.go:TestR3DocumentSelectionIsExactlyTheAgentRequest`
+- `r3/token_external_test.go:TestR3AuthorizationGrantPartitionsTheExactAgentRequest`
+- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
 
-**Suggested disposition:** State that a selected/composed direct R3 document
+**Suggested disposition:** State that a selected/composed initial R3 document
 contains exactly the requested operation set, or add an integrity-bound
 requested-operation set that the AS must use to bound `r3_granted` and
 `r3_per_call`.
+
+### AAG-F015 — A per-call auth token does not identify the resource-token record that supplies `presented_jti`
+
+**Status:** ready / unsubmitted
+
+**Source:** current Protocol `Resource Token Structure`, `Resource Token
+Verification`, and `Why presented_jti exists`; current R3 `Per-Call Proposals /
+Flow` at AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5`.
+
+**Question:** How must a resource select the earlier person-token record when a
+per-call request presents an auth token? The new resource token must carry the
+earlier `presented_jti`, but the auth token carries neither that claim nor the
+identifier of the resource token from which it was issued.
+
+**Why this is ambiguous:** A resource can retain several active resource tokens
+with the same access server, person server, subject, proof key, scope, mission,
+tenant, account, and R3 document. Those are all the relevant values available
+from the later auth token. Claim equality therefore need not identify one
+person-token JTI.
+
+**Observed implementation effect:** The reference resource retains each exact
+R3 resource token and resolves the latest active generation no later than the
+auth token's trusted issuance instant. It converges only repeated issuance for
+the same person-token JTI and requested scope; different bindings in the same
+otherwise indistinguishable generation make per-call resolution fail closed.
+This is deterministic, but it is an implementation choice rather than a rule
+stated by the draft.
+
+**Evidence:**
+
+- `reference/r3_resource_token_store_test.go:TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage`
+- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+
+**Suggested disposition:** Bind the auth token to the resource-token JTI whose
+authorization it represents, or define the exact resource-side lineage rule
+that recovers `presented_jti` during step-up and per-call challenges.
 
 ## New, evidence pending
 

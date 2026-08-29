@@ -741,7 +741,7 @@
       "source": "r3",
       "section": "auth-token-extensions",
       "status": "partial",
-      "claim": "R3 validation binds r3_uri, r3_s256, r3_granted, and optional r3_per_call to exact Core auth-token evidence; it validates one shared vocabulary, semantic operation shapes, and disjoint granted and per-call sets. One direct resource-enforcement path is claimed separately; per-call execution remains unclaimed.",
+      "claim": "R3 validation binds r3_uri, r3_s256, r3_granted, and optional r3_per_call to exact Core auth-token evidence; it validates one shared vocabulary, semantic operation shapes, and disjoint granted and per-call sets. One bounded direct and 401 per-call resource-enforcement path is claimed separately.",
       "evidence": [
         {
           "file": "r3/token_external_test.go",
@@ -761,15 +761,15 @@
       "source": "r3",
       "section": "authorization-endpoint-extensions/request",
       "status": "partial",
-      "claim": "The reference agent submits one validated r3_operations set with the current authorization request. The direct profile requires the resource-selected document to contain exactly that set; account selection and multiple-definition composition are not exercised.",
+      "claim": "The reference agent submits one validated r3_operations set with the current authorization request. The four-party profile requires the resource-selected document to contain exactly that set; account selection and multiple-definition composition are not exercised.",
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         },
         {
           "file": "reference/r3_direct_test.go",
-          "test": "TestDirectR3DocumentSelectionIsExactlyTheAgentRequest"
+          "test": "TestR3DocumentSelectionIsExactlyTheAgentRequest"
         }
       ]
     },
@@ -781,7 +781,7 @@
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         }
       ]
     },
@@ -793,7 +793,7 @@
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         }
       ]
     },
@@ -805,7 +805,7 @@
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         }
       ]
     },
@@ -813,11 +813,59 @@
       "source": "r3",
       "section": "resource-enforcement",
       "status": "partial",
-      "claim": "A configured direct-R3 resource maps each protected request to exactly one operation, requires it in r3_granted, and refuses ungranted or per-call operations before proof consumption or host consequence. Per-call proposal and retained-result enforcement remain unclaimed.",
+      "claim": "A configured R3 resource maps each protected request to exactly one operation. It serves r3_granted directly, challenges r3_per_call before consequence, and refuses ungranted operations. The bounded 401 per-call path verifies exact approved parameters, executes once, and replays its retained result; deferred 202 delivery remains unclaimed.",
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "per-call-proposals/proposal-document",
+      "status": "partial",
+      "claim": "The public R3 package validates one-operation per-call proposals with a required parameters object. Inline JSON values compare structurally; digest objects require an unpadded SHA-256 value and admit an optional excerpt and valid media type. Broader vocabulary-specific parameter projection remains deployment-owned.",
+      "evidence": [
+        {
+          "file": "r3/per_call_external_test.go",
+          "test": "TestPerCallProposalMatchesInlineAndDigestParameters"
+        },
+        {
+          "file": "r3/per_call_external_test.go",
+          "test": "TestPerCallProposalRejectsAmbiguousParameterForms"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "per-call-proposals/flow",
+      "status": "partial",
+      "claim": "One immediate four-party 401 flow retains the exact proposal for PS and AS retrieval, issues an exact one-operation approval, verifies the retried parameters, admits only one in-process provider call, retains its JSON result before response, and recovers the result after loss and resource reconstruction. Deferred 202 delivery remains unclaimed.",
+      "evidence": [
+        {
+          "file": "r3_direct_journey_test.go",
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
+        },
+        {
+          "file": "reference/r3_per_call_store_test.go",
+          "test": "TestFileR3PerCallStoreRecoversPendingAndCompleteExecution"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "per-call-proposals/large-and-sensitive-payloads",
+      "status": "partial",
+      "claim": "A proposal may replace one exact parameter value with an s256 digest plus bounded display metadata. The retry hashes the exact presented bytes and rejects substitution before provider execution. Deployment policy decides which fields remain inline and how excerpts are produced.",
+      "evidence": [
+        {
+          "file": "r3/per_call_external_test.go",
+          "test": "TestPerCallProposalMatchesInlineAndDigestParameters"
+        },
+        {
+          "file": "r3_direct_journey_test.go",
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         }
       ]
     },
@@ -825,7 +873,7 @@
       "source": "r3",
       "section": "r3-document-access-restriction",
       "status": "partial",
-      "claim": "Before releasing the resource token, the resource atomically retains the exact document bytes with the precise PS and AS reader identities. The reconstructed resource serves it only after a fresh verified jwks_uri request from a retained reader. Per-call proposal access remains unclaimed.",
+      "claim": "Before releasing an initial or per-call resource token, the resource atomically retains the exact document bytes with the precise PS and AS reader identities. The reconstructed resource serves them only after a fresh verified jwks_uri request from a retained reader. Three-party reader composition remains unclaimed.",
       "evidence": [
         {
           "file": "reference/r3_document_store_test.go",
@@ -833,7 +881,7 @@
         },
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         }
       ]
     },
@@ -841,15 +889,15 @@
       "source": "r3",
       "section": "security-considerations/hash-verification",
       "status": "exercised",
-      "claim": "Both direct-profile policy roles verify SHA-256 over the exact fetched bytes against r3_s256 and refuse changed bytes before review, grant issuance, or protected consequence.",
+      "claim": "Both four-party policy roles verify SHA-256 over the exact fetched bytes against r3_s256 and refuse changed bytes before review, grant issuance, or protected consequence.",
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         },
         {
           "file": "r3/token_external_test.go",
-          "test": "TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest"
+          "test": "TestR3AuthorizationGrantPartitionsTheExactAgentRequest"
         }
       ]
     },
@@ -857,15 +905,15 @@
       "source": "r3",
       "section": "security-considerations/grant-enforcement",
       "status": "partial",
-      "claim": "The direct profile validates that every AS grant belongs to the verified document, that every agent-accepted grant stays within the exact requested set, and that every served operation appears in r3_granted. r3_per_call is refused and remains unimplemented.",
+      "claim": "The four-party profile validates that every AS direct or per-call classification belongs to the verified document and stays within the agent's exact request. The resource serves direct operations, challenges per-call operations, and executes an approved concrete call once before replaying its retained result.",
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         },
         {
           "file": "r3/token_external_test.go",
-          "test": "TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest"
+          "test": "TestR3AuthorizationGrantPartitionsTheExactAgentRequest"
         }
       ]
     },
@@ -873,11 +921,11 @@
       "source": "r3",
       "section": "security-considerations/audit-log-integrity",
       "status": "exercised",
-      "claim": "For the direct profile, the AS atomically commits the exact auth-token response with r3_uri, r3_s256, PS, subject, agent key thumbprint, agent identity, resource and token identifiers, and issuance instant before release. Exact replay after a lost response and server reconstruction returns that record without policy re-execution; a conflicting record refuses.",
+      "claim": "For immediate four-party issuance, the AS atomically commits the exact auth-token response with r3_uri, r3_s256, PS, subject, agent key thumbprint, agent identity, resource and token identifiers, and issuance instant before release. Exact replay after a lost response and server reconstruction returns that record without policy re-execution; a conflicting record refuses.",
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
-          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
+          "test": "TestCurrentFourPartyR3JourneySurvivesReconstruction"
         }
       ]
     },

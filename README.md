@@ -38,8 +38,8 @@ seven current standard vocabularies, third-party vocabulary admission, and
 content digests. It also validates the R3 members retained in exact Core token
 evidence and returns a sealed result bound to that evidence. These values do
 not themselves authorize an operation. The reference package composes the
-bounded direct journey: deployment-owned review and grant policy creates a
-sealed direct grant, while signed retrieval and resource enforcement remain
+bounded four-party journey: deployment-owned review and grant policy creates a
+sealed authorization partition, while signed retrieval and resource enforcement remain
 role-specific responsibilities.
 The `events` package owns exact AsyncAPI contract parsing and payload
 validation plus admitted resource-contract and agent-endpoint discovery. Event
@@ -163,21 +163,21 @@ Token JSON and reference endpoint request JSON reject exact duplicate member
 names and names that Go would case-fold onto the same struct field before
 decoding.
 
-One bounded immediate four-party R3 path is callable. The agent requests one
-operation set; the resource retains an exact document containing exactly that
-set and the precise PS/AS readers before releasing its token; the PS and AS
-fetch with signed server identities and independently verify the exact hash;
-deployment review and grant policies run over sealed document evidence; and the
-resource serves only an operation named in `r3_granted`. Resource
-reconstruction, changed bytes, review denial, and an ungranted operation are
-exercised end to end.
+One bounded immediate four-party R3 path is callable. The AS partitions one
+exact requested operation set into direct and per-call operations. Direct
+operations run under `r3_granted`. A `401` per-call operation produces an exact
+content-addressed proposal for one call, admits only the PS and AS as readers,
+and goes through both policies again. The retry must match inline JSON
+structurally and digest parameters byte-for-byte before a provider-keyed
+operation runs once. A dropped response, resource reconstruction, or exact
+retry returns the retained result; a concurrent retry cannot run the provider
+again.
 
-This is not complete R3 conformance. Deferred authorization, three-party R3,
-document caching, and per-call proposals and retained results remain open.
-Direct AS issuance retains the required audit fields and exact token response
-atomically before release; exact retry after a lost response or AS
-reconstruction returns that record without rerunning policy. Budgets remains
-entirely unclaimed. Core verification
+This is not complete R3 conformance. Deferred `202` per-call delivery,
+three-party R3, and document caching remain open. Direct and per-call AS
+issuance retains the required audit fields and exact token response atomically
+before release; exact retry after a lost response or AS reconstruction returns
+that record without rerunning policy. Budgets remains entirely unclaimed. Core verification
 retains structurally complete companion members only as exact evidence; an
 endpoint must return matching invalid-zero companion evidence or reject those
 members. Existing non-companion endpoints reject them, and the removed
@@ -493,13 +493,12 @@ protected-registration reconciliation remain unsupported. The provided memory
 and bounded single-writer file stores qualify replaceable host boundaries; they
 do not claim distributed, multi-writer, federated, or enterprise storage.
 
-Missionless direct-AS call chaining, resource-owned interaction chaining,
-interaction/payment relay and callbacks, question delivery,
-updated-request/cancel clarification actions, complete PS-and-AS R3 document
-retrieval, per-call proposal custody, grant enforcement, audit-atomic R3
-issuance, platform enrollment/attestation, x509, additional Signature-Key schemes, and
-broader challenge-selection behavior still require implementation and
-qualification. The Phase-1 `Accept-Signature-Alg` and
+Resource-owned interaction chaining, interaction/payment relay and callbacks,
+question delivery, updated-request/cancel clarification actions, deferred `202`
+and three-party R3, R3 caching and multiple-definition composition, platform
+enrollment/attestation, x509, additional Signature-Key schemes, and broader
+challenge-selection behavior still require implementation and qualification.
+The Phase-1 `Accept-Signature-Alg` and
 `Accept-Signature-Scheme` failure envelopes are implemented and qualified.
 Without a configured
 `GovernanceStore`, an embedded reference person server deliberately remains
