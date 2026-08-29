@@ -61,7 +61,7 @@ func TestCurrentAuthTokenStepUpRetriesTheExactCall(t *testing.T) {
 	accessPolicyCalls := 0
 	accessServer, err := reference.NewAccessServer(reference.AccessServerConfig{
 		Identifier: "https://as.example", SigningKey: asKey, KeyResolver: resolver,
-		Clock: clock, NewID: sequentialIDs("step-up-auth-token", "step-up-renewed-auth-token"),
+		Clock: clock, NewID: sequentialIDs("step-up-auth-token", "step-up-renewed-auth-token", "step-up-deferred-auth-token"),
 		AuthorizationStore: testAuthorizationStateStore(t),
 		TrustedPersonServer: func(_ context.Context, identifier string) error {
 			if identifier != "https://ps.example" {
@@ -131,8 +131,40 @@ func TestCurrentAuthTokenStepUpRetriesTheExactCall(t *testing.T) {
 
 	var stepUpArmed bool
 	var stepUpToken string
+	var deferredStepUpArmed bool
+	var deferredStepUpToken string
+	var deferredOriginalMethod string
+	var deferredOriginalTarget string
+	var deferredOriginalBody []byte
+	var deferredCompletionMethod string
+	var deferredCompletionTarget string
+	var deferredCompletionBody []byte
+	var deferredCompletionAuthTokenID string
 	var presentedPerson aa.PersonTokenClaims
 	stepUpHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/step-up/deferred" {
+			deferredCompletionMethod = request.Method
+			deferredCompletionTarget = request.URL.RequestURI()
+			deferredCompletionBody, _ = io.ReadAll(request.Body)
+			credential := signatureKeyJWT(request.Header.Get("Signature-Key"))
+			parsed, parseErr := jose.ParseCompact(credential)
+			if parseErr != nil || parsed.Header().Type != aa.AuthTokenType {
+				t.Errorf("deferred completion credential = %q, parse error = %v", credential, parseErr)
+				response.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			var claims aa.AuthTokenClaims
+			if err := json.Unmarshal(parsed.Payload(), &claims); err != nil {
+				t.Errorf("deferred completion auth-token: %v", err)
+				response.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			deferredCompletionAuthTokenID = claims.JTI
+			response.Header().Set("Content-Type", "application/json")
+			response.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(response, `{"status":"deferred-complete"}`)
+			return
+		}
 		credential := signatureKeyJWT(request.Header.Get("Signature-Key"))
 		if request.URL.Path == "/records" && credential != "" {
 			parsed, parseErr := jose.ParseCompact(credential)
@@ -156,6 +188,27 @@ func TestCurrentAuthTokenStepUpRetriesTheExactCall(t *testing.T) {
 						response.Header().Set("AAuth-Requirement", requirement)
 						response.WriteHeader(http.StatusUnauthorized)
 						_, _ = io.WriteString(response, `{"error":"authorization_required"}`)
+						return
+					}
+					if deferredStepUpArmed {
+						deferredStepUpArmed = false
+						deferredOriginalMethod = request.Method
+						deferredOriginalTarget = request.URL.RequestURI()
+						deferredOriginalBody, _ = io.ReadAll(request.Body)
+						requirement, requirementErr := aa.FormatRequirementHeader(aa.Requirement{
+							Type: aa.RequirementAuthToken, ResourceToken: deferredStepUpToken,
+						})
+						if requirementErr != nil {
+							t.Errorf("format deferred step-up requirement: %v", requirementErr)
+							return
+						}
+						response.Header().Set("Location", "/step-up/deferred")
+						response.Header().Set("Retry-After", "0")
+						response.Header().Set("Cache-Control", "no-store")
+						response.Header().Set("AAuth-Requirement", requirement)
+						response.Header().Set("Content-Type", "application/json")
+						response.WriteHeader(http.StatusAccepted)
+						_, _ = io.WriteString(response, `{"status":"pending"}`)
 						return
 					}
 				}
@@ -248,5 +301,40 @@ func TestCurrentAuthTokenStepUpRetriesTheExactCall(t *testing.T) {
 	}
 	if operationAuthTokenIDs[2] != operationAuthTokenIDs[1] {
 		t.Fatalf("cached call used token %q after upgraded token %q", operationAuthTokenIDs[2], operationAuthTokenIDs[1])
+	}
+
+	deferredStepUpToken, err = aa.MintResourceToken(resourceKey, aa.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aa.ResourceDiscoveryDocument,
+		Audience: "https://as.example", JTI: "step-up-resource-token-deferred",
+		AgentJKT: thumbprint, IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		Scope: "records.read records.write", PersonServer: presentedPerson.Issuer,
+		Subject: presentedPerson.Subject, PresentedJTI: presentedPerson.JTI,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferredStepUpArmed = true
+
+	response.Body.Close()
+	response, err = agent.Do(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("deferred step-up completion status = %d, body = %s", response.StatusCode, body)
+	}
+	if operationCalls != 3 || personPolicyCalls != 3 || accessPolicyCalls != 3 {
+		t.Fatalf("deferred step-up operation/PS/AS calls = %d/%d/%d, want 3/3/3", operationCalls, personPolicyCalls, accessPolicyCalls)
+	}
+	if deferredOriginalMethod != call.Method || deferredOriginalTarget != "/records" || string(deferredOriginalBody) != string(call.Body) {
+		t.Fatalf("deferred original call changed: method=%q target=%q body=%q", deferredOriginalMethod, deferredOriginalTarget, deferredOriginalBody)
+	}
+	if deferredCompletionMethod != http.MethodGet || deferredCompletionTarget != "/step-up/deferred" || len(deferredCompletionBody) != 0 {
+		t.Fatalf("deferred completion call = method=%q target=%q body=%q", deferredCompletionMethod, deferredCompletionTarget, deferredCompletionBody)
+	}
+	if deferredCompletionAuthTokenID == "" || deferredCompletionAuthTokenID == operationAuthTokenIDs[2] {
+		t.Fatalf("deferred completion did not use a fresh upgraded auth token: %q vs %q", deferredCompletionAuthTokenID, operationAuthTokenIDs[2])
 	}
 }
