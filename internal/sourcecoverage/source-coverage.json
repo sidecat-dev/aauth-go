@@ -1666,10 +1666,22 @@
       "source": "budgets",
       "section": "usage-counters",
       "status": "partial",
-      "claim": "The reference resource atomically retains completed Budget consumption with person-server, subject, tenant, mission, and signing-key context; its signed POST usage_endpoint serves UTC day, week, month, year, and all_time counters and omits unknown scopes. Response signing and a client convenience wrapper remain unclaimed.",
+      "claim": "The reference resource atomically retains completed Budget consumption with person-server, subject, tenant, mission, and signing-key context; its signed POST usage_endpoint serves UTC day, week, month, year, and all_time counters and omits unknown scopes. Client convenience discovery and wrappers remain unclaimed.",
       "evidence": [
         {"file": "reference/budget_usage_test.go", "test": "TestFileBudgetStoreUsageAggregatesAndRecoversWithoutDoubleCounting"},
         {"file": "reference/budget_usage_test.go", "test": "TestFileBudgetStoreUsageRefusesMixedDenominations"},
+        {"file": "reference/budget_usage_test.go", "test": "TestResourceServesSignedBudgetUsageAndHidesUnknownScopes"},
+        {"file": "budget_journey_test.go", "test": "TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary"}
+      ]
+    },
+    {
+      "source": "budgets",
+      "section": "signed-response",
+      "status": "exercised",
+      "claim": "The reusable response-side HTTP Message Signature profile covers status, content type, content digest, and the requesting authority/path; a configured reference Resource signs its usage response, while a deliberately keyless reference remains unsigned as the profile permits.",
+      "evidence": [
+        {"file": "signaturekey/response_external_test.go", "test": "TestResponseProofBindsRequestAndExactRepresentation"},
+        {"file": "signaturekey/response_external_test.go", "test": "TestResponseProofRejectsNonExactComponentProfiles"},
         {"file": "reference/budget_usage_test.go", "test": "TestResourceServesSignedBudgetUsageAndHidesUnknownScopes"},
         {"file": "budget_journey_test.go", "test": "TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary"}
       ]

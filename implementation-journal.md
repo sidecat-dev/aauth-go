@@ -136,14 +136,15 @@ for this library.
   reference resource emits a sorted `budget_units` metadata array. When a
   resource configures declarations, every offer must use a declared unit and
   scale and stay within its optional maximum; nil declarations preserve the
-  prior unconfigured behavior. `usage_endpoint` and proactive client
-  discovery remain separate work.
+  prior unconfigured behavior. Usage endpoint serving and proactive client
+  discovery remain separate concerns.
 - The reference resource now optionally exposes a same-origin signed
   `usage_endpoint`. Completed metered results and their person-server, subject,
   tenant, mission, and signing-key context are retained atomically in the
   checksum-bound Budget store; UTC calendar and all-time queries survive
-  reopen, exact retry, and unknown-scope requests without disclosure. Response
-  signing and a client convenience wrapper remain unclaimed.
+  reopen, exact retry, and unknown-scope requests without disclosure. The
+  resource response can carry a request-bound HTTP Message Signature; a client
+  convenience wrapper remains unclaimed.
 - Metadata-driven proactive client discovery, streaming trailers, billing
   interaction, deferred Budget authorization, and broader deployment
   topologies remain unclaimed.

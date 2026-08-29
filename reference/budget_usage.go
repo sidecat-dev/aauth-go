@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -351,5 +353,49 @@ func (resource *Resource) handleBudgetUsage(response http.ResponseWriter, reques
 	if query.AgentJKT != nil {
 		payload["jkts"] = snapshot.ByKey
 	}
-	writeJSON(response, http.StatusOK, payload)
+	resource.writeBudgetUsageJSON(response, request, http.StatusOK, payload)
+}
+
+// writeBudgetUsageJSON writes one deterministic usage representation. A
+// normal configured Resource has a signing key, so its successful usage
+// response carries the response-side HTTP Message Signature. A deliberately
+// keyless Resource remains an unsigned reference deployment, as permitted by
+// the Budget profile's recommended response signing.
+func (resource *Resource) writeBudgetUsageJSON(response http.ResponseWriter, request *http.Request, status int, payload any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "usage_unavailable", err)
+		return
+	}
+	body = append(body, '\n')
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Cache-Control", "no-store")
+	if resource.hasSigningKey {
+		signed := &http.Response{
+			StatusCode: status,
+			Header:     headers,
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}
+		if err := signaturekey.SignResponse(signed, request, resource.signingKey, resource.identifier, aa.ResourceDiscoveryDocument, resource.clock); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "usage_unavailable", err)
+			return
+		}
+		body, err = io.ReadAll(signed.Body)
+		if closeErr := signed.Body.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "usage_unavailable", err)
+			return
+		}
+		headers = signed.Header
+	}
+	for name, values := range headers {
+		for _, value := range values {
+			response.Header().Add(name, value)
+		}
+	}
+	response.WriteHeader(status)
+	_, _ = response.Write(body)
 }

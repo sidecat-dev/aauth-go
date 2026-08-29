@@ -169,6 +169,7 @@ func TestResourceServesSignedBudgetUsageAndHidesUnknownScopes(t *testing.T) {
 	otherKey := referenceTestSigningKey(t, "other-ps")
 	resource := &Resource{
 		identifier: "https://resource.example", accessMode: aauth.AccessModeAuthToken,
+		signingKey: referenceTestSigningKey(t, "resource-response-key"), hasSigningKey: true,
 		keyResolver: signaturekey.StaticKeyResolver{
 			"https://ps.example":    {psKey.ID(): psKey.PublicJWK()},
 			"https://other.example": {otherKey.ID(): otherKey.PublicJWK()},
@@ -191,8 +192,16 @@ func TestResourceServesSignedBudgetUsageAndHidesUnknownScopes(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("usage status = %d: %s", response.Code, response.Body.String())
 	}
+	responseResult := response.Result()
+	preparedResponse, err := signaturekey.PrepareResponse(responseResult, request, clock, signaturekey.ResponseVerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifiedResponse, err := preparedResponse.Verify(resource.signingKey.PublicJWK()); err != nil || verifiedResponse.Signer() != resource.identifier {
+		t.Fatalf("usage response signature = %#v, %v", verifiedResponse, err)
+	}
 	var payload map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+	if err := json.NewDecoder(responseResult.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
 	usagePayload, ok := payload["usage"].(map[string]any)

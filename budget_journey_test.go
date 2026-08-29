@@ -336,6 +336,13 @@ func TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary(t *testing.T)
 		body, _ := io.ReadAll(io.LimitReader(usageResponse.Body, 8<<10))
 		t.Fatalf("usage status = %d: %s", usageResponse.StatusCode, body)
 	}
+	preparedUsageResponse, err := signaturekey.PrepareResponse(usageResponse, usageRequest, clock, signaturekey.ResponseVerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifiedUsageResponse, err := preparedUsageResponse.Verify(resourceKey.PublicJWK()); err != nil || verifiedUsageResponse.Signer() != "https://resource.example" {
+		t.Fatalf("usage response signature = %#v, %v", verifiedUsageResponse, err)
+	}
 	var usagePayload map[string]any
 	if err := json.NewDecoder(io.LimitReader(usageResponse.Body, 8<<10)).Decode(&usagePayload); err != nil {
 		t.Fatal(err)
