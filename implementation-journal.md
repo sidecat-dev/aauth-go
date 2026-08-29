@@ -147,8 +147,8 @@ for this library.
   runs once, only after both PS and AS policy. Substitution tests reject every
   person and request-context binding before the token exchange.
 - A configured Budget resource can place its default offer in this challenge.
-  Automatic person-token acquisition, R3 challenge selection, and step-up from
-  an existing auth token remain unclaimed.
+  R3 challenge selection and step-up from an existing auth token remain
+  unclaimed.
 
 ### Deferred protected-call delivery
 
@@ -207,6 +207,12 @@ for this library.
 - A PS-less agent surfaces an error after the resource requirement and before
   any person-server call. Other runtime requirements remain with their owning
   paths; this increment does not claim a universal requirement engine.
+- The same call surface now completes the immediate auth-token profile. After
+  the first retry receives `requirement=auth-token`, the agent verifies the
+  enclosed resource token, sends it to the discovered PS auth-token endpoint,
+  follows the existing PS/AS exchange, and retries the exact call under the
+  returned auth token. One journey observes both requirements in order and
+  proves PS policy, AS policy, and the host consequence each run once.
 
 ## 2026-08-28
 

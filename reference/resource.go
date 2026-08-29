@@ -2146,7 +2146,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	if resource.accessMode == aauth.AccessModeSessionToken {
 		allowedCredentialTypes = []string{aauth.AgentTokenType}
 	} else if resource.accessMode == aauth.AccessModeAuthToken {
-		allowedCredentialTypes = []string{aauth.AuthTokenType, aauth.PersonTokenType}
+		allowedCredentialTypes = []string{aauth.AuthTokenType, aauth.PersonTokenType, aauth.AgentTokenType}
 	} else if resource.accessMode == aauth.AccessModePersonToken {
 		allowedCredentialTypes = []string{aauth.PersonTokenType, aauth.AgentTokenType}
 	}
@@ -2172,7 +2172,8 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		writeSignatureFailure(response, err)
 		return
 	}
-	if verified.AgentToken != nil && resource.accessMode == aauth.AccessModePersonToken {
+	if verified.AgentToken != nil &&
+		(resource.accessMode == aauth.AccessModePersonToken || resource.accessMode == aauth.AccessModeAuthToken) {
 		writePersonTokenRequired(response, "protected operation requires a person token")
 		return
 	}

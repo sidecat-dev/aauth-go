@@ -514,7 +514,7 @@ Evidence:
 
 ### `core/requirement-auth-token` — Partial
 
-An auth-token resource accepts one person-token-signed protected call, maps its required scope, and performs no protected consequence before returning either the baseline 401 or stateful 202 with a verified resource token. The reference agent exchanges it through the ordinary PS and AS path and completes the exact invocation. Existing-auth-token step-up remains unclaimed.
+An auth-token resource accepts either a person-token-signed protected call or an agent-token-signed entry that first receives requirement=person-token. After the directed person token is presented, it maps the required scope and performs no protected consequence before returning either the baseline 401 or stateful 202 with a verified resource token. The reference agent exchanges it through the ordinary PS and AS path and completes the exact invocation. Existing-auth-token step-up remains unclaimed.
 
 Evidence:
 
@@ -523,11 +523,12 @@ Evidence:
 
 ### `core/requirement-person-token` — Exercised
 
-A person-token resource accepts an agent-token-signed call only far enough to return requirement=person-token without running policy or consequence. The reference agent verifies its own token, discovers the named person server's current person-token endpoint, obtains a resource-directed person token, and retries the exact call. An agent with no person server refuses before contacting one.
+A person-token or auth-token resource accepts an agent-token-signed call only far enough to return requirement=person-token without running policy or consequence. The reference agent verifies its own token, discovers the named person server's current endpoints, obtains a resource-directed person token, and retries the exact call. An agent with no person server refuses before contacting one.
 
 Evidence:
 
 - `person_token_access_journey_test.go:TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer`
+- `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
 
 ### `core/requirement-responses/aauth-requirement-header-structure` — Exercised
 

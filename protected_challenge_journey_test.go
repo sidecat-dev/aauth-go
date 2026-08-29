@@ -135,52 +135,47 @@ func TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	person, err := agent.RequestPersonToken(
-		context.Background(), "https://ps.example/person", "https://resource.example", nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	call := reference.AuthorizedCall{
 		Method: http.MethodPost, Endpoint: "https://resource.example/records",
 		Body: []byte(`{"name":"current"}`), ContentType: "application/json",
 	}
-	response, grant, err := agent.DoWithPersonTokenAuthorization(
-		context.Background(), call, "https://ps.example/token", person.PersonToken,
-	)
+	response, err := agent.Do(context.Background(), call)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+		t.Fatalf("protected result status = %d: %s", response.StatusCode, body)
+	}
 	var result map[string]string
 	if decodeErr := json.NewDecoder(io.LimitReader(response.Body, 8<<10)).Decode(&result); decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	if response.StatusCode != http.StatusOK || result["status"] != "stored" {
+	if result["status"] != "stored" {
 		t.Fatalf("protected result = %d %#v", response.StatusCode, result)
 	}
 	if operationCalls != 1 || personPolicyCalls != 1 || accessPolicyCalls != 1 {
 		t.Fatalf("operation/PS/AS calls = %d/%d/%d", operationCalls, personPolicyCalls, accessPolicyCalls)
 	}
-	if observed.count != 1 || observed.requirement.Type != aauth.RequirementAuthToken ||
-		observed.requirement.ResourceToken == "" || observed.cacheControl != "no-store" {
-		t.Fatalf("observed challenge = count %d, requirement %#v, cache-control %q", observed.count, observed.requirement, observed.cacheControl)
+	if len(observed.requirements) != 2 || observed.requirements[0].Type != aauth.RequirementPersonToken ||
+		observed.requirements[1].Type != aauth.RequirementAuthToken ||
+		observed.requirements[1].ResourceToken == "" || observed.cacheControl != "no-store" {
+		t.Fatalf("observed requirements = %#v, cache-control %q", observed.requirements, observed.cacheControl)
 	}
 	if operationRequest.Method != call.Method || operationRequest.Path != "/records" ||
 		operationRequest.Target != "/records" || string(operationRequest.Body) != string(call.Body) || operationRequest.ContentType != call.ContentType {
 		t.Fatalf("retried operation = %#v", operationRequest)
 	}
-	if grant.Claims.Issuer != "https://as.example" || grant.Claims.Audience != "https://resource.example" ||
-		grant.Claims.PersonServer != "https://ps.example" || grant.Claims.Subject != "challenge-person" ||
-		grant.Claims.Tenant != "example-org" {
-		t.Fatalf("challenge grant = %#v", grant.Claims)
+	if operationRequest.PersonServer != "https://ps.example" || operationRequest.Subject != "challenge-person" ||
+		operationRequest.Tenant != "example-org" {
+		t.Fatalf("challenge operation context = %#v", operationRequest)
 	}
 }
 
 type protectedChallengeObservingTransport struct {
 	base         http.RoundTripper
-	count        int
-	requirement  aauth.Requirement
+	requirements []aauth.Requirement
 	cacheControl string
 }
 
@@ -189,8 +184,8 @@ func (transport *protectedChallengeObservingTransport) RoundTrip(request *http.R
 	if err != nil || request.URL.Host != "resource.example" || request.URL.Path != "/records" || response.StatusCode != http.StatusUnauthorized {
 		return response, err
 	}
-	transport.count++
 	transport.cacheControl = response.Header.Get("Cache-Control")
-	transport.requirement, _ = aauth.ParseRequirementHeader(response.Header.Get("AAuth-Requirement"))
+	requirement, _ := aauth.ParseRequirementHeader(response.Header.Get("AAuth-Requirement"))
+	transport.requirements = append(transport.requirements, requirement)
 	return response, nil
 }
