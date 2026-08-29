@@ -167,12 +167,16 @@ func (client *BootstrapClient) refresh(
 	if wire.Agent == "" || wire.AgentToken == "" {
 		return result, errors.New("reference: bootstrap response is incomplete")
 	}
-	claims, err := aauth.VerifyAgentToken(
+	evidence, err := aauth.VerifyAgentToken(
 		ctx,
 		wire.AgentToken,
 		client.keyResolver,
 		client.clock,
 	)
+	if err != nil {
+		return result, err
+	}
+	claims, err := evidence.Claims()
 	if err != nil {
 		return result, err
 	}

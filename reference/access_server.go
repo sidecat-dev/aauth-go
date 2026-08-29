@@ -659,7 +659,12 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	agentKeyCapture, agentVerificationResolver := newRetainedKeyCapture(server.keyResolver)
-	agentToken, err := aauth.VerifyAgentToken(request.Context(), input.AgentToken, agentVerificationResolver, verificationClock)
+	agentTokenEvidence, err := aauth.VerifyAgentToken(request.Context(), input.AgentToken, agentVerificationResolver, verificationClock)
+	if err != nil {
+		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_agent_token", err)
+		return
+	}
+	agentToken, err := agentTokenEvidence.Claims()
 	if err != nil {
 		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_agent_token", err)
 		return
@@ -685,7 +690,12 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	var subagentVerificationKey *jose.JWK
 	if input.SubagentToken != "" {
 		subagentKeyCapture, subagentVerificationResolver := newRetainedKeyCapture(server.keyResolver)
-		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, subagentVerificationResolver, verificationClock)
+		subagentEvidence, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, subagentVerificationResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
+			return
+		}
+		subagent, err := subagentEvidence.Claims()
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
@@ -719,7 +729,12 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		upstreamKeyCapture, upstreamVerificationResolver := newRetainedKeyCapture(server.keyResolver)
-		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, upstreamVerificationResolver, verificationClock)
+		upstreamEvidence, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, upstreamVerificationResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			return
+		}
+		claims, err := upstreamEvidence.Claims()
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
@@ -753,7 +768,12 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	}
 
 	resourceKeyCapture, resourceVerificationResolver := newRetainedKeyCapture(server.keyResolver)
-	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, resourceVerificationResolver, verificationClock)
+	resourceTokenEvidence, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, resourceVerificationResolver, verificationClock)
+	if err != nil {
+		writeResourceTokenVerificationFailure(response, err)
+		return
+	}
+	resourceToken, err := resourceTokenEvidence.Claims()
 	if err != nil {
 		writeResourceTokenVerificationFailure(response, err)
 		return

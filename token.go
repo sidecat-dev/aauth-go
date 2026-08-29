@@ -250,94 +250,117 @@ func mintToken(key jose.SigningKey, tokenType string, claims any) (string, error
 	}, claimsBytes)
 }
 
-// VerifyAgentToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyAgentToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (AgentTokenClaims, error) {
+// VerifyAgentToken verifies issuer trust, JWS integrity, structure, and time,
+// returning sealed evidence for the exact token and verification instant.
+func VerifyAgentToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (VerifiedToken[AgentTokenClaims], error) {
+	var zero VerifiedToken[AgentTokenClaims]
 	var claims AgentTokenClaims
-	if err := verifyAndDecodeToken(ctx, compact, AgentTokenType, AgentDiscoveryDocument, resolver, clock, &claims); err != nil {
-		return claims, err
+	now, err := tokenVerificationInstant(clock)
+	if err != nil {
+		return zero, err
 	}
-	if err := validateAgentClaims(claims, clock.Now()); err != nil {
-		return claims, err
+	verified, err := verifyAndDecodeToken(ctx, compact, AgentTokenType, AgentDiscoveryDocument, resolver, &claims)
+	if err != nil {
+		return zero, err
 	}
-	return claims, nil
+	if err := validateAgentClaims(claims, now); err != nil {
+		return zero, err
+	}
+	return newVerifiedToken[AgentTokenClaims](verified, AgentTokenType, now)
 }
 
-// VerifyPersonToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyPersonToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (PersonTokenClaims, error) {
+// VerifyPersonToken verifies issuer trust, JWS integrity, structure, and time,
+// returning sealed evidence for the exact token and verification instant.
+func VerifyPersonToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (VerifiedToken[PersonTokenClaims], error) {
+	var zero VerifiedToken[PersonTokenClaims]
 	var claims PersonTokenClaims
 	if resolver == nil {
-		return claims, errors.New("aauth: key resolver is required")
+		return zero, errors.New("aauth: key resolver is required")
 	}
-	if clock == nil {
-		return claims, errors.New("aauth: clock is required")
+	now, err := tokenVerificationInstant(clock)
+	if err != nil {
+		return zero, err
 	}
 	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
-		return claims, err
+		return zero, err
 	}
 	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != PersonTokenType {
-		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, PersonTokenType)
+		return zero, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, PersonTokenType)
 	}
 	var names map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &names); err != nil {
-		return claims, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
+		return zero, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
 	}
 	if _, exists := names["scope"]; exists {
-		return claims, errors.New("aauth: person-token must not contain scope or account")
+		return zero, errors.New("aauth: person-token must not contain scope or account")
 	}
 	if _, exists := names["account"]; exists {
-		return claims, errors.New("aauth: person-token must not contain scope or account")
+		return zero, errors.New("aauth: person-token must not contain scope or account")
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return claims, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
+		return zero, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
 	}
 	if claims.DWK != PersonDiscoveryDocument {
-		return claims, fmt.Errorf("aauth: token dwk is %q, want %q", claims.DWK, PersonDiscoveryDocument)
+		return zero, fmt.Errorf("aauth: token dwk is %q, want %q", claims.DWK, PersonDiscoveryDocument)
 	}
-	if _, err := verifyResolvedTokenKey(ctx, parsed, claims.Issuer, claims.DWK, resolver); err != nil {
-		return claims, err
+	verified, err := verifyResolvedTokenKey(ctx, parsed, claims.Issuer, claims.DWK, resolver)
+	if err != nil {
+		return zero, err
 	}
-	if err := validatePersonClaims(claims, clock.Now(), true); err != nil {
-		return claims, err
+	if err := validatePersonClaims(claims, now, true); err != nil {
+		return zero, err
 	}
-	return claims, nil
+	return newVerifiedToken[PersonTokenClaims](verified, PersonTokenType, now)
 }
 
-// VerifyResourceToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyResourceToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (ResourceTokenClaims, error) {
+// VerifyResourceToken verifies issuer trust, JWS integrity, structure, and
+// time, returning sealed evidence for the exact token and verification instant.
+func VerifyResourceToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (VerifiedToken[ResourceTokenClaims], error) {
+	var zero VerifiedToken[ResourceTokenClaims]
 	var claims ResourceTokenClaims
-	if err := verifyAndDecodeToken(
+	now, err := tokenVerificationInstant(clock)
+	if err != nil {
+		return zero, err
+	}
+	verified, err := verifyAndDecodeToken(
 		ctx,
 		compact,
 		ResourceTokenType,
 		ResourceDiscoveryDocument,
 		resolver,
-		clock,
 		&claims,
 		"r3_uri",
 		"r3_s256",
 		"budget",
 		"budget_consumed",
-	); err != nil {
-		return claims, err
+	)
+	if err != nil {
+		return zero, err
 	}
-	if err := validateResourceClaims(claims, clock.Now(), true); err != nil {
-		return claims, err
+	if err := validateResourceClaims(claims, now, true); err != nil {
+		return zero, err
 	}
-	return claims, nil
+	return newVerifiedToken[ResourceTokenClaims](verified, ResourceTokenType, now)
 }
 
-// VerifyAuthToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyAuthToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (AuthTokenClaims, error) {
+// VerifyAuthToken verifies issuer trust, JWS integrity, structure, and time,
+// returning sealed evidence for the exact token and verification instant.
+func VerifyAuthToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (VerifiedToken[AuthTokenClaims], error) {
+	var zero VerifiedToken[AuthTokenClaims]
 	var claims AuthTokenClaims
+	now, err := tokenVerificationInstant(clock)
+	if err != nil {
+		return zero, err
+	}
 	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
-		return claims, err
+		return zero, err
 	}
 	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != AuthTokenType {
-		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, AuthTokenType)
+		return zero, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, AuthTokenType)
 	}
 	if err := rejectUnsupportedTokenMembers(
 		payload,
@@ -350,21 +373,22 @@ func VerifyAuthToken(ctx context.Context, compact string, resolver signaturekey.
 		"budget",
 		"budget_consumed",
 	); err != nil {
-		return claims, err
+		return zero, err
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return claims, fmt.Errorf("aauth: decode auth-token claims: %w", err)
+		return zero, fmt.Errorf("aauth: decode auth-token claims: %w", err)
 	}
 	if claims.DWK != PersonDiscoveryDocument && claims.DWK != AccessDiscoveryDocument {
-		return claims, fmt.Errorf("aauth: auth-token dwk is %q", claims.DWK)
+		return zero, fmt.Errorf("aauth: auth-token dwk is %q", claims.DWK)
 	}
-	if _, err := verifyResolvedTokenKey(ctx, parsed, claims.Issuer, claims.DWK, resolver); err != nil {
-		return claims, err
+	verified, err := verifyResolvedTokenKey(ctx, parsed, claims.Issuer, claims.DWK, resolver)
+	if err != nil {
+		return zero, err
 	}
-	if err := validateAuthClaims(claims, clock.Now(), true); err != nil {
-		return claims, err
+	if err := validateAuthClaims(claims, now, true); err != nil {
+		return zero, err
 	}
-	return claims, nil
+	return newVerifiedToken[AuthTokenClaims](verified, AuthTokenType, now)
 }
 
 func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceTokenClaims](
@@ -373,29 +397,25 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	expectedType string,
 	expectedDWK string,
 	resolver signaturekey.KeyResolver,
-	clock Clock,
 	claims *T,
 	unsupportedMembers ...string,
-) error {
+) (jose.VerifiedCompact, error) {
 	if resolver == nil {
-		return errors.New("aauth: key resolver is required")
-	}
-	if clock == nil {
-		return errors.New("aauth: clock is required")
+		return jose.VerifiedCompact{}, errors.New("aauth: key resolver is required")
 	}
 	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
-		return err
+		return jose.VerifiedCompact{}, err
 	}
 	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != expectedType {
-		return fmt.Errorf("aauth: token typ is %q, want %q", header.Type, expectedType)
+		return jose.VerifiedCompact{}, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, expectedType)
 	}
 	if err := rejectUnsupportedTokenMembers(payload, expectedType, unsupportedMembers...); err != nil {
-		return err
+		return jose.VerifiedCompact{}, err
 	}
 	if err := json.Unmarshal(payload, claims); err != nil {
-		return fmt.Errorf("aauth: decode %s claims: %w", expectedType, err)
+		return jose.VerifiedCompact{}, fmt.Errorf("aauth: decode %s claims: %w", expectedType, err)
 	}
 	var issuer, dwk string
 	switch value := any(claims).(type) {
@@ -407,12 +427,20 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 		issuer, dwk = value.Issuer, value.DWK
 	}
 	if dwk != expectedDWK {
-		return fmt.Errorf("aauth: token dwk is %q, want %q", dwk, expectedDWK)
+		return jose.VerifiedCompact{}, fmt.Errorf("aauth: token dwk is %q, want %q", dwk, expectedDWK)
 	}
-	if _, err := verifyResolvedTokenKey(ctx, parsed, issuer, dwk, resolver); err != nil {
-		return err
+	verified, err := verifyResolvedTokenKey(ctx, parsed, issuer, dwk, resolver)
+	if err != nil {
+		return jose.VerifiedCompact{}, err
 	}
-	return nil
+	return verified, nil
+}
+
+func tokenVerificationInstant(clock Clock) (time.Time, error) {
+	if clock == nil {
+		return time.Time{}, errors.New("aauth: clock is required")
+	}
+	return clock.Now().UTC(), nil
 }
 
 func rejectUnsupportedTokenMembers(payload []byte, tokenType string, unsupportedMembers ...string) error {

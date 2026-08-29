@@ -62,14 +62,38 @@ type VerifiedRequest struct {
 	PublicKey        jose.JWK
 	IdentityKey      jose.JWK
 	JKTJWT           *signaturekey.VerifiedJKTJWT
-	AgentToken       *AgentTokenClaims
-	PersonToken      *PersonTokenClaims
-	AuthToken        *AuthTokenClaims
+	AgentToken       *VerifiedToken[AgentTokenClaims]
+	PersonToken      *VerifiedToken[PersonTokenClaims]
+	AuthToken        *VerifiedToken[AuthTokenClaims]
 	SubscribeToken   *SubscribeTokenClaims
 	SelfJWT          *VerifiedSelfJWT
 	Created          time.Time
 	VerifiedAt       time.Time
 	ReplayKey        string
+}
+
+// AgentClaims returns an independent projection of the verified agent token.
+func (verified VerifiedRequest) AgentClaims() (AgentTokenClaims, error) {
+	if verified.AgentToken == nil {
+		return AgentTokenClaims{}, errors.New("aauth: verified request has no agent token")
+	}
+	return verified.AgentToken.Claims()
+}
+
+// PersonClaims returns an independent projection of the verified person token.
+func (verified VerifiedRequest) PersonClaims() (PersonTokenClaims, error) {
+	if verified.PersonToken == nil {
+		return PersonTokenClaims{}, errors.New("aauth: verified request has no person token")
+	}
+	return verified.PersonToken.Claims()
+}
+
+// AuthClaims returns an independent projection of the verified auth token.
+func (verified VerifiedRequest) AuthClaims() (AuthTokenClaims, error) {
+	if verified.AuthToken == nil {
+		return AuthTokenClaims{}, errors.New("aauth: verified request has no auth token")
+	}
+	return verified.AuthToken.Claims()
 }
 
 // SelfJWTClaimPolicy applies deployment-owned application claim rules after
@@ -163,30 +187,42 @@ func VerifyRequest(
 		verified.CredentialType = header.Type
 		switch header.Type {
 		case AgentTokenType:
-			claims, verifyErr := VerifyAgentToken(ctx, verified.RawCredential, resolver, verificationClock)
+			token, verifyErr := VerifyAgentToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
+			}
+			claims, claimsErr := token.Claims()
+			if claimsErr != nil {
+				return verified, classifyJWTVerificationError(claimsErr)
 			}
 			verified.Agent = claims.Subject
 			verified.Signer = claims.Subject
 			verified.PublicKey = claims.Confirmation.JWK
-			verified.AgentToken = &claims
+			verified.AgentToken = &token
 		case PersonTokenType:
-			claims, verifyErr := VerifyPersonToken(ctx, verified.RawCredential, resolver, verificationClock)
+			token, verifyErr := VerifyPersonToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
+			claims, claimsErr := token.Claims()
+			if claimsErr != nil {
+				return verified, classifyJWTVerificationError(claimsErr)
+			}
 			verified.PublicKey = claims.Confirmation.JWK
-			verified.PersonToken = &claims
+			verified.PersonToken = &token
 		case AuthTokenType:
-			claims, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, verificationClock)
+			token, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
+			}
+			claims, claimsErr := token.Claims()
+			if claimsErr != nil {
+				return verified, classifyJWTVerificationError(claimsErr)
 			}
 			verified.Agent = claims.Agent
 			verified.Signer = claims.Agent
 			verified.PublicKey = claims.Confirmation.JWK
-			verified.AuthToken = &claims
+			verified.AuthToken = &token
 		case SubscribeTokenType:
 			claims, verifyErr := VerifySubscribeToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {

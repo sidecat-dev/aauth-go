@@ -217,7 +217,11 @@ func TestPublicAgentUsesUniqueProofsForIndependentSameSecondProtectedCalls(t *te
 
 func mustVerifyAuthToken(t *testing.T, compact string, resolver signaturekey.KeyResolver, clock aauth.Clock) aauth.AuthTokenClaims {
 	t.Helper()
-	claims, err := aauth.VerifyAuthToken(context.Background(), compact, resolver, clock)
+	evidence, err := aauth.VerifyAuthToken(context.Background(), compact, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := evidence.Claims()
 	if err != nil {
 		t.Fatal(err)
 	}

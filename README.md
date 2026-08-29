@@ -28,6 +28,11 @@ signing key, and compact-JWS parse, sign, and sealed-verification API. The
 request proofs, admitted issuer-key discovery, and typed negotiation failures;
 it leaves JWT credentials opaque. The root `aauth` package owns portable
 protocol values, token semantics, and policy-aware verification.
+Core verification returns `VerifiedToken[T]`: invalid-zero, copy-safe evidence
+bound to the exact compact token, selected issuer key, token profile, and one
+trusted verification instant. `Claims()` returns a defensive typed projection;
+`EvidenceID()` identifies the exact retained verification without exposing a
+constructor or mutable evidence fields.
 Deployable reference role handlers, host-owned storage interfaces, and an
 agent client are in `reference`. [Architecture](ARCHITECTURE.md) maps the
 observed package structure, target import graph, endpoint-specific evidence

@@ -648,15 +648,16 @@ func (resource *Resource) validateResourceAuthorizationRequestEvidence(
 	}
 	switch proof.CredentialType {
 	case aauth.PersonTokenType:
-		if proof.Target != "/authorize" || proof.Method != http.MethodPost || verified.PersonToken == nil ||
-			proof.CredentialIssuer != verified.PersonToken.Issuer || proof.Agent != "" || proof.Signer != "" ||
-			record.Request.Agent != "" || record.Request.PersonServer != verified.PersonToken.Issuer ||
-			record.Request.Subject != verified.PersonToken.Subject ||
-			record.Request.MissionS256 != verified.PersonToken.MissionS256 ||
-			record.Request.Tenant != verified.PersonToken.Tenant || record.Request.Mission != nil ||
+		personClaims, claimsErr := verified.PersonClaims()
+		if claimsErr != nil || proof.Target != "/authorize" || proof.Method != http.MethodPost ||
+			proof.CredentialIssuer != personClaims.Issuer || proof.Agent != "" || proof.Signer != "" ||
+			record.Request.Agent != "" || record.Request.PersonServer != personClaims.Issuer ||
+			record.Request.Subject != personClaims.Subject ||
+			record.Request.MissionS256 != personClaims.MissionS256 ||
+			record.Request.Tenant != personClaims.Tenant || record.Request.Mission != nil ||
 			record.Request.Upstream != nil ||
-			record.AgentExpiresAt.Unix() != verified.PersonToken.ExpiresAt ||
-			aauth.ValidatePersonTokenContext(*verified.PersonToken, resource.identifier, verified.PublicKey) != nil {
+			record.AgentExpiresAt.Unix() != personClaims.ExpiresAt ||
+			aauth.ValidatePersonTokenContext(personClaims, resource.identifier, verified.PublicKey) != nil {
 			return ErrAuthorizationStateIntegrity
 		}
 		var input resourceAuthorizationInput
@@ -669,12 +670,13 @@ func (resource *Resource) validateResourceAuthorizationRequestEvidence(
 			return ErrAuthorizationStateIntegrity
 		}
 	case aauth.AgentTokenType:
-		if proof.Target == "/authorize" || verified.AgentToken == nil ||
-			proof.CredentialIssuer != verified.AgentToken.Issuer || proof.Agent != verified.Agent ||
+		agentClaims, claimsErr := verified.AgentClaims()
+		if claimsErr != nil || proof.Target == "/authorize" ||
+			proof.CredentialIssuer != agentClaims.Issuer || proof.Agent != verified.Agent ||
 			proof.Signer != verified.Agent || record.Request.Agent != verified.Agent ||
 			record.Request.PersonServer != "" || record.Request.Subject != "" || record.Request.Account != "" ||
 			record.Request.Tenant != "" || record.Request.Mission != nil || record.Request.Upstream != nil ||
-			record.AgentExpiresAt.Unix() != verified.AgentToken.ExpiresAt {
+			record.AgentExpiresAt.Unix() != agentClaims.ExpiresAt {
 			return ErrAuthorizationStateIntegrity
 		}
 		if resource.requiredScopesForRequest != nil {
@@ -1250,15 +1252,20 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		writePersonTokenRequired(response, "authorization endpoint requires a person token")
 		return
 	}
+	personClaims, err := verified.PersonClaims()
+	if err != nil {
+		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_person_token", err)
+		return
+	}
 	if resource.authTokenDiscoveryDocument == aauth.PersonDiscoveryDocument &&
-		verified.PersonToken.Issuer != resource.tokenAudience {
+		personClaims.Issuer != resource.tokenAudience {
 		writeProblem(
 			response,
 			http.StatusBadRequest,
 			"invalid_person_token",
 			fmt.Errorf(
 				"person-token issuer %q does not match configured person server %q",
-				verified.PersonToken.Issuer,
+				personClaims.Issuer,
 				resource.tokenAudience,
 			),
 		)
@@ -1289,11 +1296,11 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	}
 	now := verified.VerifiedAt
 	resourceTokenExpiresAt := now.Add(5 * time.Minute)
-	if err := aauth.ValidatePersonTokenContext(*verified.PersonToken, resource.identifier, verified.PublicKey); err != nil {
+	if err := aauth.ValidatePersonTokenContext(personClaims, resource.identifier, verified.PublicKey); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_person_token", err)
 		return
 	}
-	if personExpiry := time.Unix(verified.PersonToken.ExpiresAt, 0); personExpiry.Before(resourceTokenExpiresAt) {
+	if personExpiry := time.Unix(personClaims.ExpiresAt, 0); personExpiry.Before(resourceTokenExpiresAt) {
 		resourceTokenExpiresAt = personExpiry
 	}
 	thumbprint, err := verified.PublicKey.Thumbprint()
@@ -1308,10 +1315,10 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 			Scope:    append([]string(nil), scopes...),
 			Account:  input.Account,
 		}
-		authorizationRequest.PersonServer = verified.PersonToken.Issuer
-		authorizationRequest.Subject = verified.PersonToken.Subject
-		authorizationRequest.MissionS256 = verified.PersonToken.MissionS256
-		authorizationRequest.Tenant = verified.PersonToken.Tenant
+		authorizationRequest.PersonServer = personClaims.Issuer
+		authorizationRequest.Subject = personClaims.Subject
+		authorizationRequest.MissionS256 = personClaims.MissionS256
+		authorizationRequest.Tenant = personClaims.Tenant
 		resource.handleLocalAuthorization(
 			response, request, requestBody, requestVerificationKey,
 			authorizationRequest, verified, thumbprint, now,
@@ -1331,11 +1338,11 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		Scope:     strings.Join(scopes, " "),
 		Account:   input.Account,
 	}
-	claims.PersonServer = verified.PersonToken.Issuer
-	claims.Subject = verified.PersonToken.Subject
-	claims.PresentedJTI = verified.PersonToken.JTI
-	claims.MissionS256 = verified.PersonToken.MissionS256
-	claims.Tenant = verified.PersonToken.Tenant
+	claims.PersonServer = personClaims.Issuer
+	claims.Subject = personClaims.Subject
+	claims.PresentedJTI = personClaims.JTI
+	claims.MissionS256 = personClaims.MissionS256
+	claims.Tenant = personClaims.Tenant
 	claims.Agent = ""
 	token, err := aauth.MintResourceToken(resource.signingKey, claims)
 	if err != nil {
@@ -1370,9 +1377,11 @@ func isPersonTokenCredentialFailure(verified aauth.VerifiedRequest, err error) b
 
 func credentialExpiry(verified aauth.VerifiedRequest) time.Time {
 	if verified.PersonToken != nil {
-		return time.Unix(verified.PersonToken.ExpiresAt, 0)
+		claims, _ := verified.PersonClaims()
+		return time.Unix(claims.ExpiresAt, 0)
 	}
-	return time.Unix(verified.AgentToken.ExpiresAt, 0)
+	claims, _ := verified.AgentClaims()
+	return time.Unix(claims.ExpiresAt, 0)
 }
 
 func validateAuthorizationDecision(decision aauth.AuthorizationDecision, requestedScope []string) error {
@@ -1942,7 +1951,11 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		)
 		return
 	}
-	claims := verified.AuthToken
+	claims, err := verified.AuthClaims()
+	if err != nil {
+		writeTokenVerificationFailure(response, http.StatusForbidden, "invalid_token", err)
+		return
+	}
 	if resource.accessMode != aauth.AccessModeAuthToken {
 		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("resource does not accept auth tokens for protected operations"))
 		return
@@ -1965,7 +1978,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		return
 	}
 	contextErr := aauth.ValidateCurrentAuthTokenContext(
-		*claims,
+		claims,
 		resource.identifier,
 		claims.PersonServer,
 		claims.Subject,

@@ -1055,6 +1055,11 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		writeSignatureFailure(response, err)
 		return
 	}
+	agentClaims, err := verified.AgentClaims()
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
 	if !server.requireCurrentPersonServer(response, verified) {
 		return
 	}
@@ -1085,7 +1090,7 @@ func (server *PersonServer) handleMission(response http.ResponseWriter, request 
 		Agent:          verified.Agent,
 		Proposal:       copyMissionProposal(proposal),
 		Confirmation:   verified.PublicKey,
-		AgentExpiresAt: time.Unix(verified.AgentToken.ExpiresAt, 0).UTC(),
+		AgentExpiresAt: time.Unix(agentClaims.ExpiresAt, 0).UTC(),
 		PersonServer:   server.identifier,
 	})
 	if err != nil {
@@ -1114,6 +1119,11 @@ func (server *PersonServer) completeCurrentMission(
 	proposal aauth.MissionProposal,
 	decision aauth.MissionDecision,
 ) {
+	agentClaims, err := verified.AgentClaims()
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
 	approvedResources, err := validateApprovedResources(proposal.Resources, decision.ApprovedResources)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -1151,7 +1161,7 @@ func (server *PersonServer) completeCurrentMission(
 			verified.Agent,
 			"",
 			verified.PublicKey,
-			verified.AgentToken.ExpiresAt,
+			agentClaims.ExpiresAt,
 			resource,
 			reference.S256,
 			expiresAt,
@@ -1335,7 +1345,12 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return verified.VerifiedAt })
-	if verified.AgentToken.ParentAgent != "" {
+	agentClaims, err := verified.AgentClaims()
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
+	if agentClaims.ParentAgent != "" {
 		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request a person token directly"))
 		return
 	}
@@ -1356,9 +1371,14 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 	targetAgent := verified.Agent
 	targetKey := verified.PublicKey
 	parentAgent := ""
-	targetExpiresAt := verified.AgentToken.ExpiresAt
+	targetExpiresAt := agentClaims.ExpiresAt
 	if input.SubagentToken != "" {
-		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, server.keyResolver, verificationClock)
+		subagentEvidence, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, server.keyResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
+			return
+		}
+		subagent, err := subagentEvidence.Claims()
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
@@ -1384,7 +1404,12 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("call chaining is not configured"))
 			return
 		}
-		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, verificationClock)
+		upstreamEvidence, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, server.keyResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			return
+		}
+		claims, err := upstreamEvidence.Claims()
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
@@ -1393,7 +1418,7 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 			writeHostPolicyRefusal(response, "invalid_upstream_token", "upstream token issuer is not trusted")
 			return
 		}
-		if claims.Audience != verified.AgentToken.Issuer || claims.PersonServer != server.identifier {
+		if claims.Audience != agentClaims.Issuer || claims.PersonServer != server.identifier {
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth token does not route the intermediary to this person server"))
 			return
 		}
@@ -1452,7 +1477,8 @@ func (server *PersonServer) requireCurrentPersonServer(
 	response http.ResponseWriter,
 	verified aauth.VerifiedRequest,
 ) bool {
-	if verified.AgentToken != nil && verified.AgentToken.PersonServer == server.identifier {
+	claims, err := verified.AgentClaims()
+	if err == nil && claims.PersonServer == server.identifier {
 		return true
 	}
 	writeProblem(
@@ -1690,6 +1716,11 @@ func (server *PersonServer) handlePermission(
 		writeSignatureFailure(response, err)
 		return
 	}
+	agentClaims, err := verified.AgentClaims()
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
 	if server.governanceReplayExists(verified.ReplayKey) {
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
@@ -1736,7 +1767,7 @@ func (server *PersonServer) handlePermission(
 				response,
 				verified.Agent,
 				thumbprint,
-				verified.AgentToken.ExpiresAt,
+				agentClaims.ExpiresAt,
 				body,
 				proof,
 				verified.Created.Add(signaturekey.DefaultSignatureWindow),
@@ -2657,11 +2688,14 @@ func requestProof(
 	credentialIssuer := ""
 	switch {
 	case verified.AgentToken != nil:
-		credentialIssuer = verified.AgentToken.Issuer
+		claims, _ := verified.AgentClaims()
+		credentialIssuer = claims.Issuer
 	case verified.PersonToken != nil:
-		credentialIssuer = verified.PersonToken.Issuer
+		claims, _ := verified.PersonClaims()
+		credentialIssuer = claims.Issuer
 	case verified.AuthToken != nil:
-		credentialIssuer = verified.AuthToken.Issuer
+		claims, _ := verified.AuthClaims()
+		credentialIssuer = claims.Issuer
 	case verified.SubscribeToken != nil:
 		credentialIssuer = verified.SubscribeToken.Issuer
 	case verified.SelfJWT != nil:
@@ -2724,6 +2758,11 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return verified.VerifiedAt })
+	agentClaims, err := verified.AgentClaims()
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
 	agentVerificationKey, err := agentKeyCapture.retainedKey()
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -2739,18 +2778,23 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	if verified.AgentToken.ParentAgent != "" {
+	if agentClaims.ParentAgent != "" {
 		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request authorization directly"))
 		return
 	}
 	targetAgent := verified.Agent
 	targetKey := verified.PublicKey
 	parentAgent := ""
-	targetTokenExpiry := verified.AgentToken.ExpiresAt
+	targetTokenExpiry := agentClaims.ExpiresAt
 	var subagentVerificationKey *jose.JWK
 	if input.SubagentToken != "" {
 		subagentKeyCapture, subagentVerificationResolver := newRetainedKeyCapture(server.keyResolver)
-		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, subagentVerificationResolver, verificationClock)
+		subagentEvidence, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, subagentVerificationResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
+			return
+		}
+		subagent, err := subagentEvidence.Claims()
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
@@ -2784,7 +2828,12 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		upstreamKeyCapture, upstreamVerificationResolver := newRetainedKeyCapture(server.keyResolver)
-		claims, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, upstreamVerificationResolver, verificationClock)
+		upstreamEvidence, err := aauth.VerifyAuthToken(request.Context(), input.UpstreamToken, upstreamVerificationResolver, verificationClock)
+		if err != nil {
+			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
+			return
+		}
+		claims, err := upstreamEvidence.Claims()
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
@@ -2799,7 +2848,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			writeHostPolicyRefusal(response, "invalid_upstream_token", "upstream token issuer is not trusted")
 			return
 		}
-		if claims.Audience != verified.AgentToken.Issuer {
+		if claims.Audience != agentClaims.Issuer {
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("upstream auth-token audience does not match intermediary issuer"))
 			return
 		}
@@ -2818,7 +2867,12 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	}
 
 	resourceKeyCapture, resourceVerificationResolver := newRetainedKeyCapture(server.keyResolver)
-	resourceToken, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, resourceVerificationResolver, verificationClock)
+	resourceEvidence, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, resourceVerificationResolver, verificationClock)
+	if err != nil {
+		writeResourceTokenVerificationFailure(response, err)
+		return
+	}
+	resourceToken, err := resourceEvidence.Claims()
 	if err != nil {
 		writeResourceTokenVerificationFailure(response, err)
 		return
@@ -4074,7 +4128,11 @@ func (server *PersonServer) parseAccessServerGrant(
 			refresher:           refresher,
 		}
 	}
-	claims, err := aauth.VerifyAuthToken(ctx, result.AuthToken, verificationResolver, server.clock)
+	evidence, err := aauth.VerifyAuthToken(ctx, result.AuthToken, verificationResolver, server.clock)
+	if err != nil {
+		return exchange, err
+	}
+	claims, err := evidence.Claims()
 	if err != nil {
 		return exchange, err
 	}

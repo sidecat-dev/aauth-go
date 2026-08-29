@@ -47,11 +47,13 @@ const externalModuleRequestTest = `package consumer_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"net/http"
 	"testing"
 	"time"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -97,6 +99,54 @@ func TestPublicPackagesCompose(t *testing.T) {
 	}
 	if proof.Scheme() != signaturekey.SchemeHWK || proof.ReplayKey() == "" {
 		t.Fatalf("proof = scheme %q, replay %q", proof.Scheme(), proof.ReplayKey())
+	}
+}
+
+func TestCoreVerificationReturnsSealedEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 29, 2, 30, 0, 0, time.UTC)
+	issuerPrivate := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x52}, ed25519.SeedSize))
+	issuerKey, err := jose.NewEd25519SigningKey("issuer-key", issuerPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestPrivate := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x53}, ed25519.SeedSize))
+	requestKey, err := jose.NewEd25519SigningKey("request-key", requestPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := aauth.MintAgentToken(
+		"https://provider.example",
+		issuerKey,
+		aauth.AgentTokenRequest{
+			Agent: "aauth:external@provider.example",
+			PersonServer: "https://person.example",
+			PublicKey: requestKey.PublicJWK(),
+			Lifetime: time.Hour,
+		},
+		now,
+		"external-evidence",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := aauth.VerifyAgentToken(
+		context.Background(),
+		compact,
+		signaturekey.StaticKeyResolver{
+			"https://provider.example": {issuerKey.ID(): issuerKey.PublicJWK()},
+		},
+		clock(now),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := evidence.Claims()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := evidence.EvidenceID()
+	if err != nil || identity.String() == "" || claims.Subject != "aauth:external@provider.example" {
+		t.Fatalf("evidence = %q, claims = %#v, error = %v", identity, claims, err)
 	}
 }
 `

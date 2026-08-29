@@ -258,7 +258,11 @@ func TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries(t *tes
 				t.Fatalf("recovered approval = %#v, mission decode error = %v", approval, err)
 			}
 			for resource, compact := range approval.PersonTokens {
-				claims, err := aauth.VerifyPersonToken(context.Background(), compact, resolver, clock)
+				evidence, err := aauth.VerifyPersonToken(context.Background(), compact, resolver, clock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				claims, err := evidence.Claims()
 				if err != nil {
 					t.Fatal(err)
 				}

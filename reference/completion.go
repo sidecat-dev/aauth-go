@@ -105,7 +105,12 @@ func (server *PersonServer) handleAgentInteraction(
 	}
 	now := server.clock.Now()
 	expiresAt := now.Add(server.pendingLifetime)
-	tokenExpiry := time.Unix(verified.AgentToken.ExpiresAt, 0)
+	agentClaims, err := verified.AgentToken.Claims()
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
+	tokenExpiry := time.Unix(agentClaims.ExpiresAt, 0)
 	if tokenExpiry.Before(expiresAt) {
 		expiresAt = tokenExpiry
 	}

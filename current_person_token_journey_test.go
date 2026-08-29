@@ -691,7 +691,11 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	if personToken == "" {
 		t.Fatal("mission approval omitted the approved resource person token")
 	}
-	personClaims, err := aauth.VerifyPersonToken(context.Background(), personToken, keyResolver, clock)
+	personEvidence, err := aauth.VerifyPersonToken(context.Background(), personToken, keyResolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personClaims, err := personEvidence.Claims()
 	if err != nil {
 		t.Fatal(err)
 	}

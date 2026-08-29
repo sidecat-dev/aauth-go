@@ -1181,7 +1181,7 @@ func TestPersonAndAccessAuthorizationStateRejectsInputTokenExpiredAtVerifiedAt(t
 		if err != nil {
 			t.Fatal(err)
 		}
-		claims, err := aauth.VerifyAgentToken(
+		evidence, err := aauth.VerifyAgentToken(
 			context.Background(),
 			compact,
 			signaturekey.StaticKeyResolver{
@@ -1189,6 +1189,10 @@ func TestPersonAndAccessAuthorizationStateRejectsInputTokenExpiredAtVerifiedAt(t
 			},
 			aauth.ClockFunc(func() time.Time { return fixture.now }),
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claims, err := evidence.Claims()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1374,7 +1378,7 @@ func TestPersonAndAccessAuthorizationStateRejectDirectSubagentWithoutPersonServe
 		if err != nil {
 			t.Fatal(err)
 		}
-		claims, err := aauth.VerifyAgentToken(
+		evidence, err := aauth.VerifyAgentToken(
 			context.Background(),
 			compact,
 			signaturekey.StaticKeyResolver{
@@ -1382,6 +1386,10 @@ func TestPersonAndAccessAuthorizationStateRejectDirectSubagentWithoutPersonServe
 			},
 			aauth.ClockFunc(func() time.Time { return fixture.now }),
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claims, err := evidence.Claims()
 		if err != nil {
 			t.Fatal(err)
 		}

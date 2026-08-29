@@ -1054,7 +1054,11 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 		return approved, errors.New("reference: approved mission body does not match agent or approver")
 	}
 	for resource, compact := range approved.PersonTokens {
-		claims, err := aauth.VerifyPersonToken(ctx, compact, agent.keyResolver, agent.clock)
+		evidence, err := aauth.VerifyPersonToken(ctx, compact, agent.keyResolver, agent.clock)
+		if err != nil {
+			return approved, err
+		}
+		claims, err := evidence.Claims()
 		if err != nil {
 			return approved, err
 		}
@@ -1163,14 +1167,22 @@ func (agent *Agent) requestPersonToken(
 	}
 	expectedKey := agent.signingKey.PublicJWK()
 	if subagentToken != "" {
-		parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		parentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		parentClaims, err := parentEvidence.Claims()
 		if err != nil {
 			return grant, err
 		}
 		if parentClaims.ParentAgent != "" {
 			return grant, errors.New("reference: sub-agent cannot mediate another sub-agent")
 		}
-		subagentClaims, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
+		subagentEvidence, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		subagentClaims, err := subagentEvidence.Claims()
 		if err != nil {
 			return grant, err
 		}
@@ -1181,14 +1193,22 @@ func (agent *Agent) requestPersonToken(
 		expectedKey = subagentClaims.Confirmation.JWK
 	}
 	if upstreamToken != "" {
-		agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		agentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		agentClaims, err := agentEvidence.Claims()
 		if err != nil {
 			return grant, err
 		}
 		if agentClaims.ParentAgent != "" {
 			return grant, errors.New("reference: sub-agent cannot perform call chaining")
 		}
-		upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+		upstreamEvidence, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return grant, err
+		}
+		upstream, err := upstreamEvidence.Claims()
 		if err != nil {
 			return grant, err
 		}
@@ -1226,7 +1246,11 @@ func (agent *Agent) requestPersonToken(
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
 		return grant, err
 	}
-	claims, err := aauth.VerifyPersonToken(ctx, result.PersonToken, agent.keyResolver, agent.clock)
+	evidence, err := aauth.VerifyPersonToken(ctx, result.PersonToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return grant, err
+	}
+	claims, err := evidence.Claims()
 	if err != nil {
 		return grant, err
 	}
@@ -1738,7 +1762,11 @@ func (agent *Agent) AuthorizeWithPersonToken(
 	if err != nil {
 		return Grant{}, err
 	}
-	personClaims, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	personEvidence, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return Grant{}, err
+	}
+	personClaims, err := personEvidence.Claims()
 	if err != nil {
 		return Grant{}, err
 	}
@@ -1761,7 +1789,11 @@ func (agent *Agent) RequestResourceTokenWithPersonToken(
 	scopes []string,
 	personToken string,
 ) (ResourceGrant, error) {
-	claims, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	evidence, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	claims, err := evidence.Claims()
 	if err != nil {
 		return ResourceGrant{}, err
 	}
@@ -1816,7 +1848,11 @@ func (agent *Agent) requestCurrentResourceToken(
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
 		return grant, err
 	}
-	resourceClaims, err := aauth.VerifyResourceToken(ctx, result.ResourceToken, agent.keyResolver, agent.clock)
+	resourceEvidence, err := aauth.VerifyResourceToken(ctx, result.ResourceToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return grant, err
+	}
+	resourceClaims, err := resourceEvidence.Claims()
 	if err != nil {
 		return grant, err
 	}
@@ -1869,7 +1905,11 @@ func (agent *Agent) RequestTokenAuthorization(
 	if _, err := preflightResourceGrantPersonServer(personServerEndpoint, resourceGrant); err != nil {
 		return TokenAuthorization{}, err
 	}
-	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	agentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
+	agentClaims, err := agentEvidence.Claims()
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -1991,14 +2031,22 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	parentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	parentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
+	parentClaims, err := parentEvidence.Claims()
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
 	if parentClaims.ParentAgent != "" {
 		return TokenAuthorization{}, errors.New("reference: sub-agent cannot mediate another sub-agent")
 	}
-	subagentClaims, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
+	subagentEvidence, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
+	subagentClaims, err := subagentEvidence.Claims()
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -2017,7 +2065,11 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 		return TokenAuthorization{}, errors.New("reference: resource token is not bound to the sub-agent")
 	}
 	if upstreamToken != "" {
-		upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+		upstreamEvidence, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return TokenAuthorization{}, err
+		}
+		upstream, err := upstreamEvidence.Claims()
 		if err != nil {
 			return TokenAuthorization{}, err
 		}
@@ -2072,14 +2124,22 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	agentClaims, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	agentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
+	agentClaims, err := agentEvidence.Claims()
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
 	if agentClaims.ParentAgent != "" {
 		return TokenAuthorization{}, errors.New("reference: sub-agent cannot perform call chaining")
 	}
-	upstream, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+	upstreamEvidence, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return TokenAuthorization{}, err
+	}
+	upstream, err := upstreamEvidence.Claims()
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -2223,7 +2283,11 @@ func (agent *Agent) verifyResourceGrantForContinuation(
 	resourceGrant ResourceGrant,
 ) (jose.JWK, error) {
 	capture, resolver := newRetainedKeyCapture(agent.keyResolver)
-	claims, err := aauth.VerifyResourceToken(ctx, resourceGrant.ResourceToken, resolver, agent.clock)
+	evidence, err := aauth.VerifyResourceToken(ctx, resourceGrant.ResourceToken, resolver, agent.clock)
+	if err != nil {
+		return jose.JWK{}, err
+	}
+	claims, err := evidence.Claims()
 	if err != nil {
 		return jose.JWK{}, err
 	}
@@ -2334,7 +2398,11 @@ func (agent *Agent) parseTokenGrantResponse(
 		return Grant{}, jose.JWK{}, err
 	}
 	capture, resolver := newRetainedKeyCapture(agent.keyResolver)
-	authClaims, err := aauth.VerifyAuthToken(ctx, tokenResult.AuthToken, resolver, agent.clock)
+	authEvidence, err := aauth.VerifyAuthToken(ctx, tokenResult.AuthToken, resolver, agent.clock)
+	if err != nil {
+		return Grant{}, jose.JWK{}, err
+	}
+	authClaims, err := authEvidence.Claims()
 	if err != nil {
 		return Grant{}, jose.JWK{}, err
 	}

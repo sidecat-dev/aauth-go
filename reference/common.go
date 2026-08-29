@@ -526,7 +526,11 @@ func verifyRetainedAuthTokenClaimsAt(
 	if err != nil {
 		return claims, err
 	}
-	if !reflect.DeepEqual(verified, claims) {
+	verifiedClaims, err := verified.Claims()
+	if err != nil {
+		return claims, err
+	}
+	if !reflect.DeepEqual(verifiedClaims, claims) {
 		return claims, errors.New("reference: retained auth-token claims changed during verification")
 	}
 	return claims, nil
@@ -576,7 +580,11 @@ func verifyRetainedAgentTokenClaimsAt(
 	if err != nil {
 		return claims, err
 	}
-	if !reflect.DeepEqual(verified, claims) {
+	verifiedClaims, err := verified.Claims()
+	if err != nil {
+		return claims, err
+	}
+	if !reflect.DeepEqual(verifiedClaims, claims) {
 		return claims, errors.New("reference: retained agent-token claims changed during verification")
 	}
 	return claims, nil
@@ -626,7 +634,11 @@ func verifyRetainedResourceTokenClaimsAt(
 	if err != nil {
 		return claims, err
 	}
-	if !reflect.DeepEqual(verified, claims) {
+	verifiedClaims, err := verified.Claims()
+	if err != nil {
+		return claims, err
+	}
+	if !reflect.DeepEqual(verifiedClaims, claims) {
 		return claims, errors.New("reference: retained resource-token claims changed during verification")
 	}
 	return claims, nil

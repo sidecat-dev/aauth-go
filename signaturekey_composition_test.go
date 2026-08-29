@@ -42,4 +42,26 @@ func TestAAuthVerificationComposesTheGenericRequestProof(t *testing.T) {
 		!verified.Proof.PublicKey().Equal(verified.PublicKey) {
 		t.Fatalf("AAuth request did not retain its generic proof: %#v", verified)
 	}
+	if verified.AuthToken == nil || !verified.AuthToken.Valid() {
+		t.Fatal("AAuth request did not retain sealed Core token evidence")
+	}
+	claims, err := verified.AuthClaims()
+	if err != nil || claims.JTI == "" {
+		t.Fatalf("verified auth claims = %#v, %v", claims, err)
+	}
+	direct, err := aauth.VerifyAuthToken(context.Background(), fixture.authToken, fixture.keys, fixture.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestEvidenceID, err := verified.AuthToken.EvidenceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directEvidenceID, err := direct.EvidenceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestEvidenceID != directEvidenceID {
+		t.Fatalf("request token evidence = %q, direct evidence = %q", requestEvidenceID, directEvidenceID)
+	}
 }

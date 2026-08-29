@@ -114,7 +114,11 @@ func TestAuthTokenRejectsWrongAudienceAtResourceBoundary(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAuthRequestFixture(t)
-	claims, err := aauth.VerifyAuthToken(context.Background(), fixture.authToken, fixture.keys, fixture.clock)
+	evidence, err := aauth.VerifyAuthToken(context.Background(), fixture.authToken, fixture.keys, fixture.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := evidence.Claims()
 	if err != nil {
 		t.Fatal(err)
 	}
