@@ -98,6 +98,34 @@ that evidence is reviewed, they may become ready and unsubmitted.
 
 ## Ready, unsubmitted
 
+### AAG-F016 — The mandatory signature set does not bind the query
+
+**Status:** ready / unsubmitted
+
+**Source:** current Protocol `Covered Components`, `Verification`, and
+`Freshness and Replay` at AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5`.
+
+**Question:** Should `@query` be mandatory whenever a request target contains a
+query, and should the replay identity include that covered value?
+
+**Why this is ambiguous:** The text says the four mandatory components close
+request-substitution attacks. `@path` excludes the query under RFC 9421. The
+same method, authority, path, and Signature-Key can therefore name different
+operations when query parameters select behavior. The suggested replay tuple
+also omits the query.
+
+**Observed implementation effect:** The Go implementation adds and requires
+`@query` only when one is present. Changing the raw query after signing fails
+verification; query-free request vectors remain byte-identical.
+
+**Evidence:**
+
+- `signaturekey/request_external_test.go:TestRequestProofCoversAnExactQueryWhenPresent`
+
+**Suggested disposition:** Require `@query` on query-bearing requests and add it
+to the replay tuple, or state explicitly that every resource using query
+semantics must advertise it as an additional required component.
+
 ### AAG-F014 — The AS cannot distinguish requested operations from a broader R3 document
 
 **Status:** ready / unsubmitted

@@ -364,6 +364,38 @@ consequence, not a license to create another one.
 reference store. This retry rule does not claim a new Budgets wire member or a
 general distributed settlement protocol.
 
+## AAG-I011 — Query-bearing requests cover the exact query
+
+**Status:** adopted pending editor clarification
+
+**Source:** AAuth Protocol, `Covered Components`, `Verification`, and
+`Freshness and Replay`; RFC 9421, `@query` derived component.
+
+**Question:** May an AAuth request whose target contains a query rely on the
+four mandatory components even though `@path` excludes that query?
+
+**Chosen behavior:** No. The signer automatically adds `@query` whenever a
+query is present, and the verifier requires it for that request. The exact raw
+query participates in signature verification and replay identity.
+
+**Alternative considered:** Leave query coverage to each resource's advertised
+additional components. That makes an omitted resource declaration silently
+authorize query substitution even though the base profile says its mandatory
+set closes request-substitution attacks.
+
+**Why:** Query parameters commonly select operation semantics. `@path` covers
+none of them. A captured proof for one query must not authorize another at the
+same method, authority, and path.
+
+**Evidence:**
+
+- `signaturekey/request_external_test.go:TestRequestProofCoversAnExactQueryWhenPresent`
+- `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
+
+**Current-product effect:** Query-free requests preserve their existing exact
+component set. Query-bearing requests require `@query`; peers following only
+the draft's minimum receive a typed missing-component refusal.
+
 ## Adding or changing an interpretation
 
 1. Pin the exact source revision and section.
