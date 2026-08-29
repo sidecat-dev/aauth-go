@@ -26,7 +26,9 @@ The focused `jose` package owns the current Ed25519 JWK, caller-custodied
 signing key, and compact-JWS parse, sign, and sealed-verification API. The root
 `aauth` package owns portable protocol values and policy-aware verification.
 Deployable reference role handlers, host-owned storage interfaces, and an
-agent client are in `reference`. The
+agent client are in `reference`. [Architecture](ARCHITECTURE.md) maps the
+observed package structure, target import graph, endpoint-specific evidence
+flows, and recovery contracts. The
 [implementation interpretation register](INTERPRETATIONS.md) records observable
 choices, alternatives, reasons, and evidence in one
 place. [Retained-source provenance](PROVENANCE.md) makes every current input
