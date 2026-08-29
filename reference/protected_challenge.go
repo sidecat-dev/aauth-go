@@ -8,13 +8,16 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func (resource *Resource) challengeProtectedWithPersonToken(
 	response http.ResponseWriter,
 	request *http.Request,
+	exactBody []byte,
 	verified aauth.VerifiedRequest,
+	personIssuerKey jose.JWK,
 ) {
 	person, err := verified.PersonClaims()
 	if err != nil || aauth.ValidatePersonTokenContext(person, resource.identifier, verified.PublicKey) != nil {
@@ -46,6 +49,14 @@ func (resource *Resource) challengeProtectedWithPersonToken(
 			return
 		}
 		offer = &selected
+	}
+	deferred := false
+	if resource.deferredProtectedStore != nil {
+		deferred, err = resource.deferredProtectedSelect(request.Context(), request)
+		if err != nil {
+			writeHostPolicyRefusal(response, "deferred_selection_denied", "resource could not select challenge delivery")
+			return
+		}
 	}
 	if !resource.consumeProof(response, request, verified) {
 		return
@@ -86,5 +97,30 @@ func (resource *Resource) challengeProtectedWithPersonToken(
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("AAuth-Requirement", requirement)
+	if deferred {
+		resource.randomMu.Lock()
+		pendingID, pendingErr := aauth.GeneratePendingID(resource.random)
+		resource.randomMu.Unlock()
+		if pendingErr != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", pendingErr)
+			return
+		}
+		record := DeferredProtectedCallRecord{
+			ID: pendingID, Resource: resource.identifier, ResourceToken: compact,
+			RequestProofKey: verified.ReplayKey, Method: request.Method, Target: request.URL.RequestURI(),
+			RequestProof: requestProof(request, verified), PersonIssuerKey: personIssuerKey,
+			Body: append([]byte(nil), exactBody...), ContentType: request.Header.Get("Content-Type"),
+			RequiredScopes: append([]string(nil), scopes...), ExpiresAt: expiresAt,
+			State: DeferredProtectedPending,
+		}
+		if err := resource.deferredProtectedStore.Create(request.Context(), record); err != nil {
+			writeProblem(response, http.StatusServiceUnavailable, "deferred_custody_unavailable", err)
+			return
+		}
+		response.Header().Set("Location", "/deferred/"+pendingID)
+		response.Header().Set("Retry-After", "0")
+		writeJSON(response, http.StatusAccepted, map[string]string{"status": "pending"})
+		return
+	}
 	writeProblem(response, http.StatusUnauthorized, "auth_token_required", errors.New("protected operation requires an auth token"))
 }

@@ -89,10 +89,21 @@ the resource, its own key, and the person token's exact namespace and context;
 exchanges it through the ordinary PS and AS path; then retries the same method,
 target, body, and media type once under the resulting auth token.
 
+A resource may instead select the current stateful `202 Accepted` form. It
+retains the exact invocation before releasing a same-origin pending URL. The
+agent obtains the auth token through the same exchange and completes with a
+signed `GET`. The first valid token claims a stable host consequence key; the
+resource retains the exact terminal status, media type, and body before release.
+A lost terminal response and reconstructed resource return that retained result
+without rerunning protected policy or the host consequence. Store reopen also
+re-verifies the original person-token request proof, so rewriting a canonical
+snapshot cannot change the held invocation.
+
 This slice is deliberately bounded. `reference.Resource` implements explicit
 `auth-token` and `session-token` modes, not every registered access mode.
-Deferred protected-call challenge delivery, resource-owned person identity
-matching, collocated PS/AS roles, dynamic three-party PS
+Companion-bearing deferred calls, refreshed resource tokens during a pending
+call, deferred PS or AS authorization, resource-owned person identity matching,
+collocated PS/AS roles, and dynamic three-party PS
 selection, and account ownership remain open. The exercised current profile
 includes immediate and deferred PS/AS authorization, one-level parent-mediated
 sub-agents, and upstream-auth-token call chaining through either a PS or AS. Exact
@@ -168,7 +179,8 @@ response, err := agent.DoWithAccess(ctx, reference.AuthorizedCall{
 ```
 
 HTTP request bodies use `Content-Digest`, all AAuth requests use the mandatory
-RFC 9421 components, and protected operations durably consume an exact proof
+RFC 9421 components, query-bearing calls additionally cover the exact `@query`,
+and protected operations durably consume an exact proof
 before their host callback.
 Issuer keys use admitted two-hop metadata/JWKS discovery with bounded reads,
 cache lifetimes, unknown-key refresh throttling, and same-`kid` rotation
@@ -524,8 +536,8 @@ and bounded single-writer file stores qualify replaceable host boundaries; they
 do not claim distributed, multi-writer, federated, or enterprise storage.
 
 Resource-owned interaction chaining, interaction/payment relay and callbacks,
-question delivery, updated-request/cancel clarification actions, deferred
-protected-call delivery, existing-token step-up, deferred `202` and three-party
+question delivery, updated-request/cancel clarification actions,
+existing-token step-up, deferred `202` and three-party
 R3, R3 challenge selection, R3 caching and multiple-definition composition,
 platform enrollment/attestation, x509, and additional Signature-Key schemes
 still require implementation and qualification.

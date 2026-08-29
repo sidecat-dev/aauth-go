@@ -2896,7 +2896,8 @@ func (agent *Agent) DoAuthorized(
 // DoWithPersonTokenAuthorization starts one exact protected call with a
 // resource-directed person token, satisfies the resource's immediate auth-token
 // challenge through the selected person server, and retries the same call under
-// the resulting grant. Deferred challenge delivery is not handled here.
+// the resulting grant. For stateful 202 delivery it completes at the retained
+// pending URL and retries one lost terminal response safely.
 func (agent *Agent) DoWithPersonTokenAuthorization(
 	ctx context.Context,
 	call AuthorizedCall,
@@ -2934,12 +2935,25 @@ func (agent *Agent) DoWithPersonTokenAuthorization(
 	if err != nil {
 		return nil, zero, err
 	}
-	if challenge.StatusCode != http.StatusUnauthorized {
+	var requirement aauth.Requirement
+	deferredLocation := ""
+	switch challenge.StatusCode {
+	case http.StatusUnauthorized:
+		requirement, err = aauth.ParseRequirementHeader(challenge.Header.Get("AAuth-Requirement"))
+		challenge.Body.Close()
+	case http.StatusAccepted:
+		deferred, deferredErr := aauth.ParseDeferredResponse(challenge)
+		challenge.Body.Close()
+		if deferredErr != nil || deferred.Requirement == nil {
+			return nil, zero, errors.New("reference: protected response is not a valid deferred auth-token challenge")
+		}
+		requirement = *deferred.Requirement
+		deferredLocation = deferred.Location
+		err = nil
+	default:
 		defer challenge.Body.Close()
 		return nil, zero, responseError(challenge)
 	}
-	requirement, err := aauth.ParseRequirementHeader(challenge.Header.Get("AAuth-Requirement"))
-	challenge.Body.Close()
 	if err != nil || requirement.Type != aauth.RequirementAuthToken {
 		return nil, zero, errors.New("reference: protected response is not an auth-token challenge")
 	}
@@ -2951,7 +2965,14 @@ func (agent *Agent) DoWithPersonTokenAuthorization(
 	if err != nil {
 		return nil, zero, err
 	}
-	response, err := agent.DoAuthorizedRequest(ctx, call, grant)
+	completion := call
+	if deferredLocation != "" {
+		completion = AuthorizedCall{Method: http.MethodGet, Endpoint: deferredLocation}
+	}
+	response, err := agent.DoAuthorizedRequest(ctx, completion, grant)
+	if err != nil && deferredLocation != "" {
+		response, err = agent.DoAuthorizedRequest(ctx, completion, grant)
+	}
 	if err != nil {
 		return nil, zero, err
 	}
@@ -3032,7 +3053,7 @@ func (agent *Agent) newAuthorizedCallRequest(
 	call AuthorizedCall,
 	credential string,
 ) (*http.Request, error) {
-	if err := aauth.ValidateEndpoint(call.Endpoint); err != nil {
+	if err := validateAuthorizedCallEndpoint(call.Endpoint); err != nil {
 		return nil, err
 	}
 	if credential == "" {
@@ -3056,6 +3077,15 @@ func (agent *Agent) newAuthorizedCallRequest(
 		return nil, err
 	}
 	return request, nil
+}
+
+func validateAuthorizedCallEndpoint(endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.Opaque != "" {
+		return errors.New("reference: authorized call requires an absolute HTTPS URL without userinfo or fragment")
+	}
+	_, err = endpointIdentifier(endpoint)
+	return err
 }
 
 // RequestResourceManagedAccess starts the current resource-managed flow at the

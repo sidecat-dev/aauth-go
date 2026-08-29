@@ -55,6 +55,7 @@ type AuthorizedRequest struct {
 	AuthToken          string
 	Method             string
 	Path               string
+	Target             string
 	Body               []byte
 	ContentType        string
 }

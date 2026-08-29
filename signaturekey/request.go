@@ -172,6 +172,9 @@ func SignRequest(request *http.Request, key jose.SigningKey, credential Credenti
 	}
 	request.Header.Set("Signature-Key", credential.header)
 	components := []string{"@method", "@authority", "@path"}
+	if request.URL.RawQuery != "" {
+		components = append(components, "@query")
+	}
 	if request.Header.Get("Authorization") != "" {
 		components = append(components, "authorization")
 	}
@@ -230,6 +233,9 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		return prepared, newError(ErrorInvalidSignature, err)
 	}
 	required := append([]string{"@method", "@authority", "@path", "signature-key"}, options.RequiredComponents...)
+	if request.URL.RawQuery != "" {
+		required = append(required, "@query")
+	}
 	if hasRequestBody(request) {
 		required = append(required, "content-digest")
 	}
@@ -458,6 +464,8 @@ func signatureBase(request *http.Request, components []string, params string) (s
 			if value == "" {
 				value = "/"
 			}
+		case "@query":
+			value = "?" + request.URL.RawQuery
 		default:
 			if strings.HasPrefix(component, "@") {
 				return "", fmt.Errorf("aauth: unsupported derived signature component %q", component)

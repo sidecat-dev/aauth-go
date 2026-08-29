@@ -61,6 +61,16 @@ type ResourceConfig struct {
 	Events                       *ResourceEventsConfig
 	R3                           *ResourceR3Config
 	Budget                       *ResourceBudgetConfig
+	DeferredProtected            *ResourceDeferredProtectedConfig
+}
+
+// ResourceDeferredProtectedConfig selects the stateful 202 form for exact
+// person-token-signed protected calls, durable custody, and provider-keyed host
+// operation.
+type ResourceDeferredProtectedConfig struct {
+	Store     DeferredProtectedCallStore
+	Select    func(context.Context, *http.Request) (bool, error)
+	Operation func(context.Context, aauth.AuthorizedRequest, string) (any, error)
 }
 
 // ResourceBudgetConfig selects the resource-denominated offer placed in one
@@ -155,6 +165,9 @@ type Resource struct {
 	budgetMaximumCost            func(context.Context, aauth.AuthorizedRequest) (int64, error)
 	budgetCallKey                func(context.Context, aauth.AuthorizedRequest) (string, error)
 	budgetOperation              func(context.Context, aauth.AuthorizedRequest, string) (BudgetOperationResult, error)
+	deferredProtectedStore       DeferredProtectedCallStore
+	deferredProtectedSelect      func(context.Context, *http.Request) (bool, error)
+	deferredProtectedOperation   func(context.Context, aauth.AuthorizedRequest, string) (any, error)
 	r3Vocabularies               map[string]json.RawMessage
 	r3DocumentStore              R3RestrictedDocumentStore
 	r3DocumentForOperations      func(context.Context, r3.OperationSet) ([]byte, error)
@@ -263,6 +276,12 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		if config.AccessMode != aauth.AccessModeAuthToken || config.Budget.Offer == nil || config.Budget.Store == nil || config.Budget.ResourceTokenStore == nil ||
 			config.Budget.MaximumCost == nil || config.Budget.CallKey == nil || config.Budget.Operation == nil {
 			return nil, errors.New("reference: Budgets requires auth-token mode, offer policy, resource-token lineage, reservation custody, cost bound, stable call key, and metered operation")
+		}
+	}
+	if config.DeferredProtected != nil {
+		if config.AccessMode != aauth.AccessModeAuthToken || config.DeferredProtected.Store == nil || config.DeferredProtected.Select == nil || config.DeferredProtected.Operation == nil ||
+			config.R3 != nil || config.Budget != nil {
+			return nil, errors.New("reference: deferred protected calls require auth-token mode, selection policy, dedicated custody, and no companion profile")
 		}
 	}
 	switch config.AccessMode {
@@ -532,6 +551,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		pendingLifetime:              pendingLifetime,
 		operation:                    config.Operation,
 		budgetOffer:                  nil,
+		deferredProtectedStore:       nil,
 		r3Vocabularies:               r3Vocabularies,
 		r3DocumentStore:              r3DocumentStore,
 		r3DocumentForOperations:      r3DocumentForOperations,
@@ -565,6 +585,11 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		resource.budgetMaximumCost = config.Budget.MaximumCost
 		resource.budgetCallKey = config.Budget.CallKey
 		resource.budgetOperation = config.Budget.Operation
+	}
+	if config.DeferredProtected != nil {
+		resource.deferredProtectedStore = config.DeferredProtected.Store
+		resource.deferredProtectedSelect = config.DeferredProtected.Select
+		resource.deferredProtectedOperation = config.DeferredProtected.Operation
 	}
 	if resource.authorizationStore != nil {
 		if err := resource.loadAuthorizationState(context.Background()); err != nil {
@@ -991,6 +1016,7 @@ func (resource *Resource) Handler() http.Handler {
 	}
 	mux.HandleFunc("POST /authorize", resource.handleAuthorize)
 	mux.HandleFunc("GET /pending/{id}", resource.handlePendingAuthorization)
+	mux.HandleFunc("GET /deferred/{id}", resource.handleDeferredProtectedCall)
 	mux.HandleFunc("GET /interaction/{id}", resource.handleInteraction)
 	mux.HandleFunc("GET /.well-known/aauth-resource.json", resource.handleMetadata)
 	mux.HandleFunc("GET /jwks", resource.handleJWKS)
@@ -1339,6 +1365,7 @@ func validateResourceRoutePatterns(publicEvents, asyncAPI, protectedEvents strin
 	for _, pattern := range []string{
 		"POST /authorize",
 		"GET /pending/{id}",
+		"GET /deferred/{id}",
 		"GET /interaction/{id}",
 		"GET /.well-known/aauth-resource.json",
 		"GET /jwks",
@@ -2140,7 +2167,12 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		return
 	}
 	if resource.accessMode == aauth.AccessModeAuthToken && verified.CredentialType == aauth.PersonTokenType {
-		resource.challengeProtectedWithPersonToken(response, request, verified)
+		personIssuerKey, keyErr := credentialKeyCapture.retainedKey()
+		if keyErr != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", keyErr)
+			return
+		}
+		resource.challengeProtectedWithPersonToken(response, request, exactBody, verified, personIssuerKey)
 		return
 	}
 	if resource.accessMode == aauth.AccessModeSessionToken {
@@ -2282,6 +2314,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		AuthToken:          verified.RawCredential,
 		Method:             request.Method,
 		Path:               request.URL.Path,
+		Target:             request.URL.RequestURI(),
 		Body:               append([]byte(nil), exactBody...),
 		ContentType:        request.Header.Get("Content-Type"),
 	}

@@ -9,10 +9,10 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | Status | Sections |
 | --- | ---: |
 | Exercised | 44 |
-| Partial | 55 |
+| Partial | 57 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 495 |
+| Unclaimed | 493 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,7 +20,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 18 | 3 | 0 | 210 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 20 | 3 | 0 | 208 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
@@ -332,6 +332,25 @@ Evidence:
 - `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServerRejectsSubstitutedUpstreamKey`
 - `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServerRejectsSubstitutedUpstreamKey`
 
+### `core/covered-components` — Partial
+
+Current reference requests always cover method, normalized authority, escaped path, the exact query when one is present, and Signature-Key. Body-bearing calls also cover Content-Digest and present Content-Type; endpoint-specific additional-component coverage remains partial.
+
+Evidence:
+
+- `signaturekey/request_external_test.go:TestRequestProofCoversAnExactQueryWhenPresent`
+- `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
+
+### `core/deferred-auth-token` — Partial
+
+One four-party 202 delivery retains the exact body-bearing invocation and its verified person-token request proof before releasing its same-origin pending URL. Store reopen re-verifies that proof, so a canonical request rewrite fails. The first auth token to satisfy the held scope claims a stable consequence key; the exact status, media type, and body are retained before release and replay after terminal-response loss and resource reconstruction without rerunning policy or consequence. Companion-bearing calls, refreshed resource tokens, and deferred PS or AS authorization remain unclaimed.
+
+Evidence:
+
+- `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
+- `reference/deferred_protected_store_test.go:TestFileDeferredProtectedCallStoreRetainsOneExactTerminalResponse`
+- `reference/deferred_protected_store_test.go:TestFileDeferredProtectedCallStoreRefusesCanonicalRequestRewrite`
+
 ### `core/deferred-responses/deferred-response-state-machine` — Partial
 
 After the caller receives and retains the pending URL, pending, success, denial, expiry, polling refusal, reconstructed server/client continuations, transient issuance and federation retry, and exact terminal-response recovery are exercised for protected-first session authorization and current person-server/access-server authorization. Recovery from loss of the initial 202 response is not implemented because the current wire request carries no stable recovery identity.
@@ -484,11 +503,12 @@ Evidence:
 
 ### `core/requirement-auth-token` — Partial
 
-An auth-token resource accepts one person-token-signed protected call, maps its required scope, performs no protected consequence, and returns 401 with a verified resource token. The reference agent exchanges it through the ordinary PS and AS path and retries the exact method, target, body, and media type once. Deferred 202 delivery and existing-auth-token step-up remain unclaimed.
+An auth-token resource accepts one person-token-signed protected call, maps its required scope, and performs no protected consequence before returning either the baseline 401 or stateful 202 with a verified resource token. The reference agent exchanges it through the ordinary PS and AS path and completes the exact invocation. Existing-auth-token step-up remains unclaimed.
 
 Evidence:
 
 - `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
+- `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
 
 ### `core/requirement-responses/aauth-requirement-header-structure` — Exercised
 
@@ -532,13 +552,14 @@ Evidence:
 
 ### `core/resource-tokens/resource-token/resource-challenge-verification` — Partial
 
-The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on both proactive and protected-resource 401 resource tokens before contacting the PS. A distinct-server journey retries the exact protected call under the resulting grant. Deferred 202 challenge delivery, R3 challenge selection, and step-up from an existing auth token remain open.
+The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on proactive, protected-resource 401, and held-invocation 202 resource tokens before contacting the PS. Distinct-server journeys complete the exact protected call under the resulting grant. R3 challenge selection and step-up from an existing auth token remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 - `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
 - `reference/protected_challenge_test.go:TestAgentRejectsSubstitutedProtectedResourceChallengeContext`
+- `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
 
 ### `core/resource-tokens/resource-token/resource-token-structure` — Exercised
 

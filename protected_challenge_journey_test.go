@@ -167,7 +167,7 @@ func TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall(t *test
 		t.Fatalf("observed challenge = count %d, requirement %#v, cache-control %q", observed.count, observed.requirement, observed.cacheControl)
 	}
 	if operationRequest.Method != call.Method || operationRequest.Path != "/records" ||
-		string(operationRequest.Body) != string(call.Body) || operationRequest.ContentType != call.ContentType {
+		operationRequest.Target != "/records" || string(operationRequest.Body) != string(call.Body) || operationRequest.ContentType != call.ContentType {
 		t.Fatalf("retried operation = %#v", operationRequest)
 	}
 	if grant.Claims.Issuer != "https://as.example" || grant.Claims.Audience != "https://resource.example" ||

@@ -147,9 +147,35 @@ for this library.
   runs once, only after both PS and AS policy. Substitution tests reject every
   person and request-context binding before the token exchange.
 - A configured Budget resource can place its default offer in this challenge.
-  Deferred `202` challenge delivery, automatic person-token acquisition, R3
-  challenge selection, and step-up from an existing auth token remain
-  unclaimed.
+  Automatic person-token acquisition, R3 challenge selection, and step-up from
+  an existing auth token remain unclaimed.
+
+### Deferred protected-call delivery
+
+- A resource may select the current `202 Accepted` delivery before issuing the
+  challenge. It retains the exact method, target, body, media type, required
+  scopes, resource token, full verified person-token request proof, exact
+  person-server verification key, and expiry before releasing a same-origin
+  pending URL. Store reopen re-verifies that proof; recomputing the store
+  checksum after changing the held request does not transfer authority.
+- The agent validates the same resource-token boundary, obtains an immediate
+  grant through the ordinary PS/AS path, and completes with a signed `GET` at
+  the pending URL. A transport failure on that consequence-safe endpoint is
+  retried once with a fresh proof.
+- The first auth token matching the retained person, resource, and scope context
+  durably claims the invocation. The host receives the stable pending ID as its
+  consequence key. Concurrent or different-token claims cannot run it.
+- `AuthorizedRequest` now retains the exact request target as well as its parsed
+  path. Query-bearing calls cover RFC 9421 `@query`; changing a query after
+  signing invalidates the proof. A held invocation therefore does not silently
+  lose unsigned query semantics before reaching its host.
+- Exact terminal status, media type, and body are retained before response. A
+  lost response followed by resource reconstruction returns those bytes without
+  rerunning protected policy or the host consequence. Claimed work is
+  reclaimable after restart with the same token and consequence key.
+- Companion-bearing deferred calls, refreshed resource-token challenges,
+  deferred PS or AS authorization, and automatic agent process-restart recovery
+  remain unclaimed.
 
 ## 2026-08-28
 

@@ -105,6 +105,46 @@ func TestHWKRequestProofIsPortableAndSealed(t *testing.T) {
 	}
 }
 
+func TestRequestProofCoversAnExactQueryWhenPresent(t *testing.T) {
+	now := time.Date(2026, 8, 29, 17, 30, 0, 0, time.UTC)
+	key, err := jose.NewEd25519SigningKey(
+		"query-key",
+		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x45}, ed25519.SeedSize)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, _ := signaturekey.NewHWKCredential(key.PublicJWK())
+	request, _ := http.NewRequest(http.MethodGet, "https://resource.example/records?mode=current&limit=1", nil)
+	if err := signaturekey.SignRequest(request, key, credential, fixedClock(now), signaturekey.SignOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(request.Header.Get("Signature-Input"), `"@query"`) {
+		t.Fatalf("query is not covered: %s", request.Header.Get("Signature-Input"))
+	}
+	prepared, err := signaturekey.PrepareRequest(
+		request, fixedClock(now),
+		signaturekey.VerifyOptions{AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeHWK}, RequireExactComponents: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepared.Verify(key.PublicJWK()); err != nil {
+		t.Fatal(err)
+	}
+	request.URL.RawQuery = "mode=other&limit=1"
+	changed, err := signaturekey.PrepareRequest(
+		request, fixedClock(now),
+		signaturekey.VerifyOptions{AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeHWK}, RequireExactComponents: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := changed.Verify(key.PublicJWK()); err == nil {
+		t.Fatal("changed query verified under the original proof")
+	}
+}
+
 func TestJWKSURICredentialResolvesThroughTheGenericKeyContract(t *testing.T) {
 	now := time.Date(2026, 8, 28, 22, 45, 0, 0, time.UTC)
 	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x44}, ed25519.SeedSize))
