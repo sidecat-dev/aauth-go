@@ -1950,6 +1950,8 @@ func TestPersonServerRetainsRefreshedAccessServerKeyForOfflineTerminalRecovery(t
 		record.Context.TargetTokenExpiresAt,
 		record.Context.ResourceToken,
 		record.Decision,
+		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

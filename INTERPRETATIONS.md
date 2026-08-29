@@ -119,7 +119,7 @@ branches are removed. Old wire forms may remain only as raw rejection vectors.
 
 ## AAG-I004 — Current R3 proposal retrieval must admit both the PS and AS
 
-**Status:** adopted source correction; implementation pending
+**Status:** adopted; direct-document retrieval implemented, per-call pending
 
 **Source:** R3, `Per-Call Proposals`, `R3 Document`, and `R3 Processing` at the
 current AAuth revision above.
@@ -127,9 +127,11 @@ current AAuth revision above.
 **Question:** May a resource expose an exact proposal only to its access server,
 leaving the person server unable to retrieve it?
 
-**Chosen behavior:** No current-conformance claim is made until resource policy
-admits the current PS and AS retrieval roles and the rebuilt person-token flow
-binds the resulting proposal and token evidence.
+**Chosen behavior:** A direct R3 resource retains the exact PS and AS reader
+identities with the document before releasing the resource token. Both roles
+fetch it independently with authenticated server requests and bind the exact
+bytes to Core token evidence. Per-call proposal retrieval must use the same
+two-reader rule before that path can make a conformance claim.
 
 **Alternative considered:** Preserve the earlier AS-only endpoint rule because
 an older draft combined PS display language with AS-only retrieval text. The
@@ -141,14 +143,13 @@ retrieval contract.
 
 **Evidence:**
 
-- `internal/sourcecoverage/sourcecoverage_test.go:TestCurrentClaimsUseCurrentEvidenceOnly`
-- current R3 sections remain unclaimed in `SOURCE-COVERAGE.md`
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart`
 
-**Current-product effect:** Current R3 remains unclaimed, and no callable R3
-authorization path remains. Neutral current-source document values and digests
-remain for Events. A future implementation must add PS-and-AS retrieval,
-per-call proposal custody, grant enforcement, and audit-atomic issuance as one
-complete path before any R3 conformance claim.
+**Current-product effect:** One immediate four-party direct path is callable and
+partially claimed. Per-call proposal custody, deferred R3, three-party R3,
+caching, and audit-atomic issuance remain explicit gaps; direct-document proof
+does not imply those paths.
 
 ## AAG-I005 — Person-token policy denial is an explicit extension
 

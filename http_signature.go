@@ -53,23 +53,24 @@ func preflightSelfJWTClaims(payload []byte, now time.Time) (selfJWTLocator, erro
 
 // VerifiedRequest is the trusted signing context of an HTTP request.
 type VerifiedRequest struct {
-	Proof            signaturekey.VerifiedRequest
-	SignatureKeyType signaturekey.Scheme
-	Signer           string
-	RawCredential    string
-	CredentialType   string
-	Agent            string
-	PublicKey        jose.JWK
-	IdentityKey      jose.JWK
-	JKTJWT           *signaturekey.VerifiedJKTJWT
-	AgentToken       *VerifiedToken[AgentTokenClaims]
-	PersonToken      *VerifiedToken[PersonTokenClaims]
-	AuthToken        *VerifiedToken[AuthTokenClaims]
-	SubscribeToken   *SubscribeTokenClaims
-	SelfJWT          *VerifiedSelfJWT
-	Created          time.Time
-	VerifiedAt       time.Time
-	ReplayKey        string
+	Proof                  signaturekey.VerifiedRequest
+	SignatureKeyType       signaturekey.Scheme
+	Signer                 string
+	RawCredential          string
+	CredentialType         string
+	Agent                  string
+	PublicKey              jose.JWK
+	IdentityKey            jose.JWK
+	JKTJWT                 *signaturekey.VerifiedJKTJWT
+	AgentToken             *VerifiedToken[AgentTokenClaims]
+	PersonToken            *VerifiedToken[PersonTokenClaims]
+	AuthToken              *VerifiedToken[AuthTokenClaims]
+	SubscribeToken         *SubscribeTokenClaims
+	SelfJWT                *VerifiedSelfJWT
+	Created                time.Time
+	VerifiedAt             time.Time
+	ReplayKey              string
+	authCompanionValidated bool
 }
 
 // AgentClaims returns an independent projection of the verified agent token.
@@ -99,8 +100,10 @@ func (verified VerifiedRequest) AuthClaims() (AuthTokenClaims, error) {
 	if verified.AuthToken == nil {
 		return AuthTokenClaims{}, errors.New("aauth: verified request has no auth token")
 	}
-	if err := verified.AuthToken.RequireNoAuthorizationMembers(); err != nil {
-		return AuthTokenClaims{}, err
+	if !verified.authCompanionValidated {
+		if err := verified.AuthToken.RequireNoAuthorizationMembers(); err != nil {
+			return AuthTokenClaims{}, err
+		}
 	}
 	return verified.AuthToken.Claims()
 }
@@ -110,6 +113,13 @@ func (verified VerifiedRequest) AuthClaims() (AuthTokenClaims, error) {
 // verified. The supplied value is sealed and may be passed to a strict
 // application decoder such as DecodeVerifiedEventToken.
 type SelfJWTClaimPolicy func(VerifiedSelfJWT) error
+
+// AuthorizationCompanion is invalid-zero evidence returned by the
+// deployment-selected companion validator for the same exact Core token.
+type AuthorizationCompanion interface {
+	Valid() bool
+	CoreEvidenceID() EvidenceID
+}
 
 // VerifyRequestOptions declares the message components and token forms a
 // particular endpoint accepts.
@@ -125,6 +135,12 @@ type VerifyRequestOptions struct {
 	SignatureWindow          time.Duration
 	SelfJWTMaximumLifetime   time.Duration
 	SelfJWTClaimPolicy       SelfJWTClaimPolicy
+	// AuthTokenCompanion validates every recognized authorization member before
+	// an auth-token request can expose claims. When absent, such members fail
+	// closed. The deployment remains responsible for selecting a callback that
+	// validates all companion semantics it accepts; Core rejects nil, invalid,
+	// or wrong-token evidence returned by that callback.
+	AuthTokenCompanion func(VerifiedToken[AuthTokenClaims]) (AuthorizationCompanion, error)
 }
 
 // VerifyRequest verifies the JWT identity, required component coverage,
@@ -230,8 +246,18 @@ func VerifyRequest(
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
-			if memberErr := token.RequireNoAuthorizationMembers(); memberErr != nil {
-				return verified, classifyJWTVerificationError(memberErr)
+			if options.AuthTokenCompanion == nil {
+				if memberErr := token.RequireNoAuthorizationMembers(); memberErr != nil {
+					return verified, classifyJWTVerificationError(memberErr)
+				}
+			} else if companion, companionErr := options.AuthTokenCompanion(token); companionErr != nil {
+				return verified, classifyJWTVerificationError(companionErr)
+			} else {
+				coreID, identityErr := token.EvidenceID()
+				if companion == nil || identityErr != nil || !companion.Valid() || companion.CoreEvidenceID() != coreID {
+					return verified, classifyJWTVerificationError(errors.New("aauth: auth-token companion evidence does not match Core verification"))
+				}
+				verified.authCompanionValidated = true
 			}
 			claims, claimsErr := token.Claims()
 			if claimsErr != nil {

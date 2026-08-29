@@ -37,8 +37,10 @@ The `r3` package owns exact-byte R3 documents, semantic operation sets, the
 seven current standard vocabularies, third-party vocabulary admission, and
 content digests. It also validates the R3 members retained in exact Core token
 evidence and returns a sealed result bound to that evidence. These values do
-not themselves authorize an operation; callable policy, document retrieval,
-and resource enforcement remain separate unfinished work.
+not themselves authorize an operation. The reference package composes the
+bounded direct journey: deployment-owned review and grant policy creates a
+sealed direct grant, while signed retrieval and resource enforcement remain
+role-specific responsibilities.
 The `events` package owns exact AsyncAPI contract parsing and payload
 validation plus admitted resource-contract and agent-endpoint discovery. Event
 and subscribe token profiles remain in root Core for now; their package move is
@@ -161,16 +163,22 @@ Token JSON and reference endpoint request JSON reject exact duplicate member
 names and names that Go would case-fold onto the same struct field before
 decoding.
 
-Current R3 authorization and Budgets remain unclaimed. The module exposes no
-callable R3 authorization path. Core verification retains structurally complete
-R3 or Budget members only as exact evidence; an endpoint must consume a
-companion validation result or reject those unresolved members. Existing
-non-companion endpoints reject them. One compile-time Core catalog rejects
-those members on agent and person tokens, enforces current token applicability
-and required co-presence, and keeps the removed `r3_conditional` name only as a
-rejected negative vector. The public `r3` package validates R3 URI, digest,
-grant, and per-call members against the exact Core evidence. Budgets validation,
-R3 document retrieval, callable policy, and resource enforcement remain open.
+One bounded immediate four-party R3 path is callable. The agent requests one
+operation set; the resource retains an exact document containing exactly that
+set and the precise PS/AS readers before releasing its token; the PS and AS
+fetch with signed server identities and independently verify the exact hash;
+deployment review and grant policies run over sealed document evidence; and the
+resource serves only an operation named in `r3_granted`. Resource
+reconstruction, changed bytes, review denial, and an ungranted operation are
+exercised end to end.
+
+This is not complete R3 conformance. Deferred authorization, three-party R3,
+document caching, per-call proposals and retained results, and atomic AS audit
+retention remain open. Budgets remains entirely unclaimed. Core verification
+retains structurally complete companion members only as exact evidence; an
+endpoint must return matching invalid-zero companion evidence or reject those
+members. Existing non-companion endpoints reject them, and the removed
+`r3_conditional` name remains only as a rejected negative vector.
 Bounded current
 sub-agent and call-chain behavior is claimed only for the exact runnable
 journeys listed in the source coverage report; broader delegation and

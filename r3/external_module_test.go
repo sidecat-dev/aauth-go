@@ -120,4 +120,62 @@ func TestR3TokenEvidence(t *testing.T) {
 		t.Fatalf("R3 result = %#v, %v", result, err)
 	}
 }
+
+func TestR3DirectGrant(t *testing.T) {
+	now := time.Date(2026, 8, 29, 6, 30, 0, 0, time.UTC)
+	resourceKey, _ := jose.NewEd25519SigningKey("resource", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x34}, ed25519.SeedSize)))
+	accessKey, _ := jose.NewEd25519SigningKey("access", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x35}, ed25519.SeedSize)))
+	agentKey, _ := jose.NewEd25519SigningKey("agent", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x36}, ed25519.SeedSize)))
+	exact := []byte(` + "`" + `{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}]}` + "`" + `)
+	reference, err := r3.NewDocumentReference("https://resource.example/r3/direct", exact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, _ := agentKey.PublicJWK().Thumbprint()
+	resourceCompact, err := r3.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+		Audience: "https://access.example", JTI: "resource-direct", AgentJKT: thumbprint,
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Scope: "read",
+		PersonServer: "https://person.example", Subject: "person", PresentedJTI: "person-token",
+	}, reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceCore, err := aauth.VerifyResourceToken(context.Background(), resourceCompact,
+		signaturekey.StaticKeyResolver{"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()}},
+		aauth.ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceResult, _ := r3.ValidateResourceToken(resourceCore)
+	verifiedDocument, err := r3.VerifyDocument(resourceResult, exact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := r3.OperationSet{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(` + "`" + `{"tool":"read"}` + "`" + `)}}
+	grant, err := r3.NewDirectGrant(verifiedDocument, requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authCompact, err := r3.MintAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "auth-direct",
+		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
+		Subject: "person", Scope: "read", PersonServer: "https://person.example",
+	}, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authCore, err := aauth.VerifyAuthToken(context.Background(), authCompact,
+		signaturekey.StaticKeyResolver{"https://access.example": {accessKey.ID(): accessKey.PublicJWK()}},
+		aauth.ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authResult, err := r3.ValidateAuthToken(authCore)
+	if err != nil || r3.ValidateDirectGrant(resourceResult, authResult, requested) != nil {
+		t.Fatalf("direct result = %#v, %v", authResult, err)
+	}
+}
 `

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -45,6 +46,10 @@ type PersonServerConfig struct {
 	FederationClient              *http.Client
 	AccessServerEndpoint          func(context.Context, string) (string, error)
 	TrustedUpstreamIssuer         func(context.Context, string) error
+	R3HTTPClient                  *http.Client
+	R3Admit                       func(context.Context, string) error
+	R3Review                      R3Review
+	R3FetchTimeout                time.Duration
 }
 
 type PersonServer struct {
@@ -69,6 +74,10 @@ type PersonServer struct {
 	federationClient              *http.Client
 	accessServerEndpoint          func(context.Context, string) (string, error)
 	trustedUpstreamIssuer         func(context.Context, string) error
+	r3HTTPClient                  *http.Client
+	r3Admit                       func(context.Context, string) error
+	r3Review                      R3Review
+	r3FetchTimeout                time.Duration
 
 	mu                    sync.RWMutex
 	missionIssuanceMu     sync.Mutex
@@ -161,6 +170,8 @@ type personAuthorizationContext struct {
 	personTokenRecord      PersonTokenRecord
 	requestBody            []byte
 	requestProof           *aauth.RequestProof
+	r3Token                *r3.TokenResult
+	r3Document             *r3.DocumentReference
 }
 
 type pendingPersonAuthorization struct {
@@ -351,6 +362,25 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 	if config.AuthorizationStore == nil {
 		return nil, errors.New("reference: person server requires an authorization state store")
 	}
+	r3Parts := 0
+	if config.R3HTTPClient != nil {
+		r3Parts++
+	}
+	if config.R3Admit != nil {
+		r3Parts++
+	}
+	if config.R3Review != nil {
+		r3Parts++
+	}
+	if r3Parts != 0 && r3Parts != 3 {
+		return nil, errors.New("reference: person-server R3 requires HTTP client, egress admission, and review policy")
+	}
+	if r3Parts == 3 && config.FederationClient == nil {
+		return nil, errors.New("reference: direct R3 person-server review requires access-server federation")
+	}
+	if config.R3FetchTimeout < 0 {
+		return nil, errors.New("reference: person-server R3 fetch timeout is invalid")
+	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
 		pendingLifetime = 5 * time.Minute
@@ -384,6 +414,10 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		federationClient:              config.FederationClient,
 		accessServerEndpoint:          config.AccessServerEndpoint,
 		trustedUpstreamIssuer:         config.TrustedUpstreamIssuer,
+		r3HTTPClient:                  config.R3HTTPClient,
+		r3Admit:                       config.R3Admit,
+		r3Review:                      config.R3Review,
+		r3FetchTimeout:                config.R3FetchTimeout,
 		missions:                      make(map[string]storedMission),
 		governanceReplays:             make(map[string]time.Time),
 		pending:                       make(map[string]*pendingPersonAuthorization),
@@ -2872,7 +2906,21 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeResourceTokenVerificationFailure(response, err)
 		return
 	}
-	resourceToken, err := claimsWithoutAuthorization(resourceEvidence)
+	var resourceR3 r3.TokenResult
+	members, memberErr := resourceEvidence.AuthorizationMembers()
+	var resourceToken aauth.ResourceTokenClaims
+	if memberErr != nil {
+		err = memberErr
+	} else if len(members) == 0 {
+		resourceToken, err = resourceEvidence.Claims()
+	} else if server.r3Review == nil {
+		err = resourceEvidence.RequireNoAuthorizationMembers()
+	} else {
+		resourceR3, err = r3.ValidateResourceToken(resourceEvidence)
+		if err == nil {
+			resourceToken, err = resourceEvidence.Claims()
+		}
+	}
 	if err != nil {
 		writeResourceTokenVerificationFailure(response, err)
 		return
@@ -2895,6 +2943,10 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			writeProblem(response, http.StatusForbidden, "invalid_resource_token", err)
 			return
 		}
+	}
+	if resourceR3.Valid() && resourceToken.Audience == server.identifier {
+		writeProblem(response, http.StatusNotImplemented, "r3_topology_not_implemented", errors.New("direct R3 requires a distinct access server"))
+		return
 	}
 	if resourceToken.PersonServer == "" {
 		writeProblem(response, http.StatusForbidden, "invalid_resource_token", errors.New("current resource-token ps is required"))
@@ -2995,6 +3047,32 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	authorizationContext.request.MissionS256 = resourceToken.MissionS256
 	authorizationContext.request.Tenant = resourceToken.Tenant
 	authorizationContext.request.Account = resourceToken.Account
+	if resourceR3.Valid() {
+		document, fetchErr := fetchR3Document(
+			request.Context(),
+			r3FetchConfig{
+				client: server.r3HTTPClient, key: server.signingKey,
+				identifier: server.identifier, discoveryDocument: aauth.PersonDiscoveryDocument,
+				clock: server.clock, admit: server.r3Admit, timeout: server.r3FetchTimeout,
+			},
+			resourceToken.Issuer,
+			resourceR3,
+		)
+		if fetchErr != nil {
+			writeProblem(response, http.StatusBadGateway, "r3_document_verification_failed", fetchErr)
+			return
+		}
+		if reviewErr := server.r3Review(
+			request.Context(), copyAuthorizationRequest(authorizationContext.request), document,
+		); reviewErr != nil {
+			writeHostPolicyRefusal(response, "r3_review_denied", "person-server R3 review denied the request")
+			return
+		}
+		tokenCopy := resourceR3
+		documentCopy := document
+		authorizationContext.r3Token = &tokenCopy
+		authorizationContext.r3Document = &documentCopy
+	}
 	if server.interactionRequired != nil {
 		required, err := server.interactionRequired(
 			request.Context(),
@@ -3005,6 +3083,10 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		if required {
+			if resourceR3.Valid() {
+				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("direct R3 authorization does not support deferred interaction"))
+				return
+			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
 				if !writeAuthorizationStateFailure(response, err) {
 					writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -3053,6 +3135,8 @@ func (server *PersonServer) completeAuthorization(
 			authorizationContext.targetTokenExpiresAt,
 			resourceToken,
 			decision,
+			authorizationContext.r3Token,
+			authorizationContext.r3Document,
 		)
 		if err != nil {
 			writeProblem(response, http.StatusBadGateway, "federation_failed", err)
@@ -3745,6 +3829,8 @@ func (server *PersonServer) pollFederatedAuthorization(
 			authorizationContext.targetTokenExpiresAt,
 			authorizationContext.resourceToken,
 			personDecision,
+			authorizationContext.r3Token,
+			authorizationContext.r3Document,
 		)
 		if err != nil {
 			server.failFederatedAuthorization(responseWriter, pendingID, http.StatusBadGateway, "federation_failed", err)
@@ -4036,6 +4122,8 @@ func (server *PersonServer) exchangeWithAccessServer(
 	targetTokenExpiresAt int64,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
+	resourceR3 *r3.TokenResult,
+	r3Document *r3.DocumentReference,
 ) (accessServerExchange, error) {
 	var exchange accessServerExchange
 	endpoint, err := server.accessServerEndpoint(ctx, accessServerIdentifier)
@@ -4082,6 +4170,9 @@ func (server *PersonServer) exchangeWithAccessServer(
 	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusAccepted:
+		if resourceR3 != nil {
+			return exchange, errors.New("access server deferred a direct R3 authorization")
+		}
 		deferred, err := aauth.ParseDeferredResponse(response)
 		if err != nil {
 			return exchange, err
@@ -4097,6 +4188,8 @@ func (server *PersonServer) exchangeWithAccessServer(
 			targetTokenExpiresAt,
 			resourceToken,
 			personDecision,
+			resourceR3,
+			r3Document,
 		)
 	default:
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
@@ -4112,6 +4205,8 @@ func (server *PersonServer) parseAccessServerGrant(
 	targetTokenExpiresAt int64,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
+	resourceR3 *r3.TokenResult,
+	r3Document *r3.DocumentReference,
 ) (accessServerExchange, error) {
 	var exchange accessServerExchange
 	var result struct {
@@ -4132,9 +4227,34 @@ func (server *PersonServer) parseAccessServerGrant(
 	if err != nil {
 		return exchange, err
 	}
-	claims, err := claimsWithoutAuthorization(evidence)
+	var authR3 r3.TokenResult
+	var claims aauth.AuthTokenClaims
+	if resourceR3 == nil {
+		claims, err = claimsWithoutAuthorization(evidence)
+	} else {
+		authR3, err = r3.ValidateAuthToken(evidence)
+		if err == nil {
+			claims, err = evidence.Claims()
+		}
+	}
 	if err != nil {
 		return exchange, err
+	}
+	if resourceR3 != nil {
+		if r3Document == nil || !r3Document.Valid() ||
+			resourceR3.URI() != authR3.URI() || resourceR3.Digest() != authR3.Digest() {
+			return exchange, errors.New("access-server auth token changed the verified R3 document reference")
+		}
+		granted, present := authR3.Granted()
+		if !present {
+			return exchange, errors.New("access-server auth token omitted the direct R3 grant")
+		}
+		if _, perCall := authR3.PerCall(); perCall {
+			return exchange, errors.New("access-server returned a per-call grant to the direct R3 path")
+		}
+		if _, grantErr := r3.NewDirectGrant(*r3Document, granted); grantErr != nil {
+			return exchange, grantErr
+		}
 	}
 	if claims.Issuer != accessServerIdentifier || claims.DWK != aauth.AccessDiscoveryDocument {
 		return exchange, errors.New("access-server auth token has the wrong issuer or discovery document")
@@ -4171,8 +4291,23 @@ func (server *PersonServer) parseAccessServerGrant(
 	if !capturedResolver.found {
 		return exchange, errors.New("access-server auth token verification key was not retained")
 	}
-	retainedClaims, err := verifyRetainedAuthToken(result.AuthToken, capturedResolver.key)
-	if err != nil || !reflect.DeepEqual(retainedClaims, claims) {
+	retainedEvidence, retainedErr := aauth.VerifyAuthToken(
+		context.Background(), result.AuthToken,
+		signaturekey.StaticKeyResolver{claims.Issuer: {capturedResolver.key.Kid: capturedResolver.key}},
+		aauth.ClockFunc(func() time.Time { return time.Unix(claims.IssuedAt, 0).UTC() }),
+	)
+	var retainedClaims aauth.AuthTokenClaims
+	if retainedErr == nil {
+		if resourceR3 == nil {
+			retainedClaims, retainedErr = claimsWithoutAuthorization(retainedEvidence)
+		} else {
+			_, retainedErr = r3.ValidateAuthToken(retainedEvidence)
+			if retainedErr == nil {
+				retainedClaims, retainedErr = retainedEvidence.Claims()
+			}
+		}
+	}
+	if retainedErr != nil || !reflect.DeepEqual(retainedClaims, claims) {
 		return exchange, errors.New("access-server auth token cannot be verified from retained key material")
 	}
 	exchange.authToken = result.AuthToken

@@ -21,6 +21,7 @@ import (
 
 	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -77,6 +78,7 @@ type Grant struct {
 	Resource  string
 	AuthToken string
 	Claims    aauth.AuthTokenClaims
+	R3        *r3.TokenResult
 }
 
 // PersonGrant is one verified resource-directed person token obtained from a
@@ -102,6 +104,7 @@ type ResourceGrant struct {
 	Resource      string                    `json:"resource"`
 	ResourceToken string                    `json:"resource_token"`
 	Claims        aauth.ResourceTokenClaims `json:"claims"`
+	RequestedR3   *r3.OperationSet          `json:"requested_r3,omitempty"`
 }
 
 // TokenAuthorization is either an auth-token grant or a signed-poll
@@ -1774,7 +1777,44 @@ func (agent *Agent) AuthorizeWithPersonToken(
 	if personClaims.Issuer != personServer {
 		return Grant{}, errors.New("reference: person token issuer does not match person-server endpoint")
 	}
-	resourceGrant, err := agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, personClaims)
+	resourceGrant, err := agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, personClaims, nil)
+	if err != nil {
+		return Grant{}, err
+	}
+	return agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
+}
+
+// AuthorizeR3WithPersonToken performs one immediate four-party direct R3
+// authorization journey. Deferred and per-call R3 are separate flows.
+func (agent *Agent) AuthorizeR3WithPersonToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	personServerEndpoint string,
+	scopes []string,
+	personToken string,
+	requested r3.OperationSet,
+) (Grant, error) {
+	if err := aauth.ValidateEndpoint(personServerEndpoint); err != nil {
+		return Grant{}, err
+	}
+	personServer, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return Grant{}, err
+	}
+	evidence, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return Grant{}, err
+	}
+	claims, err := claimsWithoutAuthorization(evidence)
+	if err != nil {
+		return Grant{}, err
+	}
+	if claims.Issuer != personServer {
+		return Grant{}, errors.New("reference: person token issuer does not match person-server endpoint")
+	}
+	resourceGrant, err := agent.RequestR3ResourceTokenWithPersonToken(
+		ctx, resourceEndpoint, scopes, personToken, requested,
+	)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -1798,7 +1838,30 @@ func (agent *Agent) RequestResourceTokenWithPersonToken(
 	if err != nil {
 		return ResourceGrant{}, err
 	}
-	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims)
+	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, nil)
+}
+
+// RequestR3ResourceTokenWithPersonToken requests one exact direct R3 operation
+// set and retains that request beside the returned resource token.
+func (agent *Agent) RequestR3ResourceTokenWithPersonToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	personToken string,
+	requested r3.OperationSet,
+) (ResourceGrant, error) {
+	if err := requested.Validate(); err != nil {
+		return ResourceGrant{}, err
+	}
+	evidence, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	claims, err := claimsWithoutAuthorization(evidence)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, &requested)
 }
 
 func (agent *Agent) requestCurrentResourceToken(
@@ -1807,6 +1870,7 @@ func (agent *Agent) requestCurrentResourceToken(
 	scopes []string,
 	personToken string,
 	personClaims aauth.PersonTokenClaims,
+	requestedR3 *r3.OperationSet,
 ) (ResourceGrant, error) {
 	var grant ResourceGrant
 	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
@@ -1823,7 +1887,12 @@ func (agent *Agent) requestCurrentResourceToken(
 	if err := aauth.ValidatePersonTokenContext(personClaims, resourceID, agent.signingKey.PublicJWK()); err != nil {
 		return grant, err
 	}
-	body, err := json.Marshal(map[string]string{"scope": strings.Join(requestedScopes, " ")})
+	input := resourceAuthorizationInput{Scope: strings.Join(requestedScopes, " ")}
+	if requestedR3 != nil {
+		requested := requestedR3.Clone()
+		input.R3Operations = &requested
+	}
+	body, err := json.Marshal(input)
 	if err != nil {
 		return grant, err
 	}
@@ -1853,7 +1922,16 @@ func (agent *Agent) requestCurrentResourceToken(
 	if err != nil {
 		return grant, err
 	}
-	resourceClaims, err := claimsWithoutAuthorization(resourceEvidence)
+	var resourceR3 r3.TokenResult
+	var resourceClaims aauth.ResourceTokenClaims
+	if requestedR3 == nil {
+		resourceClaims, err = claimsWithoutAuthorization(resourceEvidence)
+	} else {
+		resourceR3, err = r3.ValidateResourceToken(resourceEvidence)
+		if err == nil {
+			resourceClaims, err = resourceEvidence.Claims()
+		}
+	}
 	if err != nil {
 		return grant, err
 	}
@@ -1870,10 +1948,22 @@ func (agent *Agent) requestCurrentResourceToken(
 		resourceClaims.Tenant != personClaims.Tenant {
 		return grant, errors.New("reference: resource token does not match the presented person token")
 	}
+	if requestedR3 != nil {
+		origin, originErr := endpointIdentifier(resourceR3.URI())
+		if originErr != nil || origin != resourceID {
+			return grant, errors.New("reference: R3 resource token names a document outside the resource")
+		}
+	}
+	var retainedRequest *r3.OperationSet
+	if requestedR3 != nil {
+		copy := requestedR3.Clone()
+		retainedRequest = &copy
+	}
 	return ResourceGrant{
 		Resource:      resourceID,
 		ResourceToken: result.ResourceToken,
 		Claims:        resourceClaims,
+		RequestedR3:   retainedRequest,
 	}, nil
 }
 
@@ -2233,6 +2323,9 @@ func (agent *Agent) requestTokenAuthorization(
 		authorization.Grant = &grant
 		return authorization, nil
 	case http.StatusAccepted:
+		if resourceGrant.RequestedR3 != nil {
+			return authorization, errors.New("reference: deferred direct R3 authorization is not implemented")
+		}
 		deferred, err := aauth.ParseDeferredResponse(tokenResponse)
 		if err != nil {
 			return authorization, err
@@ -2276,6 +2369,11 @@ func preflightResourceGrantPersonServer(
 	if resourceGrant.Claims.PersonServer != personServerID {
 		return "", errors.New("reference: resource token ps does not match selected person server")
 	}
+	if resourceGrant.RequestedR3 != nil {
+		if err := resourceGrant.RequestedR3.Validate(); err != nil {
+			return "", fmt.Errorf("reference: retained R3 request: %w", err)
+		}
+	}
 	return personServerID, nil
 }
 
@@ -2288,7 +2386,20 @@ func (agent *Agent) verifyResourceGrantForContinuation(
 	if err != nil {
 		return jose.JWK{}, err
 	}
-	claims, err := claimsWithoutAuthorization(evidence)
+	var claims aauth.ResourceTokenClaims
+	if resourceGrant.RequestedR3 == nil {
+		claims, err = claimsWithoutAuthorization(evidence)
+	} else {
+		result, validationErr := r3.ValidateResourceToken(evidence)
+		if validationErr != nil {
+			return jose.JWK{}, validationErr
+		}
+		origin, originErr := endpointIdentifier(result.URI())
+		if originErr != nil || origin != resourceGrant.Resource {
+			return jose.JWK{}, errors.New("reference: R3 document is outside the retained resource")
+		}
+		claims, err = evidence.Claims()
+	}
 	if err != nil {
 		return jose.JWK{}, err
 	}
@@ -2403,7 +2514,16 @@ func (agent *Agent) parseTokenGrantResponse(
 	if err != nil {
 		return Grant{}, jose.JWK{}, err
 	}
-	authClaims, err := claimsWithoutAuthorization(authEvidence)
+	var authR3 r3.TokenResult
+	var authClaims aauth.AuthTokenClaims
+	if resourceGrant.RequestedR3 == nil {
+		authClaims, err = claimsWithoutAuthorization(authEvidence)
+	} else {
+		authR3, err = r3.ValidateAuthToken(authEvidence)
+		if err == nil {
+			authClaims, err = authEvidence.Claims()
+		}
+	}
 	if err != nil {
 		return Grant{}, jose.JWK{}, err
 	}
@@ -2441,15 +2561,33 @@ func (agent *Agent) parseTokenGrantResponse(
 	); err != nil {
 		return Grant{}, jose.JWK{}, err
 	}
+	if resourceGrant.RequestedR3 != nil {
+		resourceCore, resourceErr := aauth.VerifyResourceToken(ctx, resourceGrant.ResourceToken, agent.keyResolver, agent.clock)
+		if resourceErr != nil {
+			return Grant{}, jose.JWK{}, resourceErr
+		}
+		resourceR3, resourceErr := r3.ValidateResourceToken(resourceCore)
+		if resourceErr != nil {
+			return Grant{}, jose.JWK{}, resourceErr
+		}
+		if resourceErr := r3.ValidateDirectGrant(resourceR3, authR3, resourceGrant.RequestedR3.Clone()); resourceErr != nil {
+			return Grant{}, jose.JWK{}, resourceErr
+		}
+	}
 	verificationKey, err := capture.retainedKey()
 	if err != nil {
 		return Grant{}, jose.JWK{}, err
 	}
-	return Grant{
+	grant := Grant{
 		Resource:  resourceGrant.Resource,
 		AuthToken: tokenResult.AuthToken,
 		Claims:    authClaims,
-	}, verificationKey, nil
+	}
+	if authR3.Valid() {
+		copy := authR3
+		grant.R3 = &copy
+	}
+	return grant, verificationKey, nil
 }
 
 func newPendingTokenAuthorization(

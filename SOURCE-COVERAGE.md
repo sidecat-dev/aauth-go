@@ -8,11 +8,11 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 34 |
-| Partial | 33 |
+| Exercised | 35 |
+| Partial | 40 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 527 |
+| Unclaimed | 519 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -22,7 +22,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 17 | 3 | 0 | 211 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
-| `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 0 | 5 | 0 | 0 | 51 |
+| `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 1 | 12 | 0 | 0 | 43 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` | 1 | 2 | 2 | 0 | 38 |
 | `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 0 | 0 | 0 | 0 | 91 |
@@ -520,13 +520,30 @@ Evidence:
 
 ### `r3/auth-token-extensions` — Partial
 
-R3 validation binds r3_uri, r3_s256, r3_granted, and optional r3_per_call to exact Core auth-token evidence; it validates one shared vocabulary, semantic operation shapes, and disjoint granted and per-call sets. Resource enforcement and per-call execution remain unclaimed.
+R3 validation binds r3_uri, r3_s256, r3_granted, and optional r3_per_call to exact Core auth-token evidence; it validates one shared vocabulary, semantic operation shapes, and disjoint granted and per-call sets. One direct resource-enforcement path is claimed separately; per-call execution remains unclaimed.
 
 Evidence:
 
 - `r3/token_external_test.go:TestR3TokenResultsBindExactCoreEvidence`
 - `r3/token_external_test.go:TestR3AuthTokenValidationRefusesMalformedMembers`
 - `r3/external_module_test.go:TestCleanExternalModuleValidatesR3DocumentsAndTokenEvidence`
+
+### `r3/authorization-endpoint-extensions/request` — Partial
+
+The reference agent submits one validated r3_operations set with the current authorization request. The direct profile requires the resource-selected document to contain exactly that set; account selection and multiple-definition composition are not exercised.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+- `reference/r3_direct_test.go:TestDirectR3DocumentSelectionIsExactlyTheAgentRequest`
+
+### `r3/authorization-endpoint-extensions/response` — Partial
+
+The direct four-party profile returns a resource token carrying the exact HTTPS r3_uri and unpadded exact-byte r3_s256 selected for the requested operations. Non-R3 and multiple-definition response behavior remains outside this claim.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
 
 ### `r3/content-addressing` — Partial
 
@@ -536,9 +553,18 @@ Evidence:
 
 - `r3/document_internal_test.go:TestR3DocumentRetainsExactIdentityAndCurrentNeutralShape`
 
+### `r3/r3-document-access-restriction` — Partial
+
+Before releasing the resource token, the resource atomically retains the exact document bytes with the precise PS and AS reader identities. The reconstructed resource serves it only after a fresh verified jwks_uri request from a retained reader. Per-call proposal access remains unclaimed.
+
+Evidence:
+
+- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart`
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+
 ### `r3/r3-document/fields` — Partial
 
-The public R3 package strictly parses the current vocabulary, operations, account, parameters, and display fields and returns defensive operation-set projections. Serving, authenticated retrieval, and policy use are not implemented by this value layer.
+The public R3 package strictly parses the current vocabulary, operations, account, parameters, and display fields and returns defensive operation-set projections. Serving and policy remain separate role compositions; one bounded reference path is claimed below.
 
 Evidence:
 
@@ -547,12 +573,54 @@ Evidence:
 
 ### `r3/r3-document/resource-token-extensions` — Partial
 
-Core verification retains applicable r3_uri and r3_s256 members only as exact sealed token evidence; R3 validation then requires an absolute HTTPS document URI and an unpadded SHA-256 digest bound to that evidence. Document retrieval, hash comparison, and policy processing remain unclaimed.
+Core verification retains applicable r3_uri and r3_s256 members only as exact sealed token evidence; R3 validation then requires an absolute HTTPS document URI and an unpadded SHA-256 digest bound to that evidence. The bounded direct retrieval and policy composition is claimed separately below.
 
 Evidence:
 
 - `r3/token_external_test.go:TestR3TokenResultsBindExactCoreEvidence`
 - `r3/token_external_test.go:TestR3AuthTokenValidationRefusesMalformedMembers`
+
+### `r3/r3-processing` — Partial
+
+In one immediate four-party profile, the PS and AS independently fetch the exact document with signed server identities and verify its hash before review or grant policy. Caching, deferred authorization, three-party deployment, and audit-atomic issuance remain unclaimed.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+
+### `r3/r3-processing/as-processing` — Partial
+
+The AS verifies the resource token, signed document retrieval, exact document hash, deployment grant policy, and grant membership before issuing an auth token with r3_granted. Atomic R3 audit-log retention is not implemented and remains a blocker to a complete AS-processing claim.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+
+### `r3/resource-enforcement` — Partial
+
+A configured direct-R3 resource maps each protected request to exactly one operation, requires it in r3_granted, and refuses ungranted or per-call operations before proof consumption or host consequence. Per-call proposal and retained-result enforcement remain unclaimed.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+
+### `r3/security-considerations/grant-enforcement` — Partial
+
+The direct profile validates that every AS grant belongs to the verified document, that every agent-accepted grant stays within the exact requested set, and that every served operation appears in r3_granted. r3_per_call is refused and remains unimplemented.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+- `r3/token_external_test.go:TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest`
+
+### `r3/security-considerations/hash-verification` — Exercised
+
+Both direct-profile policy roles verify SHA-256 over the exact fetched bytes against r3_s256 and refuse changed bytes before review, grant issuance, or protected consequence.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+- `r3/token_external_test.go:TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest`
 
 ### `r3/vocabularies` — Partial
 

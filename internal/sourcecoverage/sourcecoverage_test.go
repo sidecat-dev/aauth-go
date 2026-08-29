@@ -174,6 +174,14 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"r3\x00content-addressing":                                                              StatusPartial,
 		"r3\x00r3-document/resource-token-extensions":                                           StatusPartial,
 		"r3\x00auth-token-extensions":                                                           StatusPartial,
+		"r3\x00authorization-endpoint-extensions/request":                                       StatusPartial,
+		"r3\x00authorization-endpoint-extensions/response":                                      StatusPartial,
+		"r3\x00r3-processing":                                                                   StatusPartial,
+		"r3\x00r3-processing/as-processing":                                                     StatusPartial,
+		"r3\x00resource-enforcement":                                                            StatusPartial,
+		"r3\x00r3-document-access-restriction":                                                  StatusPartial,
+		"r3\x00security-considerations/hash-verification":                                       StatusExercised,
+		"r3\x00security-considerations/grant-enforcement":                                       StatusPartial,
 	}
 	currentEvidence := map[string]bool{
 		"access_client_test.go":                  true,
@@ -188,6 +196,9 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"r3/document_internal_test.go":           true,
 		"r3/external_module_test.go":             true,
 		"r3/token_external_test.go":              true,
+		"r3_direct_journey_test.go":              true,
+		"reference/r3_direct_test.go":            true,
+		"reference/r3_document_store_test.go":    true,
 		"subagent_journey_test.go":               true,
 	}
 	seenCurrent := make(map[string]bool, len(currentClaims))
@@ -212,7 +223,6 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"r3\x00authorization-endpoint-extensions":          {},
 		"r3\x00per-call-proposals":                         {},
 		"r3\x00r3-document":                                {},
-		"r3\x00r3-processing":                              {},
 		"interop-profile\x00aauth-interoperability-demo-profile/surface-1-ps-mission-approval-and-blob-response":        {},
 		"interop-profile\x00aauth-interoperability-demo-profile/surface-3-resource-token-issuance-and-issuer-discovery": {},
 		"interop-profile\x00aauth-interoperability-demo-profile/surface-4-auth-token-issuance-and-presentation":         {},

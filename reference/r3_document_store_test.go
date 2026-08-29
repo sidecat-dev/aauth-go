@@ -126,10 +126,55 @@ func TestFileR3DocumentStoreRejectsNonCanonicalDigestPaths(t *testing.T) {
 	escapeDigest := "../" + digest
 	escapedPath := filepath.Join(filepath.Dir(directory), digest+".r3")
 	t.Cleanup(func() { _ = os.Remove(escapedPath) })
-	if err := store.write(escapeDigest, document, now.Add(time.Minute)); !errors.Is(err, ErrR3DocumentIntegrity) {
+	if err := store.write(escapeDigest, document, nil, now.Add(time.Minute)); !errors.Is(err, ErrR3DocumentIntegrity) {
 		t.Fatalf("non-canonical write error = %v", err)
 	}
-	if _, _, err := store.read(escapeDigest); !errors.Is(err, ErrR3DocumentIntegrity) {
+	if _, _, _, err := store.read(escapeDigest); !errors.Is(err, ErrR3DocumentIntegrity) {
 		t.Fatalf("non-canonical read error = %v", err)
+	}
+}
+
+func TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart(t *testing.T) {
+	now := time.Date(2026, 8, 29, 7, 30, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	config := FileR3DocumentStoreConfig{
+		Directory: privateR3TestDirectory(t), Clock: clock,
+		MaxDocuments: 2, MaxBytes: 1024, MaxDocumentBytes: 512,
+	}
+	store, err := OpenFileR3DocumentStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}]}`)
+	digest := r3.S256(exact)
+	if err := store.RetainAuthorized(context.Background(), digest, exact,
+		[]string{"https://person.example", "https://access.example"}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFileR3DocumentStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reader := range []string{"https://person.example", "https://access.example"} {
+		loaded, loadErr := reopened.LoadAuthorized(context.Background(), digest, reader)
+		if loadErr != nil || !bytes.Equal(loaded, exact) {
+			t.Fatalf("reader %s = %q, %v", reader, loaded, loadErr)
+		}
+	}
+	if _, err := reopened.LoadAuthorized(context.Background(), digest, "https://other.example"); !errors.Is(err, ErrR3DocumentUnauthorized) {
+		t.Fatalf("unauthorized reader error = %v", err)
+	}
+	if err := reopened.RetainAuthorized(context.Background(), digest, exact,
+		[]string{"https://second-access.example"}, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err = OpenFileR3DocumentStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reader := range []string{"https://person.example", "https://access.example", "https://second-access.example"} {
+		if _, err := reopened.LoadAuthorized(context.Background(), digest, reader); err != nil {
+			t.Fatalf("merged reader %s: %v", reader, err)
+		}
 	}
 }

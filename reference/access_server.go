@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -37,6 +38,10 @@ type AccessServerConfig struct {
 	Random                io.Reader
 	PendingLifetime       time.Duration
 	AuthorizationStore    AuthorizationStateStore
+	R3HTTPClient          *http.Client
+	R3Admit               func(context.Context, string) error
+	R3GrantPolicy         R3GrantPolicy
+	R3FetchTimeout        time.Duration
 }
 
 type AccessServer struct {
@@ -52,6 +57,10 @@ type AccessServer struct {
 	random                io.Reader
 	pendingLifetime       time.Duration
 	authorizationStore    AuthorizationStateStore
+	r3HTTPClient          *http.Client
+	r3Admit               func(context.Context, string) error
+	r3GrantPolicy         R3GrantPolicy
+	r3FetchTimeout        time.Duration
 	replayMu              sync.Mutex
 	replayedProof         map[string]time.Time
 	randomMu              sync.Mutex
@@ -79,6 +88,7 @@ type accessServerAuthorizationContext struct {
 	pollingServer         string
 	pollingKey            jose.JWK
 	pollingKeyThumbprint  string
+	r3Grant               *r3.DirectGrant
 }
 
 type pendingAccessServerAuthorization struct {
@@ -143,6 +153,22 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		config.AuthorizationStore == nil {
 		return nil, errors.New("reference: access server requires key, resolver, clock, id source, trust, policy, and authorization state store")
 	}
+	r3Parts := 0
+	if config.R3HTTPClient != nil {
+		r3Parts++
+	}
+	if config.R3Admit != nil {
+		r3Parts++
+	}
+	if config.R3GrantPolicy != nil {
+		r3Parts++
+	}
+	if r3Parts != 0 && r3Parts != 3 {
+		return nil, errors.New("reference: access-server R3 requires HTTP client, egress admission, and grant policy")
+	}
+	if config.R3FetchTimeout < 0 {
+		return nil, errors.New("reference: access-server R3 fetch timeout is invalid")
+	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
 		pendingLifetime = 5 * time.Minute
@@ -167,6 +193,10 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		random:                random,
 		pendingLifetime:       pendingLifetime,
 		authorizationStore:    config.AuthorizationStore,
+		r3HTTPClient:          config.R3HTTPClient,
+		r3Admit:               config.R3Admit,
+		r3GrantPolicy:         config.R3GrantPolicy,
+		r3FetchTimeout:        config.R3FetchTimeout,
 		replayedProof:         make(map[string]time.Time),
 		pending:               make(map[string]*pendingAccessServerAuthorization),
 	}
@@ -773,7 +803,21 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeResourceTokenVerificationFailure(response, err)
 		return
 	}
-	resourceToken, err := claimsWithoutAuthorization(resourceTokenEvidence)
+	var resourceR3 r3.TokenResult
+	members, memberErr := resourceTokenEvidence.AuthorizationMembers()
+	var resourceToken aauth.ResourceTokenClaims
+	if memberErr != nil {
+		err = memberErr
+	} else if len(members) == 0 {
+		resourceToken, err = resourceTokenEvidence.Claims()
+	} else if server.r3GrantPolicy == nil {
+		err = resourceTokenEvidence.RequireNoAuthorizationMembers()
+	} else {
+		resourceR3, err = r3.ValidateResourceToken(resourceTokenEvidence)
+		if err == nil {
+			resourceToken, err = resourceTokenEvidence.Claims()
+		}
+	}
 	if err != nil {
 		writeResourceTokenVerificationFailure(response, err)
 		return
@@ -857,6 +901,35 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	authorizationContext.request.MissionS256 = resourceToken.MissionS256
 	authorizationContext.request.Tenant = resourceToken.Tenant
 	authorizationContext.request.Account = resourceToken.Account
+	if resourceR3.Valid() {
+		document, fetchErr := fetchR3Document(
+			request.Context(),
+			r3FetchConfig{
+				client: server.r3HTTPClient, key: server.signingKey,
+				identifier: server.identifier, discoveryDocument: aauth.AccessDiscoveryDocument,
+				clock: server.clock, admit: server.r3Admit, timeout: server.r3FetchTimeout,
+			},
+			resourceToken.Issuer,
+			resourceR3,
+		)
+		if fetchErr != nil {
+			writeProblem(response, http.StatusBadGateway, "r3_document_verification_failed", fetchErr)
+			return
+		}
+		granted, policyErr := server.r3GrantPolicy(
+			request.Context(), copyAuthorizationRequest(authorizationContext.request), document,
+		)
+		if policyErr != nil {
+			writeHostPolicyRefusal(response, "r3_grant_denied", "access-server R3 policy denied the request")
+			return
+		}
+		direct, grantErr := r3.NewDirectGrant(document, granted)
+		if grantErr != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_r3_grant", grantErr)
+			return
+		}
+		authorizationContext.r3Grant = &direct
+	}
 	if server.interactionRequired != nil {
 		required, err := server.interactionRequired(
 			request.Context(),
@@ -867,6 +940,10 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		if required {
+			if resourceR3.Valid() {
+				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("direct R3 authorization does not support deferred interaction"))
+				return
+			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
 				if !writeAuthorizationStateFailure(response, err) {
 					writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -943,7 +1020,13 @@ func (server *AccessServer) mintAuthorization(
 		MissionS256:  authorizationContext.resourceToken.MissionS256,
 		Tenant:       authorizationContext.resourceToken.Tenant,
 	}
-	authToken, err := aauth.MintAuthToken(server.signingKey, claims)
+	var authToken string
+	var err error
+	if authorizationContext.r3Grant != nil {
+		authToken, err = r3.MintAuthToken(server.signingKey, claims, *authorizationContext.r3Grant)
+	} else {
+		authToken, err = aauth.MintAuthToken(server.signingKey, claims)
+	}
 	if err != nil {
 		return "", 0, err
 	}

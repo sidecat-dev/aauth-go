@@ -44,8 +44,8 @@ for this library.
   `r3_conditional` form remains only as a negative vector.
 - Exact R3 documents, operation sets, vocabularies, display values, and digests
   now have one public owner in `r3`. Events and reference stores import that
-  package directly; root forwarding names are absent, and callable R3
-  authorization remains unclaimed.
+  package directly; root forwarding names are absent. Callable authorization
+  enters only through the explicit companion composition below.
 - Events AsyncAPI contracts and both Events discovery paths now have one public
   owner in `events`. Root Core imports neither `events` nor `r3`; reference
   composition imports the owning packages directly. Event-token ownership is a
@@ -62,6 +62,25 @@ for this library.
   using only public APIs. Malformed R3 values retain typed member-specific
   failures, while reference endpoints without an R3 consumer continue to fail
   closed before policy or consequence.
+
+### Immediate four-party direct R3
+
+- `AuthTokenCompanion` requires invalid-zero companion evidence carrying the
+  same Core evidence identity. Core rejects nil and wrong-token results; the
+  deployment remains responsible for selecting the correct companion
+  validator rather than a permissive callback.
+- A direct resource-selected document must contain exactly the agent-requested
+  operation set. Exact bytes and the precise PS/AS reader identities are
+  retained atomically before token release and survive resource reconstruction.
+- The PS and AS fetch independently with signed `jwks_uri` server requests and
+  verify the exact SHA-256 digest before review or grant policy. Changed bytes
+  fail before either policy can issue authority.
+- The AS can issue only a direct grant drawn from the verified document. The
+  agent rejects grants outside its request, and the resource refuses an
+  ungranted operation before replay consumption or host consequence.
+- Deferred interaction, a same-process PS/AS topology, R3 caching, per-call
+  proposals and retained results, and atomic AS audit retention remain
+  unclaimed.
 
 ## 2026-08-28
 
