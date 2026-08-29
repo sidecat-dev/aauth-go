@@ -31,6 +31,7 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	ids := sequentialIDs(
 		"agent-token",
 		"other-agent-token",
+		"wrong-key-agent-token",
 		"person-token",
 		"resource-token",
 		"auth-token",
@@ -79,6 +80,13 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wrongKeyToken, err := ap.IssueAgentToken(aauth.AgentTokenRequest{
+		Agent: "aauth:planner@ap.example", PersonServer: "https://ps.example",
+		PublicKey: otherKey.PublicJWK(), Lifetime: 2 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	client := &http.Client{}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
@@ -101,7 +109,7 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var policyCalls int
+	var personPolicyCalls, policyCalls int
 	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
 	personAuthorizationDirectory := t.TempDir() + "/person-authorization"
 	personAuthorizationStore := openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
@@ -115,7 +123,11 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 		PersonTokenStore:     personTokenStore,
 		MissionIssuanceStore: missionIssuanceStore,
 		PersonTokenPolicy: func(_ context.Context, _ aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			personPolicyCalls++
 			return aauth.PersonTokenDecision{Subject: "pairwise-user-for-resource", Lifetime: time.Hour}, nil
+		},
+		PersonTokenInteractionRequired: func(_ context.Context, request aauth.PersonTokenRequest) (bool, error) {
+			return request.Agent == "aauth:planner@ap.example", nil
 		},
 		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
 			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
@@ -139,6 +151,14 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 			{10, 11, 12, 13, 14},
 			bytes.Repeat([]byte{3}, 16),
 			{15, 16, 17, 18, 19},
+			bytes.Repeat([]byte{4}, 16),
+			{20, 21, 22, 23, 24},
+			bytes.Repeat([]byte{5}, 16),
+			{25, 26, 27, 28, 29},
+			bytes.Repeat([]byte{6}, 16),
+			{30, 31, 32, 33, 34},
+			bytes.Repeat([]byte{7}, 16),
+			{35, 36, 37, 38, 39},
 		}, nil)),
 		PendingLifetime: time.Minute,
 	}
@@ -216,10 +236,128 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	person, err := agent.RequestPersonToken(context.Background(), "https://ps.example/person", "https://resource.example", nil)
+	wrongKeyAgent, err := reference.NewAgent(reference.AgentConfig{
+		AuthorizationStore: testAuthorizationStateStore(t), Identifier: "aauth:planner@ap.example",
+		SigningKey: otherKey, AgentToken: wrongKeyToken, KeyResolver: resolver,
+		HTTPClient: client, Clock: clock,
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	personAuthorization, err := agent.RequestPersonTokenAuthorization(
+		context.Background(), "https://ps.example/person", "https://resource.example", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personAuthorization.Grant != nil || personAuthorization.Pending == nil {
+		t.Fatalf("initial person-token authorization = %#v", personAuthorization)
+	}
+	personPending := personAuthorization.Pending
+	if personPending.PersonServer != "https://ps.example" ||
+		personPending.Location != "https://ps.example/pending/"+personPending.ID ||
+		personPending.Requirement == nil || personPending.Requirement.Type != aauth.RequirementInteraction {
+		t.Fatalf("pending person-token authorization = %#v", personPending)
+	}
+	if personPolicyCalls != 0 {
+		t.Fatalf("person-token policy ran before trusted approval; calls = %d", personPolicyCalls)
+	}
+	otherPersonPending := *personPending
+	if _, err := other.PollPersonTokenAuthorization(context.Background(), &otherPersonPending); err == nil {
+		t.Fatal("another agent polled the person-token authorization")
+	}
+	wrongKeyPending := *personPending
+	if _, err := wrongKeyAgent.PollPersonTokenAuthorization(context.Background(), &wrongKeyPending); err == nil {
+		t.Fatal("the same agent identifier polled the person-token authorization with another key")
+	}
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	ps, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
+	if err := agentAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	agentAuthorizationStore = openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig.AuthorizationStore = agentAuthorizationStore
+	agent, err = reference.NewAgent(agentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personPending = &reference.PendingPersonTokenAuthorization{ID: personPending.ID}
+	waitingPerson, err := agent.PollPersonTokenAuthorization(context.Background(), personPending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitingPerson.Pending == nil || waitingPerson.Pending.Status != "pending" || waitingPerson.Pending.Requirement == nil {
+		t.Fatalf("waiting person-token poll = %#v", waitingPerson)
+	}
+	personPending = waitingPerson.Pending
+	personInteraction, err := client.Get(
+		personPending.Requirement.InteractionURL + "?code=" + personPending.Requirement.InteractionCode,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personInteraction.Body.Close()
+	if personInteraction.StatusCode != http.StatusOK {
+		t.Fatalf("person-token interaction status = %d", personInteraction.StatusCode)
+	}
+	if err := ps.ApprovePersonToken(context.Background(), personPending.ID); err != nil {
+		t.Fatal(err)
+	}
+	if personPolicyCalls != 1 {
+		t.Fatalf("person-token policy calls after approval = %d", personPolicyCalls)
+	}
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	ps, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
+	personAuthorization, err = agent.PollPersonTokenAuthorization(context.Background(), personPending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personAuthorization.Grant == nil || personAuthorization.Pending != nil {
+		t.Fatalf("approved person-token authorization = %#v", personAuthorization)
+	}
+	person := *personAuthorization.Grant
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	ps, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
+	if err := agentAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	agentAuthorizationStore = openTestFileAuthorizationStateStore(t, agentAuthorizationDirectory)
+	agentConfig.AuthorizationStore = agentAuthorizationStore
+	agent, err = reference.NewAgent(agentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedPerson, err := agent.PollPersonTokenAuthorization(context.Background(), personPending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedPerson.Grant == nil || replayedPerson.Grant.PersonToken != person.PersonToken || personPolicyCalls != 1 {
+		t.Fatalf("replayed person-token authorization = %#v, policy calls %d", replayedPerson, personPolicyCalls)
 	}
 	resourceGrant, err := agent.RequestResourceTokenWithPersonToken(
 		context.Background(),
@@ -532,6 +670,58 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 			problem.Code != aauth.PollingInvalidCode {
 			t.Fatalf("invalid-code polling error = %#v", err)
 		}
+	}
+
+	deniedPerson, err := agent.RequestPersonTokenAuthorization(
+		context.Background(), "https://ps.example/person", "https://resource.example", nil,
+	)
+	if err != nil || deniedPerson.Pending == nil {
+		t.Fatalf("denied person-token start = %#v, %v", deniedPerson, err)
+	}
+	response, err := client.Get(
+		deniedPerson.Pending.Requirement.InteractionURL + "?code=" + deniedPerson.Pending.Requirement.InteractionCode,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("denied person-token interaction status = %d", response.StatusCode)
+	}
+	if err := ps.RejectPersonToken(context.Background(), deniedPerson.Pending.ID, aauth.PollingDenied); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.PollPersonTokenAuthorization(context.Background(), deniedPerson.Pending); err == nil {
+		t.Fatal("denied person-token authorization returned a grant")
+	} else {
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != aauth.PollingDenied {
+			t.Fatalf("denied person-token polling error = %#v", err)
+		}
+	}
+
+	expiredPerson, err := agent.RequestPersonTokenAuthorization(
+		context.Background(), "https://ps.example/person", "https://resource.example", nil,
+	)
+	if err != nil || expiredPerson.Pending == nil {
+		t.Fatalf("expired person-token start = %#v, %v", expiredPerson, err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := agent.PollPersonTokenAuthorization(context.Background(), expiredPerson.Pending); err == nil {
+		t.Fatal("expired person-token authorization remained pending")
+	} else {
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) || problem.Status != http.StatusRequestTimeout || problem.Code != aauth.PollingExpired {
+			t.Fatalf("expired person-token polling error = %#v", err)
+		}
+	}
+	if personPolicyCalls != 1 {
+		t.Fatalf("person-token policy ran for denied or expired interaction; calls = %d", personPolicyCalls)
+	}
+	if _, err := agent.RequestPersonToken(
+		context.Background(), "https://ps.example/person", "https://resource.example", nil,
+	); err == nil || !strings.Contains(err.Error(), "use RequestPersonTokenAuthorization") {
+		t.Fatalf("immediate-only deferred person-token error = %v", err)
 	}
 }
 

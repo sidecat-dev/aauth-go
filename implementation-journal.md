@@ -227,6 +227,23 @@ for this library.
   resource-token and auth-token exchange occurs. R3 and Budget grants are not
   admitted to this cache because their per-call state has separate semantics.
 
+### Deferred person-token issuance
+
+- `PersonTokenAuthorization` makes the immediate-or-pending result explicit.
+  `RequestPersonToken` remains an immediate-only convenience and directs a
+  caller to the typed API when interaction is required.
+- The PS retains one union record in its existing authorization store: exact
+  interaction state, polling agent and key, target key, resource, optional
+  mission and upstream context, trusted decision, and terminal token material.
+  Before committing the person-token retention record, it persists the exact
+  compact token and claims; retry after failure or restart therefore commits
+  and returns the same token rather than minting another.
+- One combined journey reconstructs both PS and agent before approval and
+  terminal polling, returns the terminal token twice without rerunning person
+  policy, then continues through the older deferred auth-token journey. It
+  also refuses a different agent, the same agent identifier under another key,
+  denial, and expiry before issuance.
+
 ## 2026-08-28
 
 ### Incomplete callable R3 authorization removed

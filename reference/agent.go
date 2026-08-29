@@ -60,6 +60,7 @@ type Agent struct {
 	authorizationRecovery []byte
 	pendingTokens         map[string]agentPendingTokenRecord
 	pendingAccess         map[string]agentPendingAccessRecord
+	pendingPersons        map[string]agentPendingPersonRecord
 	personMu              sync.Mutex
 	personGrants          map[string]PersonGrant
 	authMu                sync.Mutex
@@ -94,6 +95,29 @@ type PersonGrant struct {
 	Resource    string
 	PersonToken string
 	Claims      aauth.PersonTokenClaims
+}
+
+// PersonTokenAuthorization is either an immediate resource-directed person
+// token or a signed-poll continuation owned by the requesting agent.
+type PersonTokenAuthorization struct {
+	Grant   *PersonGrant
+	Pending *PendingPersonTokenAuthorization
+}
+
+// PendingPersonTokenAuthorization carries the public continuation state for a
+// deferred person-token request. Private request bindings are retained by the
+// agent authorization store.
+type PendingPersonTokenAuthorization struct {
+	ID           string
+	PersonServer string
+	Resource     string
+	Location     string
+	RetryAfter   time.Duration
+	NotBefore    time.Time
+	Status       string
+	Requirement  *aauth.Requirement
+	missionS256  string
+	expectedKey  jose.JWK
 }
 
 // AuthorizedCall is the exact HTTP call an agent signs under an auth-token
@@ -172,6 +196,7 @@ type agentAuthorizationStateRecord struct {
 	Key    string                    `json:"key"`
 	Token  *agentPendingTokenRecord  `json:"token,omitempty"`
 	Access *agentPendingAccessRecord `json:"access,omitempty"`
+	Person *agentPendingPersonRecord `json:"person,omitempty"`
 }
 
 type agentPendingTokenRecord struct {
@@ -272,6 +297,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		authorizationStore: config.AuthorizationStore,
 		pendingTokens:      make(map[string]agentPendingTokenRecord),
 		pendingAccess:      make(map[string]agentPendingAccessRecord),
+		pendingPersons:     make(map[string]agentPendingPersonRecord),
 		personGrants:       make(map[string]PersonGrant),
 		authGrants:         make(map[string]Grant),
 		eventStore:         eventStore,
@@ -307,6 +333,7 @@ func (agent *Agent) restoreAuthorizationStateLocked(body []byte) error {
 	}
 	pendingTokens := make(map[string]agentPendingTokenRecord)
 	pendingAccess := make(map[string]agentPendingAccessRecord)
+	pendingPersons := make(map[string]agentPendingPersonRecord)
 	terminalTokenIDs := make(map[string]struct{})
 	terminalAccessTokens := make(map[string]struct{})
 	previous := ""
@@ -322,7 +349,7 @@ func (agent *Agent) restoreAuthorizationStateLocked(body []byte) error {
 		previous = sortKey
 		switch record.Kind {
 		case "access":
-			if record.Access == nil || record.Token != nil || record.Access.ID != record.Key ||
+			if record.Access == nil || record.Token != nil || record.Person != nil || record.Access.ID != record.Key ||
 				validateAgentPendingAccessRecord(*record.Access) != nil {
 				return ErrAuthorizationStateIntegrity
 			}
@@ -334,7 +361,7 @@ func (agent *Agent) restoreAuthorizationStateLocked(body []byte) error {
 			}
 			pendingAccess[record.Key] = cloneAgentPendingAccessRecord(*record.Access)
 		case "token":
-			if record.Token == nil || record.Access != nil || record.Token.ID != record.Key ||
+			if record.Token == nil || record.Access != nil || record.Person != nil || record.Token.ID != record.Key ||
 				validateAgentPendingTokenRecord(*record.Token) != nil {
 				return ErrAuthorizationStateIntegrity
 			}
@@ -346,12 +373,19 @@ func (agent *Agent) restoreAuthorizationStateLocked(body []byte) error {
 				terminalTokenIDs[terminalID] = struct{}{}
 			}
 			pendingTokens[record.Key] = cloneAgentPendingTokenRecord(*record.Token)
+		case "person":
+			if record.Person == nil || record.Token != nil || record.Access != nil || record.Person.ID != record.Key ||
+				validateAgentPendingPersonRecord(*record.Person) != nil {
+				return ErrAuthorizationStateIntegrity
+			}
+			pendingPersons[record.Key] = cloneAgentPendingPersonRecord(*record.Person)
 		default:
 			return ErrAuthorizationStateIntegrity
 		}
 	}
 	agent.pendingTokens = pendingTokens
 	agent.pendingAccess = pendingAccess
+	agent.pendingPersons = pendingPersons
 	return nil
 }
 
@@ -492,7 +526,7 @@ func (agent *Agent) persistAuthorizationStateLocked(ctx context.Context) error {
 	if err := agent.settleAuthorizationStateLocked(ctx); err != nil {
 		return err
 	}
-	records := make([]agentAuthorizationStateRecord, 0, len(agent.pendingTokens)+len(agent.pendingAccess))
+	records := make([]agentAuthorizationStateRecord, 0, len(agent.pendingTokens)+len(agent.pendingAccess)+len(agent.pendingPersons))
 	terminalTokenIDs := make(map[string]struct{})
 	terminalAccessTokens := make(map[string]struct{})
 	for key, pending := range agent.pendingTokens {
@@ -522,6 +556,13 @@ func (agent *Agent) persistAuthorizationStateLocked(ctx context.Context) error {
 		copied := cloneAgentPendingAccessRecord(pending)
 		records = append(records, agentAuthorizationStateRecord{Kind: "access", Key: key, Access: &copied})
 	}
+	for key, pending := range agent.pendingPersons {
+		if pending.ID != key || validateAgentPendingPersonRecord(pending) != nil {
+			return ErrAuthorizationStateIntegrity
+		}
+		copied := cloneAgentPendingPersonRecord(pending)
+		records = append(records, agentAuthorizationStateRecord{Kind: "person", Key: key, Person: &copied})
+	}
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].Kind+"\x00"+records[i].Key < records[j].Kind+"\x00"+records[j].Key
 	})
@@ -549,12 +590,14 @@ func (agent *Agent) reconcileAuthorizationStateLocked(ctx context.Context, candi
 	if err != nil || len(body) == 0 {
 		agent.pendingTokens = make(map[string]agentPendingTokenRecord)
 		agent.pendingAccess = make(map[string]agentPendingAccessRecord)
+		agent.pendingPersons = make(map[string]agentPendingPersonRecord)
 		agent.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
 		return agent.authorizationErr
 	}
 	if err := agent.restoreAuthorizationStateLocked(body); err != nil {
 		agent.pendingTokens = make(map[string]agentPendingTokenRecord)
 		agent.pendingAccess = make(map[string]agentPendingAccessRecord)
+		agent.pendingPersons = make(map[string]agentPendingPersonRecord)
 		agent.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
 		return agent.authorizationErr
 	}
@@ -582,6 +625,7 @@ func (agent *Agent) settleAuthorizationStateLocked(ctx context.Context) error {
 		if reconcileErr != nil || !published {
 			agent.pendingTokens = make(map[string]agentPendingTokenRecord)
 			agent.pendingAccess = make(map[string]agentPendingAccessRecord)
+			agent.pendingPersons = make(map[string]agentPendingPersonRecord)
 			agent.authorizationErr = authorizationStateReconciliationFailure(err, reconcileErr)
 			return agent.authorizationErr
 		}
@@ -1093,7 +1137,17 @@ func (agent *Agent) RequestPersonToken(
 	resource string,
 	mission *aauth.ApprovedMission,
 ) (PersonGrant, error) {
-	return agent.requestPersonToken(ctx, endpoint, resource, mission, "", "")
+	authorization, err := agent.RequestPersonTokenAuthorization(ctx, endpoint, resource, mission)
+	if err != nil {
+		return PersonGrant{}, err
+	}
+	if authorization.Pending != nil {
+		return PersonGrant{}, errors.New("reference: person-token request requires interaction; use RequestPersonTokenAuthorization")
+	}
+	if authorization.Grant == nil {
+		return PersonGrant{}, errors.New("reference: person-token response has no grant")
+	}
+	return *authorization.Grant, nil
 }
 
 // RequestPersonTokenForSubagent lets a top-level parent obtain a current

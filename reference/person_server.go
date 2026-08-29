@@ -26,61 +26,63 @@ import (
 )
 
 type PersonServerConfig struct {
-	Identifier                    string
-	SigningKey                    jose.SigningKey
-	KeyResolver                   signaturekey.KeyResolver
-	Clock                         aauth.Clock
-	NewID                         func() string
-	CurrentMissionPolicy          aauth.CurrentMissionPolicy
-	AuthorizationPolicy           aauth.AuthorizationPolicy
-	PermissionPolicy              aauth.PermissionPolicy
-	PermissionInteractionRequired func(context.Context, aauth.PermissionEvaluation) (bool, error)
-	GovernanceStore               GovernanceStore
-	PersonTokenStore              PersonTokenStore
-	PersonTokenPolicy             aauth.PersonTokenPolicy
-	MissionIssuanceStore          MissionIssuanceStore
-	CompletionReviewEnabled       bool
-	InteractionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	Random                        io.Reader
-	PendingLifetime               time.Duration
-	AuthorizationStore            AuthorizationStateStore
-	FederationClient              *http.Client
-	AccessServerEndpoint          func(context.Context, string) (string, error)
-	TrustedUpstreamIssuer         func(context.Context, string) error
-	R3HTTPClient                  *http.Client
-	R3Admit                       func(context.Context, string) error
-	R3Review                      R3Review
-	R3FetchTimeout                time.Duration
-	BudgetPolicy                  BudgetPolicy
+	Identifier                     string
+	SigningKey                     jose.SigningKey
+	KeyResolver                    signaturekey.KeyResolver
+	Clock                          aauth.Clock
+	NewID                          func() string
+	CurrentMissionPolicy           aauth.CurrentMissionPolicy
+	AuthorizationPolicy            aauth.AuthorizationPolicy
+	PermissionPolicy               aauth.PermissionPolicy
+	PermissionInteractionRequired  func(context.Context, aauth.PermissionEvaluation) (bool, error)
+	GovernanceStore                GovernanceStore
+	PersonTokenStore               PersonTokenStore
+	PersonTokenPolicy              aauth.PersonTokenPolicy
+	PersonTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
+	MissionIssuanceStore           MissionIssuanceStore
+	CompletionReviewEnabled        bool
+	InteractionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	Random                         io.Reader
+	PendingLifetime                time.Duration
+	AuthorizationStore             AuthorizationStateStore
+	FederationClient               *http.Client
+	AccessServerEndpoint           func(context.Context, string) (string, error)
+	TrustedUpstreamIssuer          func(context.Context, string) error
+	R3HTTPClient                   *http.Client
+	R3Admit                        func(context.Context, string) error
+	R3Review                       R3Review
+	R3FetchTimeout                 time.Duration
+	BudgetPolicy                   BudgetPolicy
 }
 
 type PersonServer struct {
-	identifier                    string
-	signingKey                    jose.SigningKey
-	keyResolver                   signaturekey.KeyResolver
-	clock                         aauth.Clock
-	newID                         func() string
-	currentMissionPolicy          aauth.CurrentMissionPolicy
-	authorizationPolicy           aauth.AuthorizationPolicy
-	permissionPolicy              aauth.PermissionPolicy
-	permissionInteractionRequired func(context.Context, aauth.PermissionEvaluation) (bool, error)
-	governanceStore               GovernanceStore
-	personTokenStore              PersonTokenStore
-	personTokenPolicy             aauth.PersonTokenPolicy
-	missionIssuanceStore          MissionIssuanceStore
-	completionReviewEnabled       bool
-	interactionRequired           func(context.Context, aauth.AuthorizationRequest) (bool, error)
-	random                        io.Reader
-	pendingLifetime               time.Duration
-	authorizationStore            AuthorizationStateStore
-	federationClient              *http.Client
-	accessServerEndpoint          func(context.Context, string) (string, error)
-	trustedUpstreamIssuer         func(context.Context, string) error
-	r3HTTPClient                  *http.Client
-	r3Admit                       func(context.Context, string) error
-	r3Review                      R3Review
-	r3FetchTimeout                time.Duration
-	budgetPolicy                  BudgetPolicy
+	identifier                     string
+	signingKey                     jose.SigningKey
+	keyResolver                    signaturekey.KeyResolver
+	clock                          aauth.Clock
+	newID                          func() string
+	currentMissionPolicy           aauth.CurrentMissionPolicy
+	authorizationPolicy            aauth.AuthorizationPolicy
+	permissionPolicy               aauth.PermissionPolicy
+	permissionInteractionRequired  func(context.Context, aauth.PermissionEvaluation) (bool, error)
+	governanceStore                GovernanceStore
+	personTokenStore               PersonTokenStore
+	personTokenPolicy              aauth.PersonTokenPolicy
+	personTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
+	missionIssuanceStore           MissionIssuanceStore
+	completionReviewEnabled        bool
+	interactionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
+	random                         io.Reader
+	pendingLifetime                time.Duration
+	authorizationStore             AuthorizationStateStore
+	federationClient               *http.Client
+	accessServerEndpoint           func(context.Context, string) (string, error)
+	trustedUpstreamIssuer          func(context.Context, string) error
+	r3HTTPClient                   *http.Client
+	r3Admit                        func(context.Context, string) error
+	r3Review                       R3Review
+	r3FetchTimeout                 time.Duration
+	budgetPolicy                   BudgetPolicy
 
 	mu                    sync.RWMutex
 	missionIssuanceMu     sync.Mutex
@@ -95,6 +97,7 @@ type PersonServer struct {
 	authorizationBody     []byte
 	authorizationRecovery []byte
 	pending               map[string]*pendingPersonAuthorization
+	pendingPersonTokens   map[string]*pendingPersonTokenAuthorization
 	permissionPending     map[string]pendingPersonPermission
 	replayMu              sync.Mutex
 	replayedProof         map[string]time.Time
@@ -294,6 +297,7 @@ const personAuthorizationStateSchema = "aauth.reference.person-authorization-sta
 
 type personAuthorizationStateRecord struct {
 	Key                     string                           `json:"key"`
+	PersonToken             *pendingPersonTokenRecord        `json:"person_token,omitempty"`
 	Interaction             pendingInteractionRecord         `json:"interaction"`
 	Context                 personAuthorizationContextRecord `json:"context"`
 	Decision                aauth.AuthorizationDecision      `json:"decision"`
@@ -398,38 +402,40 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		random = rand.Reader
 	}
 	server := &PersonServer{
-		identifier:                    config.Identifier,
-		signingKey:                    config.SigningKey,
-		keyResolver:                   config.KeyResolver,
-		clock:                         config.Clock,
-		newID:                         config.NewID,
-		currentMissionPolicy:          config.CurrentMissionPolicy,
-		authorizationPolicy:           config.AuthorizationPolicy,
-		permissionPolicy:              config.PermissionPolicy,
-		permissionInteractionRequired: config.PermissionInteractionRequired,
-		governanceStore:               config.GovernanceStore,
-		personTokenStore:              config.PersonTokenStore,
-		personTokenPolicy:             config.PersonTokenPolicy,
-		missionIssuanceStore:          config.MissionIssuanceStore,
-		completionReviewEnabled:       config.CompletionReviewEnabled,
-		interactionRequired:           config.InteractionRequired,
-		random:                        random,
-		pendingLifetime:               pendingLifetime,
-		authorizationStore:            config.AuthorizationStore,
-		federationClient:              config.FederationClient,
-		accessServerEndpoint:          config.AccessServerEndpoint,
-		trustedUpstreamIssuer:         config.TrustedUpstreamIssuer,
-		r3HTTPClient:                  config.R3HTTPClient,
-		r3Admit:                       config.R3Admit,
-		r3Review:                      config.R3Review,
-		r3FetchTimeout:                config.R3FetchTimeout,
-		budgetPolicy:                  config.BudgetPolicy,
-		missions:                      make(map[string]storedMission),
-		governanceReplays:             make(map[string]time.Time),
-		pending:                       make(map[string]*pendingPersonAuthorization),
-		permissionPending:             make(map[string]pendingPersonPermission),
-		completionPending:             make(map[string]pendingCompletion),
-		replayedProof:                 make(map[string]time.Time),
+		identifier:                     config.Identifier,
+		signingKey:                     config.SigningKey,
+		keyResolver:                    config.KeyResolver,
+		clock:                          config.Clock,
+		newID:                          config.NewID,
+		currentMissionPolicy:           config.CurrentMissionPolicy,
+		authorizationPolicy:            config.AuthorizationPolicy,
+		permissionPolicy:               config.PermissionPolicy,
+		permissionInteractionRequired:  config.PermissionInteractionRequired,
+		governanceStore:                config.GovernanceStore,
+		personTokenStore:               config.PersonTokenStore,
+		personTokenPolicy:              config.PersonTokenPolicy,
+		personTokenInteractionRequired: config.PersonTokenInteractionRequired,
+		missionIssuanceStore:           config.MissionIssuanceStore,
+		completionReviewEnabled:        config.CompletionReviewEnabled,
+		interactionRequired:            config.InteractionRequired,
+		random:                         random,
+		pendingLifetime:                pendingLifetime,
+		authorizationStore:             config.AuthorizationStore,
+		federationClient:               config.FederationClient,
+		accessServerEndpoint:           config.AccessServerEndpoint,
+		trustedUpstreamIssuer:          config.TrustedUpstreamIssuer,
+		r3HTTPClient:                   config.R3HTTPClient,
+		r3Admit:                        config.R3Admit,
+		r3Review:                       config.R3Review,
+		r3FetchTimeout:                 config.R3FetchTimeout,
+		budgetPolicy:                   config.BudgetPolicy,
+		missions:                       make(map[string]storedMission),
+		governanceReplays:              make(map[string]time.Time),
+		pending:                        make(map[string]*pendingPersonAuthorization),
+		pendingPersonTokens:            make(map[string]*pendingPersonTokenAuthorization),
+		permissionPending:              make(map[string]pendingPersonPermission),
+		completionPending:              make(map[string]pendingCompletion),
+		replayedProof:                  make(map[string]time.Time),
 	}
 	if server.governanceStore != nil {
 		body, err := server.governanceStore.Load()
@@ -479,6 +485,7 @@ func (server *PersonServer) restoreAuthorizationStateLocked(body []byte) error {
 		return err
 	}
 	pending := make(map[string]*pendingPersonAuthorization, len(rawRecords))
+	pendingPersonTokens := make(map[string]*pendingPersonTokenAuthorization)
 	terminalIdentities := make(map[string]string)
 	previous := ""
 	for _, raw := range rawRecords {
@@ -486,10 +493,30 @@ func (server *PersonServer) restoreAuthorizationStateLocked(body []byte) error {
 		if err := decodeAuthorizationStateRecord(raw, &record); err != nil {
 			return err
 		}
-		if record.Key == "" || record.Key <= previous || record.Interaction.ID != record.Key {
+		if record.Key == "" || record.Key <= previous {
 			return ErrAuthorizationStateIntegrity
 		}
 		previous = record.Key
+		if record.PersonToken != nil {
+			if record.PersonToken.Interaction.ID != record.Key {
+				return ErrAuthorizationStateIntegrity
+			}
+			pendingPersonToken, err := restorePendingPersonToken(*record.PersonToken)
+			if err != nil {
+				return err
+			}
+			if record.PersonToken.TerminalCompact != "" {
+				claims, err := verifyRetainedPersonToken(record.PersonToken.TerminalCompact, server.signingKey.PublicJWK())
+				if err != nil || !reflect.DeepEqual(claims, record.PersonToken.TerminalClaims) {
+					return ErrAuthorizationStateIntegrity
+				}
+			}
+			pendingPersonTokens[record.Key] = pendingPersonToken
+			continue
+		}
+		if record.Interaction.ID != record.Key {
+			return ErrAuthorizationStateIntegrity
+		}
 		interaction, err := restorePendingInteraction(record.Interaction)
 		if err != nil {
 			return err
@@ -519,6 +546,7 @@ func (server *PersonServer) restoreAuthorizationStateLocked(body []byte) error {
 		}
 	}
 	server.pending = pending
+	server.pendingPersonTokens = pendingPersonTokens
 	return nil
 }
 
@@ -903,7 +931,7 @@ func (server *PersonServer) persistAuthorizationStateLocked(ctx context.Context)
 	if err := server.settleAuthorizationStateLocked(ctx); err != nil {
 		return err
 	}
-	records := make([]personAuthorizationStateRecord, 0, len(server.pending))
+	records := make([]personAuthorizationStateRecord, 0, len(server.pending)+len(server.pendingPersonTokens))
 	for key, pending := range server.pending {
 		var federated *pendingFederatedRecord
 		if pending.federated != nil {
@@ -923,10 +951,24 @@ func (server *PersonServer) persistAuthorizationStateLocked(ctx context.Context)
 			TerminalStatus:          pending.terminalStatus, TerminalCode: pending.terminalCode, TerminalDetail: pending.terminalDetail,
 		})
 	}
+	for key, pending := range server.pendingPersonTokens {
+		records = append(records, personAuthorizationStateRecord{Key: key, PersonToken: snapshotPendingPersonToken(pending)})
+	}
 	sort.Slice(records, func(i, j int) bool { return records[i].Key < records[j].Key })
 	raw := make([]json.RawMessage, 0, len(records))
 	terminalIdentities := make(map[string]string)
 	for _, record := range records {
+		if record.PersonToken != nil {
+			if _, err := restorePendingPersonToken(*record.PersonToken); err != nil {
+				return server.reconcileAuthorizationStateLocked(ctx, nil, err)
+			}
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				return server.reconcileAuthorizationStateLocked(ctx, nil, err)
+			}
+			raw = append(raw, encoded)
+			continue
+		}
 		if err := server.validatePersonAuthorizationStateRecord(record); err != nil {
 			return server.reconcileAuthorizationStateLocked(ctx, nil, err)
 		}
@@ -970,11 +1012,13 @@ func (server *PersonServer) reconcileAuthorizationStateLocked(ctx context.Contex
 	body, published, err := reconcileAuthorizationState(ctx, server.authorizationStore, server.authorizationBody, candidate)
 	if err != nil || len(body) == 0 {
 		server.pending = make(map[string]*pendingPersonAuthorization)
+		server.pendingPersonTokens = make(map[string]*pendingPersonTokenAuthorization)
 		server.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
 		return server.authorizationErr
 	}
 	if err := server.restoreAuthorizationStateLocked(body); err != nil {
 		server.pending = make(map[string]*pendingPersonAuthorization)
+		server.pendingPersonTokens = make(map[string]*pendingPersonTokenAuthorization)
 		server.authorizationErr = authorizationStateReconciliationFailure(commitErr, err)
 		return server.authorizationErr
 	}
@@ -1001,6 +1045,7 @@ func (server *PersonServer) settleAuthorizationStateLocked(ctx context.Context) 
 		}
 		if reconcileErr != nil || !published {
 			server.pending = make(map[string]*pendingPersonAuthorization)
+			server.pendingPersonTokens = make(map[string]*pendingPersonTokenAuthorization)
 			server.authorizationErr = authorizationStateReconciliationFailure(err, reconcileErr)
 			return server.authorizationErr
 		}
@@ -1491,6 +1536,26 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 	if server.seenReplay(verified.ReplayKey, verified.Created.Add(signaturekey.DefaultSignatureWindow), verified.VerifiedAt) {
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
+	}
+	personRequest := aauth.PersonTokenRequest{
+		Agent: targetAgent, ParentAgent: parentAgent, Resource: input.Resource,
+		MissionS256: input.MissionS256, Confirmation: targetKey,
+		AgentExpiresAt: time.Unix(targetExpiresAt, 0).UTC(), Upstream: upstream,
+	}
+	if server.personTokenInteractionRequired != nil {
+		evaluation := personRequest
+		evaluation.Upstream = copyAuthorizationRequest(aauth.AuthorizationRequest{Upstream: personRequest.Upstream}).Upstream
+		required, err := server.personTokenInteractionRequired(request.Context(), evaluation)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if required {
+			if err := server.beginPendingPersonToken(response, personRequest, verified.Agent, targetKey, verified.PublicKey, targetExpiresAt, missionExpiry); err != nil {
+				writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", err)
+			}
+			return
+		}
 	}
 	compact, claims, err := server.issuePersonTokenForContext(
 		request.Context(),
@@ -2384,7 +2449,6 @@ func (server *PersonServer) handlePendingPermission(
 		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
-
 	server.mu.Lock()
 	pending, exists := server.permissionPending[request.PathValue("id")]
 	if !exists {
@@ -3581,6 +3645,9 @@ func (server *PersonServer) handlePendingAuthorization(
 		writeProblem(response, http.StatusInternalServerError, "server_error", nil)
 		return
 	}
+	if server.handlePendingPersonTokenIfPresent(response, request, verified.Agent, thumbprint) {
+		return
+	}
 
 	server.pendingMu.Lock()
 	pending, exists := server.pending[request.PathValue("id")]
@@ -3747,6 +3814,9 @@ func (server *PersonServer) handleAuthorizationInteraction(
 	server.pendingMu.Unlock()
 	if stateErr != nil {
 		writeProblem(response, http.StatusServiceUnavailable, "authorization_state_unavailable", stateErr)
+		return
+	}
+	if server.handlePersonTokenInteractionIfPresent(response, request) {
 		return
 	}
 	server.pendingMu.Lock()

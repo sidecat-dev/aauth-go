@@ -93,6 +93,13 @@ PS and AS path; then retries the same method, target, body, and media type once
 under the resulting auth token. Missionless person tokens are reused for the
 same resource until their trusted expiry and reacquired lazily afterward.
 
+A person server may defer person-token issuance for trusted user interaction.
+The typed client result then carries a signed-poll continuation rather than a
+placeholder grant. Both the agent and PS retain the continuation across
+reconstruction; after interaction and a trusted decision, polling commits and
+returns one exact token, and replay returns that token without rerunning policy
+or minting.
+
 A resource may instead select the current stateful `202 Accepted` form. It
 retains the exact invocation before releasing a same-origin pending URL. The
 agent obtains the auth token through the same exchange and completes with a

@@ -388,6 +388,30 @@ func decodeRetainedAuthToken(compact string) (aauth.AuthTokenClaims, error) {
 	return claims, nil
 }
 
+func verifyRetainedPersonToken(compact string, key jose.JWK) (aauth.PersonTokenClaims, error) {
+	var claims aauth.PersonTokenClaims
+	if err := decodeRetainedCompactToken(compact, aauth.PersonTokenType, &claims); err != nil {
+		return claims, err
+	}
+	header, err := jose.PeekHeader(compact)
+	if err != nil {
+		return claims, err
+	}
+	verified, err := aauth.VerifyPersonToken(
+		context.Background(), compact,
+		signaturekey.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
+		aauth.ClockFunc(func() time.Time { return time.Unix(claims.IssuedAt, 0).UTC() }),
+	)
+	if err != nil {
+		return claims, err
+	}
+	verifiedClaims, err := claimsWithoutAuthorization(verified)
+	if err != nil || !reflect.DeepEqual(verifiedClaims, claims) {
+		return claims, errors.New("reference: retained person-token claims changed during verification")
+	}
+	return claims, nil
+}
+
 func validateRetainedAgentClaims(claims aauth.AgentTokenClaims) error {
 	if aauth.ValidateServerIdentifier(claims.Issuer) != nil || claims.DWK != aauth.AgentDiscoveryDocument ||
 		aauth.ValidateAgentIdentifier(claims.Subject) != nil || claims.JTI == "" ||
