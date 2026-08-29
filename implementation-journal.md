@@ -30,6 +30,19 @@ comparators. Unexercised BEAM source may be consulted as code archaeology, but
 provides no conformance evidence. Neither defines compatibility requirements
 for this library.
 
+## 2026-08-29
+
+### Core token evidence and authorization-member recognition
+
+- Every Core token verifier now returns invalid-zero, copy-safe
+  `VerifiedToken[T]` evidence bound to the exact compact token, selected issuer
+  key, profile, and one trusted verification instant. Typed claims are
+  defensive projections rather than the verification result itself.
+- One source-defined catalog recognizes every current R3 and Budgets Core-token
+  member, enforces token applicability and required co-presence, and rejects
+  unsupported companions before key resolution or role policy. The removed
+  `r3_conditional` form remains only as a negative vector.
+
 ## 2026-08-28
 
 ### Incomplete callable R3 authorization removed

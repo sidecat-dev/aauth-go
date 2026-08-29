@@ -153,7 +153,10 @@ decoding.
 
 Current R3 authorization and Budgets remain unclaimed. The module exposes no
 callable R3 authorization path, and defined R3 or Budget members on resource
-and auth tokens fail closed instead of being silently ignored. It retains
+and auth tokens fail closed instead of being silently ignored. One compile-time
+Core catalog also rejects those members on agent and person tokens, enforces
+their current token applicability and required co-presence, and keeps the
+removed `r3_conditional` name only as a rejected negative vector. It retains
 current neutral R3 document values and digests used by Events. Bounded current
 sub-agent and call-chain behavior is claimed only for the exact runnable
 journeys listed in the source coverage report; broader delegation and

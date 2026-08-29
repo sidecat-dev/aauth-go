@@ -46,6 +46,7 @@ type unsupportedTokenAlgorithmError struct{ algorithm string }
 type unsupportedTokenClaimError struct {
 	tokenType string
 	claim     string
+	reason    string
 }
 
 func (err *unsupportedTokenAlgorithmError) Error() string {
@@ -56,7 +57,11 @@ func (err *unsupportedTokenClaimError) Error() string {
 	if err == nil {
 		return "aauth: token contains an unsupported claim"
 	}
-	return fmt.Sprintf("aauth: %s contains unsupported %s claim", err.tokenType, err.claim)
+	detail := fmt.Sprintf("aauth: %s contains unsupported %s claim", err.tokenType, err.claim)
+	if err.reason != "" {
+		detail += ": " + err.reason
+	}
+	return detail
 }
 
 func (err *TokenValidationError) Error() string {
@@ -293,6 +298,9 @@ func VerifyPersonToken(ctx context.Context, compact string, resolver signatureke
 	if err := json.Unmarshal(payload, &names); err != nil {
 		return zero, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
 	}
+	if err := rejectUnsupportedAuthorizationMembers(payload, PersonTokenType); err != nil {
+		return zero, err
+	}
 	if _, exists := names["scope"]; exists {
 		return zero, errors.New("aauth: person-token must not contain scope or account")
 	}
@@ -331,10 +339,6 @@ func VerifyResourceToken(ctx context.Context, compact string, resolver signature
 		ResourceDiscoveryDocument,
 		resolver,
 		&claims,
-		"r3_uri",
-		"r3_s256",
-		"budget",
-		"budget_consumed",
 	)
 	if err != nil {
 		return zero, err
@@ -362,17 +366,7 @@ func VerifyAuthToken(ctx context.Context, compact string, resolver signaturekey.
 	if header.Type != AuthTokenType {
 		return zero, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, AuthTokenType)
 	}
-	if err := rejectUnsupportedTokenMembers(
-		payload,
-		AuthTokenType,
-		"r3_uri",
-		"r3_s256",
-		"r3_granted",
-		"r3_per_call",
-		"r3_conditional",
-		"budget",
-		"budget_consumed",
-	); err != nil {
+	if err := rejectUnsupportedAuthorizationMembers(payload, AuthTokenType); err != nil {
 		return zero, err
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
@@ -398,7 +392,6 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	expectedDWK string,
 	resolver signaturekey.KeyResolver,
 	claims *T,
-	unsupportedMembers ...string,
 ) (jose.VerifiedCompact, error) {
 	if resolver == nil {
 		return jose.VerifiedCompact{}, errors.New("aauth: key resolver is required")
@@ -411,7 +404,7 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	if header.Type != expectedType {
 		return jose.VerifiedCompact{}, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, expectedType)
 	}
-	if err := rejectUnsupportedTokenMembers(payload, expectedType, unsupportedMembers...); err != nil {
+	if err := rejectUnsupportedAuthorizationMembers(payload, expectedType); err != nil {
 		return jose.VerifiedCompact{}, err
 	}
 	if err := json.Unmarshal(payload, claims); err != nil {
@@ -441,22 +434,6 @@ func tokenVerificationInstant(clock Clock) (time.Time, error) {
 		return time.Time{}, errors.New("aauth: clock is required")
 	}
 	return clock.Now().UTC(), nil
-}
-
-func rejectUnsupportedTokenMembers(payload []byte, tokenType string, unsupportedMembers ...string) error {
-	if len(unsupportedMembers) == 0 {
-		return nil
-	}
-	var names map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &names); err != nil {
-		return fmt.Errorf("aauth: decode %s claims: %w", tokenType, err)
-	}
-	for _, member := range unsupportedMembers {
-		if _, exists := names[member]; exists {
-			return &unsupportedTokenClaimError{tokenType: tokenType, claim: member}
-		}
-	}
-	return nil
 }
 
 func verifyResolvedTokenKey(
