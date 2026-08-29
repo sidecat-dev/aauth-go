@@ -1161,7 +1161,8 @@ func (agent *Agent) RequestPersonTokenForSubagent(
 	if strings.TrimSpace(subagentToken) == "" {
 		return PersonGrant{}, errors.New("reference: sub-agent token is required")
 	}
-	return agent.requestPersonToken(ctx, endpoint, resource, nil, subagentToken, "")
+	authorization, err := agent.RequestPersonTokenForSubagentAuthorization(ctx, endpoint, resource, subagentToken)
+	return immediatePersonGrant(authorization, err)
 }
 
 // RequestPersonTokenForUpstream obtains the downstream-directed person token
@@ -1176,7 +1177,8 @@ func (agent *Agent) RequestPersonTokenForUpstream(
 	if strings.TrimSpace(upstreamToken) == "" {
 		return PersonGrant{}, errors.New("reference: upstream auth token is required")
 	}
-	return agent.requestPersonToken(ctx, endpoint, resource, nil, "", upstreamToken)
+	authorization, err := agent.RequestPersonTokenForUpstreamAuthorization(ctx, endpoint, resource, upstreamToken)
+	return immediatePersonGrant(authorization, err)
 }
 
 // RequestPersonTokenForChainedSubagent obtains a downstream person token for
@@ -1195,138 +1197,21 @@ func (agent *Agent) RequestPersonTokenForChainedSubagent(
 	if strings.TrimSpace(upstreamToken) == "" {
 		return PersonGrant{}, errors.New("reference: upstream auth token is required")
 	}
-	return agent.requestPersonToken(ctx, endpoint, resource, nil, subagentToken, upstreamToken)
+	authorization, err := agent.RequestPersonTokenForChainedSubagentAuthorization(ctx, endpoint, resource, subagentToken, upstreamToken)
+	return immediatePersonGrant(authorization, err)
 }
 
-func (agent *Agent) requestPersonToken(
-	ctx context.Context,
-	endpoint string,
-	resource string,
-	mission *aauth.ApprovedMission,
-	subagentToken string,
-	upstreamToken string,
-) (PersonGrant, error) {
-	var grant PersonGrant
-	if err := aauth.ValidateEndpoint(endpoint); err != nil {
-		return grant, err
-	}
-	if err := aauth.ValidateServerIdentifier(resource); err != nil {
-		return grant, err
-	}
-	personServer, err := endpointIdentifier(endpoint)
+func immediatePersonGrant(authorization PersonTokenAuthorization, err error) (PersonGrant, error) {
 	if err != nil {
-		return grant, err
+		return PersonGrant{}, err
 	}
-	input := struct {
-		Resource      string `json:"resource"`
-		MissionS256   string `json:"mission_s256,omitempty"`
-		SubagentToken string `json:"subagent_token,omitempty"`
-		UpstreamToken string `json:"upstream_token,omitempty"`
-	}{Resource: resource, SubagentToken: subagentToken, UpstreamToken: upstreamToken}
-	if mission != nil {
-		if err := mission.ValidateExactBytes(); err != nil {
-			return grant, err
-		}
-		if mission.Reference.Approver != personServer {
-			return grant, errors.New("reference: person-token mission approver does not match endpoint")
-		}
-		input.MissionS256 = mission.Reference.S256
+	if authorization.Pending != nil {
+		return PersonGrant{}, errors.New("reference: person-token request requires interaction; use the matching PersonTokenAuthorization method")
 	}
-	expectedKey := agent.signingKey.PublicJWK()
-	if subagentToken != "" {
-		parentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
-		if err != nil {
-			return grant, err
-		}
-		parentClaims, err := claimsWithoutAuthorization(parentEvidence)
-		if err != nil {
-			return grant, err
-		}
-		if parentClaims.ParentAgent != "" {
-			return grant, errors.New("reference: sub-agent cannot mediate another sub-agent")
-		}
-		subagentEvidence, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
-		if err != nil {
-			return grant, err
-		}
-		subagentClaims, err := claimsWithoutAuthorization(subagentEvidence)
-		if err != nil {
-			return grant, err
-		}
-		if subagentClaims.ParentAgent != agent.identifier ||
-			(upstreamToken == "" && subagentClaims.PersonServer != personServer) {
-			return grant, errors.New("reference: sub-agent token does not name this parent and person server")
-		}
-		expectedKey = subagentClaims.Confirmation.JWK
+	if authorization.Grant == nil {
+		return PersonGrant{}, errors.New("reference: person-token response has no grant")
 	}
-	if upstreamToken != "" {
-		agentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
-		if err != nil {
-			return grant, err
-		}
-		agentClaims, err := claimsWithoutAuthorization(agentEvidence)
-		if err != nil {
-			return grant, err
-		}
-		if agentClaims.ParentAgent != "" {
-			return grant, errors.New("reference: sub-agent cannot perform call chaining")
-		}
-		upstreamEvidence, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
-		if err != nil {
-			return grant, err
-		}
-		upstream, err := claimsWithoutAuthorization(upstreamEvidence)
-		if err != nil {
-			return grant, err
-		}
-		if upstream.Audience != agentClaims.Issuer || upstream.PersonServer != personServer {
-			return grant, errors.New("reference: upstream auth token does not route this intermediary to the person server")
-		}
-		if !upstream.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
-			return grant, errors.New("reference: upstream auth-token confirmation key does not match intermediary signing key")
-		}
-		input.MissionS256 = upstream.MissionS256
-	}
-	body, err := json.Marshal(input)
-	if err != nil {
-		return grant, err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return grant, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if err := agent.signRequest(request, agent.agentToken); err != nil {
-		return grant, err
-	}
-	response, err := agent.httpClient.Do(request)
-	if err != nil {
-		return grant, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return grant, responseError(response)
-	}
-	var result struct {
-		PersonToken string `json:"person_token"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxJSONBody)).Decode(&result); err != nil {
-		return grant, err
-	}
-	evidence, err := aauth.VerifyPersonToken(ctx, result.PersonToken, agent.keyResolver, agent.clock)
-	if err != nil {
-		return grant, err
-	}
-	claims, err := claimsWithoutAuthorization(evidence)
-	if err != nil {
-		return grant, err
-	}
-	if claims.Issuer != personServer || claims.Audience != resource ||
-		claims.MissionS256 != input.MissionS256 ||
-		!claims.Confirmation.JWK.Equal(expectedKey) {
-		return grant, errors.New("reference: person token does not match its request")
-	}
-	return PersonGrant{Resource: resource, PersonToken: result.PersonToken, Claims: claims}, nil
+	return *authorization.Grant, nil
 }
 
 func copyStringMap(source map[string]string) map[string]string {

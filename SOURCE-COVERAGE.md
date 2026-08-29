@@ -456,7 +456,7 @@ Evidence:
 
 ### `core/person-token-endpoint` — Partial
 
-Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. An agent follows a runtime requirement through issuer-matched person-server metadata to this endpoint, reuses the verified missionless token for the same resource while valid, and reacquires it lazily after expiry. Direct deferred issuance retains the exact interaction, caller/key/resource context, decision, and precommitted terminal token across PS and agent reconstruction; signed polling returns the same token without rerunning policy or minting. Deferred sub-agent and call-chain clients remain open.
+Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. Parent-mediated sub-agent, upstream-auth-token, and chained-sub-agent requests share one typed immediate-or-pending client path. Deferred issuance retains the exact interaction, polling caller and key, target key, resource, parent, upstream and mission context, decision, and precommitted terminal token across PS and agent reconstruction; signed polling returns the same token without rerunning policy or minting. The automatic path discovers issuer-matched metadata, caches missionless tokens until expiry, and reacquires lazily. First-use resource metadata presentation and distinct-resource rate-limit policy remain open.
 
 Evidence:
 
@@ -466,6 +466,8 @@ Evidence:
 - `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServer`
 - `person_token_access_journey_test.go:TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer`
 - `deferred_person_server_journey_test.go:TestCurrentPersonServerDeferredAuthorizationJourney`
+- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
+- `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
 
 ### `core/person-token-structure` — Exercised
 

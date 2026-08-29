@@ -99,6 +99,11 @@ placeholder grant. Both the agent and PS retain the continuation across
 reconstruction; after interaction and a trusted decision, polling commits and
 returns one exact token, and replay returns that token without rerunning policy
 or minting.
+The same typed continuation supports a parent requesting for one direct
+sub-agent, an intermediary carrying an upstream auth token, and their combined
+form. The signing parent or intermediary owns polling, while the terminal token
+is bound to the target agent key and retains the approved upstream and mission
+context.
 
 A resource may instead select the current stateful `202 Accepted` form. It
 retains the exact invocation before releasing a same-origin pending URL. The

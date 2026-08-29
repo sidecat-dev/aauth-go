@@ -88,11 +88,14 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 
 	var policyRequest aauth.AuthorizationRequest
 	var personPolicyRequest aauth.PersonTokenRequest
-	var policyCalls int
+	var personPolicyCalls, policyCalls int
 	var deferSubagent bool
+	deferPersonToken := true
 	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
-	ps, err := reference.NewPersonServer(reference.PersonServerConfig{
-		AuthorizationStore: testAuthorizationStateStore(t),
+	psAuthorizationDirectory := t.TempDir() + "/ps-authorization"
+	psAuthorizationStore := openTestFileAuthorizationStateStore(t, psAuthorizationDirectory)
+	psConfig := reference.PersonServerConfig{
+		AuthorizationStore: psAuthorizationStore,
 		Identifier:         "https://ps.example",
 		SigningKey:         psKey,
 		KeyResolver:        keyResolver,
@@ -101,9 +104,13 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 		InteractionRequired: func(_ context.Context, request aauth.AuthorizationRequest) (bool, error) {
 			return deferSubagent && request.ParentAgent == "aauth:planner@ap.example", nil
 		},
+		PersonTokenInteractionRequired: func(_ context.Context, request aauth.PersonTokenRequest) (bool, error) {
+			return deferPersonToken && request.ParentAgent == "aauth:planner@ap.example", nil
+		},
 		PersonTokenStore:     personTokenStore,
 		MissionIssuanceStore: missionIssuanceStore,
 		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			personPolicyCalls++
 			personPolicyRequest = request
 			return aauth.PersonTokenDecision{Subject: "pairwise-user-for-resource", Lifetime: time.Hour}, nil
 		},
@@ -121,9 +128,12 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 		Random: bytes.NewReader(bytes.Join([][]byte{
 			bytes.Repeat([]byte{4}, 16),
 			{0, 1, 2, 3, 4},
+			bytes.Repeat([]byte{5}, 16),
+			{5, 6, 7, 8, 9},
 		}, nil)),
 		PendingLifetime: time.Minute,
-	})
+	}
+	ps, err := reference.NewPersonServer(psConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,25 +161,36 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	psHandler := ps.Handler()
 	gateway := newLogicalGateway(t, map[string]http.Handler{
-		"ap.example":       ap.Handler(),
-		"ps.example":       ps.Handler(),
+		"ap.example": ap.Handler(),
+		"ps.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			psHandler.ServeHTTP(response, request)
+		}),
 		"resource.example": resource.Handler(),
 	})
 	defer gateway.Close()
 	discoveryClient.Transport = gateway.Client().Transport
 
-	parent, err := reference.NewAgent(reference.AgentConfig{
-		AuthorizationStore: testAuthorizationStateStore(t),
+	parentAuthorizationDirectory := t.TempDir() + "/parent-authorization"
+	parentAuthorizationStore := openTestFileAuthorizationStateStore(t, parentAuthorizationDirectory)
+	parentConfig := reference.AgentConfig{
+		AuthorizationStore: parentAuthorizationStore,
 		Identifier:         "aauth:planner@ap.example",
 		SigningKey:         parentKey,
 		AgentToken:         parentToken,
 		KeyResolver:        keyResolver,
 		HTTPClient:         gateway.Client(),
 		Clock:              clock,
-	})
+	}
+	parent, err := reference.NewAgent(parentConfig)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := parent.RequestPersonTokenForSubagentAuthorization(
+		context.Background(), "https://ps.example/person", "https://resource.example", "",
+	); err == nil || err.Error() != "reference: sub-agent token is required" {
+		t.Fatalf("empty typed sub-agent token error = %v", err)
 	}
 	subagent, err := reference.NewAgent(reference.AgentConfig{
 		AuthorizationStore: testAuthorizationStateStore(t),
@@ -184,7 +205,7 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	person, err := parent.RequestPersonTokenForSubagent(
+	personAuthorization, err := parent.RequestPersonTokenForSubagentAuthorization(
 		context.Background(),
 		"https://ps.example/person",
 		"https://resource.example",
@@ -192,6 +213,93 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if personAuthorization.Pending == nil || personAuthorization.Grant != nil {
+		t.Fatalf("deferred sub-agent person-token authorization = %#v", personAuthorization)
+	}
+	if _, err := subagent.PollPersonTokenAuthorization(context.Background(), personAuthorization.Pending); err == nil {
+		t.Fatal("target sub-agent polled the parent-owned person-token continuation")
+	}
+	pendingID := personAuthorization.Pending.ID
+	if err := psAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	psAuthorizationStore = openTestFileAuthorizationStateStore(t, psAuthorizationDirectory)
+	psConfig.AuthorizationStore = psAuthorizationStore
+	ps, err = reference.NewPersonServer(psConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
+	if err := parentAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	parentAuthorizationStore = openTestFileAuthorizationStateStore(t, parentAuthorizationDirectory)
+	parentConfig.AuthorizationStore = parentAuthorizationStore
+	parent, err = reference.NewAgent(parentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personAuthorization.Pending = &reference.PendingPersonTokenAuthorization{ID: pendingID}
+	personAuthorization, err = parent.PollPersonTokenAuthorization(context.Background(), personAuthorization.Pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personAuthorization.Pending == nil || personAuthorization.Pending.Requirement == nil {
+		t.Fatalf("recovered sub-agent person-token continuation = %#v", personAuthorization)
+	}
+	personInteraction, err := gateway.Client().Get(
+		personAuthorization.Pending.Requirement.InteractionURL + "?code=" + personAuthorization.Pending.Requirement.InteractionCode,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personInteraction.Body.Close()
+	if personInteraction.StatusCode != http.StatusOK {
+		t.Fatalf("sub-agent person-token interaction status = %d", personInteraction.StatusCode)
+	}
+	if err := ps.ApprovePersonToken(context.Background(), personAuthorization.Pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	deferPersonToken = false
+	personAuthorization, err = parent.PollPersonTokenAuthorization(context.Background(), personAuthorization.Pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personAuthorization.Grant == nil || personAuthorization.Pending != nil {
+		t.Fatalf("immediate sub-agent person-token authorization = %#v", personAuthorization)
+	}
+	person := *personAuthorization.Grant
+	if personPolicyCalls != 1 {
+		t.Fatalf("sub-agent person-token policy calls = %d, want 1", personPolicyCalls)
+	}
+	if err := psAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	psAuthorizationStore = openTestFileAuthorizationStateStore(t, psAuthorizationDirectory)
+	psConfig.AuthorizationStore = psAuthorizationStore
+	ps, err = reference.NewPersonServer(psConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	psHandler = ps.Handler()
+	if err := parentAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	parentAuthorizationStore = openTestFileAuthorizationStateStore(t, parentAuthorizationDirectory)
+	parentConfig.AuthorizationStore = parentAuthorizationStore
+	parent, err = reference.NewAgent(parentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedPerson, err := parent.PollPersonTokenAuthorization(
+		context.Background(), &reference.PendingPersonTokenAuthorization{ID: pendingID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedPerson.Grant == nil || replayedPerson.Grant.PersonToken != person.PersonToken || personPolicyCalls != 1 {
+		t.Fatalf("replayed sub-agent person token = %#v, policy calls %d", replayedPerson, personPolicyCalls)
 	}
 	if personPolicyRequest.Agent != "aauth:planner+search1@ap.example" ||
 		personPolicyRequest.ParentAgent != "aauth:planner@ap.example" ||

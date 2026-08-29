@@ -143,13 +143,16 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 
 	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
 	var personPolicyRequest aauth.PersonTokenRequest
+	personPolicyCalls := 0
 	var authorizationRequest aauth.AuthorizationRequest
 	personIDs := []string{"downstream-person-token"}
 	if !federated {
 		personIDs = append(personIDs, "downstream-auth-token")
 	}
-	personServer, err := reference.NewPersonServer(reference.PersonServerConfig{
-		AuthorizationStore:   testAuthorizationStateStore(t),
+	personAuthorizationDirectory := t.TempDir() + "/person-authorization"
+	personAuthorizationStore := openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig := reference.PersonServerConfig{
+		AuthorizationStore:   personAuthorizationStore,
 		Identifier:           "https://ps.example",
 		SigningKey:           psKey,
 		KeyResolver:          resolver,
@@ -158,11 +161,15 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 		PersonTokenStore:     personTokenStore,
 		MissionIssuanceStore: missionIssuanceStore,
 		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+			personPolicyCalls++
 			personPolicyRequest = request
 			if request.Upstream == nil || request.Upstream.Subject != "upstream-directed-person" {
 				return aauth.PersonTokenDecision{}, fmt.Errorf("upstream authorization is required")
 			}
 			return aauth.PersonTokenDecision{Subject: "downstream-directed-person", Lifetime: time.Hour}, nil
+		},
+		PersonTokenInteractionRequired: func(_ context.Context, request aauth.PersonTokenRequest) (bool, error) {
+			return request.Upstream != nil, nil
 		},
 		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
 			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
@@ -197,7 +204,12 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 				return identifier + "/token", nil
 			}
 		}(),
-	})
+		Random: bytes.NewReader(bytes.Join([][]byte{
+			bytes.Repeat([]byte{8}, 16), {0, 1, 2, 3, 4},
+		}, nil)),
+		PendingLifetime: time.Minute,
+	}
+	personServer, err := reference.NewPersonServer(personConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,9 +246,12 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 		t.Fatal(err)
 	}
 
+	personHandler := personServer.Handler()
 	handlers := map[string]http.Handler{
-		"first.example":      intermediaryProvider.Handler(),
-		"ps.example":         personServer.Handler(),
+		"first.example": intermediaryProvider.Handler(),
+		"ps.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			personHandler.ServeHTTP(response, request)
+		}),
 		"downstream.example": downstream.Handler(),
 	}
 	if federated {
@@ -246,17 +261,35 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 	defer gateway.Close()
 	client.Transport = gateway.Client().Transport
 
-	intermediary, err := reference.NewAgent(reference.AgentConfig{
-		AuthorizationStore: testAuthorizationStateStore(t),
+	intermediaryAuthorizationDirectory := t.TempDir() + "/intermediary-authorization"
+	intermediaryAuthorizationStore := openTestFileAuthorizationStateStore(t, intermediaryAuthorizationDirectory)
+	intermediaryConfig := reference.AgentConfig{
+		AuthorizationStore: intermediaryAuthorizationStore,
 		Identifier:         "aauth:booking@first.example",
 		SigningKey:         intermediaryKey,
 		AgentToken:         intermediaryToken,
 		KeyResolver:        resolver,
 		HTTPClient:         client,
 		Clock:              clock,
-	})
+	}
+	intermediary, err := reference.NewAgent(intermediaryConfig)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := intermediary.RequestPersonTokenForUpstreamAuthorization(
+		context.Background(), "https://ps.example/person", "https://downstream.example", "",
+	); err == nil || err.Error() != "reference: upstream auth token is required" {
+		t.Fatalf("empty typed upstream token error = %v", err)
+	}
+	if _, err := intermediary.RequestPersonTokenForChainedSubagentAuthorization(
+		context.Background(), "https://ps.example/person", "https://downstream.example", "", "upstream",
+	); err == nil || err.Error() != "reference: sub-agent token is required" {
+		t.Fatalf("empty typed chained sub-agent token error = %v", err)
+	}
+	if _, err := intermediary.RequestPersonTokenForChainedSubagentAuthorization(
+		context.Background(), "https://ps.example/person", "https://downstream.example", "subagent", "",
+	); err == nil || err.Error() != "reference: upstream auth token is required" {
+		t.Fatalf("empty typed chained upstream token error = %v", err)
 	}
 	resourceCaller := intermediary
 	expectedTargetAgent := "aauth:booking@first.example"
@@ -295,9 +328,9 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 		t.Fatal(err)
 	}
 
-	var person reference.PersonGrant
+	var personAuthorization reference.PersonTokenAuthorization
 	if chainedSubagent {
-		person, err = intermediary.RequestPersonTokenForChainedSubagent(
+		personAuthorization, err = intermediary.RequestPersonTokenForChainedSubagentAuthorization(
 			context.Background(),
 			"https://ps.example/person",
 			"https://downstream.example",
@@ -305,7 +338,7 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 			upstreamToken,
 		)
 	} else {
-		person, err = intermediary.RequestPersonTokenForUpstream(
+		personAuthorization, err = intermediary.RequestPersonTokenForUpstreamAuthorization(
 			context.Background(),
 			"https://ps.example/person",
 			"https://downstream.example",
@@ -314,6 +347,94 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 	}
 	if err != nil {
 		t.Fatal(err)
+	}
+	if personAuthorization.Grant != nil || personAuthorization.Pending == nil {
+		t.Fatalf("deferred call-chain person-token authorization = %#v", personAuthorization)
+	}
+	if chainedSubagent {
+		if _, err := resourceCaller.PollPersonTokenAuthorization(context.Background(), personAuthorization.Pending); err == nil {
+			t.Fatal("target chained sub-agent polled the intermediary-owned person-token continuation")
+		}
+	}
+	pendingID := personAuthorization.Pending.ID
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	personServer, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personHandler = personServer.Handler()
+	if err := intermediaryAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	intermediaryAuthorizationStore = openTestFileAuthorizationStateStore(t, intermediaryAuthorizationDirectory)
+	intermediaryConfig.AuthorizationStore = intermediaryAuthorizationStore
+	intermediary, err = reference.NewAgent(intermediaryConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personAuthorization.Pending = &reference.PendingPersonTokenAuthorization{ID: pendingID}
+	personAuthorization, err = intermediary.PollPersonTokenAuthorization(context.Background(), personAuthorization.Pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personAuthorization.Pending == nil || personAuthorization.Pending.Requirement == nil {
+		t.Fatalf("recovered call-chain person-token continuation = %#v", personAuthorization)
+	}
+	interaction, err := gateway.Client().Get(
+		personAuthorization.Pending.Requirement.InteractionURL + "?code=" + personAuthorization.Pending.Requirement.InteractionCode,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interaction.Body.Close()
+	if interaction.StatusCode != http.StatusOK {
+		t.Fatalf("call-chain person-token interaction status = %d", interaction.StatusCode)
+	}
+	if err := personServer.ApprovePersonToken(context.Background(), personAuthorization.Pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorization, err = intermediary.PollPersonTokenAuthorization(context.Background(), personAuthorization.Pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personAuthorization.Grant == nil || personAuthorization.Pending != nil {
+		t.Fatalf("approved call-chain person-token authorization = %#v", personAuthorization)
+	}
+	person := *personAuthorization.Grant
+	if personPolicyCalls != 1 {
+		t.Fatalf("call-chain person-token policy calls = %d, want 1", personPolicyCalls)
+	}
+	if err := personAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	personAuthorizationStore = openTestFileAuthorizationStateStore(t, personAuthorizationDirectory)
+	personConfig.AuthorizationStore = personAuthorizationStore
+	personServer, err = reference.NewPersonServer(personConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personHandler = personServer.Handler()
+	if err := intermediaryAuthorizationStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	intermediaryAuthorizationStore = openTestFileAuthorizationStateStore(t, intermediaryAuthorizationDirectory)
+	intermediaryConfig.AuthorizationStore = intermediaryAuthorizationStore
+	intermediary, err = reference.NewAgent(intermediaryConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedPerson, err := intermediary.PollPersonTokenAuthorization(
+		context.Background(), &reference.PendingPersonTokenAuthorization{ID: pendingID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedPerson.Grant == nil || replayedPerson.Grant.PersonToken != person.PersonToken || personPolicyCalls != 1 {
+		t.Fatalf("replayed call-chain person token = %#v, policy calls %d", replayedPerson, personPolicyCalls)
 	}
 	if person.Claims.Subject != "downstream-directed-person" ||
 		person.Claims.Subject == "upstream-directed-person" ||

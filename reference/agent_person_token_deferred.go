@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"strings"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -26,6 +27,42 @@ type agentPendingPersonRecord struct {
 	MissionS256  string             `json:"mission_s256,omitempty"`
 	ExpectedKey  jose.JWK           `json:"expected_key"`
 	Terminal     *PersonGrant       `json:"terminal,omitempty"`
+}
+
+// RequestPersonTokenForSubagentAuthorization is the typed result form of the
+// direct-parent person-token request.
+func (agent *Agent) RequestPersonTokenForSubagentAuthorization(
+	ctx context.Context, endpoint, resource, subagentToken string,
+) (PersonTokenAuthorization, error) {
+	if strings.TrimSpace(subagentToken) == "" {
+		return PersonTokenAuthorization{}, errors.New("reference: sub-agent token is required")
+	}
+	return agent.requestPersonTokenAuthorization(ctx, endpoint, resource, nil, subagentToken, "")
+}
+
+// RequestPersonTokenForUpstreamAuthorization is the typed result form of one
+// upstream-auth-token call-chain request.
+func (agent *Agent) RequestPersonTokenForUpstreamAuthorization(
+	ctx context.Context, endpoint, resource, upstreamToken string,
+) (PersonTokenAuthorization, error) {
+	if strings.TrimSpace(upstreamToken) == "" {
+		return PersonTokenAuthorization{}, errors.New("reference: upstream auth token is required")
+	}
+	return agent.requestPersonTokenAuthorization(ctx, endpoint, resource, nil, "", upstreamToken)
+}
+
+// RequestPersonTokenForChainedSubagentAuthorization is the typed result form
+// for a parent carrying both sub-agent and upstream authorization context.
+func (agent *Agent) RequestPersonTokenForChainedSubagentAuthorization(
+	ctx context.Context, endpoint, resource, subagentToken, upstreamToken string,
+) (PersonTokenAuthorization, error) {
+	if strings.TrimSpace(subagentToken) == "" {
+		return PersonTokenAuthorization{}, errors.New("reference: sub-agent token is required")
+	}
+	if strings.TrimSpace(upstreamToken) == "" {
+		return PersonTokenAuthorization{}, errors.New("reference: upstream auth token is required")
+	}
+	return agent.requestPersonTokenAuthorization(ctx, endpoint, resource, nil, subagentToken, upstreamToken)
 }
 
 func cloneAgentPendingPersonRecord(value agentPendingPersonRecord) agentPendingPersonRecord {
@@ -65,6 +102,17 @@ func (agent *Agent) RequestPersonTokenAuthorization(
 	resource string,
 	mission *aauth.ApprovedMission,
 ) (PersonTokenAuthorization, error) {
+	return agent.requestPersonTokenAuthorization(ctx, endpoint, resource, mission, "", "")
+}
+
+func (agent *Agent) requestPersonTokenAuthorization(
+	ctx context.Context,
+	endpoint string,
+	resource string,
+	mission *aauth.ApprovedMission,
+	subagentToken string,
+	upstreamToken string,
+) (PersonTokenAuthorization, error) {
 	var authorization PersonTokenAuthorization
 	if err := aauth.ValidateEndpoint(endpoint); err != nil {
 		return authorization, err
@@ -77,9 +125,11 @@ func (agent *Agent) RequestPersonTokenAuthorization(
 		return authorization, err
 	}
 	input := struct {
-		Resource    string `json:"resource"`
-		MissionS256 string `json:"mission_s256,omitempty"`
-	}{Resource: resource}
+		Resource      string `json:"resource"`
+		MissionS256   string `json:"mission_s256,omitempty"`
+		SubagentToken string `json:"subagent_token,omitempty"`
+		UpstreamToken string `json:"upstream_token,omitempty"`
+	}{Resource: resource, SubagentToken: subagentToken, UpstreamToken: upstreamToken}
 	if mission != nil {
 		if err := mission.ValidateExactBytes(); err != nil {
 			return authorization, err
@@ -88,6 +138,59 @@ func (agent *Agent) RequestPersonTokenAuthorization(
 			return authorization, errors.New("reference: person-token mission approver does not match endpoint")
 		}
 		input.MissionS256 = mission.Reference.S256
+	}
+	expectedKey := agent.signingKey.PublicJWK()
+	if subagentToken != "" {
+		parentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return authorization, err
+		}
+		parentClaims, err := claimsWithoutAuthorization(parentEvidence)
+		if err != nil {
+			return authorization, err
+		}
+		if parentClaims.ParentAgent != "" {
+			return authorization, errors.New("reference: sub-agent cannot mediate another sub-agent")
+		}
+		subagentEvidence, err := aauth.VerifyAgentToken(ctx, subagentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return authorization, err
+		}
+		subagentClaims, err := claimsWithoutAuthorization(subagentEvidence)
+		if err != nil {
+			return authorization, err
+		}
+		if subagentClaims.ParentAgent != agent.identifier ||
+			(upstreamToken == "" && subagentClaims.PersonServer != personServer) {
+			return authorization, errors.New("reference: sub-agent token does not name this parent and person server")
+		}
+		expectedKey = subagentClaims.Confirmation.JWK
+	}
+	if upstreamToken != "" {
+		agentEvidence, err := aauth.VerifyAgentToken(ctx, agent.agentToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return authorization, err
+		}
+		agentClaims, err := claimsWithoutAuthorization(agentEvidence)
+		if err != nil {
+			return authorization, err
+		}
+		if agentClaims.ParentAgent != "" {
+			return authorization, errors.New("reference: sub-agent cannot perform call chaining")
+		}
+		upstreamEvidence, err := aauth.VerifyAuthToken(ctx, upstreamToken, agent.keyResolver, agent.clock)
+		if err != nil {
+			return authorization, err
+		}
+		upstream, err := claimsWithoutAuthorization(upstreamEvidence)
+		if err != nil {
+			return authorization, err
+		}
+		if upstream.Audience != agentClaims.Issuer || upstream.PersonServer != personServer ||
+			!upstream.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+			return authorization, errors.New("reference: upstream auth token does not route this intermediary to the person server and signing key")
+		}
+		input.MissionS256 = upstream.MissionS256
 	}
 	body, err := json.Marshal(input)
 	if err != nil {
@@ -109,7 +212,7 @@ func (agent *Agent) RequestPersonTokenAuthorization(
 	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusOK:
-		grant, err := agent.parsePersonGrantResponse(ctx, response, personServer, resource, input.MissionS256, agent.signingKey.PublicJWK())
+		grant, err := agent.parsePersonGrantResponse(ctx, response, personServer, resource, input.MissionS256, expectedKey)
 		if err != nil {
 			return authorization, err
 		}
@@ -120,7 +223,7 @@ func (agent *Agent) RequestPersonTokenAuthorization(
 		if err != nil {
 			return authorization, err
 		}
-		pending, err := newPendingPersonTokenAuthorization(personServer, resource, input.MissionS256, agent.signingKey.PublicJWK(), deferred, agent.clock.Now())
+		pending, err := newPendingPersonTokenAuthorization(personServer, resource, input.MissionS256, expectedKey, deferred, agent.clock.Now())
 		if err != nil {
 			return authorization, err
 		}

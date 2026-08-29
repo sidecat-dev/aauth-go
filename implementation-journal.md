@@ -243,6 +243,14 @@ for this library.
   policy, then continues through the older deferred auth-token journey. It
   also refuses a different agent, the same agent identifier under another key,
   denial, and expiry before issuance.
+- Parent-mediated sub-agent, upstream-token, and chained-sub-agent requests now
+  use the same typed request builder and pending result. Their immediate-only
+  convenience methods are terminal adapters rather than a second wire path.
+  Variant journeys reconstruct both PS and polling parent/intermediary while
+  pending and again after terminal issuance. Exact replay returns one token
+  with one person-policy call; a target sub-agent cannot take over polling, and
+  the issued token remains bound to the target key while retained upstream and
+  parent context reaches policy unchanged.
 
 ## 2026-08-28
 
