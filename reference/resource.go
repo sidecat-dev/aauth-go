@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -89,7 +90,7 @@ type ResourceEventsConfig struct {
 // AgentEventMetadataResolver resolves only the Events delivery endpoint. Key
 // resolution remains a separate Signature-Key dependency.
 type AgentEventMetadataResolver interface {
-	ResolveAgentEventMetadata(context.Context, string) (aauth.AgentEventMetadata, error)
+	ResolveAgentEventMetadata(context.Context, string) (events.AgentEventMetadata, error)
 }
 
 type Resource struct {
@@ -122,9 +123,9 @@ type Resource struct {
 	eventActiveUntil             func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 	eventAsyncAPIPath            string
 	eventAsyncAPIDocument        []byte
-	eventAsyncAPIContract        *aauth.EventsAsyncAPIContract
+	eventAsyncAPIContract        *events.EventsAsyncAPIContract
 	eventProtectedOperation      string
-	eventProtectedMessage        aauth.EventsAsyncAPIMessage
+	eventProtectedMessage        events.EventsAsyncAPIMessage
 	eventProtectedPath           string
 	eventContractStore           EventContractStore
 	eventTicketLifetime          time.Duration
@@ -265,9 +266,9 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	var eventActiveUntil func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 	var eventAsyncAPIPath string
 	var eventAsyncAPIDocument []byte
-	var eventAsyncAPIContract *aauth.EventsAsyncAPIContract
+	var eventAsyncAPIContract *events.EventsAsyncAPIContract
 	var eventProtectedOperation string
-	var eventProtectedMessage aauth.EventsAsyncAPIMessage
+	var eventProtectedMessage events.EventsAsyncAPIMessage
 	var eventProtectedPath string
 	var eventContractStore EventContractStore
 	var eventTicketLifetime time.Duration
@@ -303,7 +304,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 			if config.Events.AsyncAPIPath == config.Events.PublicSubscriptionPath {
 				return nil, errors.New("reference: resource Events AsyncAPI and subscription paths must differ")
 			}
-			parsed, err := aauth.ParseEventsAsyncAPI(config.Events.AsyncAPIDocument)
+			parsed, err := events.ParseEventsAsyncAPI(config.Events.AsyncAPIDocument)
 			if err != nil {
 				return nil, fmt.Errorf("reference: resource Events AsyncAPI document: %w", err)
 			}
@@ -1157,7 +1158,7 @@ func (resource *Resource) validateEventPayload(
 	if r3.S256(exactContract) != subscription.ContractDigest {
 		return "", nil, "", ErrEventContractIntegrity
 	}
-	contract, err := aauth.ParseEventsAsyncAPI(exactContract)
+	contract, err := events.ParseEventsAsyncAPI(exactContract)
 	if err != nil {
 		return "", nil, "", err
 	}

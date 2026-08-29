@@ -14,6 +14,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
 
@@ -1152,7 +1153,7 @@ func validateAgentEventContext(value AgentEventContext) error {
 		value.OperationID == "" || value.MessageID == "" {
 		return fmt.Errorf("%w: agent event contract binding is incomplete", ErrEventRecordInvalid)
 	}
-	contract, err := aauth.ParseEventsAsyncAPI(value.Contract)
+	contract, err := events.ParseEventsAsyncAPI(value.Contract)
 	if err != nil || contract.Digest() != value.ContractDigest {
 		return fmt.Errorf("%w: agent event contract is invalid", ErrEventRecordInvalid)
 	}

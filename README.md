@@ -37,6 +37,10 @@ The `r3` package owns exact-byte R3 documents, semantic operation sets, the
 seven current standard vocabularies, third-party vocabulary admission, and
 content digests. Those neutral values carry authorization material but do not
 themselves authorize an operation.
+The `events` package owns exact AsyncAPI contract parsing and payload
+validation plus admitted resource-contract and agent-endpoint discovery. Event
+and subscribe token profiles remain in root Core for now; their package move is
+not implied by the contract/discovery boundary.
 Deployable reference role handlers, host-owned storage interfaces, and an
 agent client are in `reference`. [Architecture](ARCHITECTURE.md) maps the
 observed package structure, target import graph, endpoint-specific evidence

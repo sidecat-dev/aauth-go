@@ -1,4 +1,4 @@
-package aauth
+package events
 
 import (
 	"context"

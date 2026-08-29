@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
@@ -47,7 +48,7 @@ func TestEventsContractResolverUsesAdmittedExactHTTPFreshness(t *testing.T) {
 	defer gateway.Close()
 
 	var admissions atomic.Int32
-	resolver, err := aauth.NewHTTPEventsContractResolver(aauth.HTTPEventsContractResolverConfig{
+	resolver, err := events.NewHTTPEventsContractResolver(events.HTTPEventsContractResolverConfig{
 		Client: gateway.Client(), Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if !strings.HasPrefix(endpoint, "https://resource.example/") {
@@ -128,7 +129,7 @@ func TestEventsContractResolverRejectsUnsafeOrInvalidDiscovery(t *testing.T) {
 				}),
 			})
 			defer gateway.Close()
-			resolver, err := aauth.NewHTTPEventsContractResolver(aauth.HTTPEventsContractResolverConfig{
+			resolver, err := events.NewHTTPEventsContractResolver(events.HTTPEventsContractResolverConfig{
 				Client: gateway.Client(), Clock: aauth.ClockFunc(func() time.Time { return time.Now() }),
 				Admit: func(context.Context, string) error { return nil },
 			})

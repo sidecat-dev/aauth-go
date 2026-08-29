@@ -832,7 +832,7 @@
           "test": "TestEventsContractResolverUsesAdmittedExactHTTPFreshness"
         },
         {
-          "file": "events_asyncapi_test.go",
+          "file": "events/asyncapi_external_test.go",
           "test": "TestEventsAsyncAPIRejectsUnsupportedOrAmbiguousDocuments"
         }
       ]

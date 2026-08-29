@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
@@ -52,7 +53,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 			"https://as.example": {accessKey.ID(): accessKey.PublicJWK()},
 			"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 		},
-		metadata: aauth.AgentEventMetadata{Issuer: "https://ap.example", EventEndpoint: "https://ap.example/events"},
+		metadata: events.AgentEventMetadata{Issuer: "https://ap.example", EventEndpoint: "https://ap.example/events"},
 	}
 	resource := newProtectedJourneyResource(t, resourceKey, resourceResolver, clock, resourceStore, contractStore, document, transport, func(_ context.Context, authorized aauth.AuthorizedRequest) (any, error) {
 		if authorized.Agent != "" || authorized.PersonServer != "https://ps.example" ||
@@ -98,7 +99,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	discoveryClient := &http.Client{Transport: registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return eventRegistrationHTTPResponse(resource.Handler(), request), nil
 	})}
-	contractResolver, err := aauth.NewHTTPEventsContractResolver(aauth.HTTPEventsContractResolverConfig{
+	contractResolver, err := events.NewHTTPEventsContractResolver(events.HTTPEventsContractResolverConfig{
 		Client: discoveryClient, Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if !strings.HasPrefix(endpoint, "https://resource.example/") {

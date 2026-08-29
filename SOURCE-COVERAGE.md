@@ -476,7 +476,7 @@ Evidence:
 - `discovery_events_test.go:TestAgentEventMetadataUsesAdmittedHTTPFreshness`
 - `reference/events_provider_test.go:TestAgentProviderEventsMetadataRotatesWithHTTPFreshness`
 - `events_discovery_test.go:TestEventsContractResolverUsesAdmittedExactHTTPFreshness`
-- `events_asyncapi_test.go:TestEventsAsyncAPIRejectsUnsupportedOrAmbiguousDocuments`
+- `events/asyncapi_external_test.go:TestEventsAsyncAPIRejectsUnsupportedOrAmbiguousDocuments`
 
 ### `events/event-token` — Partial
 

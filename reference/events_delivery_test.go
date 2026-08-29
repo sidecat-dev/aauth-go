@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
@@ -192,7 +193,7 @@ func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadataResolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
+	metadataResolver, err := events.NewHTTPAgentEventMetadataResolver(events.HTTPAgentEventMetadataResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -464,7 +465,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 	}
 	metadataResolver := hostileEventMetadataResolver{
 		StaticKeyResolver: resolver,
-		metadata: aauth.AgentEventMetadata{
+		metadata: events.AgentEventMetadata{
 			Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events",
 		},
 	}
@@ -669,7 +670,7 @@ func TestEventDeliveryRejectsUnsafeResolvedEndpointBeforeSend(t *testing.T) {
 			}
 			resolver := hostileEventMetadataResolver{
 				StaticKeyResolver: signaturekey.StaticKeyResolver{},
-				metadata: aauth.AgentEventMetadata{
+				metadata: events.AgentEventMetadata{
 					Issuer: subscription.APIssuer, EventEndpoint: endpoint,
 				},
 			}
@@ -857,10 +858,10 @@ func (store *twoArrivalAPEventStore) AcceptEvent(ctx context.Context, input Acce
 
 type hostileEventMetadataResolver struct {
 	signaturekey.StaticKeyResolver
-	metadata aauth.AgentEventMetadata
+	metadata events.AgentEventMetadata
 }
 
-func (resolver hostileEventMetadataResolver) ResolveAgentEventMetadata(context.Context, string) (aauth.AgentEventMetadata, error) {
+func (resolver hostileEventMetadataResolver) ResolveAgentEventMetadata(context.Context, string) (events.AgentEventMetadata, error) {
 	return resolver.metadata, nil
 }
 

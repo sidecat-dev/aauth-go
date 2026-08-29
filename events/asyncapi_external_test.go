@@ -1,16 +1,17 @@
-package aauth
+package events_test
 
 import (
 	"bytes"
 	"strings"
 	"testing"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func TestEventsAsyncAPIParsesProtectedJSONMessageAndValidatesPayload(t *testing.T) {
 	exact := eventsAsyncAPITestDocument()
-	contract, err := ParseEventsAsyncAPI(exact)
+	contract, err := events.ParseEventsAsyncAPI(exact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func TestEventsAsyncAPIRejectsUnsupportedOrAmbiguousDocuments(t *testing.T) {
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := ParseEventsAsyncAPI([]byte(test.document)); err == nil {
+			if _, err := events.ParseEventsAsyncAPI([]byte(test.document)); err == nil {
 				t.Fatal("unsupported AsyncAPI document was accepted")
 			}
 		})
@@ -91,7 +92,7 @@ func TestEventsAsyncAPIRejectsUnsupportedOrAmbiguousDocuments(t *testing.T) {
 }
 
 func TestEventsAsyncAPISelectionIsExact(t *testing.T) {
-	contract, err := ParseEventsAsyncAPI(eventsAsyncAPITestDocument())
+	contract, err := events.ParseEventsAsyncAPI(eventsAsyncAPITestDocument())
 	if err != nil {
 		t.Fatal(err)
 	}

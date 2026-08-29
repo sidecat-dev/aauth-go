@@ -1,4 +1,4 @@
-package aauth
+package events
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 const (
@@ -21,7 +23,7 @@ const (
 // and egress boundaries for Events delivery routing.
 type HTTPAgentEventMetadataResolverConfig struct {
 	Client *http.Client
-	Clock  Clock
+	Clock  aauth.Clock
 	Admit  EgressAdmitter
 	Limits HTTPAgentEventMetadataResolverLimits
 }
@@ -37,7 +39,7 @@ type HTTPAgentEventMetadataResolverLimits struct {
 // It does not resolve or retain Signature-Key material.
 type HTTPAgentEventMetadataResolver struct {
 	client *http.Client
-	clock  Clock
+	clock  aauth.Clock
 	admit  EgressAdmitter
 	limits HTTPAgentEventMetadataResolverLimits
 
@@ -80,7 +82,7 @@ func (resolver *HTTPAgentEventMetadataResolver) ResolveAgentEventMetadata(ctx co
 	if resolver == nil {
 		return zero, errors.New("aauth: agent event metadata resolver is required")
 	}
-	if err := ValidateServerIdentifier(issuer); err != nil {
+	if err := aauth.ValidateServerIdentifier(issuer); err != nil {
 		return zero, fmt.Errorf("aauth: event metadata issuer: %w", err)
 	}
 	for {
@@ -150,7 +152,7 @@ func (resolver *HTTPAgentEventMetadataResolver) rememberLocked(issuer string, en
 }
 
 func (resolver *HTTPAgentEventMetadataResolver) fetch(ctx context.Context, issuer string) (agentEventMetadataCacheEntry, error) {
-	endpoint := issuer + "/.well-known/" + AgentDiscoveryDocument
+	endpoint := issuer + "/.well-known/" + aauth.AgentDiscoveryDocument
 	if err := resolver.admit(ctx, endpoint); err != nil {
 		return agentEventMetadataCacheEntry{}, fmt.Errorf("aauth: event metadata egress admission failed for %q: %w", endpoint, err)
 	}

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
@@ -780,7 +780,7 @@ func TestFileAgentEventStoreDefaultRetainsMaximumAdmittedContract(t *testing.T) 
 	if len(largeDocument) != admittedSize {
 		t.Fatalf("large contract bytes = %d", len(largeDocument))
 	}
-	contract, err := aauth.ParseEventsAsyncAPI(largeDocument)
+	contract, err := events.ParseEventsAsyncAPI(largeDocument)
 	if err != nil {
 		t.Fatalf("maximum admitted contract parse: %v", err)
 	}

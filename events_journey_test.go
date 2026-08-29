@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
@@ -139,7 +140,7 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadataResolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
+	metadataResolver, err := events.NewHTTPAgentEventMetadataResolver(events.HTTPAgentEventMetadataResolverConfig{
 		Client: protocolClient,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {

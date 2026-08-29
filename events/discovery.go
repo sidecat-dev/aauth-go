@@ -1,4 +1,4 @@
-package aauth
+package events
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
@@ -33,7 +35,7 @@ type AgentEventMetadata struct {
 // egress-policy boundaries for AsyncAPI resource discovery.
 type HTTPEventsContractResolverConfig struct {
 	Client *http.Client
-	Clock  Clock
+	Clock  aauth.Clock
 	Admit  EgressAdmitter
 	Limits HTTPEventsContractResolverLimits
 }
@@ -50,7 +52,7 @@ type HTTPEventsContractResolverLimits struct {
 // freshness. Contract endpoints must remain on the resource origin.
 type HTTPEventsContractResolver struct {
 	client *http.Client
-	clock  Clock
+	clock  aauth.Clock
 	admit  EgressAdmitter
 	limits HTTPEventsContractResolverLimits
 
@@ -96,7 +98,7 @@ func (resolver *HTTPEventsContractResolver) Resolve(
 	if resolver == nil {
 		return nil, errors.New("aauth: Events contract resolver is required")
 	}
-	if err := ValidateServerIdentifier(resource); err != nil {
+	if err := aauth.ValidateServerIdentifier(resource); err != nil {
 		return nil, fmt.Errorf("aauth: Events contract resource: %w", err)
 	}
 	for {
@@ -173,12 +175,12 @@ func (resolver *HTTPEventsContractResolver) fetch(
 	ctx context.Context,
 	resource string,
 ) (eventsContractCacheEntry, error) {
-	metadataEndpoint := resource + "/.well-known/" + ResourceDiscoveryDocument
+	metadataEndpoint := resource + "/.well-known/" + aauth.ResourceDiscoveryDocument
 	metadataBytes, metadataFreshness, err := resolver.fetchJSON(ctx, metadataEndpoint)
 	if err != nil {
 		return eventsContractCacheEntry{}, err
 	}
-	if err := rejectDuplicateJSONNames(metadataBytes); err != nil {
+	if err := jsonstrict.RejectAmbiguousNames(metadataBytes); err != nil {
 		return eventsContractCacheEntry{}, fmt.Errorf("aauth: Events resource metadata: %w", err)
 	}
 	var metadata struct {

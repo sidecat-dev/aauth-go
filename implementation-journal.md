@@ -46,6 +46,10 @@ for this library.
   now have one public owner in `r3`. Events and reference stores import that
   package directly; root forwarding names are absent, and callable R3
   authorization remains unclaimed.
+- Events AsyncAPI contracts and both Events discovery paths now have one public
+  owner in `events`. Root Core imports neither `events` nor `r3`; reference
+  composition imports the owning packages directly. Event-token ownership is a
+  later dependency-ordered change, not a claim of this increment.
 
 ## 2026-08-28
 

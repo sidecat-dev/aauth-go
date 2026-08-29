@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
@@ -61,7 +62,7 @@ func (store *MemoryEventContractStore) Retain(
 	if r3.S256(exact) != digest {
 		return ErrEventContractIntegrity
 	}
-	if _, err := aauth.ParseEventsAsyncAPI(exact); err != nil {
+	if _, err := events.ParseEventsAsyncAPI(exact); err != nil {
 		return fmt.Errorf("%w: %v", ErrEventContractIntegrity, err)
 	}
 	store.mu.Lock()

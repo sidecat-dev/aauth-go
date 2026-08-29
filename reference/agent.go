@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
@@ -961,7 +962,7 @@ func validateAgentEventPayload(
 	if err := validateEventPayloadEnvelope(contentType, payload, digest); err != nil {
 		return err
 	}
-	contract, err := aauth.ParseEventsAsyncAPI(localContext.Contract)
+	contract, err := events.ParseEventsAsyncAPI(localContext.Contract)
 	if err != nil || contract.Digest() != localContext.ContractDigest {
 		return errors.New("reference: agent retained event contract is invalid")
 	}

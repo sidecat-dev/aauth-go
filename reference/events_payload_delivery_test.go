@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -56,7 +57,7 @@ func TestEventPayloadDeliveryRetainsExactPairAndReconcilesLost202(t *testing.T) 
 	transport := &lostAcceptedPayloadTransport{handler: provider.Handler()}
 	resolver := hostileEventMetadataResolver{
 		StaticKeyResolver: signaturekey.StaticKeyResolver{},
-		metadata:          aauth.AgentEventMetadata{Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events"},
+		metadata:          events.AgentEventMetadata{Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events"},
 	}
 	resource := newPayloadDeliveryTestResource(t, resourceKey, resolver, &http.Client{Transport: transport}, clock, resourceStore, contractStore, document)
 	if err := resource.DeliverEvent(ctx, subscription.APIssuer, subscription.EventID); !errors.Is(err, ErrEventPayloadNotAllowed) {
@@ -180,7 +181,7 @@ func TestEventPayloadDeliveryRefusalsPrecedePendingCustodyAndTransport(t *testin
 				return nil, errors.New("test: invalid payload reached transport")
 			})}
 			resolver := hostileEventMetadataResolver{
-				metadata: aauth.AgentEventMetadata{Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events"},
+				metadata: events.AgentEventMetadata{Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events"},
 			}
 			resource := newPayloadDeliveryTestResource(t, resourceKey, resolver, client, clock, store, contracts, document)
 			payload := valid
@@ -226,7 +227,7 @@ func TestEventPayloadDeliveryRefusalsPrecedePendingCustodyAndTransport(t *testin
 			return nil, errors.New("test: failed custody reached transport")
 		})}
 		resolver := hostileEventMetadataResolver{
-			metadata: aauth.AgentEventMetadata{Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events"},
+			metadata: events.AgentEventMetadata{Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events"},
 		}
 		resource := newPayloadDeliveryTestResource(t, resourceKey, resolver, client, clock, store, contracts, document)
 		if err := resource.DeliverEventPayload(ctx, subscription.APIssuer, subscription.EventID, valid); !errors.Is(err, commitFailure) {

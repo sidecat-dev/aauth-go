@@ -9,6 +9,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/events"
 )
 
 func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
@@ -34,7 +35,7 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 	defer gateway.Close()
 
 	admissions := 0
-	resolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
+	resolver, err := events.NewHTTPAgentEventMetadataResolver(events.HTTPAgentEventMetadataResolverConfig{
 		Client: gateway.Client(),
 		Clock:  clock,
 		Admit: func(context.Context, string) error {
@@ -102,7 +103,7 @@ func TestAgentEventMetadataDoesNotCacheWhenCacheControlForbidsIt(t *testing.T) {
 			})
 			defer gateway.Close()
 
-			resolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
+			resolver, err := events.NewHTTPAgentEventMetadataResolver(events.HTTPAgentEventMetadataResolverConfig{
 				Client: gateway.Client(),
 				Clock:  aauth.ClockFunc(func() time.Time { return now }),
 				Admit:  func(context.Context, string) error { return nil },

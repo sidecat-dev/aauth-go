@@ -1,4 +1,4 @@
-package aauth
+package events
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
@@ -83,7 +84,7 @@ func (message EventsAsyncAPIMessage) ValidatePayload(exact []byte) error {
 	if len(exact) == 0 {
 		return errors.New("aauth: Events payload is required")
 	}
-	if err := rejectDuplicateJSONNames(exact); err != nil {
+	if err := jsonstrict.RejectAmbiguousNames(exact); err != nil {
 		return fmt.Errorf("aauth: Events payload: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(exact))
@@ -162,7 +163,7 @@ func ParseEventsAsyncAPI(exact []byte) (*EventsAsyncAPIContract, error) {
 	if len(exact) > maximumEventsAsyncAPIDocument {
 		return nil, errors.New("aauth: Events AsyncAPI document is too large")
 	}
-	if err := rejectDuplicateJSONNames(exact); err != nil {
+	if err := jsonstrict.RejectAmbiguousNames(exact); err != nil {
 		return nil, fmt.Errorf("aauth: Events AsyncAPI document: %w", err)
 	}
 	var document eventsAsyncAPIDocument
