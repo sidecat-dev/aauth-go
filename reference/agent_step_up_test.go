@@ -250,6 +250,36 @@ func TestParseAuthTokenChallengeDistinguishesMalformedAndOtherRequirements(t *te
 	}
 }
 
+func TestParseAuthTokenChallengeLeavesOtherDeferredResponseUntouched(t *testing.T) {
+	requirement, err := aa.FormatRequirementHeader(aa.Requirement{
+		Type: aa.RequirementInteraction, InteractionURL: "https://resource.example/interaction", InteractionCode: "ABCD-EFGH",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := &http.Response{
+		StatusCode: http.StatusAccepted,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"status":"pending","clarification":"answer"}`)),
+	}
+	response.Header.Set("Location", "https://resource.example/pending/step-up")
+	response.Header.Set("Retry-After", "1")
+	response.Header.Set("Cache-Control", "no-store")
+	response.Header.Set("AAuth-Requirement", requirement)
+	response.Request, err = http.NewRequest(http.MethodGet, "https://resource.example/records", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, present, err := parseAuthTokenChallenge(response)
+	if err != nil || present {
+		t.Fatalf("other deferred requirement present=%v err=%v", present, err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	if readErr != nil || string(body) != `{"status":"pending","clarification":"answer"}` {
+		t.Fatalf("other deferred response body=%q err=%v", body, readErr)
+	}
+}
+
 type httpResponseForStepUpTest struct {
 	status int
 	header string

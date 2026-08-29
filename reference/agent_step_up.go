@@ -97,7 +97,15 @@ func parseAuthTokenChallenge(response *http.Response) (authTokenChallenge, bool,
 		challenge.requirement = requirement
 		return challenge, true, nil
 	case http.StatusAccepted:
-		if response.Header.Get("AAuth-Requirement") == "" {
+		header := response.Header.Get("AAuth-Requirement")
+		if header == "" {
+			return challenge, false, nil
+		}
+		requirement, err := aa.ParseRequirementHeader(header)
+		if err != nil {
+			return challenge, true, fmt.Errorf("reference: parse auth-token step-up requirement: %w", err)
+		}
+		if requirement.Type != aa.RequirementAuthToken {
 			return challenge, false, nil
 		}
 		deferred, err := aa.ParseDeferredResponse(response)
