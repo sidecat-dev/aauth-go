@@ -89,6 +89,10 @@ type ResourceBudgetConfig struct {
 	// its metadata. A configured declaration constrains every offer produced by
 	// the resource's Budget policy.
 	Units []budgets.BudgetUnit
+	// UsageEndpoint enables the signed usage-counter query on the resource. The
+	// configured Budget store must implement both BudgetUsageStore and
+	// BudgetUsageRecorder so usage is retained atomically with completion.
+	UsageEndpoint string
 }
 
 // BudgetOperationResult carries the provider value and exact metered cost.
@@ -170,6 +174,9 @@ type Resource struct {
 	operation                    func(context.Context, aauth.AuthorizedRequest) (any, error)
 	budgetOffer                  func(context.Context, *budgets.Budget) (budgets.Budget, error)
 	budgetUnits                  []budgets.BudgetUnit
+	budgetUsageStore             BudgetUsageStore
+	budgetUsageEndpoint          string
+	budgetUsagePath              string
 	budgetStore                  BudgetStore
 	budgetMaximumCost            func(context.Context, aauth.AuthorizedRequest) (int64, error)
 	budgetCallKey                func(context.Context, aauth.AuthorizedRequest) (string, error)
@@ -288,6 +295,21 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		}
 		if err := budgets.ValidateBudgetUnits(config.Budget.Units); err != nil {
 			return nil, fmt.Errorf("reference: Budget unit declarations: %w", err)
+		}
+		if config.Budget.UsageEndpoint != "" {
+			usagePath, err := budgetUsageEndpointPath(config.Identifier, config.Budget.UsageEndpoint)
+			if err != nil {
+				return nil, fmt.Errorf("reference: Budget usage endpoint: %w", err)
+			}
+			if err := validateBudgetUsagePath(usagePath); err != nil {
+				return nil, fmt.Errorf("reference: Budget usage endpoint: %w", err)
+			}
+			if _, ok := config.Budget.Store.(BudgetUsageStore); !ok {
+				return nil, errors.New("reference: Budget usage endpoint requires a usage-capable Budget store")
+			}
+			if _, ok := config.Budget.Store.(BudgetUsageRecorder); !ok {
+				return nil, errors.New("reference: Budget usage endpoint requires atomic usage completion custody")
+			}
 		}
 	}
 	if config.DeferredProtected != nil {
@@ -552,11 +574,19 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		}
 	}
 	var budgetUnits []budgets.BudgetUnit
+	var budgetUsageStore BudgetUsageStore
+	var budgetUsageEndpoint string
+	var budgetUsagePath string
 	if config.Budget != nil && config.Budget.Units != nil {
 		budgetUnits = cloneBudgetUnits(config.Budget.Units)
 		sort.Slice(budgetUnits, func(left, right int) bool {
 			return budgetUnits[left].Unit < budgetUnits[right].Unit
 		})
+	}
+	if config.Budget != nil && config.Budget.UsageEndpoint != "" {
+		budgetUsageStore, _ = config.Budget.Store.(BudgetUsageStore)
+		budgetUsageEndpoint = config.Budget.UsageEndpoint
+		budgetUsagePath, _ = budgetUsageEndpointPath(config.Identifier, budgetUsageEndpoint)
 	}
 	resource := &Resource{
 		identifier:                   config.Identifier,
@@ -583,6 +613,9 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		operation:                    config.Operation,
 		budgetOffer:                  nil,
 		budgetUnits:                  budgetUnits,
+		budgetUsageStore:             budgetUsageStore,
+		budgetUsageEndpoint:          budgetUsageEndpoint,
+		budgetUsagePath:              budgetUsagePath,
 		deferredProtectedStore:       nil,
 		r3Vocabularies:               r3Vocabularies,
 		r3DocumentStore:              r3DocumentStore,
@@ -1048,6 +1081,9 @@ func (resource *Resource) Handler() http.Handler {
 	}
 	if resource.tokenRevocationStore != nil {
 		mux.HandleFunc("POST /revoke", resource.handleTokenRevocation)
+	}
+	if resource.budgetUsageStore != nil {
+		mux.HandleFunc("POST "+resource.budgetUsagePath, resource.handleBudgetUsage)
 	}
 	mux.HandleFunc("POST /authorize", resource.handleAuthorize)
 	mux.HandleFunc("GET /pending/{id}", resource.handlePendingAuthorization)
@@ -2742,6 +2778,9 @@ func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.R
 	}
 	if resource.tokenRevocationStore != nil {
 		metadata["revocation_endpoint"] = resource.identifier + "/revoke"
+	}
+	if resource.budgetUsageStore != nil {
+		metadata["usage_endpoint"] = resource.budgetUsageEndpoint
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }

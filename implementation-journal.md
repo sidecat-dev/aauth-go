@@ -138,9 +138,15 @@ for this library.
   scale and stay within its optional maximum; nil declarations preserve the
   prior unconfigured behavior. `usage_endpoint` and proactive client
   discovery remain separate work.
-- Metadata-driven Budget discovery, durable per-person ledger production and
-  lookup, usage counters, streaming trailers, billing interaction, deferred
-  Budget authorization, and broader deployment topologies remain unclaimed.
+- The reference resource now optionally exposes a same-origin signed
+  `usage_endpoint`. Completed metered results and their person-server, subject,
+  tenant, mission, and signing-key context are retained atomically in the
+  checksum-bound Budget store; UTC calendar and all-time queries survive
+  reopen, exact retry, and unknown-scope requests without disclosure. Response
+  signing and a client convenience wrapper remain unclaimed.
+- Metadata-driven proactive client discovery, streaming trailers, billing
+  interaction, deferred Budget authorization, and broader deployment
+  topologies remain unclaimed.
 
 ### Protected-resource auth-token challenge
 

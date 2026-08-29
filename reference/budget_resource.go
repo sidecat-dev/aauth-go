@@ -47,6 +47,30 @@ func (resource *Resource) executeBudgeted(
 		writeProblem(response, http.StatusInternalServerError, "budget_custody_failed", err)
 		return
 	}
+	var usageRecorder BudgetUsageRecorder
+	var usageContext BudgetUsageRecord
+	if resource.budgetUsageStore != nil {
+		var ok bool
+		usageRecorder, ok = resource.budgetStore.(BudgetUsageRecorder)
+		if !ok {
+			writeProblem(response, http.StatusServiceUnavailable, "budget_usage_unavailable", errors.New("resource Budget store cannot retain usage atomically"))
+			return
+		}
+		agentJKT, thumbprintErr := authorized.ConfirmationKey.Thumbprint()
+		if thumbprintErr != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("auth-token confirmation key cannot identify Budget usage"))
+			return
+		}
+		usageContext = BudgetUsageRecord{
+			Key: execution.Key, PersonServer: authorized.PersonServer, Subject: authorized.Subject,
+			Tenant: authorized.Tenant, MissionS256: authorized.MissionS256, AgentJKT: agentJKT,
+			Unit: grant.Unit, Decimals: grant.Decimals, RecordedAt: resource.clock.Now().Unix(),
+		}
+		if usageContext.Validate() != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("auth-token context cannot identify Budget usage"))
+			return
+		}
+	}
 	record, acquired, remaining, err := resource.budgetStore.Claim(request.Context(), execution)
 	if errors.Is(err, ErrBudgetInsufficient) {
 		required := execution.Maximum
@@ -97,9 +121,16 @@ func (resource *Resource) executeBudgeted(
 		writeProblem(response, http.StatusInternalServerError, "operation_failed", err)
 		return
 	}
-	record, remaining, err = resource.budgetStore.Complete(request.Context(), execution.Key, BudgetResult{
+	completedResult := BudgetResult{
 		Status: http.StatusOK, ContentType: "application/json", Body: body, Cost: result.Cost,
-	})
+	}
+	if usageRecorder != nil {
+		usageContext.Consumed = result.Cost
+		usageContext.RecordedAt = resource.clock.Now().Unix()
+		record, remaining, err = usageRecorder.CompleteWithUsage(request.Context(), execution.Key, completedResult, usageContext)
+	} else {
+		record, remaining, err = resource.budgetStore.Complete(request.Context(), execution.Key, completedResult)
+	}
 	if err != nil {
 		writeProblem(response, http.StatusServiceUnavailable, "budget_custody_failed", err)
 		return

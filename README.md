@@ -253,10 +253,12 @@ insufficient maximum is refused before the provider with a fresh resource
 token, `AAuth-Requirement` reason, and `AAuth-Budget` remainder and required
 values.
 
-This is not complete Budgets conformance. Metadata-driven discovery, general
-recent-consumption selection, usage counters, streaming trailers, billing
-integration, deferred Budget authorization, and broader deployment topologies
-remain unclaimed. Core verification
+This is not complete Budgets conformance. Resource-declared `budget_units`, the
+bounded most-recent-first consumption projection, and an optional signed
+`usage_endpoint` with durable UTC counters are implemented in the reference
+resource. Response signing, metadata-driven proactive client discovery,
+streaming trailers, billing integration, deferred Budget authorization, and
+broader deployment topologies remain unclaimed. Core verification
 retains structurally complete companion members only as exact evidence; an
 endpoint must return matching invalid-zero companion evidence or reject those
 members. Existing non-companion endpoints reject them, and the removed

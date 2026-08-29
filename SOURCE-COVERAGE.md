@@ -9,10 +9,10 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | Status | Sections |
 | --- | ---: |
 | Exercised | 47 |
-| Partial | 60 |
+| Partial | 61 |
 | Unsupported | 5 |
 | Informational | 0 |
-| Unclaimed | 488 |
+| Unclaimed | 487 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -25,7 +25,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` | 1 | 2 | 2 | 0 | 38 |
-| `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 8 | 12 | 0 | 0 | 71 |
+| `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 8 | 13 | 0 | 0 | 70 |
 | `interop-profile` | interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195` | 0 | 0 | 0 | 0 | 8 |
 
 ## Explicit section dispositions
@@ -110,7 +110,7 @@ Evidence:
 
 ### `budgets/budget-consumed` — Partial
 
-Consumption records are strictly parsed as JTI plus non-negative consumed amount; resource-token composition validates a most-recent-first history and projects at most 20 newest records as independent evidence exposed to PS and AS Budget policy. Durable per-person ledger selection and production remain unclaimed.
+Consumption records are strictly parsed as JTI plus non-negative consumed amount; resource-token composition validates a most-recent-first history and projects at most 20 newest records as independent evidence exposed to PS and AS Budget policy. Durable production of budget_consumed from the usage ledger remains unclaimed.
 
 Evidence:
 
@@ -182,7 +182,7 @@ Evidence:
 
 ### `budgets/ps-token-endpoint` — Partial
 
-The PS validates the exact resource Budget and recent consumption before applying a deployment policy that can only narrow the offer. Clarification, interaction, usage-counter lookup, and suggested-budget refusal remain unclaimed.
+The PS validates the exact resource Budget and recent consumption before applying a deployment policy that can only narrow the offer. Clarification, interaction, PS client usage-counter lookup, and suggested-budget refusal remain unclaimed.
 
 Evidence:
 
@@ -230,6 +230,17 @@ Evidence:
 
 - `budgets/external_module_test.go:TestBudgetCompanionBindsNarrowedTokenEvidence`
 - `reference/resource_token_lineage_store_test.go:TestFileResourceTokenLineageStoreRecoversOneExactAuthorizationLineage`
+
+### `budgets/usage-counters` — Partial
+
+The reference resource atomically retains completed Budget consumption with person-server, subject, tenant, mission, and signing-key context; its signed POST usage_endpoint serves UTC day, week, month, year, and all_time counters and omits unknown scopes. Response signing and a client convenience wrapper remain unclaimed.
+
+Evidence:
+
+- `reference/budget_usage_test.go:TestFileBudgetStoreUsageAggregatesAndRecoversWithoutDoubleCounting`
+- `reference/budget_usage_test.go:TestFileBudgetStoreUsageRefusesMixedDenominations`
+- `reference/budget_usage_test.go:TestResourceServesSignedBudgetUsageAndHidesUnknownScopes`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
 
 ### `budgets/value-representation` — Exercised
 

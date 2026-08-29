@@ -1,7 +1,9 @@
 package aauth_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -154,6 +156,7 @@ func TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary(t *testing.T)
 				Units: []budgets.BudgetUnit{{
 					Unit: "USD", Decimals: 6, Max: budgets.OptionalInteger(5_000_000), Description: "US dollars",
 				}},
+				UsageEndpoint: "https://resource.example/usage",
 				Offer: func(_ context.Context, requested *budgets.Budget) (budgets.Budget, error) {
 					resourceOfferCalls++
 					if requested != nil && requested.Amount != 10_000_000 {
@@ -310,6 +313,36 @@ func TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary(t *testing.T)
 		budgets.Budget{Amount: 10_000_000, Unit: "tokens", Decimals: 0},
 	); err == nil {
 		t.Fatal("resource released an offer outside its declared Budget units")
+	}
+	agentJKT, err := agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageBody := []byte(fmt.Sprintf(`{"sub":"directed-person","jkts":[%q]}`, agentJKT))
+	usageRequest, err := http.NewRequest(http.MethodPost, "https://resource.example/usage", bytes.NewReader(usageBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageRequest.Header.Set("Content-Type", "application/json")
+	if err := signaturekey.SignJWKSURIRequest(usageRequest, psKey, "https://ps.example", aauth.PersonDiscoveryDocument, clock); err != nil {
+		t.Fatal(err)
+	}
+	usageResponse, err := gateway.Client().Do(usageRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageResponse.Body.Close()
+	if usageResponse.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(usageResponse.Body, 8<<10))
+		t.Fatalf("usage status = %d: %s", usageResponse.StatusCode, body)
+	}
+	var usagePayload map[string]any
+	if err := json.NewDecoder(io.LimitReader(usageResponse.Body, 8<<10)).Decode(&usagePayload); err != nil {
+		t.Fatal(err)
+	}
+	usageTotals, ok := usagePayload["usage"].(map[string]any)
+	if !ok || usageTotals["all_time"] != float64(500_000) {
+		t.Fatalf("integrated usage payload = %#v", usagePayload)
 	}
 }
 

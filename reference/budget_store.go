@@ -110,6 +110,7 @@ type FileBudgetStore struct {
 	file    *FileGovernanceStore
 	mu      sync.Mutex
 	records map[string]BudgetRecord
+	usage   map[string]BudgetUsageRecord
 	active  map[string]struct{}
 }
 
@@ -120,8 +121,9 @@ type budgetEnvelope struct {
 }
 
 type budgetState struct {
-	Schema  string         `json:"schema"`
-	Records []BudgetRecord `json:"records"`
+	Schema  string              `json:"schema"`
+	Records []BudgetRecord      `json:"records"`
+	Usage   []BudgetUsageRecord `json:"usage,omitempty"`
 }
 
 func NewFileBudgetStore(path string) (*FileBudgetStore, error) {
@@ -133,11 +135,11 @@ func NewFileBudgetStore(path string) (*FileBudgetStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reference: load Budget state: %w", err)
 	}
-	records, err := decodeBudgetState(body)
+	records, usage, err := decodeBudgetState(body)
 	if err != nil {
 		return nil, err
 	}
-	return &FileBudgetStore{file: file, records: records, active: make(map[string]struct{})}, nil
+	return &FileBudgetStore{file: file, records: records, usage: usage, active: make(map[string]struct{})}, nil
 }
 
 func (store *FileBudgetStore) Claim(_ context.Context, execution BudgetExecution) (BudgetRecord, bool, int64, error) {
@@ -181,7 +183,25 @@ func (store *FileBudgetStore) Claim(_ context.Context, execution BudgetExecution
 	return copyBudgetRecord(record), true, remaining - execution.Maximum, nil
 }
 
-func (store *FileBudgetStore) Complete(_ context.Context, key string, result BudgetResult) (BudgetRecord, int64, error) {
+func (store *FileBudgetStore) Complete(ctx context.Context, key string, result BudgetResult) (BudgetRecord, int64, error) {
+	return store.complete(ctx, key, result, nil)
+}
+
+func (store *FileBudgetStore) CompleteWithUsage(
+	ctx context.Context,
+	key string,
+	result BudgetResult,
+	usage BudgetUsageRecord,
+) (BudgetRecord, int64, error) {
+	return store.complete(ctx, key, result, &usage)
+}
+
+func (store *FileBudgetStore) complete(
+	_ context.Context,
+	key string,
+	result BudgetResult,
+	usage *BudgetUsageRecord,
+) (BudgetRecord, int64, error) {
 	if store == nil || store.file == nil {
 		return BudgetRecord{}, 0, errors.New("reference: Budget file store is not initialized")
 	}
@@ -195,9 +215,23 @@ func (store *FileBudgetStore) Complete(_ context.Context, key string, result Bud
 	if err := validateBudgetResult(result, existing.Execution.Maximum); err != nil {
 		return BudgetRecord{}, 0, err
 	}
+	if usage != nil {
+		if usage.Key != key || usage.Unit != existing.Execution.Grant.Unit || usage.Decimals != existing.Execution.Grant.Decimals || usage.Consumed != result.Cost || usage.Validate() != nil {
+			return BudgetRecord{}, 0, ErrBudgetConflict
+		}
+	}
 	if existing.State == "complete" {
 		if existing.Result == nil || !reflect.DeepEqual(*existing.Result, result) {
 			return BudgetRecord{}, 0, ErrBudgetConflict
+		}
+		if usage != nil {
+			if existingUsage, exists := store.usage[key]; exists {
+				if !reflect.DeepEqual(existingUsage, *usage) {
+					return BudgetRecord{}, 0, ErrBudgetConflict
+				}
+			} else if err := store.saveLockedWithUsage(existing, usage); err != nil {
+				return BudgetRecord{}, 0, err
+			}
 		}
 		remaining, err := store.remainingLocked(existing.Execution)
 		return copyBudgetRecord(existing), remaining, err
@@ -207,7 +241,7 @@ func (store *FileBudgetStore) Complete(_ context.Context, key string, result Bud
 	copyResult := result
 	copyResult.Body = append([]byte(nil), result.Body...)
 	next.Result = &copyResult
-	if err := store.saveLocked(next); err != nil {
+	if err := store.saveLockedWithUsage(next, usage); err != nil {
 		return BudgetRecord{}, 0, err
 	}
 	remaining, err := store.remainingLocked(next.Execution)
@@ -245,6 +279,10 @@ func (store *FileBudgetStore) remainingLocked(execution BudgetExecution) (int64,
 }
 
 func (store *FileBudgetStore) saveLocked(record BudgetRecord) error {
+	return store.saveLockedWithUsage(record, nil)
+}
+
+func (store *FileBudgetStore) saveLockedWithUsage(record BudgetRecord, usage *BudgetUsageRecord) error {
 	if err := validateBudgetRecord(record); err != nil {
 		return err
 	}
@@ -253,17 +291,24 @@ func (store *FileBudgetStore) saveLocked(record BudgetRecord) error {
 		next[key] = copyBudgetRecord(existing)
 	}
 	next[record.Execution.Key] = copyBudgetRecord(record)
-	body, err := encodeBudgetState(next)
+	nextUsage := cloneBudgetUsage(store.usage)
+	if usage != nil {
+		copyUsage := *usage
+		nextUsage[usage.Key] = copyUsage
+	}
+	body, err := encodeBudgetState(next, nextUsage)
 	if err != nil {
 		return err
 	}
 	if err := store.file.Save(body); err != nil {
 		if errors.Is(err, ErrGovernanceStateUncertain) {
 			store.records = next
+			store.usage = nextUsage
 		}
 		return fmt.Errorf("reference: save Budget state: %w", err)
 	}
 	store.records = next
+	store.usage = nextUsage
 	return nil
 }
 
@@ -335,7 +380,7 @@ func copyBudgetRecord(record BudgetRecord) BudgetRecord {
 	return record
 }
 
-func encodeBudgetState(records map[string]BudgetRecord) ([]byte, error) {
+func encodeBudgetState(records map[string]BudgetRecord, usage map[string]BudgetUsageRecord) ([]byte, error) {
 	keys := make([]string, 0, len(records))
 	for key := range records {
 		keys = append(keys, key)
@@ -345,6 +390,14 @@ func encodeBudgetState(records map[string]BudgetRecord) ([]byte, error) {
 	for _, key := range keys {
 		state.Records = append(state.Records, copyBudgetRecord(records[key]))
 	}
+	usageKeys := make([]string, 0, len(usage))
+	for key := range usage {
+		usageKeys = append(usageKeys, key)
+	}
+	sort.Strings(usageKeys)
+	for _, key := range usageKeys {
+		state.Usage = append(state.Usage, usage[key])
+	}
 	body, err := json.Marshal(state)
 	if err != nil {
 		return nil, err
@@ -353,38 +406,50 @@ func encodeBudgetState(records map[string]BudgetRecord) ([]byte, error) {
 	return json.Marshal(budgetEnvelope{Schema: budgetEnvelopeSchema, StateSHA256: hex.EncodeToString(digest[:]), State: body})
 }
 
-func decodeBudgetState(body []byte) (map[string]BudgetRecord, error) {
+func decodeBudgetState(body []byte) (map[string]BudgetRecord, map[string]BudgetUsageRecord, error) {
 	records := make(map[string]BudgetRecord)
+	usage := make(map[string]BudgetUsageRecord)
 	if len(body) == 0 {
-		return records, nil
+		return records, usage, nil
 	}
 	var envelope budgetEnvelope
 	if err := decodeJSONBytesWithLimit(bytes.NewReader(body), &envelope, maxGovernanceStateBytes); err != nil || envelope.Schema != budgetEnvelopeSchema {
-		return nil, errors.New("reference: Budget envelope is invalid")
+		return nil, nil, errors.New("reference: Budget envelope is invalid")
 	}
 	digest := sha256.Sum256(envelope.State)
 	if hex.EncodeToString(digest[:]) != envelope.StateSHA256 {
-		return nil, errors.New("reference: Budget state checksum does not match")
+		return nil, nil, errors.New("reference: Budget state checksum does not match")
 	}
 	var state budgetState
 	if err := decodeJSONBytesWithLimit(bytes.NewReader(envelope.State), &state, maxGovernanceStateBytes); err != nil || state.Schema != budgetStateSchema {
-		return nil, errors.New("reference: Budget state is invalid")
+		return nil, nil, errors.New("reference: Budget state is invalid")
 	}
 	previous := ""
 	for _, record := range state.Records {
 		if record.Execution.Key <= previous || validateBudgetRecord(record) != nil {
-			return nil, errors.New("reference: Budget state contains an invalid record")
+			return nil, nil, errors.New("reference: Budget state contains an invalid record")
 		}
 		previous = record.Execution.Key
 		records[record.Execution.Key] = copyBudgetRecord(record)
 	}
-	store := &FileBudgetStore{records: records}
+	previous = ""
+	for _, record := range state.Usage {
+		if record.Key <= previous || record.Validate() != nil {
+			return nil, nil, errors.New("reference: Budget state contains an invalid usage record")
+		}
+		if retained, exists := records[record.Key]; !exists || retained.State != "complete" || retained.Result == nil || retained.Result.Cost != record.Consumed || retained.Execution.Grant.Unit != record.Unit || retained.Execution.Grant.Decimals != record.Decimals {
+			return nil, nil, errors.New("reference: Budget usage record does not match its retained execution")
+		}
+		previous = record.Key
+		usage[record.Key] = record
+	}
+	store := &FileBudgetStore{records: records, usage: usage}
 	for _, record := range records {
 		if _, err := store.remainingLocked(record.Execution); err != nil {
-			return nil, errors.New("reference: Budget state violates its hard cap")
+			return nil, nil, errors.New("reference: Budget state violates its hard cap")
 		}
 	}
-	return records, nil
+	return records, usage, nil
 }
 
 var _ BudgetStore = (*FileBudgetStore)(nil)
