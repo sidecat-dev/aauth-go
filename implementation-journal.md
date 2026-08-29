@@ -50,6 +50,18 @@ for this library.
   owner in `events`. Root Core imports neither `events` nor `r3`; reference
   composition imports the owning packages directly. Event-token ownership is a
   later dependency-ordered change, not a claim of this increment.
+- Core evidence now exposes defensive exact values for structurally complete
+  R3 and Budgets members. Existing endpoints explicitly reject unresolved
+  companion members; Core verification alone never upgrades them into callable
+  authority.
+- `r3.ValidateResourceToken` and `r3.ValidateAuthToken` return invalid-zero,
+  sealed results bound to the exact Core evidence. They validate the current
+  R3 URI, digest, grant, per-call vocabulary, operation shape, and disjointness
+  rules. They do not fetch a document, run policy, or authorize an effect.
+- A clean external module performs Core verification followed by R3 validation
+  using only public APIs. Malformed R3 values retain typed member-specific
+  failures, while reference endpoints without an R3 consumer continue to fail
+  closed before policy or consequence.
 
 ## 2026-08-28
 

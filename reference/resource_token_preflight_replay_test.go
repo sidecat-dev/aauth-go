@@ -286,7 +286,7 @@ func TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay(t 
 			}
 			upstreamToken := signRawPreflightAuthToken(t, upstreamKey, upstreamPrivate, aauth.AuthTokenClaims{
 				Issuer:       "https://upstream-ps.example",
-				DWK:          aauth.PersonDiscoveryDocument,
+				DWK:          aauth.AccessDiscoveryDocument,
 				Audience:     "https://ap.example",
 				JTI:          "upstream-auth-token",
 				Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},

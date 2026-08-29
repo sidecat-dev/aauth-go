@@ -126,19 +126,11 @@ func inspectCoreAuthorizationMembers(
 	return recognized, nil
 }
 
-func rejectUnsupportedAuthorizationMembers(payload []byte, tokenType string) error {
+func validateAuthorizationMembers(payload []byte, tokenType string) error {
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &members); err != nil {
 		return fmt.Errorf("aauth: decode %s claims: %w", tokenType, err)
 	}
-	recognized, err := inspectCoreAuthorizationMembers(members, tokenType)
-	if err != nil {
-		return err
-	}
-	for _, rule := range coreAuthorizationMemberCatalog {
-		if _, present := recognized[rule.name]; present {
-			return &unsupportedTokenClaimError{tokenType: tokenType, claim: rule.name}
-		}
-	}
-	return nil
+	_, err := inspectCoreAuthorizationMembers(members, tokenType)
+	return err
 }

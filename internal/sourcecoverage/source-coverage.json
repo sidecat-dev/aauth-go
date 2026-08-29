@@ -678,6 +678,86 @@
       "claim": "The x509 scheme is not implemented."
     },
     {
+      "source": "r3",
+      "section": "vocabularies",
+      "status": "partial",
+      "claim": "The public R3 package validates semantic operation sets for all seven standard vocabulary identifiers and admits structurally valid third-party vocabulary URIs. It does not discover authoritative service definitions or prove that a declared operation exists there.",
+      "evidence": [
+        {
+          "file": "r3/document_internal_test.go",
+          "test": "TestR3StandardVocabularyOperationShapes"
+        },
+        {
+          "file": "r3/document_internal_test.go",
+          "test": "TestR3OperationSetUsesSemanticSetEquality"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "r3-document/fields",
+      "status": "partial",
+      "claim": "The public R3 package strictly parses the current vocabulary, operations, account, parameters, and display fields and returns defensive operation-set projections. Serving, authenticated retrieval, and policy use are not implemented by this value layer.",
+      "evidence": [
+        {
+          "file": "r3/document_internal_test.go",
+          "test": "TestR3DocumentRetainsExactIdentityAndCurrentNeutralShape"
+        },
+        {
+          "file": "r3/document_internal_test.go",
+          "test": "TestParseR3DocumentRejectsRemovedAndMalformedMembers"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "content-addressing",
+      "status": "partial",
+      "claim": "R3 S256 computes unpadded base64url SHA-256 over the exact document bytes without canonicalization. Durable byte serving and hash-keyed cache custody are not implemented by this value layer.",
+      "evidence": [
+        {
+          "file": "r3/document_internal_test.go",
+          "test": "TestR3DocumentRetainsExactIdentityAndCurrentNeutralShape"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "r3-document/resource-token-extensions",
+      "status": "partial",
+      "claim": "Core verification retains applicable r3_uri and r3_s256 members only as exact sealed token evidence; R3 validation then requires an absolute HTTPS document URI and an unpadded SHA-256 digest bound to that evidence. Document retrieval, hash comparison, and policy processing remain unclaimed.",
+      "evidence": [
+        {
+          "file": "r3/token_external_test.go",
+          "test": "TestR3TokenResultsBindExactCoreEvidence"
+        },
+        {
+          "file": "r3/token_external_test.go",
+          "test": "TestR3AuthTokenValidationRefusesMalformedMembers"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "auth-token-extensions",
+      "status": "partial",
+      "claim": "R3 validation binds r3_uri, r3_s256, r3_granted, and optional r3_per_call to exact Core auth-token evidence; it validates one shared vocabulary, semantic operation shapes, and disjoint granted and per-call sets. Resource enforcement and per-call execution remain unclaimed.",
+      "evidence": [
+        {
+          "file": "r3/token_external_test.go",
+          "test": "TestR3TokenResultsBindExactCoreEvidence"
+        },
+        {
+          "file": "r3/token_external_test.go",
+          "test": "TestR3AuthTokenValidationRefusesMalformedMembers"
+        },
+        {
+          "file": "r3/external_module_test.go",
+          "test": "TestCleanExternalModuleValidatesR3DocumentsAndTokenEvidence"
+        }
+      ]
+    },
+    {
       "source": "events",
       "section": "protocol-overview",
       "status": "partial",

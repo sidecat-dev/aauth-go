@@ -116,6 +116,38 @@ func (verified VerifiedToken[T]) Claims() (T, error) {
 	return claims, nil
 }
 
+// AuthorizationMembers returns defensive exact JSON values for every
+// recognized current R3 or Budgets member carried by the verified token.
+func (verified VerifiedToken[T]) AuthorizationMembers() (map[string]json.RawMessage, error) {
+	if !verified.Valid() {
+		return nil, errors.New("aauth: verified token evidence is invalid")
+	}
+	payload, err := verified.compact.Payload()
+	if err != nil {
+		return nil, err
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &members); err != nil {
+		return nil, err
+	}
+	return inspectCoreAuthorizationMembers(members, verified.tokenType)
+}
+
+// RequireNoAuthorizationMembers refuses evidence that still needs an R3 or
+// Budgets validation result before an endpoint may use it.
+func (verified VerifiedToken[T]) RequireNoAuthorizationMembers() error {
+	members, err := verified.AuthorizationMembers()
+	if err != nil {
+		return err
+	}
+	for _, rule := range coreAuthorizationMemberCatalog {
+		if _, present := members[rule.name]; present {
+			return &unsupportedTokenClaimError{tokenType: verified.tokenType, claim: rule.name}
+		}
+	}
+	return nil
+}
+
 func (verified VerifiedToken[T]) computeIdentity() (EvidenceID, error) {
 	compact, err := verified.compact.Compact()
 	if err != nil {

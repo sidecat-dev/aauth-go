@@ -105,7 +105,7 @@ func (server *PersonServer) handleAgentInteraction(
 	}
 	now := server.clock.Now()
 	expiresAt := now.Add(server.pendingLifetime)
-	agentClaims, err := verified.AgentToken.Claims()
+	agentClaims, err := claimsWithoutAuthorization(*verified.AgentToken)
 	if err != nil {
 		writeSignatureFailure(response, err)
 		return

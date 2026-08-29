@@ -1059,7 +1059,7 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 		if err != nil {
 			return approved, err
 		}
-		claims, err := evidence.Claims()
+		claims, err := claimsWithoutAuthorization(evidence)
 		if err != nil {
 			return approved, err
 		}
@@ -1172,7 +1172,7 @@ func (agent *Agent) requestPersonToken(
 		if err != nil {
 			return grant, err
 		}
-		parentClaims, err := parentEvidence.Claims()
+		parentClaims, err := claimsWithoutAuthorization(parentEvidence)
 		if err != nil {
 			return grant, err
 		}
@@ -1183,7 +1183,7 @@ func (agent *Agent) requestPersonToken(
 		if err != nil {
 			return grant, err
 		}
-		subagentClaims, err := subagentEvidence.Claims()
+		subagentClaims, err := claimsWithoutAuthorization(subagentEvidence)
 		if err != nil {
 			return grant, err
 		}
@@ -1198,7 +1198,7 @@ func (agent *Agent) requestPersonToken(
 		if err != nil {
 			return grant, err
 		}
-		agentClaims, err := agentEvidence.Claims()
+		agentClaims, err := claimsWithoutAuthorization(agentEvidence)
 		if err != nil {
 			return grant, err
 		}
@@ -1209,7 +1209,7 @@ func (agent *Agent) requestPersonToken(
 		if err != nil {
 			return grant, err
 		}
-		upstream, err := upstreamEvidence.Claims()
+		upstream, err := claimsWithoutAuthorization(upstreamEvidence)
 		if err != nil {
 			return grant, err
 		}
@@ -1251,7 +1251,7 @@ func (agent *Agent) requestPersonToken(
 	if err != nil {
 		return grant, err
 	}
-	claims, err := evidence.Claims()
+	claims, err := claimsWithoutAuthorization(evidence)
 	if err != nil {
 		return grant, err
 	}
@@ -1767,7 +1767,7 @@ func (agent *Agent) AuthorizeWithPersonToken(
 	if err != nil {
 		return Grant{}, err
 	}
-	personClaims, err := personEvidence.Claims()
+	personClaims, err := claimsWithoutAuthorization(personEvidence)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -1794,7 +1794,7 @@ func (agent *Agent) RequestResourceTokenWithPersonToken(
 	if err != nil {
 		return ResourceGrant{}, err
 	}
-	claims, err := evidence.Claims()
+	claims, err := claimsWithoutAuthorization(evidence)
 	if err != nil {
 		return ResourceGrant{}, err
 	}
@@ -1853,7 +1853,7 @@ func (agent *Agent) requestCurrentResourceToken(
 	if err != nil {
 		return grant, err
 	}
-	resourceClaims, err := resourceEvidence.Claims()
+	resourceClaims, err := claimsWithoutAuthorization(resourceEvidence)
 	if err != nil {
 		return grant, err
 	}
@@ -1910,7 +1910,7 @@ func (agent *Agent) RequestTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	agentClaims, err := agentEvidence.Claims()
+	agentClaims, err := claimsWithoutAuthorization(agentEvidence)
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -2036,7 +2036,7 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	parentClaims, err := parentEvidence.Claims()
+	parentClaims, err := claimsWithoutAuthorization(parentEvidence)
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -2047,7 +2047,7 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	subagentClaims, err := subagentEvidence.Claims()
+	subagentClaims, err := claimsWithoutAuthorization(subagentEvidence)
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -2070,7 +2070,7 @@ func (agent *Agent) requestSubagentTokenAuthorization(
 		if err != nil {
 			return TokenAuthorization{}, err
 		}
-		upstream, err := upstreamEvidence.Claims()
+		upstream, err := claimsWithoutAuthorization(upstreamEvidence)
 		if err != nil {
 			return TokenAuthorization{}, err
 		}
@@ -2129,7 +2129,7 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	agentClaims, err := agentEvidence.Claims()
+	agentClaims, err := claimsWithoutAuthorization(agentEvidence)
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -2140,7 +2140,7 @@ func (agent *Agent) RequestChainedTokenAuthorization(
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
-	upstream, err := upstreamEvidence.Claims()
+	upstream, err := claimsWithoutAuthorization(upstreamEvidence)
 	if err != nil {
 		return TokenAuthorization{}, err
 	}
@@ -2288,7 +2288,7 @@ func (agent *Agent) verifyResourceGrantForContinuation(
 	if err != nil {
 		return jose.JWK{}, err
 	}
-	claims, err := evidence.Claims()
+	claims, err := claimsWithoutAuthorization(evidence)
 	if err != nil {
 		return jose.JWK{}, err
 	}
@@ -2403,7 +2403,7 @@ func (agent *Agent) parseTokenGrantResponse(
 	if err != nil {
 		return Grant{}, jose.JWK{}, err
 	}
-	authClaims, err := authEvidence.Claims()
+	authClaims, err := claimsWithoutAuthorization(authEvidence)
 	if err != nil {
 		return Grant{}, jose.JWK{}, err
 	}

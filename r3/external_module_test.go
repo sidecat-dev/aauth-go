@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestCleanExternalModuleUsesOnlyTheR3Package(t *testing.T) {
+func TestCleanExternalModuleValidatesR3DocumentsAndTokenEvidence(t *testing.T) {
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate r3 source")
@@ -45,10 +45,18 @@ func writeR3ExternalFile(t *testing.T, directory, name, contents string) {
 const r3ExternalModuleTest = `package consumer_test
 
 import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestR3Document(t *testing.T) {
@@ -60,6 +68,56 @@ func TestR3Document(t *testing.T) {
 	set := document.OperationSet()
 	if !set.Contains(json.RawMessage(` + "`" + `{"tool":"read"}` + "`" + `)) || r3.S256(exact) == "" {
 		t.Fatalf("document = %#v", document)
+	}
+}
+
+func TestR3TokenEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 29, 6, 0, 0, 0, time.UTC)
+	issuer, err := jose.NewEd25519SigningKey("issuer", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x31}, ed25519.SeedSize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestKey, err := jose.NewEd25519SigningKey("request", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x32}, ed25519.SeedSize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := json.Marshal(aauth.AuthTokenClaims{
+		Issuer: "https://person.example", DWK: aauth.PersonDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "auth-r3-external",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()},
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
+		Subject: "person", Scope: "read", PersonServer: "https://person.example",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(claims, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["r3_uri"] = json.RawMessage("\"https://resource.example/r3/current\"")
+	digest := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x33}, 32))
+	payload["r3_s256"] = json.RawMessage("\"" + digest + "\"")
+	payload["r3_granted"] = json.RawMessage(` + "`" + `{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}]}` + "`" + `)
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := jose.SignCompact(issuer, jose.Header{
+		Algorithm: jose.Ed25519Algorithm, Type: aauth.AuthTokenType, KeyID: issuer.ID(),
+	}, payloadBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := aauth.VerifyAuthToken(context.Background(), compact,
+		signaturekey.StaticKeyResolver{"https://person.example": {issuer.ID(): issuer.PublicJWK()}},
+		aauth.ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r3.ValidateAuthToken(core)
+	if err != nil || !result.Valid() || result.Digest() != digest {
+		t.Fatalf("R3 result = %#v, %v", result, err)
 	}
 }
 `

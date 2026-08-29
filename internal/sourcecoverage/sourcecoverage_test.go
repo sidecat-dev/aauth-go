@@ -169,6 +169,11 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"core\x00requirement-responses/interaction-required":                                    StatusPartial,
 		"core\x00deferred-responses/initial-request":                                            StatusExercised,
 		"core\x00deferred-responses/deferred-response-state-machine":                            StatusPartial,
+		"r3\x00vocabularies":                                                                    StatusPartial,
+		"r3\x00r3-document/fields":                                                              StatusPartial,
+		"r3\x00content-addressing":                                                              StatusPartial,
+		"r3\x00r3-document/resource-token-extensions":                                           StatusPartial,
+		"r3\x00auth-token-extensions":                                                           StatusPartial,
 	}
 	currentEvidence := map[string]bool{
 		"access_client_test.go":                  true,
@@ -180,6 +185,9 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"deferred_four_party_journey_test.go":    true,
 		"deferred_person_server_journey_test.go": true,
 		"person_token_internal_test.go":          true,
+		"r3/document_internal_test.go":           true,
+		"r3/external_module_test.go":             true,
+		"r3/token_external_test.go":              true,
 		"subagent_journey_test.go":               true,
 	}
 	seenCurrent := make(map[string]bool, len(currentClaims))
@@ -201,7 +209,6 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"core\x00mission-completion":                       {},
 		"core\x00upstream-token-verification":              {},
 		"core\x00metadata-documents":                       {},
-		"r3\x00auth-token-extensions":                      {},
 		"r3\x00authorization-endpoint-extensions":          {},
 		"r3\x00per-call-proposals":                         {},
 		"r3\x00r3-document":                                {},

@@ -298,7 +298,7 @@ func VerifyPersonToken(ctx context.Context, compact string, resolver signatureke
 	if err := json.Unmarshal(payload, &names); err != nil {
 		return zero, fmt.Errorf("aauth: decode %s claims: %w", PersonTokenType, err)
 	}
-	if err := rejectUnsupportedAuthorizationMembers(payload, PersonTokenType); err != nil {
+	if err := validateAuthorizationMembers(payload, PersonTokenType); err != nil {
 		return zero, err
 	}
 	if _, exists := names["scope"]; exists {
@@ -366,7 +366,7 @@ func VerifyAuthToken(ctx context.Context, compact string, resolver signaturekey.
 	if header.Type != AuthTokenType {
 		return zero, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, AuthTokenType)
 	}
-	if err := rejectUnsupportedAuthorizationMembers(payload, AuthTokenType); err != nil {
+	if err := validateAuthorizationMembers(payload, AuthTokenType); err != nil {
 		return zero, err
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
@@ -404,7 +404,7 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	if header.Type != expectedType {
 		return jose.VerifiedCompact{}, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, expectedType)
 	}
-	if err := rejectUnsupportedAuthorizationMembers(payload, expectedType); err != nil {
+	if err := validateAuthorizationMembers(payload, expectedType); err != nil {
 		return jose.VerifiedCompact{}, err
 	}
 	if err := json.Unmarshal(payload, claims); err != nil {

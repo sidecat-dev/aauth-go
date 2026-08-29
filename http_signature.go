@@ -77,6 +77,9 @@ func (verified VerifiedRequest) AgentClaims() (AgentTokenClaims, error) {
 	if verified.AgentToken == nil {
 		return AgentTokenClaims{}, errors.New("aauth: verified request has no agent token")
 	}
+	if err := verified.AgentToken.RequireNoAuthorizationMembers(); err != nil {
+		return AgentTokenClaims{}, err
+	}
 	return verified.AgentToken.Claims()
 }
 
@@ -85,6 +88,9 @@ func (verified VerifiedRequest) PersonClaims() (PersonTokenClaims, error) {
 	if verified.PersonToken == nil {
 		return PersonTokenClaims{}, errors.New("aauth: verified request has no person token")
 	}
+	if err := verified.PersonToken.RequireNoAuthorizationMembers(); err != nil {
+		return PersonTokenClaims{}, err
+	}
 	return verified.PersonToken.Claims()
 }
 
@@ -92,6 +98,9 @@ func (verified VerifiedRequest) PersonClaims() (PersonTokenClaims, error) {
 func (verified VerifiedRequest) AuthClaims() (AuthTokenClaims, error) {
 	if verified.AuthToken == nil {
 		return AuthTokenClaims{}, errors.New("aauth: verified request has no auth token")
+	}
+	if err := verified.AuthToken.RequireNoAuthorizationMembers(); err != nil {
+		return AuthTokenClaims{}, err
 	}
 	return verified.AuthToken.Claims()
 }
@@ -191,6 +200,9 @@ func VerifyRequest(
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
+			if memberErr := token.RequireNoAuthorizationMembers(); memberErr != nil {
+				return verified, classifyJWTVerificationError(memberErr)
+			}
 			claims, claimsErr := token.Claims()
 			if claimsErr != nil {
 				return verified, classifyJWTVerificationError(claimsErr)
@@ -204,6 +216,9 @@ func VerifyRequest(
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
 			}
+			if memberErr := token.RequireNoAuthorizationMembers(); memberErr != nil {
+				return verified, classifyJWTVerificationError(memberErr)
+			}
 			claims, claimsErr := token.Claims()
 			if claimsErr != nil {
 				return verified, classifyJWTVerificationError(claimsErr)
@@ -214,6 +229,9 @@ func VerifyRequest(
 			token, verifyErr := VerifyAuthToken(ctx, verified.RawCredential, resolver, verificationClock)
 			if verifyErr != nil {
 				return verified, classifyJWTVerificationError(verifyErr)
+			}
+			if memberErr := token.RequireNoAuthorizationMembers(); memberErr != nil {
+				return verified, classifyJWTVerificationError(memberErr)
 			}
 			claims, claimsErr := token.Claims()
 			if claimsErr != nil {

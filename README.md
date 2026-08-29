@@ -35,8 +35,10 @@ trusted verification instant. `Claims()` returns a defensive typed projection;
 constructor or mutable evidence fields.
 The `r3` package owns exact-byte R3 documents, semantic operation sets, the
 seven current standard vocabularies, third-party vocabulary admission, and
-content digests. Those neutral values carry authorization material but do not
-themselves authorize an operation.
+content digests. It also validates the R3 members retained in exact Core token
+evidence and returns a sealed result bound to that evidence. These values do
+not themselves authorize an operation; callable policy, document retrieval,
+and resource enforcement remain separate unfinished work.
 The `events` package owns exact AsyncAPI contract parsing and payload
 validation plus admitted resource-contract and agent-endpoint discovery. Event
 and subscribe token profiles remain in root Core for now; their package move is
@@ -160,12 +162,15 @@ names and names that Go would case-fold onto the same struct field before
 decoding.
 
 Current R3 authorization and Budgets remain unclaimed. The module exposes no
-callable R3 authorization path, and defined R3 or Budget members on resource
-and auth tokens fail closed instead of being silently ignored. One compile-time
-Core catalog also rejects those members on agent and person tokens, enforces
-their current token applicability and required co-presence, and keeps the
-removed `r3_conditional` name only as a rejected negative vector. The public
-`r3` package retains current neutral document values and digests used by Events.
+callable R3 authorization path. Core verification retains structurally complete
+R3 or Budget members only as exact evidence; an endpoint must consume a
+companion validation result or reject those unresolved members. Existing
+non-companion endpoints reject them. One compile-time Core catalog rejects
+those members on agent and person tokens, enforces current token applicability
+and required co-presence, and keeps the removed `r3_conditional` name only as a
+rejected negative vector. The public `r3` package validates R3 URI, digest,
+grant, and per-call members against the exact Core evidence. Budgets validation,
+R3 document retrieval, callable policy, and resource enforcement remain open.
 Bounded current
 sub-agent and call-chain behavior is claimed only for the exact runnable
 journeys listed in the source coverage report; broader delegation and

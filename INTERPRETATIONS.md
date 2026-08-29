@@ -212,7 +212,7 @@ stores a recoverable state machine without pretending they share a transaction.
 `MissionIssuanceStore`. Exact recovery requires the original signed request
 within its accepted signature window; a newly signed request is a new proposal.
 
-## AAG-I007 — Defined authorization extensions fail closed until implemented
+## AAG-I007 — Defined authorization extensions require an explicit companion result
 
 **Status:** adopted current boundary
 
@@ -223,13 +223,16 @@ and `Auth Token Extensions`.
 **Question:** May a receiver ignore a signed R3 or Budget claim merely because
 this implementation does not yet support that companion specification?
 
-**Chosen behavior:** No. Resource and auth tokens containing any defined R3 or
-Budget member are rejected by name before ordinary claims decoding, request-
-proof replay admission, authorization-decision policy, new authorization-state
-retention, or protected consequence. Signer authentication, trusted-peer
-policy, and recovery of already-retained state remain earlier independent
-boundaries. Support begins only with the companion extension's complete
-validation and enforcement path.
+**Chosen behavior:** No. Core verification recognizes current R3 and Budget
+members, enforces their token-profile applicability and required co-presence,
+and retains their exact JSON values in sealed evidence. That evidence is not an
+authorization decision. A caller must pass it through the applicable companion
+validator and enforcement path, or explicitly reject it with
+`RequireNoAuthorizationMembers`. Existing endpoints without a companion
+consumer reject unresolved members before request-proof replay admission,
+authorization-decision policy, new authorization-state retention, or protected
+consequence. Signer authentication, trusted-peer policy, and recovery of
+already-retained state remain independent boundaries.
 
 **Alternative considered:** Treat the members as unknown optional JWT claims.
 That would silently discard signed grants or limits. In particular, accepting a
@@ -237,19 +240,24 @@ Budget-bearing auth token without enforcing its hard cap changes the authority
 the issuer expressed.
 
 **Why:** Cryptographic validity does not authorize a receiver to ignore known
-authorization semantics. A named refusal is safer and interoperable with a
-future complete extension implementation; partial parsing would create a
-second, weaker profile.
+authorization semantics. Keeping exact signed members attached to Core evidence
+allows a companion package to validate them without reparsing or weakening the
+Core result. Requiring either an explicit companion result or a named refusal
+prevents ordinary endpoints from silently treating the token as scope-only.
 
 **Evidence:**
 
-- `r3_test.go:TestVerifyTokensRejectRawUnsupportedExtensionMembersBeforeClaimsDecode`
+- `token_authorization_catalog_test.go:TestInapplicableIncompleteAndRemovedAuthorizationMembersFailBeforeKeyResolution`
+- `token_authorization_catalog_test.go:TestCompleteAuthorizationMembersRemainBoundToVerifiedCoreEvidence`
+- `r3/token_external_test.go:TestR3TokenResultsBindExactCoreEvidence`
 - `reference/resource_replay_store_test.go:TestCurrentProtectedResourceRejectsRawUnsupportedExtensionTokensBeforePolicyReplayAndOperation`
 - `reference/resource_token_preflight_replay_test.go:TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay`
 - `reference/resource_token_preflight_replay_test.go:TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay`
 
-**Current-product effect:** R3 and Budgets remain unclaimed. Their defined
-claims cannot be downgraded into the current Core scope-only path.
+**Current-product effect:** Callable R3 authorization and Budgets remain
+unclaimed. R3 token-member validation is now implemented as a side-effect-free
+companion result; defined claims still cannot be downgraded into the current
+Core scope-only path.
 
 ## Adding or changing an interpretation
 

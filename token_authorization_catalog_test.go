@@ -3,6 +3,7 @@ package aauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -134,14 +135,10 @@ func TestCoreAuthorizationMemberCatalogEnforcesApplicabilityAndCoPresence(t *tes
 	}
 }
 
-func TestRecognizedAndRemovedAuthorizationMembersFailBeforeKeyResolution(t *testing.T) {
+func TestInapplicableIncompleteAndRemovedAuthorizationMembersFailBeforeKeyResolution(t *testing.T) {
 	now := time.Date(2026, 8, 29, 4, 0, 0, 0, time.UTC)
 	issuerKey := internalTestSigningKey(t, "issuer-key")
 	requestKey := internalTestSigningKey(t, "request-key")
-	thumbprint, err := requestKey.PublicJWK().Thumbprint()
-	if err != nil {
-		t.Fatal(err)
-	}
 	tests := []struct {
 		name      string
 		tokenType string
@@ -179,41 +176,6 @@ func TestRecognizedAndRemovedAuthorizationMembersFailBeforeKeyResolution(t *test
 			},
 			verify: func(compact string, resolver *catalogKeyResolver) error {
 				_, err := VerifyPersonToken(context.Background(), compact, resolver, ClockFunc(func() time.Time { return now }))
-				return err
-			},
-		},
-		{
-			name:      "resource complete budget",
-			tokenType: ResourceTokenType,
-			claims: ResourceTokenClaims{
-				Issuer: "https://resource.example", DWK: ResourceDiscoveryDocument,
-				Audience: "https://person.example", JTI: "resource-catalog", AgentJKT: thumbprint,
-				IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Scope: "documents.read",
-				PersonServer: "https://person.example", Subject: "directed-person", PresentedJTI: "person-catalog",
-			},
-			members: map[string]json.RawMessage{"budget": json.RawMessage(`{}`)},
-			verify: func(compact string, resolver *catalogKeyResolver) error {
-				_, err := VerifyResourceToken(context.Background(), compact, resolver, ClockFunc(func() time.Time { return now }))
-				return err
-			},
-		},
-		{
-			name:      "auth complete R3",
-			tokenType: AuthTokenType,
-			claims: AuthTokenClaims{
-				Issuer: "https://person.example", DWK: PersonDiscoveryDocument,
-				Audience: "https://resource.example", JTI: "auth-catalog",
-				Confirmation: Confirmation{JWK: requestKey.PublicJWK()},
-				IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
-				Subject: "directed-person", Scope: "documents.read", PersonServer: "https://person.example",
-			},
-			members: map[string]json.RawMessage{
-				"r3_uri":     json.RawMessage(`"https://resource.example/r3"`),
-				"r3_s256":    json.RawMessage(`"digest"`),
-				"r3_granted": json.RawMessage(`{}`),
-			},
-			verify: func(compact string, resolver *catalogKeyResolver) error {
-				_, err := VerifyAuthToken(context.Background(), compact, resolver, ClockFunc(func() time.Time { return now }))
 				return err
 			},
 		},
@@ -259,6 +221,101 @@ func TestRecognizedAndRemovedAuthorizationMembersFailBeforeKeyResolution(t *test
 			}
 			if resolver.calls != 0 {
 				t.Fatalf("key resolver calls = %d, want 0", resolver.calls)
+			}
+		})
+	}
+}
+
+func TestCompleteAuthorizationMembersRemainBoundToVerifiedCoreEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 29, 4, 0, 0, 0, time.UTC)
+	issuerKey := internalTestSigningKey(t, "issuer-key")
+	requestKey := internalTestSigningKey(t, "request-key")
+	thumbprint, err := requestKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		tokenType string
+		claims    any
+		members   map[string]json.RawMessage
+		verify    func(string, *catalogKeyResolver) (map[string]json.RawMessage, error)
+	}{
+		{
+			name:      "resource budget",
+			tokenType: ResourceTokenType,
+			claims: ResourceTokenClaims{
+				Issuer: "https://resource.example", DWK: ResourceDiscoveryDocument,
+				Audience: "https://person.example", JTI: "resource-catalog", AgentJKT: thumbprint,
+				IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Scope: "documents.read",
+				PersonServer: "https://person.example", Subject: "directed-person", PresentedJTI: "person-catalog",
+			},
+			members: map[string]json.RawMessage{"budget": json.RawMessage(`{}`)},
+			verify: func(compact string, resolver *catalogKeyResolver) (map[string]json.RawMessage, error) {
+				verified, err := VerifyResourceToken(context.Background(), compact, resolver, ClockFunc(func() time.Time { return now }))
+				if err != nil {
+					return nil, err
+				}
+				if err := verified.RequireNoAuthorizationMembers(); err == nil {
+					return nil, errors.New("ordinary endpoint accepted unresolved budget")
+				}
+				return verified.AuthorizationMembers()
+			},
+		},
+		{
+			name:      "auth R3",
+			tokenType: AuthTokenType,
+			claims: AuthTokenClaims{
+				Issuer: "https://person.example", DWK: PersonDiscoveryDocument,
+				Audience: "https://resource.example", JTI: "auth-catalog",
+				Confirmation: Confirmation{JWK: requestKey.PublicJWK()},
+				IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
+				Subject: "directed-person", Scope: "documents.read", PersonServer: "https://person.example",
+			},
+			members: map[string]json.RawMessage{
+				"r3_uri":     json.RawMessage(`"https://resource.example/r3"`),
+				"r3_s256":    json.RawMessage(`"digest"`),
+				"r3_granted": json.RawMessage(`{}`),
+			},
+			verify: func(compact string, resolver *catalogKeyResolver) (map[string]json.RawMessage, error) {
+				verified, err := VerifyAuthToken(context.Background(), compact, resolver, ClockFunc(func() time.Time { return now }))
+				if err != nil {
+					return nil, err
+				}
+				if err := verified.RequireNoAuthorizationMembers(); err == nil {
+					return nil, errors.New("ordinary endpoint accepted unresolved R3")
+				}
+				return verified.AuthorizationMembers()
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := json.Marshal(test.claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &object); err != nil {
+				t.Fatal(err)
+			}
+			for name, raw := range test.members {
+				object[name] = raw
+			}
+			payload, err = json.Marshal(object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolver := &catalogKeyResolver{key: issuerKey.PublicJWK()}
+			members, err := test.verify(signRawTestToken(t, issuerKey, test.tokenType, payload), resolver)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolver.calls != 1 {
+				t.Fatalf("key resolver calls = %d, want 1", resolver.calls)
+			}
+			if len(members) != len(test.members) {
+				t.Fatalf("authorization members = %#v", members)
 			}
 		})
 	}

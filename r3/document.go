@@ -43,6 +43,27 @@ type OperationSet struct {
 	Operations []json.RawMessage `json:"operations"`
 }
 
+// ParseOperationSet strictly decodes and validates one operation-set value.
+func ParseOperationSet(exact []byte) (OperationSet, error) {
+	var set OperationSet
+	if err := jsonstrict.RejectAmbiguousNames(exact); err != nil {
+		return set, fmt.Errorf("aauth: R3 operation set: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(exact))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&set); err != nil {
+		return set, fmt.Errorf("aauth: parse R3 operation set: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return set, errors.New("aauth: R3 operation set must contain one JSON value")
+	}
+	if err := set.Validate(); err != nil {
+		return OperationSet{}, err
+	}
+	return set, nil
+}
+
 // Validate checks the vocabulary envelope and every operation entry.
 func (set OperationSet) Validate() error {
 	return set.validate(false)

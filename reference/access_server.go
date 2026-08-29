@@ -664,7 +664,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_agent_token", err)
 		return
 	}
-	agentToken, err := agentTokenEvidence.Claims()
+	agentToken, err := claimsWithoutAuthorization(agentTokenEvidence)
 	if err != nil {
 		writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_agent_token", err)
 		return
@@ -695,7 +695,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
 		}
-		subagent, err := subagentEvidence.Claims()
+		subagent, err := claimsWithoutAuthorization(subagentEvidence)
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_subagent_token", err)
 			return
@@ -734,7 +734,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
 		}
-		claims, err := upstreamEvidence.Claims()
+		claims, err := claimsWithoutAuthorization(upstreamEvidence)
 		if err != nil {
 			writeTokenVerificationFailure(response, http.StatusBadRequest, "invalid_upstream_token", err)
 			return
@@ -773,7 +773,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeResourceTokenVerificationFailure(response, err)
 		return
 	}
-	resourceToken, err := resourceTokenEvidence.Claims()
+	resourceToken, err := claimsWithoutAuthorization(resourceTokenEvidence)
 	if err != nil {
 		writeResourceTokenVerificationFailure(response, err)
 		return

@@ -25,6 +25,14 @@ import (
 
 const maxJSONBody = 1 << 20
 
+func claimsWithoutAuthorization[T aauth.TokenClaims](verified aauth.VerifiedToken[T]) (T, error) {
+	var zero T
+	if err := verified.RequireNoAuthorizationMembers(); err != nil {
+		return zero, err
+	}
+	return verified.Claims()
+}
+
 type retainedAuthorizationTokenKeys struct {
 	Resource jose.JWK  `json:"resource"`
 	Agent    jose.JWK  `json:"agent"`
@@ -526,7 +534,7 @@ func verifyRetainedAuthTokenClaimsAt(
 	if err != nil {
 		return claims, err
 	}
-	verifiedClaims, err := verified.Claims()
+	verifiedClaims, err := claimsWithoutAuthorization(verified)
 	if err != nil {
 		return claims, err
 	}
@@ -580,7 +588,7 @@ func verifyRetainedAgentTokenClaimsAt(
 	if err != nil {
 		return claims, err
 	}
-	verifiedClaims, err := verified.Claims()
+	verifiedClaims, err := claimsWithoutAuthorization(verified)
 	if err != nil {
 		return claims, err
 	}
@@ -634,7 +642,7 @@ func verifyRetainedResourceTokenClaimsAt(
 	if err != nil {
 		return claims, err
 	}
-	verifiedClaims, err := verified.Claims()
+	verifiedClaims, err := claimsWithoutAuthorization(verified)
 	if err != nil {
 		return claims, err
 	}

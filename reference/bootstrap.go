@@ -176,7 +176,7 @@ func (client *BootstrapClient) refresh(
 	if err != nil {
 		return result, err
 	}
-	claims, err := evidence.Claims()
+	claims, err := claimsWithoutAuthorization(evidence)
 	if err != nil {
 		return result, err
 	}
