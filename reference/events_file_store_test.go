@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
 func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
@@ -139,7 +140,7 @@ func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				statePath := filepath.Join(directory, eventFileStateName)
+				statePath := filepath.Join(directory, "state.json")
 				body, err := os.ReadFile(statePath)
 				if err != nil {
 					t.Fatal(err)
@@ -195,7 +196,7 @@ func TestFileEventStoresEnforceEveryConfiguredLimit(t *testing.T) {
 						if err := bootstrap.close(); err != nil {
 							t.Fatal(err)
 						}
-						info, err := os.Stat(filepath.Join(directory, eventFileStateName))
+						info, err := os.Stat(filepath.Join(directory, "state.json"))
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -321,7 +322,7 @@ func TestFileEventStoresRefuseUnsafeCustodyAndConcurrentWriter(t *testing.T) {
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
-		statePath := filepath.Join(directory, eventFileStateName)
+		statePath := filepath.Join(directory, "state.json")
 		if err := os.Chmod(statePath, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -340,6 +341,24 @@ func TestFileEventStoresRefuseUnsafeCustodyAndConcurrentWriter(t *testing.T) {
 		}
 		if reopened, err := OpenFileAPEventStore(FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"}); !errors.Is(err, ErrEventStoreUnsafe) || reopened != nil {
 			t.Fatalf("symlinked state open = %#v, %v", reopened, err)
+		}
+	})
+
+	t.Run("hard-linked state", func(t *testing.T) {
+		base := t.TempDir()
+		directory := filepath.Join(base, "store")
+		store, err := OpenFileAPEventStore(FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(filepath.Join(directory, "state.json"), filepath.Join(base, "linked-state")); err != nil {
+			t.Fatal(err)
+		}
+		if reopened, err := OpenFileAPEventStore(FileAPEventStoreConfig{Directory: directory, Issuer: "https://ap.example"}); !errors.Is(err, ErrEventStoreUnsafe) || reopened != nil {
+			t.Fatalf("hard-linked state open = %#v, %v", reopened, err)
 		}
 	})
 
@@ -375,7 +394,7 @@ func TestFileEventStoresRefuseUnsafeCustodyAndConcurrentWriter(t *testing.T) {
 		if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		tempPath := filepath.Join(directory, eventFileTemporaryPrefix+"attacker")
+		tempPath := filepath.Join(directory, ".state-attacker")
 		if err := os.Symlink(target, tempPath); err != nil {
 			t.Fatal(err)
 		}
@@ -410,12 +429,12 @@ func TestFileEventStoresPreserveCommittedSnapshotAcrossPartialWrite(t *testing.T
 		t.Fatal(err)
 	}
 	injected := errors.New("test: injected file commit failure")
-	store.file.failCommit = func(phase eventFileCommitPhase) error {
-		if phase == eventFileCommitAfterWrite {
+	store.file.SetFailureInjectorForTesting(func(phase snapshotfile.CommitPhase) error {
+		if phase == snapshotfile.CommitAfterWrite {
 			return injected
 		}
 		return nil
-	}
+	})
 	if err := store.Register(ctx, fileEventTestResourceSubscription("event-two")); !errors.Is(err, injected) {
 		t.Fatalf("pre-publish failure = %v", err)
 	}
@@ -434,12 +453,12 @@ func TestFileEventStoresPreserveCommittedSnapshotAcrossPartialWrite(t *testing.T
 		t.Fatalf("partial successor became reachable: %v", err)
 	}
 
-	store.file.failCommit = func(phase eventFileCommitPhase) error {
-		if phase == eventFileCommitAfterRename {
+	store.file.SetFailureInjectorForTesting(func(phase snapshotfile.CommitPhase) error {
+		if phase == snapshotfile.CommitAfterRename {
 			return injected
 		}
 		return nil
-	}
+	})
 	if err := store.Register(ctx, fileEventTestResourceSubscription("event-three")); !errors.Is(err, injected) || !errors.Is(err, ErrEventStoreCommitUncertain) {
 		t.Fatalf("post-publish failure = %v, want injected commit-uncertain", err)
 	}
@@ -472,7 +491,7 @@ func TestFileResourceEventStoreReopensProtectedTicketConsumption(t *testing.T) {
 	if err := store.CreateTicket(ctx, ticket); err != nil {
 		t.Fatal(err)
 	}
-	state, err := os.ReadFile(filepath.Join(directory, eventFileStateName))
+	state, err := os.ReadFile(filepath.Join(directory, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,12 +556,12 @@ func TestFileResourceEventStoreTicketConsumptionIsAtomicBeforePublish(t *testing
 		EventID: "protected-event", Agent: ticket.Agent, RegisteredAt: fileEventTestNow,
 	}
 	injected := errors.New("test: ticket consume commit failed")
-	store.file.failCommit = func(phase eventFileCommitPhase) error {
-		if phase == eventFileCommitAfterWrite {
+	store.file.SetFailureInjectorForTesting(func(phase snapshotfile.CommitPhase) error {
+		if phase == snapshotfile.CommitAfterWrite {
 			return injected
 		}
 		return nil
-	}
+	})
 	if _, err := store.ConsumeTicket(ctx, input); !errors.Is(err, injected) {
 		t.Fatalf("pre-publish consume error = %v", err)
 	}
@@ -642,7 +661,7 @@ func TestFileEventStoresRefuseCorruptTruncatedAndUnknownVersions(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	statePath := filepath.Join(directory, eventFileStateName)
+	statePath := filepath.Join(directory, "state.json")
 	original, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -795,7 +814,7 @@ func TestFileAgentEventStoreDefaultRetainsMaximumAdmittedContract(t *testing.T) 
 
 func rewriteEventStateSchemaForRejection(t *testing.T, directory string, replacements map[string]string) {
 	t.Helper()
-	path := filepath.Join(directory, eventFileStateName)
+	path := filepath.Join(directory, "state.json")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

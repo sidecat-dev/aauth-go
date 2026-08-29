@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
 func TestFileAuthorizationStateStoreReopensExactCanonicalSnapshot(t *testing.T) {
@@ -59,7 +61,7 @@ func TestAuthorizationStateStoresFailClosedForCapacityCorruptionUnsafeCustodyAnd
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
-		statePath := filepath.Join(directory, eventFileStateName)
+		statePath := filepath.Join(directory, "state.json")
 		if err := os.WriteFile(statePath, []byte(`{"records":[],"schema":"wrong-order"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -110,12 +112,12 @@ func TestAuthorizationStateStoresFailClosedForCapacityCorruptionUnsafeCustodyAnd
 			t.Fatal(err)
 		}
 		defer store.Close()
-		store.file.failCommit = func(phase eventFileCommitPhase) error {
-			if phase == eventFileCommitAfterRename {
+		store.file.SetFailureInjectorForTesting(func(phase snapshotfile.CommitPhase) error {
+			if phase == snapshotfile.CommitAfterRename {
 				return errors.New("injected directory-sync loss")
 			}
 			return nil
-		}
+		})
 		body := []byte(`{"schema":"test","records":[]}`)
 		err = store.Replace(context.Background(), body)
 		if !errors.Is(err, ErrAuthorizationStateUncertain) {

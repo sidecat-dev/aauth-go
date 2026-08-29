@@ -10,6 +10,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
 func TestProofReplayStoresExpireAndEnforceCapacity(t *testing.T) {
@@ -76,16 +77,16 @@ func TestFileProofReplayStoreFailsClosedAfterCloseAndUncertainCommit(t *testing.
 		t.Fatal(err)
 	}
 	replayKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, 32))
-	store.file.failCommit = func(phase eventFileCommitPhase) error {
-		if phase == eventFileCommitAfterRename {
+	store.file.SetFailureInjectorForTesting(func(phase snapshotfile.CommitPhase) error {
+		if phase == snapshotfile.CommitAfterRename {
 			return errors.New("injected directory-sync loss")
 		}
 		return nil
-	}
+	})
 	if err := store.Consume(context.Background(), replayKey, now.Add(time.Minute)); !errors.Is(err, ErrProofReplayStoreCommitUncertain) {
 		t.Fatalf("uncertain consume error = %v", err)
 	}
-	store.file.failCommit = nil
+	store.file.SetFailureInjectorForTesting(nil)
 	if err := store.Consume(context.Background(), replayKey, now.Add(time.Minute)); !errors.Is(err, ErrProofReplay) {
 		t.Fatalf("published uncertain proof error = %v", err)
 	}

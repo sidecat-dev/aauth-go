@@ -17,6 +17,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
 func TestAgentReconcilesPublishedUncertainAuthorizationStateBeforeNextMutation(t *testing.T) {
@@ -60,7 +61,7 @@ func TestAgentReconcilesPublishedUncertainAuthorizationStateBeforeNextMutation(t
 		t.Fatal("unrelated agent continuation entered uncertain state")
 	}
 
-	store.file.failCommit = nil
+	store.file.SetFailureInjectorForTesting(nil)
 	agent.authorizationMu.Lock()
 	settleErr := agent.settleAuthorizationStateLocked(context.Background())
 	agent.authorizationMu.Unlock()
@@ -131,7 +132,7 @@ func TestResourceReconcilesPublishedUncertainAuthorizationStateBeforeNextMutatio
 		t.Fatal("unrelated resource grant entered uncertain state")
 	}
 
-	store.file.failCommit = nil
+	store.file.SetFailureInjectorForTesting(nil)
 	resource.pendingMu.Lock()
 	settleErr := resource.settleAuthorizationStateLocked(context.Background())
 	resource.pendingMu.Unlock()
@@ -274,12 +275,12 @@ func TestResourceRestoresPreviousSnapshotAfterUnpublishedAuthorizationStateFailu
 	if err := resource.persistAuthorizationStateLocked(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	store.file.failCommit = func(phase eventFileCommitPhase) error {
-		if phase == eventFileCommitAfterFileSync {
+	store.file.SetFailureInjectorForTesting(func(phase snapshotfile.CommitPhase) error {
+		if phase == snapshotfile.CommitAfterFileSync {
 			return errors.New("injected failure before rename")
 		}
 		return nil
-	}
+	})
 	request := aauth.AuthorizationRequest{Agent: "aauth:first@ap.example", Resource: "https://resource.example", Scope: []string{"records.read"}}
 	decision := aauth.AuthorizationDecision{Subject: "person:first", Scope: []string{"records.read"}}
 	if _, err := resource.storeAccessGrant(request, decision, strings.Repeat("A", 43), time.Unix(1_750_003_600, 0)); err == nil {
@@ -288,7 +289,7 @@ func TestResourceRestoresPreviousSnapshotAfterUnpublishedAuthorizationStateFailu
 	if _, exists := resource.access["unpublished-access"]; exists {
 		t.Fatal("unpublished candidate remained in resource memory")
 	}
-	store.file.failCommit = nil
+	store.file.SetFailureInjectorForTesting(nil)
 	if _, err := resource.storeAccessGrant(request, decision, strings.Repeat("B", 43), time.Unix(1_750_007_200, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +351,7 @@ func TestPersonServerReconcilesPublishedUncertainAuthorizationStateBeforeNextMut
 		t.Fatal("unrelated person-server continuation entered uncertain state")
 	}
 
-	store.file.failCommit = nil
+	store.file.SetFailureInjectorForTesting(nil)
 	server.pendingMu.Lock()
 	settleErr := server.settleAuthorizationStateLocked(context.Background())
 	server.pendingMu.Unlock()
@@ -419,7 +420,7 @@ func TestAccessServerReconcilesPublishedUncertainAuthorizationStateBeforeNextMut
 		t.Fatal("unrelated access-server continuation entered uncertain state")
 	}
 
-	store.file.failCommit = nil
+	store.file.SetFailureInjectorForTesting(nil)
 	server.pendingMu.Lock()
 	settleErr := server.settleAuthorizationStateLocked(context.Background())
 	server.pendingMu.Unlock()
@@ -2951,12 +2952,12 @@ func reopenRoleAuthorizationStateStore(
 }
 
 func injectPublishedUncertainAuthorizationStateCommit(store *FileAuthorizationStateStore) {
-	store.file.failCommit = func(phase eventFileCommitPhase) error {
-		if phase == eventFileCommitAfterRename {
+	store.file.SetFailureInjectorForTesting(func(phase snapshotfile.CommitPhase) error {
+		if phase == snapshotfile.CommitAfterRename {
 			return errors.New("injected directory-sync loss")
 		}
 		return nil
-	}
+	})
 }
 
 func distinctPendingRandomness() *bytes.Reader {

@@ -14,6 +14,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
 var (
@@ -119,7 +120,7 @@ type FileProofReplayStoreConfig struct {
 type FileProofReplayStore struct {
 	mu      sync.Mutex
 	clock   aauth.Clock
-	file    *eventFileEngine
+	file    *snapshotfile.File
 	entries map[string]time.Time
 	closed  bool
 }
@@ -140,12 +141,11 @@ func OpenFileProofReplayStore(config FileProofReplayStoreConfig) (*FileProofRepl
 	if config.Clock == nil || config.MaxEntries <= 0 || config.MaxBytes < minimumProofReplayStoreBytes {
 		return nil, ErrProofReplayStoreConfig
 	}
-	limits := eventFileLimits{
-		maxRecords:     config.MaxEntries,
-		maxBytes:       config.MaxBytes,
-		maxRecordBytes: maxProofReplayRecordBytes,
+	limits, err := snapshotfile.NewLimits(config.MaxEntries, config.MaxBytes, maxProofReplayRecordBytes)
+	if err != nil {
+		return nil, ErrProofReplayStoreConfig
 	}
-	file, body, err := openEventFileEngine(config.Directory, limits)
+	file, body, err := snapshotfile.Open(config.Directory, limits)
 	if err != nil {
 		return nil, mapProofReplayFileError(err)
 	}
@@ -212,7 +212,7 @@ func (store *FileProofReplayStore) Consume(ctx context.Context, replayKey string
 	if _, exists := next[replayKey]; exists {
 		return ErrProofReplay
 	}
-	if len(next) >= store.file.limits.maxRecords {
+	if len(next) >= store.file.Limits().MaxRecords() {
 		return ErrProofReplayStoreCapacity
 	}
 	next[replayKey] = expiresAt.UTC()
@@ -220,7 +220,7 @@ func (store *FileProofReplayStore) Consume(ctx context.Context, replayKey string
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if published {
 		store.entries = next
 	}
@@ -244,7 +244,7 @@ func (store *FileProofReplayStore) Close() error {
 	store.closed = true
 	file := store.file
 	store.file = nil
-	return file.Close()
+	return mapProofReplayFileError(file.Close())
 }
 
 func (store *FileProofReplayStore) persistLocked(entries map[string]time.Time) error {
@@ -252,12 +252,12 @@ func (store *FileProofReplayStore) persistLocked(entries map[string]time.Time) e
 	if err != nil {
 		return err
 	}
-	_, err = store.file.commit(body, records)
+	_, err = store.file.Replace(body, records)
 	return mapProofReplayFileError(err)
 }
 
-func decodeFileProofReplaySnapshot(body []byte, limits eventFileLimits) (map[string]time.Time, error) {
-	if len(body) == 0 || int64(len(body)) > limits.maxBytes {
+func decodeFileProofReplaySnapshot(body []byte, limits snapshotfile.Limits) (map[string]time.Time, error) {
+	if len(body) == 0 || int64(len(body)) > limits.MaxBytes() {
 		return nil, ErrProofReplayStoreIntegrity
 	}
 	if err := jsonstrict.RejectAmbiguousNames(body); err != nil {
@@ -275,14 +275,14 @@ func decodeFileProofReplaySnapshot(body []byte, limits eventFileLimits) (map[str
 		}
 		return nil, errors.Join(ErrProofReplayStoreIntegrity, err)
 	}
-	if snapshot.Schema != fileProofReplaySchema || len(snapshot.Entries) > limits.maxRecords {
+	if snapshot.Schema != fileProofReplaySchema || len(snapshot.Entries) > limits.MaxRecords() {
 		return nil, ErrProofReplayStoreIntegrity
 	}
 	entries := make(map[string]time.Time, len(snapshot.Entries))
 	previous := ""
 	for _, record := range snapshot.Entries {
 		encoded, err := json.Marshal(record)
-		if err != nil || int64(len(encoded)) > limits.maxRecordBytes ||
+		if err != nil || int64(len(encoded)) > limits.MaxRecordBytes() ||
 			!validProofReplayKey(record.ReplayKey) || record.ExpiresAt <= 0 ||
 			record.ReplayKey <= previous {
 			return nil, ErrProofReplayStoreIntegrity
@@ -359,27 +359,28 @@ func cloneProofReplayEntries(entries map[string]time.Time) map[string]time.Time 
 }
 
 func mapProofReplayFileError(err error) error {
-	if err == nil {
+	eventErr := mapEventSnapshotFileError(err)
+	if eventErr == nil {
 		return nil
 	}
 	var target error
 	switch {
-	case errors.Is(err, ErrEventStoreConfig):
+	case errors.Is(eventErr, ErrEventStoreConfig):
 		target = ErrProofReplayStoreConfig
-	case errors.Is(err, ErrEventStoreCapacity):
+	case errors.Is(eventErr, ErrEventStoreCapacity):
 		target = ErrProofReplayStoreCapacity
-	case errors.Is(err, ErrEventStoreUnsafe):
+	case errors.Is(eventErr, ErrEventStoreUnsafe):
 		target = ErrProofReplayStoreUnsafe
-	case errors.Is(err, ErrEventStoreLocked):
+	case errors.Is(eventErr, ErrEventStoreLocked):
 		target = ErrProofReplayStoreLocked
-	case errors.Is(err, ErrEventStoreIntegrity):
+	case errors.Is(eventErr, ErrEventStoreIntegrity):
 		target = ErrProofReplayStoreIntegrity
-	case errors.Is(err, ErrEventStoreCommitUncertain):
+	case errors.Is(eventErr, ErrEventStoreCommitUncertain):
 		target = ErrProofReplayStoreCommitUncertain
-	case errors.Is(err, ErrEventStoreClosed):
+	case errors.Is(eventErr, ErrEventStoreClosed):
 		target = ErrProofReplayStoreClosed
 	default:
-		return err
+		return eventErr
 	}
-	return fmt.Errorf("%w: %v", target, err)
+	return fmt.Errorf("%w: %v", target, eventErr)
 }

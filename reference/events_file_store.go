@@ -5,10 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +13,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
 var (
@@ -41,10 +39,6 @@ var (
 )
 
 const (
-	eventFileStateName       = "state.json"
-	eventFileLockName        = "writer.lock"
-	eventFileTemporaryPrefix = ".state-"
-
 	defaultEventFileMaxRecords = 1024
 	defaultEventFileMaxBytes   = int64(8 << 20)
 	// A protected agent context may contain the full admitted 1 MiB AsyncAPI
@@ -63,24 +57,9 @@ const (
 	fileAgentDispositionSchema  = "aauth.reference.events.agent-disposition.v1"
 )
 
-type eventFileCommitPhase uint8
-
-const (
-	eventFileCommitAfterWrite eventFileCommitPhase = iota + 1
-	eventFileCommitAfterFileSync
-	eventFileCommitAfterRename
-	eventFileCommitAfterDirectorySync
-)
-
-type eventFileLimits struct {
-	maxRecords     int
-	maxBytes       int64
-	maxRecordBytes int64
-}
-
-func normalizeEventFileLimits(maxRecords int, maxBytes, maxRecordBytes int64) (eventFileLimits, error) {
+func normalizeEventFileLimits(maxRecords int, maxBytes, maxRecordBytes int64) (snapshotfile.Limits, error) {
 	if maxRecords < 0 || maxBytes < 0 || maxRecordBytes < 0 {
-		return eventFileLimits{}, ErrEventStoreConfig
+		return snapshotfile.Limits{}, ErrEventStoreConfig
 	}
 	if maxRecords == 0 {
 		maxRecords = defaultEventFileMaxRecords
@@ -92,249 +71,113 @@ func normalizeEventFileLimits(maxRecords int, maxBytes, maxRecordBytes int64) (e
 		maxRecordBytes = defaultEventFileMaxRecordBytes
 	}
 	if maxRecords <= 0 || maxBytes <= 0 || maxRecordBytes <= 0 {
-		return eventFileLimits{}, ErrEventStoreConfig
+		return snapshotfile.Limits{}, ErrEventStoreConfig
 	}
-	return eventFileLimits{maxRecords: maxRecords, maxBytes: maxBytes, maxRecordBytes: maxRecordBytes}, nil
+	limits, err := snapshotfile.NewLimits(maxRecords, maxBytes, maxRecordBytes)
+	if err != nil {
+		return snapshotfile.Limits{}, ErrEventStoreConfig
+	}
+	return limits, nil
 }
 
-type eventFileEngine struct {
-	directory  string
-	limits     eventFileLimits
-	lock       *eventFileLock
-	failCommit func(eventFileCommitPhase) error
-}
-
-func openEventFileEngine(directory string, limits eventFileLimits) (engine *eventFileEngine, body []byte, err error) {
-	resolved, err := prepareEventFileDirectory(directory)
-	if err != nil {
-		return nil, nil, err
-	}
-	lock, err := acquireEventFileLock(resolved)
-	if err != nil {
-		return nil, nil, err
-	}
-	engine = &eventFileEngine{directory: resolved, limits: limits, lock: lock}
-	opened := engine
-	defer func() {
-		if err != nil {
-			_ = opened.Close()
-			engine = nil
-		}
-	}()
-	if err = engine.cleanAndValidateEntries(); err != nil {
-		return nil, nil, err
-	}
-	body, err = engine.readState()
-	if err != nil {
-		return nil, nil, err
-	}
-	return engine, body, nil
-}
-
-func (engine *eventFileEngine) Close() error {
-	if engine == nil || engine.lock == nil {
+func mapEventSnapshotFileError(err error) error {
+	if err == nil {
 		return nil
 	}
-	lock := engine.lock
-	engine.lock = nil
-	return lock.Close()
-}
-
-func prepareEventFileDirectory(directory string) (string, error) {
-	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
-		return "", ErrEventStoreConfig
+	var source, target error
+	switch {
+	case errors.Is(err, snapshotfile.ErrConfig):
+		source = snapshotfile.ErrConfig
+		target = ErrEventStoreConfig
+	case errors.Is(err, snapshotfile.ErrCapacity):
+		source = snapshotfile.ErrCapacity
+		target = ErrEventStoreCapacity
+	case errors.Is(err, snapshotfile.ErrUnsafe):
+		source = snapshotfile.ErrUnsafe
+		target = ErrEventStoreUnsafe
+	case errors.Is(err, snapshotfile.ErrLocked):
+		source = snapshotfile.ErrLocked
+		target = ErrEventStoreLocked
+	case errors.Is(err, snapshotfile.ErrIntegrity):
+		source = snapshotfile.ErrIntegrity
+		target = ErrEventStoreIntegrity
+	case errors.Is(err, snapshotfile.ErrCommitUncertain):
+		source = snapshotfile.ErrCommitUncertain
+		target = ErrEventStoreCommitUncertain
+	case errors.Is(err, snapshotfile.ErrClosed):
+		source = snapshotfile.ErrClosed
+		target = ErrEventStoreClosed
+	default:
+		return mapEventSnapshotOperationError(err)
 	}
-	if err := rejectEventFileSymlinkComponents(directory); err != nil {
-		return "", err
+	if err == source {
+		return target
 	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return "", fmt.Errorf("%w: create directory: %v", ErrEventStoreUnsafe, err)
-	}
-	if err := rejectEventFileSymlinkComponents(directory); err != nil {
-		return "", err
-	}
-	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return "", ErrEventStoreUnsafe
-	}
-	if !eventFileOwnedByCurrentUser(info) {
-		return "", ErrEventStoreUnsafe
-	}
-	return directory, nil
-}
-
-func rejectEventFileSymlinkComponents(path string) error {
-	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
-		info, err := os.Lstat(current)
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return ErrEventStoreUnsafe
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%w: inspect directory: %v", ErrEventStoreUnsafe, err)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return nil
-		}
-	}
-}
-
-func (engine *eventFileEngine) cleanAndValidateEntries() error {
-	entries, err := os.ReadDir(engine.directory)
-	if err != nil {
-		return fmt.Errorf("%w: read directory: %v", ErrEventStoreUnsafe, err)
-	}
-	removed := false
-	for _, entry := range entries {
-		name := entry.Name()
-		path := filepath.Join(engine.directory, name)
-		switch {
-		case name == eventFileLockName:
-			if err := validatePrivateEventFile(path); err != nil {
-				return err
-			}
-		case name == eventFileStateName:
-			if err := validatePrivateEventFile(path); err != nil {
-				return err
-			}
-		case strings.HasPrefix(name, eventFileTemporaryPrefix) && len(name) > len(eventFileTemporaryPrefix):
-			if err := validatePrivateEventFile(path); err != nil {
-				return err
-			}
-			if err := os.Remove(path); err != nil {
-				return fmt.Errorf("%w: remove crash temporary: %v", ErrEventStoreUnsafe, err)
-			}
-			removed = true
-		default:
-			return fmt.Errorf("%w: unexpected entry %q", ErrEventStoreUnsafe, name)
-		}
-	}
-	if removed {
-		return syncEventFileDirectory(engine.directory)
-	}
-	return nil
-}
-
-func validatePrivateEventFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
-		info.Mode().Perm() != 0o600 || !eventFileHasSingleLink(info) || !eventFileOwnedByCurrentUser(info) {
-		return ErrEventStoreUnsafe
-	}
-	return nil
-}
-
-func (engine *eventFileEngine) readState() ([]byte, error) {
-	path := filepath.Join(engine.directory, eventFileStateName)
-	if err := validatePrivateEventFile(path); err != nil {
-		if errors.Is(err, ErrEventStoreUnsafe) {
-			if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
-				return nil, nil
+	if source == snapshotfile.ErrCommitUncertain {
+		message := target.Error()
+		matches := []error{target}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, cause := range joined.Unwrap() {
+				if cause != source {
+					mappedCause := mapEventSnapshotOperationError(cause)
+					message += "\n" + mappedCause.Error()
+					matches = append(matches, mappedCause)
+				}
 			}
 		}
-		return nil, err
+		return mappedSnapshotFileError{message: message, matches: matches}
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("%w: open state: %v", ErrEventStoreUnsafe, err)
+	return mappedSnapshotFileError{
+		message: strings.Replace(err.Error(), source.Error(), target.Error(), 1),
+		matches: []error{target},
 	}
-	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("%w: inspect opened state: %v", ErrEventStoreUnsafe, err)
-	}
-	linked, err := os.Lstat(path)
-	if err != nil || !os.SameFile(opened, linked) || opened.Mode().Perm() != 0o600 ||
-		!opened.Mode().IsRegular() || !eventFileHasSingleLink(opened) || !eventFileOwnedByCurrentUser(opened) {
-		return nil, ErrEventStoreUnsafe
-	}
-	body, err := io.ReadAll(io.LimitReader(file, engine.limits.maxBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("%w: read state: %v", ErrEventStoreIntegrity, err)
-	}
-	if int64(len(body)) > engine.limits.maxBytes {
-		return nil, ErrEventStoreCapacity
-	}
-	return body, nil
 }
 
-func (engine *eventFileEngine) commit(body []byte, records [][]byte) (published bool, err error) {
-	if len(records) > engine.limits.maxRecords || int64(len(body)) > engine.limits.maxBytes {
-		return false, ErrEventStoreCapacity
-	}
-	for _, record := range records {
-		if int64(len(record)) > engine.limits.maxRecordBytes {
-			return false, ErrEventStoreCapacity
+// mappedSnapshotFileError preserves the reference adapter's established error
+// text and errors.Is contract while the private custody mechanism retains its
+// own internal vocabulary.
+type mappedSnapshotFileError struct {
+	message string
+	matches []error
+}
+
+func (err mappedSnapshotFileError) Error() string   { return err.message }
+func (err mappedSnapshotFileError) Unwrap() []error { return err.matches }
+
+func mapEventSnapshotOperationError(err error) error {
+	message := err.Error()
+	for _, replacement := range []struct {
+		internal  string
+		reference string
+	}{
+		{internal: "snapshotfile: create temporary", reference: "reference: create event state temporary"},
+		{internal: "snapshotfile: protect temporary", reference: "reference: protect event state temporary"},
+		{internal: "snapshotfile: write state", reference: "reference: write event state"},
+		{internal: "snapshotfile: sync state", reference: "reference: sync event state"},
+		{internal: "snapshotfile: close state", reference: "reference: close event state"},
+		{internal: "snapshotfile: publish state", reference: "reference: publish event state"},
+		{internal: "snapshotfile: open directory", reference: "reference: open event state directory"},
+		{internal: "snapshotfile: sync directory", reference: "reference: sync event state directory"},
+		{internal: "snapshotfile: close new lock"},
+		{internal: "snapshotfile: create lock"},
+		{internal: "snapshotfile: inspect lock"},
+		{internal: "snapshotfile: open lock"},
+		{internal: "snapshotfile: inspect opened lock"},
+		{internal: "snapshotfile: acquire writer lock"},
+	} {
+		if strings.HasPrefix(message, replacement.internal) {
+			if replacement.reference == "" {
+				if cause := errors.Unwrap(err); cause != nil {
+					return cause
+				}
+			}
+			return mappedSnapshotFileError{
+				message: replacement.reference + strings.TrimPrefix(message, replacement.internal),
+				matches: []error{err},
+			}
 		}
 	}
-	temporary, err := os.CreateTemp(engine.directory, eventFileTemporaryPrefix)
-	if err != nil {
-		return false, fmt.Errorf("reference: create event state temporary: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	defer func() {
-		_ = temporary.Close()
-		if !published {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return false, fmt.Errorf("reference: protect event state temporary: %w", err)
-	}
-	temporaryInfo, err := temporary.Stat()
-	if err != nil || !eventFileOwnedByCurrentUser(temporaryInfo) || !eventFileHasSingleLink(temporaryInfo) {
-		return false, ErrEventStoreUnsafe
-	}
-	if _, err := temporary.Write(body); err != nil {
-		return false, fmt.Errorf("reference: write event state: %w", err)
-	}
-	if err := engine.inject(eventFileCommitAfterWrite); err != nil {
-		return false, err
-	}
-	if err := temporary.Sync(); err != nil {
-		return false, fmt.Errorf("reference: sync event state: %w", err)
-	}
-	if err := engine.inject(eventFileCommitAfterFileSync); err != nil {
-		return false, err
-	}
-	if err := temporary.Close(); err != nil {
-		return false, fmt.Errorf("reference: close event state: %w", err)
-	}
-	statePath := filepath.Join(engine.directory, eventFileStateName)
-	if err := os.Rename(temporaryPath, statePath); err != nil {
-		return false, fmt.Errorf("reference: publish event state: %w", err)
-	}
-	published = true
-	if err := engine.inject(eventFileCommitAfterRename); err != nil {
-		return true, errors.Join(ErrEventStoreCommitUncertain, err)
-	}
-	if err := syncEventFileDirectory(engine.directory); err != nil {
-		return true, errors.Join(ErrEventStoreCommitUncertain, err)
-	}
-	if err := engine.inject(eventFileCommitAfterDirectorySync); err != nil {
-		return true, errors.Join(ErrEventStoreCommitUncertain, err)
-	}
-	return true, nil
-}
-
-func (engine *eventFileEngine) inject(phase eventFileCommitPhase) error {
-	if engine.failCommit == nil {
-		return nil
-	}
-	return engine.failCommit(phase)
-}
-
-func syncEventFileDirectory(directory string) error {
-	file, err := os.Open(directory)
-	if err != nil {
-		return fmt.Errorf("reference: open event state directory: %w", err)
-	}
-	defer file.Close()
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("reference: sync event state directory: %w", err)
-	}
-	return nil
+	return err
 }
 
 func decodeEventFileSnapshot(body []byte, destination any) error {
@@ -490,7 +333,7 @@ type fileAgentDispositionRecord struct {
 // custody rather than Events protocol wire.
 type FileAPEventStore struct {
 	mu     sync.Mutex
-	file   *eventFileEngine
+	file   *snapshotfile.File
 	memory *MemoryAPEventStore
 	closed bool
 }
@@ -503,9 +346,9 @@ func OpenFileAPEventStore(config FileAPEventStoreConfig) (*FileAPEventStore, err
 	if err != nil {
 		return nil, err
 	}
-	file, body, err := openEventFileEngine(config.Directory, limits)
+	file, body, err := snapshotfile.Open(config.Directory, limits)
 	if err != nil {
-		return nil, err
+		return nil, mapEventSnapshotFileError(err)
 	}
 	store := &FileAPEventStore{file: file, memory: NewMemoryAPEventStore(config.Issuer)}
 	if len(body) == 0 {
@@ -531,7 +374,7 @@ func (store *FileAPEventStore) Close() error {
 		return nil
 	}
 	store.closed = true
-	return store.file.Close()
+	return mapEventSnapshotFileError(store.file.Close())
 }
 
 func (store *FileAPEventStore) CreateSubscription(ctx context.Context, value APEventSubscription) error {
@@ -592,9 +435,9 @@ func (store *FileAPEventStore) persistInitial() error {
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if err != nil {
-		return err
+		return mapEventSnapshotFileError(err)
 	}
 	if !published {
 		return ErrEventStoreIntegrity
@@ -607,11 +450,11 @@ func (store *FileAPEventStore) commitCandidate(candidate *MemoryAPEventStore) er
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if published {
 		store.memory = candidate
 	}
-	return err
+	return mapEventSnapshotFileError(err)
 }
 
 func (store *FileAPEventStore) openError() error {
@@ -656,7 +499,7 @@ func encodeFileAPSnapshot(memory *MemoryAPEventStore) ([]byte, [][]byte, error) 
 	return marshalEventFileSnapshot(snapshot, records)
 }
 
-func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*MemoryAPEventStore, error) {
+func decodeFileAPSnapshot(body []byte, issuer string, limits snapshotfile.Limits) (*MemoryAPEventStore, error) {
 	var snapshot fileAPSnapshotEnvelope
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
@@ -664,12 +507,12 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 	if snapshot.Schema != fileAPSnapshotSchema || snapshot.Issuer != issuer {
 		return nil, ErrEventStoreIntegrity
 	}
-	if len(snapshot.Subscriptions)+len(snapshot.Inbox) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
+	if len(snapshot.Subscriptions)+len(snapshot.Inbox) > limits.MaxRecords() || int64(len(body)) > limits.MaxBytes() {
 		return nil, ErrEventStoreCapacity
 	}
 	memory := NewMemoryAPEventStore(issuer)
 	for _, body := range snapshot.Subscriptions {
-		if int64(len(body)) > limits.maxRecordBytes {
+		if int64(len(body)) > limits.MaxRecordBytes() {
 			return nil, ErrEventStoreCapacity
 		}
 		var record fileAPSubscriptionRecord
@@ -691,7 +534,7 @@ func decodeFileAPSnapshot(body []byte, issuer string, limits eventFileLimits) (*
 		memory.subscriptions[record.Subscription.EventID] = record.Subscription
 	}
 	for _, body := range snapshot.Inbox {
-		if int64(len(body)) > limits.maxRecordBytes {
+		if int64(len(body)) > limits.MaxRecordBytes() {
 			return nil, ErrEventStoreCapacity
 		}
 		var record fileAPDeliveryRecord
@@ -757,7 +600,7 @@ func cloneMemoryAPEventStore(source *MemoryAPEventStore) *MemoryAPEventStore {
 // pending-delivery adapter.
 type FileResourceEventStore struct {
 	mu     sync.Mutex
-	file   *eventFileEngine
+	file   *snapshotfile.File
 	memory *MemoryResourceEventStore
 	closed bool
 }
@@ -767,9 +610,9 @@ func OpenFileResourceEventStore(config FileResourceEventStoreConfig) (*FileResou
 	if err != nil {
 		return nil, err
 	}
-	file, body, err := openEventFileEngine(config.Directory, limits)
+	file, body, err := snapshotfile.Open(config.Directory, limits)
 	if err != nil {
-		return nil, err
+		return nil, mapEventSnapshotFileError(err)
 	}
 	store := &FileResourceEventStore{file: file, memory: NewMemoryResourceEventStore()}
 	if len(body) == 0 {
@@ -795,7 +638,7 @@ func (store *FileResourceEventStore) Close() error {
 		return nil
 	}
 	store.closed = true
-	return store.file.Close()
+	return mapEventSnapshotFileError(store.file.Close())
 }
 
 func (store *FileResourceEventStore) Register(ctx context.Context, value ResourceEventSubscription) error {
@@ -902,9 +745,9 @@ func (store *FileResourceEventStore) persistInitial() error {
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if err != nil {
-		return err
+		return mapEventSnapshotFileError(err)
 	}
 	if !published {
 		return ErrEventStoreIntegrity
@@ -917,11 +760,11 @@ func (store *FileResourceEventStore) commitCandidate(candidate *MemoryResourceEv
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if published {
 		store.memory = candidate
 	}
-	return err
+	return mapEventSnapshotFileError(err)
 }
 
 func (store *FileResourceEventStore) openError() error {
@@ -981,7 +824,7 @@ func encodeFileResourceSnapshot(memory *MemoryResourceEventStore) ([]byte, [][]b
 	return marshalEventFileSnapshot(snapshot, records)
 }
 
-func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryResourceEventStore, error) {
+func decodeFileResourceSnapshot(body []byte, limits snapshotfile.Limits) (*MemoryResourceEventStore, error) {
 	var snapshot fileResourceSnapshotEnvelope
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
@@ -989,12 +832,12 @@ func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryRes
 	if snapshot.Schema != fileResourceSnapshotSchema {
 		return nil, ErrEventStoreIntegrity
 	}
-	if len(snapshot.Authorities)+len(snapshot.Tickets) > limits.maxRecords || int64(len(body)) > limits.maxBytes {
+	if len(snapshot.Authorities)+len(snapshot.Tickets) > limits.MaxRecords() || int64(len(body)) > limits.MaxBytes() {
 		return nil, ErrEventStoreCapacity
 	}
 	memory := NewMemoryResourceEventStore()
 	for _, body := range snapshot.Authorities {
-		if int64(len(body)) > limits.maxRecordBytes {
+		if int64(len(body)) > limits.MaxRecordBytes() {
 			return nil, ErrEventStoreCapacity
 		}
 		var record fileResourceAuthorityRecord
@@ -1020,7 +863,7 @@ func decodeFileResourceSnapshot(body []byte, limits eventFileLimits) (*MemoryRes
 		}
 	}
 	for _, body := range snapshot.Tickets {
-		if int64(len(body)) > limits.maxRecordBytes {
+		if int64(len(body)) > limits.MaxRecordBytes() {
 			return nil, ErrEventStoreCapacity
 		}
 		var record fileResourceTicketRecord
@@ -1058,7 +901,7 @@ func cloneMemoryResourceEventStore(source *MemoryResourceEventStore) *MemoryReso
 // consequence-processing adapter.
 type FileAgentEventStore struct {
 	mu     sync.Mutex
-	file   *eventFileEngine
+	file   *snapshotfile.File
 	memory *MemoryAgentEventStore
 	closed bool
 }
@@ -1068,9 +911,9 @@ func OpenFileAgentEventStore(config FileAgentEventStoreConfig) (*FileAgentEventS
 	if err != nil {
 		return nil, err
 	}
-	file, body, err := openEventFileEngine(config.Directory, limits)
+	file, body, err := snapshotfile.Open(config.Directory, limits)
 	if err != nil {
-		return nil, err
+		return nil, mapEventSnapshotFileError(err)
 	}
 	store := &FileAgentEventStore{file: file, memory: NewMemoryAgentEventStore()}
 	if len(body) == 0 {
@@ -1096,7 +939,7 @@ func (store *FileAgentEventStore) Close() error {
 		return nil
 	}
 	store.closed = true
-	return store.file.Close()
+	return mapEventSnapshotFileError(store.file.Close())
 }
 
 func (store *FileAgentEventStore) PutContext(ctx context.Context, value AgentEventContext) error {
@@ -1235,9 +1078,9 @@ func (store *FileAgentEventStore) persistInitial() error {
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if err != nil {
-		return err
+		return mapEventSnapshotFileError(err)
 	}
 	if !published {
 		return ErrEventStoreIntegrity
@@ -1250,11 +1093,11 @@ func (store *FileAgentEventStore) commitCandidate(candidate *MemoryAgentEventSto
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if published {
 		store.memory = candidate
 	}
-	return err
+	return mapEventSnapshotFileError(err)
 }
 
 func (store *FileAgentEventStore) openError() error {
@@ -1332,7 +1175,7 @@ func encodeFileAgentSnapshot(memory *MemoryAgentEventStore) ([]byte, [][]byte, e
 	return marshalEventFileSnapshot(snapshot, records)
 }
 
-func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentEventStore, error) {
+func decodeFileAgentSnapshot(body []byte, limits snapshotfile.Limits) (*MemoryAgentEventStore, error) {
 	var snapshot fileAgentSnapshotEnvelope
 	if err := decodeEventFileSnapshot(body, &snapshot); err != nil {
 		return nil, err
@@ -1340,13 +1183,13 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 	if snapshot.Schema != fileAgentSnapshotSchema {
 		return nil, ErrEventStoreIntegrity
 	}
-	if len(snapshot.Contexts)+len(snapshot.Processing)+len(snapshot.Dispositions) > limits.maxRecords ||
-		int64(len(body)) > limits.maxBytes {
+	if len(snapshot.Contexts)+len(snapshot.Processing)+len(snapshot.Dispositions) > limits.MaxRecords() ||
+		int64(len(body)) > limits.MaxBytes() {
 		return nil, ErrEventStoreCapacity
 	}
 	memory := NewMemoryAgentEventStore()
 	for _, body := range snapshot.Contexts {
-		if int64(len(body)) > limits.maxRecordBytes {
+		if int64(len(body)) > limits.MaxRecordBytes() {
 			return nil, ErrEventStoreCapacity
 		}
 		var record fileAgentContextRecord
@@ -1365,7 +1208,7 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		memory.contexts[key] = record.Context
 	}
 	for _, body := range snapshot.Processing {
-		if int64(len(body)) > limits.maxRecordBytes {
+		if int64(len(body)) > limits.MaxRecordBytes() {
 			return nil, ErrEventStoreCapacity
 		}
 		var record fileAgentProcessingRecord
@@ -1406,7 +1249,7 @@ func decodeFileAgentSnapshot(body []byte, limits eventFileLimits) (*MemoryAgentE
 		}
 	}
 	for _, body := range snapshot.Dispositions {
-		if int64(len(body)) > limits.maxRecordBytes {
+		if int64(len(body)) > limits.MaxRecordBytes() {
 			return nil, ErrEventStoreCapacity
 		}
 		var record fileAgentDispositionRecord

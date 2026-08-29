@@ -1,6 +1,6 @@
 //go:build linux || darwin || freebsd || netbsd || openbsd || dragonfly
 
-package reference
+package snapshotfile
 
 import (
 	"io/fs"
@@ -10,17 +10,17 @@ import (
 	"time"
 )
 
-func TestEventFileCustodyRequiresCurrentEffectiveUser(t *testing.T) {
+func TestFileCustodyRequiresCurrentEffectiveUser(t *testing.T) {
 	current := uint32(os.Geteuid())
-	if !eventFileOwnedByCurrentUser(custodyFileInfo{uid: current}) {
-		t.Fatal("current effective user was not accepted as file owner")
+	if !ownedByCurrentUser(custodyFileInfo{uid: current}) {
+		t.Fatal("current effective user was not accepted")
 	}
 	foreign := current + 1
 	if foreign == current {
 		foreign--
 	}
-	if eventFileOwnedByCurrentUser(custodyFileInfo{uid: foreign}) {
-		t.Fatal("foreign file owner was accepted")
+	if ownedByCurrentUser(custodyFileInfo{uid: foreign}) {
+		t.Fatal("foreign effective user was accepted")
 	}
 }
 

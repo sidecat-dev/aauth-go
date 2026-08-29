@@ -14,6 +14,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
 )
 
 type pendingInteractionRecord struct {
@@ -258,7 +259,7 @@ type FileAuthorizationStateStoreConfig struct {
 // and fsync-backed temporary-file replacement.
 type FileAuthorizationStateStore struct {
 	mu     sync.Mutex
-	file   *eventFileEngine
+	file   *snapshotfile.File
 	body   []byte
 	closed bool
 }
@@ -267,12 +268,11 @@ func OpenFileAuthorizationStateStore(config FileAuthorizationStateStoreConfig) (
 	if config.MaxEntries <= 0 || config.MaxBytes < 128 {
 		return nil, ErrAuthorizationStateStoreConfig
 	}
-	limits := eventFileLimits{
-		maxRecords:     config.MaxEntries,
-		maxBytes:       config.MaxBytes,
-		maxRecordBytes: config.MaxBytes,
+	limits, err := snapshotfile.NewLimits(config.MaxEntries, config.MaxBytes, config.MaxBytes)
+	if err != nil {
+		return nil, ErrAuthorizationStateStoreConfig
 	}
-	file, body, err := openEventFileEngine(config.Directory, limits)
+	file, body, err := snapshotfile.Open(config.Directory, limits)
 	if err != nil {
 		return nil, mapAuthorizationStateFileError(err)
 	}
@@ -314,11 +314,12 @@ func (store *FileAuthorizationStateStore) Replace(ctx context.Context, body []by
 	if store.closed || store.file == nil {
 		return ErrAuthorizationStateClosed
 	}
-	records, err := validateAuthorizationStateSnapshot(body, store.file.limits.maxRecords, store.file.limits.maxBytes)
+	limits := store.file.Limits()
+	records, err := validateAuthorizationStateSnapshot(body, limits.MaxRecords(), limits.MaxBytes())
 	if err != nil {
 		return err
 	}
-	published, err := store.file.commit(body, records)
+	published, err := store.file.Replace(body, records)
 	if published {
 		store.body = append(store.body[:0], body...)
 	}
@@ -340,7 +341,7 @@ func (store *FileAuthorizationStateStore) Close() error {
 	store.closed = true
 	file := store.file
 	store.file = nil
-	return file.Close()
+	return mapAuthorizationStateFileError(file.Close())
 }
 
 type authorizationStateEnvelope struct {
@@ -459,22 +460,25 @@ func authorizationStateContext(ctx context.Context) error {
 }
 
 func mapAuthorizationStateFileError(err error) error {
+	eventErr := mapEventSnapshotFileError(err)
 	switch {
-	case err == nil:
+	case eventErr == nil:
 		return nil
-	case errors.Is(err, ErrEventStoreConfig):
-		return errors.Join(ErrAuthorizationStateStoreConfig, err)
-	case errors.Is(err, ErrEventStoreCapacity):
-		return errors.Join(ErrAuthorizationStateCapacity, err)
-	case errors.Is(err, ErrEventStoreUnsafe):
-		return errors.Join(ErrAuthorizationStateUnsafe, err)
-	case errors.Is(err, ErrEventStoreLocked):
-		return errors.Join(ErrAuthorizationStateLocked, err)
-	case errors.Is(err, ErrEventStoreIntegrity):
-		return errors.Join(ErrAuthorizationStateIntegrity, err)
-	case errors.Is(err, ErrEventStoreCommitUncertain):
-		return errors.Join(ErrAuthorizationStateUncertain, err)
+	case errors.Is(eventErr, ErrEventStoreConfig):
+		return errors.Join(ErrAuthorizationStateStoreConfig, eventErr)
+	case errors.Is(eventErr, ErrEventStoreCapacity):
+		return errors.Join(ErrAuthorizationStateCapacity, eventErr)
+	case errors.Is(eventErr, ErrEventStoreUnsafe):
+		return errors.Join(ErrAuthorizationStateUnsafe, eventErr)
+	case errors.Is(eventErr, ErrEventStoreLocked):
+		return errors.Join(ErrAuthorizationStateLocked, eventErr)
+	case errors.Is(eventErr, ErrEventStoreIntegrity):
+		return errors.Join(ErrAuthorizationStateIntegrity, eventErr)
+	case errors.Is(eventErr, ErrEventStoreCommitUncertain):
+		return errors.Join(ErrAuthorizationStateUncertain, eventErr)
+	case errors.Is(eventErr, ErrEventStoreClosed):
+		return errors.Join(ErrAuthorizationStateClosed, eventErr)
 	default:
-		return fmt.Errorf("reference: authorization state file: %w", err)
+		return fmt.Errorf("reference: authorization state file: %w", eventErr)
 	}
 }
