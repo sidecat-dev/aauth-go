@@ -151,6 +151,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"core\x00resource-tokens/resource-token/resource-token-verification":                    StatusPartial,
 		"core\x00resource-tokens/resource-token/resource-challenge-verification":                StatusPartial,
 		"core\x00requirement-auth-token":                                                        StatusPartial,
+		"core\x00requirement-person-token":                                                      StatusExercised,
 		"core\x00deferred-auth-token":                                                           StatusPartial,
 		"core\x00covered-components":                                                            StatusPartial,
 		"core\x00ps-token-endpoint/agent-token-request":                                         StatusPartial,

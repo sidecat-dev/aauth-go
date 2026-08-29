@@ -2148,7 +2148,7 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	} else if resource.accessMode == aauth.AccessModeAuthToken {
 		allowedCredentialTypes = []string{aauth.AuthTokenType, aauth.PersonTokenType}
 	} else if resource.accessMode == aauth.AccessModePersonToken {
-		allowedCredentialTypes = []string{aauth.PersonTokenType}
+		allowedCredentialTypes = []string{aauth.PersonTokenType, aauth.AgentTokenType}
 	}
 	credentialKeyCapture, verificationResolver := newRetainedKeyCapture(resource.keyResolver)
 	var r3Result r3.TokenResult
@@ -2170,6 +2170,10 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	verified, err := aauth.VerifyRequest(request.Context(), request, verificationResolver, resource.clock, verifyOptions)
 	if err != nil {
 		writeSignatureFailure(response, err)
+		return
+	}
+	if verified.AgentToken != nil && resource.accessMode == aauth.AccessModePersonToken {
+		writePersonTokenRequired(response, "protected operation requires a person token")
 		return
 	}
 	if resource.accessMode == aauth.AccessModeAuthToken && verified.CredentialType == aauth.PersonTokenType {

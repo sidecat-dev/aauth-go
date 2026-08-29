@@ -8,11 +8,11 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 45 |
+| Exercised | 46 |
 | Partial | 57 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 492 |
+| Unclaimed | 491 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,7 +20,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 26 | 20 | 3 | 0 | 207 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 27 | 20 | 3 | 0 | 206 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
@@ -455,7 +455,7 @@ Evidence:
 
 ### `core/person-token-endpoint` — Partial
 
-Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. Deferred person-token issuance and metadata-fetch behavior remain open.
+Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. An agent follows a runtime requirement through issuer-matched person-server metadata to this endpoint. Deferred person-token issuance remains open.
 
 Evidence:
 
@@ -463,6 +463,7 @@ Evidence:
 - `current_mission_recovery_test.go:TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries`
 - `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
 - `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServer`
+- `person_token_access_journey_test.go:TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer`
 
 ### `core/person-token-structure` — Exercised
 
@@ -519,6 +520,14 @@ Evidence:
 
 - `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
 - `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
+
+### `core/requirement-person-token` — Exercised
+
+A person-token resource accepts an agent-token-signed call only far enough to return requirement=person-token without running policy or consequence. The reference agent verifies its own token, discovers the named person server's current person-token endpoint, obtains a resource-directed person token, and retries the exact call. An agent with no person server refuses before contacting one.
+
+Evidence:
+
+- `person_token_access_journey_test.go:TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer`
 
 ### `core/requirement-responses/aauth-requirement-header-structure` — Exercised
 

@@ -97,7 +97,7 @@
       "source": "core",
       "section": "person-token-endpoint",
       "status": "partial",
-      "claim": "Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. Deferred person-token issuance and metadata-fetch behavior remain open.",
+      "claim": "Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. The endpoint also verifies parent-mediated sub-agent and upstream-auth-token requests before issuing a resource-directed current person token. An agent follows a runtime requirement through issuer-matched person-server metadata to this endpoint. Deferred person-token issuance remains open.",
       "evidence": [
         {
           "file": "current_person_token_journey_test.go",
@@ -114,6 +114,10 @@
         {
           "file": "call_chaining_journey_test.go",
           "test": "TestCurrentCallChainThroughPersonServer"
+        },
+        {
+          "file": "person_token_access_journey_test.go",
+          "test": "TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer"
         }
       ]
     },
@@ -270,6 +274,18 @@
         {
           "file": "deferred_protected_journey_test.go",
           "test": "TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "requirement-person-token",
+      "status": "exercised",
+      "claim": "A person-token resource accepts an agent-token-signed call only far enough to return requirement=person-token without running policy or consequence. The reference agent verifies its own token, discovers the named person server's current person-token endpoint, obtains a resource-directed person token, and retries the exact call. An agent with no person server refuses before contacting one.",
+      "evidence": [
+        {
+          "file": "person_token_access_journey_test.go",
+          "test": "TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer"
         }
       ]
     },

@@ -193,6 +193,21 @@ for this library.
   replay, and authorization-member failures remain covered by the shared token
   and request-verification controls before this branch can run.
 
+### Requirement-driven person-token acquisition
+
+- `reference.Agent.Do` begins one exact call with the agent token. When a
+  person-token resource returns `requirement=person-token`, the
+  agent independently verifies that its current token names its configured
+  identity, signing key, and person server before continuing.
+- The agent reads the named server's current person metadata, requires the
+  metadata issuer to equal that exact server, validates the advertised
+  `person_token_endpoint`, obtains a resource-directed person token, and
+  retries the original method, query, body, and media type. The resource runs
+  policy and consequence only on the verified person-token request.
+- A PS-less agent surfaces an error after the resource requirement and before
+  any person-server call. Other runtime requirements remain with their owning
+  paths; this increment does not claim a universal requirement engine.
+
 ## 2026-08-28
 
 ### Incomplete callable R3 authorization removed
