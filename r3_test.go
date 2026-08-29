@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -20,18 +21,18 @@ func TestR3StandardVocabularyOperationShapes(t *testing.T) {
 		vocabulary string
 		operation  string
 	}{
-		{"mcp", R3VocabularyMCP, `{"tool":"read_record"}`},
-		{"openapi", R3VocabularyOpenAPI, `{"operationId":"readRecord"}`},
-		{"grpc", R3VocabularyGRPC, `{"method":"records.RecordService/Read"}`},
-		{"graphql", R3VocabularyGraphQL, `{"operation":"ReadRecord","type":"query"}`},
-		{"asyncapi", R3VocabularyAsyncAPI, `{"operationId":"receiveRecord","action":"receive"}`},
-		{"wsdl", R3VocabularyWSDL, `{"operation":"ReadRecord","service":"RecordService"}`},
-		{"odata", R3VocabularyOData, `{"operation":"Records","methods":["GET"]}`},
+		{"mcp", r3.VocabularyMCP, `{"tool":"read_record"}`},
+		{"openapi", r3.VocabularyOpenAPI, `{"operationId":"readRecord"}`},
+		{"grpc", r3.VocabularyGRPC, `{"method":"records.RecordService/Read"}`},
+		{"graphql", r3.VocabularyGraphQL, `{"operation":"ReadRecord","type":"query"}`},
+		{"asyncapi", r3.VocabularyAsyncAPI, `{"operationId":"receiveRecord","action":"receive"}`},
+		{"wsdl", r3.VocabularyWSDL, `{"operation":"ReadRecord","service":"RecordService"}`},
+		{"odata", r3.VocabularyOData, `{"operation":"Records","methods":["GET"]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			set := R3OperationSet{
+			set := r3.OperationSet{
 				Vocabulary: test.vocabulary,
 				Operations: []json.RawMessage{json.RawMessage(test.operation)},
 			}
@@ -41,13 +42,13 @@ func TestR3StandardVocabularyOperationShapes(t *testing.T) {
 		})
 	}
 
-	for index, set := range []R3OperationSet{
+	for index, set := range []r3.OperationSet{
 		{Vocabulary: "urn:aauth:vocabulary:openapi-gateway", Operations: []json.RawMessage{json.RawMessage(`{"service":"records","operationId":"read"}`)}},
-		{Vocabulary: R3VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(`{"operationId":"wrong"}`)}},
-		{Vocabulary: R3VocabularyGRPC, Operations: []json.RawMessage{json.RawMessage(`{"method":"not-qualified"}`)}},
-		{Vocabulary: R3VocabularyGraphQL, Operations: []json.RawMessage{json.RawMessage(`{"operation":"Read","type":"read"}`)}},
-		{Vocabulary: R3VocabularyAsyncAPI, Operations: []json.RawMessage{json.RawMessage(`{"operationId":"event","action":"poll"}`)}},
-		{Vocabulary: R3VocabularyOData, Operations: []json.RawMessage{json.RawMessage(`{"operation":"Records","methods":["get"]}`)}},
+		{Vocabulary: r3.VocabularyMCP, Operations: []json.RawMessage{json.RawMessage(`{"operationId":"wrong"}`)}},
+		{Vocabulary: r3.VocabularyGRPC, Operations: []json.RawMessage{json.RawMessage(`{"method":"not-qualified"}`)}},
+		{Vocabulary: r3.VocabularyGraphQL, Operations: []json.RawMessage{json.RawMessage(`{"operation":"Read","type":"read"}`)}},
+		{Vocabulary: r3.VocabularyAsyncAPI, Operations: []json.RawMessage{json.RawMessage(`{"operationId":"event","action":"poll"}`)}},
+		{Vocabulary: r3.VocabularyOData, Operations: []json.RawMessage{json.RawMessage(`{"operation":"Records","methods":["get"]}`)}},
 	} {
 		if err := set.Validate(); err == nil {
 			t.Fatalf("invalid standard operation %d was accepted", index)
@@ -58,15 +59,15 @@ func TestR3StandardVocabularyOperationShapes(t *testing.T) {
 func TestR3OperationSetUsesSemanticSetEquality(t *testing.T) {
 	t.Parallel()
 
-	left := R3OperationSet{
-		Vocabulary: R3VocabularyOpenAPI,
+	left := r3.OperationSet{
+		Vocabulary: r3.VocabularyOpenAPI,
 		Operations: []json.RawMessage{
 			json.RawMessage(`{"operationId":"readRecord"}`),
 			json.RawMessage(`{"operationId":"writeRecord"}`),
 		},
 	}
-	right := R3OperationSet{
-		Vocabulary: R3VocabularyOpenAPI,
+	right := r3.OperationSet{
+		Vocabulary: r3.VocabularyOpenAPI,
 		Operations: []json.RawMessage{
 			json.RawMessage(`{ "operationId": "writeRecord" }`),
 			json.RawMessage(`{"operationId":"readRecord"}`),
@@ -75,8 +76,8 @@ func TestR3OperationSetUsesSemanticSetEquality(t *testing.T) {
 	if !left.Equal(right) {
 		t.Fatalf("semantically equal operation sets differ:\nleft: %#v\nright: %#v", left, right)
 	}
-	if !left.ContainsSet(R3OperationSet{
-		Vocabulary: R3VocabularyOpenAPI,
+	if !left.ContainsSet(r3.OperationSet{
+		Vocabulary: r3.VocabularyOpenAPI,
 		Operations: []json.RawMessage{json.RawMessage(`{"operationId":"readRecord"}`)},
 	}) {
 		t.Fatal("operation set does not contain its semantic subset")
@@ -88,22 +89,22 @@ func TestR3DocumentRetainsExactIdentityAndCurrentNeutralShape(t *testing.T) {
 
 	compact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"send_email"}],"account":"work-account","parameters":{"to":"person@example.com","body":{"s256":"abc","media_type":"text/plain"}},"display":{"summary":"Send email","detail":"## To\nperson@example.com"}}`)
 	spaced := []byte(`{ "vocabulary": "urn:aauth:vocabulary:mcp", "operations": [{"tool":"send_email"}], "account": "work-account", "parameters": {"to":"person@example.com","body":{"s256":"abc","media_type":"text/plain"}}, "display": {"summary":"Send email","detail":"## To\nperson@example.com"} }`)
-	compactDocument, err := ParseR3Document(compact)
+	compactDocument, err := r3.ParseDocument(compact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spacedDocument, err := ParseR3Document(spaced)
+	spacedDocument, err := r3.ParseDocument(spaced)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !compactDocument.OperationSet().Equal(spacedDocument.OperationSet()) {
 		t.Fatal("equivalent R3 documents produced different operation sets")
 	}
-	if R3S256(compact) == R3S256(spaced) {
+	if r3.S256(compact) == r3.S256(spaced) {
 		t.Fatal("different exact R3 bytes produced the same test digest")
 	}
-	if len(R3S256(compact)) != 43 {
-		t.Fatalf("R3 SHA-256 base64url length = %d, want 43", len(R3S256(compact)))
+	if len(r3.S256(compact)) != 43 {
+		t.Fatalf("R3 SHA-256 base64url length = %d, want 43", len(r3.S256(compact)))
 	}
 	encoded, err := json.Marshal(compactDocument)
 	if err != nil {
@@ -128,7 +129,7 @@ func TestParseR3DocumentRejectsRemovedAndMalformedMembers(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := ParseR3Document(exactBytes); err == nil {
+			if _, err := r3.ParseDocument(exactBytes); err == nil {
 				t.Fatalf("invalid R3 document was accepted: %s", exactBytes)
 			}
 		})
@@ -146,7 +147,7 @@ func TestR3DocumentRejectsDuplicateNamesAtEveryDepth(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := ParseR3Document(exactBytes); err == nil ||
+			if _, err := r3.ParseDocument(exactBytes); err == nil ||
 				(!strings.Contains(err.Error(), "duplicate object name") &&
 					!strings.Contains(err.Error(), "case-ambiguous object names")) {
 				t.Fatalf("duplicate-name error = %v", err)

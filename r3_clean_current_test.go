@@ -42,21 +42,25 @@ func TestR3CallableAuthorizationSurfaceIsAbsent(t *testing.T) {
 		}
 	}
 
-	documentType := reflect.TypeOf(aauth.R3Document{})
-	if _, exists := documentType.FieldByName("Version"); exists {
-		t.Error("R3Document still exposes the removed version member")
-	}
-	for _, field := range []string{"Vocabulary", "Operations", "Account", "Parameters", "Display"} {
-		if _, exists := documentType.FieldByName(field); !exists {
-			t.Errorf("R3Document is missing current neutral field %s", field)
-		}
-	}
 }
 
 func TestR3CallableAuthorizationImplementationIsAbsent(t *testing.T) {
 	t.Parallel()
 
 	forbiddenRoot := map[string]struct{}{
+		"R3Document":                 {},
+		"R3Display":                  {},
+		"R3OperationSet":             {},
+		"R3S256":                     {},
+		"ParseR3Document":            {},
+		"ValidateR3VocabularyURI":    {},
+		"R3VocabularyMCP":            {},
+		"R3VocabularyOpenAPI":        {},
+		"R3VocabularyGRPC":           {},
+		"R3VocabularyGraphQL":        {},
+		"R3VocabularyAsyncAPI":       {},
+		"R3VocabularyWSDL":           {},
+		"R3VocabularyOData":          {},
 		"R3VocabularyOpenAPIGateway": {},
 		"R3Authorization":            {},
 		"R3AuditRecord":              {},
@@ -93,7 +97,17 @@ func TestR3CallableAuthorizationImplementationIsAbsent(t *testing.T) {
 		"validateResourceGrantR3Request":  {},
 	}
 
-	checkFilesForForbiddenIdentifiers(t, []string{"decision.go", "token.go", "r3.go"}, forbiddenRoot)
+	rootFiles, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootProduction := rootFiles[:0]
+	for _, path := range rootFiles {
+		if !strings.HasSuffix(path, "_test.go") {
+			rootProduction = append(rootProduction, path)
+		}
+	}
+	checkFilesForForbiddenIdentifiers(t, rootProduction, forbiddenRoot)
 	referenceFiles, err := filepath.Glob(filepath.Join("reference", "*.go"))
 	if err != nil {
 		t.Fatal(err)

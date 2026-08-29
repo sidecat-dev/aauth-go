@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -26,14 +27,14 @@ func TestEventPayloadDeliveryRetainsExactPairAndReconcilesLost202(t *testing.T) 
 	document := protectedEventsTestDocument()
 	contractStore := NewMemoryEventContractStore(clock)
 	activeUntil := now.Add(time.Hour)
-	if err := contractStore.Retain(ctx, aauth.R3S256(document), document, activeUntil); err != nil {
+	if err := contractStore.Retain(ctx, r3.S256(document), document, activeUntil); err != nil {
 		t.Fatal(err)
 	}
 	resourceStore := NewMemoryResourceEventStore()
 	subscription := ResourceEventSubscription{
 		APIssuer: "https://ap.example", EventID: "event-payload",
 		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-		ActiveUntil: activeUntil, ContractDigest: aauth.R3S256(document),
+		ActiveUntil: activeUntil, ContractDigest: r3.S256(document),
 		OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 	}
 	if err := resourceStore.Register(ctx, subscription); err != nil {
@@ -159,7 +160,7 @@ func TestEventPayloadDeliveryRefusalsPrecedePendingCustodyAndTransport(t *testin
 			clock := aauth.ClockFunc(func() time.Time { return now })
 			contracts := NewMemoryEventContractStore(clock)
 			if test.retainContract {
-				if err := contracts.Retain(ctx, aauth.R3S256(document), document, now.Add(time.Hour)); err != nil {
+				if err := contracts.Retain(ctx, r3.S256(document), document, now.Add(time.Hour)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -167,7 +168,7 @@ func TestEventPayloadDeliveryRefusalsPrecedePendingCustodyAndTransport(t *testin
 			subscription := ResourceEventSubscription{
 				APIssuer: "https://ap.example", EventID: "event-refusal",
 				Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-				ActiveUntil: now.Add(time.Hour), ContractDigest: aauth.R3S256(document),
+				ActiveUntil: now.Add(time.Hour), ContractDigest: r3.S256(document),
 				OperationID: valid.OperationID, MessageID: valid.MessageID,
 			}
 			if err := store.Register(ctx, subscription); err != nil {
@@ -202,14 +203,14 @@ func TestEventPayloadDeliveryRefusalsPrecedePendingCustodyAndTransport(t *testin
 		now := base
 		clock := aauth.ClockFunc(func() time.Time { return now })
 		contracts := NewMemoryEventContractStore(clock)
-		if err := contracts.Retain(ctx, aauth.R3S256(document), document, now.Add(time.Hour)); err != nil {
+		if err := contracts.Retain(ctx, r3.S256(document), document, now.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		baseStore := NewMemoryResourceEventStore()
 		subscription := ResourceEventSubscription{
 			APIssuer: "https://ap.example", EventID: "event-store-failure",
 			Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-			ActiveUntil: now.Add(time.Hour), ContractDigest: aauth.R3S256(document),
+			ActiveUntil: now.Add(time.Hour), ContractDigest: r3.S256(document),
 			OperationID: valid.OperationID, MessageID: valid.MessageID,
 		}
 		if err := baseStore.Register(ctx, subscription); err != nil {
@@ -280,7 +281,7 @@ func TestEventPayloadDeliveryAPProofRefusalsLeaveUseAndInboxUnchanged(t *testing
 				APIssuer: "https://ap.example", EventID: "event-payload-refusal",
 				Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
 				ActiveUntil: now.Add(time.Hour), MaxUses: 1,
-				ContractDigest: aauth.R3S256(document),
+				ContractDigest: r3.S256(document),
 				OperationID:    "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 			}
 			if err := store.CreateSubscription(ctx, subscription); err != nil {
@@ -336,7 +337,7 @@ func TestEventPayloadCustodyDefensivelyCopiesMemoryBoundaries(t *testing.T) {
 	resourceSubscription := ResourceEventSubscription{
 		APIssuer: "https://ap.example", EventID: "event-copy-resource",
 		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-		ActiveUntil: now.Add(time.Hour), ContractDigest: aauth.R3S256(document),
+		ActiveUntil: now.Add(time.Hour), ContractDigest: r3.S256(document),
 		OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 	}
 	if err := resourceStore.Register(ctx, resourceSubscription); err != nil {
@@ -365,7 +366,7 @@ func TestEventPayloadCustodyDefensivelyCopiesMemoryBoundaries(t *testing.T) {
 	if err := apStore.CreateSubscription(ctx, APEventSubscription{
 		APIssuer: "https://ap.example", EventID: "event-copy-ap",
 		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-		ActiveUntil: now.Add(time.Hour), MaxUses: 1, ContractDigest: aauth.R3S256(document),
+		ActiveUntil: now.Add(time.Hour), MaxUses: 1, ContractDigest: r3.S256(document),
 		OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 	}); err != nil {
 		t.Fatal(err)
@@ -405,7 +406,7 @@ func TestEventPayloadFileStoresReopenExactCustody(t *testing.T) {
 	resourceSubscription := ResourceEventSubscription{
 		APIssuer: "https://ap.example", EventID: "event-file-payload",
 		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-		ActiveUntil: now.Add(time.Hour), ContractDigest: aauth.R3S256(document),
+		ActiveUntil: now.Add(time.Hour), ContractDigest: r3.S256(document),
 		OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 	}
 	if err := resourceStore.Register(ctx, resourceSubscription); err != nil {
@@ -443,7 +444,7 @@ func TestEventPayloadFileStoresReopenExactCustody(t *testing.T) {
 	if err := apStore.CreateSubscription(ctx, APEventSubscription{
 		APIssuer: "https://ap.example", EventID: "event-file-payload",
 		Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-		ActiveUntil: now.Add(time.Hour), MaxUses: 1, ContractDigest: aauth.R3S256(document),
+		ActiveUntil: now.Add(time.Hour), MaxUses: 1, ContractDigest: r3.S256(document),
 		OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 	}); err != nil {
 		t.Fatal(err)

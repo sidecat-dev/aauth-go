@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 const maximumEventsAsyncAPIDocument = 1 << 20
@@ -229,7 +230,7 @@ func ParseEventsAsyncAPI(exact []byte) (*EventsAsyncAPIContract, error) {
 	}
 	return &EventsAsyncAPIContract{
 		exact:  append([]byte(nil), exact...),
-		digest: R3S256(exact),
+		digest: r3.S256(exact),
 		message: EventsAsyncAPIMessage{
 			OperationID: operationID, ChannelID: channelID, MessageID: messageID,
 			Address: channel.Address, TicketParameter: ticketParameter,

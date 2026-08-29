@@ -1,4 +1,6 @@
-package aauth
+// Package r3 implements the current exact-byte R3 document and operation
+// vocabulary model. It does not, by itself, authorize an operation.
+package r3
 
 import (
 	"bytes"
@@ -10,42 +12,44 @@ import (
 	"io"
 	"net/url"
 	"strings"
+
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
 
 const (
-	R3VocabularyMCP      = "urn:aauth:vocabulary:mcp"
-	R3VocabularyOpenAPI  = "urn:aauth:vocabulary:openapi"
-	R3VocabularyGRPC     = "urn:aauth:vocabulary:grpc"
-	R3VocabularyGraphQL  = "urn:aauth:vocabulary:graphql"
-	R3VocabularyAsyncAPI = "urn:aauth:vocabulary:asyncapi"
-	R3VocabularyWSDL     = "urn:aauth:vocabulary:wsdl"
-	R3VocabularyOData    = "urn:aauth:vocabulary:odata"
+	VocabularyMCP      = "urn:aauth:vocabulary:mcp"
+	VocabularyOpenAPI  = "urn:aauth:vocabulary:openapi"
+	VocabularyGRPC     = "urn:aauth:vocabulary:grpc"
+	VocabularyGraphQL  = "urn:aauth:vocabulary:graphql"
+	VocabularyAsyncAPI = "urn:aauth:vocabulary:asyncapi"
+	VocabularyWSDL     = "urn:aauth:vocabulary:wsdl"
+	VocabularyOData    = "urn:aauth:vocabulary:odata"
 )
 
-// ValidateR3VocabularyURI accepts the standard R3 vocabulary URIs and absolute
+// ValidateVocabularyURI accepts the standard R3 vocabulary URIs and absolute
 // third-party vocabulary URIs. The AAuth-owned namespace is closed to unknown
 // names so a typo cannot silently become a proprietary vocabulary.
-func ValidateR3VocabularyURI(vocabulary string) error {
-	return validateR3VocabularyURI(vocabulary)
+func ValidateVocabularyURI(vocabulary string) error {
+	return validateVocabularyURI(vocabulary)
 }
 
-// R3OperationSet is the vocabulary envelope retained in a neutral R3 document.
+// OperationSet is the vocabulary envelope retained in a neutral R3 document.
 //
 // Operations remain raw JSON because each vocabulary owns its entry shape.
 // Validate enforces the standard vocabulary shapes defined by the R3 draft and
 // admits structurally valid object entries for third-party vocabulary URIs.
-type R3OperationSet struct {
+type OperationSet struct {
 	Vocabulary string            `json:"vocabulary"`
 	Operations []json.RawMessage `json:"operations"`
 }
 
 // Validate checks the vocabulary envelope and every operation entry.
-func (set R3OperationSet) Validate() error {
+func (set OperationSet) Validate() error {
 	return set.validate(false)
 }
 
-func (set R3OperationSet) validate(allowEmpty bool) error {
-	if err := validateR3VocabularyURI(set.Vocabulary); err != nil {
+func (set OperationSet) validate(allowEmpty bool) error {
+	if err := validateVocabularyURI(set.Vocabulary); err != nil {
 		return err
 	}
 	if len(set.Operations) == 0 && !allowEmpty {
@@ -69,8 +73,8 @@ func (set R3OperationSet) validate(allowEmpty bool) error {
 }
 
 // Clone returns an independent copy suitable for crossing a policy boundary.
-func (set R3OperationSet) Clone() R3OperationSet {
-	cloned := R3OperationSet{
+func (set OperationSet) Clone() OperationSet {
+	cloned := OperationSet{
 		Vocabulary: set.Vocabulary,
 		Operations: make([]json.RawMessage, len(set.Operations)),
 	}
@@ -82,7 +86,7 @@ func (set R3OperationSet) Clone() R3OperationSet {
 
 // Equal compares operation sets as JSON values. Object member order,
 // insignificant JSON whitespace, and array order do not affect set equality.
-func (set R3OperationSet) Equal(other R3OperationSet) bool {
+func (set OperationSet) Equal(other OperationSet) bool {
 	if set.Vocabulary != other.Vocabulary || len(set.Operations) != len(other.Operations) {
 		return false
 	}
@@ -98,7 +102,7 @@ func (set R3OperationSet) Equal(other R3OperationSet) bool {
 }
 
 // Contains reports whether an operation is a member of this set.
-func (set R3OperationSet) Contains(operation json.RawMessage) bool {
+func (set OperationSet) Contains(operation json.RawMessage) bool {
 	candidate, _, err := parseR3Operation(operation)
 	if err != nil {
 		return false
@@ -113,7 +117,7 @@ func (set R3OperationSet) Contains(operation json.RawMessage) bool {
 }
 
 // ContainsSet reports whether every operation in subset is present in set.
-func (set R3OperationSet) ContainsSet(subset R3OperationSet) bool {
+func (set OperationSet) ContainsSet(subset OperationSet) bool {
 	if set.Vocabulary != subset.Vocabulary {
 		return false
 	}
@@ -125,8 +129,8 @@ func (set R3OperationSet) ContainsSet(subset R3OperationSet) bool {
 	return true
 }
 
-// R3Display describes the human-visible consequences of a grant.
-type R3Display struct {
+// Display describes the human-visible consequences of a grant.
+type Display struct {
 	Summary      string `json:"summary"`
 	Implications string `json:"implications,omitempty"`
 	DataAccessed string `json:"data_accessed,omitempty"`
@@ -134,24 +138,24 @@ type R3Display struct {
 	Detail       string `json:"detail,omitempty"`
 }
 
-// R3Document is the parsed form of the exact bytes published by a resource.
+// Document is the parsed form of the exact bytes published by a resource.
 // Exact bytes remain separate because re-marshalling this value must never be
 // used to verify or serve the document's content hash.
-type R3Document struct {
+type Document struct {
 	Vocabulary string                     `json:"vocabulary"`
 	Operations []json.RawMessage          `json:"operations"`
 	Account    string                     `json:"account,omitempty"`
 	Parameters map[string]json.RawMessage `json:"parameters,omitempty"`
-	Display    *R3Display                 `json:"display,omitempty"`
+	Display    *Display                   `json:"display,omitempty"`
 }
 
-// ParseR3Document validates an R3 document without altering its source bytes.
-func ParseR3Document(exactBytes []byte) (R3Document, error) {
-	var document R3Document
+// ParseDocument validates an R3 document without altering its source bytes.
+func ParseDocument(exactBytes []byte) (Document, error) {
+	var document Document
 	if len(exactBytes) == 0 {
 		return document, errors.New("aauth: R3 document is empty")
 	}
-	if err := rejectDuplicateJSONNames(exactBytes); err != nil {
+	if err := jsonstrict.RejectAmbiguousNames(exactBytes); err != nil {
 		return document, fmt.Errorf("aauth: R3 document: %w", err)
 	}
 	var topLevel map[string]json.RawMessage
@@ -180,33 +184,33 @@ func ParseR3Document(exactBytes []byte) (R3Document, error) {
 }
 
 // OperationSet returns an independent operation-set view of the document.
-func (document R3Document) OperationSet() R3OperationSet {
-	return R3OperationSet{
+func (document Document) OperationSet() OperationSet {
+	return OperationSet{
 		Vocabulary: document.Vocabulary,
 		Operations: cloneRawMessages(document.Operations),
 	}
 }
 
-// R3S256 computes the unpadded base64url SHA-256 digest over exact bytes.
-func R3S256(exactBytes []byte) string {
+// S256 computes the unpadded base64url SHA-256 digest over exact bytes.
+func S256(exactBytes []byte) string {
 	digest := sha256.Sum256(exactBytes)
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-func validateR3VocabularyURI(vocabulary string) error {
+func validateVocabularyURI(vocabulary string) error {
 	parsed, err := url.Parse(vocabulary)
 	if err != nil || !parsed.IsAbs() || parsed.Scheme == "" {
 		return errors.New("aauth: R3 vocabulary must be an absolute URI")
 	}
 	if strings.HasPrefix(vocabulary, "urn:aauth:vocabulary:") {
 		switch vocabulary {
-		case R3VocabularyMCP,
-			R3VocabularyOpenAPI,
-			R3VocabularyGRPC,
-			R3VocabularyGraphQL,
-			R3VocabularyAsyncAPI,
-			R3VocabularyWSDL,
-			R3VocabularyOData:
+		case VocabularyMCP,
+			VocabularyOpenAPI,
+			VocabularyGRPC,
+			VocabularyGraphQL,
+			VocabularyAsyncAPI,
+			VocabularyWSDL,
+			VocabularyOData:
 			return nil
 		default:
 			return errors.New("aauth: R3 standard vocabulary URI is unknown")
@@ -219,7 +223,7 @@ func parseR3Operation(operation json.RawMessage) (string, map[string]json.RawMes
 	if len(operation) == 0 || !json.Valid(operation) {
 		return "", nil, errors.New("operation must be valid JSON")
 	}
-	if err := rejectDuplicateJSONNames(operation); err != nil {
+	if err := jsonstrict.RejectAmbiguousNames(operation); err != nil {
 		return "", nil, err
 	}
 	var fields map[string]json.RawMessage
@@ -271,13 +275,13 @@ func validateR3OperationFields(vocabulary string, fields map[string]json.RawMess
 	}
 
 	switch vocabulary {
-	case R3VocabularyMCP:
+	case VocabularyMCP:
 		_, err := requireString("tool")
 		return err
-	case R3VocabularyOpenAPI:
+	case VocabularyOpenAPI:
 		_, err := requireString("operationId")
 		return err
-	case R3VocabularyGRPC:
+	case VocabularyGRPC:
 		method, err := requireString("method")
 		if err != nil {
 			return err
@@ -286,7 +290,7 @@ func validateR3OperationFields(vocabulary string, fields map[string]json.RawMess
 			return errors.New("method must be a fully qualified gRPC method")
 		}
 		return nil
-	case R3VocabularyGraphQL:
+	case VocabularyGraphQL:
 		if _, err := requireString("operation"); err != nil {
 			return err
 		}
@@ -298,7 +302,7 @@ func validateR3OperationFields(vocabulary string, fields map[string]json.RawMess
 			return errors.New("type must be query, mutation, or subscription")
 		}
 		return nil
-	case R3VocabularyAsyncAPI:
+	case VocabularyAsyncAPI:
 		if _, err := requireString("operationId"); err != nil {
 			return err
 		}
@@ -310,13 +314,13 @@ func validateR3OperationFields(vocabulary string, fields map[string]json.RawMess
 			return errors.New("action must be send or receive")
 		}
 		return nil
-	case R3VocabularyWSDL:
+	case VocabularyWSDL:
 		if _, err := requireString("operation"); err != nil {
 			return err
 		}
 		_, _, err := optionalString("service")
 		return err
-	case R3VocabularyOData:
+	case VocabularyOData:
 		if _, err := requireString("operation"); err != nil {
 			return err
 		}

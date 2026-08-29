@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 var (
@@ -57,7 +58,7 @@ func (store *MemoryEventContractStore) Retain(
 	if store == nil || store.clock == nil || digest == "" || !retainUntil.After(store.clock.Now()) {
 		return fmt.Errorf("%w: contract retention is invalid", ErrEventContractIntegrity)
 	}
-	if aauth.R3S256(exact) != digest {
+	if r3.S256(exact) != digest {
 		return ErrEventContractIntegrity
 	}
 	if _, err := aauth.ParseEventsAsyncAPI(exact); err != nil {
@@ -96,7 +97,7 @@ func (store *MemoryEventContractStore) Load(ctx context.Context, digest string) 
 		delete(store.entries, digest)
 		return nil, ErrEventContractNotFound
 	}
-	if aauth.R3S256(entry.exact) != digest {
+	if r3.S256(entry.exact) != digest {
 		return nil, ErrEventContractIntegrity
 	}
 	return append([]byte(nil), entry.exact...), nil

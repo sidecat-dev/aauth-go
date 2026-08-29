@@ -10,6 +10,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func privateR3TestDirectory(t *testing.T) string {
@@ -46,7 +47,7 @@ func TestFileR3DocumentStoreRetainsExactBytesAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read_record"}]}`)
-	firstHash := aauth.R3S256(first)
+	firstHash := r3.S256(first)
 	firstExpiry := now.Add(5 * time.Minute)
 	if err := store.Retain(context.Background(), firstHash, first, firstExpiry); err != nil {
 		t.Fatal(err)
@@ -67,7 +68,7 @@ func TestFileR3DocumentStoreRetainsExactBytesAcrossRestart(t *testing.T) {
 	}
 
 	second := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"write_record"}]}`)
-	secondHash := aauth.R3S256(second)
+	secondHash := r3.S256(second)
 	if err := reopened.Retain(context.Background(), secondHash, second, now.Add(5*time.Minute)); !errors.Is(err, ErrR3DocumentCapacity) {
 		t.Fatalf("live-document capacity error = %v", err)
 	}
@@ -92,14 +93,14 @@ func TestFileR3DocumentStoreRefusesInvalidRetentionAndCustodyEntries(t *testing.
 		t.Fatal(err)
 	}
 	oversized := bytes.Repeat([]byte("x"), 65)
-	if err := store.Retain(context.Background(), aauth.R3S256(oversized), oversized, now.Add(time.Minute)); !errors.Is(err, ErrR3DocumentCapacity) {
+	if err := store.Retain(context.Background(), r3.S256(oversized), oversized, now.Add(time.Minute)); !errors.Is(err, ErrR3DocumentCapacity) {
 		t.Fatalf("oversized-document error = %v", err)
 	}
 	valid := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}]}`)
-	if err := store.Retain(context.Background(), aauth.R3S256(valid), valid, now); !errors.Is(err, ErrR3DocumentRetention) {
+	if err := store.Retain(context.Background(), r3.S256(valid), valid, now); !errors.Is(err, ErrR3DocumentRetention) {
 		t.Fatalf("expired-retention error = %v", err)
 	}
-	if err := store.Retain(context.Background(), aauth.R3S256([]byte("different")), valid, now.Add(time.Minute)); !errors.Is(err, ErrR3DocumentIntegrity) {
+	if err := store.Retain(context.Background(), r3.S256([]byte("different")), valid, now.Add(time.Minute)); !errors.Is(err, ErrR3DocumentIntegrity) {
 		t.Fatalf("digest mismatch error = %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(directory, "obsolete.proposal"), []byte("stale"), 0o600); err != nil {
@@ -121,7 +122,7 @@ func TestFileR3DocumentStoreRejectsNonCanonicalDigestPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}]}`)
-	digest := aauth.R3S256(document)
+	digest := r3.S256(document)
 	escapeDigest := "../" + digest
 	escapedPath := filepath.Join(filepath.Dir(directory), digest+".r3")
 	t.Cleanup(func() { _ = os.Remove(escapedPath) })

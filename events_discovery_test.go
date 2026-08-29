@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -63,7 +64,7 @@ func TestEventsContractResolverUsesAdmittedExactHTTPFreshness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Digest() != aauth.R3S256(contractBytes) {
+	if first.Digest() != r3.S256(contractBytes) {
 		t.Fatalf("first contract digest = %q", first.Digest())
 	}
 
@@ -82,7 +83,7 @@ func TestEventsContractResolverUsesAdmittedExactHTTPFreshness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rotated.Digest() == first.Digest() || rotated.Digest() != aauth.R3S256(contractBytes) {
+	if rotated.Digest() == first.Digest() || rotated.Digest() != r3.S256(contractBytes) {
 		t.Fatalf("rotated contract digest = %q", rotated.Digest())
 	}
 	if metadataFetches.Load() != 2 || contractFetches.Load() != 2 || admissions.Load() != 4 {
@@ -113,7 +114,7 @@ func TestEventsContractResolverRejectsUnsafeOrInvalidDiscovery(t *testing.T) {
 						response.Header().Set("Content-Type", "application/json")
 						vocabularies := map[string]string{}
 						if test.vocabulary != "" {
-							vocabularies[aauth.R3VocabularyAsyncAPI] = test.vocabulary
+							vocabularies[r3.VocabularyAsyncAPI] = test.vocabulary
 						}
 						_ = json.NewEncoder(response).Encode(map[string]any{
 							"issuer": "https://resource.example", "r3_vocabularies": vocabularies,
@@ -180,8 +181,8 @@ func TestResourceEventsAsyncAPIDiscoveryServesExactDocument(t *testing.T) {
 	if err := json.Unmarshal(metadataResponse.Body.Bytes(), &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if string(metadata.R3Vocabularies[aauth.R3VocabularyAsyncAPI]) != `"/asyncapi.json"` {
-		t.Fatalf("AsyncAPI discovery = %s", metadata.R3Vocabularies[aauth.R3VocabularyAsyncAPI])
+	if string(metadata.R3Vocabularies[r3.VocabularyAsyncAPI]) != `"/asyncapi.json"` {
+		t.Fatalf("AsyncAPI discovery = %s", metadata.R3Vocabularies[r3.VocabularyAsyncAPI])
 	}
 
 	documentRequest := httptest.NewRequest(http.MethodGet, "https://resource.example/asyncapi.json", nil)

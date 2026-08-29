@@ -33,6 +33,10 @@ bound to the exact compact token, selected issuer key, token profile, and one
 trusted verification instant. `Claims()` returns a defensive typed projection;
 `EvidenceID()` identifies the exact retained verification without exposing a
 constructor or mutable evidence fields.
+The `r3` package owns exact-byte R3 documents, semantic operation sets, the
+seven current standard vocabularies, third-party vocabulary admission, and
+content digests. Those neutral values carry authorization material but do not
+themselves authorize an operation.
 Deployable reference role handlers, host-owned storage interfaces, and an
 agent client are in `reference`. [Architecture](ARCHITECTURE.md) maps the
 observed package structure, target import graph, endpoint-specific evidence
@@ -156,8 +160,9 @@ callable R3 authorization path, and defined R3 or Budget members on resource
 and auth tokens fail closed instead of being silently ignored. One compile-time
 Core catalog also rejects those members on agent and person tokens, enforces
 their current token applicability and required co-presence, and keeps the
-removed `r3_conditional` name only as a rejected negative vector. It retains
-current neutral R3 document values and digests used by Events. Bounded current
+removed `r3_conditional` name only as a rejected negative vector. The public
+`r3` package retains current neutral document values and digests used by Events.
+Bounded current
 sub-agent and call-chain behavior is claimed only for the exact runnable
 journeys listed in the source coverage report; broader delegation and
 interaction chaining remain explicit gaps.

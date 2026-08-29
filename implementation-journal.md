@@ -42,6 +42,10 @@ for this library.
   member, enforces token applicability and required co-presence, and rejects
   unsupported companions before key resolution or role policy. The removed
   `r3_conditional` form remains only as a negative vector.
+- Exact R3 documents, operation sets, vocabularies, display values, and digests
+  now have one public owner in `r3`. Events and reference stores import that
+  package directly; root forwarding names are absent, and callable R3
+  authorization remains unclaimed.
 
 ## 2026-08-28
 

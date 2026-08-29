@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -368,7 +369,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		if err != nil {
 			return nil, err
 		}
-		r3Vocabularies[aauth.R3VocabularyAsyncAPI] = discovery
+		r3Vocabularies[r3.VocabularyAsyncAPI] = discovery
 	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
@@ -1153,7 +1154,7 @@ func (resource *Resource) validateEventPayload(
 	if err != nil {
 		return "", nil, "", err
 	}
-	if aauth.R3S256(exactContract) != subscription.ContractDigest {
+	if r3.S256(exactContract) != subscription.ContractDigest {
 		return "", nil, "", ErrEventContractIntegrity
 	}
 	contract, err := aauth.ParseEventsAsyncAPI(exactContract)

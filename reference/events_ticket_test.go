@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -99,7 +100,7 @@ func TestProtectedEventTicketIssueFollowsAuthenticatedOperationCommit(t *testing
 	if ticket.TicketDigest != digest || ticket.Agent != "aauth:subscriber@ap.example" ||
 		ticket.Resource != "https://resource.example" || ticket.AuthorizedMethod != http.MethodPost ||
 		ticket.AuthorizedPath != "/appointments/search" || ticket.ResourceRevision != "appointment-state-17" ||
-		ticket.ContractDigest != aauth.R3S256(document) ||
+		ticket.ContractDigest != r3.S256(document) ||
 		ticket.OperationID != "subscribeProtectedWaitlist" || ticket.MessageID != "slotAvailable" ||
 		!ticket.ExpiresAt.Equal(now.Add(time.Minute)) || !ticket.ActiveUntil.Equal(activeUntil) {
 		t.Fatalf("retained ticket = %#v", ticket)
@@ -726,7 +727,7 @@ func protectedEventsTestTicket(raw string, now time.Time, document []byte) Prote
 		TicketDigest: protectedEventTicketDigest(raw), Resource: "https://resource.example",
 		Agent: "aauth:subscriber@ap.example", AuthorizedMethod: http.MethodPost,
 		AuthorizedPath: "/appointments/search", ResourceRevision: "appointment-state-17",
-		ContractDigest: aauth.R3S256(document), OperationID: "subscribeProtectedWaitlist",
+		ContractDigest: r3.S256(document), OperationID: "subscribeProtectedWaitlist",
 		MessageID: "slotAvailable", ExpiresAt: now.Add(time.Minute), ActiveUntil: now.Add(time.Hour),
 	}
 }

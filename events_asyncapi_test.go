@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func TestEventsAsyncAPIParsesProtectedJSONMessageAndValidatesPayload(t *testing.T) {
@@ -12,8 +14,8 @@ func TestEventsAsyncAPIParsesProtectedJSONMessageAndValidatesPayload(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contract.Digest() != R3S256(exact) {
-		t.Fatalf("contract digest = %q, want %q", contract.Digest(), R3S256(exact))
+	if contract.Digest() != r3.S256(exact) {
+		t.Fatalf("contract digest = %q, want %q", contract.Digest(), r3.S256(exact))
 	}
 	if !bytes.Equal(contract.ExactBytes(), exact) {
 		t.Fatal("contract did not preserve exact source bytes")

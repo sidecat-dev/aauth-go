@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 const (
@@ -189,7 +191,7 @@ func (resolver *HTTPEventsContractResolver) fetch(
 	if metadata.Issuer != resource {
 		return eventsContractCacheEntry{}, errors.New("aauth: Events resource metadata issuer does not match")
 	}
-	rawEndpoint, ok := metadata.R3Vocabularies[R3VocabularyAsyncAPI]
+	rawEndpoint, ok := metadata.R3Vocabularies[r3.VocabularyAsyncAPI]
 	if !ok {
 		return eventsContractCacheEntry{}, errors.New("aauth: resource does not advertise the Events AsyncAPI vocabulary")
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 const (
@@ -158,7 +159,7 @@ func (store *FileR3DocumentStore) load() error {
 		if err != nil {
 			return err
 		}
-		if aauth.R3S256(exactBytes) != digest {
+		if r3.S256(exactBytes) != digest {
 			return fmt.Errorf("%w: retained digest %s", ErrR3DocumentIntegrity, digest)
 		}
 		if !retainUntil.After(now) {
@@ -218,7 +219,7 @@ func (store *FileR3DocumentStore) validateRetention(
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if aauth.R3S256(exactBytes) != digest {
+	if r3.S256(exactBytes) != digest {
 		return ErrR3DocumentIntegrity
 	}
 	now := store.clock.Now()
@@ -301,7 +302,7 @@ func (store *FileR3DocumentStore) Load(
 	if err != nil {
 		return nil, err
 	}
-	if !retainUntil.Equal(entry.retainUntil) || aauth.R3S256(exactBytes) != digest {
+	if !retainUntil.Equal(entry.retainUntil) || r3.S256(exactBytes) != digest {
 		return nil, ErrR3DocumentIntegrity
 	}
 	return exactBytes, nil

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -41,7 +42,7 @@ func TestAgentEventPayloadIndependentlyValidatesAndReachesExactAction(t *testing
 	input, calls := action.captured()
 	if calls != 1 || input.ContentType != accepted.ContentType || input.PayloadDigest != accepted.PayloadDigest ||
 		!bytes.Equal(input.Payload, accepted.Payload) || input.Event != claims ||
-		input.Context.ContractDigest != aauth.R3S256(document) {
+		input.Context.ContractDigest != r3.S256(document) {
 		t.Fatalf("captured payload action = %#v, calls %d", input, calls)
 	}
 	accepted.Payload[1] = 'X'
@@ -192,7 +193,7 @@ func TestEventAdapterPayloadAcknowledgesOnlyAfterTerminalAgentValidation(t *test
 			if err := apStore.CreateSubscription(ctx, APEventSubscription{
 				APIssuer: "https://ap.example", EventID: eventID,
 				Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example",
-				ActiveUntil: now.Add(time.Hour), MaxUses: 1, ContractDigest: aauth.R3S256(document),
+				ActiveUntil: now.Add(time.Hour), MaxUses: 1, ContractDigest: r3.S256(document),
 				OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 			}); err != nil {
 				t.Fatal(err)
@@ -238,7 +239,7 @@ func protectedAgentPayloadContext(eventID string, document []byte) AgentEventCon
 	return AgentEventContext{
 		APIssuer: "https://ap.example", EventID: eventID,
 		Value:    []byte(`{"purpose":"protected payload action"}`),
-		Contract: append([]byte(nil), document...), ContractDigest: aauth.R3S256(document),
+		Contract: append([]byte(nil), document...), ContractDigest: r3.S256(document),
 		OperationID: "subscribeProtectedWaitlist", MessageID: "slotAvailable",
 	}
 }
