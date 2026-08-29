@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -26,7 +27,7 @@ type ResourceConfig struct {
 	AccessMode   aauth.AccessMode
 	PersonServer string
 	AccessServer string
-	SigningKey   aauth.SigningKey
+	SigningKey   jose.SigningKey
 	KeyResolver  aauth.KeyResolver
 	Clock        aauth.Clock
 	NewID        func() string
@@ -90,7 +91,7 @@ type Resource struct {
 	accessMode                   aauth.AccessMode
 	tokenAudience                string
 	authTokenDiscoveryDocument   string
-	signingKey                   aauth.SigningKey
+	signingKey                   jose.SigningKey
 	hasSigningKey                bool
 	keyResolver                  aauth.KeyResolver
 	clock                        aauth.Clock
@@ -145,7 +146,7 @@ type pendingAuthorization struct {
 	request                aauth.AuthorizationRequest
 	requestBody            []byte
 	requestProof           *aauth.RequestProof
-	requestVerificationKey aauth.JWK
+	requestVerificationKey jose.JWK
 	decision               aauth.AuthorizationDecision
 	agentThumbprint        string
 	agentExpiresAt         time.Time
@@ -173,7 +174,7 @@ type resourcePendingAuthorizationRecord struct {
 	Request                aauth.AuthorizationRequest  `json:"request"`
 	RequestBody            []byte                      `json:"request_body"`
 	RequestProof           *aauth.RequestProof         `json:"request_proof"`
-	RequestVerificationKey aauth.JWK                   `json:"request_verification_key"`
+	RequestVerificationKey jose.JWK                    `json:"request_verification_key"`
 	Decision               aauth.AuthorizationDecision `json:"decision"`
 	AgentThumbprint        string                      `json:"agent_thumbprint"`
 	AgentExpiresAt         time.Time                   `json:"agent_expires_at"`
@@ -1386,7 +1387,7 @@ func (resource *Resource) handleLocalAuthorization(
 	response http.ResponseWriter,
 	request *http.Request,
 	requestBody []byte,
-	requestVerificationKey aauth.JWK,
+	requestVerificationKey jose.JWK,
 	authorizationRequest aauth.AuthorizationRequest,
 	verified aauth.VerifiedRequest,
 	thumbprint string,
@@ -1510,7 +1511,7 @@ func (resource *Resource) beginPendingAuthorization(
 	request aauth.AuthorizationRequest,
 	requestBody []byte,
 	requestProof *aauth.RequestProof,
-	requestVerificationKey aauth.JWK,
+	requestVerificationKey jose.JWK,
 	thumbprint string,
 	agentExpiresAt time.Time,
 	now time.Time,
@@ -2323,6 +2324,6 @@ func (resource *Resource) handleJWKS(response http.ResponseWriter, _ *http.Reque
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{
-		"keys": []aauth.JWK{resource.signingKey.PublicJWK()},
+		"keys": []jose.JWK{resource.signingKey.PublicJWK()},
 	})
 }

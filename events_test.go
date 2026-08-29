@@ -3,6 +3,7 @@ package aauth
 import (
 	"context"
 	"encoding/json"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
 		test := test
 		t.Run("subscribe "+test.name, func(t *testing.T) {
 			t.Parallel()
-			mutated := mintRawToken(t, issuerKey, TokenHeader{Algorithm: "Ed25519", Type: test.typ, KeyID: issuerKey.ID()}, test.claims)
+			mutated := mintRawToken(t, issuerKey, jose.Header{Algorithm: "Ed25519", Type: test.typ, KeyID: issuerKey.ID()}, test.claims)
 			if _, err := VerifySubscribeToken(context.Background(), mutated, resolver, clock); err == nil {
 				t.Fatalf("VerifySubscribeToken accepted %s", test.name)
 			}
@@ -105,23 +106,23 @@ func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	validEvent := verifiedSelfJWTFromCompact(t, eventCompact)
+	validEvent := verifiedSelfJWTFromCompact(t, eventCompact, issuerKey.PublicJWK())
 	if got, err := DecodeVerifiedEventToken(validEvent, clock); err != nil || got != event {
 		t.Fatalf("DecodeVerifiedEventToken() = %#v, %v, want %#v", got, err, event)
 	}
 	forgedEvent := validEvent
-	forgedEvent.seal = [32]byte{}
+	forgedEvent.verified = jose.VerifiedCompact{}
 	if _, err := DecodeVerifiedEventToken(forgedEvent, clock); err == nil {
 		t.Fatal("DecodeVerifiedEventToken accepted an unverified value")
 	}
 
 	for _, test := range []struct {
 		name   string
-		header TokenHeader
+		header jose.Header
 		claims map[string]any
 	}{
-		{name: "wrong type", header: TokenHeader{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
-		{name: "absent type", header: TokenHeader{Algorithm: "Ed25519", KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
+		{name: "wrong type", header: jose.Header{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
+		{name: "absent type", header: jose.Header{Algorithm: "Ed25519", KeyID: issuerKey.ID()}, claims: eventClaimsMap(event)},
 		{name: "wrong discovery document", header: validEvent.Header, claims: mutateClaim(eventClaimsMap(event), "dwk", AgentDiscoveryDocument)},
 		{name: "absent issued time", header: validEvent.Header, claims: mutateClaim(eventClaimsMap(event), "iat", nil)},
 		{name: "malformed issued time", header: validEvent.Header, claims: mutateClaim(eventClaimsMap(event), "iat", "now")},
@@ -136,16 +137,8 @@ func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
 		test := test
 		t.Run("event "+test.name, func(t *testing.T) {
 			t.Parallel()
-			claims, err := json.Marshal(test.claims)
-			if err != nil {
-				t.Fatal(err)
-			}
-			verified := newVerifiedSelfJWT(
-				test.header,
-				stringClaim(test.claims, "iss"),
-				stringClaim(test.claims, "dwk"),
-				claims,
-			)
+			compact := mintRawToken(t, issuerKey, test.header, test.claims)
+			verified := verifiedSelfJWTFromCompact(t, compact, issuerKey.PublicJWK())
 			if _, err := DecodeVerifiedEventToken(verified, clock); err == nil {
 				t.Fatalf("DecodeVerifiedEventToken accepted %s", test.name)
 			}
@@ -216,12 +209,17 @@ func stringClaim(claims map[string]any, name string) string {
 	return value
 }
 
-func verifiedSelfJWTFromCompact(t *testing.T, compact string) VerifiedSelfJWT {
+func verifiedSelfJWTFromCompact(t *testing.T, compact string, key jose.JWK) VerifiedSelfJWT {
 	t.Helper()
-	header, payload, _, _, err := decodeToken(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		t.Fatal(err)
 	}
+	verified, err := parsed.Verify(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := parsed.Payload()
 	var locator struct {
 		Issuer string `json:"iss"`
 		DWK    string `json:"dwk"`
@@ -229,5 +227,5 @@ func verifiedSelfJWTFromCompact(t *testing.T, compact string) VerifiedSelfJWT {
 	if err := json.Unmarshal(payload, &locator); err != nil {
 		t.Fatal(err)
 	}
-	return newVerifiedSelfJWT(header, locator.Issuer, locator.DWK, payload)
+	return newVerifiedSelfJWT(verified, locator.Issuer, locator.DWK)
 }

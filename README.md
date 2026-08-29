@@ -22,8 +22,11 @@ AAuth designation.
 go get gitlab.com/sidecat-dev/aauth-go
 ```
 
-The public API is the root `aauth` package. Deployable reference role handlers,
-host-owned storage interfaces, and an agent client are in `reference`. The
+The focused `jose` package owns the current Ed25519 JWK, caller-custodied
+signing key, and compact-JWS parse, sign, and sealed-verification API. The root
+`aauth` package owns portable protocol values and policy-aware verification.
+Deployable reference role handlers, host-owned storage interfaces, and an
+agent client are in `reference`. The
 [implementation interpretation register](INTERPRETATIONS.md) records observable
 choices, alternatives, reasons, and evidence in one
 place. [Retained-source provenance](PROVENANCE.md) makes every current input
@@ -185,7 +188,7 @@ request entries archive the verified signature headers, presented credential,
 public-key snapshot, request target, timestamps, replay identity, and exact
 body. That material is sensitive evidence custody, not display data.
 
-Signing keys can likewise remain host-custodied. `NewSigningKey` accepts a
+Signing keys can likewise remain host-custodied. `jose.NewSigningKey` accepts a
 standard `crypto.Signer` and retains only that signing capability plus its
 Ed25519 public identity. A host can therefore sign through an operating-system
 key store, HSM, encrypted value service, or another protected adapter without

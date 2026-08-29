@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -228,13 +229,13 @@ func TestCurrentThreePartyMissionAuthorizationJourney(t *testing.T) {
 	}
 }
 
-func testSigningKey(t *testing.T, id string) aauth.SigningKey {
+func testSigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +275,7 @@ func testRoleDiscoveryHandler(
 	t *testing.T,
 	issuer string,
 	discoveryDocument string,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 ) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -285,7 +286,7 @@ func testRoleDiscoveryHandler(
 		})
 	})
 	mux.HandleFunc("GET /jwks", func(response http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(t, response, map[string]any{"keys": []aauth.JWK{key.PublicJWK()}})
+		writeTestJSON(t, response, map[string]any{"keys": []jose.JWK{key.PublicJWK()}})
 	})
 	return mux
 }

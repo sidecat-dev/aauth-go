@@ -3,6 +3,7 @@ package aauth_test
 import (
 	"bytes"
 	"context"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
@@ -130,7 +131,7 @@ func TestAuthTokenRejectsWrongAudienceAtResourceBoundary(t *testing.T) {
 
 type authRequestFixture struct {
 	clock     aauth.Clock
-	agentKey  aauth.SigningKey
+	agentKey  jose.SigningKey
 	authToken string
 	keys      aauth.StaticKeyResolver
 }

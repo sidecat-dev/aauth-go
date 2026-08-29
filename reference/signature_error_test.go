@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -225,17 +226,17 @@ func TestResourceSanitizesOperationalKeyResolutionFailure(t *testing.T) {
 
 type failingReferenceKeyResolver struct{ err error }
 
-func (resolver failingReferenceKeyResolver) ResolveKey(context.Context, string, string, string) (aauth.JWK, error) {
-	return aauth.JWK{}, resolver.err
+func (resolver failingReferenceKeyResolver) ResolveKey(context.Context, string, string, string) (jose.JWK, error) {
+	return jose.JWK{}, resolver.err
 }
 
-func referenceTestSigningKey(t *testing.T, id string) aauth.SigningKey {
+func referenceTestSigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, private)
+	key, err := jose.NewEd25519SigningKey(id, private)
 	if err != nil {
 		t.Fatal(err)
 	}

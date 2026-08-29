@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -546,8 +547,8 @@ func TestProtectedEventRegistrationRefusalsLeaveTicketUsable(t *testing.T) {
 		name        string
 		body        string
 		claimsAgent string
-		requestKey  aauth.SigningKey
-		tokenKey    aauth.SigningKey
+		requestKey  jose.SigningKey
+		tokenKey    jose.SigningKey
 		advance     time.Duration
 		wantStatus  int
 	}{
@@ -646,7 +647,7 @@ func TestProtectedEventTicketConcurrentConsumptionHasOneWinner(t *testing.T) {
 
 type protectedEventsTestResourceInput struct {
 	clock                 aauth.Clock
-	resourceKey           aauth.SigningKey
+	resourceKey           jose.SigningKey
 	resolver              aauth.KeyResolver
 	store                 ResourceEventStore
 	contracts             EventContractStore
@@ -684,7 +685,7 @@ func newProtectedEventsTestResource(t *testing.T, input protectedEventsTestResou
 	return resource
 }
 
-func protectedEventsTestAuthToken(t *testing.T, accessKey, agentKey aauth.SigningKey, now time.Time) string {
+func protectedEventsTestAuthToken(t *testing.T, accessKey, agentKey jose.SigningKey, now time.Time) string {
 	t.Helper()
 	compact, err := aauth.MintAuthToken(accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://as.example", DWK: aauth.AccessDiscoveryDocument,
@@ -699,12 +700,12 @@ func protectedEventsTestAuthToken(t *testing.T, accessKey, agentKey aauth.Signin
 	return compact
 }
 
-func protectedEventsTestSubscribeToken(t *testing.T, apKey, agentKey aauth.SigningKey, now time.Time, eventID string) string {
+func protectedEventsTestSubscribeToken(t *testing.T, apKey, agentKey jose.SigningKey, now time.Time, eventID string) string {
 	t.Helper()
 	return protectedEventsTestSubscribeTokenForAgent(t, apKey, agentKey.PublicJWK(), now, eventID, "aauth:subscriber@ap.example")
 }
 
-func protectedEventsTestSubscribeTokenForAgent(t *testing.T, apKey aauth.SigningKey, agentKey aauth.JWK, now time.Time, eventID, agent string) string {
+func protectedEventsTestSubscribeTokenForAgent(t *testing.T, apKey jose.SigningKey, agentKey jose.JWK, now time.Time, eventID, agent string) string {
 	t.Helper()
 	maxUses := 1
 	compact, err := aauth.MintSubscribeToken(apKey, aauth.SubscribeTokenClaims{

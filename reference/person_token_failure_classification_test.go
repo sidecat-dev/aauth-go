@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +45,7 @@ func TestPersonTokenEndpointClassifiesPolicyPreparationAndCustodyFailures(t *tes
 
 	for _, test := range []struct {
 		name          string
-		signingKey    aauth.SigningKey
+		signingKey    jose.SigningKey
 		policy        aauth.PersonTokenPolicy
 		commitErr     error
 		wantStatus    int
@@ -243,13 +244,13 @@ func (failingPersonTokenSigner) Sign(io.Reader, []byte, crypto.SignerOpts) ([]by
 	return nil, errors.New("secret signing device /dev/hsm0 failed")
 }
 
-func newFailingPersonTokenSigningKey(t *testing.T, id string) aauth.SigningKey {
+func newFailingPersonTokenSigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewSigningKey(id, failingPersonTokenSigner{public: public})
+	key, err := jose.NewSigningKey(id, failingPersonTokenSigner{public: public})
 	if err != nil {
 		t.Fatal(err)
 	}

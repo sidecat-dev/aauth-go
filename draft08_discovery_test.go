@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"testing"
 	"time"
@@ -113,7 +114,7 @@ func TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope(t *testin
 			if !errors.As(err, &signatureError) ||
 				signatureError.Code != aauth.SignatureErrorUnsupportedAlgorithm ||
 				len(signatureError.AcceptedAlgorithms) != 1 ||
-				signatureError.AcceptedAlgorithms[0] != aauth.Ed25519Algorithm {
+				signatureError.AcceptedAlgorithms[0] != jose.Ed25519Algorithm {
 				t.Fatalf("selected alg %q error = %v (%#v)", algorithm, err, signatureError)
 			}
 		})

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,9 +24,9 @@ type goJKTJWTRequestFixture struct {
 	} `json:"generator"`
 	Now      int64 `json:"now"`
 	Expected struct {
-		Identity    string    `json:"identity"`
-		IdentityKey aauth.JWK `json:"identity_key"`
-		RequestKey  aauth.JWK `json:"request_key"`
+		Identity    string   `json:"identity"`
+		IdentityKey jose.JWK `json:"identity_key"`
+		RequestKey  jose.JWK `json:"request_key"`
 	} `json:"expected"`
 	Request struct {
 		Method  string            `json:"method"`
@@ -53,11 +54,11 @@ func main() {
 func generateJKTJWTRequest(output string) error {
 	durablePrivate := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{97}, 32))
 	ephemeralPrivate := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{109}, 32))
-	durableKey, err := aauth.NewEd25519SigningKey("go-durable-key", durablePrivate)
+	durableKey, err := jose.NewEd25519SigningKey("go-durable-key", durablePrivate)
 	if err != nil {
 		return err
 	}
-	ephemeralKey, err := aauth.NewEd25519SigningKey("go-ephemeral-key", ephemeralPrivate)
+	ephemeralKey, err := jose.NewEd25519SigningKey("go-ephemeral-key", ephemeralPrivate)
 	if err != nil {
 		return err
 	}

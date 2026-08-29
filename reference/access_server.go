@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"reflect"
@@ -21,7 +22,7 @@ import (
 
 type AccessServerConfig struct {
 	Identifier          string
-	SigningKey          aauth.SigningKey
+	SigningKey          jose.SigningKey
 	KeyResolver         aauth.KeyResolver
 	Clock               aauth.Clock
 	NewID               func() string
@@ -38,7 +39,7 @@ type AccessServerConfig struct {
 
 type AccessServer struct {
 	identifier            string
-	signingKey            aauth.SigningKey
+	signingKey            jose.SigningKey
 	keyResolver           aauth.KeyResolver
 	clock                 aauth.Clock
 	newID                 func() string
@@ -70,11 +71,11 @@ type accessServerAuthorizationContext struct {
 	upstreamTokenCompact  string
 	tokenVerificationKeys retainedAuthorizationTokenKeys
 	targetAgent           string
-	targetKey             aauth.JWK
+	targetKey             jose.JWK
 	parentAgent           string
 	targetTokenExpiresAt  int64
 	pollingServer         string
-	pollingKey            aauth.JWK
+	pollingKey            jose.JWK
 	pollingKeyThumbprint  string
 }
 
@@ -83,7 +84,7 @@ type pendingAccessServerAuthorization struct {
 	context                 accessServerAuthorizationContext
 	decision                aauth.AuthorizationDecision
 	terminalAuthToken       string
-	terminalVerificationKey *aauth.JWK
+	terminalVerificationKey *jose.JWK
 	terminalExpiresAt       int64
 	terminalStatus          int
 	terminalCode            string
@@ -98,7 +99,7 @@ type accessAuthorizationStateRecord struct {
 	Context                 accessAuthorizationContextRecord `json:"context"`
 	Decision                aauth.AuthorizationDecision      `json:"decision"`
 	TerminalAuthToken       string                           `json:"terminal_auth_token,omitempty"`
-	TerminalVerificationKey *aauth.JWK                       `json:"terminal_verification_key,omitempty"`
+	TerminalVerificationKey *jose.JWK                        `json:"terminal_verification_key,omitempty"`
 	TerminalExpiresAt       int64                            `json:"terminal_expires_at,omitempty"`
 	TerminalStatus          int                              `json:"terminal_status,omitempty"`
 	TerminalCode            string                           `json:"terminal_code,omitempty"`
@@ -116,11 +117,11 @@ type accessAuthorizationContextRecord struct {
 	UpstreamTokenCompact  string                         `json:"upstream_token,omitempty"`
 	TokenVerificationKeys retainedAuthorizationTokenKeys `json:"token_verification_keys"`
 	TargetAgent           string                         `json:"target_agent"`
-	TargetKey             aauth.JWK                      `json:"target_key"`
+	TargetKey             jose.JWK                       `json:"target_key"`
 	ParentAgent           string                         `json:"parent_agent,omitempty"`
 	TargetTokenExpiresAt  int64                          `json:"target_token_expires_at"`
 	PollingServer         string                         `json:"polling_server"`
-	PollingKey            aauth.JWK                      `json:"polling_key"`
+	PollingKey            jose.JWK                       `json:"polling_key"`
 	PollingKeyThumbprint  string                         `json:"polling_key_thumbprint"`
 }
 
@@ -679,7 +680,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	targetKey := agentToken.Confirmation.JWK
 	parentAgent := ""
 	targetExpiry := agentToken.ExpiresAt
-	var subagentVerificationKey *aauth.JWK
+	var subagentVerificationKey *jose.JWK
 	if input.SubagentToken != "" {
 		subagentKeyCapture, subagentVerificationResolver := newRetainedKeyCapture(server.keyResolver)
 		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, subagentVerificationResolver, verificationClock)
@@ -709,7 +710,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		}
 	}
 	var upstream *aauth.AuthTokenClaims
-	var upstreamVerificationKey *aauth.JWK
+	var upstreamVerificationKey *jose.JWK
 	if input.UpstreamToken != "" {
 		if server.trustedUpstreamIssuer == nil {
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("call chaining is not configured"))
@@ -1303,6 +1304,6 @@ func (server *AccessServer) handleMetadata(response http.ResponseWriter, _ *http
 
 func (server *AccessServer) handleJWKS(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]any{
-		"keys": []aauth.JWK{server.signingKey.PublicJWK()},
+		"keys": []jose.JWK{server.signingKey.PublicJWK()},
 	})
 }

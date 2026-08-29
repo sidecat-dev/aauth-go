@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +39,7 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 		ExpiresAt:    now.Add(5 * time.Minute).Unix(),
 		MaxUses:      eventRegistrationMaxUses(1),
 	}
-	mint := func(t *testing.T, claims aauth.SubscribeTokenClaims, key aauth.SigningKey) string {
+	mint := func(t *testing.T, claims aauth.SubscribeTokenClaims, key jose.SigningKey) string {
 		t.Helper()
 		compact, err := aauth.MintSubscribeToken(key, claims)
 		if err != nil {
@@ -51,7 +52,7 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 		name       string
 		claims     aauth.SubscribeTokenClaims
 		token      func(*testing.T) string
-		requestKey aauth.SigningKey
+		requestKey jose.SigningKey
 	}{
 		{name: "wrong audience", claims: eventRegistrationClaims(validClaims, func(value *aauth.SubscribeTokenClaims) { value.Audience = "https://other-resource.example" }), requestKey: agentKey},
 		{name: "absent max uses", claims: eventRegistrationClaims(validClaims, func(value *aauth.SubscribeTokenClaims) { value.MaxUses = nil }), requestKey: agentKey},
@@ -287,10 +288,10 @@ func TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody(t *te
 
 	for _, test := range []struct {
 		name   string
-		header aauth.TokenHeader
+		header jose.Header
 		claims map[string]any
 	}{
-		{name: "algorithm none", header: aauth.TokenHeader{Algorithm: "none", Type: aauth.SubscribeTokenType, KeyID: apKey.ID()}, claims: validClaims},
+		{name: "algorithm none", header: jose.Header{Algorithm: "none", Type: aauth.SubscribeTokenType, KeyID: apKey.ID()}, claims: validClaims},
 		{name: "wrong discovery document", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "dwk", aauth.ResourceDiscoveryDocument)},
 		{name: "absent subject", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "sub", nil)},
 		{name: "malformed subject", header: rawEventsTestHeader(aauth.SubscribeTokenType, apKey.ID()), claims: mutateRawEventsTestClaim(validClaims, "sub", "subscriber")},
@@ -428,13 +429,13 @@ func TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer(t *testing.T) {
 	now := time.Date(2026, 8, 3, 7, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	agentKey := eventsProviderTestSigningKey(t, "shared-agent-key")
-	apKeys := map[string]aauth.SigningKey{
+	apKeys := map[string]jose.SigningKey{
 		"https://ap-one.example": eventsProviderTestSigningKey(t, "ap-one-key"),
 		"https://ap-two.example": eventsProviderTestSigningKey(t, "ap-two-key"),
 	}
 	resolver := aauth.StaticKeyResolver{}
 	for issuer, key := range apKeys {
-		resolver[issuer] = map[string]aauth.JWK{key.ID(): key.PublicJWK()}
+		resolver[issuer] = map[string]jose.JWK{key.ID(): key.PublicJWK()}
 	}
 	store := NewMemoryResourceEventStore()
 	activeUntil := now.Add(24 * time.Hour)
@@ -528,7 +529,7 @@ func newRegistrationTestResource(t *testing.T, resolver aauth.KeyResolver, clock
 	return resource
 }
 
-func newRegistrationTestAgent(t *testing.T, resolver aauth.KeyResolver, clock aauth.Clock, key aauth.SigningKey, store AgentEventStore, transport http.RoundTripper) *Agent {
+func newRegistrationTestAgent(t *testing.T, resolver aauth.KeyResolver, clock aauth.Clock, key jose.SigningKey, store AgentEventStore, transport http.RoundTripper) *Agent {
 	t.Helper()
 	agent, err := NewAgent(AgentConfig{
 		AuthorizationStore: testAuthorizationStateStore(t),

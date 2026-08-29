@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 	validCompact := mintRawToken(
 		t,
 		key,
-		TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()},
+		jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()},
 		validClaims,
 	)
 
@@ -66,21 +67,21 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 
 	for _, test := range []struct {
 		name   string
-		header TokenHeader
+		header jose.Header
 		claims map[string]any
 		rawJWT string
 		want   SignatureErrorCode
 	}{
 		{name: "malformed JWT", rawJWT: "not-a-jwt", want: SignatureErrorInvalidJWT},
-		{name: "wrong type", header: TokenHeader{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
-		{name: "expired", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "exp", now.Add(-time.Second).Unix()), want: SignatureErrorExpiredJWT},
-		{name: "missing issuer", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", nil), want: SignatureErrorInvalidJWT},
-		{name: "unsafe issuer", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", "http://127.0.0.1"), want: SignatureErrorInvalidJWT},
-		{name: "missing discovery document", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", nil), want: SignatureErrorInvalidKey},
-		{name: "unsafe discovery document", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", "../keys.json"), want: SignatureErrorInvalidKey},
-		{name: "missing key id", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType}, claims: validClaims, want: SignatureErrorInvalidKey},
-		{name: "algorithm none", header: TokenHeader{Algorithm: "none", Type: EventTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
-		{name: "confirmation claim", header: TokenHeader{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "cnf", map[string]any{"jwk": key.PublicJWK()}), want: SignatureErrorInvalidJWT},
+		{name: "wrong type", header: jose.Header{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
+		{name: "expired", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "exp", now.Add(-time.Second).Unix()), want: SignatureErrorExpiredJWT},
+		{name: "missing issuer", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", nil), want: SignatureErrorInvalidJWT},
+		{name: "unsafe issuer", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", "http://127.0.0.1"), want: SignatureErrorInvalidJWT},
+		{name: "missing discovery document", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", nil), want: SignatureErrorInvalidKey},
+		{name: "unsafe discovery document", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", "../keys.json"), want: SignatureErrorInvalidKey},
+		{name: "missing key id", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType}, claims: validClaims, want: SignatureErrorInvalidKey},
+		{name: "algorithm none", header: jose.Header{Algorithm: "none", Type: EventTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
+		{name: "confirmation claim", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "cnf", map[string]any{"jwk": key.PublicJWK()}), want: SignatureErrorInvalidJWT},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
@@ -132,7 +133,7 @@ func TestSelfJWTUsesOneDiscoveredKeyForBothProofs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resolver := &selfJWTCountingResolver{keys: map[string]JWK{
+	resolver := &selfJWTCountingResolver{keys: map[string]jose.JWK{
 		issuerKey.ID(): issuerKey.PublicJWK(),
 		otherKey.ID():  otherKey.PublicJWK(),
 	}}
@@ -228,7 +229,7 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 	clock := ClockFunc(func() time.Time { return now })
 	issuerKey := internalTestSigningKey(t, "resource-key")
 	otherKey := internalTestSigningKey(t, "other-key")
-	resolver := &selfJWTCountingResolver{keys: map[string]JWK{
+	resolver := &selfJWTCountingResolver{keys: map[string]jose.JWK{
 		issuerKey.ID(): issuerKey.PublicJWK(),
 	}}
 	claims := EventTokenClaims{
@@ -359,28 +360,28 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 type selfJWTCountingResolver struct {
 	calls        int
 	refreshCalls int
-	keys         map[string]JWK
+	keys         map[string]jose.JWK
 }
 
-func (resolver *selfJWTCountingResolver) ResolveKey(_ context.Context, _, _, keyID string) (JWK, error) {
+func (resolver *selfJWTCountingResolver) ResolveKey(_ context.Context, _, _, keyID string) (jose.JWK, error) {
 	resolver.calls++
 	key, ok := resolver.keys[keyID]
 	if !ok {
-		return JWK{}, &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("test key is absent")}
+		return jose.JWK{}, &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("test key is absent")}
 	}
 	return key, nil
 }
 
-func (resolver *selfJWTCountingResolver) RefreshKey(_ context.Context, _, _, keyID string) (JWK, error) {
+func (resolver *selfJWTCountingResolver) RefreshKey(_ context.Context, _, _, keyID string) (jose.JWK, error) {
 	resolver.refreshCalls++
 	key, ok := resolver.keys[keyID]
 	if !ok {
-		return JWK{}, &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("test key is absent")}
+		return jose.JWK{}, &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("test key is absent")}
 	}
 	return key, nil
 }
 
-func mintRawToken(t *testing.T, key SigningKey, header TokenHeader, claims any) string {
+func mintRawToken(t *testing.T, key jose.SigningKey, header jose.Header, claims any) string {
 	t.Helper()
 	headerBytes, err := json.Marshal(header)
 	if err != nil {
@@ -391,7 +392,7 @@ func mintRawToken(t *testing.T, key SigningKey, header TokenHeader, claims any) 
 		t.Fatal(err)
 	}
 	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
-	signature, err := key.sign([]byte(signingInput))
+	signature, err := signTestMessage(key, []byte(signingInput))
 	if err != nil {
 		t.Fatal(err)
 	}

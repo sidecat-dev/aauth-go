@@ -2,6 +2,7 @@ package reference
 
 import (
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ func TestSignatureFailureEmitsDraft08NegotiationHeaders(t *testing.T) {
 	response := httptest.NewRecorder()
 	writeSignatureFailure(response, &aauth.SignatureError{
 		Code:               aauth.SignatureErrorUnsupportedAlgorithm,
-		AcceptedAlgorithms: []string{aauth.Ed25519Algorithm},
+		AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 		AcceptedSchemes:    []string{aauth.SignatureKeyJWT, aauth.SignatureKeyHWK},
 	})
 

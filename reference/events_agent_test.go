@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -242,7 +243,7 @@ func TestAgentEventRefusalMatrixSurvivesStoreReconstruction(t *testing.T) {
 
 	for _, test := range []struct {
 		name       string
-		header     aauth.TokenHeader
+		header     jose.Header
 		claims     map[string]any
 		privateKey ed25519.PrivateKey
 		advance    time.Duration
@@ -642,7 +643,7 @@ func TestEventAdapterReconstructedPendingReappliesAgentPolicy(t *testing.T) {
 	}
 }
 
-func newAgentEventTestAgent(t *testing.T, store AgentEventStore, action EventAction, resourceKey aauth.SigningKey, clock aauth.Clock) *Agent {
+func newAgentEventTestAgent(t *testing.T, store AgentEventStore, action EventAction, resourceKey jose.SigningKey, clock aauth.Clock) *Agent {
 	t.Helper()
 	return newAgentEventTestAgentWithResolver(t, store, action, aauth.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
@@ -675,7 +676,7 @@ func putAgentEventTestContext(t *testing.T, store AgentEventStore, eventID strin
 	}
 }
 
-func acceptedAgentEventTest(t *testing.T, resourceKey aauth.SigningKey, now time.Time, eventID, deliveryID string) (AcceptedEvent, aauth.EventTokenClaims) {
+func acceptedAgentEventTest(t *testing.T, resourceKey jose.SigningKey, now time.Time, eventID, deliveryID string) (AcceptedEvent, aauth.EventTokenClaims) {
 	t.Helper()
 	claims := agentEventTestClaims(now, eventID, "aauth:subscriber@ap.example")
 	compact, err := aauth.MintEventToken(resourceKey, claims)
@@ -766,8 +767,8 @@ func (action *scriptedEventAction) counts() (int, int) {
 
 type unavailableEventKeyResolver struct{}
 
-func (unavailableEventKeyResolver) ResolveKey(context.Context, string, string, string) (aauth.JWK, error) {
-	return aauth.JWK{}, &aauth.KeyResolutionError{Code: aauth.KeyResolutionUnavailable, Cause: errors.New("test: resolver unavailable")}
+func (unavailableEventKeyResolver) ResolveKey(context.Context, string, string, string) (jose.JWK, error) {
+	return jose.JWK{}, &aauth.KeyResolutionError{Code: aauth.KeyResolutionUnavailable, Cause: errors.New("test: resolver unavailable")}
 }
 
 type terminalReloadFailureAgentStore struct {
@@ -790,21 +791,21 @@ func (store *failOnceAdmitProcessingAgentStore) AdmitProcessing(ctx context.Cont
 	return store.AgentEventStore.AdmitProcessing(ctx, processing)
 }
 
-func rawEventsTestSigningKey(t *testing.T, id string) (aauth.SigningKey, ed25519.PrivateKey) {
+func rawEventsTestSigningKey(t *testing.T, id string) (jose.SigningKey, ed25519.PrivateKey) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return key, privateKey
 }
 
-func rawEventsTestHeader(tokenType, keyID string) aauth.TokenHeader {
-	return aauth.TokenHeader{Algorithm: "Ed25519", Type: tokenType, KeyID: keyID}
+func rawEventsTestHeader(tokenType, keyID string) jose.Header {
+	return jose.Header{Algorithm: "Ed25519", Type: tokenType, KeyID: keyID}
 }
 
 func rawAgentEventTestClaims(now time.Time, eventID string) map[string]any {
@@ -828,7 +829,7 @@ func mutateRawEventsTestClaim(claims map[string]any, name string, value any) map
 	return mutated
 }
 
-func mintRawEventsTestToken(t *testing.T, privateKey ed25519.PrivateKey, header aauth.TokenHeader, claims map[string]any) string {
+func mintRawEventsTestToken(t *testing.T, privateKey ed25519.PrivateKey, header jose.Header, claims map[string]any) string {
 	t.Helper()
 	headerBytes, err := json.Marshal(header)
 	if err != nil {

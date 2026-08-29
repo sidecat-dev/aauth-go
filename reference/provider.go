@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/url"
 	"sync"
@@ -50,8 +51,8 @@ func (store StaticEnrollmentStore) LookupEnrollment(
 type AgentRefreshEvaluation struct {
 	Enrollment      AgentEnrollment
 	DurableIdentity string
-	DurableKey      aauth.JWK
-	RequestKey      aauth.JWK
+	DurableKey      jose.JWK
+	RequestKey      jose.JWK
 	SignatureScheme string
 	PersonServer    string
 }
@@ -112,7 +113,7 @@ func (store *MemoryRefreshReplayStore) AdmitRefreshProof(
 
 type AgentProviderConfig struct {
 	Identifier            string
-	SigningKey            aauth.SigningKey
+	SigningKey            jose.SigningKey
 	Clock                 aauth.Clock
 	NewID                 func() string
 	Events                *AgentProviderEventsConfig
@@ -138,7 +139,7 @@ type AgentProviderEventsConfig struct {
 type EventSubscriptionRequest struct {
 	Resource       string
 	Agent          string
-	AgentKey       aauth.JWK
+	AgentKey       jose.JWK
 	ContractDigest string
 	OperationID    string
 	MessageID      string
@@ -149,7 +150,7 @@ type EventSubscriptionRequest struct {
 // profile when an EnrollmentStore is configured.
 type AgentProvider struct {
 	identifier            string
-	signingKey            aauth.SigningKey
+	signingKey            jose.SigningKey
 	clock                 aauth.Clock
 	newID                 func() string
 	eventEndpoint         string
@@ -342,7 +343,7 @@ func (provider *AgentProvider) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /jwks", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, map[string]any{
-			"keys": []aauth.JWK{provider.signingKey.PublicJWK()},
+			"keys": []jose.JWK{provider.signingKey.PublicJWK()},
 		})
 	})
 	return mux

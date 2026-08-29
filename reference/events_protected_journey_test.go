@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -287,7 +288,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 
 func newProtectedJourneyResource(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	resolver aauth.KeyResolver,
 	clock aauth.Clock,
 	store ResourceEventStore,
@@ -325,7 +326,7 @@ func newProtectedJourneyResource(
 
 func newJourneyAgent(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	resolver aauth.KeyResolver,
 	clock aauth.Clock,
 	store AgentEventStore,

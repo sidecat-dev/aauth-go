@@ -1,12 +1,12 @@
 package aauth
 
 import (
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 const JKTJWTTypeSHA256 = "jkt-s256+jwt"
@@ -23,24 +23,24 @@ type JKTJWTClaims struct {
 // by the jkt-jwt Signature-Key scheme.
 type VerifiedJKTJWT struct {
 	Issuer       string
-	IdentityKey  JWK
-	Confirmation JWK
+	IdentityKey  jose.JWK
+	Confirmation jose.JWK
 	IssuedAt     time.Time
 	ExpiresAt    time.Time
 	Compact      string
 }
 
 type jktJWTHeader struct {
-	Algorithm string `json:"alg"`
-	Type      string `json:"typ"`
-	JWK       JWK    `json:"jwk"`
+	Algorithm string   `json:"alg"`
+	Type      string   `json:"typ"`
+	JWK       jose.JWK `json:"jwk"`
 }
 
 // MintJKTJWT creates the mandatory SHA-256/Ed25519 self-issued delegation
 // from a durable identity key to an HTTP request-signing key.
 func MintJKTJWT(
-	identityKey SigningKey,
-	confirmationKey JWK,
+	identityKey jose.SigningKey,
+	confirmationKey jose.JWK,
 	now time.Time,
 	lifetime time.Duration,
 ) (string, error) {
@@ -59,7 +59,7 @@ func MintJKTJWT(
 		return "", fmt.Errorf("aauth: jkt-jwt identity key: %w", err)
 	}
 	headerBytes, err := json.Marshal(jktJWTHeader{
-		Algorithm: Ed25519Algorithm,
+		Algorithm: jose.Ed25519Algorithm,
 		Type:      JKTJWTTypeSHA256,
 		JWK:       identityJWK,
 	})
@@ -75,12 +75,7 @@ func MintJKTJWT(
 	if err != nil {
 		return "", fmt.Errorf("aauth: marshal jkt-jwt claims: %w", err)
 	}
-	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
-	signature, err := identityKey.sign([]byte(signingInput))
-	if err != nil {
-		return "", err
-	}
-	return signingInput + "." + rawURL.EncodeToString(signature), nil
+	return jose.SignCompactProtected(identityKey, headerBytes, claimsBytes)
 }
 
 // VerifyJKTJWT verifies the self-issued durable identity, protected header,
@@ -90,14 +85,11 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 	if clock == nil {
 		return verified, errors.New("aauth: clock is required")
 	}
-	parts := strings.Split(compact, ".")
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return verified, errors.New("aauth: jkt-jwt must be a three-part compact JWS")
-	}
-	headerBytes, err := rawURL.DecodeString(parts[0])
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
-		return verified, fmt.Errorf("aauth: decode jkt-jwt header: %w", err)
+		return verified, fmt.Errorf("aauth: jkt-jwt: %w", err)
 	}
+	headerBytes := parsed.Protected()
 	var header jktJWTHeader
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		return verified, fmt.Errorf("aauth: parse jkt-jwt header: %w", err)
@@ -108,25 +100,16 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 	if header.Algorithm == "none" {
 		return verified, errors.New("aauth: jkt-jwt alg none is forbidden")
 	}
-	if header.Algorithm != Ed25519Algorithm {
+	if header.Algorithm != jose.Ed25519Algorithm {
 		return verified, &unsupportedTokenAlgorithmError{algorithm: header.Algorithm}
 	}
-	identityPublic, err := header.JWK.PublicKey()
-	if err != nil {
+	if _, err := header.JWK.PublicKey(); err != nil {
 		return verified, &TokenValidationError{
 			Code:  TokenValidationInvalidKey,
 			Cause: fmt.Errorf("aauth: jkt-jwt header jwk: %w", err),
 		}
 	}
-	identityEd25519, ok := identityPublic.(ed25519.PublicKey)
-	if !ok {
-		return verified, errors.New("aauth: jkt-jwt identity key is not Ed25519")
-	}
-
-	claimsBytes, err := rawURL.DecodeString(parts[1])
-	if err != nil {
-		return verified, fmt.Errorf("aauth: decode jkt-jwt claims: %w", err)
-	}
+	claimsBytes := parsed.Payload()
 	var claims JKTJWTClaims
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
 		return verified, fmt.Errorf("aauth: parse jkt-jwt claims: %w", err)
@@ -147,16 +130,8 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 			Cause: fmt.Errorf("aauth: jkt-jwt cnf.jwk: %w", err),
 		}
 	}
-	signature, err := rawURL.DecodeString(parts[2])
-	if err != nil {
-		return verified, fmt.Errorf("aauth: decode jkt-jwt signature: %w", err)
-	}
-	if len(signature) != ed25519.SignatureSize {
-		return verified, fmt.Errorf("aauth: Ed25519 jkt-jwt signature has %d bytes", len(signature))
-	}
-	signingInput := parts[0] + "." + parts[1]
-	if !ed25519.Verify(identityEd25519, []byte(signingInput), signature) {
-		return verified, errors.New("aauth: jkt-jwt signature is invalid")
+	if _, err := parsed.Verify(header.JWK); err != nil {
+		return verified, err
 	}
 	return VerifiedJKTJWT{
 		Issuer:       claims.Issuer,

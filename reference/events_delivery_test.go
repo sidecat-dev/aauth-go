@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -442,7 +443,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 	barrier := &twoArrivalAPEventStore{APEventStore: store, release: make(chan struct{})}
 	provider := newDeliveryTestProvider(t, apKey, barrier, resolver, clock)
 	directToken := mintDeliveryTestEvent(t, resourceKeyB, now, subscription.Agent, subscription.EventID)
-	tokens := map[string]aauth.SigningKey{
+	tokens := map[string]jose.SigningKey{
 		retainedToken: resourceKeyA,
 		directToken:   resourceKeyB,
 	}
@@ -567,7 +568,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 	now = now.Add(time.Second)
 	for name, attempt := range map[string]struct {
 		token string
-		key   aauth.SigningKey
+		key   jose.SigningKey
 	}{
 		"winning exact token": {token: winner, key: tokens[winner]},
 		"different valid token": {
@@ -597,7 +598,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 	}
 }
 
-func proofTokenKey(name string, resourceKey, otherResourceKey aauth.SigningKey) aauth.SigningKey {
+func proofTokenKey(name string, resourceKey, otherResourceKey jose.SigningKey) jose.SigningKey {
 	if name == "wrong resource" {
 		return otherResourceKey
 	}
@@ -673,7 +674,7 @@ func TestEventDeliveryRejectsUnsafeResolvedEndpointBeforeSend(t *testing.T) {
 	}
 }
 
-func newDeliveryTestProvider(t *testing.T, key aauth.SigningKey, store APEventStore, resolver aauth.KeyResolver, clock aauth.Clock) *AgentProvider {
+func newDeliveryTestProvider(t *testing.T, key jose.SigningKey, store APEventStore, resolver aauth.KeyResolver, clock aauth.Clock) *AgentProvider {
 	t.Helper()
 	provider, err := NewAgentProvider(AgentProviderConfig{
 		Identifier: "https://ap.example",
@@ -696,7 +697,7 @@ func newDeliveryTestProvider(t *testing.T, key aauth.SigningKey, store APEventSt
 	return provider
 }
 
-func newDeliveryTestResource(t *testing.T, key aauth.SigningKey, resolver aauth.KeyResolver, client *http.Client, clock aauth.Clock, store ResourceEventStore) *Resource {
+func newDeliveryTestResource(t *testing.T, key jose.SigningKey, resolver aauth.KeyResolver, client *http.Client, clock aauth.Clock, store ResourceEventStore) *Resource {
 	t.Helper()
 	resource, err := NewResource(ResourceConfig{
 		Identifier:               "https://resource.example",
@@ -728,7 +729,7 @@ func newDeliveryTestResource(t *testing.T, key aauth.SigningKey, resolver aauth.
 	return resource
 }
 
-func mintDeliveryTestEvent(t *testing.T, key aauth.SigningKey, now time.Time, agent, eventID string) string {
+func mintDeliveryTestEvent(t *testing.T, key jose.SigningKey, now time.Time, agent, eventID string) string {
 	t.Helper()
 	compact, err := aauth.MintEventToken(key, aauth.EventTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,

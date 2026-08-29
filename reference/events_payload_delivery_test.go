@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -471,7 +472,7 @@ func TestEventPayloadFileStoresReopenExactCustody(t *testing.T) {
 
 func newPayloadDeliveryTestResource(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	resolver aauth.KeyResolver,
 	client *http.Client,
 	clock aauth.Clock,

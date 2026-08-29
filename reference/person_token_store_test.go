@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"testing"
 	"time"
 
@@ -150,13 +151,13 @@ func TestPersonTokenIssuanceRefusesSameJTIForDifferentToken(t *testing.T) {
 	}
 }
 
-func newPersonTokenTestKey(t *testing.T, id string) aauth.SigningKey {
+func newPersonTokenTestKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}

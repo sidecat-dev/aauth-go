@@ -3,12 +3,13 @@ package aauth
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 const (
@@ -46,15 +47,18 @@ type EventTokenClaims struct {
 // verified with the same discovered key used for the HTTP Message Signature.
 // Application profiles must decode Claims through a profile-specific decoder.
 type VerifiedSelfJWT struct {
-	Header TokenHeader
+	Header jose.Header
 	Issuer string
 	DWK    string
 	Claims json.RawMessage
-	seal   [sha256.Size]byte
+
+	verified jose.VerifiedCompact
+	issuer   string
+	dwk      string
 }
 
 // MintSubscribeToken creates a strictly shaped public subscription token.
-func MintSubscribeToken(key SigningKey, claims SubscribeTokenClaims) (string, error) {
+func MintSubscribeToken(key jose.SigningKey, claims SubscribeTokenClaims) (string, error) {
 	if err := validateSubscribeTokenClaims(claims, time.Unix(claims.IssuedAt, 0)); err != nil {
 		return "", err
 	}
@@ -76,10 +80,11 @@ func VerifySubscribeToken(
 	if clock == nil {
 		return claims, errors.New("aauth: clock is required")
 	}
-	header, payload, signature, signingInput, err := decodeToken(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		return claims, err
 	}
+	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != SubscribeTokenType {
 		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, SubscribeTokenType)
 	}
@@ -89,13 +94,11 @@ func VerifySubscribeToken(
 	if claims.DWK != AgentDiscoveryDocument {
 		return claims, fmt.Errorf("aauth: subscribe-token dwk is %q, want %q", claims.DWK, AgentDiscoveryDocument)
 	}
-	if err := verifyResolvedTokenKey(
+	if _, err := verifyResolvedTokenKey(
 		ctx,
-		header,
+		parsed,
 		claims.Issuer,
 		claims.DWK,
-		signingInput,
-		signature,
 		resolver,
 	); err != nil {
 		return claims, err
@@ -107,7 +110,7 @@ func VerifySubscribeToken(
 }
 
 // MintEventToken creates a strictly shaped, payload-free event token.
-func MintEventToken(key SigningKey, claims EventTokenClaims) (string, error) {
+func MintEventToken(key jose.SigningKey, claims EventTokenClaims) (string, error) {
 	if err := validateEventTokenClaims(claims, time.Unix(claims.IssuedAt, 0)); err != nil {
 		return "", err
 	}
@@ -129,10 +132,11 @@ func VerifyEventToken(
 	if clock == nil {
 		return claims, errors.New("aauth: clock is required")
 	}
-	header, payload, signature, signingInput, err := decodeToken(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		return claims, err
 	}
+	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != EventTokenType {
 		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, EventTokenType)
 	}
@@ -142,13 +146,11 @@ func VerifyEventToken(
 	if claims.DWK != ResourceDiscoveryDocument {
 		return claims, fmt.Errorf("aauth: event-token dwk is %q, want %q", claims.DWK, ResourceDiscoveryDocument)
 	}
-	if err := verifyResolvedTokenKey(
+	if _, err := verifyResolvedTokenKey(
 		ctx,
-		header,
+		parsed,
 		claims.Issuer,
 		claims.DWK,
-		signingInput,
-		signature,
 		resolver,
 	); err != nil {
 		return claims, err
@@ -167,13 +169,21 @@ func DecodeVerifiedEventToken(verified VerifiedSelfJWT, clock Clock) (EventToken
 	if clock == nil {
 		return claims, errors.New("aauth: clock is required")
 	}
-	if verified.seal != selfJWTSeal(verified) {
+	if verified.issuer != verified.Issuer || verified.dwk != verified.DWK {
 		return claims, errors.New("aauth: event token requires intact verified self-jwt claims")
 	}
-	if verified.Header.Type != EventTokenType {
-		return claims, fmt.Errorf("aauth: token typ is %q, want %q", verified.Header.Type, EventTokenType)
+	sealedHeader, err := verified.verified.Header()
+	if err != nil || sealedHeader != verified.Header {
+		return claims, errors.New("aauth: event token requires intact verified self-jwt claims")
 	}
-	if verified.Header.Algorithm != Ed25519Algorithm || verified.Header.KeyID == "" {
+	sealedClaims, err := verified.verified.Payload()
+	if err != nil || !bytes.Equal(sealedClaims, verified.Claims) {
+		return claims, errors.New("aauth: event token requires intact verified self-jwt claims")
+	}
+	if sealedHeader.Type != EventTokenType {
+		return claims, fmt.Errorf("aauth: token typ is %q, want %q", sealedHeader.Type, EventTokenType)
+	}
+	if sealedHeader.Algorithm != jose.Ed25519Algorithm || sealedHeader.KeyID == "" {
 		return claims, errors.New("aauth: verified event token header is invalid")
 	}
 	if len(verified.Claims) == 0 {
@@ -194,30 +204,22 @@ func DecodeVerifiedEventToken(verified VerifiedSelfJWT, clock Clock) (EventToken
 	return claims, nil
 }
 
-func newVerifiedSelfJWT(header TokenHeader, issuer, dwk string, claims []byte) VerifiedSelfJWT {
-	verified := VerifiedSelfJWT{
-		Header: header,
-		Issuer: issuer,
-		DWK:    dwk,
-		Claims: append(json.RawMessage(nil), claims...),
+func newVerifiedSelfJWT(compact jose.VerifiedCompact, issuer, dwk string) VerifiedSelfJWT {
+	header, headerErr := compact.Header()
+	claims, claimsErr := compact.Payload()
+	if headerErr != nil || claimsErr != nil {
+		return VerifiedSelfJWT{}
 	}
-	verified.seal = selfJWTSeal(verified)
+	verified := VerifiedSelfJWT{
+		Header:   header,
+		Issuer:   issuer,
+		DWK:      dwk,
+		Claims:   append(json.RawMessage(nil), claims...),
+		verified: compact,
+		issuer:   issuer,
+		dwk:      dwk,
+	}
 	return verified
-}
-
-func selfJWTSeal(verified VerifiedSelfJWT) [sha256.Size]byte {
-	encoded, _ := json.Marshal(struct {
-		Header TokenHeader `json:"header"`
-		Issuer string      `json:"issuer"`
-		DWK    string      `json:"dwk"`
-		Claims []byte      `json:"claims"`
-	}{
-		Header: verified.Header,
-		Issuer: verified.Issuer,
-		DWK:    verified.DWK,
-		Claims: verified.Claims,
-	})
-	return sha256.Sum256(encoded)
 }
 
 func validateSubscribeTokenClaims(claims SubscribeTokenClaims, now time.Time) error {

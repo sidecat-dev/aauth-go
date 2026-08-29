@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -24,7 +25,7 @@ import (
 
 type AgentConfig struct {
 	Identifier         string
-	SigningKey         aauth.SigningKey
+	SigningKey         jose.SigningKey
 	AgentToken         string
 	KeyResolver        aauth.KeyResolver
 	HTTPClient         *http.Client
@@ -42,7 +43,7 @@ type AgentEventsConfig struct {
 
 type Agent struct {
 	identifier            string
-	signingKey            aauth.SigningKey
+	signingKey            jose.SigningKey
 	agentToken            string
 	keyResolver           aauth.KeyResolver
 	httpClient            *http.Client
@@ -119,9 +120,9 @@ type PendingTokenAuthorization struct {
 	Requirement  *aauth.Requirement
 
 	resourceGrant           ResourceGrant
-	resourceVerificationKey aauth.JWK
+	resourceVerificationKey jose.JWK
 	expectedIssuer          string
-	expectedKey             aauth.JWK
+	expectedKey             jose.JWK
 }
 
 // AccessGrant is a resource-managed authorization result. Token is opaque to
@@ -169,11 +170,11 @@ type agentPendingTokenRecord struct {
 	Status                  string             `json:"status"`
 	Requirement             *aauth.Requirement `json:"requirement,omitempty"`
 	ResourceGrant           ResourceGrant      `json:"resource_grant"`
-	ResourceVerificationKey aauth.JWK          `json:"resource_verification_key"`
+	ResourceVerificationKey jose.JWK           `json:"resource_verification_key"`
 	ExpectedIssuer          string             `json:"expected_issuer"`
-	ExpectedKey             aauth.JWK          `json:"expected_key"`
+	ExpectedKey             jose.JWK           `json:"expected_key"`
 	TerminalGrant           *Grant             `json:"terminal_grant,omitempty"`
-	TerminalVerificationKey *aauth.JWK         `json:"terminal_verification_key,omitempty"`
+	TerminalVerificationKey *jose.JWK          `json:"terminal_verification_key,omitempty"`
 }
 
 type agentPendingAccessRecord struct {
@@ -2112,7 +2113,7 @@ func (agent *Agent) requestTokenAuthorization(
 	personServerEndpoint string,
 	resourceGrant ResourceGrant,
 	subagentToken string,
-	expectedKey aauth.JWK,
+	expectedKey jose.JWK,
 	upstreamToken string,
 ) (TokenAuthorization, error) {
 	var authorization TokenAuthorization
@@ -2218,17 +2219,17 @@ func preflightResourceGrantPersonServer(
 func (agent *Agent) verifyResourceGrantForContinuation(
 	ctx context.Context,
 	resourceGrant ResourceGrant,
-) (aauth.JWK, error) {
+) (jose.JWK, error) {
 	capture, resolver := newRetainedKeyCapture(agent.keyResolver)
 	claims, err := aauth.VerifyResourceToken(ctx, resourceGrant.ResourceToken, resolver, agent.clock)
 	if err != nil {
-		return aauth.JWK{}, err
+		return jose.JWK{}, err
 	}
 	if !reflect.DeepEqual(claims, resourceGrant.Claims) {
-		return aauth.JWK{}, errors.New("reference: resource token compact value does not match its retained claims")
+		return jose.JWK{}, errors.New("reference: resource token compact value does not match its retained claims")
 	}
 	if claims.Issuer != resourceGrant.Resource {
-		return aauth.JWK{}, errors.New("reference: resource token issuer does not match its resource grant")
+		return jose.JWK{}, errors.New("reference: resource token issuer does not match its resource grant")
 	}
 	return capture.retainedKey()
 }
@@ -2237,7 +2238,7 @@ func (agent *Agent) retainPendingTokenAuthorization(
 	ctx context.Context,
 	pending PendingTokenAuthorization,
 	terminal *Grant,
-	terminalVerificationKey *aauth.JWK,
+	terminalVerificationKey *jose.JWK,
 ) error {
 	record := agentPendingTokenRecord{
 		ID: pending.ID, PersonServer: pending.PersonServer, Location: pending.Location,
@@ -2321,29 +2322,29 @@ func (agent *Agent) parseTokenGrantResponse(
 	tokenResponse *http.Response,
 	resourceGrant ResourceGrant,
 	expectedIssuer string,
-	expectedKey aauth.JWK,
+	expectedKey jose.JWK,
 	expectedJTI string,
-) (Grant, aauth.JWK, error) {
+) (Grant, jose.JWK, error) {
 	var tokenResult struct {
 		AuthToken string `json:"auth_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(tokenResponse.Body, maxJSONBody)).Decode(&tokenResult); err != nil {
-		return Grant{}, aauth.JWK{}, err
+		return Grant{}, jose.JWK{}, err
 	}
 	capture, resolver := newRetainedKeyCapture(agent.keyResolver)
 	authClaims, err := aauth.VerifyAuthToken(ctx, tokenResult.AuthToken, resolver, agent.clock)
 	if err != nil {
-		return Grant{}, aauth.JWK{}, err
+		return Grant{}, jose.JWK{}, err
 	}
 	if expectedJTI != "" && authClaims.JTI != expectedJTI {
-		return Grant{}, aauth.JWK{}, errors.New("reference: deferred auth-token jti does not match its pending authorization")
+		return Grant{}, jose.JWK{}, errors.New("reference: deferred auth-token jti does not match its pending authorization")
 	}
 	requiredScopes, err := parseScopes(resourceGrant.Claims.Scope)
 	if err != nil {
-		return Grant{}, aauth.JWK{}, err
+		return Grant{}, jose.JWK{}, err
 	}
 	if authClaims.ExpiresAt > resourceGrant.Claims.ExpiresAt {
-		return Grant{}, aauth.JWK{}, errors.New("reference: auth token outlives the resource token")
+		return Grant{}, jose.JWK{}, errors.New("reference: auth token outlives the resource token")
 	}
 	expectedDiscoveryDocument := aauth.AccessDiscoveryDocument
 	if expectedIssuer == resourceGrant.Claims.PersonServer {
@@ -2357,7 +2358,7 @@ func (agent *Agent) parseTokenGrantResponse(
 		authClaims.Tenant != resourceGrant.Claims.Tenant ||
 		authClaims.Account != resourceGrant.Claims.Account ||
 		authClaims.Agent != "" || authClaims.Actor != nil {
-		return Grant{}, aauth.JWK{}, errors.New("reference: current auth token issuer, discovery document, or person context does not match the resource token")
+		return Grant{}, jose.JWK{}, errors.New("reference: current auth token issuer, discovery document, or person context does not match the resource token")
 	}
 	if err := aauth.ValidateCurrentAuthTokenContext(
 		authClaims,
@@ -2367,11 +2368,11 @@ func (agent *Agent) parseTokenGrantResponse(
 		expectedKey,
 		requiredScopes,
 	); err != nil {
-		return Grant{}, aauth.JWK{}, err
+		return Grant{}, jose.JWK{}, err
 	}
 	verificationKey, err := capture.retainedKey()
 	if err != nil {
-		return Grant{}, aauth.JWK{}, err
+		return Grant{}, jose.JWK{}, err
 	}
 	return Grant{
 		Resource:  resourceGrant.Resource,
@@ -2383,9 +2384,9 @@ func (agent *Agent) parseTokenGrantResponse(
 func newPendingTokenAuthorization(
 	personServer string,
 	resourceGrant ResourceGrant,
-	resourceVerificationKey aauth.JWK,
+	resourceVerificationKey jose.JWK,
 	expectedIssuer string,
-	expectedKey aauth.JWK,
+	expectedKey jose.JWK,
 	deferred aauth.DeferredResponse,
 	now time.Time,
 ) (PendingTokenAuthorization, error) {

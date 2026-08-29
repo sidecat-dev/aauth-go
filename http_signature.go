@@ -3,7 +3,9 @@ package aauth
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -15,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 
 	"github.com/dunglas/httpsfv"
 )
@@ -75,8 +79,8 @@ type VerifiedRequest struct {
 	RawCredential    string
 	CredentialType   string
 	Agent            string
-	PublicKey        JWK
-	IdentityKey      JWK
+	PublicKey        jose.JWK
+	IdentityKey      jose.JWK
 	JKTJWT           *VerifiedJKTJWT
 	AgentToken       *AgentTokenClaims
 	PersonToken      *PersonTokenClaims
@@ -119,7 +123,7 @@ type SignRequestOptions struct {
 
 // SignRequest applies the AAuth HTTP Message Signatures profile using a JWT
 // identity credential in Signature-Key.
-func SignRequest(request *http.Request, key SigningKey, credential string, clock Clock) error {
+func SignRequest(request *http.Request, key jose.SigningKey, credential string, clock Clock) error {
 	return SignRequestWithOptions(request, key, credential, clock, SignRequestOptions{})
 }
 
@@ -127,21 +131,22 @@ func SignRequest(request *http.Request, key SigningKey, credential string, clock
 // signs the HTTP request with the same key that signed the JWT.
 func SignRequestWithSelfJWT(
 	request *http.Request,
-	key SigningKey,
+	key jose.SigningKey,
 	compact string,
 	clock Clock,
 ) error {
 	if compact == "" {
 		return errors.New("aauth: self-jwt is required")
 	}
-	header, _, signature, signingInput, err := decodeToken(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		return fmt.Errorf("aauth: self-jwt: %w", err)
 	}
-	if header.Algorithm != Ed25519Algorithm || header.KeyID == "" || header.KeyID != key.ID() {
+	header := parsed.Header()
+	if header.Algorithm != jose.Ed25519Algorithm || header.KeyID == "" || header.KeyID != key.ID() {
 		return errors.New("aauth: self-jwt signing key does not match the token header")
 	}
-	if err := verifyTokenSignatureWithKey(signingInput, signature, key.PublicJWK()); err != nil {
+	if _, err := verifyTokenSignatureWithKey(parsed, key.PublicJWK()); err != nil {
 		return fmt.Errorf("aauth: self-jwt signing key does not verify the token: %w", err)
 	}
 	return signRequestWithSignatureKey(
@@ -158,7 +163,7 @@ func SignRequestWithSelfJWT(
 // signing clock's current time.
 func SignRequestWithOptions(
 	request *http.Request,
-	key SigningKey,
+	key jose.SigningKey,
 	credential string,
 	clock Clock,
 	options SignRequestOptions,
@@ -183,7 +188,7 @@ func SignRequestWithOptions(
 
 // SignRequestWithHWK signs with the Ed25519 key carried inline in
 // Signature-Key. The key is pseudonymous and requires no discovery resolver.
-func SignRequestWithHWK(request *http.Request, key SigningKey, clock Clock) error {
+func SignRequestWithHWK(request *http.Request, key jose.SigningKey, clock Clock) error {
 	public := key.PublicJWK()
 	if _, err := public.PublicKey(); err != nil {
 		return fmt.Errorf("aauth: hwk signing key: %w", err)
@@ -199,7 +204,7 @@ func SignRequestWithHWK(request *http.Request, key SigningKey, clock Clock) erro
 // durable-key JWK Thumbprint JWT.
 func SignRequestWithJKTJWT(
 	request *http.Request,
-	key SigningKey,
+	key jose.SigningKey,
 	delegation string,
 	clock Clock,
 ) error {
@@ -226,7 +231,7 @@ func SignRequestWithJKTJWT(
 // discoverable through the Signature-Key two-hop metadata/JWKS scheme.
 func SignRequestWithJWKSURI(
 	request *http.Request,
-	key SigningKey,
+	key jose.SigningKey,
 	identifier string,
 	discoveryDocument string,
 	clock Clock,
@@ -245,7 +250,7 @@ func SignRequestWithJWKSURI(
 // optional RFC 9421 signature parameters.
 func SignRequestWithJWKSURIOptions(
 	request *http.Request,
-	key SigningKey,
+	key jose.SigningKey,
 	identifier string,
 	discoveryDocument string,
 	clock Clock,
@@ -268,7 +273,7 @@ func SignRequestWithJWKSURIOptions(
 
 func signRequestWithSignatureKey(
 	request *http.Request,
-	key SigningKey,
+	key jose.SigningKey,
 	signatureKeyHeader string,
 	clock Clock,
 	options SignRequestOptions,
@@ -311,7 +316,7 @@ func signRequestWithSignatureKey(
 	if err != nil {
 		return err
 	}
-	signature, err := key.sign([]byte(base))
+	signature, err := key.Sign(rand.Reader, []byte(base), crypto.Hash(0))
 	if err != nil {
 		return err
 	}
@@ -451,7 +456,7 @@ func VerifyRequest(
 		if errors.As(err, &missingAlgorithm) {
 			return verified, &SignatureError{
 				Code:               SignatureErrorUnsupportedAlgorithm,
-				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 				Cause:              err,
 			}
 		}
@@ -475,7 +480,7 @@ func VerifyRequest(
 				errors.New("aauth: key resolver is required"),
 			)
 		}
-		header, err := PeekTokenHeader(signatureKey.parameters["jwt"])
+		header, err := jose.PeekHeader(signatureKey.parameters["jwt"])
 		if err != nil {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key JWT: %w", err))
 		}
@@ -550,16 +555,16 @@ func VerifyRequest(
 		verified.PublicKey = resolved
 		verified.IdentityKey = resolved
 	case SignatureKeyHWK:
-		inline := JWK{
+		inline := jose.JWK{
 			Kty: signatureKey.parameters["kty"],
 			Crv: signatureKey.parameters["crv"],
 			X:   signatureKey.parameters["x"],
 			Alg: signatureKey.parameters["alg"],
 		}
-		if inline.Alg != Ed25519Algorithm {
+		if inline.Alg != jose.Ed25519Algorithm {
 			return verified, &SignatureError{
 				Code:               SignatureErrorUnsupportedAlgorithm,
-				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 				Cause:              fmt.Errorf("aauth: unsupported hwk algorithm %q", inline.Alg),
 			}
 		}
@@ -597,17 +602,18 @@ func VerifyRequest(
 			)
 		}
 		compact := signatureKey.parameters["jwt"]
-		header, payload, tokenSignature, signingInput, err := decodeToken(compact)
+		parsed, err := jose.ParseCompact(compact)
 		if err != nil {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key self-jwt: %w", err))
 		}
+		header, payload := parsed.Header(), parsed.Payload()
 		if header.Algorithm == "none" {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: alg none is forbidden"))
 		}
-		if header.Algorithm != Ed25519Algorithm {
+		if header.Algorithm != jose.Ed25519Algorithm {
 			return verified, &SignatureError{
 				Code:               SignatureErrorUnsupportedAlgorithm,
-				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 				Cause:              &unsupportedTokenAlgorithmError{algorithm: header.Algorithm},
 			}
 		}
@@ -625,10 +631,11 @@ func VerifyRequest(
 		if err != nil {
 			return verified, classifyJWKSURIResolutionError(err)
 		}
-		if err := verifyTokenSignatureWithKey(signingInput, tokenSignature, resolved); err != nil {
+		verifiedCompact, err := verifyTokenSignatureWithKey(parsed, resolved)
+		if err != nil {
 			return verified, classifyJWTVerificationError(err)
 		}
-		selfJWT := newVerifiedSelfJWT(header, locator.Issuer, locator.DWK, payload)
+		selfJWT := newVerifiedSelfJWT(verifiedCompact, locator.Issuer, locator.DWK)
 		if err := validateSelfJWTMaximumLifetime(selfJWT, options.SelfJWTMaximumLifetime); err != nil {
 			return verified, newSignatureError(SignatureErrorInvalidJWT, err)
 		}
@@ -660,14 +667,14 @@ func VerifyRequest(
 	}
 	publicKey, err := verified.PublicKey.PublicKey()
 	if err != nil {
-		if verified.PublicKey.Alg != Ed25519Algorithm {
-			return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{Ed25519Algorithm}, Cause: err}
+		if verified.PublicKey.Alg != jose.Ed25519Algorithm {
+			return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{jose.Ed25519Algorithm}, Cause: err}
 		}
 		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidKey, err)
 	}
 	ed25519Key, ok := publicKey.(ed25519.PublicKey)
 	if !ok {
-		return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{Ed25519Algorithm}, Cause: errors.New("aauth: request confirmation key is not Ed25519")}
+		return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{jose.Ed25519Algorithm}, Cause: errors.New("aauth: request confirmation key is not Ed25519")}
 	}
 	if !ed25519.Verify(ed25519Key, []byte(base), signature) {
 		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, errors.New("aauth: HTTP message signature is invalid"))
@@ -914,7 +921,7 @@ func classifyJWTVerificationError(err error) error {
 		case KeyResolutionUnsupportedAlgorithm:
 			return &SignatureError{
 				Code:               SignatureErrorUnsupportedAlgorithm,
-				AcceptedAlgorithms: []string{Ed25519Algorithm},
+				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 				Cause:              err,
 			}
 		case KeyResolutionDenied, KeyResolutionUnavailable:
@@ -934,7 +941,7 @@ func classifyJWTVerificationError(err error) error {
 	if errors.As(err, &unsupportedAlgorithm) {
 		return &SignatureError{
 			Code:               SignatureErrorUnsupportedAlgorithm,
-			AcceptedAlgorithms: []string{Ed25519Algorithm},
+			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 			Cause:              err,
 		}
 	}
@@ -966,7 +973,7 @@ func classifyJWKSURIResolutionError(err error) error {
 	case KeyResolutionUnsupportedAlgorithm:
 		return &SignatureError{
 			Code:               SignatureErrorUnsupportedAlgorithm,
-			AcceptedAlgorithms: []string{Ed25519Algorithm},
+			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 			Cause:              err,
 		}
 	case KeyResolutionDenied, KeyResolutionUnavailable:

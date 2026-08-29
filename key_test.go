@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"sync"
@@ -19,18 +20,6 @@ type recordingSigner struct {
 	mu      sync.Mutex
 	private ed25519.PrivateKey
 	calls   int
-}
-
-type unsupportedSigner struct{}
-
-func (unsupportedSigner) Public() crypto.PublicKey { return []byte("unsupported") }
-
-func (unsupportedSigner) Sign(
-	io.Reader,
-	[]byte,
-	crypto.SignerOpts,
-) ([]byte, error) {
-	return nil, nil
 }
 
 func (signer *recordingSigner) Public() crypto.PublicKey {
@@ -62,7 +51,7 @@ func TestSigningKeyUsesCallerCustodiedCryptoSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 	signer := &recordingSigner{private: private}
-	key, err := aauth.NewSigningKey("protected-agent-key", signer)
+	key, err := jose.NewSigningKey("protected-agent-key", signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,20 +76,6 @@ func TestSigningKeyUsesCallerCustodiedCryptoSigner(t *testing.T) {
 	}
 	if signer.callCount() != 1 {
 		t.Fatalf("crypto signer calls = %d, want 1", signer.callCount())
-	}
-}
-
-func TestSigningKeyRejectsUnsupportedOrUninitializedSigner(t *testing.T) {
-	t.Parallel()
-
-	if _, err := aauth.NewSigningKey("key", nil); err == nil {
-		t.Fatal("accepted nil crypto signer")
-	}
-	if _, err := aauth.NewSigningKey("", &recordingSigner{}); err == nil {
-		t.Fatal("accepted empty key id")
-	}
-	if _, err := aauth.NewSigningKey("key", unsupportedSigner{}); err == nil {
-		t.Fatal("accepted signer without an Ed25519 public key")
 	}
 }
 
@@ -136,9 +111,9 @@ func mustJWKForPrivateKey(
 	t *testing.T,
 	id string,
 	private ed25519.PrivateKey,
-) aauth.JWK {
+) jose.JWK {
 	t.Helper()
-	key, err := aauth.NewEd25519SigningKey(id, private)
+	key, err := jose.NewEd25519SigningKey(id, private)
 	if err != nil {
 		t.Fatal(err)
 	}

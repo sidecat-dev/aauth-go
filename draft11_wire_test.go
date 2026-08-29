@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ func TestDraft11Ed25519WireJourney(t *testing.T) {
 	issuerKey := draft11SigningKey(t, "issuer-key")
 	requestKey := draft11SigningKey(t, "request-key")
 
-	for name, key := range map[string]aauth.JWK{
+	for name, key := range map[string]jose.JWK{
 		"missing alg": {
 			Kty: "OKP", Crv: "Ed25519", X: requestKey.PublicJWK().X,
 		},
@@ -48,7 +49,7 @@ func TestDraft11Ed25519WireJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header, err := aauth.PeekTokenHeader(credential)
+	header, err := jose.PeekHeader(credential)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,8 +238,8 @@ func TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer(t *testing.T) 
 
 type failingDraft11Resolver struct{ err error }
 
-func (resolver failingDraft11Resolver) ResolveKey(context.Context, string, string, string) (aauth.JWK, error) {
-	return aauth.JWK{}, resolver.err
+func (resolver failingDraft11Resolver) ResolveKey(context.Context, string, string, string) (jose.JWK, error) {
+	return jose.JWK{}, resolver.err
 }
 
 func draft11JWKSURIRequest(t *testing.T) *http.Request {
@@ -294,13 +295,13 @@ func draft11JWTRequest(t *testing.T) *http.Request {
 	return request
 }
 
-func draft11SigningKey(t *testing.T, id string) aauth.SigningKey {
+func draft11SigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}

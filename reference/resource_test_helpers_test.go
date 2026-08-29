@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"testing"
 
@@ -38,13 +39,13 @@ func testProtectedAuthorizationPolicy(context.Context, aauth.AuthorizedRequest) 
 	return nil
 }
 
-func referenceTestSigningKey(t *testing.T, id string) aauth.SigningKey {
+func referenceTestSigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, private)
+	key, err := jose.NewEd25519SigningKey(id, private)
 	if err != nil {
 		t.Fatal(err)
 	}

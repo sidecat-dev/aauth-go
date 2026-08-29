@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"log"
 	"net"
@@ -166,18 +167,18 @@ func runCoverageVerification(
 }
 
 type personProfile struct {
-	Format          string                 `json:"format"`
-	Identifier      string                 `json:"identifier"`
-	Listen          string                 `json:"listen"`
-	KeyID           string                 `json:"key_id"`
-	SigningKey      []byte                 `json:"signing_key"`
-	TLSCertificate  string                 `json:"tls_certificate"`
-	TLSPrivateKey   string                 `json:"tls_private_key"`
-	GovernanceFile  string                 `json:"governance_file"`
-	TrustedKeys     map[string][]aauth.JWK `json:"trusted_keys"`
-	AllowedActions  []string               `json:"allowed_actions"`
-	AllowedScopes   []string               `json:"allowed_scopes,omitempty"`
-	PendingLifetime int64                  `json:"pending_lifetime_seconds,omitempty"`
+	Format          string                `json:"format"`
+	Identifier      string                `json:"identifier"`
+	Listen          string                `json:"listen"`
+	KeyID           string                `json:"key_id"`
+	SigningKey      []byte                `json:"signing_key"`
+	TLSCertificate  string                `json:"tls_certificate"`
+	TLSPrivateKey   string                `json:"tls_private_key"`
+	GovernanceFile  string                `json:"governance_file"`
+	TrustedKeys     map[string][]jose.JWK `json:"trusted_keys"`
+	AllowedActions  []string              `json:"allowed_actions"`
+	AllowedScopes   []string              `json:"allowed_scopes,omitempty"`
+	PendingLifetime int64                 `json:"pending_lifetime_seconds,omitempty"`
 }
 
 type personReady struct {
@@ -192,7 +193,7 @@ type personDeployment struct {
 	tlsConfig          *tls.Config
 	signer             *protectedSigner
 	authorizationStore *reference.FileAuthorizationStateStore
-	publicKey          aauth.JWK
+	publicKey          jose.JWK
 	tlsLeaf            *x509.Certificate
 }
 
@@ -284,7 +285,7 @@ func loadPersonDeployment(profilePath string) (*personDeployment, error) {
 	if err != nil {
 		return nil, err
 	}
-	signingKey, err := aauth.NewSigningKey(profile.KeyID, signer)
+	signingKey, err := jose.NewSigningKey(profile.KeyID, signer)
 	if err != nil {
 		_ = signer.Close()
 		return nil, errors.New("profile signing identity is invalid")
@@ -537,14 +538,14 @@ func validatePersonProfile(profile personProfile) error {
 }
 
 func personKeyResolver(
-	trusted map[string][]aauth.JWK,
+	trusted map[string][]jose.JWK,
 ) (aauth.StaticKeyResolver, error) {
 	resolver := make(aauth.StaticKeyResolver, len(trusted))
 	for issuer, keys := range trusted {
 		if err := aauth.ValidateServerIdentifier(issuer); err != nil || len(keys) == 0 {
 			return nil, errors.New("profile trusted issuer is invalid")
 		}
-		issuerKeys := make(map[string]aauth.JWK, len(keys))
+		issuerKeys := make(map[string]jose.JWK, len(keys))
 		for _, key := range keys {
 			if strings.TrimSpace(key.Kid) != key.Kid || key.Kid == "" {
 				return nil, errors.New("profile trusted key id is invalid")

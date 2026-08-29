@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"math/big"
 	"net"
@@ -44,7 +45,7 @@ type personDemoMaterial struct {
 	profilePath    string
 	governancePath string
 	roots          *x509.CertPool
-	agentKey       aauth.SigningKey
+	agentKey       jose.SigningKey
 	agentToken     string
 	resolver       aauth.StaticKeyResolver
 	clear          func()
@@ -273,7 +274,7 @@ func createPersonDemoMaterial(root string) (personDemoMaterial, error) {
 		TLSCertificate: certificatePath,
 		TLSPrivateKey:  privateKeyPath,
 		GovernanceFile: material.governancePath,
-		TrustedKeys: map[string][]aauth.JWK{
+		TrustedKeys: map[string][]jose.JWK{
 			"https://ap.example": {apKey.PublicJWK()},
 		},
 		AllowedActions: []string{"store.backup.create"},
@@ -312,15 +313,15 @@ func createPersonDemoMaterial(root string) (personDemoMaterial, error) {
 	return material, nil
 }
 
-func newDemoSigningKey(id string) (aauth.SigningKey, ed25519.PrivateKey, error) {
+func newDemoSigningKey(id string) (jose.SigningKey, ed25519.PrivateKey, error) {
 	_, privateKey, err := ed25519.GenerateKey(cryptorand.Reader)
 	if err != nil {
-		return aauth.SigningKey{}, nil, err
+		return jose.SigningKey{}, nil, err
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		clearBytes(privateKey)
-		return aauth.SigningKey{}, nil, err
+		return jose.SigningKey{}, nil, err
 	}
 	return key, privateKey, nil
 }

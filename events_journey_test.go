@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -486,7 +487,7 @@ func (store *terminalBeforeAckAPEventStore) acknowledgedStates() []reference.Eve
 type eventProviderInput struct {
 	identifier  string
 	endpoint    string
-	signingKey  aauth.SigningKey
+	signingKey  jose.SigningKey
 	clock       aauth.Clock
 	newID       func() string
 	store       reference.APEventStore
@@ -519,7 +520,7 @@ func newEventProvider(t *testing.T, input eventProviderInput) *reference.AgentPr
 
 type eventResourceInput struct {
 	identifier  string
-	signingKey  aauth.SigningKey
+	signingKey  jose.SigningKey
 	resolver    aauth.KeyResolver
 	client      *http.Client
 	clock       aauth.Clock
@@ -563,7 +564,7 @@ func newEventResource(t *testing.T, input eventResourceInput) *reference.Resourc
 
 type eventAgentInput struct {
 	identifier string
-	signingKey aauth.SigningKey
+	signingKey jose.SigningKey
 	agentToken string
 	resolver   aauth.KeyResolver
 	client     *http.Client
@@ -791,13 +792,13 @@ func signatureKeyJWT(header string) string {
 	return value[:end]
 }
 
-func eventJourneySigningKey(t *testing.T, id string) aauth.SigningKey {
+func eventJourneySigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}

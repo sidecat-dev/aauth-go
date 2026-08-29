@@ -2,6 +2,7 @@ package aauth
 
 import (
 	"context"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"time"
 )
 
@@ -42,7 +43,7 @@ type AuthorizedRequest struct {
 	AuthTokenID        string
 	AuthTokenIssuedAt  time.Time
 	AuthTokenExpiresAt time.Time
-	ConfirmationKey    JWK
+	ConfirmationKey    jose.JWK
 	ProofReplayKey     string
 	ProofCreatedAt     time.Time
 	Scope              []string
@@ -69,7 +70,7 @@ type PersonTokenRequest struct {
 	ParentAgent    string
 	Resource       string
 	MissionS256    string
-	Confirmation   JWK
+	Confirmation   jose.JWK
 	AgentExpiresAt time.Time
 	Upstream       *AuthTokenClaims
 }
@@ -90,7 +91,7 @@ type PersonTokenPolicy func(context.Context, PersonTokenRequest) (PersonTokenDec
 type MissionEvaluation struct {
 	Agent          string
 	Proposal       MissionProposal
-	Confirmation   JWK
+	Confirmation   jose.JWK
 	AgentExpiresAt time.Time
 	PersonServer   string
 }

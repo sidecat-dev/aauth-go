@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"strings"
@@ -41,7 +42,7 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	psSigner := &failOnceEd25519Signer{privateKey: psPrivateKey}
-	psKey, err := aauth.NewSigningKey("ps-key", psSigner)
+	psKey, err := jose.NewSigningKey("ps-key", psSigner)
 	if err != nil {
 		t.Fatal(err)
 	}

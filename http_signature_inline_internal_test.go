@@ -2,6 +2,7 @@ package aauth
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
@@ -137,7 +139,7 @@ func TestVerifyRequestExactComponentProfileRejectsAdditionalCoveredHeader(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	signature, err := agent.sign([]byte(base))
+	signature, err := signTestMessage(agent, []byte(base))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +365,7 @@ func TestVerifyRequestClassifiesUnsupportedJWTAlgorithm(t *testing.T) {
 	if !errors.As(err, &signatureError) ||
 		signatureError.Code != SignatureErrorUnsupportedAlgorithm ||
 		len(signatureError.AcceptedAlgorithms) != 1 ||
-		signatureError.AcceptedAlgorithms[0] != Ed25519Algorithm {
+		signatureError.AcceptedAlgorithms[0] != jose.Ed25519Algorithm {
 		t.Fatalf("unsupported token algorithm error = %v (%#v)", err, signatureError)
 	}
 }
@@ -380,7 +382,7 @@ func TestVerifyRequestClassifiesMalformedJWTConfirmationAsInvalidKey(t *testing.
 		DWK:     AgentDiscoveryDocument,
 		Subject: "aauth:agent@ap.example",
 		JTI:     "agent-token-with-invalid-confirmation",
-		Confirmation: Confirmation{JWK: JWK{
+		Confirmation: Confirmation{JWK: jose.JWK{
 			Kty: "OKP",
 			Crv: "Ed25519",
 			X:   "not-a-public-key",
@@ -539,13 +541,13 @@ func (resolver *countingKeyResolver) ResolveKey(
 	string,
 	string,
 	string,
-) (JWK, error) {
+) (jose.JWK, error) {
 	resolver.calls++
-	return JWK{}, errors.New("resolver should not be called")
+	return jose.JWK{}, errors.New("resolver should not be called")
 }
 
-func mintTokenWithAlgorithm(key SigningKey, algorithm, tokenType string, claims any) (string, error) {
-	headerBytes, err := json.Marshal(TokenHeader{Algorithm: algorithm, Type: tokenType, KeyID: key.ID()})
+func mintTokenWithAlgorithm(key jose.SigningKey, algorithm, tokenType string, claims any) (string, error) {
+	headerBytes, err := json.Marshal(jose.Header{Algorithm: algorithm, Type: tokenType, KeyID: key.ID()})
 	if err != nil {
 		return "", err
 	}
@@ -554,7 +556,7 @@ func mintTokenWithAlgorithm(key SigningKey, algorithm, tokenType string, claims 
 		return "", err
 	}
 	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
-	signature, err := key.sign([]byte(signingInput))
+	signature, err := signTestMessage(key, []byte(signingInput))
 	if err != nil {
 		return "", err
 	}
@@ -564,7 +566,7 @@ func mintTokenWithAlgorithm(key SigningKey, algorithm, tokenType string, claims 
 func rewriteJKTJWT(
 	t *testing.T,
 	compact string,
-	signer SigningKey,
+	signer jose.SigningKey,
 	rewrite func(*jktJWTHeader, *JKTJWTClaims),
 ) string {
 	t.Helper()
@@ -598,22 +600,26 @@ func rewriteJKTJWT(
 		t.Fatal(err)
 	}
 	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
-	signature, err := signer.sign([]byte(signingInput))
+	signature, err := signTestMessage(signer, []byte(signingInput))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return signingInput + "." + rawURL.EncodeToString(signature)
 }
 
-func internalTestSigningKey(t *testing.T, id string) SigningKey {
+func internalTestSigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return key
+}
+
+func signTestMessage(key jose.SigningKey, message []byte) ([]byte, error) {
+	return key.Sign(rand.Reader, message, crypto.Hash(0))
 }

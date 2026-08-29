@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"strings"
 	"time"
 )
@@ -152,7 +153,7 @@ type RequestProof struct {
 	CredentialIssuer string    `json:"credential_issuer,omitempty"`
 	Signer           string    `json:"signer"`
 	Agent            string    `json:"agent,omitempty"`
-	PublicKey        JWK       `json:"public_key"`
+	PublicKey        jose.JWK  `json:"public_key"`
 	Created          time.Time `json:"created"`
 	VerifiedAt       time.Time `json:"verified_at"`
 	ReplayKey        string    `json:"replay_key"`

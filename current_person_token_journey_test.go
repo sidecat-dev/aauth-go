@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1008,7 +1009,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	for _, test := range []struct {
 		name   string
 		claims aauth.AuthTokenClaims
-		key    aauth.SigningKey
+		key    jose.SigningKey
 	}{
 		{
 			name: "person-server discovery role from access server",
@@ -1222,7 +1223,7 @@ func assertSanitizedPolicyProblem(t *testing.T, err error, wantDetail string) {
 
 func mintCurrentResourceGrant(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	claims aauth.ResourceTokenClaims,
 	resource string,
 ) reference.ResourceGrant {
@@ -1234,7 +1235,7 @@ func mintCurrentResourceGrant(
 	return reference.ResourceGrant{Resource: resource, ResourceToken: compact, Claims: claims}
 }
 
-func mintPersonToken(t *testing.T, key aauth.SigningKey, claims aauth.PersonTokenClaims) string {
+func mintPersonToken(t *testing.T, key jose.SigningKey, claims aauth.PersonTokenClaims) string {
 	t.Helper()
 	compact, err := aauth.MintPersonToken(key, claims)
 	if err != nil {

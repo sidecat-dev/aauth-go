@@ -6,13 +6,12 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestPersonTLSIdentityMustBeCurrentlyValid(t *testing.T) {
@@ -70,7 +69,7 @@ func TestPersonDiagnosisUsesServerCompositionWithoutExposingCustody(t *testing.T
 		"tls_certificate": certificatePath,
 		"tls_private_key": tlsKeyPath,
 		"governance_file": governancePath,
-		"trusted_keys": map[string][]aauth.JWK{
+		"trusted_keys": map[string][]jose.JWK{
 			"https://ap.example": {apKey.PublicJWK()},
 		},
 		"allowed_actions": []string{"store.backup.create"},
@@ -139,7 +138,7 @@ func TestPersonDiagnosisRejectsCorruptGovernance(t *testing.T) {
 		"tls_certificate": certificatePath,
 		"tls_private_key": tlsKeyPath,
 		"governance_file": governancePath,
-		"trusted_keys": map[string][]aauth.JWK{
+		"trusted_keys": map[string][]jose.JWK{
 			"https://ap.example": {apKey.PublicJWK()},
 		},
 		"allowed_actions": []string{"store.backup.create"},

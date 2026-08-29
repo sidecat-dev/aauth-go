@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -446,13 +447,13 @@ func (store *countingProofReplayStore) Consume(context.Context, string, time.Tim
 	return nil
 }
 
-func rawReferenceTestSigningMaterial(t *testing.T, id string) (aauth.SigningKey, ed25519.PrivateKey) {
+func rawReferenceTestSigningMaterial(t *testing.T, id string) (jose.SigningKey, ed25519.PrivateKey) {
 	t.Helper()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, private)
+	key, err := jose.NewEd25519SigningKey(id, private)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +462,7 @@ func rawReferenceTestSigningMaterial(t *testing.T, id string) (aauth.SigningKey,
 
 func signRawReferenceAuthToken(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	private ed25519.PrivateKey,
 	claims aauth.AuthTokenClaims,
 	claimName string,
@@ -474,8 +475,8 @@ func signRawReferenceAuthToken(
 	}
 	payload = append(payload[:len(payload)-1], []byte(`,"`+claimName+`":`+claimValue)...)
 	payload = append(payload, '}')
-	header, err := json.Marshal(aauth.TokenHeader{
-		Algorithm: aauth.Ed25519Algorithm,
+	header, err := json.Marshal(jose.Header{
+		Algorithm: jose.Ed25519Algorithm,
 		Type:      aauth.AuthTokenType,
 		KeyID:     key.ID(),
 	})
@@ -904,7 +905,7 @@ func referenceTestRequiredResourceScopes(scopes ...string) func(context.Context,
 
 func signedCurrentProtectedRequest(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	authToken string,
 	clock aauth.Clock,
 	path string,

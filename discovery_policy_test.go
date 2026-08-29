@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/netip"
@@ -503,7 +504,7 @@ func TestHTTPKeyResolverBoundsConcurrentUniqueInflight(t *testing.T) {
 	}
 }
 
-func metadataAndKeys(issuer string, key aauth.SigningKey) http.Handler {
+func metadataAndKeys(issuer string, key jose.SigningKey) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "max-age=300")
 		switch request.URL.Path {
@@ -575,7 +576,7 @@ func (transport *discoveryPolicyTransport) forwarded(host string) int {
 }
 
 type blockingDiscoveryTransport struct {
-	key             aauth.JWK
+	key             jose.JWK
 	release         chan struct{}
 	metadataStarted chan string
 	metadataCount   atomic.Int32

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"os"
@@ -25,13 +26,13 @@ type elixirRequestFixture struct {
 		Repository string `json:"repository"`
 		Commit     string `json:"commit"`
 	} `json:"generator"`
-	Now       int64     `json:"now"`
-	Issuer    string    `json:"issuer"`
-	IssuerKey aauth.JWK `json:"issuer_key"`
+	Now       int64    `json:"now"`
+	Issuer    string   `json:"issuer"`
+	IssuerKey jose.JWK `json:"issuer_key"`
 	Expected  struct {
 		Agent        string                 `json:"agent"`
 		PersonServer string                 `json:"person_server"`
-		AgentKey     aauth.JWK              `json:"agent_key"`
+		AgentKey     jose.JWK               `json:"agent_key"`
 		Mission      aauth.MissionReference `json:"mission"`
 	} `json:"expected"`
 	Request struct {
@@ -49,9 +50,9 @@ type elixirJKTJWTRequestFixture struct {
 	} `json:"generator"`
 	Now      int64 `json:"now"`
 	Expected struct {
-		Identity    string    `json:"identity"`
-		IdentityKey aauth.JWK `json:"identity_key"`
-		RequestKey  aauth.JWK `json:"request_key"`
+		Identity    string   `json:"identity"`
+		IdentityKey jose.JWK `json:"identity_key"`
+		RequestKey  jose.JWK `json:"request_key"`
 	} `json:"expected"`
 	Request struct {
 		Method  string            `json:"method"`

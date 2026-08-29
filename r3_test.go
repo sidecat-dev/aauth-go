@@ -3,6 +3,7 @@ package aauth
 import (
 	"context"
 	"encoding/json"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"strings"
 	"testing"
 	"time"
@@ -254,14 +255,14 @@ func TestVerifyTokensRejectRawUnsupportedExtensionMembersBeforeClaimsDecode(t *t
 	}
 }
 
-func signRawTestToken(t *testing.T, key SigningKey, tokenType string, claims []byte) string {
+func signRawTestToken(t *testing.T, key jose.SigningKey, tokenType string, claims []byte) string {
 	t.Helper()
-	header, err := json.Marshal(TokenHeader{Algorithm: Ed25519Algorithm, Type: tokenType, KeyID: key.ID()})
+	header, err := json.Marshal(jose.Header{Algorithm: jose.Ed25519Algorithm, Type: tokenType, KeyID: key.ID()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	signingInput := rawURL.EncodeToString(header) + "." + rawURL.EncodeToString(claims)
-	signature, err := key.sign([]byte(signingInput))
+	signature, err := signTestMessage(key, []byte(signingInput))
 	if err != nil {
 		t.Fatal(err)
 	}

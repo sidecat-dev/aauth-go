@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"time"
@@ -15,7 +16,7 @@ import (
 )
 
 type BootstrapClientConfig struct {
-	DurableKey         aauth.SigningKey
+	DurableKey         jose.SigningKey
 	KeyResolver        aauth.KeyResolver
 	HTTPClient         *http.Client
 	Clock              aauth.Clock
@@ -26,7 +27,7 @@ type BootstrapClientConfig struct {
 // AP's two-key refresh profile. The returned ephemeral key remains
 // caller-owned and is never retained by the client.
 type BootstrapClient struct {
-	durableKey         aauth.SigningKey
+	durableKey         jose.SigningKey
 	keyResolver        aauth.KeyResolver
 	httpClient         *http.Client
 	clock              aauth.Clock
@@ -35,7 +36,7 @@ type BootstrapClient struct {
 
 type BootstrapResult struct {
 	Identifier string
-	SigningKey aauth.SigningKey
+	SigningKey jose.SigningKey
 	AgentToken string
 	Claims     aauth.AgentTokenClaims
 }
@@ -65,7 +66,7 @@ func (client *BootstrapClient) Refresh(
 	ctx context.Context,
 	endpoint string,
 	personServer string,
-	ephemeralKey aauth.SigningKey,
+	ephemeralKey jose.SigningKey,
 ) (BootstrapResult, error) {
 	if err := validateBootstrapRefresh(endpoint, personServer); err != nil {
 		return BootstrapResult{}, err
@@ -119,7 +120,7 @@ func (client *BootstrapClient) refresh(
 	ctx context.Context,
 	endpoint string,
 	personServer string,
-	requestKey aauth.SigningKey,
+	requestKey jose.SigningKey,
 	sign func(*http.Request) error,
 ) (BootstrapResult, error) {
 	var result BootstrapResult

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -23,10 +24,10 @@ import (
 const maxJSONBody = 1 << 20
 
 type retainedAuthorizationTokenKeys struct {
-	Resource aauth.JWK  `json:"resource"`
-	Agent    aauth.JWK  `json:"agent"`
-	Subagent *aauth.JWK `json:"subagent,omitempty"`
-	Upstream *aauth.JWK `json:"upstream,omitempty"`
+	Resource jose.JWK  `json:"resource"`
+	Agent    jose.JWK  `json:"agent"`
+	Subagent *jose.JWK `json:"subagent,omitempty"`
+	Upstream *jose.JWK `json:"upstream,omitempty"`
 }
 
 func copyRetainedAuthorizationTokenKeys(value retainedAuthorizationTokenKeys) retainedAuthorizationTokenKeys {
@@ -316,30 +317,22 @@ func scopesContained(granted, requested []string) bool {
 }
 
 func decodeRetainedCompactToken(compact string, tokenType string, destination any) error {
-	header, err := aauth.PeekTokenHeader(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		return err
 	}
+	header := parsed.Header()
 	if header.Type != tokenType {
 		return fmt.Errorf("reference: retained token typ is %q, want %q", header.Type, tokenType)
 	}
-	parts := strings.Split(compact, ".")
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
+	var strictHeader jose.Header
+	if err := decodeJSONBytes(bytes.NewReader(parsed.Protected()), &strictHeader); err != nil {
 		return fmt.Errorf("reference: decode retained token header: %w", err)
 	}
-	var strictHeader aauth.TokenHeader
-	if err := decodeJSONBytes(bytes.NewReader(headerBytes), &strictHeader); err != nil {
-		return fmt.Errorf("reference: decode retained token header: %w", err)
-	}
-	if strictHeader != header || header.Algorithm != aauth.Ed25519Algorithm || header.KeyID == "" {
+	if strictHeader != header || header.Algorithm != jose.Ed25519Algorithm || header.KeyID == "" {
 		return errors.New("reference: retained token header is invalid")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return fmt.Errorf("reference: decode retained token payload: %w", err)
-	}
-	if err := decodeJSONBytes(bytes.NewReader(payload), destination); err != nil {
+	if err := decodeJSONBytes(bytes.NewReader(parsed.Payload()), destination); err != nil {
 		return fmt.Errorf("reference: decode retained token claims: %w", err)
 	}
 	return nil
@@ -487,7 +480,7 @@ func latestRetainedAuthorizationInputIssuedAt(
 // at its own issuance instant. Recovery therefore rechecks structure,
 // signature, and lifetime construction without consulting discovery, current
 // policy, or the wall clock.
-func verifyRetainedAuthToken(compact string, key aauth.JWK) (aauth.AuthTokenClaims, error) {
+func verifyRetainedAuthToken(compact string, key jose.JWK) (aauth.AuthTokenClaims, error) {
 	claims, err := decodeRetainedAuthToken(compact)
 	if err != nil {
 		return claims, err
@@ -502,7 +495,7 @@ func verifyRetainedAuthToken(compact string, key aauth.JWK) (aauth.AuthTokenClai
 
 func verifyRetainedAuthTokenAt(
 	compact string,
-	key aauth.JWK,
+	key jose.JWK,
 	verifiedAt time.Time,
 ) (aauth.AuthTokenClaims, error) {
 	claims, err := decodeRetainedAuthToken(compact)
@@ -514,11 +507,11 @@ func verifyRetainedAuthTokenAt(
 
 func verifyRetainedAuthTokenClaimsAt(
 	compact string,
-	key aauth.JWK,
+	key jose.JWK,
 	claims aauth.AuthTokenClaims,
 	verifiedAt time.Time,
 ) (aauth.AuthTokenClaims, error) {
-	header, err := aauth.PeekTokenHeader(compact)
+	header, err := jose.PeekHeader(compact)
 	if err != nil {
 		return claims, err
 	}
@@ -537,7 +530,7 @@ func verifyRetainedAuthTokenClaimsAt(
 	return claims, nil
 }
 
-func verifyRetainedAgentToken(compact string, key aauth.JWK) (aauth.AgentTokenClaims, error) {
+func verifyRetainedAgentToken(compact string, key jose.JWK) (aauth.AgentTokenClaims, error) {
 	claims, err := decodeRetainedAgentToken(compact)
 	if err != nil {
 		return claims, err
@@ -552,7 +545,7 @@ func verifyRetainedAgentToken(compact string, key aauth.JWK) (aauth.AgentTokenCl
 
 func verifyRetainedAgentTokenAt(
 	compact string,
-	key aauth.JWK,
+	key jose.JWK,
 	verifiedAt time.Time,
 ) (aauth.AgentTokenClaims, error) {
 	claims, err := decodeRetainedAgentToken(compact)
@@ -564,11 +557,11 @@ func verifyRetainedAgentTokenAt(
 
 func verifyRetainedAgentTokenClaimsAt(
 	compact string,
-	key aauth.JWK,
+	key jose.JWK,
 	claims aauth.AgentTokenClaims,
 	verifiedAt time.Time,
 ) (aauth.AgentTokenClaims, error) {
-	header, err := aauth.PeekTokenHeader(compact)
+	header, err := jose.PeekHeader(compact)
 	if err != nil {
 		return claims, err
 	}
@@ -587,7 +580,7 @@ func verifyRetainedAgentTokenClaimsAt(
 	return claims, nil
 }
 
-func verifyRetainedResourceToken(compact string, key aauth.JWK) (aauth.ResourceTokenClaims, error) {
+func verifyRetainedResourceToken(compact string, key jose.JWK) (aauth.ResourceTokenClaims, error) {
 	claims, err := decodeRetainedResourceToken(compact)
 	if err != nil {
 		return claims, err
@@ -602,7 +595,7 @@ func verifyRetainedResourceToken(compact string, key aauth.JWK) (aauth.ResourceT
 
 func verifyRetainedResourceTokenAt(
 	compact string,
-	key aauth.JWK,
+	key jose.JWK,
 	verifiedAt time.Time,
 ) (aauth.ResourceTokenClaims, error) {
 	claims, err := decodeRetainedResourceToken(compact)
@@ -614,11 +607,11 @@ func verifyRetainedResourceTokenAt(
 
 func verifyRetainedResourceTokenClaimsAt(
 	compact string,
-	key aauth.JWK,
+	key jose.JWK,
 	claims aauth.ResourceTokenClaims,
 	verifiedAt time.Time,
 ) (aauth.ResourceTokenClaims, error) {
-	header, err := aauth.PeekTokenHeader(compact)
+	header, err := jose.PeekHeader(compact)
 	if err != nil {
 		return claims, err
 	}

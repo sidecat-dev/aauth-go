@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -385,13 +386,13 @@ func TestAccessServerTrustPolicyRefusalDoesNotLeakHostDetail(t *testing.T) {
 	}
 }
 
-func preflightTestSigningMaterial(t *testing.T, id string) (aauth.SigningKey, ed25519.PrivateKey) {
+func preflightTestSigningMaterial(t *testing.T, id string) (jose.SigningKey, ed25519.PrivateKey) {
 	t.Helper()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, private)
+	key, err := jose.NewEd25519SigningKey(id, private)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +401,7 @@ func preflightTestSigningMaterial(t *testing.T, id string) (aauth.SigningKey, ed
 
 func signRawPreflightResourceToken(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	private ed25519.PrivateKey,
 	claims aauth.ResourceTokenClaims,
 	claimName string,
@@ -413,8 +414,8 @@ func signRawPreflightResourceToken(
 	}
 	payload = append(payload[:len(payload)-1], []byte(`,"`+claimName+`":`+claimValue)...)
 	payload = append(payload, '}')
-	header, err := json.Marshal(aauth.TokenHeader{
-		Algorithm: aauth.Ed25519Algorithm,
+	header, err := json.Marshal(jose.Header{
+		Algorithm: jose.Ed25519Algorithm,
 		Type:      aauth.ResourceTokenType,
 		KeyID:     key.ID(),
 	})
@@ -427,7 +428,7 @@ func signRawPreflightResourceToken(
 
 func signRawPreflightAuthToken(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	private ed25519.PrivateKey,
 	claims aauth.AuthTokenClaims,
 	claimName string,
@@ -440,8 +441,8 @@ func signRawPreflightAuthToken(
 	}
 	payload = append(payload[:len(payload)-1], []byte(`,"`+claimName+`":`+claimValue)...)
 	payload = append(payload, '}')
-	header, err := json.Marshal(aauth.TokenHeader{
-		Algorithm: aauth.Ed25519Algorithm,
+	header, err := json.Marshal(jose.Header{
+		Algorithm: jose.Ed25519Algorithm,
 		Type:      aauth.AuthTokenType,
 		KeyID:     key.ID(),
 	})

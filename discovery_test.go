@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -546,7 +547,7 @@ func TestTokenVerificationPreservesOperationalRefreshFailure(t *testing.T) {
 }
 
 type staleRefreshResolver struct {
-	stale aauth.JWK
+	stale jose.JWK
 	err   error
 }
 
@@ -555,7 +556,7 @@ func (resolver staleRefreshResolver) ResolveKey(
 	string,
 	string,
 	string,
-) (aauth.JWK, error) {
+) (jose.JWK, error) {
 	return resolver.stale, nil
 }
 
@@ -564,6 +565,6 @@ func (resolver staleRefreshResolver) RefreshKey(
 	string,
 	string,
 	string,
-) (aauth.JWK, error) {
-	return aauth.JWK{}, resolver.err
+) (jose.JWK, error) {
+	return jose.JWK{}, resolver.err
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -69,7 +70,7 @@ type discoveryCacheKey struct {
 }
 
 type discoveryCacheEntry struct {
-	keys          map[string]JWK
+	keys          map[string]jose.JWK
 	duplicateKeys map[string]struct{}
 	eventMetadata *AgentEventMetadata
 	fetchedAt     time.Time
@@ -129,7 +130,7 @@ func (resolver *HTTPKeyResolver) ResolveKey(
 	issuer string,
 	discoveryDocument string,
 	keyID string,
-) (JWK, error) {
+) (jose.JWK, error) {
 	return resolver.resolveKey(ctx, issuer, discoveryDocument, keyID, false)
 }
 
@@ -140,7 +141,7 @@ func (resolver *HTTPKeyResolver) RefreshKey(
 	issuer string,
 	discoveryDocument string,
 	keyID string,
-) (JWK, error) {
+) (jose.JWK, error) {
 	return resolver.resolveKey(ctx, issuer, discoveryDocument, keyID, true)
 }
 
@@ -228,21 +229,21 @@ func (resolver *HTTPKeyResolver) resolveKey(
 	discoveryDocument string,
 	keyID string,
 	forceRefresh bool,
-) (JWK, error) {
+) (jose.JWK, error) {
 	if err := ValidateServerIdentifier(issuer); err != nil {
-		return JWK{}, keyResolutionError(
+		return jose.JWK{}, keyResolutionError(
 			KeyResolutionInvalid,
 			fmt.Errorf("aauth: discovery issuer: %w", err),
 		)
 	}
 	if len(discoveryDocument) > maximumDiscoveryName || !discoveryDocumentPattern.MatchString(discoveryDocument) {
-		return JWK{}, keyResolutionError(
+		return jose.JWK{}, keyResolutionError(
 			KeyResolutionInvalid,
 			errors.New("aauth: discovery document name is invalid"),
 		)
 	}
 	if keyID == "" {
-		return JWK{}, keyResolutionError(
+		return jose.JWK{}, keyResolutionError(
 			KeyResolutionInvalid,
 			errors.New("aauth: discovery key id is required"),
 		)
@@ -272,11 +273,11 @@ func (resolver *HTTPKeyResolver) resolveKey(
 			}
 			if !isUnknownKeyResolution(selectionErr) {
 				resolver.mu.Unlock()
-				return JWK{}, selectionErr
+				return jose.JWK{}, selectionErr
 			}
 			if now.Sub(entry.fetchedAt) < minimumDiscoveryRefresh {
 				resolver.mu.Unlock()
-				return JWK{}, selectionErr
+				return jose.JWK{}, selectionErr
 			}
 		}
 		if attempted {
@@ -289,11 +290,11 @@ func (resolver *HTTPKeyResolver) resolveKey(
 					}
 					if !isUnknownKeyResolution(selectionErr) {
 						resolver.mu.Unlock()
-						return JWK{}, selectionErr
+						return jose.JWK{}, selectionErr
 					}
 				}
 				resolver.mu.Unlock()
-				return JWK{}, attempt.err
+				return jose.JWK{}, attempt.err
 			}
 			if cached {
 				key, selectionErr := selectDiscoveryKey(entry, issuer, keyID)
@@ -302,7 +303,7 @@ func (resolver *HTTPKeyResolver) resolveKey(
 					return key, nil
 				}
 				resolver.mu.Unlock()
-				return JWK{}, selectionErr
+				return jose.JWK{}, selectionErr
 			}
 		}
 		if cached && now.Sub(entry.fetchedAt) < minimumDiscoveryRefresh {
@@ -312,20 +313,20 @@ func (resolver *HTTPKeyResolver) resolveKey(
 				return key, nil
 			}
 			resolver.mu.Unlock()
-			return JWK{}, selectionErr
+			return jose.JWK{}, selectionErr
 		}
 		if pending, ok := resolver.inflight[cacheKey]; ok {
 			resolver.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return JWK{}, keyResolutionError(KeyResolutionUnavailable, ctx.Err())
+				return jose.JWK{}, keyResolutionError(KeyResolutionUnavailable, ctx.Err())
 			case <-pending:
 				continue
 			}
 		}
 		if len(resolver.inflight) >= resolver.limits.InFlightEntries {
 			resolver.mu.Unlock()
-			return JWK{}, keyResolutionError(
+			return jose.JWK{}, keyResolutionError(
 				KeyResolutionUnavailable,
 				errors.New("aauth: concurrent discovery capacity is exhausted"),
 			)
@@ -358,31 +359,31 @@ func (resolver *HTTPKeyResolver) resolveKey(
 					return key, nil
 				}
 				if !isUnknownKeyResolution(selectionErr) {
-					return JWK{}, selectionErr
+					return jose.JWK{}, selectionErr
 				}
 			}
-			return JWK{}, fetchErr
+			return jose.JWK{}, fetchErr
 		}
 		return selectDiscoveryKey(fetched, issuer, keyID)
 	}
 }
 
-func selectDiscoveryKey(entry discoveryCacheEntry, issuer, keyID string) (JWK, error) {
+func selectDiscoveryKey(entry discoveryCacheEntry, issuer, keyID string) (jose.JWK, error) {
 	if _, duplicate := entry.duplicateKeys[keyID]; duplicate {
-		return JWK{}, keyResolutionError(
+		return jose.JWK{}, keyResolutionError(
 			KeyResolutionInvalid,
 			fmt.Errorf("aauth: issuer %q has duplicate key id %q", issuer, keyID),
 		)
 	}
 	key, ok := entry.keys[keyID]
 	if !ok {
-		return JWK{}, keyResolutionError(
+		return jose.JWK{}, keyResolutionError(
 			KeyResolutionUnknown,
 			fmt.Errorf("aauth: issuer %q has no key %q", issuer, keyID),
 		)
 	}
 	if _, err := key.PublicKey(); err != nil {
-		return JWK{}, classifyResolvedJWKError(err)
+		return jose.JWK{}, classifyResolvedJWKError(err)
 	}
 	return key, nil
 }
@@ -522,7 +523,7 @@ func (resolver *HTTPKeyResolver) fetch(
 		return discoveryCacheEntry{}, err
 	}
 	var keySet struct {
-		Keys []JWK `json:"keys"`
+		Keys []jose.JWK `json:"keys"`
 	}
 	if err := json.Unmarshal(keySetBytes, &keySet); err != nil {
 		return discoveryCacheEntry{}, keyResolutionError(
@@ -536,7 +537,7 @@ func (resolver *HTTPKeyResolver) fetch(
 			errors.New("aauth: discovered JWKS contains no keys"),
 		)
 	}
-	keys := make(map[string]JWK, len(keySet.Keys))
+	keys := make(map[string]jose.JWK, len(keySet.Keys))
 	duplicateKeys := make(map[string]struct{})
 	for _, key := range keySet.Keys {
 		if key.Kid == "" {

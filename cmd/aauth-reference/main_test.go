@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"math/big"
 	"net"
 	"net/http"
@@ -54,7 +55,7 @@ func TestPersonProcessServesDurableGovernanceOverTLS(t *testing.T) {
 		"tls_certificate": certificatePath,
 		"tls_private_key": tlsKeyPath,
 		"governance_file": governancePath,
-		"trusted_keys": map[string][]aauth.JWK{
+		"trusted_keys": map[string][]jose.JWK{
 			"https://ap.example": {apKey.PublicJWK()},
 		},
 		"allowed_actions": []string{"store.backup.create"},
@@ -228,7 +229,7 @@ func TestPersonDeploymentReleasesAuthorizationStoreLockOnCompositionFailure(t *t
 		"tls_certificate": certificatePath,
 		"tls_private_key": tlsKeyPath,
 		"governance_file": governancePath,
-		"trusted_keys": map[string][]aauth.JWK{
+		"trusted_keys": map[string][]jose.JWK{
 			"not-a-server-identifier": {trustedKey.PublicJWK()},
 		},
 		"allowed_actions": []string{"store.backup.create"},
@@ -375,7 +376,7 @@ func processTestAgent(
 	t *testing.T,
 	target string,
 	roots *x509.CertPool,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	token string,
 	resolver aauth.KeyResolver,
 ) *reference.Agent {
@@ -413,13 +414,13 @@ func processTestAgent(
 func processTestSigningKey(
 	t *testing.T,
 	id string,
-) (aauth.SigningKey, ed25519.PrivateKey) {
+) (jose.SigningKey, ed25519.PrivateKey) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(cryptorand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}

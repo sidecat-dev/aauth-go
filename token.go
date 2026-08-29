@@ -2,12 +2,13 @@ package aauth
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 const (
@@ -73,7 +74,7 @@ func (err *TokenValidationError) Unwrap() error {
 
 // Confirmation is the RFC 7800 confirmation claim used by AAuth.
 type Confirmation struct {
-	JWK JWK `json:"jwk"`
+	JWK jose.JWK `json:"jwk"`
 }
 
 // AgentTokenRequest is the issuer-validated input to agent-token creation.
@@ -81,7 +82,7 @@ type AgentTokenRequest struct {
 	Agent        string
 	PersonServer string
 	ParentAgent  string
-	PublicKey    JWK
+	PublicKey    jose.JWK
 	Lifetime     time.Duration
 }
 
@@ -160,15 +161,8 @@ type AuthTokenClaims struct {
 	Tenant       string            `json:"tenant,omitempty"`
 }
 
-// TokenHeader is the protected JWS header common to AAuth tokens.
-type TokenHeader struct {
-	Algorithm string `json:"alg"`
-	Type      string `json:"typ"`
-	KeyID     string `json:"kid"`
-}
-
 // MintAgentToken creates an agent token with the supplied issuer key.
-func MintAgentToken(issuer string, key SigningKey, request AgentTokenRequest, now time.Time, jti string) (string, error) {
+func MintAgentToken(issuer string, key jose.SigningKey, request AgentTokenRequest, now time.Time, jti string) (string, error) {
 	if err := ValidateServerIdentifier(issuer); err != nil {
 		return "", fmt.Errorf("aauth: agent-token issuer: %w", err)
 	}
@@ -216,7 +210,7 @@ func MintAgentToken(issuer string, key SigningKey, request AgentTokenRequest, no
 
 // MintResourceToken creates the short-lived resource assertion carried to a
 // person or access server.
-func MintResourceToken(key SigningKey, claims ResourceTokenClaims) (string, error) {
+func MintResourceToken(key jose.SigningKey, claims ResourceTokenClaims) (string, error) {
 	if err := validateResourceClaims(claims, time.Unix(claims.IssuedAt, 0), false); err != nil {
 		return "", err
 	}
@@ -228,7 +222,7 @@ func MintResourceToken(key SigningKey, claims ResourceTokenClaims) (string, erro
 // server's retention obligation. Issuers must retain the exact corresponding
 // PersonTokenRecord before release; reference.PersonServer composes that
 // custody and recovery boundary.
-func MintPersonToken(key SigningKey, claims PersonTokenClaims) (string, error) {
+func MintPersonToken(key jose.SigningKey, claims PersonTokenClaims) (string, error) {
 	if err := validatePersonClaims(claims, time.Unix(claims.IssuedAt, 0), false); err != nil {
 		return "", err
 	}
@@ -236,32 +230,23 @@ func MintPersonToken(key SigningKey, claims PersonTokenClaims) (string, error) {
 }
 
 // MintAuthToken creates the proof-bound authorization assertion.
-func MintAuthToken(key SigningKey, claims AuthTokenClaims) (string, error) {
+func MintAuthToken(key jose.SigningKey, claims AuthTokenClaims) (string, error) {
 	if err := validateAuthClaims(claims, time.Unix(claims.IssuedAt, 0), false); err != nil {
 		return "", err
 	}
 	return mintToken(key, AuthTokenType, claims)
 }
 
-func mintToken(key SigningKey, tokenType string, claims any) (string, error) {
-	headerBytes, err := json.Marshal(TokenHeader{
-		Algorithm: Ed25519Algorithm,
-		Type:      tokenType,
-		KeyID:     key.ID(),
-	})
-	if err != nil {
-		return "", fmt.Errorf("aauth: marshal token header: %w", err)
-	}
+func mintToken(key jose.SigningKey, tokenType string, claims any) (string, error) {
 	claimsBytes, err := json.Marshal(claims)
 	if err != nil {
 		return "", fmt.Errorf("aauth: marshal token claims: %w", err)
 	}
-	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
-	signature, err := key.sign([]byte(signingInput))
-	if err != nil {
-		return "", err
-	}
-	return signingInput + "." + rawURL.EncodeToString(signature), nil
+	return jose.SignCompact(key, jose.Header{
+		Algorithm: jose.Ed25519Algorithm,
+		Type:      tokenType,
+		KeyID:     key.ID(),
+	}, claimsBytes)
 }
 
 // VerifyAgentToken verifies issuer trust, JWS integrity, structure, and time.
@@ -285,10 +270,11 @@ func VerifyPersonToken(ctx context.Context, compact string, resolver KeyResolver
 	if clock == nil {
 		return claims, errors.New("aauth: clock is required")
 	}
-	header, payload, signature, signingInput, err := decodeToken(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		return claims, err
 	}
+	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != PersonTokenType {
 		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, PersonTokenType)
 	}
@@ -308,7 +294,7 @@ func VerifyPersonToken(ctx context.Context, compact string, resolver KeyResolver
 	if claims.DWK != PersonDiscoveryDocument {
 		return claims, fmt.Errorf("aauth: token dwk is %q, want %q", claims.DWK, PersonDiscoveryDocument)
 	}
-	if err := verifyResolvedTokenKey(ctx, header, claims.Issuer, claims.DWK, signingInput, signature, resolver); err != nil {
+	if _, err := verifyResolvedTokenKey(ctx, parsed, claims.Issuer, claims.DWK, resolver); err != nil {
 		return claims, err
 	}
 	if err := validatePersonClaims(claims, clock.Now(), true); err != nil {
@@ -344,10 +330,11 @@ func VerifyResourceToken(ctx context.Context, compact string, resolver KeyResolv
 // VerifyAuthToken verifies issuer trust, JWS integrity, structure, and time.
 func VerifyAuthToken(ctx context.Context, compact string, resolver KeyResolver, clock Clock) (AuthTokenClaims, error) {
 	var claims AuthTokenClaims
-	header, payload, signature, signingInput, err := decodeToken(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		return claims, err
 	}
+	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != AuthTokenType {
 		return claims, fmt.Errorf("aauth: token typ is %q, want %q", header.Type, AuthTokenType)
 	}
@@ -370,7 +357,7 @@ func VerifyAuthToken(ctx context.Context, compact string, resolver KeyResolver, 
 	if claims.DWK != PersonDiscoveryDocument && claims.DWK != AccessDiscoveryDocument {
 		return claims, fmt.Errorf("aauth: auth-token dwk is %q", claims.DWK)
 	}
-	if err := verifyResolvedTokenKey(ctx, header, claims.Issuer, claims.DWK, signingInput, signature, resolver); err != nil {
+	if _, err := verifyResolvedTokenKey(ctx, parsed, claims.Issuer, claims.DWK, resolver); err != nil {
 		return claims, err
 	}
 	if err := validateAuthClaims(claims, clock.Now(), true); err != nil {
@@ -395,10 +382,11 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	if clock == nil {
 		return errors.New("aauth: clock is required")
 	}
-	header, payload, signature, signingInput, err := decodeToken(compact)
+	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
 		return err
 	}
+	header, payload := parsed.Header(), parsed.Payload()
 	if header.Type != expectedType {
 		return fmt.Errorf("aauth: token typ is %q, want %q", header.Type, expectedType)
 	}
@@ -420,7 +408,7 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	if dwk != expectedDWK {
 		return fmt.Errorf("aauth: token dwk is %q, want %q", dwk, expectedDWK)
 	}
-	if err := verifyResolvedTokenKey(ctx, header, issuer, dwk, signingInput, signature, resolver); err != nil {
+	if _, err := verifyResolvedTokenKey(ctx, parsed, issuer, dwk, resolver); err != nil {
 		return err
 	}
 	return nil
@@ -444,119 +432,65 @@ func rejectUnsupportedTokenMembers(payload []byte, tokenType string, unsupported
 
 func verifyResolvedTokenKey(
 	ctx context.Context,
-	header TokenHeader,
+	parsed jose.ParsedCompact,
 	issuer string,
 	dwk string,
-	signingInput string,
-	signature []byte,
 	resolver KeyResolver,
-) error {
+) (jose.VerifiedCompact, error) {
 	if resolver == nil {
-		return errors.New("aauth: key resolver is required")
+		return jose.VerifiedCompact{}, errors.New("aauth: key resolver is required")
 	}
+	header := parsed.Header()
 	if header.Algorithm == "none" {
-		return errors.New("aauth: alg none is forbidden")
+		return jose.VerifiedCompact{}, errors.New("aauth: alg none is forbidden")
 	}
-	if header.Algorithm != Ed25519Algorithm {
-		return &unsupportedTokenAlgorithmError{algorithm: header.Algorithm}
+	if header.Algorithm != jose.Ed25519Algorithm {
+		return jose.VerifiedCompact{}, &unsupportedTokenAlgorithmError{algorithm: header.Algorithm}
 	}
 	if header.KeyID == "" {
-		return errors.New("aauth: token kid is required")
+		return jose.VerifiedCompact{}, errors.New("aauth: token kid is required")
 	}
 	if err := ValidateServerIdentifier(issuer); err != nil {
-		return fmt.Errorf("aauth: token issuer: %w", err)
+		return jose.VerifiedCompact{}, fmt.Errorf("aauth: token issuer: %w", err)
 	}
 	key, err := resolver.ResolveKey(ctx, issuer, dwk, header.KeyID)
 	if err != nil {
-		return normalizeKeyResolutionError(err)
+		return jose.VerifiedCompact{}, normalizeKeyResolutionError(err)
 	}
-	publicKey, err := key.PublicKey()
-	if err != nil {
-		return err
+	if _, err := key.PublicKey(); err != nil {
+		return jose.VerifiedCompact{}, err
 	}
-	ed25519Key, ok := publicKey.(ed25519.PublicKey)
-	if !ok {
-		return errors.New("aauth: resolved token key is not Ed25519")
-	}
-	if ed25519.Verify(ed25519Key, []byte(signingInput), signature) {
-		return nil
+	verified, err := parsed.Verify(key)
+	if err == nil {
+		return verified, nil
 	}
 	if refresher, ok := resolver.(KeyRefresher); ok {
 		refreshed, refreshErr := refresher.RefreshKey(ctx, issuer, dwk, header.KeyID)
 		if refreshErr == nil {
-			refreshedPublic, publicErr := refreshed.PublicKey()
-			if publicErr == nil {
-				if refreshedEd25519, isEd25519 := refreshedPublic.(ed25519.PublicKey); isEd25519 &&
-					ed25519.Verify(refreshedEd25519, []byte(signingInput), signature) {
-					return nil
-				}
+			refreshedVerified, verifyErr := parsed.Verify(refreshed)
+			if verifyErr == nil {
+				return refreshedVerified, nil
 			}
 		} else {
 			normalized := normalizeKeyResolutionError(refreshErr)
 			var resolutionError *KeyResolutionError
 			if errors.As(normalized, &resolutionError) {
-				return normalized
+				return jose.VerifiedCompact{}, normalized
 			}
 		}
 	}
-	return errors.New("aauth: token signature is invalid")
+	return jose.VerifiedCompact{}, errors.New("aauth: token signature is invalid")
 }
 
-func verifyTokenSignatureWithKey(signingInput string, signature []byte, key JWK) error {
-	publicKey, err := key.PublicKey()
+func verifyTokenSignatureWithKey(parsed jose.ParsedCompact, key jose.JWK) (jose.VerifiedCompact, error) {
+	if _, err := key.PublicKey(); err != nil {
+		return jose.VerifiedCompact{}, &TokenValidationError{Code: TokenValidationInvalidKey, Cause: err}
+	}
+	verified, err := parsed.Verify(key)
 	if err != nil {
-		return &TokenValidationError{Code: TokenValidationInvalidKey, Cause: err}
+		return jose.VerifiedCompact{}, err
 	}
-	ed25519Key, ok := publicKey.(ed25519.PublicKey)
-	if !ok {
-		return &TokenValidationError{
-			Code:  TokenValidationInvalidKey,
-			Cause: errors.New("aauth: resolved token key is not Ed25519"),
-		}
-	}
-	if !ed25519.Verify(ed25519Key, []byte(signingInput), signature) {
-		return errors.New("aauth: token signature is invalid")
-	}
-	return nil
-}
-
-func decodeToken(compact string) (TokenHeader, []byte, []byte, string, error) {
-	var header TokenHeader
-	parts := strings.Split(compact, ".")
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return header, nil, nil, "", errors.New("aauth: token must be a three-part compact JWS")
-	}
-	headerBytes, err := rawURL.DecodeString(parts[0])
-	if err != nil {
-		return header, nil, nil, "", fmt.Errorf("aauth: decode token header: %w", err)
-	}
-	if err := rejectDuplicateJSONNames(headerBytes); err != nil {
-		return header, nil, nil, "", fmt.Errorf("aauth: parse token header: %w", err)
-	}
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return header, nil, nil, "", fmt.Errorf("aauth: parse token header: %w", err)
-	}
-	payload, err := rawURL.DecodeString(parts[1])
-	if err != nil {
-		return header, nil, nil, "", fmt.Errorf("aauth: decode token payload: %w", err)
-	}
-	if err := rejectDuplicateJSONNames(payload); err != nil {
-		return header, nil, nil, "", fmt.Errorf("aauth: parse token payload: %w", err)
-	}
-	signature, err := rawURL.DecodeString(parts[2])
-	if err != nil {
-		return header, nil, nil, "", fmt.Errorf("aauth: decode token signature: %w", err)
-	}
-	if len(signature) != ed25519.SignatureSize {
-		return header, nil, nil, "", fmt.Errorf("aauth: Ed25519 token signature has %d bytes", len(signature))
-	}
-	return header, payload, signature, parts[0] + "." + parts[1], nil
-}
-
-// PeekTokenHeader reads only the protected header. It does not establish trust.
-func PeekTokenHeader(compact string) (TokenHeader, error) {
-	header, _, _, _, err := decodeToken(compact)
-	return header, err
+	return verified, nil
 }
 
 func validateAgentClaims(claims AgentTokenClaims, now time.Time) error {
@@ -783,7 +717,7 @@ func validateAgentIssuerDomain(agent string, issuer string) error {
 func ValidatePersonTokenContext(
 	claims PersonTokenClaims,
 	resourceIdentifier string,
-	requestKey JWK,
+	requestKey jose.JWK,
 ) error {
 	if err := ValidateServerIdentifier(resourceIdentifier); err != nil {
 		return fmt.Errorf("aauth: person-token expected resource: %w", err)
@@ -806,7 +740,7 @@ func ValidateCurrentAuthTokenContext(
 	resourceIdentifier string,
 	personServer string,
 	subject string,
-	requestKey JWK,
+	requestKey jose.JWK,
 	requiredScopes []string,
 ) error {
 	if claims.PersonServer == "" {

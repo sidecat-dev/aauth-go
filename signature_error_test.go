@@ -3,6 +3,7 @@ package aauth_test
 import (
 	"context"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"reflect"
 	"strings"
@@ -590,18 +591,18 @@ func containsString(values []string, target string) bool {
 
 type failingKeyResolver struct{ err error }
 
-func (resolver failingKeyResolver) ResolveKey(context.Context, string, string, string) (aauth.JWK, error) {
-	return aauth.JWK{}, resolver.err
+func (resolver failingKeyResolver) ResolveKey(context.Context, string, string, string) (jose.JWK, error) {
+	return jose.JWK{}, resolver.err
 }
 
-type refreshUnknownResolver struct{ stale aauth.JWK }
+type refreshUnknownResolver struct{ stale jose.JWK }
 
-func (resolver refreshUnknownResolver) ResolveKey(context.Context, string, string, string) (aauth.JWK, error) {
+func (resolver refreshUnknownResolver) ResolveKey(context.Context, string, string, string) (jose.JWK, error) {
 	return resolver.stale, nil
 }
 
-func (refreshUnknownResolver) RefreshKey(context.Context, string, string, string) (aauth.JWK, error) {
-	return aauth.JWK{}, &aauth.KeyResolutionError{
+func (refreshUnknownResolver) RefreshKey(context.Context, string, string, string) (jose.JWK, error) {
+	return jose.JWK{}, &aauth.KeyResolutionError{
 		Code:  aauth.KeyResolutionUnknown,
 		Cause: errors.New("issuer kid disappeared after refresh"),
 	}

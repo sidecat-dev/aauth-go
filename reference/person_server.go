@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -22,7 +23,7 @@ import (
 
 type PersonServerConfig struct {
 	Identifier                    string
-	SigningKey                    aauth.SigningKey
+	SigningKey                    jose.SigningKey
 	KeyResolver                   aauth.KeyResolver
 	Clock                         aauth.Clock
 	NewID                         func() string
@@ -46,7 +47,7 @@ type PersonServerConfig struct {
 
 type PersonServer struct {
 	identifier                    string
-	signingKey                    aauth.SigningKey
+	signingKey                    jose.SigningKey
 	keyResolver                   aauth.KeyResolver
 	clock                         aauth.Clock
 	newID                         func() string
@@ -149,7 +150,7 @@ type personAuthorizationContext struct {
 	upstreamTokenCompact   string
 	tokenVerificationKeys  retainedAuthorizationTokenKeys
 	targetAgent            string
-	targetKey              aauth.JWK
+	targetKey              jose.JWK
 	parentAgent            string
 	pollingAgent           string
 	pollingAgentThumbprint string
@@ -167,7 +168,7 @@ type pendingPersonAuthorization struct {
 	federated               *pendingFederatedAuthorization
 	pollingFederation       bool
 	terminalAuthToken       string
-	terminalVerificationKey *aauth.JWK
+	terminalVerificationKey *jose.JWK
 	terminalExpiresAt       int64
 	terminalStatus          int
 	terminalCode            string
@@ -195,7 +196,7 @@ type pendingPersonPermission struct {
 type accessServerExchange struct {
 	authToken       string
 	claims          aauth.AuthTokenClaims
-	verificationKey *aauth.JWK
+	verificationKey *jose.JWK
 	deferred        *aauth.DeferredResponse
 }
 
@@ -205,7 +206,7 @@ type accessServerExchange struct {
 // successful resolution path rather than perform a second lookup.
 type retainedKeyResolver struct {
 	resolver aauth.KeyResolver
-	key      aauth.JWK
+	key      jose.JWK
 	found    bool
 }
 
@@ -214,7 +215,7 @@ func (resolver *retainedKeyResolver) ResolveKey(
 	issuer string,
 	discoveryDocument string,
 	keyID string,
-) (aauth.JWK, error) {
+) (jose.JWK, error) {
 	key, err := resolver.resolver.ResolveKey(ctx, issuer, discoveryDocument, keyID)
 	if err == nil {
 		resolver.key = key
@@ -239,9 +240,9 @@ func newRetainedKeyCapture(resolver aauth.KeyResolver) (*retainedKeyResolver, aa
 	return capture, capture
 }
 
-func (resolver *retainedKeyResolver) retainedKey() (aauth.JWK, error) {
+func (resolver *retainedKeyResolver) retainedKey() (jose.JWK, error) {
 	if resolver == nil || !resolver.found {
-		return aauth.JWK{}, errors.New("reference: verified token key material was not retained")
+		return jose.JWK{}, errors.New("reference: verified token key material was not retained")
 	}
 	return resolver.key, nil
 }
@@ -251,7 +252,7 @@ func (resolver *retainedRefreshingKeyResolver) RefreshKey(
 	issuer string,
 	discoveryDocument string,
 	keyID string,
-) (aauth.JWK, error) {
+) (jose.JWK, error) {
 	key, err := resolver.refresher.RefreshKey(ctx, issuer, discoveryDocument, keyID)
 	if err == nil {
 		resolver.key = key
@@ -280,7 +281,7 @@ type personAuthorizationStateRecord struct {
 	Decision                aauth.AuthorizationDecision      `json:"decision"`
 	Federated               *pendingFederatedRecord          `json:"federated,omitempty"`
 	TerminalAuthToken       string                           `json:"terminal_auth_token,omitempty"`
-	TerminalVerificationKey *aauth.JWK                       `json:"terminal_verification_key,omitempty"`
+	TerminalVerificationKey *jose.JWK                        `json:"terminal_verification_key,omitempty"`
 	TerminalExpiresAt       int64                            `json:"terminal_expires_at,omitempty"`
 	TerminalStatus          int                              `json:"terminal_status,omitempty"`
 	TerminalCode            string                           `json:"terminal_code,omitempty"`
@@ -295,7 +296,7 @@ type personAuthorizationContextRecord struct {
 	UpstreamTokenCompact   string                         `json:"upstream_token,omitempty"`
 	TokenVerificationKeys  retainedAuthorizationTokenKeys `json:"token_verification_keys"`
 	TargetAgent            string                         `json:"target_agent"`
-	TargetKey              aauth.JWK                      `json:"target_key"`
+	TargetKey              jose.JWK                       `json:"target_key"`
 	ParentAgent            string                         `json:"parent_agent,omitempty"`
 	PollingAgent           string                         `json:"polling_agent"`
 	PollingAgentThumbprint string                         `json:"polling_agent_thumbprint"`
@@ -744,7 +745,7 @@ func (server *PersonServer) validatePersonAuthorizationRequestEvidence(
 	if err != nil || proof.CredentialIssuer != agent.Issuer {
 		return ErrAuthorizationStateIntegrity
 	}
-	header, err := aauth.PeekTokenHeader(value.AgentTokenCompact)
+	header, err := jose.PeekHeader(value.AgentTokenCompact)
 	if err != nil {
 		return ErrAuthorizationStateIntegrity
 	}
@@ -845,7 +846,7 @@ func (server *PersonServer) validatePersonTerminalToken(record personAuthorizati
 	return nil
 }
 
-func copyJWK(value *aauth.JWK) *aauth.JWK {
+func copyJWK(value *jose.JWK) *jose.JWK {
 	if value == nil {
 		return nil
 	}
@@ -1464,7 +1465,7 @@ func (server *PersonServer) requireCurrentPersonServer(
 func (server *PersonServer) issuePersonToken(
 	ctx context.Context,
 	agent string,
-	confirmation aauth.JWK,
+	confirmation jose.JWK,
 	agentExpiresAt int64,
 	resource string,
 	missionS256 string,
@@ -1477,7 +1478,7 @@ func (server *PersonServer) issuePersonTokenForContext(
 	ctx context.Context,
 	agent string,
 	parentAgent string,
-	confirmation aauth.JWK,
+	confirmation jose.JWK,
 	agentExpiresAt int64,
 	resource string,
 	missionS256 string,
@@ -1508,7 +1509,7 @@ func (server *PersonServer) preparePersonToken(
 	ctx context.Context,
 	agent string,
 	parentAgent string,
-	confirmation aauth.JWK,
+	confirmation jose.JWK,
 	agentExpiresAt int64,
 	resource string,
 	missionS256 string,
@@ -2744,7 +2745,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 	targetKey := verified.PublicKey
 	parentAgent := ""
 	targetTokenExpiry := verified.AgentToken.ExpiresAt
-	var subagentVerificationKey *aauth.JWK
+	var subagentVerificationKey *jose.JWK
 	if input.SubagentToken != "" {
 		subagentKeyCapture, subagentVerificationResolver := newRetainedKeyCapture(server.keyResolver)
 		subagent, err := aauth.VerifyAgentToken(request.Context(), input.SubagentToken, subagentVerificationResolver, verificationClock)
@@ -2774,7 +2775,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		}
 	}
 	var upstream *aauth.AuthTokenClaims
-	var upstreamVerificationKey *aauth.JWK
+	var upstreamVerificationKey *jose.JWK
 	if input.UpstreamToken != "" {
 		if server.trustedUpstreamIssuer == nil {
 			writeProblem(response, http.StatusForbidden, "invalid_upstream_token", errors.New("call chaining is not configured"))
@@ -3975,7 +3976,7 @@ func (server *PersonServer) exchangeWithAccessServer(
 	agentTokenCompact string,
 	subagentTokenCompact string,
 	upstreamTokenCompact string,
-	targetKey aauth.JWK,
+	targetKey jose.JWK,
 	targetTokenExpiresAt int64,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
@@ -4051,7 +4052,7 @@ func (server *PersonServer) parseAccessServerGrant(
 	ctx context.Context,
 	response *http.Response,
 	accessServerIdentifier string,
-	targetKey aauth.JWK,
+	targetKey jose.JWK,
 	targetTokenExpiresAt int64,
 	resourceToken aauth.ResourceTokenClaims,
 	personDecision aauth.AuthorizationDecision,
@@ -4141,6 +4142,6 @@ func (server *PersonServer) handleMetadata(response http.ResponseWriter, _ *http
 
 func (server *PersonServer) handleJWKS(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]any{
-		"keys": []aauth.JWK{server.signingKey.PublicJWK()},
+		"keys": []jose.JWK{server.signingKey.PublicJWK()},
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1140,7 +1141,7 @@ func TestPersonAndAccessServerTokenEndpointsUseRequestVerificationInstant(t *tes
 func TestPersonAndAccessAuthorizationStateRejectsInputTokenExpiredAtVerifiedAt(t *testing.T) {
 	fixture := newAuthorizationStateSemanticFixture(t)
 	verifiedAt := fixture.now.Add(30 * time.Second).UTC()
-	shortUpstream := func(t *testing.T, agentKey aauth.SigningKey, jti string) (string, aauth.AuthTokenClaims) {
+	shortUpstream := func(t *testing.T, agentKey jose.SigningKey, jti string) (string, aauth.AuthTokenClaims) {
 		t.Helper()
 		claims := aauth.AuthTokenClaims{
 			Issuer:       "https://ps.example",
@@ -1598,7 +1599,7 @@ func TestPersonAndAccessServerLiveRejectDirectSubagentWithoutPersonServer(t *tes
 func TestPersonAndAccessAuthorizationStateAcceptsUpstreamSelectedPSAfterReopen(t *testing.T) {
 	fixture := newAuthorizationStateSemanticFixture(t)
 
-	upstreamContext := func(t *testing.T, agentKey aauth.SigningKey, jti string) (string, aauth.AuthTokenClaims) {
+	upstreamContext := func(t *testing.T, agentKey jose.SigningKey, jti string) (string, aauth.AuthTokenClaims) {
 		t.Helper()
 		claims := aauth.AuthTokenClaims{
 			Issuer:       "https://ps.example",
@@ -1618,7 +1619,7 @@ func TestPersonAndAccessAuthorizationStateAcceptsUpstreamSelectedPSAfterReopen(t
 		}
 		return compact, claims
 	}
-	intermediaryToken := func(t *testing.T, agent string, key aauth.SigningKey, jti string) string {
+	intermediaryToken := func(t *testing.T, agent string, key jose.SigningKey, jti string) string {
 		t.Helper()
 		compact, err := aauth.MintAgentToken(
 			"https://ap.example",
@@ -1663,7 +1664,7 @@ func TestPersonAndAccessAuthorizationStateAcceptsUpstreamSelectedPSAfterReopen(t
 	})
 }
 
-func pointerToJWK(value aauth.JWK) *aauth.JWK {
+func pointerToJWK(value jose.JWK) *jose.JWK {
 	return &value
 }
 
@@ -3006,11 +3007,11 @@ func roleAuthorizationSnapshot(t *testing.T, schema string, records ...any) []by
 
 type authorizationStateSemanticFixture struct {
 	now         time.Time
-	personKey   aauth.SigningKey
-	accessKey   aauth.SigningKey
-	resourceKey aauth.SigningKey
-	providerKey aauth.SigningKey
-	agentKeys   []aauth.SigningKey
+	personKey   jose.SigningKey
+	accessKey   jose.SigningKey
+	resourceKey jose.SigningKey
+	providerKey jose.SigningKey
+	agentKeys   []jose.SigningKey
 }
 
 func newAuthorizationStateSemanticFixture(t *testing.T) authorizationStateSemanticFixture {
@@ -3021,7 +3022,7 @@ func newAuthorizationStateSemanticFixture(t *testing.T) authorizationStateSemant
 		accessKey:   referenceTestSigningKey(t, "access-key"),
 		resourceKey: referenceTestSigningKey(t, "resource-key"),
 		providerKey: referenceTestSigningKey(t, "provider-key"),
-		agentKeys: []aauth.SigningKey{
+		agentKeys: []jose.SigningKey{
 			referenceTestSigningKey(t, "agent-key-1"),
 			referenceTestSigningKey(t, "agent-key-2"),
 		},
@@ -3331,7 +3332,7 @@ func (fixture authorizationStateSemanticFixture) terminalClaims(
 	issuer string,
 	discoveryDocument string,
 	resourceToken aauth.ResourceTokenClaims,
-	targetKey aauth.JWK,
+	targetKey jose.JWK,
 	decision aauth.AuthorizationDecision,
 ) aauth.AuthTokenClaims {
 	return aauth.AuthTokenClaims{
@@ -3542,7 +3543,7 @@ func (fixture authorizationStateSemanticFixture) loadAgentRecordsAfterReopen(
 func (fixture authorizationStateSemanticFixture) bindPersonRequestEvidence(
 	t *testing.T,
 	record *personAuthorizationStateRecord,
-	agentKey aauth.SigningKey,
+	agentKey jose.SigningKey,
 ) {
 	t.Helper()
 	body, err := json.Marshal(personAuthorizationTokenInput{
@@ -3763,8 +3764,8 @@ type countingProofReplayStore struct {
 }
 
 type staleThenFreshAuthorizationResolver struct {
-	stale        aauth.JWK
-	fresh        aauth.JWK
+	stale        jose.JWK
+	fresh        jose.JWK
 	resolveCalls int
 	refreshCalls int
 }
@@ -3780,7 +3781,7 @@ func (resolver *staleThenFreshAuthorizationResolver) ResolveKey(
 	string,
 	string,
 	string,
-) (aauth.JWK, error) {
+) (jose.JWK, error) {
 	resolver.resolveCalls++
 	return resolver.stale, nil
 }
@@ -3790,7 +3791,7 @@ func (resolver *staleThenFreshAuthorizationResolver) RefreshKey(
 	string,
 	string,
 	string,
-) (aauth.JWK, error) {
+) (jose.JWK, error) {
 	resolver.refreshCalls++
 	return resolver.fresh, nil
 }

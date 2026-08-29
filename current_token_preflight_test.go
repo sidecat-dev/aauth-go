@@ -3,6 +3,7 @@ package aauth_test
 import (
 	"context"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
@@ -32,10 +33,10 @@ func (resolver *refusingResourceGrantKeyResolver) ResolveKey(
 	issuer string,
 	discoveryDocument string,
 	keyID string,
-) (aauth.JWK, error) {
+) (jose.JWK, error) {
 	resolver.calls++
 	if resolver.refuse {
-		return aauth.JWK{}, errors.New("resource-token PS preflight must not resolve a key")
+		return jose.JWK{}, errors.New("resource-token PS preflight must not resolve a key")
 	}
 	return resolver.delegate.ResolveKey(ctx, issuer, discoveryDocument, keyID)
 }

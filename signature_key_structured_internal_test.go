@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,7 +22,7 @@ func TestSignatureKeyUsesRFC8941DictionarySelection(t *testing.T) {
 	}
 	if parsed.scheme != SignatureKeyHWK ||
 		parsed.parameters["kty"] != "OKP" ||
-		parsed.parameters["alg"] != Ed25519Algorithm {
+		parsed.parameters["alg"] != jose.Ed25519Algorithm {
 		t.Fatalf("parsed Signature-Key = %#v", parsed)
 	}
 
@@ -89,7 +90,7 @@ func TestSignatureKeySplitFieldLinesAreAllCoveredByTheSignature(t *testing.T) {
 		`"@path": /records` + "\n" +
 		`"signature-key": ` + strings.Join(request.Header.Values("Signature-Key"), ", ") + "\n" +
 		`"@signature-params": ` + params
-	signature, err := key.sign([]byte(base))
+	signature, err := signTestMessage(key, []byte(base))
 	if err != nil {
 		t.Fatal(err)
 	}

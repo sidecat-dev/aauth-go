@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -171,7 +172,7 @@ func TestAgentProviderEventsRejectsInvalidConfigurationAndBindings(t *testing.T)
 	}{
 		{name: "invalid resource", request: EventSubscriptionRequest{Resource: "resource", Agent: "aauth:subscriber@ap.example", AgentKey: agentKey.PublicJWK()}},
 		{name: "invalid agent", request: EventSubscriptionRequest{Resource: "https://resource.example", Agent: "subscriber", AgentKey: agentKey.PublicJWK()}},
-		{name: "invalid key", request: EventSubscriptionRequest{Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example", AgentKey: aauth.JWK{Kty: "OKP"}}},
+		{name: "invalid key", request: EventSubscriptionRequest{Resource: "https://resource.example", Agent: "aauth:subscriber@ap.example", AgentKey: jose.JWK{Kty: "OKP"}}},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
@@ -246,7 +247,7 @@ func TestAgentProviderEventsMetadataRotatesWithHTTPFreshness(t *testing.T) {
 
 func newEventsTestAgentProvider(
 	t *testing.T,
-	key aauth.SigningKey,
+	key jose.SigningKey,
 	store APEventStore,
 	newID func() string,
 	now time.Time,
@@ -275,13 +276,13 @@ func newEventsTestAgentProvider(
 	return provider
 }
 
-func eventsProviderTestSigningKey(t *testing.T, id string) aauth.SigningKey {
+func eventsProviderTestSigningKey(t *testing.T, id string) jose.SigningKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := aauth.NewEd25519SigningKey(id, privateKey)
+	key, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}

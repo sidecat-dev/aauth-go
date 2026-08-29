@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"os"
@@ -645,8 +646,8 @@ func (rejectingKeyResolver) ResolveKey(
 	string,
 	string,
 	string,
-) (aauth.JWK, error) {
-	return aauth.JWK{}, fmt.Errorf("unexpected key resolution")
+) (jose.JWK, error) {
+	return jose.JWK{}, fmt.Errorf("unexpected key resolution")
 }
 
 type toggleGovernanceStore struct {
