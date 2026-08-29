@@ -23,6 +23,9 @@ func (agent *Agent) Do(ctx context.Context, call AuthorizedCall) (*http.Response
 	if err != nil {
 		return nil, err
 	}
+	if grant, ok := agent.cachedAuthGrant(resource, agentClaims); ok {
+		return agent.DoAuthorizedRequest(ctx, call, grant)
+	}
 	if person, ok := agent.cachedPersonGrant(resource, agentClaims); ok {
 		response, err := agent.DoWithPersonToken(ctx, call, person.PersonToken)
 		if err != nil {
@@ -101,6 +104,7 @@ func (agent *Agent) followAuthTokenRequirement(
 	if err != nil {
 		return nil, err
 	}
+	agent.rememberAuthGrant(grant)
 	return agent.DoAuthorizedRequest(ctx, call, grant)
 }
 
@@ -137,6 +141,29 @@ func (agent *Agent) rememberPersonGrant(grant PersonGrant) {
 	agent.personMu.Lock()
 	defer agent.personMu.Unlock()
 	agent.personGrants[grant.Resource] = grant
+}
+
+func (agent *Agent) cachedAuthGrant(resource string, current aauth.AgentTokenClaims) (Grant, bool) {
+	agent.authMu.Lock()
+	defer agent.authMu.Unlock()
+	grant, ok := agent.authGrants[resource]
+	if !ok || grant.AuthToken == "" || grant.Resource != resource || grant.Claims.Audience != resource ||
+		grant.Claims.PersonServer != current.PersonServer || grant.Claims.MissionS256 != "" ||
+		grant.Claims.ExpiresAt <= agent.clock.Now().Unix() || grant.R3 != nil || grant.Budget != nil ||
+		!grant.Claims.Confirmation.JWK.Equal(agent.signingKey.PublicJWK()) {
+		delete(agent.authGrants, resource)
+		return Grant{}, false
+	}
+	return grant, true
+}
+
+func (agent *Agent) rememberAuthGrant(grant Grant) {
+	if grant.R3 != nil || grant.Budget != nil || grant.Claims.MissionS256 != "" {
+		return
+	}
+	agent.authMu.Lock()
+	defer agent.authMu.Unlock()
+	agent.authGrants[grant.Resource] = grant
 }
 
 type personServerEndpoints struct {

@@ -62,6 +62,8 @@ type Agent struct {
 	pendingAccess         map[string]agentPendingAccessRecord
 	personMu              sync.Mutex
 	personGrants          map[string]PersonGrant
+	authMu                sync.Mutex
+	authGrants            map[string]Grant
 	eventStore            AgentEventStore
 	eventAction           EventAction
 	eventMu               sync.Mutex
@@ -271,6 +273,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		pendingTokens:      make(map[string]agentPendingTokenRecord),
 		pendingAccess:      make(map[string]agentPendingAccessRecord),
 		personGrants:       make(map[string]PersonGrant),
+		authGrants:         make(map[string]Grant),
 		eventStore:         eventStore,
 		eventAction:        eventAction,
 	}

@@ -299,11 +299,12 @@ Evidence:
 
 ### `core/auth-tokens/auth-token-usage` — Exercised
 
-The agent presents the auth token through Signature-Key and signs the protected request with the token's confirmation key; exact proof replay is refused.
+The agent presents the auth token through Signature-Key and signs the protected request with the token's confirmation key; exact proof replay is refused. The automatic missionless path reuses one verified companion-free grant for subsequent calls to the same resource until trusted expiry, then re-enters the person-token and auth-token requirement chain.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
 
 ### `core/auth-tokens/auth-token-verification/jwt-trust-verification` — Exercised
 

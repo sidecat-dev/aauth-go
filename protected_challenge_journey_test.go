@@ -18,7 +18,10 @@ import (
 func TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall(t *testing.T) {
 	now := time.Date(2026, 8, 29, 15, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	ids := sequentialIDs("agent-token", "person-token", "resource-token", "auth-token")
+	ids := sequentialIDs(
+		"agent-token", "person-token", "resource-token", "auth-token",
+		"renewed-resource-token", "renewed-auth-token",
+	)
 	apKey := testSigningKey(t, "challenge-ap")
 	psKey := testSigningKey(t, "challenge-ps")
 	asKey := testSigningKey(t, "challenge-as")
@@ -170,6 +173,24 @@ func TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall(t *test
 	if operationRequest.PersonServer != "https://ps.example" || operationRequest.Subject != "challenge-person" ||
 		operationRequest.Tenant != "example-org" {
 		t.Fatalf("challenge operation context = %#v", operationRequest)
+	}
+	response, err = agent.Do(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(observed.requirements) != 2 || operationCalls != 2 || personPolicyCalls != 1 || accessPolicyCalls != 1 {
+		t.Fatalf("cached auth-token requirements/operation/PS/AS = %d/%d/%d/%d, want 2/2/1/1", len(observed.requirements), operationCalls, personPolicyCalls, accessPolicyCalls)
+	}
+	now = now.Add(6 * time.Minute)
+	response, err = agent.Do(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(observed.requirements) != 3 || observed.requirements[2].Type != aauth.RequirementAuthToken ||
+		operationCalls != 3 || personPolicyCalls != 2 || accessPolicyCalls != 2 {
+		t.Fatalf("renewed auth-token requirements/operation/PS/AS = %#v/%d/%d/%d", observed.requirements, operationCalls, personPolicyCalls, accessPolicyCalls)
 	}
 }
 

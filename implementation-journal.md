@@ -220,6 +220,12 @@ for this library.
   first call after expiry reacquires one and then proceeds through the same
   requirement checks. Restart safely loses this optimization and reacquires a
   token; no authorization or consequence result is cached.
+- The same agent process keeps one verified, missionless, companion-free auth
+  grant per resource until its trusted expiry. A second call presents that
+  auth token directly, so neither requirement nor PS/AS policy repeats. After
+  expiry the cached person token remains independently usable, and one new
+  resource-token and auth-token exchange occurs. R3 and Budget grants are not
+  admitted to this cache because their per-call state has separate semantics.
 
 ## 2026-08-28
 
