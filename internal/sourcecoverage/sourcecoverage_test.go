@@ -204,6 +204,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"person_token_internal_test.go":                       true,
 		"person_token_access_journey_test.go":                 true,
 		"protected_challenge_journey_test.go":                 true,
+		"r3_challenge_journey_test.go":                        true,
 		"r3/document_internal_test.go":                        true,
 		"r3/external_module_test.go":                          true,
 		"r3/token_external_test.go":                           true,

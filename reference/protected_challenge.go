@@ -28,10 +28,6 @@ func (resource *Resource) challengeProtectedWithPersonToken(
 		writeTokenVerificationFailure(response, http.StatusForbidden, "invalid_person_token", errors.New("person-token issuer does not match the configured person server"))
 		return
 	}
-	if resource.r3DocumentStore != nil {
-		writeProblem(response, http.StatusNotImplemented, "r3_challenge_not_implemented", errors.New("protected-call R3 challenge selection is not implemented"))
-		return
-	}
 	scopes, err := resource.requiredScopes(request)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "scope_mapping_failed", err)
@@ -71,6 +67,38 @@ func (resource *Resource) challengeProtectedWithPersonToken(
 	if personExpiry := time.Unix(person.ExpiresAt, 0).UTC(); personExpiry.Before(expiresAt) {
 		expiresAt = personExpiry
 	}
+	var r3Reference r3.DocumentReference
+	if resource.r3DocumentStore != nil {
+		operation, operationErr := resource.r3OperationForRequest(request.Context(), request)
+		if operationErr != nil || operation.Validate() != nil {
+			writeProblem(response, http.StatusInternalServerError, "r3_operation_mapping_failed", errors.New("protected request does not map to one valid R3 operation"))
+			return
+		}
+		if len(operation.Operations) != 1 {
+			writeProblem(response, http.StatusInternalServerError, "r3_operation_mapping_failed", errors.New("protected request must map to exactly one R3 operation"))
+			return
+		}
+		exact, documentErr := resource.r3DocumentForOperations(request.Context(), operation.Clone())
+		if documentErr != nil {
+			writeHostPolicyRefusal(response, "r3_operations_denied", "requested R3 operation is not available")
+			return
+		}
+		r3Reference, err = selectR3Document(resource.identifier, operation, exact)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_r3_document", err)
+			return
+		}
+		readers := []string{resource.tokenAudience, person.Issuer}
+		if resource.tokenAudience == person.Issuer {
+			readers = readers[:1]
+		}
+		if err := resource.r3DocumentStore.RetainAuthorized(
+			request.Context(), r3Reference.Digest(), r3Reference.ExactBytes(), readers, expiresAt,
+		); err != nil {
+			writeProblem(response, http.StatusServiceUnavailable, "r3_custody_unavailable", err)
+			return
+		}
+	}
 	claims := aauth.ResourceTokenClaims{
 		Issuer: resource.identifier, DWK: aauth.ResourceDiscoveryDocument,
 		Audience: resource.tokenAudience, JTI: resource.newID(), AgentJKT: thumbprint,
@@ -79,8 +107,8 @@ func (resource *Resource) challengeProtectedWithPersonToken(
 		MissionS256: person.MissionS256, Tenant: person.Tenant,
 	}
 	var compact string
-	if offer != nil {
-		compact, err = resource.mintAndRetainResourceToken(request.Context(), claims, r3.DocumentReference{}, offer, now)
+	if r3Reference.Valid() || offer != nil {
+		compact, err = resource.mintAndRetainResourceToken(request.Context(), claims, r3Reference, offer, now)
 	} else {
 		compact, err = aauth.MintResourceToken(resource.signingKey, claims)
 	}

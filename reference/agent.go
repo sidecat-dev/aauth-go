@@ -135,6 +135,7 @@ type ResourceGrant struct {
 	ResourceToken string                    `json:"resource_token"`
 	Claims        aauth.ResourceTokenClaims `json:"claims"`
 	RequestedR3   *r3.OperationSet          `json:"requested_r3,omitempty"`
+	R3            *r3.TokenResult           `json:"-"`
 	Budget        *budgets.TokenResult      `json:"-"`
 }
 
@@ -2032,7 +2033,7 @@ func (agent *Agent) RequestR3PerCall(
 	requested := operation.Clone()
 	return ResourceGrant{
 		Resource: resource, ResourceToken: requirement.ResourceToken,
-		Claims: claims, RequestedR3: &requested,
+		Claims: claims, RequestedR3: &requested, R3: &proposalR3,
 	}, nil
 }
 
@@ -2147,8 +2148,17 @@ func (agent *Agent) requestCurrentResourceToken(
 		ResourceToken: result.ResourceToken,
 		Claims:        resourceClaims,
 		RequestedR3:   retainedRequest,
+		R3:            optionalR3Result(resourceR3),
 		Budget:        optionalBudgetResult(resourceBudget),
 	}, nil
+}
+
+func optionalR3Result(result r3.TokenResult) *r3.TokenResult {
+	if !result.Valid() {
+		return nil
+	}
+	copy := result
+	return &copy
 }
 
 func optionalBudgetResult(result budgets.TokenResult) *budgets.TokenResult {
@@ -2515,7 +2525,7 @@ func (agent *Agent) requestTokenAuthorization(
 		authorization.Grant = &grant
 		return authorization, nil
 	case http.StatusAccepted:
-		if resourceGrant.RequestedR3 != nil || resourceGrant.Budget != nil {
+		if resourceGrant.RequestedR3 != nil || resourceGrant.R3 != nil || resourceGrant.Budget != nil {
 			return authorization, errors.New("reference: deferred companion authorization is not implemented")
 		}
 		deferred, err := aauth.ParseDeferredResponse(tokenResponse)
@@ -2566,6 +2576,9 @@ func preflightResourceGrantPersonServer(
 			return "", fmt.Errorf("reference: retained R3 request: %w", err)
 		}
 	}
+	if resourceGrant.R3 != nil && !resourceGrant.R3.Valid() {
+		return "", errors.New("reference: retained R3 result is invalid")
+	}
 	if resourceGrant.Budget != nil && !resourceGrant.Budget.Valid() {
 		return "", errors.New("reference: retained Budget result is invalid")
 	}
@@ -2582,9 +2595,25 @@ func (agent *Agent) verifyResourceGrantForContinuation(
 		return jose.JWK{}, err
 	}
 	var claims aauth.ResourceTokenClaims
-	if resourceGrant.RequestedR3 == nil && resourceGrant.Budget == nil {
+	if resourceGrant.RequestedR3 == nil && resourceGrant.R3 == nil && resourceGrant.Budget == nil {
 		claims, err = claimsWithoutAuthorization(evidence)
 	} else {
+		if resourceGrant.R3 != nil || resourceGrant.RequestedR3 != nil {
+			result, validationErr := r3.ValidateResourceToken(evidence)
+			if validationErr != nil {
+				return jose.JWK{}, validationErr
+			}
+			if resourceGrant.R3 != nil && (result.CoreEvidenceID() != resourceGrant.R3.CoreEvidenceID() ||
+				result.URI() != resourceGrant.R3.URI() || result.Digest() != resourceGrant.R3.Digest()) {
+				return jose.JWK{}, errors.New("reference: R3 evidence does not match the retained resource token")
+			}
+			if resourceGrant.RequestedR3 == nil {
+				origin, originErr := endpointIdentifier(result.URI())
+				if originErr != nil || origin != resourceGrant.Resource {
+					return jose.JWK{}, errors.New("reference: R3 document is outside the retained resource")
+				}
+			}
+		}
 		if resourceGrant.RequestedR3 != nil {
 			result, validationErr := r3.ValidateResourceToken(evidence)
 			if validationErr != nil {
@@ -2720,10 +2749,10 @@ func (agent *Agent) parseTokenGrantResponse(
 	var authR3 r3.TokenResult
 	var authBudget budgets.TokenResult
 	var authClaims aauth.AuthTokenClaims
-	if resourceGrant.RequestedR3 == nil && resourceGrant.Budget == nil {
+	if resourceGrant.RequestedR3 == nil && resourceGrant.R3 == nil && resourceGrant.Budget == nil {
 		authClaims, err = claimsWithoutAuthorization(authEvidence)
 	} else {
-		if resourceGrant.RequestedR3 != nil {
+		if resourceGrant.R3 != nil || resourceGrant.RequestedR3 != nil {
 			authR3, err = r3.ValidateAuthToken(authEvidence)
 		}
 		if err == nil && resourceGrant.Budget != nil {
@@ -2782,6 +2811,9 @@ func (agent *Agent) parseTokenGrantResponse(
 		if resourceErr := r3.ValidateAuthorizationGrant(resourceR3, authR3, resourceGrant.RequestedR3.Clone()); resourceErr != nil {
 			return Grant{}, jose.JWK{}, resourceErr
 		}
+	}
+	if resourceGrant.R3 != nil && (authR3.URI() != resourceGrant.R3.URI() || authR3.Digest() != resourceGrant.R3.Digest()) {
+		return Grant{}, jose.JWK{}, errors.New("reference: R3 auth token does not match the retained resource token")
 	}
 	if resourceGrant.Budget != nil {
 		if err := budgets.ValidateGrant(*resourceGrant.Budget, authBudget); err != nil {
@@ -3097,13 +3129,16 @@ func (agent *Agent) resourceGrantFromChallenge(
 	if err != nil {
 		return ResourceGrant{}, err
 	}
-	if _, hasR3 := members["r3_uri"]; hasR3 {
-		return ResourceGrant{}, errors.New("reference: protected-call R3 challenge verification is not implemented")
+	var resourceR3 r3.TokenResult
+	_, hasR3 := members["r3_uri"]
+	if hasR3 {
+		resourceR3, err = r3.ValidateResourceToken(evidence)
 	}
 	var budget budgets.TokenResult
-	if _, hasBudget := members["budget"]; hasBudget {
+	_, hasBudget := members["budget"]
+	if err == nil && hasBudget {
 		budget, err = budgets.ValidateResourceToken(evidence)
-	} else {
+	} else if err == nil && !hasR3 {
 		err = evidence.RequireNoAuthorizationMembers()
 	}
 	if err != nil {
@@ -3128,7 +3163,7 @@ func (agent *Agent) resourceGrantFromChallenge(
 	}
 	return ResourceGrant{
 		Resource: resource, ResourceToken: compact, Claims: claims,
-		Budget: optionalBudgetResult(budget),
+		R3: optionalR3Result(resourceR3), Budget: optionalBudgetResult(budget),
 	}, nil
 }
 

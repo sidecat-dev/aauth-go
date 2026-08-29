@@ -508,6 +508,37 @@ deferred-recovery or audit-evidence issue. If none covers restored authority,
 open a focused new issue rather than attaching it to the lost-initial-response
 question in AAG-F012.
 
+### AAG-F014 — R3 operation selection on a protected person-token challenge
+
+**Status:** ready / unsubmitted
+
+**Source:** current AAuth Protocol, `Resource Challenge Verification`; current
+R3, `Resource Token Extensions`, `Resource Enforcement`, and `R3 Processing`.
+
+**Question:** When a protected request first presents a person token and the
+resource needs R3 authorization, should the resource map that exact request to
+one operation and select the R3 document before returning `requirement=auth-token`,
+with the agent validating only the returned token context, or must the agent
+also send a caller-supplied operation set for the challenge to be valid?
+
+**Executable evidence:**
+
+- `r3_challenge_journey_test.go:TestResourceSelectsAndRetainsR3DocumentForPersonChallenge`
+  proves that the resource can select one operation, retain the exact document
+  for the PS and AS, and release a resource token carrying its digest.
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
+  proves the ordinary Agent.Do path can exchange that token through both signed
+  readers and complete the directly granted operation.
+
+**Provisional choice:** The resource is authoritative for the protected call's
+operation mapping and must select a document containing exactly that one
+operation. The agent verifies the resource-token R3 member, document origin,
+and PS/AS exchange result; it does not fetch the restricted document itself.
+
+**Consequence:** Without a stated handoff, clients may either reject a valid
+resource challenge because they cannot reconstruct the resource's opaque
+operation mapping, or accept a grant broader than the call that triggered it.
+
 ## Adding and submitting an item
 
 1. Pin the exact source commit, document, section, and shortest relevant

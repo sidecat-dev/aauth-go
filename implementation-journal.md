@@ -166,8 +166,10 @@ for this library.
   runs once, only after both PS and AS policy. Substitution tests reject every
   person and request-context binding before the token exchange.
 - A configured Budget resource can place its default offer in this challenge.
-  R3 challenge selection and step-up from an existing auth token remain
-  unclaimed.
+- A configured R3 resource maps a protected person-token request to exactly one
+  operation, retains its exact document for the PS and AS before releasing the
+  auth-token requirement, and the ordinary agent path completes the direct
+  four-party grant. Existing-auth-token step-up remains unclaimed.
 
 ### Deferred protected-call delivery
 

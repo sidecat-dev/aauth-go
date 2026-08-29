@@ -576,12 +576,13 @@ Evidence:
 
 ### `core/requirement-auth-token` — Partial
 
-An auth-token resource accepts either a person-token-signed protected call or an agent-token-signed entry that first receives requirement=person-token. After the directed person token is presented, it maps the required scope and performs no protected consequence before returning either the baseline 401 or stateful 202 with a verified resource token. The reference agent exchanges it through the ordinary PS and AS path and completes the exact invocation. Existing-auth-token step-up remains unclaimed.
+An auth-token resource accepts either a person-token-signed protected call or an agent-token-signed entry that first receives requirement=person-token. After the directed person token is presented, it maps the required scope and performs no protected consequence before returning either the baseline 401 or stateful 202 with a verified resource token; an R3 resource also selects and retains the exact document for the mapped operation. The reference agent exchanges it through the ordinary PS and AS path and completes the exact invocation. Existing-auth-token step-up remains unclaimed.
 
 Evidence:
 
 - `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
 - `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
 
 ### `core/requirement-person-token` — Exercised
 
@@ -634,7 +635,7 @@ Evidence:
 
 ### `core/resource-tokens/resource-token/resource-challenge-verification` — Partial
 
-The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on proactive, protected-resource 401, and held-invocation 202 resource tokens before contacting the PS. Distinct-server journeys complete the exact protected call under the resulting grant. R3 challenge selection and step-up from an existing auth token remain open.
+The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on proactive, protected-resource 401, and held-invocation 202 resource tokens before contacting the PS. Distinct-server journeys complete the exact protected call under the resulting grant, including immediate R3 document selection from a person-token challenge. Step-up from an existing auth token remains open.
 
 Evidence:
 
@@ -642,6 +643,7 @@ Evidence:
 - `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
 - `reference/protected_challenge_test.go:TestAgentRejectsSubstitutedProtectedResourceChallengeContext`
 - `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
+- `r3_challenge_journey_test.go:TestResourceSelectsAndRetainsR3DocumentForPersonChallenge`
 
 ### `core/resource-tokens/resource-token/resource-token-structure` — Exercised
 
@@ -810,6 +812,7 @@ Evidence:
 - `r3/token_external_test.go:TestR3TokenResultsBindExactCoreEvidence`
 - `r3/token_external_test.go:TestR3AuthTokenValidationRefusesMalformedMembers`
 - `r3/external_module_test.go:TestCleanExternalModuleValidatesR3DocumentsAndTokenEvidence`
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
 
 ### `r3/authorization-endpoint-extensions/request` — Partial
 
@@ -822,11 +825,12 @@ Evidence:
 
 ### `r3/authorization-endpoint-extensions/response` — Partial
 
-The direct four-party profile returns a resource token carrying the exact HTTPS r3_uri and unpadded exact-byte r3_s256 selected for the requested operations. Non-R3 and multiple-definition response behavior remains outside this claim.
+The direct four-party profile returns a resource token carrying the exact HTTPS r3_uri and unpadded exact-byte r3_s256 selected for the requested operations, both proactively and from a protected person-token challenge. Non-R3 and multiple-definition response behavior remains outside this claim.
 
 Evidence:
 
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+- `r3_challenge_journey_test.go:TestResourceSelectsAndRetainsR3DocumentForPersonChallenge`
 
 ### `r3/content-addressing` — Partial
 
@@ -871,6 +875,7 @@ Evidence:
 
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart`
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+- `r3_challenge_journey_test.go:TestResourceSelectsAndRetainsR3DocumentForPersonChallenge`
 
 ### `r3/r3-document/fields` — Partial
 
@@ -883,36 +888,40 @@ Evidence:
 
 ### `r3/r3-document/resource-token-extensions` — Partial
 
-Core verification retains applicable r3_uri and r3_s256 members only as exact sealed token evidence; R3 validation then requires an absolute HTTPS document URI and an unpadded SHA-256 digest bound to that evidence. The bounded direct retrieval and policy composition is claimed separately below.
+Core verification retains applicable r3_uri and r3_s256 members only as exact sealed token evidence; R3 validation then requires an absolute HTTPS document URI and an unpadded SHA-256 digest bound to that evidence. The bounded direct retrieval and policy composition, including selection from a protected person-token challenge, is claimed separately below.
 
 Evidence:
 
 - `r3/token_external_test.go:TestR3TokenResultsBindExactCoreEvidence`
 - `r3/token_external_test.go:TestR3AuthTokenValidationRefusesMalformedMembers`
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
 
 ### `r3/r3-processing` — Partial
 
-In one immediate four-party profile, the PS and AS independently fetch the exact document with signed server identities and verify its hash before review or grant policy. Direct AS audit and response retention are atomic; caching, deferred authorization, and three-party deployment remain unclaimed.
+In one immediate four-party profile, the resource selects and retains the exact document during a protected person-token challenge, then the PS and AS independently fetch it with signed server identities and verify its hash before review or grant policy. Direct AS audit and response retention are atomic; caching, deferred authorization, and three-party deployment remain unclaimed.
 
 Evidence:
 
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
 
 ### `r3/r3-processing/as-processing` — Partial
 
-The AS verifies the resource token, signed document retrieval, exact document hash, deployment grant policy, and grant membership before atomically retaining the required audit fields with the exact r3_granted token response. Exact retry after a lost response and AS reconstruction returns the same record without rerunning trust or grant policy. Caching and deferred R3 remain unclaimed.
+The AS verifies the resource token selected during a protected person-token challenge, signed document retrieval, exact document hash, deployment grant policy, and grant membership before atomically retaining the required audit fields with the exact r3_granted token response. Exact retry after a lost response and AS reconstruction returns the same record without rerunning trust or grant policy. Caching and deferred R3 remain unclaimed.
 
 Evidence:
 
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
 
 ### `r3/resource-enforcement` — Partial
 
-A configured R3 resource maps each protected request to exactly one operation. It serves r3_granted directly, challenges r3_per_call before consequence, and refuses ungranted operations. The bounded 401 per-call path verifies exact approved parameters, executes once, and replays its retained result; deferred 202 delivery remains unclaimed.
+A configured R3 resource maps each protected request to exactly one operation, including when selecting a document for a person-token challenge. It serves r3_granted directly, challenges r3_per_call before consequence, and refuses ungranted operations. The bounded 401 per-call path verifies exact approved parameters, executes once, and replays its retained result; deferred 202 delivery remains unclaimed.
 
 Evidence:
 
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
 
 ### `r3/security-considerations/audit-log-integrity` — Exercised
 

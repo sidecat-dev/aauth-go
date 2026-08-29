@@ -119,7 +119,7 @@ branches are removed. Old wire forms may remain only as raw rejection vectors.
 
 ## AAG-I004 — Current R3 proposal retrieval must admit both the PS and AS
 
-**Status:** adopted; direct and `401` per-call retrieval implemented
+**Status:** adopted; direct, protected-person, and `401` per-call retrieval implemented
 
 **Source:** R3, `Per-Call Proposals`, `R3 Document`, and `R3 Processing` at the
 current AAuth revision above.
@@ -129,8 +129,10 @@ leaving the person server unable to retrieve it?
 
 **Chosen behavior:** An R3 resource retains the exact PS and AS reader
 identities with every initial document and per-call proposal before releasing
-the resource token. Both roles fetch independently with authenticated server
-requests and bind the exact bytes to Core token evidence.
+the resource token. A protected request carrying a person token is mapped to
+exactly one operation, and its selected document is retained before the
+auth-token requirement is released. Both roles fetch independently with
+authenticated server requests and bind the exact bytes to Core token evidence.
 
 **Alternative considered:** Preserve the earlier AS-only endpoint rule because
 an older draft combined PS display language with AS-only retrieval text. The
@@ -143,11 +145,13 @@ retrieval contract.
 **Evidence:**
 
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
 - `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart`
 
-**Current-product effect:** One immediate four-party direct and `401` per-call
-path is callable and partially claimed. Deferred `202` R3, three-party R3,
-caching, and broader R3 topologies remain explicit gaps.
+**Current-product effect:** One immediate four-party direct, protected-person,
+and `401` per-call path is callable and partially claimed. Deferred `202` R3,
+existing-auth-token step-up, three-party R3, caching, and broader R3 topologies
+remain explicit gaps.
 
 ## AAG-I005 — Person-token policy denial is an explicit extension
 

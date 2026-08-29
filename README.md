@@ -226,15 +226,19 @@ Token JSON and reference endpoint request JSON reject exact duplicate member
 names and names that Go would case-fold onto the same struct field before
 decoding.
 
-One bounded immediate four-party R3 path is callable. The AS partitions one
-exact requested operation set into direct and per-call operations. Direct
-operations run under `r3_granted`. A `401` per-call operation produces an exact
-content-addressed proposal for one call, admits only the PS and AS as readers,
-and goes through both policies again. The retry must match inline JSON
-structurally and digest parameters byte-for-byte before a provider-keyed
-operation runs once. A dropped response, resource reconstruction, or exact
-retry returns the retained result; a concurrent retry cannot run the provider
-again.
+One bounded immediate four-party R3 path is callable from either proactive
+resource authorization or a protected call that presents a person token. In
+the latter path the resource maps the request to exactly one operation, retains
+the exact document for the PS and AS, and returns an auth-token requirement;
+the ordinary agent and PS/AS exchange then validates that R3 reference before
+the protected operation runs. The AS partitions one exact requested operation
+set into direct and per-call operations. Direct operations run under
+`r3_granted`. A `401` per-call operation produces an exact content-addressed
+proposal for one call, admits only the PS and AS as readers, and goes through
+both policies again. The retry must match inline JSON structurally and digest
+parameters byte-for-byte before a provider-keyed operation runs once. A
+dropped response, resource reconstruction, or exact retry returns the retained
+result; a concurrent retry cannot run the provider again.
 
 This is not complete R3 conformance. Deferred `202` per-call delivery,
 three-party R3, and document caching remain open. Direct and per-call AS
@@ -604,7 +608,7 @@ do not claim distributed, multi-writer, federated, or enterprise storage.
 Resource-owned interaction chaining, interaction/payment relay and callbacks,
 question delivery, updated-request/cancel clarification actions,
 existing-token step-up, deferred `202` and three-party
-R3, R3 challenge selection, R3 caching and multiple-definition composition,
+R3, R3 caching and multiple-definition composition,
 platform enrollment/attestation, x509, and additional Signature-Key schemes
 still require implementation and qualification.
 The Phase-1 `Accept-Signature-Alg` and
