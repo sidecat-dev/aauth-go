@@ -383,7 +383,11 @@ func responseSignatureBase(response *http.Response, request *http.Request, compo
 				return "", err
 			}
 		}
-		lines = append(lines, strconv.Quote(component.name)+": "+value)
+		label := strconv.Quote(component.name)
+		if component.request {
+			label += ";req"
+		}
+		lines = append(lines, label+": "+value)
 	}
 	lines = append(lines, `"@signature-params": `+params)
 	return strings.Join(lines, "\n"), nil
