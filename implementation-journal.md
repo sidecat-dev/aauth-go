@@ -687,7 +687,9 @@ for this library.
   consequence. Both journeys reconstruct their file-backed store and refuse a
   revoked token; the resource journey also covers a four-party AS-issued auth
   token, a trusted PS revoker, an unauthorized server, unknown target, and
-  new-proof idempotency.
+  new-proof idempotency. The three-party Person Server journey now verifies
+  that locally issued auth-token identities are observed before release and
+  remain revocable after reconstruction.
 - Mission-wide propagation and provider fan-out remain unclaimed; this
   increment does not imply complete revocation coverage
   for every token issuer or token type. The Access Server now records each

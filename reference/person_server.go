@@ -3346,6 +3346,10 @@ func (server *PersonServer) completeAuthorization(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if err := server.observeIssuedAuthToken(ctx, authToken); err != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "token_revocation_unavailable", err)
+		return
+	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"auth_token": authToken,
 		"expires_in": expiresAt - now.Unix(),
@@ -3802,6 +3806,10 @@ func (server *PersonServer) handlePendingAuthorization(
 			token := pending.terminalAuthToken
 			expiresAt := pending.terminalExpiresAt
 			server.pendingMu.Unlock()
+			if err := server.observeIssuedAuthToken(request.Context(), token); err != nil {
+				writeProblem(response, http.StatusServiceUnavailable, "token_revocation_unavailable", err)
+				return
+			}
 			writeJSON(response, http.StatusOK, map[string]any{
 				"auth_token": token,
 				"expires_in": expiresAt - server.clock.Now().Unix(),
@@ -3817,6 +3825,10 @@ func (server *PersonServer) handlePendingAuthorization(
 		token, expiresAt, err := server.mintLocalAuthToken(authorizationContext, decision, pending.id)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if err := server.observeIssuedAuthToken(request.Context(), token); err != nil {
+			writeProblem(response, http.StatusServiceUnavailable, "token_revocation_unavailable", err)
 			return
 		}
 		server.pendingMu.Lock()

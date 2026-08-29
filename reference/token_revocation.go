@@ -620,6 +620,29 @@ func (server *AccessServer) observeIssuedAuthToken(ctx context.Context, compact 
 	})
 }
 
+func (server *PersonServer) observeIssuedAuthToken(ctx context.Context, compact string) error {
+	if server.tokenRevocationStore == nil {
+		return nil
+	}
+	evidence, err := aa.VerifyAuthToken(
+		ctx,
+		compact,
+		signaturekey.StaticKeyResolver{server.identifier: {server.signingKey.ID(): server.signingKey.PublicJWK()}},
+		server.clock,
+	)
+	if err != nil {
+		return fmt.Errorf("reference: issued auth-token does not verify for revocation custody: %w", err)
+	}
+	claims, err := evidence.Claims()
+	if err != nil {
+		return fmt.Errorf("reference: read issued auth-token claims for revocation custody: %w", err)
+	}
+	return server.tokenRevocationStore.Observe(ctx, TokenRevocationObservation{
+		Request:   aa.TokenRevocationRequest{Issuer: claims.Issuer, JTI: claims.JTI},
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+	})
+}
+
 func (server *AccessServer) handleTokenRevocation(
 	response http.ResponseWriter,
 	request *http.Request,
