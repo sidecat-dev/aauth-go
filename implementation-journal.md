@@ -670,22 +670,24 @@ for this library.
 
 ### Current token revocation boundary
 
-- **Status: the reference Person Server's agent-token revocation path is
-  implemented and qualified across restart.**
+- **Status: the reference Person Server's agent-token and auth-token
+  Resource revocation paths are implemented and qualified across restart.**
 - The public request value contains only the protocol's `(iss, jti)` pair. A
-  signed `POST /revoke` is accepted only after the request body and agent
-  credential are verified; a deployment policy may admit the issuer or a
-  trusted administrative caller. Unknown pairs return `404`, repeated new
-  proofs for a known pair return `200`, and an exact proof replay is refused.
+  signed `POST /revoke` is accepted only after the request body and caller
+  signature are verified; a deployment policy may admit the token issuer or a
+  trusted caller. Unknown pairs return `404`, repeated new proofs for a known
+  pair return `200`, and an exact proof replay is refused.
 - The reference store records observed token identities, revocation timestamps,
   and replay keys in one checksum-bound snapshot. The Person Server checks the
-  store on each authenticated agent-token path, so a revoked credential is
-  refused after the server is reconstructed. The journey covers malformed,
-  query-bearing, unknown, unauthorized, replayed, restart, and post-revocation
-  requests.
-- Resource and access-server token revocation, mission-wide propagation, and
-  provider fan-out remain unclaimed; this increment does not imply complete
-  revocation coverage for every token issuer.
+  store on each authenticated agent-token path, while an auth-token Resource
+  checks it after current token-context validation and before its protected
+  consequence. Both journeys reconstruct their file-backed store and refuse a
+  revoked token; the resource journey also covers a four-party AS-issued auth
+  token, a trusted PS revoker, an unauthorized server, unknown target, and
+  new-proof idempotency.
+- Mission-wide propagation, access-server orchestration, and provider fan-out
+  remain unclaimed; this increment does not imply complete revocation coverage
+  for every token issuer or token type.
 
 ### Protected host signing boundary
 

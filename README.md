@@ -306,8 +306,12 @@ When configured, the person server also advertises a revocation endpoint. A
 signed `POST /revoke` names a token by its issuer and JTI; the reference
 implementation retains observed agent-token identities, authorizes the token
 issuer or deployment policy, and durably refuses the revoked credential on
-later requests. Resource and access-server revocation remain separate profile
-work.
+later requests. An auth-token resource can likewise advertise a revocation
+endpoint, retain each observed auth token by `(iss, jti)`, accept the token
+issuer or a trusted person-server policy, and refuse the revoked token before
+its host operation even after resource reconstruction. Mission-wide
+propagation, access-server orchestration, and provider fan-out remain separate
+profile work.
 
 Governance custody can be injected through the small `GovernanceStore`
 interface. The included single-writer file adapter writes private `0600`

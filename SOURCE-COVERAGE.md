@@ -671,11 +671,12 @@ Third-party login is not implemented.
 
 ### `core/token-revocation` — Partial
 
-The reference Person Server implements the current signed (iss, jti) revocation request for observed agent credentials. A checksum-bound file store retains observations, revocation state, and proof replay keys; issuer-or-deployment policy authorizes the request; repeated new proofs are idempotent; restart preserves the refusal of a revoked agent token. Resource and access-server revocation, mission-wide propagation, and provider fan-out remain open.
+The reference Person Server and auth-token Resource implement the current signed (iss, jti) revocation request for observed credentials. A checksum-bound file store retains observations, revocation state, and proof replay keys; issuer-or-deployment policy authorizes the request; repeated new proofs are idempotent; restart preserves refusal before the protected consequence for revoked agent and auth tokens. Mission-wide propagation, access-server-owned revocation orchestration, and provider fan-out remain open.
 
 Evidence:
 
 - `revocation_journey_test.go:TestCurrentAgentTokenRevocationSurvivesPersonServerRestart`
+- `resource_revocation_journey_test.go:TestCurrentAuthTokenRevocationSurvivesResourceRestart`
 - `reference/token_revocation_test.go:TestFileTokenRevocationStoreSurvivesRestart`
 - `revocation_test.go:TestTokenRevocationRequestValidation`
 

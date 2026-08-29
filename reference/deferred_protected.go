@@ -66,6 +66,9 @@ func (resource *Resource) handleDeferredProtectedCall(response http.ResponseWrit
 		writeTokenVerificationFailure(response, http.StatusForbidden, "invalid_token", errors.New("auth token does not satisfy the held invocation"))
 		return
 	}
+	if !resource.checkAuthToken(response, request.Context(), claims) {
+		return
+	}
 	if !resource.consumeProof(response, request, verified) {
 		return
 	}

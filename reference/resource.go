@@ -53,6 +53,8 @@ type ResourceConfig struct {
 	// a defensive copy of the fully verified current request after replay
 	// admission and before any protected response or Operation consequence.
 	ProtectedAuthorizationPolicy aauth.ProtectedAuthorizationPolicy
+	TokenRevocationStore         TokenRevocationStore
+	TokenRevocationPolicy        aauth.TokenRevocationPolicy
 	AuthorizationPolicy          aauth.AuthorizationPolicy
 	InteractionRequired          func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	Random                       io.Reader
@@ -155,6 +157,8 @@ type Resource struct {
 	replayStore                  ProofReplayStore
 	authorizationStore           AuthorizationStateStore
 	protectedAuthorizationPolicy aauth.ProtectedAuthorizationPolicy
+	tokenRevocationStore         TokenRevocationStore
+	tokenRevocationPolicy        aauth.TokenRevocationPolicy
 	authorizationPolicy          aauth.AuthorizationPolicy
 	interactionRequired          func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	random                       io.Reader
@@ -337,6 +341,12 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	}
 	if config.RequiredScopesForRequest == nil {
 		return nil, errors.New("reference: current resource requires a required-scope mapper")
+	}
+	if config.TokenRevocationPolicy != nil && config.TokenRevocationStore == nil {
+		return nil, errors.New("reference: token revocation policy requires a token revocation store")
+	}
+	if config.TokenRevocationStore != nil && config.AccessMode != aauth.AccessModeAuthToken {
+		return nil, errors.New("reference: resource token revocation requires auth-token access mode")
 	}
 	var directR3Vocabularies map[string]json.RawMessage
 	var r3DocumentStore R3RestrictedDocumentStore
@@ -549,6 +559,8 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		replayStore:                  config.ReplayStore,
 		authorizationStore:           config.AuthorizationStore,
 		protectedAuthorizationPolicy: config.ProtectedAuthorizationPolicy,
+		tokenRevocationStore:         config.TokenRevocationStore,
+		tokenRevocationPolicy:        config.TokenRevocationPolicy,
 		authorizationPolicy:          config.AuthorizationPolicy,
 		interactionRequired:          config.InteractionRequired,
 		random:                       random,
@@ -1017,6 +1029,9 @@ func (resource *Resource) Handler() http.Handler {
 	if resource.r3DocumentStore != nil {
 		mux.HandleFunc("GET /r3/{s256}", resource.handleR3Document)
 		mux.HandleFunc("GET /r3/per-call/{s256}", resource.handleR3Document)
+	}
+	if resource.tokenRevocationStore != nil {
+		mux.HandleFunc("POST /revoke", resource.handleTokenRevocation)
 	}
 	mux.HandleFunc("POST /authorize", resource.handleAuthorize)
 	mux.HandleFunc("GET /pending/{id}", resource.handlePendingAuthorization)
@@ -2263,6 +2278,9 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		writeProblem(response, http.StatusForbidden, "invalid_token", contextErr)
 		return
 	}
+	if !resource.checkAuthToken(response, request.Context(), claims) {
+		return
+	}
 	granted, err := parseScopes(claims.Scope)
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "insufficient_scope", err)
@@ -2680,6 +2698,9 @@ func (resource *Resource) handleMetadata(response http.ResponseWriter, _ *http.R
 			vocabularies[vocabulary] = append(json.RawMessage(nil), discovery...)
 		}
 		metadata["r3_vocabularies"] = vocabularies
+	}
+	if resource.tokenRevocationStore != nil {
+		metadata["revocation_endpoint"] = resource.identifier + "/revoke"
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }
