@@ -534,8 +534,9 @@ func (server *PersonServer) handleTokenRevocation(
 		server.keyResolver,
 		server.clock,
 		aa.VerifyRequestOptions{
-			RequiredComponents:     []string{"content-digest"},
-			AllowedCredentialTypes: []string{aa.AgentTokenType},
+			RequiredComponents:       []string{"content-digest"},
+			AllowedCredentialTypes:   []string{aa.AgentTokenType},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWT, signaturekey.SchemeJWKSURI},
 		},
 	)
 	if err != nil {
@@ -551,19 +552,27 @@ func (server *PersonServer) handleTokenRevocation(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	if !server.checkAgentToken(response, request.Context(), verified) {
-		return
-	}
-	claims, err := verified.AgentClaims()
-	if err != nil {
-		writeSignatureFailure(response, err)
-		return
+	callerIssuer := verified.Signer
+	callerAgent := ""
+	callerJTI := ""
+	if verified.AgentToken != nil {
+		if !server.checkAgentToken(response, request.Context(), verified) {
+			return
+		}
+		claims, claimsErr := verified.AgentClaims()
+		if claimsErr != nil {
+			writeSignatureFailure(response, claimsErr)
+			return
+		}
+		callerIssuer = claims.Issuer
+		callerAgent = claims.Subject
+		callerJTI = claims.JTI
 	}
 	if server.tokenRevocationPolicy != nil {
 		err = server.tokenRevocationPolicy(request.Context(), aa.TokenRevocationEvaluation{
-			Request: input, CallerIssuer: claims.Issuer, CallerAgent: claims.Subject, CallerJTI: claims.JTI,
+			Request: input, CallerIssuer: callerIssuer, CallerAgent: callerAgent, CallerJTI: callerJTI,
 		})
-	} else if claims.Issuer != input.Issuer {
+	} else if callerIssuer != input.Issuer {
 		err = errors.New("caller is not the token issuer")
 	}
 	if err != nil {

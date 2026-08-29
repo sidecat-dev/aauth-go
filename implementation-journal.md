@@ -675,9 +675,11 @@ for this library.
   restart.**
 - The public request value contains only the protocol's `(iss, jti)` pair. A
   signed `POST /revoke` is accepted only after the request body and caller
-  signature are verified; a deployment policy may admit the token issuer or a
-  trusted caller. Unknown pairs return `404`, repeated new proofs for a known
-  pair return `200`, and an exact proof replay is refused.
+  signature are verified; the Person Server supports its existing agent-token
+  caller and a server-signed issuer caller, while a deployment policy may
+  admit the token issuer or a trusted caller. Unknown pairs return `404`,
+  repeated new proofs for a known pair return `200`, and an exact proof replay
+  is refused.
 - The reference store records observed token identities, revocation timestamps,
   and replay keys in one checksum-bound snapshot. The Person Server checks the
   store on each authenticated agent-token path, while an auth-token Resource
