@@ -1509,19 +1509,51 @@ func (agent *Agent) RecordAudit(
 	return nil
 }
 
-// ProposeMissionCompletion submits the draft's completion interaction and
-// returns the person-server review continuation.
+// ProposeMissionCompletion submits the current mission-endpoint completion
+// action and returns the person-server review continuation.
 func (agent *Agent) ProposeMissionCompletion(
 	ctx context.Context,
 	endpoint string,
 	mission aauth.MissionReference,
 	summary string,
 ) (InteractionAuthorization, error) {
-	return agent.RequestInteraction(ctx, endpoint, aauth.InteractionRequest{
-		Type:    aauth.InteractionTypeCompletion,
-		Summary: summary,
-		Mission: &mission,
-	})
+	var authorization InteractionAuthorization
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return authorization, err
+	}
+	personServer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return authorization, err
+	}
+	if err := mission.Validate(); err != nil {
+		return authorization, err
+	}
+	if mission.Approver != personServer {
+		return authorization, errors.New("reference: mission approver does not match person-server endpoint")
+	}
+	input := aauth.MissionCompletion{Action: "completion", Summary: summary}
+	if err := input.Validate(); err != nil {
+		return authorization, err
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return authorization, err
+	}
+	target := strings.TrimRight(endpoint, "/") + "/" + mission.S256
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return authorization, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
+		return authorization, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return authorization, err
+	}
+	defer response.Body.Close()
+	return decodeInteractionAuthorization(response, personServer, agent.clock.Now(), aauth.InteractionTypeCompletion)
 }
 
 // RequestInteraction submits a signed person-server interaction request.

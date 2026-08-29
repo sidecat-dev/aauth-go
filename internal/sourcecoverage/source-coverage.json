@@ -401,7 +401,7 @@
       "source": "core",
       "section": "mission-creation",
       "status": "partial",
-      "claim": "A current mission proposal is validated before policy, and policy receives the authenticated agent, proof key, token expiry, and person-server binding. The resulting exact digest-bound approval can be recovered after restart. Current mission update, completion, control, and log behavior remains open.",
+      "claim": "A current mission proposal is validated before policy, and policy receives the authenticated agent, proof key, token expiry, and person-server binding. The resulting exact digest-bound approval can be recovered after restart. Mission control and broader mission-log behavior remain open; current update and completion actions are covered by their own partial annotations.",
       "evidence": [
         {
           "file": "current_person_token_journey_test.go",
@@ -426,6 +426,22 @@
         {
           "file": "mission_test.go",
           "test": "TestMissionUpdateValidationAndResult"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "mission-completion",
+      "status": "partial",
+      "claim": "An owning agent can submit the current mission completion action at POST /mission/{mission_s256}; the person server validates the exact summary and active mission, retains a proof-bound approval continuation, and keeps the existing clarification, acceptance, termination, restart, replay, expiry, and rollback behavior. The generic interaction surface and other mission actions remain separate gaps.",
+      "evidence": [
+        {
+          "file": "mission_completion_journey_test.go",
+          "test": "TestMissionCompletionClarificationAndAcceptanceSurviveRestart"
+        },
+        {
+          "file": "mission_test.go",
+          "test": "TestMissionCompletionValidation"
         }
       ]
     },

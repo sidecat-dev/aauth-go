@@ -78,3 +78,19 @@ func TestMissionUpdateValidationAndResult(t *testing.T) {
 		t.Fatal("invalid mission update result accepted")
 	}
 }
+
+func TestMissionCompletionValidation(t *testing.T) {
+	valid := aauth.MissionCompletion{Action: "completion", Summary: "The work is complete."}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []aauth.MissionCompletion{
+		{},
+		{Action: "update", Summary: valid.Summary},
+		{Action: "completion"},
+	} {
+		if err := invalid.Validate(); err == nil {
+			t.Fatalf("invalid mission completion accepted: %#v", invalid)
+		}
+	}
+}

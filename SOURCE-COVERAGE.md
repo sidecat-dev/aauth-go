@@ -9,10 +9,10 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | Status | Sections |
 | --- | ---: |
 | Exercised | 47 |
-| Partial | 57 |
+| Partial | 58 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 490 |
+| Unclaimed | 489 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,7 +20,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 28 | 20 | 3 | 0 | 205 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 28 | 21 | 3 | 0 | 204 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
@@ -429,9 +429,18 @@ Evidence:
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 - `current_mission_recovery_test.go:TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries`
 
+### `core/mission-completion` — Partial
+
+An owning agent can submit the current mission completion action at POST /mission/{mission_s256}; the person server validates the exact summary and active mission, retains a proof-bound approval continuation, and keeps the existing clarification, acceptance, termination, restart, replay, expiry, and rollback behavior. The generic interaction surface and other mission actions remain separate gaps.
+
+Evidence:
+
+- `mission_completion_journey_test.go:TestMissionCompletionClarificationAndAcceptanceSurviveRestart`
+- `mission_test.go:TestMissionCompletionValidation`
+
 ### `core/mission-creation` — Partial
 
-A current mission proposal is validated before policy, and policy receives the authenticated agent, proof key, token expiry, and person-server binding. The resulting exact digest-bound approval can be recovered after restart. Current mission update, completion, control, and log behavior remains open.
+A current mission proposal is validated before policy, and policy receives the authenticated agent, proof key, token expiry, and person-server binding. The resulting exact digest-bound approval can be recovered after restart. Mission control and broader mission-log behavior remain open; current update and completion actions are covered by their own partial annotations.
 
 Evidence:
 

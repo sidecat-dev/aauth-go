@@ -52,6 +52,25 @@ func (result MissionUpdateResult) Validate() error {
 	return validateS256("mission update s256", result.S256)
 }
 
+// MissionCompletion is the current mission-endpoint request that proposes
+// completion of an approved mission. The person still decides whether to
+// terminate the mission.
+type MissionCompletion struct {
+	Action  string `json:"action"`
+	Summary string `json:"summary"`
+}
+
+// Validate checks the current mission-endpoint completion request shape.
+func (completion MissionCompletion) Validate() error {
+	if completion.Action != "completion" {
+		return errors.New("aauth: mission completion action must be completion")
+	}
+	if strings.TrimSpace(completion.Summary) == "" {
+		return errors.New("aauth: mission completion summary is required")
+	}
+	return nil
+}
+
 // Validate rejects protocol-invalid mission material before a deployment
 // presents it to a person or policy engine.
 func (proposal MissionProposal) Validate() error {

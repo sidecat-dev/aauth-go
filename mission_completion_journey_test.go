@@ -152,7 +152,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	}
 	authorization, err := agent.ProposeMissionCompletion(
 		context.Background(),
-		"https://ps.example/interaction",
+		"https://ps.example/mission",
 		mission.Reference,
 		"Implemented, tested, and checkpointed the change.",
 	)
@@ -172,7 +172,6 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 		len(history[0].Response) != 0 {
 		t.Fatalf("interaction history = %#v", history)
 	}
-
 	personServer = newPersonServer()
 	personHandler = personServer.Handler()
 	if _, err := otherAgent.PollInteraction(context.Background(), pending); err == nil {
@@ -310,7 +309,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	}
 	lostResponse, err := agent.ProposeMissionCompletion(
 		context.Background(),
-		"https://ps.example/interaction",
+		"https://ps.example/mission",
 		lostResponseMission.Reference,
 		"Ready for a completion response that the transport will drop.",
 	)
@@ -346,7 +345,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	}
 	expiring, err := agent.ProposeMissionCompletion(
 		context.Background(),
-		"https://ps.example/interaction",
+		"https://ps.example/mission",
 		expiringMission.Reference,
 		"Ready for review, but no decision arrived.",
 	)
@@ -393,7 +392,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	}
 	expiringClarification, err := agent.ProposeMissionCompletion(
 		context.Background(),
-		"https://ps.example/interaction",
+		"https://ps.example/mission",
 		expiringClarificationMission.Reference,
 		"Ready for clarification within a bounded review window.",
 	)
@@ -447,7 +446,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	store.setFail(true)
 	if _, err := agent.ProposeMissionCompletion(
 		context.Background(),
-		"https://ps.example/interaction",
+		"https://ps.example/mission",
 		rollbackMission.Reference,
 		"Retry this exact proposal after durable storage recovers.",
 	); err == nil {
@@ -458,7 +457,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	store.setFail(false)
 	rollbackReview, err := agent.ProposeMissionCompletion(
 		context.Background(),
-		"https://ps.example/interaction",
+		"https://ps.example/mission",
 		rollbackMission.Reference,
 		"Retry this exact proposal after durable storage recovers.",
 	)
@@ -546,7 +545,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	}
 	roundLimit, err := agent.ProposeMissionCompletion(
 		context.Background(),
-		"https://ps.example/interaction",
+		"https://ps.example/mission",
 		roundLimitMission.Reference,
 		"Ready for bounded clarification review.",
 	)

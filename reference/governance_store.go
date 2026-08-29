@@ -215,18 +215,19 @@ type governancePermissionDecision struct {
 }
 
 type governancePendingCompletion struct {
-	ID                     string          `json:"id"`
-	Agent                  string          `json:"agent"`
-	PollingAgentThumbprint string          `json:"polling_agent_thumbprint"`
-	ExpiresAt              string          `json:"expires_at"`
-	RequestReplayKey       string          `json:"request_replay_key"`
-	RequestBody            []byte          `json:"request_body"`
-	State                  completionState `json:"state"`
-	Clarification          string          `json:"clarification,omitempty"`
-	ClarificationRounds    int             `json:"clarification_rounds"`
-	DecidedBy              string          `json:"decided_by,omitempty"`
-	DecidedAt              string          `json:"decided_at,omitempty"`
-	ResponseBody           []byte          `json:"response_body,omitempty"`
+	ID                     string                 `json:"id"`
+	Mission                aauth.MissionReference `json:"mission,omitempty"`
+	Agent                  string                 `json:"agent"`
+	PollingAgentThumbprint string                 `json:"polling_agent_thumbprint"`
+	ExpiresAt              string                 `json:"expires_at"`
+	RequestReplayKey       string                 `json:"request_replay_key"`
+	RequestBody            []byte                 `json:"request_body"`
+	State                  completionState        `json:"state"`
+	Clarification          string                 `json:"clarification,omitempty"`
+	ClarificationRounds    int                    `json:"clarification_rounds"`
+	DecidedBy              string                 `json:"decided_by,omitempty"`
+	DecidedAt              string                 `json:"decided_at,omitempty"`
+	ResponseBody           []byte                 `json:"response_body,omitempty"`
 }
 
 func encodeGovernanceState(
@@ -308,6 +309,7 @@ func encodeGovernanceState(
 			state.PendingCompletions,
 			governancePendingCompletion{
 				ID:                     pending.id,
+				Mission:                pending.missionReference,
 				Agent:                  pending.agent,
 				PollingAgentThumbprint: pending.pollingAgentThumbprint,
 				ExpiresAt:              pending.expiresAt.UTC().Format(time.RFC3339Nano),
@@ -839,7 +841,12 @@ func validateGovernanceRelationships(
 					!bytes.Equal(record.Request, entry.Request) {
 					return errors.New("reference: mission interaction request has no global interaction record")
 				}
-				if interactionRecordMission(record) != mission.reference {
+				interactionMission, interactionErr := missionReferenceFromCompletionBody(
+					record.Request,
+					record.Proof.Target,
+					mission.reference.Approver,
+				)
+				if interactionErr != nil || interactionMission != mission.reference {
 					return errors.New("reference: mission interaction request has the wrong mission")
 				}
 				if len(record.Response) != 0 {
@@ -980,16 +987,17 @@ func validateMissionLogEntry(
 			return err
 		}
 	case aauth.MissionLogInteractionRequest:
-		var request aauth.InteractionRequest
-		if err := decodeJSONBytes(bytes.NewReader(entry.Request), &request); err != nil {
-			return err
+		if entry.Proof == nil {
+			return errors.New("interaction request log entry is invalid")
 		}
-		if err := request.Validate(); err != nil ||
-			request.Type != aauth.InteractionTypeCompletion ||
-			request.Mission == nil ||
-			*request.Mission != mission ||
+		missionReference, err := missionReferenceFromCompletionBody(
+			entry.Request,
+			entry.Proof.Target,
+			mission.Approver,
+		)
+		if err != nil ||
+			missionReference != mission ||
 			len(entry.Response) != 0 ||
-			entry.Proof == nil ||
 			entry.RequestProofID != entry.Proof.ReplayKey {
 			return errors.New("interaction request log entry is invalid")
 		}
@@ -998,7 +1006,7 @@ func validateMissionLogEntry(
 			entry.Request,
 			agent,
 			mission.Approver,
-			"/interaction",
+			entry.Proof.Target,
 		); err != nil {
 			return err
 		}

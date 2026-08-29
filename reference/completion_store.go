@@ -15,6 +15,44 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
+func missionReferenceFromCompletionBody(
+	body []byte,
+	target string,
+	personServer string,
+) (aauth.MissionReference, error) {
+	if strings.HasPrefix(target, "/mission/") {
+		var completion aauth.MissionCompletion
+		if err := decodeJSONBytes(bytes.NewReader(body), &completion); err != nil {
+			return aauth.MissionReference{}, err
+		}
+		if err := completion.Validate(); err != nil {
+			return aauth.MissionReference{}, err
+		}
+		reference := aauth.MissionReference{
+			Approver: personServer,
+			S256:     strings.TrimPrefix(target, "/mission/"),
+		}
+		if err := reference.Validate(); err != nil {
+			return aauth.MissionReference{}, err
+		}
+		return reference, nil
+	}
+	if target != "/interaction" {
+		return aauth.MissionReference{}, errors.New("completion request target is invalid")
+	}
+	var interaction aauth.InteractionRequest
+	if err := decodeJSONBytes(bytes.NewReader(body), &interaction); err != nil {
+		return aauth.MissionReference{}, err
+	}
+	if err := interaction.Validate(); err != nil ||
+		interaction.Type != aauth.InteractionTypeCompletion ||
+		interaction.Mission == nil ||
+		interaction.Mission.Approver != personServer {
+		return aauth.MissionReference{}, errors.New("completion request is not a local mission completion")
+	}
+	return *interaction.Mission, nil
+}
+
 func decodeGovernanceInteractionRecord(
 	encoded aauth.InteractionRecord,
 	sequence uint64,
@@ -29,20 +67,12 @@ func decodeGovernanceInteractionRecord(
 	if err := aauth.ValidateAgentIdentifier(encoded.Agent); err != nil {
 		return aauth.InteractionRecord{}, err
 	}
-	var request aauth.InteractionRequest
-	if err := decodeJSONBytes(bytes.NewReader(encoded.Request), &request); err != nil {
+	missionReference, err := missionReferenceFromCompletionBody(encoded.Request, encoded.Proof.Target, personServer)
+	if err != nil {
 		return aauth.InteractionRecord{}, err
 	}
-	if err := request.Validate(); err != nil {
-		return aauth.InteractionRecord{}, err
-	}
-	if request.Type != aauth.InteractionTypeCompletion ||
-		request.Mission == nil ||
-		request.Mission.Approver != personServer {
-		return aauth.InteractionRecord{}, errors.New("interaction record is not a local mission completion")
-	}
-	mission, exists := missions[request.Mission.S256]
-	if !exists || mission.reference != *request.Mission || mission.agent != encoded.Agent {
+	mission, exists := missions[missionReference.S256]
+	if !exists || mission.reference != missionReference || mission.agent != encoded.Agent {
 		return aauth.InteractionRecord{}, errors.New("interaction record mission is absent or has the wrong owner")
 	}
 	if err := validateStoredRequestProof(
@@ -50,7 +80,7 @@ func decodeGovernanceInteractionRecord(
 		encoded.Request,
 		encoded.Agent,
 		personServer,
-		"/interaction",
+		encoded.Proof.Target,
 	); err != nil {
 		return aauth.InteractionRecord{}, err
 	}
@@ -106,22 +136,6 @@ func decodeGovernancePendingCompletion(
 	if err != nil || expiresAt.IsZero() {
 		return pending, errors.New("completion pending expiry is invalid")
 	}
-	var request aauth.InteractionRequest
-	if err := decodeJSONBytes(bytes.NewReader(encoded.RequestBody), &request); err != nil {
-		return pending, err
-	}
-	if err := request.Validate(); err != nil {
-		return pending, err
-	}
-	if request.Type != aauth.InteractionTypeCompletion ||
-		request.Mission == nil ||
-		request.Mission.Approver != personServer {
-		return pending, errors.New("completion pending request is not a local mission completion")
-	}
-	mission, exists := missions[request.Mission.S256]
-	if !exists || mission.reference != *request.Mission || mission.agent != encoded.Agent {
-		return pending, errors.New("completion pending mission is absent or has the wrong owner")
-	}
 	var interaction *aauth.InteractionRecord
 	for index := range interactions {
 		record := &interactions[index]
@@ -135,6 +149,21 @@ func decodeGovernancePendingCompletion(
 		interaction.PendingID != encoded.ID ||
 		!bytes.Equal(interaction.Request, encoded.RequestBody) {
 		return pending, errors.New("completion pending state does not match its interaction record")
+	}
+	missionReference, err := missionReferenceFromCompletionBody(
+		encoded.RequestBody,
+		interaction.Proof.Target,
+		personServer,
+	)
+	if err != nil {
+		return pending, err
+	}
+	if (encoded.Mission.Approver != "" || encoded.Mission.S256 != "") && encoded.Mission != missionReference {
+		return pending, errors.New("completion pending mission does not match its request")
+	}
+	mission, exists := missions[missionReference.S256]
+	if !exists || mission.reference != missionReference || mission.agent != encoded.Agent {
+		return pending, errors.New("completion pending mission is absent or has the wrong owner")
 	}
 	state := encoded.State
 	switch state {
@@ -204,6 +233,7 @@ func decodeGovernancePendingCompletion(
 	}
 	return pendingCompletion{
 		id:                     encoded.ID,
+		missionReference:       missionReference,
 		agent:                  encoded.Agent,
 		pollingAgentThumbprint: encoded.PollingAgentThumbprint,
 		expiresAt:              expiresAt,
@@ -216,14 +246,6 @@ func decodeGovernancePendingCompletion(
 		decidedAt:              decidedAt,
 		responseBody:           append([]byte(nil), encoded.ResponseBody...),
 	}, nil
-}
-
-func interactionRecordMission(record aauth.InteractionRecord) aauth.MissionReference {
-	var request aauth.InteractionRequest
-	if err := json.Unmarshal(record.Request, &request); err != nil || request.Mission == nil {
-		return aauth.MissionReference{}
-	}
-	return *request.Mission
 }
 
 func validPendingInteractionTarget(target string) bool {

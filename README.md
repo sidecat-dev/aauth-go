@@ -291,8 +291,8 @@ after restart returns the retained response instead of appending a second log
 entry; another agent, malformed input, and a terminated mission are refused.
 
 An agent can also propose mission completion through the person server's
-published interaction endpoint. The proposal is signed, bound to the exact
-active mission and initiating key, and placed into a durable approval
+current mission endpoint. The proposal is signed, bound to the exact active
+mission and initiating key, and placed into a durable approval
 continuation. A trusted host may ask up to five clarification questions; the
 agent posts signed, self-describing Markdown answers and resumes polling. Host
 acceptance records the terminal interaction response and mission termination

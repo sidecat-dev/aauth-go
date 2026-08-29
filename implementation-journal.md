@@ -621,13 +621,15 @@ for this library.
 
 ### Mission completion, clarification, and durable interaction custody
 
-- **Status: the mission-completion interaction is implemented vertically and
+- **Status: the current mission completion action is implemented vertically and
   qualified across restart.**
-- The agent signs a `type=completion` request containing a Markdown summary and
-  exact mission reference. The PS admits it only for the signing agent's
-  retained active mission, binds the random continuation to that agent and
-  confirmation key, records the verified request proof and replay identity,
-  and returns a deferred approval requirement.
+- The agent signs an `action=completion` request containing a Markdown summary
+  to `POST /mission/{mission_s256}`. The PS admits it only for the signing
+  agent's retained active mission, binds the random continuation to that agent
+  and confirmation key, records the verified request proof and replay identity,
+  and returns a deferred approval requirement. The older
+  `type=completion` interaction request remains available for the generic
+  interaction path and is still retained as a separate surface.
 - A trusted in-process host boundary can request clarification or accept
   completion. Clarification questions and signed
   `action=clarification_response` answers enter the same ordered mission log;

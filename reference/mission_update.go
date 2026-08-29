@@ -24,6 +24,13 @@ func (server *PersonServer) handleMissionUpdate(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	var action struct {
+		Action string `json:"action"`
+	}
+	if json.Unmarshal(body, &action) == nil && action.Action == "completion" {
+		server.handleMissionCompletion(response, request, body)
+		return
+	}
 	verified, err := aauth.VerifyRequest(
 		request.Context(),
 		request,

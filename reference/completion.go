@@ -30,6 +30,7 @@ var ErrCompletionExpired = errors.New("reference: completion review expired")
 
 type pendingCompletion struct {
 	id                     string
+	missionReference       aauth.MissionReference
 	agent                  string
 	pollingAgentThumbprint string
 	expiresAt              time.Time
@@ -156,6 +157,7 @@ func (server *PersonServer) commitCompletionRequest(
 	proof *aauth.RequestProof,
 	replayExpiresAt time.Time,
 ) error {
+	pending.missionReference = missionReference
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if _, replayed := server.governanceReplays[proof.ReplayKey]; replayed {
@@ -266,14 +268,8 @@ func (server *PersonServer) pollCompletion(
 		writeProblem(response, http.StatusForbidden, "invalid_pending", errors.New("completion review belongs to another agent key"))
 		return
 	}
-	var input aauth.InteractionRequest
-	if err := decodeJSONBytes(bytes.NewReader(pending.requestBody), &input); err != nil {
-		server.mu.Unlock()
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	mission, missionExists := server.missions[input.Mission.S256]
-	if !missionExists || mission.reference != *input.Mission || mission.agent != agent {
+	mission, missionExists := server.missions[pending.missionReference.S256]
+	if !missionExists || mission.reference != pending.missionReference || mission.agent != agent {
 		server.mu.Unlock()
 		writeProblem(response, http.StatusForbidden, "invalid_mission", ErrMissionUnknown)
 		return
@@ -424,15 +420,9 @@ func (server *PersonServer) receiveCompletionClarification(
 		writeProblem(response, http.StatusConflict, "invalid_request", errors.New("completion review is not awaiting clarification"))
 		return
 	}
-	var interaction aauth.InteractionRequest
-	if err := decodeJSONBytes(bytes.NewReader(pending.requestBody), &interaction); err != nil {
-		server.mu.Unlock()
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	missionState, missionExists := server.missions[interaction.Mission.S256]
+	missionState, missionExists := server.missions[pending.missionReference.S256]
 	if !missionExists ||
-		missionState.reference != *interaction.Mission ||
+		missionState.reference != pending.missionReference ||
 		missionState.agent != pending.agent {
 		server.mu.Unlock()
 		writeProblem(response, http.StatusForbidden, "invalid_mission", ErrMissionUnknown)
@@ -482,7 +472,7 @@ func (server *PersonServer) receiveCompletionClarification(
 		writeProblemBody(response, http.StatusRequestTimeout, body)
 		return
 	}
-	mission, err := server.activeMissionForAgentLocked(pending.agent, *interaction.Mission)
+	mission, err := server.activeMissionForAgentLocked(pending.agent, pending.missionReference)
 	if err != nil {
 		server.mu.Unlock()
 		server.writeMissionError(response, err)
@@ -508,7 +498,7 @@ func (server *PersonServer) receiveCompletionClarification(
 		Request:        append([]byte(nil), body...),
 		Proof:          copyRequestProof(proof),
 	})
-	server.missions[interaction.Mission.S256] = mission
+	server.missions[pending.missionReference.S256] = mission
 	server.addGovernanceReplayLocked(
 		proof.ReplayKey,
 		verified.Created.Add(signaturekey.DefaultSignatureWindow),
@@ -516,7 +506,7 @@ func (server *PersonServer) receiveCompletionClarification(
 	if err := server.persistGovernanceLocked(); err != nil {
 		if governanceSaveDefinitelyFailed(err) {
 			server.completionPending[pending.id] = previousPending
-			server.missions[interaction.Mission.S256] = previousMission
+			server.missions[pending.missionReference.S256] = previousMission
 			server.governanceReplays = previousReplays
 		}
 		server.mu.Unlock()

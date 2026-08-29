@@ -1,7 +1,6 @@
 package reference
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -37,11 +36,7 @@ func (server *PersonServer) RequestCompletionClarification(
 	if pending.clarificationRounds >= maxCompletionClarificationRounds {
 		return errors.New("reference: completion clarification round limit reached")
 	}
-	var input aauth.InteractionRequest
-	if err := decodeJSONBytes(bytes.NewReader(pending.requestBody), &input); err != nil {
-		return err
-	}
-	mission, err := server.activeMissionForAgentLocked(pending.agent, *input.Mission)
+	mission, err := server.activeMissionForAgentLocked(pending.agent, pending.missionReference)
 	if err != nil {
 		return err
 	}
@@ -64,11 +59,11 @@ func (server *PersonServer) RequestCompletionClarification(
 		RequestProofID: pending.requestReplayKey,
 		Response:       questionBody,
 	})
-	server.missions[input.Mission.S256] = mission
+	server.missions[pending.missionReference.S256] = mission
 	if err := server.persistGovernanceLocked(); err != nil {
 		if governanceSaveDefinitelyFailed(err) {
 			server.completionPending[pendingID] = previousPending
-			server.missions[input.Mission.S256] = previousMission
+			server.missions[pending.missionReference.S256] = previousMission
 		}
 		return err
 	}
@@ -97,11 +92,7 @@ func (server *PersonServer) AcceptCompletion(
 	if !pending.expiresAt.After(server.clock.Now()) {
 		return ErrCompletionExpired
 	}
-	var input aauth.InteractionRequest
-	if err := decodeJSONBytes(bytes.NewReader(pending.requestBody), &input); err != nil {
-		return err
-	}
-	mission, err := server.activeMissionForAgentLocked(pending.agent, *input.Mission)
+	mission, err := server.activeMissionForAgentLocked(pending.agent, pending.missionReference)
 	if err != nil {
 		return err
 	}
@@ -146,12 +137,12 @@ func (server *PersonServer) AcceptCompletion(
 		},
 	)
 	mission.status = aauth.MissionTerminated
-	server.missions[input.Mission.S256] = mission
+	server.missions[pending.missionReference.S256] = mission
 	if err := server.persistGovernanceLocked(); err != nil {
 		if governanceSaveDefinitelyFailed(err) {
 			server.completionPending[pendingID] = previousPending
 			server.interactionHistory = previousHistory
-			server.missions[input.Mission.S256] = previousMission
+			server.missions[pending.missionReference.S256] = previousMission
 		}
 		return err
 	}
@@ -167,11 +158,7 @@ func (server *PersonServer) commitCompletionTerminalLocked(
 ) error {
 	previousPending := server.completionPending[pendingID]
 	previousHistory := copyInteractionHistory(server.interactionHistory)
-	var input aauth.InteractionRequest
-	if err := decodeJSONBytes(bytes.NewReader(pending.requestBody), &input); err != nil {
-		return err
-	}
-	mission := server.missions[input.Mission.S256]
+	mission := server.missions[pending.missionReference.S256]
 	previousMission := mission
 	now := server.clock.Now().UTC()
 	pending.state = completionServed
@@ -199,14 +186,14 @@ func (server *PersonServer) commitCompletionTerminalLocked(
 			RequestProofID: pending.requestReplayKey,
 			Response:       append([]byte(nil), body...),
 		})
-		server.missions[input.Mission.S256] = mission
+		server.missions[pending.missionReference.S256] = mission
 	}
 	if err := server.persistGovernanceLocked(); err != nil {
 		if governanceSaveDefinitelyFailed(err) {
 			server.completionPending[pendingID] = previousPending
 			server.interactionHistory = previousHistory
 			if appendMissionResponse {
-				server.missions[input.Mission.S256] = previousMission
+				server.missions[pending.missionReference.S256] = previousMission
 			}
 		}
 		return err
