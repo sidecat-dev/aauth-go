@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestVerifyPersonTokenRejectsAuthorizationClaims(t *testing.T) {
@@ -36,7 +38,7 @@ func TestVerifyPersonTokenRejectsAuthorizationClaims(t *testing.T) {
 		_, err := VerifyPersonToken(
 			context.Background(),
 			compact,
-			StaticKeyResolver{
+			signaturekey.StaticKeyResolver{
 				"https://ps.example": {"ps-key": personServerKey.PublicJWK()},
 			},
 			ClockFunc(func() time.Time { return now }),

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -36,7 +38,7 @@ func TestDraft08JWKSValidatesOnlyTheExactRequestedKid(t *testing.T) {
 	})
 	defer gateway.Close()
 
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(),
 		Clock:  aauth.ClockFunc(func() time.Time { return now }),
 		Admit:  func(context.Context, string) error { return nil },
@@ -82,7 +84,7 @@ func TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope(t *testin
 			})
 			defer gateway.Close()
 
-			resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 				Client: gateway.Client(),
 				Clock:  aauth.ClockFunc(func() time.Time { return now }),
 				Admit:  func(context.Context, string) error { return nil },
@@ -94,7 +96,7 @@ func TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := aauth.SignRequestWithJWKSURI(
+			if err := signaturekey.SignJWKSURIRequest(
 				request,
 				key,
 				"https://issuer.example",
@@ -108,11 +110,11 @@ func TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope(t *testin
 				request,
 				resolver,
 				aauth.ClockFunc(func() time.Time { return now }),
-				aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI}},
+				aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI}},
 			)
-			var signatureError *aauth.SignatureError
+			var signatureError *signaturekey.Error
 			if !errors.As(err, &signatureError) ||
-				signatureError.Code != aauth.SignatureErrorUnsupportedAlgorithm ||
+				signatureError.Code != signaturekey.ErrorUnsupportedAlgorithm ||
 				len(signatureError.AcceptedAlgorithms) != 1 ||
 				signatureError.AcceptedAlgorithms[0] != jose.Ed25519Algorithm {
 				t.Fatalf("selected alg %q error = %v (%#v)", algorithm, err, signatureError)

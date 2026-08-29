@@ -7,17 +7,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 type BootstrapClientConfig struct {
 	DurableKey         jose.SigningKey
-	KeyResolver        aauth.KeyResolver
+	KeyResolver        signaturekey.KeyResolver
 	HTTPClient         *http.Client
 	Clock              aauth.Clock
 	DelegationLifetime time.Duration
@@ -28,7 +30,7 @@ type BootstrapClientConfig struct {
 // caller-owned and is never retained by the client.
 type BootstrapClient struct {
 	durableKey         jose.SigningKey
-	keyResolver        aauth.KeyResolver
+	keyResolver        signaturekey.KeyResolver
 	httpClient         *http.Client
 	clock              aauth.Clock
 	delegationLifetime time.Duration
@@ -74,7 +76,7 @@ func (client *BootstrapClient) Refresh(
 	if ephemeralKey.ID() == "" {
 		return BootstrapResult{}, errors.New("reference: bootstrap ephemeral key is required")
 	}
-	delegation, err := aauth.MintJKTJWT(
+	delegation, err := signaturekey.MintJKTJWT(
 		client.durableKey,
 		ephemeralKey.PublicJWK(),
 		client.clock.Now(),
@@ -89,7 +91,7 @@ func (client *BootstrapClient) Refresh(
 		personServer,
 		ephemeralKey,
 		func(request *http.Request) error {
-			return aauth.SignRequestWithJKTJWT(request, ephemeralKey, delegation, client.clock)
+			return signaturekey.SignJKTJWTRequest(request, ephemeralKey, delegation, client.clock)
 		},
 	)
 }
@@ -111,7 +113,7 @@ func (client *BootstrapClient) RefreshSingleKey(
 		personServer,
 		client.durableKey,
 		func(request *http.Request) error {
-			return aauth.SignRequestWithHWK(request, client.durableKey, client.clock)
+			return signaturekey.SignHWKRequest(request, client.durableKey, client.clock)
 		},
 	)
 }

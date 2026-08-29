@@ -5,11 +5,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -53,7 +55,7 @@ type AgentRefreshEvaluation struct {
 	DurableIdentity string
 	DurableKey      jose.JWK
 	RequestKey      jose.JWK
-	SignatureScheme string
+	SignatureScheme signaturekey.Scheme
 	PersonServer    string
 }
 
@@ -129,7 +131,7 @@ type AgentProviderConfig struct {
 type AgentProviderEventsConfig struct {
 	EventEndpoint           string
 	Store                   APEventStore
-	KeyResolver             aauth.KeyResolver
+	KeyResolver             signaturekey.KeyResolver
 	SubscriptionActiveUntil func(context.Context, string, string) (time.Time, error)
 	TokenLifetime           time.Duration
 }
@@ -156,7 +158,7 @@ type AgentProvider struct {
 	eventEndpoint         string
 	eventEndpointPath     string
 	eventStore            APEventStore
-	eventKeyResolver      aauth.KeyResolver
+	eventKeyResolver      signaturekey.KeyResolver
 	eventActiveUntil      func(context.Context, string, string) (time.Time, error)
 	eventTokenLifetime    time.Duration
 	enrollments           EnrollmentStore
@@ -182,7 +184,7 @@ func NewAgentProvider(config AgentProviderConfig) (*AgentProvider, error) {
 	var eventEndpoint string
 	var eventEndpointPath string
 	var eventStore APEventStore
-	var eventKeyResolver aauth.KeyResolver
+	var eventKeyResolver signaturekey.KeyResolver
 	var eventActiveUntil func(context.Context, string, string) (time.Time, error)
 	var eventTokenLifetime time.Duration
 	if config.Events != nil {
@@ -380,7 +382,7 @@ func (provider *AgentProvider) acceptEvent(response http.ResponseWriter, request
 		aauth.VerifyRequestOptions{
 			RequiredComponents:       requiredComponents,
 			AllowedCredentialTypes:   []string{aauth.EventTokenType},
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeySelfJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 			SelfJWTMaximumLifetime:   referenceEventTokenLifetime,
 			SelfJWTClaimPolicy: func(verified aauth.VerifiedSelfJWT) error {
 				decoded, decodeErr := aauth.DecodeVerifiedEventToken(verified, provider.clock)
@@ -448,9 +450,9 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 		provider.clock,
 		aauth.VerifyRequestOptions{
 			RequiredComponents: []string{"content-digest"},
-			AllowedSignatureKeyTypes: []string{
-				aauth.SignatureKeyHWK,
-				aauth.SignatureKeyJKTJWT,
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{
+				signaturekey.SchemeHWK,
+				signaturekey.SchemeJKTJWT,
 			},
 		},
 	)
@@ -534,7 +536,7 @@ func (provider *AgentProvider) refresh(response http.ResponseWriter, request *ht
 			return
 		}
 	}
-	replayExpiresAt := verified.Created.Add(aauth.DefaultSignatureWindow + time.Nanosecond)
+	replayExpiresAt := verified.Created.Add(signaturekey.DefaultSignatureWindow + time.Nanosecond)
 	if verified.JKTJWT != nil && verified.JKTJWT.ExpiresAt.Before(replayExpiresAt) {
 		replayExpiresAt = verified.JKTJWT.ExpiresAt
 	}

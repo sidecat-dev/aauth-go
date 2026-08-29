@@ -21,6 +21,8 @@ import (
 	"syscall"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
@@ -1112,7 +1114,7 @@ func validateStoredRequestProof(
 		proof.Target != target ||
 		proof.SignatureInput == "" ||
 		proof.SignatureKey == "" ||
-		proof.SignatureKeyType != aauth.SignatureKeyJWT ||
+		proof.SignatureKeyType != string(signaturekey.SchemeJWT) ||
 		proof.CredentialType != aauth.AgentTokenType ||
 		proof.Signer != agent ||
 		proof.Agent != agent ||
@@ -1121,7 +1123,7 @@ func validateStoredRequestProof(
 		return errors.New("mission log request proof context is invalid")
 	}
 	age := proof.VerifiedAt.Sub(proof.Created)
-	if age < -aauth.DefaultSignatureWindow || age > aauth.DefaultSignatureWindow {
+	if age < -signaturekey.DefaultSignatureWindow || age > signaturekey.DefaultSignatureWindow {
 		return errors.New("mission log request proof verification time is invalid")
 	}
 	if _, err := proof.PublicKey.PublicKey(); err != nil {

@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -43,7 +45,7 @@ func TestFixedPersonServerResourceRejectsPersonTokenFromAnotherServer(t *testing
 		AccessMode:   aauth.AccessModeAuthToken,
 		PersonServer: "https://configured-ps.example",
 		SigningKey:   resourceKey,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://configured-ps.example": {configuredPersonKey.ID(): configuredPersonKey.PublicJWK()},
 			"https://other-ps.example":      {otherPersonKey.ID(): otherPersonKey.PublicJWK()},
 		},
@@ -85,7 +87,7 @@ func TestFixedPersonServerResourceRejectsPersonTokenFromAnotherServer(t *testing
 		strings.NewReader(`{"scope":"records.read"}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agentKey, personToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, personToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -142,7 +144,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 	}
 
 	protocolClient := &http.Client{}
-	keyResolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	keyResolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: protocolClient,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -561,7 +563,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 		t.Fatal(err)
 	}
 	legacyRequest.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(legacyRequest, agentKey, agentToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(legacyRequest, agentKey, agentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	legacyResponse, err := protocolClient.Do(legacyRequest)
@@ -622,7 +624,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 				t.Fatal(err)
 			}
 			request.Header.Set("Content-Type", "application/json")
-			if err := aauth.SignRequest(request, agentKey, test.compact, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, agentKey, test.compact, clock); err != nil {
 				t.Fatal(err)
 			}
 			response, err := protocolClient.Do(request)
@@ -852,7 +854,7 @@ func TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart(t *testin
 				t.Fatal(err)
 			}
 			asRequest.Header.Set("Content-Type", "application/json")
-			if err := aauth.SignRequestWithJWKSURI(
+			if err := signaturekey.SignJWKSURIRequest(
 				asRequest,
 				psKey,
 				"https://ps.example",

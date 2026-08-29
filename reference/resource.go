@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,6 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -28,7 +30,7 @@ type ResourceConfig struct {
 	PersonServer string
 	AccessServer string
 	SigningKey   jose.SigningKey
-	KeyResolver  aauth.KeyResolver
+	KeyResolver  signaturekey.KeyResolver
 	Clock        aauth.Clock
 	NewID        func() string
 	// Scopes is the canonical issuance allowlist. Auth-token resources must
@@ -62,6 +64,7 @@ type ResourceEventsConfig struct {
 	PublicSubscriptionPath string
 	Store                  ResourceEventStore
 	HTTPClient             *http.Client
+	MetadataResolver       AgentEventMetadataResolver
 	ActiveUntil            func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 	// AsyncAPIPath and AsyncAPIDocument publish one exact JSON AsyncAPI 3.0.0
 	// Events contract through the resource's R3 vocabulary metadata. They must
@@ -82,7 +85,9 @@ type ResourceEventsConfig struct {
 	ProtectedRegistrationValidator func(context.Context, ProtectedEventRegistration) error
 }
 
-type agentEventMetadataResolver interface {
+// AgentEventMetadataResolver resolves only the Events delivery endpoint. Key
+// resolution remains a separate Signature-Key dependency.
+type AgentEventMetadataResolver interface {
 	ResolveAgentEventMetadata(context.Context, string) (aauth.AgentEventMetadata, error)
 }
 
@@ -93,7 +98,7 @@ type Resource struct {
 	authTokenDiscoveryDocument   string
 	signingKey                   jose.SigningKey
 	hasSigningKey                bool
-	keyResolver                  aauth.KeyResolver
+	keyResolver                  signaturekey.KeyResolver
 	clock                        aauth.Clock
 	newID                        func() string
 	scopes                       []string
@@ -112,6 +117,7 @@ type Resource struct {
 	eventStore                   ResourceEventStore
 	eventTicketStore             ProtectedEventTicketStore
 	eventHTTPClient              *http.Client
+	eventMetadataResolver        AgentEventMetadataResolver
 	eventActiveUntil             func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 	eventAsyncAPIPath            string
 	eventAsyncAPIDocument        []byte
@@ -254,6 +260,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	var eventStore ResourceEventStore
 	var eventTicketStore ProtectedEventTicketStore
 	var eventHTTPClient *http.Client
+	var eventMetadataResolver AgentEventMetadataResolver
 	var eventActiveUntil func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error)
 	var eventAsyncAPIPath string
 	var eventAsyncAPIDocument []byte
@@ -280,6 +287,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		eventSubscriptionPath = config.Events.PublicSubscriptionPath
 		eventStore = config.Events.Store
 		eventHTTPClient = config.Events.HTTPClient
+		eventMetadataResolver = config.Events.MetadataResolver
 		eventActiveUntil = config.Events.ActiveUntil
 		if (config.Events.AsyncAPIPath == "") != (len(config.Events.AsyncAPIDocument) == 0) {
 			return nil, errors.New("reference: resource Events AsyncAPI path and document must be configured together")
@@ -407,6 +415,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		eventStore:                   eventStore,
 		eventTicketStore:             eventTicketStore,
 		eventHTTPClient:              eventHTTPClient,
+		eventMetadataResolver:        eventMetadataResolver,
 		eventActiveUntil:             eventActiveUntil,
 		eventAsyncAPIPath:            eventAsyncAPIPath,
 		eventAsyncAPIDocument:        eventAsyncAPIDocument,
@@ -593,7 +602,7 @@ func (resource *Resource) validateResourceAuthorizationRequestEvidence(
 	}
 	proof := record.RequestProof
 	if proof.Authority == "" || proof.Target == "" || proof.SignatureInput == "" || proof.Signature == "" ||
-		proof.SignatureKey == "" || proof.SignatureKeyType != aauth.SignatureKeyJWT ||
+		proof.SignatureKey == "" || proof.SignatureKeyType != string(signaturekey.SchemeJWT) ||
 		proof.CredentialIssuer == "" || proof.Created.IsZero() || proof.VerifiedAt.IsZero() ||
 		proof.ReplayKey == "" || proof.Authorization != "" {
 		return ErrAuthorizationStateIntegrity
@@ -621,7 +630,7 @@ func (resource *Resource) validateResourceAuthorizationRequestEvidence(
 	verified, err := aauth.VerifyRequest(
 		context.Background(),
 		request,
-		aauth.StaticKeyResolver{proof.CredentialIssuer: {record.RequestVerificationKey.Kid: record.RequestVerificationKey}},
+		signaturekey.StaticKeyResolver{proof.CredentialIssuer: {record.RequestVerificationKey.Kid: record.RequestVerificationKey}},
 		aauth.ClockFunc(func() time.Time { return proof.VerifiedAt.UTC() }),
 		aauth.VerifyRequestOptions{
 			RequiredComponents: requiredComponents, RequireExactComponents: true,
@@ -1018,8 +1027,8 @@ func (resource *Resource) deliverEvent(
 	if resource == nil || resource.eventStore == nil || resource.eventHTTPClient == nil {
 		return errors.New("reference: resource Events is not configured")
 	}
-	metadataResolver, ok := resource.keyResolver.(agentEventMetadataResolver)
-	if !ok {
+	metadataResolver := resource.eventMetadataResolver
+	if metadataResolver == nil {
 		return errors.New("reference: resource Events requires agent event metadata resolution")
 	}
 	subscription, err := resource.eventStore.Load(ctx, apIssuer, eventID)
@@ -1094,7 +1103,7 @@ func (resource *Resource) deliverEvent(
 	if pending.ContentType != "" {
 		request.Header.Set("Content-Type", pending.ContentType)
 	}
-	if err := aauth.SignRequestWithSelfJWT(request, resource.signingKey, pending.Token, resource.clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(request, resource.signingKey, pending.Token, resource.clock); err != nil {
 		return err
 	}
 	if pending.PayloadDigest != "" && request.Header.Get("Content-Digest") != pending.PayloadDigest {
@@ -1337,22 +1346,22 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 }
 
 func isPersonTokenCredentialFailure(verified aauth.VerifiedRequest, err error) bool {
-	if verified.SignatureKeyType != aauth.SignatureKeyJWT {
+	if verified.SignatureKeyType != signaturekey.SchemeJWT {
 		return false
 	}
-	var signatureError *aauth.SignatureError
+	var signatureError *signaturekey.Error
 	if !errors.As(err, &signatureError) {
 		return false
 	}
 	switch signatureError.Code {
-	case aauth.SignatureErrorInvalidJWT,
-		aauth.SignatureErrorExpiredJWT,
-		aauth.SignatureErrorUnknownKey,
-		aauth.SignatureErrorIssuerMissing,
-		aauth.SignatureErrorIssuerMismatch,
-		aauth.SignatureErrorUnsupportedAlgorithm:
+	case signaturekey.ErrorInvalidJWT,
+		signaturekey.ErrorExpiredJWT,
+		signaturekey.ErrorUnknownKey,
+		signaturekey.ErrorIssuerMissing,
+		signaturekey.ErrorIssuerMismatch,
+		signaturekey.ErrorUnsupportedAlgorithm:
 		return verified.CredentialType == "" || verified.CredentialType == aauth.PersonTokenType
-	case aauth.SignatureErrorInvalidKey:
+	case signaturekey.ErrorInvalidKey:
 		return verified.CredentialType == aauth.PersonTokenType
 	default:
 		return false
@@ -2208,7 +2217,7 @@ func (resource *Resource) consumeProof(
 	err := resource.replayStore.Consume(
 		request.Context(),
 		verified.ReplayKey,
-		verified.Created.Add(aauth.DefaultSignatureWindow),
+		verified.Created.Add(signaturekey.DefaultSignatureWindow),
 	)
 	if err == nil {
 		return true

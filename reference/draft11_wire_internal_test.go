@@ -2,20 +2,22 @@ package reference
 
 import (
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestSignatureFailureEmitsDraft08NegotiationHeaders(t *testing.T) {
 	response := httptest.NewRecorder()
-	writeSignatureFailure(response, &aauth.SignatureError{
-		Code:               aauth.SignatureErrorUnsupportedAlgorithm,
+	writeSignatureFailure(response, &signaturekey.Error{
+		Code:               signaturekey.ErrorUnsupportedAlgorithm,
 		AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
-		AcceptedSchemes:    []string{aauth.SignatureKeyJWT, aauth.SignatureKeyHWK},
+		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeJWT, signaturekey.SchemeHWK},
 	})
 
 	if got := response.Header().Get("Signature-Error"); got != "error=unsupported_algorithm" {
@@ -37,12 +39,12 @@ func TestSignatureFailureDoesNotEmitUnclassifiedCause(t *testing.T) {
 
 	for _, cause := range []error{
 		errors.New("private parse diagnostic"),
-		&aauth.KeyResolutionError{Code: aauth.KeyResolutionUnknown, Cause: errors.New("private key identifier")},
+		&signaturekey.ResolutionError{Code: signaturekey.ResolutionUnknown, Cause: errors.New("private key identifier")},
 		&aauth.TokenValidationError{Code: aauth.TokenValidationInvalidKey, Cause: errors.New("private trust configuration")},
 	} {
 		response := httptest.NewRecorder()
-		writeSignatureFailure(response, &aauth.SignatureError{
-			Code:  aauth.SignatureErrorInvalidJWT,
+		writeSignatureFailure(response, &signaturekey.Error{
+			Code:  signaturekey.ErrorInvalidJWT,
 			Cause: cause,
 		})
 		if strings.Contains(response.Body.String(), "private") {

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +16,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -124,7 +126,7 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 	action := &recoverableAction{}
 
 	protocolClient := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: protocolClient,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -132,6 +134,19 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 				return nil
 			}
 			return fmt.Errorf("journey discovery endpoint is outside the admitted hosts: %s", endpoint)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataResolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
+		Client: protocolClient,
+		Clock:  clock,
+		Admit: func(_ context.Context, endpoint string) error {
+			if strings.HasPrefix(endpoint, apID+"/") {
+				return nil
+			}
+			return fmt.Errorf("journey event metadata endpoint is outside the admitted AP: %s", endpoint)
 		},
 	})
 	if err != nil {
@@ -153,6 +168,7 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 		identifier:  resourceID,
 		signingKey:  resourceKey,
 		resolver:    resolver,
+		metadata:    metadataResolver,
 		client:      protocolClient,
 		clock:       clock,
 		store:       resourceStore,
@@ -249,6 +265,7 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 		identifier:  resourceID,
 		signingKey:  resourceKey,
 		resolver:    resolver,
+		metadata:    metadataResolver,
 		client:      protocolClient,
 		clock:       clock,
 		store:       resourceStore,
@@ -290,6 +307,7 @@ func runPublicSubscriptionEventJourney(t *testing.T, fileBacked bool) {
 		identifier:  resourceID,
 		signingKey:  resourceKey,
 		resolver:    resolver,
+		metadata:    metadataResolver,
 		client:      protocolClient,
 		clock:       clock,
 		store:       resourceStore,
@@ -491,7 +509,7 @@ type eventProviderInput struct {
 	clock       aauth.Clock
 	newID       func() string
 	store       reference.APEventStore
-	resolver    aauth.KeyResolver
+	resolver    signaturekey.KeyResolver
 	activeUntil time.Time
 }
 
@@ -521,7 +539,8 @@ func newEventProvider(t *testing.T, input eventProviderInput) *reference.AgentPr
 type eventResourceInput struct {
 	identifier  string
 	signingKey  jose.SigningKey
-	resolver    aauth.KeyResolver
+	resolver    signaturekey.KeyResolver
+	metadata    reference.AgentEventMetadataResolver
 	client      *http.Client
 	clock       aauth.Clock
 	store       reference.ResourceEventStore
@@ -551,6 +570,7 @@ func newEventResource(t *testing.T, input eventResourceInput) *reference.Resourc
 			PublicSubscriptionPath: "/events/subscriptions",
 			Store:                  input.store,
 			HTTPClient:             input.client,
+			MetadataResolver:       input.metadata,
 			ActiveUntil: func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error) {
 				return input.activeUntil, nil
 			},
@@ -566,7 +586,7 @@ type eventAgentInput struct {
 	identifier string
 	signingKey jose.SigningKey
 	agentToken string
-	resolver   aauth.KeyResolver
+	resolver   signaturekey.KeyResolver
 	client     *http.Client
 	clock      aauth.Clock
 	store      reference.AgentEventStore

@@ -3,11 +3,13 @@ package aauth_test
 import (
 	"context"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -23,7 +25,7 @@ func (transport *refusingTokenExchangeTransport) RoundTrip(*http.Request) (*http
 }
 
 type refusingResourceGrantKeyResolver struct {
-	delegate aauth.KeyResolver
+	delegate signaturekey.KeyResolver
 	calls    int
 	refuse   bool
 }
@@ -150,7 +152,7 @@ func testAgentResourceTokenPSPreflight(
 		t.Fatal(err)
 	}
 	transport := &refusingTokenExchangeTransport{}
-	resolver := &refusingResourceGrantKeyResolver{delegate: aauth.StaticKeyResolver{
+	resolver := &refusingResourceGrantKeyResolver{delegate: signaturekey.StaticKeyResolver{
 		"https://provider.example": {providerKey.ID(): providerKey.PublicJWK()},
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}}
@@ -249,7 +251,7 @@ func TestAgentRefusesDirectSubagentWithoutPersonServerBeforeHTTP(t *testing.T) {
 		Identifier:         parentID,
 		SigningKey:         parentKey,
 		AgentToken:         parentToken,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://provider.example": {providerKey.ID(): providerKey.PublicJWK()},
 			"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 		},

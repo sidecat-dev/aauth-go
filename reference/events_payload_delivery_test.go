@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -47,12 +49,12 @@ func TestEventPayloadDeliveryRetainsExactPairAndReconcilesLost202(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	provider := newDeliveryTestProvider(t, apKey, apStore, aauth.StaticKeyResolver{
+	provider := newDeliveryTestProvider(t, apKey, apStore, signaturekey.StaticKeyResolver{
 		subscription.Resource: {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	transport := &lostAcceptedPayloadTransport{handler: provider.Handler()}
 	resolver := hostileEventMetadataResolver{
-		StaticKeyResolver: aauth.StaticKeyResolver{},
+		StaticKeyResolver: signaturekey.StaticKeyResolver{},
 		metadata:          aauth.AgentEventMetadata{Issuer: subscription.APIssuer, EventEndpoint: "https://ap.example/events"},
 	}
 	resource := newPayloadDeliveryTestResource(t, resourceKey, resolver, &http.Client{Transport: transport}, clock, resourceStore, contractStore, document)
@@ -284,7 +286,7 @@ func TestEventPayloadDeliveryAPProofRefusalsLeaveUseAndInboxUnchanged(t *testing
 			if err := store.CreateSubscription(ctx, subscription); err != nil {
 				t.Fatal(err)
 			}
-			provider := newDeliveryTestProvider(t, apKey, store, aauth.StaticKeyResolver{
+			provider := newDeliveryTestProvider(t, apKey, store, signaturekey.StaticKeyResolver{
 				subscription.Resource: {resourceKey.ID(): resourceKey.PublicJWK()},
 			}, clock)
 			compact := mintDeliveryTestEvent(t, resourceKey, now, subscription.Agent, subscription.EventID)
@@ -299,7 +301,7 @@ func TestEventPayloadDeliveryAPProofRefusalsLeaveUseAndInboxUnchanged(t *testing
 			if test.mediaType != "" {
 				request.Header.Set("Content-Type", test.mediaType)
 			}
-			if err := aauth.SignRequestWithSelfJWT(request, resourceKey, compact, clock); err != nil {
+			if err := signaturekey.SignSelfJWTRequest(request, resourceKey, compact, clock); err != nil {
 				t.Fatal(err)
 			}
 			if test.afterSign != nil {
@@ -473,7 +475,7 @@ func TestEventPayloadFileStoresReopenExactCustody(t *testing.T) {
 func newPayloadDeliveryTestResource(
 	t *testing.T,
 	key jose.SigningKey,
-	resolver aauth.KeyResolver,
+	resolver signaturekey.KeyResolver,
 	client *http.Client,
 	clock aauth.Clock,
 	store ResourceEventStore,
@@ -481,6 +483,10 @@ func newPayloadDeliveryTestResource(
 	document []byte,
 ) *Resource {
 	t.Helper()
+	metadataResolver, ok := resolver.(AgentEventMetadataResolver)
+	if !ok {
+		t.Fatal("payload delivery test resolver does not provide Events metadata")
+	}
 	resource, err := NewResource(ResourceConfig{
 		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
 		SigningKey: key, KeyResolver: resolver,
@@ -494,6 +500,7 @@ func newPayloadDeliveryTestResource(
 		Operation: func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, errors.New("unused") },
 		Events: &ResourceEventsConfig{
 			PublicSubscriptionPath: "/events/subscriptions", Store: store, HTTPClient: client,
+			MetadataResolver: metadataResolver,
 			ActiveUntil: func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error) {
 				return clock.Now().Add(time.Hour), nil
 			},

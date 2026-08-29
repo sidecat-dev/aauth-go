@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -56,7 +58,7 @@ func TestMissionCompletionClarificationAndAcceptanceSurviveRestart(t *testing.T)
 	}
 
 	client := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {

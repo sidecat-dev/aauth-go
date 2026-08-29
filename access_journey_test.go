@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -56,7 +58,7 @@ func TestCurrentResourceManagedAccessStartsAtProtectedEndpoint(t *testing.T) {
 	}
 
 	client := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -153,7 +155,7 @@ func TestCurrentResourceManagedAccessStartsAtProtectedEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentAuthorize.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(agentAuthorize, agentKey, agentToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(agentAuthorize, agentKey, agentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	agentAuthorizeResponse, err := client.Do(agentAuthorize)
@@ -241,12 +243,12 @@ func TestCurrentResourceManagedAccessStartsAtProtectedEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	tamperedBodyRequest.Header.Set("Authorization", authorizationHeader)
-	if err := aauth.SignRequestWithOptions(
+	if err := signaturekey.SignJWTRequestWithOptions(
 		tamperedBodyRequest,
 		agentKey,
 		agentToken,
 		clock,
-		aauth.SignRequestOptions{Nonce: "captured-immediate-body"},
+		signaturekey.SignOptions{Nonce: "captured-immediate-body"},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +298,7 @@ func TestCurrentResourceManagedAccessStartsAtProtectedEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	lowercaseRequest.Header.Set("Authorization", "aauth "+grant.Token)
-	if err := aauth.SignRequest(lowercaseRequest, agentKey, agentToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(lowercaseRequest, agentKey, agentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	lowercase, err := client.Do(lowercaseRequest)
@@ -321,7 +323,7 @@ func TestCurrentResourceManagedAccessStartsAtProtectedEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	malformedRequest.Header.Set("Authorization", "AAuth one two")
-	if err := aauth.SignRequest(malformedRequest, agentKey, agentToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(malformedRequest, agentKey, agentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	malformed, err := client.Do(malformedRequest)
@@ -362,7 +364,7 @@ func TestCurrentResourceManagedAccessStartsAtProtectedEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	tamperedRequest.Header.Set("Authorization", "AAuth "+grant.Token)
-	if err := aauth.SignRequest(tamperedRequest, agentKey, agentToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(tamperedRequest, agentKey, agentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	tamperedRequest.Header.Set("Authorization", "AAuth substituted-token")

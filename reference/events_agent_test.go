@@ -7,13 +7,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -237,7 +239,7 @@ func TestAgentEventRefusalMatrixSurvivesStoreReconstruction(t *testing.T) {
 	base := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
 	trustedKey, trustedPrivate := rawEventsTestSigningKey(t, "resource-events-key")
 	_, untrustedPrivate := rawEventsTestSigningKey(t, "resource-events-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://resource.example": {trustedKey.ID(): trustedKey.PublicJWK()},
 	}
 
@@ -645,12 +647,12 @@ func TestEventAdapterReconstructedPendingReappliesAgentPolicy(t *testing.T) {
 
 func newAgentEventTestAgent(t *testing.T, store AgentEventStore, action EventAction, resourceKey jose.SigningKey, clock aauth.Clock) *Agent {
 	t.Helper()
-	return newAgentEventTestAgentWithResolver(t, store, action, aauth.StaticKeyResolver{
+	return newAgentEventTestAgentWithResolver(t, store, action, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 }
 
-func newAgentEventTestAgentWithResolver(t *testing.T, store AgentEventStore, action EventAction, resolver aauth.KeyResolver, clock aauth.Clock) *Agent {
+func newAgentEventTestAgentWithResolver(t *testing.T, store AgentEventStore, action EventAction, resolver signaturekey.KeyResolver, clock aauth.Clock) *Agent {
 	t.Helper()
 	agentKey := eventsProviderTestSigningKey(t, "agent-events-key")
 	agent, err := NewAgent(AgentConfig{
@@ -768,7 +770,7 @@ func (action *scriptedEventAction) counts() (int, int) {
 type unavailableEventKeyResolver struct{}
 
 func (unavailableEventKeyResolver) ResolveKey(context.Context, string, string, string) (jose.JWK, error) {
-	return jose.JWK{}, &aauth.KeyResolutionError{Code: aauth.KeyResolutionUnavailable, Cause: errors.New("test: resolver unavailable")}
+	return jose.JWK{}, &signaturekey.ResolutionError{Code: signaturekey.ResolutionUnavailable, Cause: errors.New("test: resolver unavailable")}
 }
 
 type terminalReloadFailureAgentStore struct {

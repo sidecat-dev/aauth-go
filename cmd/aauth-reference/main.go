@@ -15,7 +15,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"log"
 	"net"
@@ -29,6 +28,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/sourcecoverage"
@@ -539,8 +541,8 @@ func validatePersonProfile(profile personProfile) error {
 
 func personKeyResolver(
 	trusted map[string][]jose.JWK,
-) (aauth.StaticKeyResolver, error) {
-	resolver := make(aauth.StaticKeyResolver, len(trusted))
+) (signaturekey.StaticKeyResolver, error) {
+	resolver := make(signaturekey.StaticKeyResolver, len(trusted))
 	for issuer, keys := range trusted {
 		if err := aauth.ValidateServerIdentifier(issuer); err != nil || len(keys) == 0 {
 			return nil, errors.New("profile trusted issuer is invalid")

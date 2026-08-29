@@ -9,13 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
@@ -110,29 +112,29 @@ func writeSignatureFailure(response http.ResponseWriter, err error) {
 	if writeOperationalResolutionFailure(response, err) {
 		return
 	}
-	var signatureError *aauth.SignatureError
+	var signatureError *signaturekey.Error
 	if !errors.As(err, &signatureError) {
-		signatureError = &aauth.SignatureError{
-			Code:  aauth.SignatureErrorInvalidSignature,
+		signatureError = &signaturekey.Error{
+			Code:  signaturekey.ErrorInvalidSignature,
 			Cause: err,
 		}
 	}
-	header, formatErr := aauth.FormatSignatureError(*signatureError)
+	header, formatErr := signaturekey.FormatError(*signatureError)
 	if formatErr != nil {
-		signatureError = &aauth.SignatureError{
-			Code:  aauth.SignatureErrorInvalidSignature,
+		signatureError = &signaturekey.Error{
+			Code:  signaturekey.ErrorInvalidSignature,
 			Cause: formatErr,
 		}
-		header, _ = aauth.FormatSignatureError(*signatureError)
+		header, _ = signaturekey.FormatError(*signatureError)
 	}
 	response.Header().Set("Signature-Error", header)
 	if len(signatureError.AcceptedAlgorithms) > 0 {
-		if value, err := aauth.FormatAcceptSignatureAlgorithms(signatureError.AcceptedAlgorithms); err == nil {
+		if value, err := signaturekey.FormatAcceptAlgorithms(signatureError.AcceptedAlgorithms); err == nil {
 			response.Header().Set("Accept-Signature-Alg", value)
 		}
 	}
 	if len(signatureError.AcceptedSchemes) > 0 {
-		if value, err := aauth.FormatAcceptSignatureSchemes(signatureError.AcceptedSchemes); err == nil {
+		if value, err := signaturekey.FormatAcceptSchemes(signatureError.AcceptedSchemes); err == nil {
 			response.Header().Set("Accept-Signature-Scheme", value)
 		}
 	}
@@ -160,10 +162,10 @@ func writeSignatureFailure(response http.ResponseWriter, err error) {
 }
 
 func writeOperationalResolutionFailure(response http.ResponseWriter, err error) bool {
-	var resolutionError *aauth.KeyResolutionError
+	var resolutionError *signaturekey.ResolutionError
 	if !errors.As(err, &resolutionError) ||
-		(resolutionError.Code != aauth.KeyResolutionDenied &&
-			resolutionError.Code != aauth.KeyResolutionUnavailable) {
+		(resolutionError.Code != signaturekey.ResolutionDenied &&
+			resolutionError.Code != signaturekey.ResolutionUnavailable) {
 		return false
 	}
 	writeProblem(response, http.StatusServiceUnavailable, "server_error", nil)
@@ -197,7 +199,7 @@ func writeTokenVerificationFailure(
 	if writeOperationalResolutionFailure(response, err) {
 		return
 	}
-	var resolutionError *aauth.KeyResolutionError
+	var resolutionError *signaturekey.ResolutionError
 	if errors.As(err, &resolutionError) {
 		writeProblem(response, status, code, nil)
 		return
@@ -518,7 +520,7 @@ func verifyRetainedAuthTokenClaimsAt(
 	verified, err := aauth.VerifyAuthToken(
 		context.Background(),
 		compact,
-		aauth.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
+		signaturekey.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
 		aauth.ClockFunc(func() time.Time { return verifiedAt }),
 	)
 	if err != nil {
@@ -568,7 +570,7 @@ func verifyRetainedAgentTokenClaimsAt(
 	verified, err := aauth.VerifyAgentToken(
 		context.Background(),
 		compact,
-		aauth.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
+		signaturekey.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
 		aauth.ClockFunc(func() time.Time { return verifiedAt }),
 	)
 	if err != nil {
@@ -618,7 +620,7 @@ func verifyRetainedResourceTokenClaimsAt(
 	verified, err := aauth.VerifyResourceToken(
 		context.Background(),
 		compact,
-		aauth.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
+		signaturekey.StaticKeyResolver{claims.Issuer: {header.KeyID: key}},
 		aauth.ClockFunc(func() time.Time { return verifiedAt }),
 	)
 	if err != nil {

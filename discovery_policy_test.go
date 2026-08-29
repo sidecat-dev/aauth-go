@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/netip"
@@ -13,6 +12,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -50,9 +52,9 @@ func TestHTTPKeyResolverPresenterDirectedEgressPolicy(t *testing.T) {
 	defer gateway.Close()
 
 	public := netip.MustParseAddr("203.0.113.10")
-	newResolver := func(transport *discoveryPolicyTransport) *aauth.HTTPKeyResolver {
+	newResolver := func(transport *discoveryPolicyTransport) *signaturekey.HTTPKeyResolver {
 		t.Helper()
-		resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+		resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 			Client: &http.Client{Transport: transport},
 			Clock: aauth.ClockFunc(func() time.Time {
 				return time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
@@ -95,7 +97,7 @@ func TestHTTPKeyResolverPresenterDirectedEgressPolicy(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			transport := newDiscoveryPolicyTransport(gateway.Client().Transport, map[string]bool{test.host: true}, map[string][][]netip.Addr{test.host: {{test.addr}}})
 			_, err := newResolver(transport).ResolveKey(context.Background(), "https://"+test.host, aauth.ResourceDiscoveryDocument, "issuer-key")
-			requireDiscoveryResolutionCode(t, err, aauth.KeyResolutionDenied)
+			requireDiscoveryResolutionCode(t, err, signaturekey.ResolutionDenied)
 			if transport.forwarded(test.host) != 0 {
 				t.Fatalf("denied %s reached gateway", test.host)
 			}
@@ -107,7 +109,7 @@ func TestHTTPKeyResolverPresenterDirectedEgressPolicy(t *testing.T) {
 			"rebound.example": {{public}, {netip.MustParseAddr("10.0.0.8")}},
 		})
 		_, err := newResolver(transport).ResolveKey(context.Background(), "https://rebound.example", aauth.ResourceDiscoveryDocument, "issuer-key")
-		requireDiscoveryResolutionCode(t, err, aauth.KeyResolutionDenied)
+		requireDiscoveryResolutionCode(t, err, signaturekey.ResolutionDenied)
 		if transport.forwarded("rebound.example") != 1 || transport.attempted("rebound.example") != 2 {
 			t.Fatalf("rebound attempts/forwarded = %d/%d, want 2/1", transport.attempted("rebound.example"), transport.forwarded("rebound.example"))
 		}
@@ -118,7 +120,7 @@ func TestHTTPKeyResolverPresenterDirectedEgressPolicy(t *testing.T) {
 			"origin.example": {{public}}, "unapproved-keys.example": {{public}},
 		})
 		_, err := newResolver(transport).ResolveKey(context.Background(), "https://origin.example", aauth.ResourceDiscoveryDocument, "issuer-key")
-		requireDiscoveryResolutionCode(t, err, aauth.KeyResolutionDenied)
+		requireDiscoveryResolutionCode(t, err, signaturekey.ResolutionDenied)
 		if transport.forwarded("origin.example") != 1 || transport.forwarded("unapproved-keys.example") != 0 {
 			t.Fatalf("unapproved cross-origin forwarded calls = metadata %d, JWKS %d", transport.forwarded("origin.example"), transport.forwarded("unapproved-keys.example"))
 		}
@@ -161,7 +163,7 @@ func TestSelfJWTExpiryCannotUseWarmDiscoveryCache(t *testing.T) {
 		}),
 	})
 	defer gateway.Close()
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(), Clock: clock,
 		Admit: func(context.Context, string) error { return nil },
 	})
@@ -180,11 +182,11 @@ func TestSelfJWTExpiryCannotUseWarmDiscoveryCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithSelfJWT(request, key, compact, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(request, key, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	options := aauth.VerifyRequestOptions{
-		AllowedCredentialTypes: []string{aauth.EventTokenType}, AllowedSignatureKeyTypes: []string{aauth.SignatureKeySelfJWT},
+		AllowedCredentialTypes: []string{aauth.EventTokenType}, AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 		SelfJWTClaimPolicy: func(verified aauth.VerifiedSelfJWT) error {
 			_, err := aauth.DecodeVerifiedEventToken(verified, clock)
 			return err
@@ -195,8 +197,8 @@ func TestSelfJWTExpiryCannotUseWarmDiscoveryCache(t *testing.T) {
 	}
 	now = now.Add(2 * time.Second)
 	_, err = aauth.VerifyRequest(context.Background(), request, resolver, clock, options)
-	var signatureError *aauth.SignatureError
-	if !errors.As(err, &signatureError) || signatureError.Code != aauth.SignatureErrorExpiredJWT {
+	var signatureError *signaturekey.Error
+	if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorExpiredJWT {
 		t.Fatalf("expired warm-cache verification error = %v (%#v)", err, signatureError)
 	}
 	if metadataFetches.Load() != 1 || keyFetches.Load() != 1 {
@@ -229,7 +231,7 @@ func TestSelfJWTUsesAdmittedHTTPKeyForBothProofs(t *testing.T) {
 	})
 	defer gateway.Close()
 	admissions := 0
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(), Clock: clock,
 		Admit: func(context.Context, string) error { admissions++; return nil },
 	})
@@ -249,11 +251,11 @@ func TestSelfJWTUsesAdmittedHTTPKeyForBothProofs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithSelfJWT(request, key, compact, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(request, key, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	verified, err := aauth.VerifyRequest(context.Background(), request, resolver, clock, aauth.VerifyRequestOptions{
-		AllowedCredentialTypes: []string{aauth.EventTokenType}, AllowedSignatureKeyTypes: []string{aauth.SignatureKeySelfJWT},
+		AllowedCredentialTypes: []string{aauth.EventTokenType}, AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 		SelfJWTMaximumLifetime: 2 * time.Minute,
 		SelfJWTClaimPolicy: func(verified aauth.VerifiedSelfJWT) error {
 			decoded, err := aauth.DecodeVerifiedEventToken(verified, clock)
@@ -312,10 +314,10 @@ func TestHTTPKeyResolverRetainedStateIsBounded(t *testing.T) {
 	gateway := newLogicalGateway(t, handlers)
 	defer gateway.Close()
 	admissions := 0
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(), Clock: clock,
 		Admit:  func(context.Context, string) error { admissions++; return nil },
-		Limits: aauth.HTTPKeyResolverLimits{PositiveEntries: 2, NegativeEntries: 2, InFlightEntries: 2},
+		Limits: signaturekey.HTTPKeyResolverLimits{PositiveEntries: 2, NegativeEntries: 2, InFlightEntries: 2},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -357,13 +359,13 @@ func TestHTTPKeyResolverRetainedStateIsBounded(t *testing.T) {
 
 	beforeAdmissions := admissions
 	_, err = resolver.ResolveKey(context.Background(), "https://success-1.example", strings.Repeat("a", 1024)+".json", "issuer-key")
-	requireDiscoveryResolutionCode(t, err, aauth.KeyResolutionInvalid)
+	requireDiscoveryResolutionCode(t, err, signaturekey.ResolutionInvalid)
 	if admissions != beforeAdmissions {
 		t.Fatalf("overlong discovery document made %d admission calls", admissions-beforeAdmissions)
 	}
-	if _, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	if _, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(), Clock: clock, Admit: func(context.Context, string) error { return nil },
-		Limits: aauth.HTTPKeyResolverLimits{PositiveEntries: -1},
+		Limits: signaturekey.HTTPKeyResolverLimits{PositiveEntries: -1},
 	}); err == nil {
 		t.Fatal("negative resolver limit was accepted")
 	}
@@ -405,11 +407,11 @@ func TestHTTPKeyResolverEvictsTiedRetainedStateDeterministically(t *testing.T) {
 	defer gateway.Close()
 
 	for iteration := 0; iteration < 64; iteration++ {
-		resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+		resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 			Client: gateway.Client(),
 			Clock:  aauth.ClockFunc(func() time.Time { return now }),
 			Admit:  func(context.Context, string) error { return nil },
-			Limits: aauth.HTTPKeyResolverLimits{PositiveEntries: 2, NegativeEntries: 2, InFlightEntries: 2},
+			Limits: signaturekey.HTTPKeyResolverLimits{PositiveEntries: 2, NegativeEntries: 2, InFlightEntries: 2},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -461,11 +463,11 @@ func TestHTTPKeyResolverBoundsConcurrentUniqueInflight(t *testing.T) {
 	transport := &blockingDiscoveryTransport{
 		key: key.PublicJWK(), release: make(chan struct{}), metadataStarted: make(chan string, 3),
 	}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: &http.Client{Transport: transport},
 		Clock:  aauth.ClockFunc(func() time.Time { return time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC) }),
 		Admit:  func(context.Context, string) error { return nil },
-		Limits: aauth.HTTPKeyResolverLimits{PositiveEntries: 2, NegativeEntries: 2, InFlightEntries: 2},
+		Limits: signaturekey.HTTPKeyResolverLimits{PositiveEntries: 2, NegativeEntries: 2, InFlightEntries: 2},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -483,7 +485,7 @@ func TestHTTPKeyResolverBoundsConcurrentUniqueInflight(t *testing.T) {
 	thirdContext, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_, err = resolver.ResolveKey(thirdContext, "https://three.example", aauth.ResourceDiscoveryDocument, "issuer-key")
-	requireDiscoveryResolutionCode(t, err, aauth.KeyResolutionUnavailable)
+	requireDiscoveryResolutionCode(t, err, signaturekey.ResolutionUnavailable)
 	if transport.metadataCount.Load() != 2 {
 		t.Fatalf("in-flight over-cap started %d metadata requests, want 2", transport.metadataCount.Load())
 	}
@@ -550,11 +552,11 @@ func (transport *discoveryPolicyTransport) RoundTrip(request *http.Request) (*ht
 	}
 	transport.mu.Unlock()
 	if !approved || len(selected) == 0 {
-		return nil, &aauth.KeyResolutionError{Code: aauth.KeyResolutionDenied, Cause: errors.New("test deployment denied discovery origin")}
+		return nil, &signaturekey.ResolutionError{Code: signaturekey.ResolutionDenied, Cause: errors.New("test deployment denied discovery origin")}
 	}
 	for _, address := range selected {
 		if !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsUnspecified() || address.IsMulticast() {
-			return nil, &aauth.KeyResolutionError{Code: aauth.KeyResolutionDenied, Cause: fmt.Errorf("test deployment denied discovery address %s", address)}
+			return nil, &signaturekey.ResolutionError{Code: signaturekey.ResolutionDenied, Cause: fmt.Errorf("test deployment denied discovery address %s", address)}
 		}
 	}
 	transport.mu.Lock()
@@ -599,9 +601,9 @@ func discoveryJSONResponse(request *http.Request, body string) *http.Response {
 	}
 }
 
-func requireDiscoveryResolutionCode(t *testing.T, err error, want aauth.KeyResolutionCode) {
+func requireDiscoveryResolutionCode(t *testing.T, err error, want signaturekey.ResolutionCode) {
 	t.Helper()
-	var resolutionError *aauth.KeyResolutionError
+	var resolutionError *signaturekey.ResolutionError
 	if !errors.As(err, &resolutionError) || resolutionError.Code != want {
 		t.Fatalf("resolution error = %v (%#v), want %q", err, resolutionError, want)
 	}

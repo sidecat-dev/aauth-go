@@ -9,13 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -79,7 +81,7 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	}
 
 	client := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -379,7 +381,7 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithOptions(lostResponsePoll, agentKey, agentToken, clock, aauth.SignRequestOptions{Nonce: "lost-terminal-person-response"}); err != nil {
+	if err := signaturekey.SignJWTRequestWithOptions(lostResponsePoll, agentKey, agentToken, clock, signaturekey.SignOptions{Nonce: "lost-terminal-person-response"}); err != nil {
 		t.Fatal(err)
 	}
 	lostResponse, err := client.Do(lostResponsePoll)

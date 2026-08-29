@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,6 +19,9 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
@@ -27,7 +29,7 @@ type AgentConfig struct {
 	Identifier         string
 	SigningKey         jose.SigningKey
 	AgentToken         string
-	KeyResolver        aauth.KeyResolver
+	KeyResolver        signaturekey.KeyResolver
 	HTTPClient         *http.Client
 	Clock              aauth.Clock
 	AuthorizationStore AuthorizationStateStore
@@ -45,7 +47,7 @@ type Agent struct {
 	identifier            string
 	signingKey            jose.SigningKey
 	agentToken            string
-	keyResolver           aauth.KeyResolver
+	keyResolver           signaturekey.KeyResolver
 	httpClient            *http.Client
 	clock                 aauth.Clock
 	authorizationStore    AuthorizationStateStore
@@ -65,7 +67,7 @@ func (agent *Agent) signRequest(request *http.Request, credential string) error 
 	if _, err := io.ReadFull(rand.Reader, nonceBytes); err != nil {
 		return fmt.Errorf("reference: generate request proof nonce: %w", err)
 	}
-	return aauth.SignRequestWithOptions(request, agent.signingKey, credential, agent.clock, aauth.SignRequestOptions{
+	return signaturekey.SignJWTRequestWithOptions(request, agent.signingKey, credential, agent.clock, signaturekey.SignOptions{
 		Nonce: base64.RawURLEncoding.EncodeToString(nonceBytes),
 	})
 }
@@ -977,10 +979,10 @@ func retryableEventVerificationError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var resolutionError *aauth.KeyResolutionError
+	var resolutionError *signaturekey.ResolutionError
 	return errors.As(err, &resolutionError) &&
-		(resolutionError.Code == aauth.KeyResolutionDenied ||
-			resolutionError.Code == aauth.KeyResolutionUnavailable)
+		(resolutionError.Code == signaturekey.ResolutionDenied ||
+			resolutionError.Code == signaturekey.ResolutionUnavailable)
 }
 
 func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal aauth.MissionProposal) (aauth.ApprovedMission, error) {

@@ -4,41 +4,42 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestSignatureKeyUsesRFC8941DictionarySelection(t *testing.T) {
-	parsed, err := parseSignatureKey([]string{
+	key := internalTestSigningKey(t, "structured-key").PublicJWK()
+	parsed, err := signaturekey.ParseCredential([]string{
 		`other=future`,
-		`sig=hwk;kty="OKP";crv="Ed25519";x="abc";alg="Ed25519"`,
+		`sig=hwk;kty="OKP";crv="Ed25519";x=` + strconv.Quote(key.X) + `;alg="Ed25519"`,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.scheme != SignatureKeyHWK ||
-		parsed.parameters["kty"] != "OKP" ||
-		parsed.parameters["alg"] != jose.Ed25519Algorithm {
+	inline, ok := parsed.InlineJWK()
+	if parsed.Scheme() != signaturekey.SchemeHWK || !ok || !inline.Equal(key) {
 		t.Fatalf("parsed Signature-Key = %#v", parsed)
 	}
 
-	_, err = parseSignatureKey([]string{`sig=future`})
-	var unsupported *unsupportedSignatureKeySchemeError
-	if !errors.As(err, &unsupported) || unsupported.scheme != "future" {
+	_, err = signaturekey.ParseCredential([]string{`sig=future`})
+	var unsupported *signaturekey.Error
+	if !errors.As(err, &unsupported) || unsupported.Code != signaturekey.ErrorUnsupportedScheme {
 		t.Fatalf("parameterless unknown scheme error = %v", err)
 	}
 }
 
 func TestSignatureKeyAcceptsOnlyRFC8941StringEscapes(t *testing.T) {
-	parsed, err := parseSignatureKey([]string{`sig=jwt;jwt="a\\b\"c"`})
+	parsed, err := signaturekey.ParseCredential([]string{`sig=jwt;jwt="a\\b\"c"`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := parsed.parameters["jwt"]; got != "a\\b\"c" {
+	if got, _ := parsed.JWT(); got != "a\\b\"c" {
 		t.Fatalf("decoded RFC 8941 string = %q", got)
 	}
 
@@ -47,7 +48,7 @@ func TestSignatureKeyAcceptsOnlyRFC8941StringEscapes(t *testing.T) {
 		`sig=jwt;jwt="a\x41"`,
 		`sig=jwt;jwt="a\u0041"`,
 	} {
-		if _, err := parseSignatureKey([]string{header}); err == nil {
+		if _, err := signaturekey.ParseCredential([]string{header}); err == nil {
 			t.Errorf("accepted Go-only escape in %q", header)
 		}
 	}
@@ -60,7 +61,7 @@ func TestSignatureKeyRejectsMalformedStructuredMembers(t *testing.T) {
 		`sig=hwk;kty="OKP";crv="Ed25519";x="abc";alg=Ed25519`,
 		`sig=hwk;kty="OKP";crv="Ed25519";x="abc";alg="Ed25519",`,
 	} {
-		if _, err := parseSignatureKey([]string{header}); err == nil {
+		if _, err := signaturekey.ParseCredential([]string{header}); err == nil {
 			t.Errorf("accepted malformed Signature-Key %q", header)
 		}
 	}
@@ -102,7 +103,7 @@ func TestSignatureKeySplitFieldLinesAreAllCoveredByTheSignature(t *testing.T) {
 		request,
 		nil,
 		clock,
-		VerifyRequestOptions{AllowedSignatureKeyTypes: []string{SignatureKeyHWK}},
+		VerifyRequestOptions{AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK}},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -119,10 +120,10 @@ func TestSignatureKeySplitFieldLinesAreAllCoveredByTheSignature(t *testing.T) {
 		mutated,
 		nil,
 		clock,
-		VerifyRequestOptions{AllowedSignatureKeyTypes: []string{SignatureKeyHWK}},
+		VerifyRequestOptions{AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK}},
 	)
-	var signatureError *SignatureError
-	if !errors.As(err, &signatureError) || signatureError.Code != SignatureErrorInvalidSignature {
+	var signatureError *signaturekey.Error
+	if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorInvalidSignature {
 		t.Fatalf("split-field mutation error = %v, want invalid_signature", err)
 	}
 }

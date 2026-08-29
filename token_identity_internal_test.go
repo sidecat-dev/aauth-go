@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain(t *testing.T) {
@@ -44,7 +46,7 @@ func TestAgentTokenRefusesAnIdentifierOutsideTheIssuerDomain(t *testing.T) {
 	_, err = VerifyAgentToken(
 		context.Background(),
 		compact,
-		StaticKeyResolver{
+		signaturekey.StaticKeyResolver{
 			"https://provider.example": {
 				"provider-key": providerKey.PublicJWK(),
 			},
@@ -127,7 +129,7 @@ func TestVerifyAgentTokenRejectsCaseVariantClaimAlias(t *testing.T) {
 			_, err := VerifyAgentToken(
 				context.Background(),
 				compact,
-				StaticKeyResolver{
+				signaturekey.StaticKeyResolver{
 					"https://provider.example": {"provider-key": providerKey.PublicJWK()},
 				},
 				ClockFunc(func() time.Time { return now }),

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestVerifyRequestAcceptsSubscribeTokenConfirmationProof(t *testing.T) {
@@ -34,10 +36,10 @@ func TestVerifyRequestAcceptsSubscribeTokenConfirmationProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SignRequest(request, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
-	verified, err := VerifyRequest(context.Background(), request, StaticKeyResolver{
+	verified, err := VerifyRequest(context.Background(), request, signaturekey.StaticKeyResolver{
 		claims.Issuer: {apKey.ID(): apKey.PublicJWK()},
 	}, clock, VerifyRequestOptions{AllowedCredentialTypes: []string{SubscribeTokenType}})
 	if err != nil {
@@ -54,7 +56,7 @@ func TestVerifyRequestAcceptsSubscribeTokenConfirmationProof(t *testing.T) {
 	if _, err := VerifyRequest(
 		context.Background(),
 		request,
-		StaticKeyResolver{claims.Issuer: {apKey.ID(): apKey.PublicJWK()}},
+		signaturekey.StaticKeyResolver{claims.Issuer: {apKey.ID(): apKey.PublicJWK()}},
 		clock,
 		VerifyRequestOptions{},
 	); err == nil {

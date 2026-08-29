@@ -13,7 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"math/big"
 	"net"
@@ -23,6 +22,9 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -47,7 +49,7 @@ type personDemoMaterial struct {
 	roots          *x509.CertPool
 	agentKey       jose.SigningKey
 	agentToken     string
-	resolver       aauth.StaticKeyResolver
+	resolver       signaturekey.StaticKeyResolver
 	clear          func()
 }
 
@@ -307,7 +309,7 @@ func createPersonDemoMaterial(root string) (personDemoMaterial, error) {
 	material.roots = roots
 	material.agentKey = agentKey
 	material.agentToken = token
-	material.resolver = aauth.StaticKeyResolver{
+	material.resolver = signaturekey.StaticKeyResolver{
 		"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 	}
 	return material, nil

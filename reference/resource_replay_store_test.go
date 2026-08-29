@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +18,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -58,7 +60,7 @@ func TestDeferredCapableConstructorsRequireAuthorizationStateStore(t *testing.T)
 	now := time.Date(2026, 8, 28, 18, 15, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := referenceTestSigningKey(t, "authorization-state-key")
-	resolver := aauth.StaticKeyResolver{}
+	resolver := signaturekey.StaticKeyResolver{}
 	replayStore, err := reference.NewMemoryProofReplayStore(clock, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +143,7 @@ func TestCurrentProtectedResourceDurablyConsumesExactProof(t *testing.T) {
 	personKey := referenceTestSigningKey(t, "person-key")
 	agentKey := referenceTestSigningKey(t, "agent-key")
 	resourceKey := referenceTestSigningKey(t, "resource-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ps.example": {personKey.ID(): personKey.PublicJWK()},
 	}
 	authToken, err := aauth.MintAuthToken(personKey, aauth.AuthTokenClaims{
@@ -369,7 +371,7 @@ func TestCurrentProtectedResourceRejectsRawUnsupportedExtensionTokensBeforePolic
 	accessKey, accessPrivate := rawReferenceTestSigningMaterial(t, "access-key")
 	agentKey := referenceTestSigningKey(t, "agent-key")
 	resourceKey := referenceTestSigningKey(t, "resource-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://as.example": {accessKey.ID(): accessKey.PublicJWK()},
 	}
 	claims := aauth.AuthTokenClaims{
@@ -493,7 +495,7 @@ func TestCurrentResourceRequiresCanonicalRequestScopeMapping(t *testing.T) {
 	personKey := referenceTestSigningKey(t, "person-key")
 	agentKey := referenceTestSigningKey(t, "agent-key")
 	resourceKey := referenceTestSigningKey(t, "resource-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ps.example": {personKey.ID(): personKey.PublicJWK()},
 	}
 	authToken, err := aauth.MintAuthToken(personKey, aauth.AuthTokenClaims{
@@ -576,7 +578,7 @@ func TestResourceRequiresExplicitProofReplayStoreAndCurrentScopeMapper(t *testin
 		AccessMode:        aauth.AccessModeAuthToken,
 		PersonServer:      "https://ps.example",
 		SigningKey:        resourceKey,
-		KeyResolver:       aauth.StaticKeyResolver{},
+		KeyResolver:       signaturekey.StaticKeyResolver{},
 		Clock:             clock,
 		NewID:             func() string { return "id" },
 		Scopes:            []string{"operation.a"},
@@ -623,7 +625,7 @@ func TestCurrentAuthTokenResourceRequiresExactScopeDescriptionsAndPublishesDeter
 		AccessMode:   aauth.AccessModeAuthToken,
 		PersonServer: "https://ps.example",
 		SigningKey:   resourceKey,
-		KeyResolver:  aauth.StaticKeyResolver{},
+		KeyResolver:  signaturekey.StaticKeyResolver{},
 		Clock:        clock,
 		NewID:        func() string { return "id" },
 		Scopes:       []string{"operation.b", "operation.a"},
@@ -699,7 +701,7 @@ func TestResourceRequiresExplicitCurrentAccessMode(t *testing.T) {
 		Identifier:        "https://resource.example",
 		PersonServer:      "https://ps.example",
 		SigningKey:        resourceKey,
-		KeyResolver:       aauth.StaticKeyResolver{},
+		KeyResolver:       signaturekey.StaticKeyResolver{},
 		Clock:             clock,
 		NewID:             func() string { return "id" },
 		Scopes:            []string{"operation.a"},
@@ -917,7 +919,7 @@ func signedCurrentProtectedRequest(
 	if len(body) != 0 {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if err := aauth.SignRequestWithOptions(request, key, authToken, clock, aauth.SignRequestOptions{Nonce: nonce}); err != nil {
+	if err := signaturekey.SignJWTRequestWithOptions(request, key, authToken, clock, signaturekey.SignOptions{Nonce: nonce}); err != nil {
 		t.Fatal(err)
 	}
 	return request

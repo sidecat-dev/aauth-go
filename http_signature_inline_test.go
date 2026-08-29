@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
@@ -21,7 +23,7 @@ func TestHWKRequestCarriesAndProvesItsInlineEd25519Key(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := aauth.SignRequestWithHWK(request, key, clock); err != nil {
+	if err := signaturekey.SignHWKRequest(request, key, clock); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := request.Header.Get("Signature-Key"),
@@ -35,7 +37,7 @@ func TestHWKRequestCarriesAndProvesItsInlineEd25519Key(t *testing.T) {
 		nil,
 		clock,
 		aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyHWK},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK},
 		},
 	)
 	if err != nil {
@@ -45,7 +47,7 @@ func TestHWKRequestCarriesAndProvesItsInlineEd25519Key(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verified.SignatureKeyType != aauth.SignatureKeyHWK ||
+	if verified.SignatureKeyType != signaturekey.SchemeHWK ||
 		verified.Signer != identity ||
 		!verified.IdentityKey.Equal(key.PublicJWK()) ||
 		!verified.PublicKey.Equal(key.PublicJWK()) {
@@ -60,7 +62,7 @@ func TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey(t *testing.T) 
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	durable := testSigningKey(t, "durable-key")
 	ephemeral := testSigningKey(t, "ephemeral-key")
-	delegation, err := aauth.MintJKTJWT(
+	delegation, err := signaturekey.MintJKTJWT(
 		durable,
 		ephemeral.PublicJWK(),
 		now,
@@ -73,7 +75,7 @@ func TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithJKTJWT(request, ephemeral, delegation, clock); err != nil {
+	if err := signaturekey.SignJKTJWTRequest(request, ephemeral, delegation, clock); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,7 +85,7 @@ func TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey(t *testing.T) 
 		nil,
 		clock,
 		aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJKTJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJKTJWT},
 		},
 	)
 	if err != nil {
@@ -93,7 +95,7 @@ func TestJKTJWTRequestProvesDurableIdentityAndDelegatedRequestKey(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verified.SignatureKeyType != aauth.SignatureKeyJKTJWT ||
+	if verified.SignatureKeyType != signaturekey.SchemeJKTJWT ||
 		verified.Signer != identity ||
 		!verified.IdentityKey.Equal(durable.PublicJWK()) ||
 		!verified.PublicKey.Equal(ephemeral.PublicJWK()) ||
@@ -110,7 +112,7 @@ func TestJKTJWTRefusesIssuerKeySubstitutionAndInvalidTime(t *testing.T) {
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	durable := testSigningKey(t, "durable-key")
 	ephemeral := testSigningKey(t, "ephemeral-key")
-	delegation, err := aauth.MintJKTJWT(
+	delegation, err := signaturekey.MintJKTJWT(
 		durable,
 		ephemeral.PublicJWK(),
 		now,
@@ -125,18 +127,18 @@ func TestJKTJWTRefusesIssuerKeySubstitutionAndInvalidTime(t *testing.T) {
 		t.Fatalf("delegation parts = %d", len(parts))
 	}
 	parts[2] = mutateBase64URL(parts[2])
-	if _, err := aauth.VerifyJKTJWT(strings.Join(parts, "."), clock); err == nil {
+	if _, err := signaturekey.VerifyJKTJWT(strings.Join(parts, "."), clock); err == nil {
 		t.Fatal("delegation with a substituted signature was accepted")
 	}
 
 	expiredClock := aauth.ClockFunc(func() time.Time { return now.Add(time.Hour) })
-	if _, err := aauth.VerifyJKTJWT(delegation, expiredClock); err == nil ||
+	if _, err := signaturekey.VerifyJKTJWT(delegation, expiredClock); err == nil ||
 		!strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expired delegation error = %v", err)
 	}
 
 	futureClock := aauth.ClockFunc(func() time.Time { return now.Add(-time.Second) })
-	if _, err := aauth.VerifyJKTJWT(delegation, futureClock); err == nil ||
+	if _, err := signaturekey.VerifyJKTJWT(delegation, futureClock); err == nil ||
 		!strings.Contains(err.Error(), "future") {
 		t.Fatalf("future delegation error = %v", err)
 	}
@@ -150,7 +152,7 @@ func TestJKTJWTSignerRefusesAKeyOtherThanTheDelegatedKey(t *testing.T) {
 	durable := testSigningKey(t, "durable-key")
 	ephemeral := testSigningKey(t, "ephemeral-key")
 	other := testSigningKey(t, "other-key")
-	delegation, err := aauth.MintJKTJWT(
+	delegation, err := signaturekey.MintJKTJWT(
 		durable,
 		ephemeral.PublicJWK(),
 		now,
@@ -163,7 +165,7 @@ func TestJKTJWTSignerRefusesAKeyOtherThanTheDelegatedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithJKTJWT(
+	if err := signaturekey.SignJKTJWTRequest(
 		request,
 		other,
 		delegation,
@@ -183,7 +185,7 @@ func TestHWKDuplicateAlgorithmParameterRemainsCoveredByTheSignature(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithHWK(request, key, clock); err != nil {
+	if err := signaturekey.SignHWKRequest(request, key, clock); err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set(
@@ -196,7 +198,7 @@ func TestHWKDuplicateAlgorithmParameterRemainsCoveredByTheSignature(t *testing.T
 		nil,
 		clock,
 		aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyHWK},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK},
 		},
 	); err == nil || !strings.Contains(err.Error(), "HTTP message signature is invalid") {
 		t.Fatalf("hwk covered duplicate alg-parameter error = %v", err)

@@ -23,8 +23,11 @@ go get gitlab.com/sidecat-dev/aauth-go
 ```
 
 The focused `jose` package owns the current Ed25519 JWK, caller-custodied
-signing key, and compact-JWS parse, sign, and sealed-verification API. The root
-`aauth` package owns portable protocol values and policy-aware verification.
+signing key, and compact-JWS parse, sign, and sealed-verification API. The
+`signaturekey` package owns the selected Signature-Key schemes, exact HTTP
+request proofs, admitted issuer-key discovery, and typed negotiation failures;
+it leaves JWT credentials opaque. The root `aauth` package owns portable
+protocol values, token semantics, and policy-aware verification.
 Deployable reference role handlers, host-owned storage interfaces, and an
 agent client are in `reference`. [Architecture](ARCHITECTURE.md) maps the
 observed package structure, target import graph, endpoint-specific evidence

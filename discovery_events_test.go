@@ -16,10 +16,8 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 
 	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	signingKey := testSigningKey(t, "ap-events-key")
 	eventEndpoint := "https://ap.example/events-v1"
 	var metadataFetches atomic.Int32
-	var keySetFetches atomic.Int32
 
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"ap.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -28,10 +26,6 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 				metadataFetches.Add(1)
 				response.Header().Set("Cache-Control", "max-age=60")
 				_, _ = fmt.Fprintf(response, `{"issuer":"https://ap.example","jwks_uri":"https://ap.example/jwks","event_endpoint":%q}`, eventEndpoint)
-			case "/jwks":
-				keySetFetches.Add(1)
-				response.Header().Set("Cache-Control", "max-age=60")
-				_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":%q}]}`, signingKey.PublicJWK().X, signingKey.ID())
 			default:
 				http.NotFound(response, request)
 			}
@@ -40,7 +34,7 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 	defer gateway.Close()
 
 	admissions := 0
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
 		Client: gateway.Client(),
 		Clock:  clock,
 		Admit: func(context.Context, string) error {
@@ -65,8 +59,8 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cached != first || metadataFetches.Load() != 1 || keySetFetches.Load() != 1 {
-		t.Fatalf("fresh-cache metadata/fetches = %#v, %d/%d", cached, metadataFetches.Load(), keySetFetches.Load())
+	if cached != first || metadataFetches.Load() != 1 {
+		t.Fatalf("fresh-cache metadata/fetches = %#v, %d", cached, metadataFetches.Load())
 	}
 
 	now = now.Add(2 * time.Second)
@@ -74,8 +68,8 @@ func TestAgentEventMetadataUsesAdmittedHTTPFreshness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rotated.EventEndpoint != eventEndpoint || metadataFetches.Load() != 2 || keySetFetches.Load() != 2 || admissions != 4 {
-		t.Fatalf("rotated metadata/fetches/admissions = %#v, %d/%d/%d", rotated, metadataFetches.Load(), keySetFetches.Load(), admissions)
+	if rotated.EventEndpoint != eventEndpoint || metadataFetches.Load() != 2 || admissions != 2 {
+		t.Fatalf("rotated metadata/fetches/admissions = %#v, %d/%d", rotated, metadataFetches.Load(), admissions)
 	}
 }
 
@@ -93,7 +87,6 @@ func TestAgentEventMetadataDoesNotCacheWhenCacheControlForbidsIt(t *testing.T) {
 			t.Parallel()
 
 			now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
-			signingKey := testSigningKey(t, "ap-events-key")
 			var metadataFetches atomic.Int32
 			gateway := newLogicalGateway(t, map[string]http.Handler{
 				"ap.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -102,9 +95,6 @@ func TestAgentEventMetadataDoesNotCacheWhenCacheControlForbidsIt(t *testing.T) {
 						fetch := metadataFetches.Add(1)
 						response.Header().Set("Cache-Control", cacheControl)
 						_, _ = fmt.Fprintf(response, `{"issuer":"https://ap.example","jwks_uri":"https://ap.example/jwks","event_endpoint":"https://ap.example/events-%d"}`, fetch)
-					case "/jwks":
-						response.Header().Set("Cache-Control", "max-age=60")
-						_, _ = fmt.Fprintf(response, `{"keys":[{"kty":"OKP","crv":"Ed25519","alg":"Ed25519","x":%q,"kid":%q}]}`, signingKey.PublicJWK().X, signingKey.ID())
 					default:
 						http.NotFound(response, request)
 					}
@@ -112,7 +102,7 @@ func TestAgentEventMetadataDoesNotCacheWhenCacheControlForbidsIt(t *testing.T) {
 			})
 			defer gateway.Close()
 
-			resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+			resolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
 				Client: gateway.Client(),
 				Clock:  aauth.ClockFunc(func() time.Time { return now }),
 				Admit:  func(context.Context, string) error { return nil },

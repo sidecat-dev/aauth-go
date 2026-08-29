@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -52,7 +54,7 @@ func TestCurrentResourceManagedDeferredAccessStartsAtProtectedEndpoint(t *testin
 	}
 
 	client := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -291,7 +293,7 @@ func TestCurrentResourceManagedDeferredAccessStartsAtProtectedEndpoint(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithOptions(lostResponsePoll, agentKey, agentToken, clock, aauth.SignRequestOptions{Nonce: "lost-terminal-resource-response"}); err != nil {
+	if err := signaturekey.SignJWTRequestWithOptions(lostResponsePoll, agentKey, agentToken, clock, signaturekey.SignOptions{Nonce: "lost-terminal-resource-response"}); err != nil {
 		t.Fatal(err)
 	}
 	lostResponse, err := client.Do(lostResponsePoll)
@@ -346,12 +348,12 @@ func TestCurrentResourceManagedDeferredAccessStartsAtProtectedEndpoint(t *testin
 		t.Fatal(err)
 	}
 	tampered.Header.Set("Authorization", accessAuthorization)
-	if err := aauth.SignRequestWithOptions(
+	if err := signaturekey.SignJWTRequestWithOptions(
 		tampered,
 		agentKey,
 		agentToken,
 		clock,
-		aauth.SignRequestOptions{Nonce: "captured-deferred-body"},
+		signaturekey.SignOptions{Nonce: "captured-deferred-body"},
 	); err != nil {
 		t.Fatal(err)
 	}

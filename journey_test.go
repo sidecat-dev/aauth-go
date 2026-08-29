@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -48,7 +50,7 @@ func TestCurrentThreePartyMissionAuthorizationJourney(t *testing.T) {
 	}
 
 	discoveryClient := &http.Client{}
-	keyResolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	keyResolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: discoveryClient,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {

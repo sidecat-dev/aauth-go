@@ -3,11 +3,13 @@ package aauth_test
 import (
 	"bytes"
 	"context"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -17,7 +19,7 @@ func TestSignedRequestRejectsBodyMutation(t *testing.T) {
 
 	fixture := newAuthRequestFixture(t)
 	request := fixture.request(t, http.MethodPost, []byte(`{"action":"read"}`))
-	if err := aauth.SignRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
 		t.Fatal(err)
 	}
 	request.Body = ioBody(`{"action":"delete"}`)
@@ -37,7 +39,7 @@ func TestSignedRequestRejectsConfirmationKeySubstitution(t *testing.T) {
 	fixture := newAuthRequestFixture(t)
 	attackerKey := testSigningKey(t, "attacker-key")
 	request := fixture.request(t, http.MethodGet, nil)
-	if err := aauth.SignRequest(request, attackerKey, fixture.authToken, fixture.clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, attackerKey, fixture.authToken, fixture.clock); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +56,7 @@ func TestSignedRequestRejectsMissionAddedOutsideCoveredComponents(t *testing.T) 
 
 	fixture := newAuthRequestFixture(t)
 	request := fixture.request(t, http.MethodGet, nil)
-	if err := aauth.SignRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set(
@@ -77,7 +79,7 @@ func TestSignRequestDoesNotCoverObsoleteMissionHeader(t *testing.T) {
 	fixture := newAuthRequestFixture(t)
 	request := fixture.request(t, http.MethodGet, nil)
 	request.Header.Set("AAuth-Mission", "obsolete-wire-value")
-	if err := aauth.SignRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.ToLower(request.Header.Get("Signature-Input")); strings.Contains(got, "aauth-mission") {
@@ -91,7 +93,7 @@ func TestSignedRequestRejectsAdditionalCoveredFieldValue(t *testing.T) {
 	fixture := newAuthRequestFixture(t)
 	request := fixture.request(t, http.MethodGet, nil)
 	request.Header.Set("Authorization", "Bearer signed-value")
-	if err := aauth.SignRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, fixture.agentKey, fixture.authToken, fixture.clock); err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Add("Authorization", "Bearer appended-value")
@@ -133,7 +135,7 @@ type authRequestFixture struct {
 	clock     aauth.Clock
 	agentKey  jose.SigningKey
 	authToken string
-	keys      aauth.StaticKeyResolver
+	keys      signaturekey.StaticKeyResolver
 }
 
 func newAuthRequestFixture(t *testing.T) authRequestFixture {
@@ -162,7 +164,7 @@ func newAuthRequestFixture(t *testing.T) authRequestFixture {
 		clock:     clock,
 		agentKey:  agentKey,
 		authToken: token,
-		keys: aauth.StaticKeyResolver{
+		keys: signaturekey.StaticKeyResolver{
 			"https://ps.example": {"ps-key": issuerKey.PublicJWK()},
 		},
 	}

@@ -1,4 +1,4 @@
-package aauth
+package signaturekey
 
 import (
 	"encoding/json"
@@ -17,6 +17,11 @@ type JKTJWTClaims struct {
 	IssuedAt     int64        `json:"iat"`
 	ExpiresAt    int64        `json:"exp"`
 	Confirmation Confirmation `json:"cnf"`
+}
+
+// Confirmation carries the delegated HTTP request key.
+type Confirmation struct {
+	JWK jose.JWK `json:"jwk"`
 }
 
 // VerifiedJKTJWT is the trusted durable-to-ephemeral key delegation carried
@@ -101,13 +106,14 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 		return verified, errors.New("aauth: jkt-jwt alg none is forbidden")
 	}
 	if header.Algorithm != jose.Ed25519Algorithm {
-		return verified, &unsupportedTokenAlgorithmError{algorithm: header.Algorithm}
+		return verified, &Error{
+			Code:               ErrorUnsupportedAlgorithm,
+			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
+			Cause:              fmt.Errorf("aauth: unsupported token algorithm %q", header.Algorithm),
+		}
 	}
 	if _, err := header.JWK.PublicKey(); err != nil {
-		return verified, &TokenValidationError{
-			Code:  TokenValidationInvalidKey,
-			Cause: fmt.Errorf("aauth: jkt-jwt header jwk: %w", err),
-		}
+		return verified, &Error{Code: ErrorInvalidKey, Cause: fmt.Errorf("aauth: jkt-jwt header jwk: %w", err)}
 	}
 	claimsBytes := parsed.Payload()
 	var claims JKTJWTClaims
@@ -121,14 +127,11 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 	if claims.Issuer != expectedIssuer {
 		return verified, errors.New("aauth: jkt-jwt issuer does not match the header jwk")
 	}
-	if err := validateTimes(claims.IssuedAt, claims.ExpiresAt, clock.Now()); err != nil {
+	if err := validateJKTJWTTimes(claims.IssuedAt, claims.ExpiresAt, clock.Now()); err != nil {
 		return verified, fmt.Errorf("aauth: jkt-jwt: %w", err)
 	}
 	if _, err := claims.Confirmation.JWK.PublicKey(); err != nil {
-		return verified, &TokenValidationError{
-			Code:  TokenValidationInvalidKey,
-			Cause: fmt.Errorf("aauth: jkt-jwt cnf.jwk: %w", err),
-		}
+		return verified, &Error{Code: ErrorInvalidKey, Cause: fmt.Errorf("aauth: jkt-jwt cnf.jwk: %w", err)}
 	}
 	if _, err := parsed.Verify(header.JWK); err != nil {
 		return verified, err
@@ -141,4 +144,17 @@ func VerifyJKTJWT(compact string, clock Clock) (VerifiedJKTJWT, error) {
 		ExpiresAt:    time.Unix(claims.ExpiresAt, 0),
 		Compact:      compact,
 	}, nil
+}
+
+func validateJKTJWTTimes(issuedAt, expiresAt int64, now time.Time) error {
+	if issuedAt <= 0 || expiresAt <= issuedAt {
+		return errors.New("token iat and exp must define a positive lifetime")
+	}
+	if issuedAt > now.Unix() {
+		return errors.New("iat is in the future")
+	}
+	if expiresAt <= now.Unix() {
+		return &Error{Code: ErrorExpiredJWT, Cause: errors.New("token is expired")}
+	}
+	return nil
 }

@@ -7,13 +7,15 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -107,7 +109,7 @@ func TestPersonTokenEndpointClassifiesPolicyPreparationAndCustodyFailures(t *tes
 			server, err := NewPersonServer(PersonServerConfig{
 				Identifier: "https://ps.example",
 				SigningKey: test.signingKey,
-				KeyResolver: aauth.StaticKeyResolver{
+				KeyResolver: signaturekey.StaticKeyResolver{
 					"https://ap.example": {providerKey.ID(): providerKey.PublicJWK()},
 				},
 				Clock:                clock,
@@ -132,7 +134,7 @@ func TestPersonTokenEndpointClassifiesPolicyPreparationAndCustodyFailures(t *tes
 				strings.NewReader(`{"resource":"https://resource.example"}`),
 			)
 			request.Header.Set("Content-Type", "application/json")
-			if err := aauth.SignRequest(request, agentKey, agentToken, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, agentKey, agentToken, clock); err != nil {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
@@ -180,7 +182,7 @@ func TestMissionBundledPersonTokenPreparationFailureIsServerError(t *testing.T) 
 	server, err := NewPersonServer(PersonServerConfig{
 		Identifier: "https://ps.example",
 		SigningKey: referenceTestSigningKey(t, "person-key"),
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {providerKey.ID(): providerKey.PublicJWK()},
 		},
 		Clock:                clock,
@@ -213,7 +215,7 @@ func TestMissionBundledPersonTokenPreparationFailureIsServerError(t *testing.T) 
 	}
 	request := httptest.NewRequest(http.MethodPost, "https://ps.example/mission", strings.NewReader(string(body)))
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agentKey, agentToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, agentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()

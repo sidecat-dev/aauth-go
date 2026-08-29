@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
@@ -108,8 +110,8 @@ func (server *PersonServer) handleAgentInteraction(
 		expiresAt = tokenExpiry
 	}
 	if !expiresAt.After(now) {
-		writeSignatureFailure(response, &aauth.SignatureError{
-			Code:  aauth.SignatureErrorExpiredJWT,
+		writeSignatureFailure(response, &signaturekey.Error{
+			Code:  signaturekey.ErrorExpiredJWT,
 			Cause: errors.New("reference: agent credential expired while beginning completion review"),
 		})
 		return
@@ -135,7 +137,7 @@ func (server *PersonServer) handleAgentInteraction(
 		pending,
 		*input.Mission,
 		proof,
-		verified.Created.Add(aauth.DefaultSignatureWindow),
+		verified.Created.Add(signaturekey.DefaultSignatureWindow),
 	); err != nil {
 		server.writeMissionError(response, err)
 		return
@@ -504,7 +506,7 @@ func (server *PersonServer) receiveCompletionClarification(
 	server.missions[interaction.Mission.S256] = mission
 	server.addGovernanceReplayLocked(
 		proof.ReplayKey,
-		verified.Created.Add(aauth.DefaultSignatureWindow),
+		verified.Created.Add(signaturekey.DefaultSignatureWindow),
 	)
 	if err := server.persistGovernanceLocked(); err != nil {
 		if governanceSaveDefinitelyFailed(err) {

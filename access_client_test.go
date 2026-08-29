@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -63,7 +65,7 @@ func TestAgentUsesGrantedScopeAndRotatedAAuthAccess(t *testing.T) {
 		Identifier:         "aauth:reader@ap.example",
 		SigningKey:         testSigningKey(t, "agent-key"),
 		AgentToken:         "agent-token",
-		KeyResolver:        aauth.StaticKeyResolver{},
+		KeyResolver:        signaturekey.StaticKeyResolver{},
 		HTTPClient:         gateway.Client(),
 		Clock:              clock,
 	})
@@ -121,7 +123,7 @@ func TestPublicAgentUsesUniqueProofsForIndependentSameSecondProtectedCalls(t *te
 	personKey := testSigningKey(t, "person-key")
 	agentKey := testSigningKey(t, "agent-key")
 	resourceKey := testSigningKey(t, "resource-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ps.example": {personKey.ID(): personKey.PublicJWK()},
 	}
 	authToken, err := aauth.MintAuthToken(personKey, aauth.AuthTokenClaims{
@@ -213,7 +215,7 @@ func TestPublicAgentUsesUniqueProofsForIndependentSameSecondProtectedCalls(t *te
 	}
 }
 
-func mustVerifyAuthToken(t *testing.T, compact string, resolver aauth.KeyResolver, clock aauth.Clock) aauth.AuthTokenClaims {
+func mustVerifyAuthToken(t *testing.T, compact string, resolver signaturekey.KeyResolver, clock aauth.Clock) aauth.AuthTokenClaims {
 	t.Helper()
 	claims, err := aauth.VerifyAuthToken(context.Background(), compact, resolver, clock)
 	if err != nil {

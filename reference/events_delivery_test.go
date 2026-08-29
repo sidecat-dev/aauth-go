@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -14,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -37,7 +39,7 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	provider := newDeliveryTestProvider(t, apKey, store, aauth.StaticKeyResolver{
+	provider := newDeliveryTestProvider(t, apKey, store, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	compact := mintDeliveryTestEvent(t, resourceKey, now, "aauth:subscriber@ap.example", "event-one")
@@ -46,7 +48,7 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithSelfJWT(request, resourceKey, compact, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(request, resourceKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := eventRegistrationHTTPResponse(provider.Handler(), request)
@@ -67,7 +69,7 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithSelfJWT(retry, resourceKey, compact, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(retry, resourceKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	retryResponse := eventRegistrationHTTPResponse(provider.Handler(), retry)
@@ -86,7 +88,7 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	}
 	commitFailure := errors.Join(ErrEventRecordInvalid, errors.New("test: atomic event commit failed"))
 	failingStore := &failingAcceptAPEventStore{APEventStore: failedAuthority, err: commitFailure}
-	failingProvider := newDeliveryTestProvider(t, apKey, failingStore, aauth.StaticKeyResolver{
+	failingProvider := newDeliveryTestProvider(t, apKey, failingStore, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	failingToken := mintDeliveryTestEvent(t, resourceKey, now, "aauth:subscriber@ap.example", "event-failure")
@@ -94,7 +96,7 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithSelfJWT(failingRequest, resourceKey, failingToken, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(failingRequest, resourceKey, failingToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	failingResponse := eventRegistrationHTTPResponse(failingProvider.Handler(), failingRequest)
@@ -110,14 +112,14 @@ func TestAPEventEndpointCommitsInboxBefore202(t *testing.T) {
 	}
 
 	now = now.Add(time.Second)
-	recoveredProvider := newDeliveryTestProvider(t, apKey, failedAuthority, aauth.StaticKeyResolver{
+	recoveredProvider := newDeliveryTestProvider(t, apKey, failedAuthority, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	recoveredRequest, err := http.NewRequest(http.MethodPost, "https://ap.example/events", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithSelfJWT(recoveredRequest, resourceKey, failingToken, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(recoveredRequest, resourceKey, failingToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	recoveredResponse := eventRegistrationHTTPResponse(recoveredProvider.Handler(), recoveredRequest)
@@ -173,11 +175,11 @@ func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	provider := newDeliveryTestProvider(t, apKey, apStore, aauth.StaticKeyResolver{
+	provider := newDeliveryTestProvider(t, apKey, apStore, signaturekey.StaticKeyResolver{
 		subscription.Resource: {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	client := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -190,12 +192,25 @@ func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	metadataResolver, err := aauth.NewHTTPAgentEventMetadataResolver(aauth.HTTPAgentEventMetadataResolverConfig{
+		Client: client,
+		Clock:  clock,
+		Admit: func(_ context.Context, endpoint string) error {
+			if !strings.HasPrefix(endpoint, subscription.APIssuer+"/") {
+				return errors.New("unadmitted event metadata endpoint")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	transport := &lostAcceptedEventTransport{base: registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return eventRegistrationHTTPResponse(provider.Handler(), request), nil
 	})}
 	client.Transport = transport
 
-	resource := newDeliveryTestResource(t, resourceKey, resolver, client, clock, resourceStore)
+	resource := newDeliveryTestResource(t, resourceKey, resolver, metadataResolver, client, clock, resourceStore)
 	if err := resource.DeliverEvent(ctx, subscription.APIssuer, subscription.EventID); err == nil {
 		t.Fatal("lost 202 was reported as observed delivery")
 	}
@@ -209,7 +224,7 @@ func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
 	}
 
 	now = now.Add(time.Second)
-	resource = newDeliveryTestResource(t, resourceKey, resolver, client, clock, resourceStore)
+	resource = newDeliveryTestResource(t, resourceKey, resolver, metadataResolver, client, clock, resourceStore)
 	if err := resource.DeliverEvent(ctx, subscription.APIssuer, subscription.EventID); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +249,7 @@ func TestEventDeliveryRetainsExactJWTAndReconcilesLost202With429(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithSelfJWT(differentRequest, resourceKey, differentToken, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(differentRequest, resourceKey, differentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	differentResponse := eventRegistrationHTTPResponse(provider.Handler(), differentRequest)
@@ -260,15 +275,15 @@ func TestAPEventEndpointRefusalMatrixLeavesAuthorityUnchanged(t *testing.T) {
 		name          string
 		wantStatus    int
 		wantCode      string
-		wantSignature aauth.SignatureErrorCode
+		wantSignature signaturekey.ErrorCode
 	}{
 		{name: "malformed body", wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
-		{name: "invalid resource proof", wantStatus: http.StatusUnauthorized, wantCode: string(aauth.SignatureErrorInvalidSignature), wantSignature: aauth.SignatureErrorInvalidSignature},
+		{name: "invalid resource proof", wantStatus: http.StatusUnauthorized, wantCode: string(signaturekey.ErrorInvalidSignature), wantSignature: signaturekey.ErrorInvalidSignature},
 		{name: "wrong resource", wantStatus: http.StatusForbidden, wantCode: "subscription_mismatch"},
 		{name: "wrong agent", wantStatus: http.StatusForbidden, wantCode: "subscription_mismatch"},
 		{name: "unknown event id", wantStatus: http.StatusNotFound, wantCode: "subscription_not_found"},
 		{name: "expired event id", wantStatus: http.StatusNotFound, wantCode: "subscription_not_found"},
-		{name: "expired token", wantStatus: http.StatusUnauthorized, wantCode: string(aauth.SignatureErrorExpiredJWT), wantSignature: aauth.SignatureErrorExpiredJWT},
+		{name: "expired token", wantStatus: http.StatusUnauthorized, wantCode: string(signaturekey.ErrorExpiredJWT), wantSignature: signaturekey.ErrorExpiredJWT},
 		{name: "exhausted", wantStatus: http.StatusTooManyRequests, wantCode: "subscription_exhausted"},
 	} {
 		test := test
@@ -288,7 +303,7 @@ func TestAPEventEndpointRefusalMatrixLeavesAuthorityUnchanged(t *testing.T) {
 			if err := store.CreateSubscription(ctx, subscription); err != nil {
 				t.Fatal(err)
 			}
-			resolver := aauth.StaticKeyResolver{
+			resolver := signaturekey.StaticKeyResolver{
 				"https://resource.example":       {resourceKey.ID(): resourceKey.PublicJWK()},
 				"https://other-resource.example": {otherResourceKey.ID(): otherResourceKey.PublicJWK()},
 			}
@@ -337,7 +352,7 @@ func TestAPEventEndpointRefusalMatrixLeavesAuthorityUnchanged(t *testing.T) {
 			if body != nil {
 				request.Header.Set("Content-Type", "application/json")
 			}
-			if err := aauth.SignRequestWithSelfJWT(request, proofKey, compact, clock); err != nil {
+			if err := signaturekey.SignSelfJWTRequest(request, proofKey, compact, clock); err != nil {
 				t.Fatal(err)
 			}
 			if test.name == "invalid resource proof" {
@@ -365,7 +380,7 @@ func TestAPEventEndpointRefusalMatrixLeavesAuthorityUnchanged(t *testing.T) {
 			}
 			signatureHeader := response.Header.Get("Signature-Error")
 			if test.wantSignature != "" {
-				parsed, err := aauth.ParseSignatureError(signatureHeader)
+				parsed, err := signaturekey.ParseError(signatureHeader)
 				if err != nil || parsed.Code != test.wantSignature {
 					t.Fatalf("Signature-Error = %q, %#v, %v", signatureHeader, parsed, err)
 				}
@@ -391,7 +406,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 	apKey := eventsProviderTestSigningKey(t, "ap-events-key")
 	resourceKeyA := eventsProviderTestSigningKey(t, "resource-events-a")
 	resourceKeyB := eventsProviderTestSigningKey(t, "resource-events-b")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://resource.example": {
 			resourceKeyA.ID(): resourceKeyA.PublicJWK(),
 			resourceKeyB.ID(): resourceKeyB.PublicJWK(),
@@ -456,7 +471,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 	client := &http.Client{Transport: registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return eventRegistrationHTTPResponse(provider.Handler(), request), nil
 	})}
-	resource := newDeliveryTestResource(t, resourceKeyA, metadataResolver, client, clock, resourceStore)
+	resource := newDeliveryTestResource(t, resourceKeyA, metadataResolver, metadataResolver, client, clock, resourceStore)
 	resourceResult := make(chan error, 1)
 	directResult := make(chan struct {
 		status int
@@ -474,7 +489,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 			}{body: []byte(requestErr.Error())}
 			return
 		}
-		if signErr := aauth.SignRequestWithSelfJWT(request, resourceKeyB, directToken, clock); signErr != nil {
+		if signErr := signaturekey.SignSelfJWTRequest(request, resourceKeyB, directToken, clock); signErr != nil {
 			directResult <- struct {
 				status int
 				body   []byte
@@ -582,7 +597,7 @@ func TestAPEventEndpointSerializesConcurrentFinalUseAcrossReconstruction(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := aauth.SignRequestWithSelfJWT(request, attempt.key, attempt.token, clock); err != nil {
+			if err := signaturekey.SignSelfJWTRequest(request, attempt.key, attempt.token, clock); err != nil {
 				t.Fatal(err)
 			}
 			response := eventRegistrationHTTPResponse(provider.Handler(), request)
@@ -653,7 +668,7 @@ func TestEventDeliveryRejectsUnsafeResolvedEndpointBeforeSend(t *testing.T) {
 				t.Fatal(err)
 			}
 			resolver := hostileEventMetadataResolver{
-				StaticKeyResolver: aauth.StaticKeyResolver{},
+				StaticKeyResolver: signaturekey.StaticKeyResolver{},
 				metadata: aauth.AgentEventMetadata{
 					Issuer: subscription.APIssuer, EventEndpoint: endpoint,
 				},
@@ -663,7 +678,7 @@ func TestEventDeliveryRejectsUnsafeResolvedEndpointBeforeSend(t *testing.T) {
 				sent = true
 				return nil, errors.New("test: unsafe endpoint was sent")
 			})}
-			resource := newDeliveryTestResource(t, resourceKey, resolver, client, clock, store)
+			resource := newDeliveryTestResource(t, resourceKey, resolver, resolver, client, clock, store)
 			if err := resource.DeliverEvent(ctx, subscription.APIssuer, subscription.EventID); err == nil {
 				t.Fatal("unsafe resolved endpoint was accepted")
 			}
@@ -674,7 +689,7 @@ func TestEventDeliveryRejectsUnsafeResolvedEndpointBeforeSend(t *testing.T) {
 	}
 }
 
-func newDeliveryTestProvider(t *testing.T, key jose.SigningKey, store APEventStore, resolver aauth.KeyResolver, clock aauth.Clock) *AgentProvider {
+func newDeliveryTestProvider(t *testing.T, key jose.SigningKey, store APEventStore, resolver signaturekey.KeyResolver, clock aauth.Clock) *AgentProvider {
 	t.Helper()
 	provider, err := NewAgentProvider(AgentProviderConfig{
 		Identifier: "https://ap.example",
@@ -697,7 +712,15 @@ func newDeliveryTestProvider(t *testing.T, key jose.SigningKey, store APEventSto
 	return provider
 }
 
-func newDeliveryTestResource(t *testing.T, key jose.SigningKey, resolver aauth.KeyResolver, client *http.Client, clock aauth.Clock, store ResourceEventStore) *Resource {
+func newDeliveryTestResource(
+	t *testing.T,
+	key jose.SigningKey,
+	resolver signaturekey.KeyResolver,
+	metadataResolver AgentEventMetadataResolver,
+	client *http.Client,
+	clock aauth.Clock,
+	store ResourceEventStore,
+) *Resource {
 	t.Helper()
 	resource, err := NewResource(ResourceConfig{
 		Identifier:               "https://resource.example",
@@ -718,6 +741,7 @@ func newDeliveryTestResource(t *testing.T, key jose.SigningKey, resolver aauth.K
 			PublicSubscriptionPath: "/events/subscriptions",
 			Store:                  store,
 			HTTPClient:             client,
+			MetadataResolver:       metadataResolver,
 			ActiveUntil: func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error) {
 				return clock.Now().Add(time.Hour), nil
 			},
@@ -832,7 +856,7 @@ func (store *twoArrivalAPEventStore) AcceptEvent(ctx context.Context, input Acce
 }
 
 type hostileEventMetadataResolver struct {
-	aauth.StaticKeyResolver
+	signaturekey.StaticKeyResolver
 	metadata aauth.AgentEventMetadata
 }
 

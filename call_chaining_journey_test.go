@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -85,7 +87,7 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 	}
 
 	client := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -375,21 +377,21 @@ func testCurrentCallChain(t *testing.T, federated bool, substituteUpstreamKey bo
 		}
 		boundaryRequest.Header.Set("Content-Type", "application/json")
 		if federated {
-			err = aauth.SignRequestWithJWKSURIOptions(
+			err = signaturekey.SignJWKSURIRequestWithOptions(
 				boundaryRequest,
 				psKey,
 				"https://ps.example",
 				aauth.PersonDiscoveryDocument,
 				clock,
-				aauth.SignRequestOptions{Nonce: "direct-ps-to-as-substitution"},
+				signaturekey.SignOptions{Nonce: "direct-ps-to-as-substitution"},
 			)
 		} else {
-			err = aauth.SignRequestWithOptions(
+			err = signaturekey.SignJWTRequestWithOptions(
 				boundaryRequest,
 				intermediaryKey,
 				intermediaryToken,
 				clock,
-				aauth.SignRequestOptions{Nonce: "direct-ps-substitution"},
+				signaturekey.SignOptions{Nonce: "direct-ps-substitution"},
 			)
 		}
 		if err != nil {

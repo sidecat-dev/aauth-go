@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -51,7 +53,7 @@ func TestAgentEnforcesRetryAfterAndSlowDown(t *testing.T) {
 		Identifier:         "aauth:reader@ap.example",
 		SigningKey:         testSigningKey(t, "agent-key"),
 		AgentToken:         "agent-token",
-		KeyResolver:        aauth.StaticKeyResolver{},
+		KeyResolver:        signaturekey.StaticKeyResolver{},
 		HTTPClient:         gateway.Client(),
 		Clock:              clock,
 	})
@@ -147,7 +149,7 @@ func TestAgentBacksOffAfterServiceUnavailable(t *testing.T) {
 		Identifier:         "aauth:reader@ap.example",
 		SigningKey:         testSigningKey(t, "agent-key"),
 		AgentToken:         "agent-token",
-		KeyResolver:        aauth.StaticKeyResolver{},
+		KeyResolver:        signaturekey.StaticKeyResolver{},
 		HTTPClient:         gateway.Client(),
 		Clock:              clock,
 	})

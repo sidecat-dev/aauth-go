@@ -6,13 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -64,7 +66,7 @@ type elixirJKTJWTRequestFixture struct {
 func TestLegacyDraft06ElixirAgentRequestIsRetainedButRejected(t *testing.T) {
 	fixture := loadElixirRequestFixture(t)
 	request := elixirFixtureRequest(t, fixture)
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		fixture.Issuer: {
 			fixture.IssuerKey.Kid: fixture.IssuerKey,
 		},
@@ -83,9 +85,9 @@ func TestLegacyDraft06ElixirAgentRequestIsRetainedButRejected(t *testing.T) {
 			AllowedCredentialTypes: []string{aauth.AgentTokenType},
 		},
 	)
-	var signatureError *aauth.SignatureError
+	var signatureError *signaturekey.Error
 	if !errors.As(err, &signatureError) ||
-		signatureError.Code != aauth.SignatureErrorUnsupportedAlgorithm {
+		signatureError.Code != signaturekey.ErrorUnsupportedAlgorithm {
 		t.Fatalf("legacy draft-06 fixture error = %v, want unsupported_algorithm", err)
 	}
 }
@@ -130,12 +132,12 @@ func TestLegacyDraft06ElixirJKTJWTRequestIsRetainedButRejected(t *testing.T) {
 		nil,
 		clock,
 		aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJKTJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJKTJWT},
 		},
 	)
-	var signatureError *aauth.SignatureError
+	var signatureError *signaturekey.Error
 	if !errors.As(err, &signatureError) ||
-		signatureError.Code != aauth.SignatureErrorUnsupportedAlgorithm {
+		signatureError.Code != signaturekey.ErrorUnsupportedAlgorithm {
 		t.Fatalf("legacy draft-06 jkt-jwt error = %v, want unsupported_algorithm", err)
 	}
 }

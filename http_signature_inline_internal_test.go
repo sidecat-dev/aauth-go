@@ -10,12 +10,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
+
+type jktJWTHeader struct {
+	Algorithm string   `json:"alg"`
+	Type      string   `json:"typ"`
+	JWK       jose.JWK `json:"jwk"`
+}
 
 func TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey(t *testing.T) {
 	t.Parallel()
@@ -24,7 +32,7 @@ func TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey(t *testing.T) {
 	clock := ClockFunc(func() time.Time { return now })
 	durable := internalTestSigningKey(t, "durable-key")
 	ephemeral := internalTestSigningKey(t, "ephemeral-key")
-	delegation, err := MintJKTJWT(durable, ephemeral.PublicJWK(), now, time.Hour)
+	delegation, err := signaturekey.MintJKTJWT(durable, ephemeral.PublicJWK(), now, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +45,7 @@ func TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey(t *testing.T) {
 		durable,
 		`sig=jkt-jwt;jwt="`+delegation+`"`,
 		clock,
-		SignRequestOptions{},
+		signaturekey.SignOptions{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +56,7 @@ func TestJKTJWTRequestRefusesAnHTTPProofMadeByTheDurableKey(t *testing.T) {
 		nil,
 		clock,
 		VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{SignatureKeyJKTJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJKTJWT},
 		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "HTTP message signature is invalid") {
@@ -79,12 +87,12 @@ func TestJWTVerificationClassifierPublishesOnlyUnsupportedClaim(t *testing.T) {
 		},
 		{
 			name: "unknown key",
-			err:  &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("private issuer diagnostic")},
+			err:  &signaturekey.ResolutionError{Code: signaturekey.ResolutionUnknown, Cause: errors.New("private issuer diagnostic")},
 		},
 		{name: "unsupported algorithm", err: &unsupportedTokenAlgorithmError{algorithm: "private-algorithm"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var signatureError *SignatureError
+			var signatureError *signaturekey.Error
 			if err := classifyJWTVerificationError(test.err); !errors.As(err, &signatureError) {
 				t.Fatalf("classified error = %T %v", err, err)
 			}
@@ -149,7 +157,7 @@ func TestVerifyRequestExactComponentProfileRejectsAdditionalCoveredHeader(t *tes
 	_, err = VerifyRequest(
 		context.Background(),
 		request,
-		StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
+		signaturekey.StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
 		clock,
 		VerifyRequestOptions{
 			RequiredComponents:     []string{"content-type"},
@@ -157,8 +165,8 @@ func TestVerifyRequestExactComponentProfileRejectsAdditionalCoveredHeader(t *tes
 			RequireExactComponents: true,
 		},
 	)
-	var signatureError *SignatureError
-	if !errors.As(err, &signatureError) || signatureError.Code != SignatureErrorInvalidSignature ||
+	var signatureError *signaturekey.Error
+	if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorInvalidSignature ||
 		!strings.Contains(err.Error(), "exact component profile") {
 		t.Fatalf("additional covered component error = %v (%#v)", err, signatureError)
 	}
@@ -183,7 +191,7 @@ func TestVerifyRequestUsesOneTrustedInstantForTheWholeVerification(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SignRequest(request, agent, credential, ClockFunc(func() time.Time { return now })); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agent, credential, ClockFunc(func() time.Time { return now })); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
@@ -194,7 +202,7 @@ func TestVerifyRequestUsesOneTrustedInstantForTheWholeVerification(t *testing.T)
 	verified, err := VerifyRequest(
 		context.Background(),
 		request,
-		StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
+		signaturekey.StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
 		verificationClock,
 		VerifyRequestOptions{AllowedCredentialTypes: []string{AgentTokenType}},
 	)
@@ -226,7 +234,7 @@ func TestVerifyRequestExactComponentProfileRejectsUndeclaredAndSplitFields(t *te
 		_, err := VerifyRequest(
 			context.Background(),
 			request,
-			StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
+			signaturekey.StaticKeyResolver{"https://ap.example": {issuer.ID(): issuer.PublicJWK()}},
 			clock,
 			VerifyRequestOptions{
 				RequiredComponents:     []string{"content-type"},
@@ -244,7 +252,7 @@ func TestVerifyRequestExactComponentProfileRejectsUndeclaredAndSplitFields(t *te
 		}
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer foreign")
-		if err := SignRequest(request, agent, credential, clock); err != nil {
+		if err := signaturekey.SignJWTRequest(request, agent, credential, clock); err != nil {
 			t.Fatal(err)
 		}
 		if err := verify(request); err == nil || !strings.Contains(err.Error(), "exact component profile") {
@@ -258,7 +266,7 @@ func TestVerifyRequestExactComponentProfileRejectsUndeclaredAndSplitFields(t *te
 			t.Fatal(err)
 		}
 		request.Header.Set("Content-Type", "application/json")
-		if err := SignRequest(request, agent, credential, clock); err != nil {
+		if err := signaturekey.SignJWTRequest(request, agent, credential, clock); err != nil {
 			t.Fatal(err)
 		}
 		request.Header["Content-Type"] = append(request.Header["Content-Type"], "application/problem+json")
@@ -275,57 +283,57 @@ func TestJKTJWTRefusesInvalidProtectedMaterial(t *testing.T) {
 	clock := ClockFunc(func() time.Time { return now })
 	durable := internalTestSigningKey(t, "durable-key")
 	ephemeral := internalTestSigningKey(t, "ephemeral-key")
-	compact, err := MintJKTJWT(durable, ephemeral.PublicJWK(), now, time.Hour)
+	compact, err := signaturekey.MintJKTJWT(durable, ephemeral.PublicJWK(), now, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("type", func(t *testing.T) {
-		mutated := rewriteJKTJWT(t, compact, durable, func(header *jktJWTHeader, _ *JKTJWTClaims) {
+		mutated := rewriteJKTJWT(t, compact, durable, func(header *jktJWTHeader, _ *signaturekey.JKTJWTClaims) {
 			header.Type = "jkt-s512+jwt"
 		})
-		if _, err := VerifyJKTJWT(mutated, clock); err == nil ||
+		if _, err := signaturekey.VerifyJKTJWT(mutated, clock); err == nil ||
 			!strings.Contains(err.Error(), "typ") {
 			t.Fatalf("unsupported typ error = %v", err)
 		}
 	})
 	t.Run("algorithm", func(t *testing.T) {
-		mutated := rewriteJKTJWT(t, compact, durable, func(header *jktJWTHeader, _ *JKTJWTClaims) {
+		mutated := rewriteJKTJWT(t, compact, durable, func(header *jktJWTHeader, _ *signaturekey.JKTJWTClaims) {
 			header.Algorithm = "none"
 		})
-		if _, err := VerifyJKTJWT(mutated, clock); err == nil ||
+		if _, err := signaturekey.VerifyJKTJWT(mutated, clock); err == nil ||
 			!strings.Contains(err.Error(), "forbidden") {
 			t.Fatalf("alg none error = %v", err)
 		}
 	})
 	t.Run("issuer", func(t *testing.T) {
-		mutated := rewriteJKTJWT(t, compact, durable, func(_ *jktJWTHeader, claims *JKTJWTClaims) {
+		mutated := rewriteJKTJWT(t, compact, durable, func(_ *jktJWTHeader, claims *signaturekey.JKTJWTClaims) {
 			claims.Issuer = "urn:jkt:sha-256:substituted"
 		})
-		if _, err := VerifyJKTJWT(mutated, clock); err == nil ||
+		if _, err := signaturekey.VerifyJKTJWT(mutated, clock); err == nil ||
 			!strings.Contains(err.Error(), "issuer") {
 			t.Fatalf("substituted issuer error = %v", err)
 		}
 	})
 	t.Run("identity key", func(t *testing.T) {
-		mutated := rewriteJKTJWT(t, compact, durable, func(header *jktJWTHeader, _ *JKTJWTClaims) {
+		mutated := rewriteJKTJWT(t, compact, durable, func(header *jktJWTHeader, _ *signaturekey.JKTJWTClaims) {
 			header.JWK.X = "not-a-public-key"
 		})
-		_, err := VerifyJKTJWT(mutated, clock)
-		var validationError *TokenValidationError
+		_, err := signaturekey.VerifyJKTJWT(mutated, clock)
+		var validationError *signaturekey.Error
 		if !errors.As(err, &validationError) ||
-			validationError.Code != TokenValidationInvalidKey {
+			validationError.Code != signaturekey.ErrorInvalidKey {
 			t.Fatalf("invalid identity key error = %v (%#v)", err, validationError)
 		}
 	})
 	t.Run("confirmation key", func(t *testing.T) {
-		mutated := rewriteJKTJWT(t, compact, durable, func(_ *jktJWTHeader, claims *JKTJWTClaims) {
+		mutated := rewriteJKTJWT(t, compact, durable, func(_ *jktJWTHeader, claims *signaturekey.JKTJWTClaims) {
 			claims.Confirmation.JWK.X = "not-a-public-key"
 		})
-		_, err := VerifyJKTJWT(mutated, clock)
-		var validationError *TokenValidationError
+		_, err := signaturekey.VerifyJKTJWT(mutated, clock)
+		var validationError *signaturekey.Error
 		if !errors.As(err, &validationError) ||
-			validationError.Code != TokenValidationInvalidKey {
+			validationError.Code != signaturekey.ErrorInvalidKey {
 			t.Fatalf("invalid confirmation key error = %v (%#v)", err, validationError)
 		}
 	})
@@ -355,15 +363,15 @@ func TestVerifyRequestClassifiesUnsupportedJWTAlgorithm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SignRequestWithOptions(request, requestKey, compact, clock, SignRequestOptions{}); err != nil {
+	if err := signaturekey.SignJWTRequestWithOptions(request, requestKey, compact, clock, signaturekey.SignOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = VerifyRequest(context.Background(), request, StaticKeyResolver{}, clock, VerifyRequestOptions{
+	_, err = VerifyRequest(context.Background(), request, signaturekey.StaticKeyResolver{}, clock, VerifyRequestOptions{
 		AllowedCredentialTypes: []string{AgentTokenType},
 	})
-	var signatureError *SignatureError
+	var signatureError *signaturekey.Error
 	if !errors.As(err, &signatureError) ||
-		signatureError.Code != SignatureErrorUnsupportedAlgorithm ||
+		signatureError.Code != signaturekey.ErrorUnsupportedAlgorithm ||
 		len(signatureError.AcceptedAlgorithms) != 1 ||
 		signatureError.AcceptedAlgorithms[0] != jose.Ed25519Algorithm {
 		t.Fatalf("unsupported token algorithm error = %v (%#v)", err, signatureError)
@@ -397,20 +405,20 @@ func TestVerifyRequestClassifiesMalformedJWTConfirmationAsInvalidKey(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SignRequest(request, requestKey, credential, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 		t.Fatal(err)
 	}
 	_, err = VerifyRequest(
 		context.Background(),
 		request,
-		StaticKeyResolver{"https://ap.example": {"issuer-key": issuer.PublicJWK()}},
+		signaturekey.StaticKeyResolver{"https://ap.example": {"issuer-key": issuer.PublicJWK()}},
 		clock,
 		VerifyRequestOptions{AllowedCredentialTypes: []string{AgentTokenType}},
 	)
-	var signatureError *SignatureError
+	var signatureError *signaturekey.Error
 	var validationError *TokenValidationError
 	if !errors.As(err, &signatureError) ||
-		signatureError.Code != SignatureErrorInvalidKey ||
+		signatureError.Code != signaturekey.ErrorInvalidKey ||
 		!errors.As(err, &validationError) ||
 		validationError.Code != TokenValidationInvalidKey {
 		t.Fatalf(
@@ -463,8 +471,8 @@ func TestVerifyRequestChecksAllMandatoryProofHeadersBeforeKeyMaterial(t *testing
 		ClockFunc(func() time.Time { return time.Unix(1785326400, 0) }),
 		VerifyRequestOptions{},
 	)
-	var signatureError *SignatureError
-	if !errors.As(err, &signatureError) || signatureError.Code != SignatureErrorInvalidRequest {
+	var signatureError *signaturekey.Error
+	if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorInvalidRequest {
 		t.Fatalf("missing Signature precedence = %v (%#v)", err, signatureError)
 	}
 }
@@ -480,7 +488,7 @@ func TestVerifyRequestRejectsPreflightFailuresBeforeKeyResolution(t *testing.T) 
 		name        string
 		mutate      func(*http.Request)
 		verifyClock Clock
-		want        SignatureErrorCode
+		want        signaturekey.ErrorCode
 	}{
 		{
 			name: "missing required coverage",
@@ -491,13 +499,13 @@ func TestVerifyRequestRejectsPreflightFailuresBeforeKeyResolution(t *testing.T) 
 				)
 			},
 			verifyClock: signingClock,
-			want:        SignatureErrorInvalidInput,
+			want:        signaturekey.ErrorInvalidInput,
 		},
 		{
 			name:        "stale created time",
 			mutate:      func(*http.Request) {},
 			verifyClock: ClockFunc(func() time.Time { return now.Add(2 * time.Minute) }),
-			want:        SignatureErrorInvalidSignature,
+			want:        signaturekey.ErrorInvalidSignature,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -505,7 +513,7 @@ func TestVerifyRequestRejectsPreflightFailuresBeforeKeyResolution(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := SignRequestWithJWKSURI(
+			if err := signaturekey.SignJWKSURIRequest(
 				request,
 				key,
 				"https://resource.example",
@@ -521,9 +529,9 @@ func TestVerifyRequestRejectsPreflightFailuresBeforeKeyResolution(t *testing.T) 
 				request,
 				resolver,
 				test.verifyClock,
-				VerifyRequestOptions{AllowedSignatureKeyTypes: []string{SignatureKeyJWKSURI}},
+				VerifyRequestOptions{AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI}},
 			)
-			var signatureError *SignatureError
+			var signatureError *signaturekey.Error
 			if !errors.As(err, &signatureError) || signatureError.Code != test.want {
 				t.Fatalf("VerifyRequest error = %v (%#v), want %q", err, signatureError, test.want)
 			}
@@ -555,30 +563,30 @@ func mintTokenWithAlgorithm(key jose.SigningKey, algorithm, tokenType string, cl
 	if err != nil {
 		return "", err
 	}
-	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
+	signingInput := base64.RawURLEncoding.EncodeToString(headerBytes) + "." + base64.RawURLEncoding.EncodeToString(claimsBytes)
 	signature, err := signTestMessage(key, []byte(signingInput))
 	if err != nil {
 		return "", err
 	}
-	return signingInput + "." + rawURL.EncodeToString(signature), nil
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
 func rewriteJKTJWT(
 	t *testing.T,
 	compact string,
 	signer jose.SigningKey,
-	rewrite func(*jktJWTHeader, *JKTJWTClaims),
+	rewrite func(*jktJWTHeader, *signaturekey.JKTJWTClaims),
 ) string {
 	t.Helper()
 	parts := strings.Split(compact, ".")
 	if len(parts) != 3 {
 		t.Fatalf("compact parts = %d", len(parts))
 	}
-	headerBytes, err := rawURL.DecodeString(parts[0])
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimsBytes, err := rawURL.DecodeString(parts[1])
+	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +594,7 @@ func rewriteJKTJWT(
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		t.Fatal(err)
 	}
-	var claims JKTJWTClaims
+	var claims signaturekey.JKTJWTClaims
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
 		t.Fatal(err)
 	}
@@ -599,12 +607,12 @@ func rewriteJKTJWT(
 	if err != nil {
 		t.Fatal(err)
 	}
-	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
+	signingInput := base64.RawURLEncoding.EncodeToString(headerBytes) + "." + base64.RawURLEncoding.EncodeToString(claimsBytes)
 	signature, err := signTestMessage(signer, []byte(signingInput))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return signingInput + "." + rawURL.EncodeToString(signature)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func internalTestSigningKey(t *testing.T, id string) jose.SigningKey {

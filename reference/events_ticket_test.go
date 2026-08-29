@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +14,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -33,7 +35,7 @@ func TestProtectedEventTicketIssueFollowsAuthenticatedOperationCommit(t *testing
 
 	resource := newProtectedEventsTestResource(t, protectedEventsTestResourceInput{
 		clock: clock, resourceKey: resourceKey,
-		resolver: aauth.StaticKeyResolver{"https://as.example": {accessKey.ID(): accessKey.PublicJWK()}},
+		resolver: signaturekey.StaticKeyResolver{"https://as.example": {accessKey.ID(): accessKey.PublicJWK()}},
 		store:    store, contracts: contracts, document: document,
 		operation: func(_ context.Context, authorized aauth.AuthorizedRequest) (any, error) {
 			if authorized.Agent != "" || authorized.PersonServer != "https://ps.example" ||
@@ -61,7 +63,7 @@ func TestProtectedEventTicketIssueFollowsAuthenticatedOperationCommit(t *testing
 	})
 	compact := protectedEventsTestAuthToken(t, accessKey, agentKey, now)
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/search", nil)
-	if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -134,7 +136,7 @@ func TestProtectedEventsConfigurationRejectsWildcardPublicRouteConflict(t *testi
 	_, err := NewResource(ResourceConfig{
 		Identifier: "https://resource.example", AccessMode: aauth.AccessModeAuthToken,
 		AccessServer: "https://as.example",
-		SigningKey:   resourceKey, KeyResolver: aauth.StaticKeyResolver{}, Clock: clock,
+		SigningKey:   resourceKey, KeyResolver: signaturekey.StaticKeyResolver{}, Clock: clock,
 		NewID: func() string { return "unused" }, Scopes: []string{"events.read"},
 		ScopeDescriptions:            map[string]string{"events.read": "Read protected appointment events"},
 		RequiredScopesForRequest:     testRequiredResourceScopes("events.read"),
@@ -175,7 +177,7 @@ func TestEventsConfigurationRejectsReservedOrTemplatedRoutes(t *testing.T) {
 			_, err := NewResource(ResourceConfig{
 				Identifier: "https://resource.example", AccessMode: aauth.AccessModeAuthToken,
 				AccessServer: "https://as.example",
-				SigningKey:   resourceKey, KeyResolver: aauth.StaticKeyResolver{}, Clock: clock,
+				SigningKey:   resourceKey, KeyResolver: signaturekey.StaticKeyResolver{}, Clock: clock,
 				NewID: func() string { return "unused" }, Scopes: []string{"events.read"},
 				ScopeDescriptions:            map[string]string{"events.read": "Read protected appointment events"},
 				RequiredScopesForRequest:     testRequiredResourceScopes("events.read"),
@@ -213,7 +215,7 @@ func TestProtectedEventTicketIssueFailureReleasesNoURL(t *testing.T) {
 	var rendered bool
 	resource := newProtectedEventsTestResource(t, protectedEventsTestResourceInput{
 		clock: clock, resourceKey: resourceKey,
-		resolver: aauth.StaticKeyResolver{"https://as.example": {accessKey.ID(): accessKey.PublicJWK()}},
+		resolver: signaturekey.StaticKeyResolver{"https://as.example": {accessKey.ID(): accessKey.PublicJWK()}},
 		store:    store, contracts: NewMemoryEventContractStore(clock), document: protectedEventsTestDocument(),
 		operation: func(context.Context, aauth.AuthorizedRequest) (any, error) {
 			return ProtectedEventOperationResult{
@@ -229,7 +231,7 @@ func TestProtectedEventTicketIssueFailureReleasesNoURL(t *testing.T) {
 	})
 	compact := protectedEventsTestAuthToken(t, accessKey, agentKey, now)
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/search", nil)
-	if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -296,7 +298,7 @@ func TestProtectedEventRegistrationConsumesTicketAndCreatesSubscriptionAtomicall
 	document := protectedEventsTestDocument()
 	resource := newProtectedEventsTestResource(t, protectedEventsTestResourceInput{
 		clock: clock, resourceKey: resourceKey,
-		resolver: aauth.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
+		resolver: signaturekey.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
 		store:    store, contracts: NewMemoryEventContractStore(clock), document: document,
 		operation: func(context.Context, aauth.AuthorizedRequest) (any, error) {
 			return map[string]string{"status": "ok"}, nil
@@ -309,7 +311,7 @@ func TestProtectedEventRegistrationConsumesTicketAndCreatesSubscriptionAtomicall
 	}
 	compact := protectedEventsTestSubscribeToken(t, apKey, agentKey, now, "event-protected")
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/waitlist/"+rawTicket, nil)
-	if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -332,7 +334,7 @@ func TestProtectedEventRegistrationConsumesTicketAndCreatesSubscriptionAtomicall
 
 	replay := httptest.NewRecorder()
 	replayRequest := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/waitlist/"+rawTicket, nil)
-	if err := aauth.SignRequest(replayRequest, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(replayRequest, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	resource.Handler().ServeHTTP(replay, replayRequest)
@@ -352,7 +354,7 @@ func TestProtectedEventRegistrationRejectsTicketFromAnotherResourceAuthority(t *
 	document := protectedEventsTestDocument()
 	resource := newProtectedEventsTestResource(t, protectedEventsTestResourceInput{
 		clock: clock, resourceKey: resourceKey,
-		resolver: aauth.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
+		resolver: signaturekey.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
 		store:    store, contracts: NewMemoryEventContractStore(clock), document: document,
 		operation: func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
 	})
@@ -364,7 +366,7 @@ func TestProtectedEventRegistrationRejectsTicketFromAnotherResourceAuthority(t *
 	}
 	compact := protectedEventsTestSubscribeToken(t, apKey, agentKey, now, "event-cross-resource")
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/waitlist/"+rawTicket, nil)
-	if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -387,7 +389,7 @@ func TestProtectedEventRegistrationRetainsExactAgentContractContextBeforeSend(t 
 	resourceKey := eventsProviderTestSigningKey(t, "resource-key")
 	apKey := eventsProviderTestSigningKey(t, "ap-key")
 	agentKey := eventsProviderTestSigningKey(t, "agent-key")
-	resolver := aauth.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}}
+	resolver := signaturekey.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}}
 	resourceStore := NewMemoryResourceEventStore()
 	document := protectedEventsTestDocument()
 	resource := newProtectedEventsTestResource(t, protectedEventsTestResourceInput{
@@ -454,7 +456,7 @@ func TestProtectedEventRegistrationValidatorRunsAfterCoveredBodyProofAndBeforeCo
 	validatorCalls := 0
 	resource := newProtectedEventsTestResource(t, protectedEventsTestResourceInput{
 		clock: clock, resourceKey: resourceKey,
-		resolver: aauth.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
+		resolver: signaturekey.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
 		store:    store, contracts: NewMemoryEventContractStore(clock), document: document,
 		operation: func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
 		registrationValidator: func(_ context.Context, registration ProtectedEventRegistration) error {
@@ -481,7 +483,7 @@ func TestProtectedEventRegistrationValidatorRunsAfterCoveredBodyProofAndBeforeCo
 	body := []byte(`{"event_types":["slot.available"]}`)
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/waitlist/"+rawTicket, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -499,7 +501,7 @@ func TestProtectedEventRegistrationValidatorRunsAfterCoveredBodyProofAndBeforeCo
 	invalidBody := []byte(`{"event_types":[]}`)
 	invalid := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/waitlist/"+invalidRaw, bytes.NewReader(invalidBody))
 	invalid.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(invalid, agentKey, invalidCompact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(invalid, agentKey, invalidCompact, clock); err != nil {
 		t.Fatal(err)
 	}
 	invalidResponse := httptest.NewRecorder()
@@ -521,7 +523,7 @@ func TestProtectedEventRegistrationValidatorRunsAfterCoveredBodyProofAndBeforeCo
 	rejectedCompact := protectedEventsTestSubscribeToken(t, apKey, agentKey, now, "event-tampered-registration")
 	rejected := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/waitlist/"+rejectedRaw, bytes.NewReader(body))
 	rejected.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(rejected, agentKey, rejectedCompact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(rejected, agentKey, rejectedCompact, clock); err != nil {
 		t.Fatal(err)
 	}
 	rejected.Body = io.NopCloser(strings.NewReader(`{"event_types":["changed"]}`))
@@ -564,7 +566,7 @@ func TestProtectedEventRegistrationRefusalsLeaveTicketUsable(t *testing.T) {
 			store := NewMemoryResourceEventStore()
 			resource := newProtectedEventsTestResource(t, protectedEventsTestResourceInput{
 				clock: testClock, resourceKey: resourceKey,
-				resolver: aauth.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
+				resolver: signaturekey.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}},
 				store:    store, contracts: NewMemoryEventContractStore(testClock), document: document,
 				operation: func(context.Context, aauth.AuthorizedRequest) (any, error) { return nil, nil },
 			})
@@ -588,7 +590,7 @@ func TestProtectedEventRegistrationRefusalsLeaveTicketUsable(t *testing.T) {
 			} else {
 				request.Header.Set("Content-Type", "application/json")
 			}
-			if err := aauth.SignRequest(request, test.requestKey, compact, testClock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, test.requestKey, compact, testClock); err != nil {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
@@ -648,7 +650,7 @@ func TestProtectedEventTicketConcurrentConsumptionHasOneWinner(t *testing.T) {
 type protectedEventsTestResourceInput struct {
 	clock                 aauth.Clock
 	resourceKey           jose.SigningKey
-	resolver              aauth.KeyResolver
+	resolver              signaturekey.KeyResolver
 	store                 ResourceEventStore
 	contracts             EventContractStore
 	document              []byte

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"reflect"
@@ -17,13 +16,16 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 type AccessServerConfig struct {
 	Identifier          string
 	SigningKey          jose.SigningKey
-	KeyResolver         aauth.KeyResolver
+	KeyResolver         signaturekey.KeyResolver
 	Clock               aauth.Clock
 	NewID               func() string
 	TrustedPersonServer func(context.Context, string) error
@@ -40,7 +42,7 @@ type AccessServerConfig struct {
 type AccessServer struct {
 	identifier            string
 	signingKey            jose.SigningKey
-	keyResolver           aauth.KeyResolver
+	keyResolver           signaturekey.KeyResolver
 	clock                 aauth.Clock
 	newID                 func() string
 	trustedPersonServer   func(context.Context, string) error
@@ -401,7 +403,7 @@ func (server *AccessServer) validateAccessAuthorizationRequestEvidence(
 	if proof.Method != http.MethodPost || proof.Target != "/token" || proof.Authority == "" ||
 		proof.ContentDigest == "" || proof.ContentType == "" || proof.SignatureInput == "" ||
 		proof.Signature == "" || proof.SignatureKey == "" ||
-		proof.SignatureKeyType != aauth.SignatureKeyJWKSURI || proof.CredentialType != "" ||
+		proof.SignatureKeyType != string(signaturekey.SchemeJWKSURI) || proof.CredentialType != "" ||
 		proof.CredentialIssuer != "" || proof.Authorization != "" ||
 		proof.Signer == "" || proof.Agent != "" || proof.VerifiedAt.IsZero() ||
 		proof.Signer != value.PollingServer || !proof.PublicKey.Equal(value.PollingKey) {
@@ -431,18 +433,18 @@ func (server *AccessServer) validateAccessAuthorizationRequestEvidence(
 	verified, err := aauth.VerifyRequest(
 		context.Background(),
 		request,
-		aauth.StaticKeyResolver{
+		signaturekey.StaticKeyResolver{
 			proof.Signer: {proof.PublicKey.Kid: proof.PublicKey},
 		},
 		aauth.ClockFunc(func() time.Time { return proof.VerifiedAt.UTC() }),
 		aauth.VerifyRequestOptions{
 			RequiredComponents:       []string{"content-type"},
 			RequireExactComponents:   true,
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
 		},
 	)
 	if err != nil || verified.Signer != proof.Signer ||
-		verified.SignatureKeyType != proof.SignatureKeyType || verified.CredentialType != "" ||
+		verified.SignatureKeyType != signaturekey.Scheme(proof.SignatureKeyType) || verified.CredentialType != "" ||
 		!verified.PublicKey.Equal(proof.PublicKey) || !verified.Created.Equal(proof.Created) ||
 		!verified.VerifiedAt.Equal(proof.VerifiedAt) || verified.ReplayKey != proof.ReplayKey {
 		return ErrAuthorizationStateIntegrity
@@ -634,7 +636,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 	verified, err := aauth.VerifyRequest(request.Context(), request, server.keyResolver, server.clock, aauth.VerifyRequestOptions{
 		RequiredComponents:       []string{"content-type"},
 		RequireExactComponents:   true,
-		AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
+		AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
 	})
 	if err != nil {
 		writeSignatureFailure(response, err)
@@ -761,7 +763,7 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow), verified.VerifiedAt) {
+	if server.seenReplay(verified.ReplayKey, verified.Created.Add(signaturekey.DefaultSignatureWindow), verified.VerifiedAt) {
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
@@ -1124,7 +1126,7 @@ func (server *AccessServer) handlePendingAuthorization(
 		server.keyResolver,
 		server.clock,
 		aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
 		},
 	)
 	if err != nil {

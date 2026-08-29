@@ -8,12 +8,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -95,7 +97,7 @@ func TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay(t 
 					server, err := NewPersonServer(PersonServerConfig{
 						Identifier: "https://ps.example",
 						SigningKey: personKey,
-						KeyResolver: aauth.StaticKeyResolver{
+						KeyResolver: signaturekey.StaticKeyResolver{
 							"https://ap.example":       {providerKey.ID(): providerKey.PublicJWK()},
 							"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 						},
@@ -128,7 +130,7 @@ func TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay(t 
 					}
 					request := httptest.NewRequest(http.MethodPost, "https://ps.example/token", bytes.NewReader(body))
 					request.Header.Set("Content-Type", "application/json")
-					if err := aauth.SignRequest(request, agentKey, agentToken, clock); err != nil {
+					if err := signaturekey.SignJWTRequest(request, agentKey, agentToken, clock); err != nil {
 						t.Fatal(err)
 					}
 					return request
@@ -145,7 +147,7 @@ func TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay(t 
 					server, err := NewAccessServer(AccessServerConfig{
 						Identifier: "https://as.example",
 						SigningKey: referenceTestSigningKey(t, "access-key"),
-						KeyResolver: aauth.StaticKeyResolver{
+						KeyResolver: signaturekey.StaticKeyResolver{
 							"https://ps.example":       {personKey.ID(): personKey.PublicJWK()},
 							"https://ap.example":       {providerKey.ID(): providerKey.PublicJWK()},
 							"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
@@ -177,7 +179,7 @@ func TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay(t 
 					}
 					request := httptest.NewRequest(http.MethodPost, "https://as.example/token", bytes.NewReader(body))
 					request.Header.Set("Content-Type", "application/json")
-					if err := aauth.SignRequestWithJWKSURI(
+					if err := signaturekey.SignJWKSURIRequest(
 						request,
 						personKey,
 						"https://ps.example",
@@ -258,7 +260,7 @@ func TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay(t 
 			server, err := NewPersonServer(PersonServerConfig{
 				Identifier: "https://ps.example",
 				SigningKey: serverKey,
-				KeyResolver: aauth.StaticKeyResolver{
+				KeyResolver: signaturekey.StaticKeyResolver{
 					"https://ap.example":          {providerKey.ID(): providerKey.PublicJWK()},
 					"https://upstream-ps.example": {upstreamKey.ID(): upstreamKey.PublicJWK()},
 				},
@@ -303,7 +305,7 @@ func TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay(t 
 			}
 			request := httptest.NewRequest(http.MethodPost, "https://ps.example/person", bytes.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
-			if err := aauth.SignRequest(request, agentKey, agentToken, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, agentKey, agentToken, clock); err != nil {
 				t.Fatal(err)
 			}
 			for attempt := 0; attempt < 2; attempt++ {
@@ -348,7 +350,7 @@ func TestAccessServerTrustPolicyRefusalDoesNotLeakHostDetail(t *testing.T) {
 	server, err := NewAccessServer(AccessServerConfig{
 		Identifier: "https://as.example",
 		SigningKey: referenceTestSigningKey(t, "access-key"),
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ps.example": {personKey.ID(): personKey.PublicJWK()},
 		},
 		Clock:              clock,
@@ -367,7 +369,7 @@ func TestAccessServerTrustPolicyRefusalDoesNotLeakHostDetail(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "https://as.example/token", strings.NewReader(`{}`))
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequestWithJWKSURI(
+	if err := signaturekey.SignJWKSURIRequest(
 		request,
 		personKey,
 		"https://ps.example",

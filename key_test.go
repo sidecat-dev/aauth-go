@@ -6,12 +6,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -64,7 +66,7 @@ func TestSigningKeyUsesCallerCustodiedCryptoSigner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequest(
+	if err := signaturekey.SignJWTRequest(
 		request,
 		key,
 		"agent-token",
@@ -82,7 +84,7 @@ func TestSigningKeyUsesCallerCustodiedCryptoSigner(t *testing.T) {
 func TestStaticKeyResolverClassifiesResolutionFailures(t *testing.T) {
 	t.Parallel()
 
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://issuer.example": {
 			"invalid": {Kty: "OKP", Crv: "Ed25519", Alg: "Ed25519", X: "invalid", Kid: "invalid"},
 		},
@@ -91,15 +93,15 @@ func TestStaticKeyResolverClassifiesResolutionFailures(t *testing.T) {
 		name   string
 		issuer string
 		keyID  string
-		want   aauth.KeyResolutionCode
+		want   signaturekey.ResolutionCode
 	}{
-		{name: "unknown key", issuer: "https://issuer.example", keyID: "missing", want: aauth.KeyResolutionUnknown},
-		{name: "untrusted issuer", issuer: "https://other.example", keyID: "missing", want: aauth.KeyResolutionInvalid},
-		{name: "invalid key", issuer: "https://issuer.example", keyID: "invalid", want: aauth.KeyResolutionInvalid},
+		{name: "unknown key", issuer: "https://issuer.example", keyID: "missing", want: signaturekey.ResolutionUnknown},
+		{name: "untrusted issuer", issuer: "https://other.example", keyID: "missing", want: signaturekey.ResolutionInvalid},
+		{name: "invalid key", issuer: "https://issuer.example", keyID: "invalid", want: signaturekey.ResolutionInvalid},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := resolver.ResolveKey(context.Background(), test.issuer, aauth.ResourceDiscoveryDocument, test.keyID)
-			var resolutionError *aauth.KeyResolutionError
+			var resolutionError *signaturekey.ResolutionError
 			if !errors.As(err, &resolutionError) || resolutionError.Code != test.want {
 				t.Fatalf("ResolveKey error = %v (%#v), want %q", err, resolutionError, test.want)
 			}

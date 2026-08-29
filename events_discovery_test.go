@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -145,7 +147,7 @@ func TestResourceEventsAsyncAPIDiscoveryServesExactDocument(t *testing.T) {
 	resource, err := reference.NewResource(reference.ResourceConfig{
 		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
 		SigningKey:  testSigningKey(t, "resource-key"),
-		KeyResolver: aauth.StaticKeyResolver{}, Clock: aauth.ClockFunc(func() time.Time { return now }),
+		KeyResolver: signaturekey.StaticKeyResolver{}, Clock: aauth.ClockFunc(func() time.Time { return now }),
 		NewID: func() string { return "unused" }, Scopes: []string{"events.read"},
 		RequiredScopesForRequest: testRequiredResourceScopes("events.read"),
 		ReplayStore:              testResourceReplayStore(t, aauth.ClockFunc(func() time.Time { return now })),

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 const (
@@ -250,7 +251,7 @@ func mintToken(key jose.SigningKey, tokenType string, claims any) (string, error
 }
 
 // VerifyAgentToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyAgentToken(ctx context.Context, compact string, resolver KeyResolver, clock Clock) (AgentTokenClaims, error) {
+func VerifyAgentToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (AgentTokenClaims, error) {
 	var claims AgentTokenClaims
 	if err := verifyAndDecodeToken(ctx, compact, AgentTokenType, AgentDiscoveryDocument, resolver, clock, &claims); err != nil {
 		return claims, err
@@ -262,7 +263,7 @@ func VerifyAgentToken(ctx context.Context, compact string, resolver KeyResolver,
 }
 
 // VerifyPersonToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyPersonToken(ctx context.Context, compact string, resolver KeyResolver, clock Clock) (PersonTokenClaims, error) {
+func VerifyPersonToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (PersonTokenClaims, error) {
 	var claims PersonTokenClaims
 	if resolver == nil {
 		return claims, errors.New("aauth: key resolver is required")
@@ -304,7 +305,7 @@ func VerifyPersonToken(ctx context.Context, compact string, resolver KeyResolver
 }
 
 // VerifyResourceToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyResourceToken(ctx context.Context, compact string, resolver KeyResolver, clock Clock) (ResourceTokenClaims, error) {
+func VerifyResourceToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (ResourceTokenClaims, error) {
 	var claims ResourceTokenClaims
 	if err := verifyAndDecodeToken(
 		ctx,
@@ -328,7 +329,7 @@ func VerifyResourceToken(ctx context.Context, compact string, resolver KeyResolv
 }
 
 // VerifyAuthToken verifies issuer trust, JWS integrity, structure, and time.
-func VerifyAuthToken(ctx context.Context, compact string, resolver KeyResolver, clock Clock) (AuthTokenClaims, error) {
+func VerifyAuthToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (AuthTokenClaims, error) {
 	var claims AuthTokenClaims
 	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
@@ -371,7 +372,7 @@ func verifyAndDecodeToken[T AgentTokenClaims | PersonTokenClaims | ResourceToken
 	compact string,
 	expectedType string,
 	expectedDWK string,
-	resolver KeyResolver,
+	resolver signaturekey.KeyResolver,
 	clock Clock,
 	claims *T,
 	unsupportedMembers ...string,
@@ -435,7 +436,7 @@ func verifyResolvedTokenKey(
 	parsed jose.ParsedCompact,
 	issuer string,
 	dwk string,
-	resolver KeyResolver,
+	resolver signaturekey.KeyResolver,
 ) (jose.VerifiedCompact, error) {
 	if resolver == nil {
 		return jose.VerifiedCompact{}, errors.New("aauth: key resolver is required")
@@ -455,7 +456,7 @@ func verifyResolvedTokenKey(
 	}
 	key, err := resolver.ResolveKey(ctx, issuer, dwk, header.KeyID)
 	if err != nil {
-		return jose.VerifiedCompact{}, normalizeKeyResolutionError(err)
+		return jose.VerifiedCompact{}, signaturekey.NormalizeResolutionError(err)
 	}
 	if _, err := key.PublicKey(); err != nil {
 		return jose.VerifiedCompact{}, err
@@ -464,7 +465,7 @@ func verifyResolvedTokenKey(
 	if err == nil {
 		return verified, nil
 	}
-	if refresher, ok := resolver.(KeyRefresher); ok {
+	if refresher, ok := resolver.(signaturekey.KeyRefresher); ok {
 		refreshed, refreshErr := refresher.RefreshKey(ctx, issuer, dwk, header.KeyID)
 		if refreshErr == nil {
 			refreshedVerified, verifyErr := parsed.Verify(refreshed)
@@ -472,8 +473,8 @@ func verifyResolvedTokenKey(
 				return refreshedVerified, nil
 			}
 		} else {
-			normalized := normalizeKeyResolutionError(refreshErr)
-			var resolutionError *KeyResolutionError
+			normalized := signaturekey.NormalizeResolutionError(refreshErr)
+			var resolutionError *signaturekey.ResolutionError
 			if errors.As(normalized, &resolutionError) {
 				return jose.VerifiedCompact{}, normalized
 			}

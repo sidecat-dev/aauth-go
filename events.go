@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 const (
@@ -70,7 +71,7 @@ func MintSubscribeToken(key jose.SigningKey, claims SubscribeTokenClaims) (strin
 func VerifySubscribeToken(
 	ctx context.Context,
 	compact string,
-	resolver KeyResolver,
+	resolver signaturekey.KeyResolver,
 	clock Clock,
 ) (SubscribeTokenClaims, error) {
 	var claims SubscribeTokenClaims
@@ -122,7 +123,7 @@ func MintEventToken(key jose.SigningKey, claims EventTokenClaims) (string, error
 func VerifyEventToken(
 	ctx context.Context,
 	compact string,
-	resolver KeyResolver,
+	resolver signaturekey.KeyResolver,
 	clock Clock,
 ) (EventTokenClaims, error) {
 	var claims EventTokenClaims

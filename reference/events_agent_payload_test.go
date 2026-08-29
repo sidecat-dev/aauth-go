@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
@@ -29,7 +31,7 @@ func TestAgentEventPayloadIndependentlyValidatesAndReachesExactAction(t *testing
 	accepted.Payload = []byte(" \n" + `{"event_type":"slot.available","slot_time":"2026-08-04T12:30:00Z"}` + "\n ")
 	accepted.PayloadDigest = eventPayloadDigest(accepted.Payload)
 	action := &capturingPayloadEventAction{dispatchOutcome: EventActionCompleted}
-	agent := newAgentEventTestAgentWithResolver(t, store, action, aauth.StaticKeyResolver{
+	agent := newAgentEventTestAgentWithResolver(t, store, action, signaturekey.StaticKeyResolver{
 		claims.Issuer: {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	state, err := agent.AcceptEvent(ctx, accepted)
@@ -98,7 +100,7 @@ func TestAgentEventPayloadRefusalsAreDurableAndNeverDispatch(t *testing.T) {
 				test.mutate(&accepted)
 			}
 			action := &capturingPayloadEventAction{dispatchOutcome: EventActionCompleted}
-			agent := newAgentEventTestAgentWithResolver(t, store, action, aauth.StaticKeyResolver{
+			agent := newAgentEventTestAgentWithResolver(t, store, action, signaturekey.StaticKeyResolver{
 				claims.Issuer: {resourceKey.ID(): resourceKey.PublicJWK()},
 			}, clock)
 			state, err := agent.AcceptEvent(ctx, accepted)
@@ -151,7 +153,7 @@ func TestAgentEventPayloadFileProcessingReopensBeforeDispatch(t *testing.T) {
 	}
 	defer store.Close()
 	action := &capturingPayloadEventAction{dispatchOutcome: EventActionCompleted}
-	agent := newAgentEventTestAgentWithResolver(t, store, action, aauth.StaticKeyResolver{
+	agent := newAgentEventTestAgentWithResolver(t, store, action, signaturekey.StaticKeyResolver{
 		claims.Issuer: {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	if err := agent.ResumeEvents(ctx); err != nil {
@@ -209,7 +211,7 @@ func TestEventAdapterPayloadAcknowledgesOnlyAfterTerminalAgentValidation(t *test
 				t.Fatal(err)
 			}
 			action := &capturingPayloadEventAction{dispatchOutcome: EventActionCompleted}
-			agent := newAgentEventTestAgentWithResolver(t, agentStore, action, aauth.StaticKeyResolver{
+			agent := newAgentEventTestAgentWithResolver(t, agentStore, action, signaturekey.StaticKeyResolver{
 				"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 			}, clock)
 			adapter, err := NewEventAdapter(apStore, agent)

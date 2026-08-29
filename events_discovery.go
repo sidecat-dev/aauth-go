@@ -19,6 +19,14 @@ const (
 	defaultEventsContractInFlight = 64
 )
 
+// AgentEventMetadata is the Events-routing projection of one admitted agent
+// provider metadata document. It is intentionally separate from Signature-Key
+// key discovery.
+type AgentEventMetadata struct {
+	Issuer        string
+	EventEndpoint string
+}
+
 // HTTPEventsContractResolverConfig supplies the explicit network, time, and
 // egress-policy boundaries for AsyncAPI resource discovery.
 type HTTPEventsContractResolverConfig struct {

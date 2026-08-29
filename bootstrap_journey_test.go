@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -51,7 +53,7 @@ func TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity(t *test
 		AuthorizationStore: testAuthorizationStateStore(t),
 		Identifier:         "https://ps.example",
 		SigningKey:         psKey,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {"ap-key": apKey.PublicJWK()},
 		},
 		Clock:                clock,
@@ -79,7 +81,7 @@ func TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity(t *test
 	})
 	defer gateway.Close()
 
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(),
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -191,7 +193,7 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 
 	unknownClient, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
 		DurableKey: unknownDurable,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {"ap-key": apKey.PublicJWK()},
 		},
 		HTTPClient: server.Client(),
@@ -218,7 +220,7 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 
 	knownClient, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
 		DurableKey: enrolledDurable,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {"ap-key": apKey.PublicJWK()},
 		},
 		HTTPClient: server.Client(),
@@ -238,7 +240,7 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 
 	overlongClient, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
 		DurableKey: enrolledDurable,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {"ap-key": apKey.PublicJWK()},
 		},
 		HTTPClient:         server.Client(),
@@ -280,7 +282,7 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	delegation, err := aauth.MintJKTJWT(
+	delegation, err := signaturekey.MintJKTJWT(
 		enrolledDurable,
 		ephemeral.PublicJWK(),
 		now,
@@ -304,7 +306,7 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	missingNonceRequest.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequestWithJKTJWT(
+	if err := signaturekey.SignJKTJWTRequest(
 		missingNonceRequest,
 		ephemeral,
 		delegation,
@@ -323,7 +325,7 @@ func TestBootstrapRefusesUnknownInstallAndExactRequestReplay(t *testing.T) {
 			missingNonceResponse.StatusCode,
 		)
 	}
-	if err := aauth.SignRequestWithJKTJWT(request, ephemeral, delegation, clock); err != nil {
+	if err := signaturekey.SignJKTJWTRequest(request, ephemeral, delegation, clock); err != nil {
 		t.Fatal(err)
 	}
 
@@ -385,7 +387,7 @@ func TestBootstrapRefreshPolicyRefusalDoesNotLeakHostDetail(t *testing.T) {
 	defer server.Close()
 	client, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
 		DurableKey: durable,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 		},
 		HTTPClient: server.Client(),
@@ -441,7 +443,7 @@ func TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken(t *testing.T) {
 
 	client, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
 		DurableKey: durable,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {"ap-key": apKey.PublicJWK()},
 		},
 		HTTPClient: server.Client(),
@@ -498,7 +500,7 @@ func TestBootstrapRefreshesTheSameRequestKeyTwiceWithinOneClockSecond(t *testing
 	defer server.Close()
 	client, err := reference.NewBootstrapClient(reference.BootstrapClientConfig{
 		DurableKey: durable,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {"ap-key": apKey.PublicJWK()},
 		},
 		HTTPClient: server.Client(),

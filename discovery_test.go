@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -50,7 +52,7 @@ func TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache(t *testing.T) {
 	defer gateway.Close()
 
 	var admitted []string
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(),
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -120,7 +122,7 @@ func TestHTTPKeyResolverAppliesUnknownKeyRefreshFloor(t *testing.T) {
 	})
 	defer gateway.Close()
 
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(),
 		Clock:  clock,
 		Admit:  func(context.Context, string) error { return nil },
@@ -134,8 +136,8 @@ func TestHTTPKeyResolverAppliesUnknownKeyRefreshFloor(t *testing.T) {
 	if _, err := resolver.ResolveKey(context.Background(), "https://issuer.example", aauth.ResourceDiscoveryDocument, "unknown-key"); err == nil {
 		t.Fatal("unknown kid was accepted")
 	} else {
-		var resolutionError *aauth.KeyResolutionError
-		if !errors.As(err, &resolutionError) || resolutionError.Code != aauth.KeyResolutionUnknown {
+		var resolutionError *signaturekey.ResolutionError
+		if !errors.As(err, &resolutionError) || resolutionError.Code != signaturekey.ResolutionUnknown {
 			t.Fatalf("unknown kid error = %v (%#v)", err, resolutionError)
 		}
 	}
@@ -163,7 +165,7 @@ func TestHTTPKeyResolverAppliesUnknownKeyRefreshFloor(t *testing.T) {
 	if _, err := aauth.VerifyResourceToken(context.Background(), token, resolver, clock); err == nil {
 		t.Fatal("token signed by an untrusted same-kid key was accepted")
 	} else {
-		var resolutionError *aauth.KeyResolutionError
+		var resolutionError *signaturekey.ResolutionError
 		if errors.As(err, &resolutionError) {
 			t.Fatalf("refresh floor masked bad signature as key resolution failure: %v", err)
 		}
@@ -188,7 +190,7 @@ func TestHTTPKeyResolverDoesNotFetchBeforeAdmission(t *testing.T) {
 	})
 	defer gateway.Close()
 
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(),
 		Clock:  clock,
 		Admit: func(context.Context, string) error {
@@ -201,8 +203,8 @@ func TestHTTPKeyResolverDoesNotFetchBeforeAdmission(t *testing.T) {
 	if _, err := resolver.ResolveKey(context.Background(), "https://issuer.example", aauth.ResourceDiscoveryDocument, "unknown"); err == nil {
 		t.Fatal("denied discovery succeeded")
 	} else {
-		var resolutionError *aauth.KeyResolutionError
-		if !errors.As(err, &resolutionError) || resolutionError.Code != aauth.KeyResolutionDenied {
+		var resolutionError *signaturekey.ResolutionError
+		if !errors.As(err, &resolutionError) || resolutionError.Code != signaturekey.ResolutionDenied {
 			t.Fatalf("denied discovery error = %v (%#v)", err, resolutionError)
 		}
 	}
@@ -222,7 +224,7 @@ func TestHTTPKeyResolverClassifiesAdmissionCancellationAsUnavailable(t *testing.
 		{name: "deadline", err: context.DeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 				Client: http.DefaultClient,
 				Clock: aauth.ClockFunc(func() time.Time {
 					return time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -240,9 +242,9 @@ func TestHTTPKeyResolverClassifiesAdmissionCancellationAsUnavailable(t *testing.
 				aauth.ResourceDiscoveryDocument,
 				"issuer-key",
 			)
-			var resolutionError *aauth.KeyResolutionError
+			var resolutionError *signaturekey.ResolutionError
 			if !errors.As(err, &resolutionError) ||
-				resolutionError.Code != aauth.KeyResolutionUnavailable ||
+				resolutionError.Code != signaturekey.ResolutionUnavailable ||
 				!errors.Is(err, test.err) {
 				t.Fatalf("admission cancellation error = %v (%#v)", err, resolutionError)
 			}
@@ -285,7 +287,7 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 	})
 	defer gateway.Close()
 
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(),
 		Clock:  clock,
 		Admit:  func(context.Context, string) error { return nil },
@@ -357,9 +359,9 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 		if err == nil {
 			t.Fatal("token verification ignored failed same-kid refresh")
 		}
-		var resolutionError *aauth.KeyResolutionError
+		var resolutionError *signaturekey.ResolutionError
 		if !errors.As(err, &resolutionError) ||
-			resolutionError.Code != aauth.KeyResolutionUnavailable {
+			resolutionError.Code != signaturekey.ResolutionUnavailable {
 			t.Fatalf("failed same-kid refresh error = %v (%#v)", err, resolutionError)
 		}
 	}
@@ -369,9 +371,9 @@ func TestTokenVerificationRefreshesSameKidAfterSignatureFailure(t *testing.T) {
 	if _, err := aauth.VerifyResourceToken(context.Background(), token, resolver, clock); err == nil {
 		t.Fatal("subsequent verification ignored the shared refresh failure")
 	} else {
-		var resolutionError *aauth.KeyResolutionError
+		var resolutionError *signaturekey.ResolutionError
 		if !errors.As(err, &resolutionError) ||
-			resolutionError.Code != aauth.KeyResolutionUnavailable {
+			resolutionError.Code != signaturekey.ResolutionUnavailable {
 			t.Fatalf("shared failed refresh error = %v (%#v)", err, resolutionError)
 		}
 	}
@@ -412,7 +414,7 @@ func TestHTTPKeyResolverCancellationDoesNotPoisonHealthyCaller(t *testing.T) {
 	})
 	defer gateway.Close()
 
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: gateway.Client(),
 		Clock:  aauth.ClockFunc(func() time.Time { return now }),
 		Admit:  func(context.Context, string) error { return nil },
@@ -495,36 +497,36 @@ func TestTokenVerificationPreservesOperationalRefreshFailure(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		err  error
-		want aauth.KeyResolutionCode
+		want signaturekey.ResolutionCode
 	}{
 		{
 			name: "denied",
-			err: &aauth.KeyResolutionError{
-				Code:  aauth.KeyResolutionDenied,
+			err: &signaturekey.ResolutionError{
+				Code:  signaturekey.ResolutionDenied,
 				Cause: errors.New("private admission detail"),
 			},
-			want: aauth.KeyResolutionDenied,
+			want: signaturekey.ResolutionDenied,
 		},
 		{
 			name: "unavailable",
-			err: &aauth.KeyResolutionError{
-				Code:  aauth.KeyResolutionUnavailable,
+			err: &signaturekey.ResolutionError{
+				Code:  signaturekey.ResolutionUnavailable,
 				Cause: errors.New("private transport detail"),
 			},
-			want: aauth.KeyResolutionUnavailable,
+			want: signaturekey.ResolutionUnavailable,
 		},
 		{
 			name: "invalid",
-			err: &aauth.KeyResolutionError{
-				Code:  aauth.KeyResolutionInvalid,
+			err: &signaturekey.ResolutionError{
+				Code:  signaturekey.ResolutionInvalid,
 				Cause: errors.New("invalid refreshed metadata"),
 			},
-			want: aauth.KeyResolutionInvalid,
+			want: signaturekey.ResolutionInvalid,
 		},
 		{
 			name: "untyped",
 			err:  errors.New("unclassified refresh failure"),
-			want: aauth.KeyResolutionUnavailable,
+			want: signaturekey.ResolutionUnavailable,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -538,7 +540,7 @@ func TestTokenVerificationPreservesOperationalRefreshFailure(t *testing.T) {
 				resolver,
 				aauth.ClockFunc(func() time.Time { return now }),
 			)
-			var resolutionError *aauth.KeyResolutionError
+			var resolutionError *signaturekey.ResolutionError
 			if !errors.As(err, &resolutionError) || resolutionError.Code != test.want {
 				t.Fatalf("VerifyResourceToken error = %v (%#v), want %q", err, resolutionError, test.want)
 			}

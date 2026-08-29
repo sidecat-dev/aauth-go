@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
@@ -63,7 +65,7 @@ func TestGenerateProducesVerifiableGoJKTJWTRequest(t *testing.T) {
 			return time.Unix(fixture.Now, 0)
 		}),
 		aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJKTJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJKTJWT},
 		},
 	)
 	if err != nil {

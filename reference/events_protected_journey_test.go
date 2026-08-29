@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -46,7 +48,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	}
 	transport := &journeyPayloadTransport{}
 	resourceResolver := hostileEventMetadataResolver{
-		StaticKeyResolver: aauth.StaticKeyResolver{
+		StaticKeyResolver: signaturekey.StaticKeyResolver{
 			"https://as.example": {accessKey.ID(): accessKey.PublicJWK()},
 			"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 		},
@@ -67,7 +69,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	})
 	authToken := protectedEventsTestAuthToken(t, accessKey, agentKey, now)
 	authenticated := httptest.NewRequest(http.MethodPost, "https://resource.example/appointments/search", nil)
-	if err := aauth.SignRequest(authenticated, agentKey, authToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(authenticated, agentKey, authToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	authenticatedResponse := httptest.NewRecorder()
@@ -120,7 +122,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := newDeliveryTestProvider(t, apKey, apStore, aauth.StaticKeyResolver{
+	provider := newDeliveryTestProvider(t, apKey, apStore, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	subscribeToken, err := provider.IssueEventSubscription(ctx, EventSubscriptionRequest{
@@ -131,7 +133,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscribeClaims, err := aauth.VerifySubscribeToken(ctx, subscribeToken, aauth.StaticKeyResolver{
+	subscribeClaims, err := aauth.VerifySubscribeToken(ctx, subscribeToken, signaturekey.StaticKeyResolver{
 		"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 	}, clock)
 	if err != nil || subscribeClaims.MaxUses == nil || *subscribeClaims.MaxUses != 1 {
@@ -141,7 +143,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrationAgent := newJourneyAgent(t, agentKey, aauth.StaticKeyResolver{
+	registrationAgent := newJourneyAgent(t, agentKey, signaturekey.StaticKeyResolver{
 		"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 	}, clock, agentStore, unusedEventAction{}, registrationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return eventRegistrationHTTPResponse(resource.Handler(), request), nil
@@ -204,7 +206,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider = newDeliveryTestProvider(t, apKey, apStore, aauth.StaticKeyResolver{
+	provider = newDeliveryTestProvider(t, apKey, apStore, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock)
 	transport.setHandler(provider.Handler())
@@ -238,7 +240,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 		t.Fatal(err)
 	}
 	action := &journeyPayloadAction{}
-	agent := newJourneyAgent(t, agentKey, aauth.StaticKeyResolver{
+	agent := newJourneyAgent(t, agentKey, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock, agentStore, action, &http.Transport{})
 	adapter, err := NewEventAdapter(apStore, agent)
@@ -255,7 +257,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent = newJourneyAgent(t, agentKey, aauth.StaticKeyResolver{
+	agent = newJourneyAgent(t, agentKey, signaturekey.StaticKeyResolver{
 		"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()},
 	}, clock, agentStore, action, &http.Transport{})
 	adapter, err = NewEventAdapter(apStore, agent)
@@ -289,7 +291,7 @@ func TestProtectedPayloadEventSurvivesHostReconstruction(t *testing.T) {
 func newProtectedJourneyResource(
 	t *testing.T,
 	key jose.SigningKey,
-	resolver aauth.KeyResolver,
+	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
 	store ResourceEventStore,
 	contracts EventContractStore,
@@ -298,6 +300,10 @@ func newProtectedJourneyResource(
 	operation func(context.Context, aauth.AuthorizedRequest) (any, error),
 ) *Resource {
 	t.Helper()
+	metadataResolver, ok := resolver.(AgentEventMetadataResolver)
+	if !ok {
+		t.Fatal("protected Events journey resolver does not provide Events metadata")
+	}
 	resource, err := NewResource(ResourceConfig{
 		Identifier: "https://resource.example", AccessMode: aauth.AccessModeAuthToken,
 		AccessServer: "https://as.example",
@@ -309,7 +315,8 @@ func newProtectedJourneyResource(
 		Operation:                    operation,
 		Events: &ResourceEventsConfig{
 			PublicSubscriptionPath: "/events/subscriptions", Store: store,
-			HTTPClient: &http.Client{Transport: client},
+			HTTPClient:       &http.Client{Transport: client},
+			MetadataResolver: metadataResolver,
 			ActiveUntil: func(context.Context, aauth.SubscribeTokenClaims) (time.Time, error) {
 				return clock.Now().Add(time.Hour), nil
 			},
@@ -327,7 +334,7 @@ func newProtectedJourneyResource(
 func newJourneyAgent(
 	t *testing.T,
 	key jose.SigningKey,
-	resolver aauth.KeyResolver,
+	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
 	store AgentEventStore,
 	action EventAction,

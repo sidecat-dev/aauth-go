@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
@@ -365,7 +367,7 @@ func TestFixedCurrentTokenVectorsRemainByteIdentical(t *testing.T) {
 			return aauth.MintEventToken(issuerKey, aauth.EventTokenClaims{Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument, Audience: "aauth:agent@ap.example", EventID: "event-1", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix()})
 		}),
 		frozenVector(t, "jkt", "e3f905e364edc255748cc70b1034109512e8e563f609a7db9057ef2b23a6a4b2", func() (string, error) {
-			return aauth.MintJKTJWT(issuerKey, confirmationKey.PublicJWK(), now, time.Hour)
+			return signaturekey.MintJKTJWT(issuerKey, confirmationKey.PublicJWK(), now, time.Hour)
 		}),
 	}
 	for _, vector := range vectors {

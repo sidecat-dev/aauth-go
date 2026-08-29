@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -60,7 +62,7 @@ func TestAgentRejectsLegacyHeaderOnlyMissionApproval(t *testing.T) {
 		Identifier:         agentID,
 		SigningKey:         agentKey,
 		AgentToken:         agentToken,
-		KeyResolver:        aauth.StaticKeyResolver{"https://provider.example": {providerKey.ID(): providerKey.PublicJWK()}},
+		KeyResolver:        signaturekey.StaticKeyResolver{"https://provider.example": {providerKey.ID(): providerKey.PublicJWK()}},
 		HTTPClient:         gateway.Client(),
 		Clock:              clock,
 		AuthorizationStore: testAuthorizationStateStore(t),
@@ -94,7 +96,7 @@ func TestResourceRejectsMissionHeaderBeforeProofConsumptionOrTokenAllocation(t *
 		AccessMode:   aauth.AccessModeAuthToken,
 		PersonServer: "https://ps.example",
 		SigningKey:   resourceKey,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ps.example": {personKey.ID(): personKey.PublicJWK()},
 		},
 		Clock: clock,
@@ -146,7 +148,7 @@ func TestResourceRejectsMissionHeaderBeforeProofConsumptionOrTokenAllocation(t *
 			)
 			request.Header.Set("Content-Type", "application/json")
 			request.Header["Aauth-Mission"] = append([]string(nil), test.values...)
-			if err := aauth.SignRequest(request, agentKey, personToken, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, agentKey, personToken, clock); err != nil {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()

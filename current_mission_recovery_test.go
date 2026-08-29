@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -60,7 +62,7 @@ func TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries(t *tes
 			}
 
 			protocolClient := &http.Client{}
-			resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 				Client: protocolClient,
 				Clock:  clock,
 				Admit: func(_ context.Context, endpoint string) error {
@@ -190,7 +192,7 @@ func TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries(t *tes
 				t.Fatal(err)
 			}
 			request.Header.Set("Content-Type", "application/json")
-			if err := aauth.SignRequest(request, agentKey, agentToken, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, agentKey, agentToken, clock); err != nil {
 				t.Fatal(err)
 			}
 

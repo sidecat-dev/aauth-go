@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/snapshotfile"
@@ -190,7 +192,7 @@ func TestResourceInitialSessionRequestSettlesPublishedUncertainStateBeforeFreshW
 	resource, err := NewResource(ResourceConfig{
 		Identifier: "https://resource.example",
 		AccessMode: aauth.AccessModeSessionToken,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {issuerKey.ID(): issuerKey.PublicJWK()},
 		},
 		Clock: clock,
@@ -238,7 +240,7 @@ func TestResourceInitialSessionRequestSettlesPublishedUncertainStateBeforeFreshW
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "https://resource.example/records", nil)
-	if err := aauth.SignRequest(request, agentKey, agentToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, agentToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -1007,7 +1009,7 @@ func TestPersonAndAccessServerTokenEndpointsUseRequestVerificationInstant(t *tes
 		server, err := NewPersonServer(PersonServerConfig{
 			Identifier: "https://ps.example",
 			SigningKey: fixture.personKey,
-			KeyResolver: aauth.StaticKeyResolver{
+			KeyResolver: signaturekey.StaticKeyResolver{
 				"https://ap.example":       {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 				"https://resource.example": {fixture.resourceKey.ID(): fixture.resourceKey.PublicJWK()},
 			},
@@ -1045,7 +1047,7 @@ func TestPersonAndAccessServerTokenEndpointsUseRequestVerificationInstant(t *tes
 			}
 			value := httptest.NewRequest(http.MethodPost, "https://ps.example/token", bytes.NewReader(body))
 			value.Header.Set("Content-Type", "application/json")
-			if err := aauth.SignRequest(value, fixture.agentKeys[0], record.Context.AgentTokenCompact, fixedClock); err != nil {
+			if err := signaturekey.SignJWTRequest(value, fixture.agentKeys[0], record.Context.AgentTokenCompact, fixedClock); err != nil {
 				t.Fatal(err)
 			}
 			return value
@@ -1075,7 +1077,7 @@ func TestPersonAndAccessServerTokenEndpointsUseRequestVerificationInstant(t *tes
 		server, err := NewAccessServer(AccessServerConfig{
 			Identifier: "https://as.example",
 			SigningKey: fixture.accessKey,
-			KeyResolver: aauth.StaticKeyResolver{
+			KeyResolver: signaturekey.StaticKeyResolver{
 				"https://ps.example":       {fixture.personKey.ID(): fixture.personKey.PublicJWK()},
 				"https://ap.example":       {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 				"https://resource.example": {fixture.resourceKey.ID(): fixture.resourceKey.PublicJWK()},
@@ -1112,7 +1114,7 @@ func TestPersonAndAccessServerTokenEndpointsUseRequestVerificationInstant(t *tes
 			}
 			value := httptest.NewRequest(http.MethodPost, "https://as.example/token", bytes.NewReader(body))
 			value.Header.Set("Content-Type", "application/json")
-			if err := aauth.SignRequestWithJWKSURI(
+			if err := signaturekey.SignJWKSURIRequest(
 				value,
 				fixture.personKey,
 				"https://ps.example",
@@ -1182,7 +1184,7 @@ func TestPersonAndAccessAuthorizationStateRejectsInputTokenExpiredAtVerifiedAt(t
 		claims, err := aauth.VerifyAgentToken(
 			context.Background(),
 			compact,
-			aauth.StaticKeyResolver{
+			signaturekey.StaticKeyResolver{
 				"https://ap.example": {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 			},
 			aauth.ClockFunc(func() time.Time { return fixture.now }),
@@ -1375,7 +1377,7 @@ func TestPersonAndAccessAuthorizationStateRejectDirectSubagentWithoutPersonServe
 		claims, err := aauth.VerifyAgentToken(
 			context.Background(),
 			compact,
-			aauth.StaticKeyResolver{
+			signaturekey.StaticKeyResolver{
 				"https://ap.example": {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 			},
 			aauth.ClockFunc(func() time.Time { return fixture.now }),
@@ -1503,7 +1505,7 @@ func TestPersonAndAccessServerLiveRejectDirectSubagentWithoutPersonServer(t *tes
 		server, err := NewPersonServer(PersonServerConfig{
 			Identifier: "https://ps.example",
 			SigningKey: fixture.personKey,
-			KeyResolver: aauth.StaticKeyResolver{
+			KeyResolver: signaturekey.StaticKeyResolver{
 				"https://ap.example":       {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 				"https://resource.example": {fixture.resourceKey.ID(): fixture.resourceKey.PublicJWK()},
 			},
@@ -1535,7 +1537,7 @@ func TestPersonAndAccessServerLiveRejectDirectSubagentWithoutPersonServer(t *tes
 		}
 		request := httptest.NewRequest(http.MethodPost, "https://ps.example/token", bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
-		if err := aauth.SignRequest(request, fixture.agentKeys[0], record.Context.AgentTokenCompact, clock); err != nil {
+		if err := signaturekey.SignJWTRequest(request, fixture.agentKeys[0], record.Context.AgentTokenCompact, clock); err != nil {
 			t.Fatal(err)
 		}
 		response := httptest.NewRecorder()
@@ -1552,7 +1554,7 @@ func TestPersonAndAccessServerLiveRejectDirectSubagentWithoutPersonServer(t *tes
 		server, err := NewAccessServer(AccessServerConfig{
 			Identifier: "https://as.example",
 			SigningKey: fixture.accessKey,
-			KeyResolver: aauth.StaticKeyResolver{
+			KeyResolver: signaturekey.StaticKeyResolver{
 				"https://ps.example":       {fixture.personKey.ID(): fixture.personKey.PublicJWK()},
 				"https://ap.example":       {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 				"https://resource.example": {fixture.resourceKey.ID(): fixture.resourceKey.PublicJWK()},
@@ -1581,7 +1583,7 @@ func TestPersonAndAccessServerLiveRejectDirectSubagentWithoutPersonServer(t *tes
 		}
 		request := httptest.NewRequest(http.MethodPost, "https://as.example/token", bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
-		if err := aauth.SignRequestWithJWKSURI(
+		if err := signaturekey.SignJWKSURIRequest(
 			request,
 			fixture.personKey,
 			"https://ps.example",
@@ -2315,7 +2317,7 @@ func TestResourceApprovedAuthorizationCannotReleaseAfterCredentialExpiry(t *test
 	}
 	resource := &Resource{
 		identifier: "https://resource.example", clock: aauth.ClockFunc(func() time.Time { return now }),
-		keyResolver: aauth.StaticKeyResolver{
+		keyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 		},
 		authorizationStore: store, authorizationBody: append([]byte(nil), body...),
@@ -2331,7 +2333,7 @@ func TestResourceApprovedAuthorizationCannotReleaseAfterCredentialExpiry(t *test
 		nil,
 	)
 	request.SetPathValue("id", pendingRecord.Key)
-	if err := aauth.SignRequest(request, fixture.agentKeys[0], agentToken, resource.clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, fixture.agentKeys[0], agentToken, resource.clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -3215,7 +3217,7 @@ func (fixture authorizationStateSemanticFixture) bindAccessRequestEvidence(
 	request := httptest.NewRequest(http.MethodPost, "https://as.example/token", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	clock := aauth.ClockFunc(func() time.Time { return fixture.now })
-	if err := aauth.SignRequestWithJWKSURI(
+	if err := signaturekey.SignJWKSURIRequest(
 		request,
 		fixture.personKey,
 		"https://ps.example",
@@ -3227,14 +3229,14 @@ func (fixture authorizationStateSemanticFixture) bindAccessRequestEvidence(
 	verified, err := aauth.VerifyRequest(
 		context.Background(),
 		request,
-		aauth.StaticKeyResolver{
+		signaturekey.StaticKeyResolver{
 			"https://ps.example": {fixture.personKey.ID(): fixture.personKey.PublicJWK()},
 		},
 		clock,
 		aauth.VerifyRequestOptions{
 			RequiredComponents:       []string{"content-type"},
 			RequireExactComponents:   true,
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
 		},
 	)
 	if err != nil {
@@ -3425,13 +3427,13 @@ func (fixture authorizationStateSemanticFixture) resourceAuthorizationRecords(
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/authorize", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	clock := aauth.ClockFunc(func() time.Time { return fixture.now })
-	if err := aauth.SignRequest(request, agentKey, personToken, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, personToken, clock); err != nil {
 		t.Fatal(err)
 	}
 	verified, err := aauth.VerifyRequest(
 		context.Background(),
 		request,
-		aauth.StaticKeyResolver{"https://ps.example": {fixture.personKey.ID(): fixture.personKey.PublicJWK()}},
+		signaturekey.StaticKeyResolver{"https://ps.example": {fixture.personKey.ID(): fixture.personKey.PublicJWK()}},
 		clock,
 		aauth.VerifyRequestOptions{
 			RequiredComponents:     []string{"content-type"},
@@ -3558,13 +3560,13 @@ func (fixture authorizationStateSemanticFixture) bindPersonRequestEvidence(
 	request := httptest.NewRequest(http.MethodPost, "https://ps.example/token", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	clock := aauth.ClockFunc(func() time.Time { return fixture.now })
-	if err := aauth.SignRequest(request, agentKey, record.Context.AgentTokenCompact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, record.Context.AgentTokenCompact, clock); err != nil {
 		t.Fatal(err)
 	}
 	verified, err := aauth.VerifyRequest(
 		context.Background(),
 		request,
-		aauth.StaticKeyResolver{
+		signaturekey.StaticKeyResolver{
 			"https://ap.example": {fixture.providerKey.ID(): fixture.providerKey.PublicJWK()},
 		},
 		clock,

@@ -3,12 +3,14 @@ package aauth_test
 import (
 	"context"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -18,32 +20,32 @@ func TestSignatureErrorWireContract(t *testing.T) {
 
 	for _, test := range []struct {
 		name  string
-		error aauth.SignatureError
+		error signaturekey.Error
 		want  string
 	}{
 		{
 			name: "required input",
-			error: aauth.SignatureError{
-				Code:          aauth.SignatureErrorInvalidInput,
+			error: signaturekey.Error{
+				Code:          signaturekey.ErrorInvalidInput,
 				RequiredInput: []string{"@method", "signature-key"},
 			},
 			want: `error=invalid_input, required_input=("@method" "signature-key")`,
 		},
 		{
 			name:  "unsupported algorithm has no embedded capability set",
-			error: aauth.SignatureError{Code: aauth.SignatureErrorUnsupportedAlgorithm},
+			error: signaturekey.Error{Code: signaturekey.ErrorUnsupportedAlgorithm},
 			want:  `error=unsupported_algorithm`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			header, err := aauth.FormatSignatureError(test.error)
+			header, err := signaturekey.FormatError(test.error)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if header != test.want {
 				t.Fatalf("Signature-Error = %q, want %q", header, test.want)
 			}
-			parsed, err := aauth.ParseSignatureError(header + `;future=?1`)
+			parsed, err := signaturekey.ParseError(header + `;future=?1`)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,11 +60,11 @@ func TestSignatureErrorWireContract(t *testing.T) {
 func TestSignatureErrorPublicDetailIsReadOnly(t *testing.T) {
 	t.Parallel()
 
-	valueType := reflect.TypeOf(aauth.SignatureError{})
+	valueType := reflect.TypeOf(signaturekey.Error{})
 	if _, exists := valueType.FieldByName("PublicDetail"); exists {
 		t.Fatal("SignatureError exposes mutable PublicDetail state")
 	}
-	if _, exists := reflect.TypeOf(&aauth.SignatureError{}).MethodByName("PublicDetail"); !exists {
+	if _, exists := reflect.TypeOf(&signaturekey.Error{}).MethodByName("PublicDetail"); !exists {
 		t.Fatal("SignatureError is missing the read-only PublicDetail accessor")
 	}
 }
@@ -78,11 +80,11 @@ func TestSignatureErrorResponseHeaderOverridesProblemBody(t *testing.T) {
 		},
 		Body: ioNopCloser(`{"type":"urn:ietf:params:sig-error:invalid_signature","status":401,"detail":"body is not authoritative"}`),
 	}
-	got, err := aauth.DecodeSignatureErrorResponse(response)
+	got, err := signaturekey.DecodeErrorResponse(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Code != aauth.SignatureErrorInvalidInput || strings.Join(got.RequiredInput, " ") != "@method signature-key" {
+	if got.Code != signaturekey.ErrorInvalidInput || strings.Join(got.RequiredInput, " ") != "@method signature-key" {
 		t.Fatalf("decoded signature error = %#v", got)
 	}
 }
@@ -95,7 +97,7 @@ func TestSignatureErrorResponseRequiresAuthoritativeHeader(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/problem+json"}},
 		Body:       ioNopCloser(`{"type":"urn:ietf:params:sig-error:invalid_signature","status":401}`),
 	}
-	if _, err := aauth.DecodeSignatureErrorResponse(response); err == nil {
+	if _, err := signaturekey.DecodeErrorResponse(response); err == nil {
 		t.Fatal("Problem Details without Signature-Error was accepted")
 	}
 }
@@ -111,9 +113,9 @@ func TestSignatureErrorIgnoresRFC8941UnknownMembers(t *testing.T) {
 		`error=invalid_signature;future=:AQ==:`,
 		`error=invalid_signature, required_input=42`,
 	} {
-		if parsed, err := aauth.ParseSignatureError(header); err != nil {
+		if parsed, err := signaturekey.ParseError(header); err != nil {
 			t.Errorf("ParseSignatureError(%q): %v", header, err)
-		} else if parsed.Code != aauth.SignatureErrorInvalidSignature {
+		} else if parsed.Code != signaturekey.ErrorInvalidSignature {
 			t.Errorf("ParseSignatureError(%q) code = %q", header, parsed.Code)
 		}
 	}
@@ -123,11 +125,11 @@ func TestSignatureErrorAppliesRFC8941DictionaryAndCodeSpecificSemantics(t *testi
 	t.Parallel()
 
 	t.Run("duplicate member uses last value", func(t *testing.T) {
-		parsed, err := aauth.ParseSignatureError(`error=invalid_jwt, error=expired_jwt`)
+		parsed, err := signaturekey.ParseError(`error=invalid_jwt, error=expired_jwt`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if parsed.Code != aauth.SignatureErrorExpiredJWT {
+		if parsed.Code != signaturekey.ErrorExpiredJWT {
 			t.Fatalf("duplicate error code = %q", parsed.Code)
 		}
 	})
@@ -139,7 +141,7 @@ func TestSignatureErrorAppliesRFC8941DictionaryAndCodeSpecificSemantics(t *testi
 		`error=invalid_signature, future=:not-base64:`,
 	} {
 		t.Run(header, func(t *testing.T) {
-			if _, err := aauth.ParseSignatureError(header); err == nil {
+			if _, err := signaturekey.ParseError(header); err == nil {
 				t.Fatalf("ParseSignatureError(%q) succeeded", header)
 			}
 		})
@@ -152,11 +154,11 @@ func TestSignatureErrorCombinesMultipleHTTPFieldLines(t *testing.T) {
 	response := &http.Response{Header: make(http.Header)}
 	response.Header.Add("Signature-Error", `error=invalid_input`)
 	response.Header.Add("Signature-Error", `required_input=("@method" "@path")`)
-	parsed, err := aauth.DecodeSignatureErrorResponse(response)
+	parsed, err := signaturekey.DecodeErrorResponse(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Code != aauth.SignatureErrorInvalidInput ||
+	if parsed.Code != signaturekey.ErrorInvalidInput ||
 		strings.Join(parsed.RequiredInput, " ") != "@method @path" {
 		t.Fatalf("combined Signature-Error = %#v", parsed)
 	}
@@ -166,8 +168,8 @@ func TestSignatureErrorUsesStrictStructuredFieldStrings(t *testing.T) {
 	t.Parallel()
 
 	for _, value := range []string{"contains\ttab", "non-ASCII-\u00e9"} {
-		if _, err := aauth.FormatSignatureError(aauth.SignatureError{
-			Code:          aauth.SignatureErrorInvalidInput,
+		if _, err := signaturekey.FormatError(signaturekey.Error{
+			Code:          signaturekey.ErrorInvalidInput,
 			RequiredInput: []string{value},
 		}); err == nil {
 			t.Errorf("FormatSignatureError accepted RFC 8941-invalid string %q", value)
@@ -175,14 +177,14 @@ func TestSignatureErrorUsesStrictStructuredFieldStrings(t *testing.T) {
 	}
 
 	value := `quote-" and slash-\`
-	header, err := aauth.FormatSignatureError(aauth.SignatureError{
-		Code:          aauth.SignatureErrorInvalidInput,
+	header, err := signaturekey.FormatError(signaturekey.Error{
+		Code:          signaturekey.ErrorInvalidInput,
 		RequiredInput: []string{value},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := aauth.ParseSignatureError(header)
+	parsed, err := signaturekey.ParseError(header)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,14 +197,14 @@ func TestSignatureErrorPreservesFutureRegistryCodes(t *testing.T) {
 	t.Parallel()
 
 	const header = `error=future_error, future=:AQ==:`
-	parsed, err := aauth.ParseSignatureError(header)
+	parsed, err := signaturekey.ParseError(header)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Code != aauth.SignatureErrorCode("future_error") {
+	if parsed.Code != signaturekey.ErrorCode("future_error") {
 		t.Fatalf("future error code = %q", parsed.Code)
 	}
-	formatted, err := aauth.FormatSignatureError(*parsed)
+	formatted, err := signaturekey.FormatError(*parsed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +228,7 @@ func TestVerifyRequestClassifiesExpiresAndRequiredInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ap.example": {"issuer-key": issuerKey.PublicJWK()},
 	}
 
@@ -235,7 +237,7 @@ func TestVerifyRequestClassifiesExpiresAndRequiredInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := aauth.SignRequestWithOptions(request, key, credential, clock, aauth.SignRequestOptions{
+		if err := signaturekey.SignJWTRequestWithOptions(request, key, credential, clock, signaturekey.SignOptions{
 			ExpiresAt: now.Add(time.Minute),
 		}); err != nil {
 			t.Fatal(err)
@@ -256,7 +258,7 @@ func TestVerifyRequestClassifiesExpiresAndRequiredInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = aauth.SignRequestWithOptions(request, key, credential, clock, aauth.SignRequestOptions{
+		err = signaturekey.SignJWTRequestWithOptions(request, key, credential, clock, signaturekey.SignOptions{
 			ExpiresAt: now.Add(500 * time.Millisecond),
 		})
 		if err == nil {
@@ -269,15 +271,15 @@ func TestVerifyRequestClassifiesExpiresAndRequiredInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := aauth.SignRequestWithHWK(request, key, clock); err != nil {
+		if err := signaturekey.SignHWKRequest(request, key, clock); err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Signature-Input", strings.Replace(request.Header.Get("Signature-Input"), ";created=", ";expires=1;created=", 1))
 		_, err = aauth.VerifyRequest(context.Background(), request, nil, clock, aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyHWK},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK},
 		})
-		var signatureError *aauth.SignatureError
-		if !errors.As(err, &signatureError) || signatureError.Code != aauth.SignatureErrorInvalidSignature {
+		var signatureError *signaturekey.Error
+		if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorInvalidSignature {
 			t.Fatalf("past expires error = %v (%#v)", err, signatureError)
 		}
 	})
@@ -287,15 +289,15 @@ func TestVerifyRequestClassifiesExpiresAndRequiredInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := aauth.SignRequestWithHWK(request, key, clock); err != nil {
+		if err := signaturekey.SignHWKRequest(request, key, clock); err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Signature-Input", strings.Replace(request.Header.Get("Signature-Input"), ` "@path"`, "", 1))
 		_, err = aauth.VerifyRequest(context.Background(), request, nil, clock, aauth.VerifyRequestOptions{
-			AllowedSignatureKeyTypes: []string{aauth.SignatureKeyHWK},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK},
 		})
-		var signatureError *aauth.SignatureError
-		if !errors.As(err, &signatureError) || signatureError.Code != aauth.SignatureErrorInvalidInput ||
+		var signatureError *signaturekey.Error
+		if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorInvalidInput ||
 			!containsString(signatureError.RequiredInput, "@path") {
 			t.Fatalf("required component error = %v (%#v)", err, signatureError)
 		}
@@ -311,36 +313,36 @@ func TestVerifyRequestClassifiesKeyAndJWTFailures(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		setup func(*http.Request) error
-		want  aauth.SignatureErrorCode
+		want  signaturekey.ErrorCode
 	}{
 		{
 			name: "malformed key",
 			setup: func(request *http.Request) error {
-				if err := aauth.SignRequestWithHWK(request, key, clock); err != nil {
+				if err := signaturekey.SignHWKRequest(request, key, clock); err != nil {
 					return err
 				}
 				request.Header.Set("Signature-Key", "not-a-signature-key")
 				return nil
 			},
-			want: aauth.SignatureErrorInvalidKey,
+			want: signaturekey.ErrorInvalidKey,
 		},
 		{
 			name: "malformed jwt",
 			setup: func(request *http.Request) error {
-				if err := aauth.SignRequestWithHWK(request, key, clock); err != nil {
+				if err := signaturekey.SignHWKRequest(request, key, clock); err != nil {
 					return err
 				}
 				request.Header.Set("Signature-Key", `sig=jwt;jwt="not-a-jwt"`)
 				return nil
 			},
-			want: aauth.SignatureErrorInvalidJWT,
+			want: signaturekey.ErrorInvalidJWT,
 		},
 		{
 			name: "unknown jwks key",
 			setup: func(request *http.Request) error {
-				return aauth.SignRequestWithJWKSURI(request, key, "https://ps.example", aauth.PersonDiscoveryDocument, clock)
+				return signaturekey.SignJWKSURIRequest(request, key, "https://ps.example", aauth.PersonDiscoveryDocument, clock)
 			},
-			want: aauth.SignatureErrorUnknownKey,
+			want: signaturekey.ErrorUnknownKey,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -351,12 +353,12 @@ func TestVerifyRequestClassifiesKeyAndJWTFailures(t *testing.T) {
 			if err := test.setup(request); err != nil {
 				t.Fatal(err)
 			}
-			_, err = aauth.VerifyRequest(context.Background(), request, aauth.StaticKeyResolver{
+			_, err = aauth.VerifyRequest(context.Background(), request, signaturekey.StaticKeyResolver{
 				"https://ps.example": {},
 			}, clock, aauth.VerifyRequestOptions{
-				AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWT, aauth.SignatureKeyJWKSURI},
+				AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWT, signaturekey.SchemeJWKSURI},
 			})
-			var signatureError *aauth.SignatureError
+			var signatureError *signaturekey.Error
 			if !errors.As(err, &signatureError) || signatureError.Code != test.want {
 				t.Fatalf("error = %v (%#v), want %s", err, signatureError, test.want)
 			}
@@ -373,33 +375,33 @@ func TestVerifyRequestMapsTypedKeyResolutionFailures(t *testing.T) {
 	for _, test := range []struct {
 		name          string
 		err           error
-		signatureCode aauth.SignatureErrorCode
-		resolution    aauth.KeyResolutionCode
+		signatureCode signaturekey.ErrorCode
+		resolution    signaturekey.ResolutionCode
 	}{
 		{
 			name:          "unknown key",
-			err:           &aauth.KeyResolutionError{Code: aauth.KeyResolutionUnknown, Cause: errors.New("missing")},
-			signatureCode: aauth.SignatureErrorUnknownKey,
+			err:           &signaturekey.ResolutionError{Code: signaturekey.ResolutionUnknown, Cause: errors.New("missing")},
+			signatureCode: signaturekey.ErrorUnknownKey,
 		},
 		{
 			name:          "invalid key",
-			err:           &aauth.KeyResolutionError{Code: aauth.KeyResolutionInvalid, Cause: errors.New("invalid")},
-			signatureCode: aauth.SignatureErrorInvalidKey,
+			err:           &signaturekey.ResolutionError{Code: signaturekey.ResolutionInvalid, Cause: errors.New("invalid")},
+			signatureCode: signaturekey.ErrorInvalidKey,
 		},
 		{
 			name:       "egress denied",
-			err:        &aauth.KeyResolutionError{Code: aauth.KeyResolutionDenied, Cause: errors.New("private policy detail")},
-			resolution: aauth.KeyResolutionDenied,
+			err:        &signaturekey.ResolutionError{Code: signaturekey.ResolutionDenied, Cause: errors.New("private policy detail")},
+			resolution: signaturekey.ResolutionDenied,
 		},
 		{
 			name:       "resolver unavailable",
-			err:        &aauth.KeyResolutionError{Code: aauth.KeyResolutionUnavailable, Cause: errors.New("private transport detail")},
-			resolution: aauth.KeyResolutionUnavailable,
+			err:        &signaturekey.ResolutionError{Code: signaturekey.ResolutionUnavailable, Cause: errors.New("private transport detail")},
+			resolution: signaturekey.ResolutionUnavailable,
 		},
 		{
 			name:       "untyped resolver error",
 			err:        errors.New("unclassified resolver failure"),
-			resolution: aauth.KeyResolutionUnavailable,
+			resolution: signaturekey.ResolutionUnavailable,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -407,7 +409,7 @@ func TestVerifyRequestMapsTypedKeyResolutionFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := aauth.SignRequestWithJWKSURI(
+			if err := signaturekey.SignJWKSURIRequest(
 				request,
 				key,
 				"https://ps.example",
@@ -421,17 +423,17 @@ func TestVerifyRequestMapsTypedKeyResolutionFailures(t *testing.T) {
 				request,
 				failingKeyResolver{err: test.err},
 				clock,
-				aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI}},
+				aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI}},
 			)
 			if test.signatureCode != "" {
-				var signatureError *aauth.SignatureError
+				var signatureError *signaturekey.Error
 				if !errors.As(err, &signatureError) || signatureError.Code != test.signatureCode {
 					t.Fatalf("VerifyRequest error = %v (%#v), want %q", err, signatureError, test.signatureCode)
 				}
 				return
 			}
-			var resolutionError *aauth.KeyResolutionError
-			var signatureError *aauth.SignatureError
+			var resolutionError *signaturekey.ResolutionError
+			var signatureError *signaturekey.Error
 			if !errors.As(err, &resolutionError) || resolutionError.Code != test.resolution ||
 				errors.As(err, &signatureError) {
 				t.Fatalf("VerifyRequest operational error = %v resolution=%#v signature=%#v", err, resolutionError, signatureError)
@@ -459,14 +461,14 @@ func TestVerifyRequestClassifiesExpiredJWTWithoutStringInspection(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 		t.Fatal(err)
 	}
-	_, err = aauth.VerifyRequest(context.Background(), request, aauth.StaticKeyResolver{
+	_, err = aauth.VerifyRequest(context.Background(), request, signaturekey.StaticKeyResolver{
 		"https://ap.example": {"issuer-key": issuer.PublicJWK()},
 	}, clock, aauth.VerifyRequestOptions{AllowedCredentialTypes: []string{aauth.AgentTokenType}})
-	var signatureError *aauth.SignatureError
-	if !errors.As(err, &signatureError) || signatureError.Code != aauth.SignatureErrorExpiredJWT {
+	var signatureError *signaturekey.Error
+	if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorExpiredJWT {
 		t.Fatalf("expired JWT error = %v (%#v)", err, signatureError)
 	}
 	var validationError *aauth.TokenValidationError
@@ -494,12 +496,12 @@ func TestVerifyRequestClassifiesJWTIssuerKeyAbsence(t *testing.T) {
 
 	for _, test := range []struct {
 		name     string
-		resolver aauth.KeyResolver
+		resolver signaturekey.KeyResolver
 	}{
 		{
 			name: "initial lookup",
-			resolver: failingKeyResolver{err: &aauth.KeyResolutionError{
-				Code:  aauth.KeyResolutionUnknown,
+			resolver: failingKeyResolver{err: &signaturekey.ResolutionError{
+				Code:  signaturekey.ResolutionUnknown,
 				Cause: errors.New("issuer kid is absent"),
 			}},
 		},
@@ -515,7 +517,7 @@ func TestVerifyRequestClassifiesJWTIssuerKeyAbsence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 				t.Fatal(err)
 			}
 			_, err = aauth.VerifyRequest(
@@ -525,12 +527,12 @@ func TestVerifyRequestClassifiesJWTIssuerKeyAbsence(t *testing.T) {
 				clock,
 				aauth.VerifyRequestOptions{AllowedCredentialTypes: []string{aauth.AgentTokenType}},
 			)
-			var signatureError *aauth.SignatureError
-			var resolutionError *aauth.KeyResolutionError
+			var signatureError *signaturekey.Error
+			var resolutionError *signaturekey.ResolutionError
 			if !errors.As(err, &signatureError) ||
-				signatureError.Code != aauth.SignatureErrorUnknownKey ||
+				signatureError.Code != signaturekey.ErrorUnknownKey ||
 				!errors.As(err, &resolutionError) ||
-				resolutionError.Code != aauth.KeyResolutionUnknown {
+				resolutionError.Code != signaturekey.ResolutionUnknown {
 				t.Fatalf(
 					"VerifyRequest error = %v signature=%#v resolution=%#v, want unknown_key",
 					err,
@@ -561,7 +563,7 @@ func TestVerifyRequestTreatsUntypedJWTResolverFailureAsUnavailable(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 		t.Fatal(err)
 	}
 	_, err = aauth.VerifyRequest(
@@ -571,10 +573,10 @@ func TestVerifyRequestTreatsUntypedJWTResolverFailureAsUnavailable(t *testing.T)
 		clock,
 		aauth.VerifyRequestOptions{AllowedCredentialTypes: []string{aauth.AgentTokenType}},
 	)
-	var resolutionError *aauth.KeyResolutionError
-	var signatureError *aauth.SignatureError
+	var resolutionError *signaturekey.ResolutionError
+	var signatureError *signaturekey.Error
 	if !errors.As(err, &resolutionError) ||
-		resolutionError.Code != aauth.KeyResolutionUnavailable ||
+		resolutionError.Code != signaturekey.ResolutionUnavailable ||
 		errors.As(err, &signatureError) {
 		t.Fatalf("VerifyRequest error = %v resolution=%#v signature=%#v", err, resolutionError, signatureError)
 	}
@@ -602,8 +604,8 @@ func (resolver refreshUnknownResolver) ResolveKey(context.Context, string, strin
 }
 
 func (refreshUnknownResolver) RefreshKey(context.Context, string, string, string) (jose.JWK, error) {
-	return jose.JWK{}, &aauth.KeyResolutionError{
-		Code:  aauth.KeyResolutionUnknown,
+	return jose.JWK{}, &signaturekey.ResolutionError{
+		Code:  signaturekey.ResolutionUnknown,
 		Cause: errors.New("issuer kid disappeared after refresh"),
 	}
 }

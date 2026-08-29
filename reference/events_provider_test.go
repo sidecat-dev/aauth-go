@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -54,7 +56,7 @@ func TestAgentProviderIssuesOnlyAfterDurableSubscriptionCommit(t *testing.T) {
 		t.Fatalf("durable subscription = %#v, want %#v", store.created, wantRecord)
 	}
 
-	claims, err := aauth.VerifySubscribeToken(ctx, compact, aauth.StaticKeyResolver{
+	claims, err := aauth.VerifySubscribeToken(ctx, compact, signaturekey.StaticKeyResolver{
 		"https://ap.example": {providerKey.ID(): providerKey.PublicJWK()},
 	}, aauth.ClockFunc(func() time.Time { return now }))
 	if err != nil {
@@ -108,7 +110,7 @@ func TestAgentProviderIssuesOnlyAfterDurableSubscriptionCommit(t *testing.T) {
 	if got := recoveryAuthority.subscriptions["event-two"]; got != wantRecoveredRecord {
 		t.Fatalf("healthy retry authority = %#v, want %#v", got, wantRecoveredRecord)
 	}
-	recoveredClaims, err := aauth.VerifySubscribeToken(ctx, recoveredToken, aauth.StaticKeyResolver{
+	recoveredClaims, err := aauth.VerifySubscribeToken(ctx, recoveredToken, signaturekey.StaticKeyResolver{
 		"https://ap.example": {providerKey.ID(): providerKey.PublicJWK()},
 	}, aauth.ClockFunc(func() time.Time { return now }))
 	if err != nil {
@@ -263,7 +265,7 @@ func newEventsTestAgentProvider(
 		Events: &AgentProviderEventsConfig{
 			EventEndpoint: endpoint,
 			Store:         store,
-			KeyResolver:   aauth.StaticKeyResolver{},
+			KeyResolver:   signaturekey.StaticKeyResolver{},
 			SubscriptionActiveUntil: func(context.Context, string, string) (time.Time, error) {
 				return activeUntil, nil
 			},

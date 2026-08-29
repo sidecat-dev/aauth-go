@@ -3,10 +3,12 @@ package aauth
 import (
 	"context"
 	"encoding/json"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
@@ -16,7 +18,7 @@ func TestSubscribeAndEventClaimsRejectRequiredFieldMutations(t *testing.T) {
 	clock := ClockFunc(func() time.Time { return now })
 	issuerKey := internalTestSigningKey(t, "issuer-key")
 	agentKey := internalTestSigningKey(t, "agent-key")
-	resolver := StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ap.example":       {issuerKey.ID(): issuerKey.PublicJWK()},
 		"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()},
 	}
@@ -159,7 +161,7 @@ func TestVerifyEventTokenIndependentlyVerifiesCompactJWS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		claims.Issuer: {issuerKey.ID(): issuerKey.PublicJWK()},
 	}
 	verified, err := VerifyEventToken(context.Background(), compact, resolver, clock)

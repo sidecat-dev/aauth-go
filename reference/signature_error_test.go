@@ -5,12 +5,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -34,7 +36,7 @@ func TestResourceReportsSignatureFailuresAsSignatureError(t *testing.T) {
 	}
 	resource, err := reference.NewResource(reference.ResourceConfig{
 		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ps.example": {"issuer-key": issuer.PublicJWK()},
 		},
 		Clock:                    clock,
@@ -57,34 +59,34 @@ func TestResourceReportsSignatureFailuresAsSignatureError(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		setup func(*http.Request) error
-		want  aauth.SignatureErrorCode
+		want  signaturekey.ErrorCode
 	}{
 		{
 			name:  "missing proof headers",
 			setup: func(*http.Request) error { return nil },
-			want:  aauth.SignatureErrorInvalidRequest,
+			want:  signaturekey.ErrorInvalidRequest,
 		},
 		{
 			name: "missing covered component",
 			setup: func(request *http.Request) error {
-				if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
+				if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 					return err
 				}
 				request.Header.Set("Signature-Input", strings.Replace(request.Header.Get("Signature-Input"), ` "content-digest"`, "", 1))
 				return nil
 			},
-			want: aauth.SignatureErrorInvalidInput,
+			want: signaturekey.ErrorInvalidInput,
 		},
 		{
 			name: "invalid signature",
 			setup: func(request *http.Request) error {
-				if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
+				if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 					return err
 				}
 				request.Header.Set("Signature", "sig=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==:")
 				return nil
 			},
-			want: aauth.SignatureErrorInvalidSignature,
+			want: signaturekey.ErrorInvalidSignature,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -98,7 +100,7 @@ func TestResourceReportsSignatureFailuresAsSignatureError(t *testing.T) {
 			if response.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401: %s", response.Code, response.Body.String())
 			}
-			parsed, err := aauth.ParseSignatureError(response.Header().Get("Signature-Error"))
+			parsed, err := signaturekey.ParseError(response.Header().Get("Signature-Error"))
 			if err != nil || parsed.Code != test.want {
 				t.Fatalf("Signature-Error = %q parsed=%#v err=%v", response.Header().Get("Signature-Error"), parsed, err)
 			}
@@ -124,7 +126,7 @@ func TestResourcePolicyDenialIsNotASignatureFailure(t *testing.T) {
 	}
 	resource, err := reference.NewResource(reference.ResourceConfig{
 		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
-		KeyResolver: aauth.StaticKeyResolver{
+		KeyResolver: signaturekey.StaticKeyResolver{
 			"https://ap.example": {"issuer-key": issuer.PublicJWK()},
 		},
 		Clock:                    clock,
@@ -142,7 +144,7 @@ func TestResourcePolicyDenialIsNotASignatureFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "https://resource.example/documents", nil)
-	if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -186,8 +188,8 @@ func TestResourceSanitizesOperationalKeyResolutionFailure(t *testing.T) {
 	}
 	resource, err := reference.NewResource(reference.ResourceConfig{
 		Identifier: "https://resource.example", AccessMode: aauth.AccessModeSessionToken,
-		KeyResolver: failingReferenceKeyResolver{err: &aauth.KeyResolutionError{
-			Code:  aauth.KeyResolutionUnavailable,
+		KeyResolver: failingReferenceKeyResolver{err: &signaturekey.ResolutionError{
+			Code:  signaturekey.ResolutionUnavailable,
 			Cause: errors.New("private endpoint and transport detail"),
 		}},
 		Clock:                    clock,
@@ -208,7 +210,7 @@ func TestResourceSanitizesOperationalKeyResolutionFailure(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/authorize", strings.NewReader(`{"scope":"documents.read"}`))
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(request, requestKey, credential, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, requestKey, credential, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()

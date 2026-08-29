@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -46,7 +48,7 @@ func TestCurrentFourPartyPersonServerAccessServerJourney(t *testing.T) {
 	}
 
 	protocolClient := &http.Client{}
-	keyResolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	keyResolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: protocolClient,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {

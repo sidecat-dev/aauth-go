@@ -1,26 +1,15 @@
 package aauth
 
 import (
-	"bytes"
 	"context"
-	"crypto"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
-
-	"github.com/dunglas/httpsfv"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 type selfJWTLocator struct {
@@ -32,28 +21,28 @@ func preflightSelfJWTClaims(payload []byte, now time.Time) (selfJWTLocator, erro
 	var locator selfJWTLocator
 	var claims map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return locator, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: decode self-jwt claims: %w", err))
+		return locator, signaturekey.NewError(signaturekey.ErrorInvalidJWT, fmt.Errorf("aauth: decode self-jwt claims: %w", err))
 	}
 	if _, ok := claims["cnf"]; ok {
-		return locator, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: self-jwt must not contain cnf"))
+		return locator, signaturekey.NewError(signaturekey.ErrorInvalidJWT, errors.New("aauth: self-jwt must not contain cnf"))
 	}
 	if err := json.Unmarshal(claims["iss"], &locator.Issuer); err != nil || locator.Issuer == "" {
-		return locator, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: self-jwt iss is required and must be a string"))
+		return locator, signaturekey.NewError(signaturekey.ErrorInvalidJWT, errors.New("aauth: self-jwt iss is required and must be a string"))
 	}
 	if err := ValidateServerIdentifier(locator.Issuer); err != nil {
-		return locator, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: self-jwt issuer: %w", err))
+		return locator, signaturekey.NewError(signaturekey.ErrorInvalidJWT, fmt.Errorf("aauth: self-jwt issuer: %w", err))
 	}
 	if err := json.Unmarshal(claims["dwk"], &locator.DWK); err != nil ||
-		!discoveryDocumentPattern.MatchString(locator.DWK) {
-		return locator, newSignatureError(SignatureErrorInvalidKey, errors.New("aauth: self-jwt dwk is required and must be a safe discovery document"))
+		signaturekey.ValidateDiscoveryName(locator.DWK) != nil {
+		return locator, signaturekey.NewError(signaturekey.ErrorInvalidKey, errors.New("aauth: self-jwt dwk is required and must be a safe discovery document"))
 	}
 	if rawExpiry, ok := claims["exp"]; ok {
 		var expiry int64
 		if err := json.Unmarshal(rawExpiry, &expiry); err != nil || expiry <= 0 {
-			return locator, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: self-jwt exp must be a NumericDate"))
+			return locator, signaturekey.NewError(signaturekey.ErrorInvalidJWT, errors.New("aauth: self-jwt exp must be a NumericDate"))
 		}
 		if expiry <= now.Unix() {
-			return locator, newSignatureError(SignatureErrorExpiredJWT, &TokenValidationError{
+			return locator, signaturekey.NewError(signaturekey.ErrorExpiredJWT, &TokenValidationError{
 				Code:  TokenValidationExpired,
 				Cause: errors.New("token is expired"),
 			})
@@ -62,26 +51,17 @@ func preflightSelfJWTClaims(payload []byte, now time.Time) (selfJWTLocator, erro
 	return locator, nil
 }
 
-const DefaultSignatureWindow = 60 * time.Second
-
-const (
-	SignatureKeyJWT     = "jwt"
-	SignatureKeyJWKSURI = "jwks_uri"
-	SignatureKeyHWK     = "hwk"
-	SignatureKeyJKTJWT  = "jkt-jwt"
-	SignatureKeySelfJWT = "self-jwt"
-)
-
 // VerifiedRequest is the trusted signing context of an HTTP request.
 type VerifiedRequest struct {
-	SignatureKeyType string
+	Proof            signaturekey.VerifiedRequest
+	SignatureKeyType signaturekey.Scheme
 	Signer           string
 	RawCredential    string
 	CredentialType   string
 	Agent            string
 	PublicKey        jose.JWK
 	IdentityKey      jose.JWK
-	JKTJWT           *VerifiedJKTJWT
+	JKTJWT           *signaturekey.VerifiedJKTJWT
 	AgentToken       *AgentTokenClaims
 	PersonToken      *PersonTokenClaims
 	AuthToken        *AuthTokenClaims
@@ -108,221 +88,10 @@ type VerifyRequestOptions struct {
 	// custody.
 	RequireExactComponents   bool
 	AllowedCredentialTypes   []string
-	AllowedSignatureKeyTypes []string
+	AllowedSignatureKeyTypes []signaturekey.Scheme
 	SignatureWindow          time.Duration
 	SelfJWTMaximumLifetime   time.Duration
 	SelfJWTClaimPolicy       SelfJWTClaimPolicy
-}
-
-// SignRequestOptions controls optional HTTP Message Signature parameters.
-// A zero ExpiresAt and empty Nonce preserve the default created-only profile.
-type SignRequestOptions struct {
-	ExpiresAt time.Time
-	Nonce     string
-}
-
-// SignRequest applies the AAuth HTTP Message Signatures profile using a JWT
-// identity credential in Signature-Key.
-func SignRequest(request *http.Request, key jose.SigningKey, credential string, clock Clock) error {
-	return SignRequestWithOptions(request, key, credential, clock, SignRequestOptions{})
-}
-
-// SignRequestWithSelfJWT carries the exact caller-supplied compact JWT and
-// signs the HTTP request with the same key that signed the JWT.
-func SignRequestWithSelfJWT(
-	request *http.Request,
-	key jose.SigningKey,
-	compact string,
-	clock Clock,
-) error {
-	if compact == "" {
-		return errors.New("aauth: self-jwt is required")
-	}
-	parsed, err := jose.ParseCompact(compact)
-	if err != nil {
-		return fmt.Errorf("aauth: self-jwt: %w", err)
-	}
-	header := parsed.Header()
-	if header.Algorithm != jose.Ed25519Algorithm || header.KeyID == "" || header.KeyID != key.ID() {
-		return errors.New("aauth: self-jwt signing key does not match the token header")
-	}
-	if _, err := verifyTokenSignatureWithKey(parsed, key.PublicJWK()); err != nil {
-		return fmt.Errorf("aauth: self-jwt signing key does not verify the token: %w", err)
-	}
-	return signRequestWithSignatureKey(
-		request,
-		key,
-		`sig=self-jwt;jwt=`+strconv.Quote(compact),
-		clock,
-		SignRequestOptions{},
-	)
-}
-
-// SignRequestWithOptions applies the JWT Signature-Key profile with optional
-// RFC 9421 signature parameters. ExpiresAt, when present, must be after the
-// signing clock's current time.
-func SignRequestWithOptions(
-	request *http.Request,
-	key jose.SigningKey,
-	credential string,
-	clock Clock,
-	options SignRequestOptions,
-) error {
-	if request == nil || request.URL == nil {
-		return errors.New("aauth: request URL is required")
-	}
-	if clock == nil {
-		return errors.New("aauth: clock is required")
-	}
-	if credential == "" {
-		return errors.New("aauth: JWT credential is required")
-	}
-	return signRequestWithSignatureKey(
-		request,
-		key,
-		`sig=jwt;jwt=`+strconv.Quote(credential),
-		clock,
-		options,
-	)
-}
-
-// SignRequestWithHWK signs with the Ed25519 key carried inline in
-// Signature-Key. The key is pseudonymous and requires no discovery resolver.
-func SignRequestWithHWK(request *http.Request, key jose.SigningKey, clock Clock) error {
-	public := key.PublicJWK()
-	if _, err := public.PublicKey(); err != nil {
-		return fmt.Errorf("aauth: hwk signing key: %w", err)
-	}
-	header := `sig=hwk;kty=` + strconv.Quote(public.Kty) +
-		`;crv=` + strconv.Quote(public.Crv) +
-		`;x=` + strconv.Quote(public.X) +
-		`;alg=` + strconv.Quote(public.Alg)
-	return signRequestWithSignatureKey(request, key, header, clock, SignRequestOptions{})
-}
-
-// SignRequestWithJKTJWT signs with the delegated key named by a valid
-// durable-key JWK Thumbprint JWT.
-func SignRequestWithJKTJWT(
-	request *http.Request,
-	key jose.SigningKey,
-	delegation string,
-	clock Clock,
-) error {
-	if delegation == "" {
-		return errors.New("aauth: jkt-jwt delegation is required")
-	}
-	verified, err := VerifyJKTJWT(delegation, clock)
-	if err != nil {
-		return err
-	}
-	if !verified.Confirmation.Equal(key.PublicJWK()) {
-		return errors.New("aauth: jkt-jwt delegated key does not match the request signing key")
-	}
-	return signRequestWithSignatureKey(
-		request,
-		key,
-		`sig=jkt-jwt;jwt=`+strconv.Quote(delegation),
-		clock,
-		SignRequestOptions{},
-	)
-}
-
-// SignRequestWithJWKSURI signs as a URI-identified server whose key is
-// discoverable through the Signature-Key two-hop metadata/JWKS scheme.
-func SignRequestWithJWKSURI(
-	request *http.Request,
-	key jose.SigningKey,
-	identifier string,
-	discoveryDocument string,
-	clock Clock,
-) error {
-	return SignRequestWithJWKSURIOptions(
-		request,
-		key,
-		identifier,
-		discoveryDocument,
-		clock,
-		SignRequestOptions{},
-	)
-}
-
-// SignRequestWithJWKSURIOptions signs with a URI-identified server key and
-// optional RFC 9421 signature parameters.
-func SignRequestWithJWKSURIOptions(
-	request *http.Request,
-	key jose.SigningKey,
-	identifier string,
-	discoveryDocument string,
-	clock Clock,
-	options SignRequestOptions,
-) error {
-	if err := ValidateServerIdentifier(identifier); err != nil {
-		return fmt.Errorf("aauth: jwks_uri signer: %w", err)
-	}
-	if !discoveryDocumentPattern.MatchString(discoveryDocument) {
-		return errors.New("aauth: jwks_uri discovery document is invalid")
-	}
-	if key.ID() == "" {
-		return errors.New("aauth: jwks_uri signing key is required")
-	}
-	header := `sig=jwks_uri;id=` + strconv.Quote(identifier) +
-		`;dwk=` + strconv.Quote(discoveryDocument) +
-		`;kid=` + strconv.Quote(key.ID())
-	return signRequestWithSignatureKey(request, key, header, clock, options)
-}
-
-func signRequestWithSignatureKey(
-	request *http.Request,
-	key jose.SigningKey,
-	signatureKeyHeader string,
-	clock Clock,
-	options SignRequestOptions,
-) error {
-	if request == nil || request.URL == nil {
-		return errors.New("aauth: request URL is required")
-	}
-	if clock == nil {
-		return errors.New("aauth: clock is required")
-	}
-	request.Header.Set("Signature-Key", signatureKeyHeader)
-	components := []string{"@method", "@authority", "@path"}
-
-	if request.Header.Get("Authorization") != "" {
-		components = append(components, "authorization")
-	}
-	if hasRequestBody(request) {
-		body, err := readRequestBody(request)
-		if err != nil {
-			return err
-		}
-		digest := sha256.Sum256(body)
-		request.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
-		components = append(components, "content-digest")
-		if request.Header.Get("Content-Type") != "" {
-			components = append(components, "content-type")
-		}
-	}
-	components = append(components, "signature-key")
-
-	now := clock.Now()
-	if !options.ExpiresAt.IsZero() && options.ExpiresAt.Unix() <= now.Unix() {
-		return errors.New("aauth: signature expires time must be after created time")
-	}
-	if strings.ContainsAny(options.Nonce, "\r\n") {
-		return errors.New("aauth: signature nonce must not contain line breaks")
-	}
-	params := signatureParams(components, now.Unix(), options.ExpiresAt, options.Nonce)
-	base, err := signatureBase(request, components, params)
-	if err != nil {
-		return err
-	}
-	signature, err := key.Sign(rand.Reader, []byte(base), crypto.Hash(0))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Signature-Input", "sig="+params)
-	request.Header.Set("Signature", "sig=:"+base64.StdEncoding.EncodeToString(signature)+":")
-	return nil
 }
 
 // VerifyRequest verifies the JWT identity, required component coverage,
@@ -330,7 +99,7 @@ func signRequestWithSignatureKey(
 func VerifyRequest(
 	ctx context.Context,
 	request *http.Request,
-	resolver KeyResolver,
+	resolver signaturekey.KeyResolver,
 	clock Clock,
 	options VerifyRequestOptions,
 ) (VerifiedRequest, error) {
@@ -341,157 +110,56 @@ func VerifyRequest(
 	if clock == nil {
 		return verified, errors.New("aauth: clock is required")
 	}
-	verifiedAt := clock.Now().UTC()
-	verificationClock := ClockFunc(func() time.Time { return verifiedAt })
-
-	signatureHeader := request.Header.Get("Signature")
-	signatureInputHeader := request.Header.Get("Signature-Input")
-	signatureKeyHeaders := request.Header.Values("Signature-Key")
-	if signatureHeader == "" || signatureInputHeader == "" || len(signatureKeyHeaders) == 0 {
+	if request.Header.Get("Signature") == "" || request.Header.Get("Signature-Input") == "" || len(request.Header.Values("Signature-Key")) == 0 {
 		// The generic Signature-Key draft groups absent proof headers under
 		// invalid_signature. The AAuth core profile explicitly overrides that
 		// classification: its verification step 1 requires invalid_request
 		// before parsing or resolving any supplied proof material.
-		return verified, newSignatureError(
-			SignatureErrorInvalidRequest,
+		return verified, signaturekey.NewError(
+			signaturekey.ErrorInvalidRequest,
 			errors.New("aauth: Signature, Signature-Input, and Signature-Key headers are required"),
 		)
 	}
-	components, created, expires, params, err := parseSignatureInput(signatureInputHeader)
-	if err != nil {
-		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
-	}
-	required := append([]string{"@method", "@authority", "@path", "signature-key"}, options.RequiredComponents...)
-	if hasRequestBody(request) {
-		required = append(required, "content-digest")
-	}
-	if request.Header.Get("Authorization") != "" {
-		if options.RequireExactComponents && !contains(options.RequiredComponents, "authorization") {
-			return VerifiedRequest{}, newSignatureError(
-				SignatureErrorInvalidSignature,
-				errors.New("aauth: Authorization is outside the endpoint's exact component profile"),
-			)
-		}
-		required = append(required, "authorization")
-	}
-	for _, component := range required {
-		if !contains(components, strings.ToLower(component)) {
-			return VerifiedRequest{}, signatureErrorWithRequiredInput(
-				fmt.Errorf("aauth: signature does not cover required component %q", component),
-				required,
-			)
-		}
-	}
-	if options.RequireExactComponents {
-		expected := make(map[string]struct{}, len(required))
-		for _, component := range required {
-			expected[strings.ToLower(component)] = struct{}{}
-		}
-		if len(components) != len(expected) {
-			return VerifiedRequest{}, newSignatureError(
-				SignatureErrorInvalidSignature,
-				errors.New("aauth: signature does not match the endpoint's exact component profile"),
-			)
-		}
-		for _, component := range components {
-			if _, ok := expected[component]; !ok {
-				return VerifiedRequest{}, newSignatureError(
-					SignatureErrorInvalidSignature,
-					fmt.Errorf("aauth: covered component %q is outside the endpoint's exact component profile", component),
-				)
-			}
-		}
-		retainedFields := []string{"signature", "signature-input"}
-		for _, component := range components {
-			if !strings.HasPrefix(component, "@") {
-				retainedFields = append(retainedFields, component)
-			}
-		}
-		for _, field := range retainedFields {
-			if len(request.Header.Values(field)) != 1 {
-				return VerifiedRequest{}, newSignatureError(
-					SignatureErrorInvalidSignature,
-					fmt.Errorf("aauth: exact component profile field %q has multiple field lines", field),
-				)
-			}
-		}
-	}
-
-	window := options.SignatureWindow
-	if window == 0 {
-		window = DefaultSignatureWindow
-	}
-	if window < 0 {
-		return VerifiedRequest{}, newSignatureError(
-			SignatureErrorInvalidRequest,
-			errors.New("aauth: signature window must not be negative"),
-		)
-	}
-	createdAt := time.Unix(created, 0)
-	age := verifiedAt.Sub(createdAt)
-	if age < -window || age > window {
-		return VerifiedRequest{}, newSignatureError(
-			SignatureErrorInvalidSignature,
-			errors.New("aauth: signature created time is outside the validity window"),
-		)
-	}
-	if expires != nil && !time.Unix(*expires, 0).After(verifiedAt) {
-		return VerifiedRequest{}, newSignatureError(
-			SignatureErrorInvalidSignature,
-			errors.New("aauth: signature expires time is in the past"),
-		)
-	}
-
-	signatureKey, err := parseSignatureKey(signatureKeyHeaders)
-	if err != nil {
-		var unsupportedScheme *unsupportedSignatureKeySchemeError
-		if errors.As(err, &unsupportedScheme) {
-			return verified, &SignatureError{
-				Code:            SignatureErrorUnsupportedScheme,
-				AcceptedSchemes: acceptedSignatureKeyTypes(options),
-				Cause:           err,
-			}
-		}
-		var missingAlgorithm *missingSignatureKeyAlgorithmError
-		if errors.As(err, &missingAlgorithm) {
-			return verified, &SignatureError{
-				Code:               SignatureErrorUnsupportedAlgorithm,
-				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
-				Cause:              err,
-			}
-		}
-		return verified, newSignatureError(SignatureErrorInvalidKey, err)
-	}
 	allowedSignatureKeyTypes := acceptedSignatureKeyTypes(options)
-	if !contains(allowedSignatureKeyTypes, signatureKey.scheme) {
-		return verified, &SignatureError{
-			Code:            SignatureErrorUnsupportedScheme,
-			AcceptedSchemes: allowedSignatureKeyTypes,
-			Cause:           fmt.Errorf("aauth: Signature-Key type %q is not accepted", signatureKey.scheme),
-		}
+	preparedProof, err := signaturekey.PrepareRequest(
+		request,
+		clock,
+		signaturekey.VerifyOptions{
+			RequiredComponents:     options.RequiredComponents,
+			RequireExactComponents: options.RequireExactComponents,
+			AcceptedSchemes:        allowedSignatureKeyTypes,
+			SignatureWindow:        options.SignatureWindow,
+		},
+	)
+	if err != nil {
+		return verified, classifySignatureKeyProofError(err)
 	}
-	verified.SignatureKeyType = signatureKey.scheme
+	credential := preparedProof.Credential()
+	verifiedAt := preparedProof.VerifiedAt()
+	verificationClock := ClockFunc(func() time.Time { return verifiedAt })
+	verified.SignatureKeyType = credential.Scheme()
 
-	switch signatureKey.scheme {
-	case SignatureKeyJWT:
+	switch credential.Scheme() {
+	case signaturekey.SchemeJWT:
 		if resolver == nil {
-			return verified, keyResolutionError(
-				KeyResolutionUnavailable,
-				errors.New("aauth: key resolver is required"),
-			)
+			return verified, &signaturekey.ResolutionError{
+				Code:  signaturekey.ResolutionUnavailable,
+				Cause: errors.New("aauth: key resolver is required"),
+			}
 		}
-		header, err := jose.PeekHeader(signatureKey.parameters["jwt"])
+		compact, _ := credential.JWT()
+		header, err := jose.PeekHeader(compact)
 		if err != nil {
-			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key JWT: %w", err))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key JWT: %w", err))
 		}
 		allowedCredentialTypes := options.AllowedCredentialTypes
 		if len(allowedCredentialTypes) == 0 {
 			allowedCredentialTypes = []string{AgentTokenType, AuthTokenType}
 		}
 		if !contains(allowedCredentialTypes, header.Type) {
-			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
 		}
-		verified.RawCredential = signatureKey.parameters["jwt"]
+		verified.RawCredential = compact
 		verified.CredentialType = header.Type
 		switch header.Type {
 		case AgentTokenType:
@@ -529,23 +197,21 @@ func VerifyRequest(
 			verified.PublicKey = claims.Confirmation.JWK
 			verified.SubscribeToken = &claims
 		default:
-			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidJWT, fmt.Errorf("aauth: unsupported Signature-Key JWT typ %q", header.Type))
 		}
-	case SignatureKeyJWKSURI:
+	case signaturekey.SchemeJWKSURI:
 		if resolver == nil {
-			return verified, keyResolutionError(
-				KeyResolutionUnavailable,
-				errors.New("aauth: key resolver is required"),
-			)
+			return verified, &signaturekey.ResolutionError{
+				Code:  signaturekey.ResolutionUnavailable,
+				Cause: errors.New("aauth: key resolver is required"),
+			}
 		}
-		identifier := signatureKey.parameters["id"]
-		document := signatureKey.parameters["dwk"]
-		keyID := signatureKey.parameters["kid"]
+		identifier, document, keyID, _ := credential.JWKSURI()
 		if err := ValidateServerIdentifier(identifier); err != nil {
-			return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key id: %w", err))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidKey, fmt.Errorf("aauth: Signature-Key id: %w", err))
 		}
-		if !discoveryDocumentPattern.MatchString(document) || keyID == "" {
-			return verified, newSignatureError(SignatureErrorInvalidKey, errors.New("aauth: Signature-Key jwks_uri parameters are invalid"))
+		if signaturekey.ValidateDiscoveryName(document) != nil || keyID == "" {
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidKey, errors.New("aauth: Signature-Key jwks_uri parameters are invalid"))
 		}
 		resolved, err := resolver.ResolveKey(ctx, identifier, document, keyID)
 		if err != nil {
@@ -554,78 +220,74 @@ func VerifyRequest(
 		verified.Signer = identifier
 		verified.PublicKey = resolved
 		verified.IdentityKey = resolved
-	case SignatureKeyHWK:
-		inline := jose.JWK{
-			Kty: signatureKey.parameters["kty"],
-			Crv: signatureKey.parameters["crv"],
-			X:   signatureKey.parameters["x"],
-			Alg: signatureKey.parameters["alg"],
-		}
+	case signaturekey.SchemeHWK:
+		inline, _ := credential.InlineJWK()
 		if inline.Alg != jose.Ed25519Algorithm {
-			return verified, &SignatureError{
-				Code:               SignatureErrorUnsupportedAlgorithm,
+			return verified, &signaturekey.Error{
+				Code:               signaturekey.ErrorUnsupportedAlgorithm,
 				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 				Cause:              fmt.Errorf("aauth: unsupported hwk algorithm %q", inline.Alg),
 			}
 		}
 		if _, err := inline.PublicKey(); err != nil {
-			return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key hwk: %w", err))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidKey, fmt.Errorf("aauth: Signature-Key hwk: %w", err))
 		}
 		identity, err := inline.ThumbprintURI()
 		if err != nil {
-			return verified, newSignatureError(SignatureErrorInvalidKey, fmt.Errorf("aauth: Signature-Key hwk identity: %w", err))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidKey, fmt.Errorf("aauth: Signature-Key hwk identity: %w", err))
 		}
 		verified.Signer = identity
 		verified.PublicKey = inline
 		verified.IdentityKey = inline
-	case SignatureKeyJKTJWT:
-		delegation, err := VerifyJKTJWT(signatureKey.parameters["jwt"], verificationClock)
+	case signaturekey.SchemeJKTJWT:
+		compact, _ := credential.JWT()
+		delegation, err := signaturekey.VerifyJKTJWT(compact, verificationClock)
 		if err != nil {
 			return verified, classifyJWTVerificationError(err)
 		}
-		verified.RawCredential = signatureKey.parameters["jwt"]
+		verified.RawCredential = compact
 		verified.Signer = delegation.Issuer
 		verified.PublicKey = delegation.Confirmation
 		verified.IdentityKey = delegation.IdentityKey
 		verified.JKTJWT = &delegation
-	case SignatureKeySelfJWT:
+	case signaturekey.SchemeSelfJWT:
 		if options.SelfJWTMaximumLifetime < 0 {
-			return verified, newSignatureError(
-				SignatureErrorInvalidRequest,
+			return verified, signaturekey.NewError(
+				signaturekey.ErrorInvalidRequest,
 				errors.New("aauth: self-jwt maximum lifetime must not be negative"),
 			)
 		}
 		if resolver == nil {
-			return verified, keyResolutionError(
-				KeyResolutionUnavailable,
-				errors.New("aauth: key resolver is required"),
-			)
+			return verified, &signaturekey.ResolutionError{
+				Code:  signaturekey.ResolutionUnavailable,
+				Cause: errors.New("aauth: key resolver is required"),
+			}
 		}
-		compact := signatureKey.parameters["jwt"]
+		compact, _ := credential.JWT()
 		parsed, err := jose.ParseCompact(compact)
 		if err != nil {
-			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key self-jwt: %w", err))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidJWT, fmt.Errorf("aauth: Signature-Key self-jwt: %w", err))
 		}
 		header, payload := parsed.Header(), parsed.Payload()
 		if header.Algorithm == "none" {
-			return verified, newSignatureError(SignatureErrorInvalidJWT, errors.New("aauth: alg none is forbidden"))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidJWT, errors.New("aauth: alg none is forbidden"))
 		}
 		if header.Algorithm != jose.Ed25519Algorithm {
-			return verified, &SignatureError{
-				Code:               SignatureErrorUnsupportedAlgorithm,
+			return verified, &signaturekey.Error{
+				Code:               signaturekey.ErrorUnsupportedAlgorithm,
 				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 				Cause:              &unsupportedTokenAlgorithmError{algorithm: header.Algorithm},
 			}
 		}
 		if len(options.AllowedCredentialTypes) > 0 && !contains(options.AllowedCredentialTypes, header.Type) {
-			return verified, newSignatureError(SignatureErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidJWT, fmt.Errorf("aauth: credential typ %q is not accepted", header.Type))
 		}
 		locator, err := preflightSelfJWTClaims(payload, verifiedAt)
 		if err != nil {
 			return verified, err
 		}
 		if header.KeyID == "" {
-			return verified, newSignatureError(SignatureErrorInvalidKey, errors.New("aauth: self-jwt kid is required"))
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidKey, errors.New("aauth: self-jwt kid is required"))
 		}
 		resolved, err := resolver.ResolveKey(ctx, locator.Issuer, locator.DWK, header.KeyID)
 		if err != nil {
@@ -637,7 +299,7 @@ func VerifyRequest(
 		}
 		selfJWT := newVerifiedSelfJWT(verifiedCompact, locator.Issuer, locator.DWK)
 		if err := validateSelfJWTMaximumLifetime(selfJWT, options.SelfJWTMaximumLifetime); err != nil {
-			return verified, newSignatureError(SignatureErrorInvalidJWT, err)
+			return verified, signaturekey.NewError(signaturekey.ErrorInvalidJWT, err)
 		}
 		if options.SelfJWTClaimPolicy != nil {
 			if err := options.SelfJWTClaimPolicy(selfJWT); err != nil {
@@ -652,39 +314,13 @@ func VerifyRequest(
 		verified.SelfJWT = &selfJWT
 	}
 
-	if contains(components, "content-digest") {
-		if err := verifyContentDigest(request); err != nil {
-			return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
-		}
-	}
-	base, err := signatureBase(request, components, params)
+	verified.Proof, err = preparedProof.Verify(verified.PublicKey)
 	if err != nil {
-		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
+		return VerifiedRequest{}, classifySignatureKeyProofError(err)
 	}
-	signature, err := parseSignature(signatureHeader)
-	if err != nil {
-		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, err)
-	}
-	publicKey, err := verified.PublicKey.PublicKey()
-	if err != nil {
-		if verified.PublicKey.Alg != jose.Ed25519Algorithm {
-			return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{jose.Ed25519Algorithm}, Cause: err}
-		}
-		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidKey, err)
-	}
-	ed25519Key, ok := publicKey.(ed25519.PublicKey)
-	if !ok {
-		return VerifiedRequest{}, &SignatureError{Code: SignatureErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{jose.Ed25519Algorithm}, Cause: errors.New("aauth: request confirmation key is not Ed25519")}
-	}
-	if !ed25519.Verify(ed25519Key, []byte(base), signature) {
-		return VerifiedRequest{}, newSignatureError(SignatureErrorInvalidSignature, errors.New("aauth: HTTP message signature is invalid"))
-	}
-
-	replayMaterial := append([]byte(base), signature...)
-	replayDigest := sha256.Sum256(replayMaterial)
-	verified.Created = createdAt
-	verified.VerifiedAt = verifiedAt
-	verified.ReplayKey = rawURL.EncodeToString(replayDigest[:])
+	verified.Created = verified.Proof.Created()
+	verified.VerifiedAt = verified.Proof.VerifiedAt()
+	verified.ReplayKey = verified.Proof.ReplayKey()
 	return verified, nil
 }
 
@@ -710,221 +346,47 @@ func validateSelfJWTMaximumLifetime(verified VerifiedSelfJWT, maximum time.Durat
 	return nil
 }
 
-func signatureParams(components []string, created int64, expires time.Time, nonce string) string {
-	var quoted []string
-	for _, component := range components {
-		quoted = append(quoted, strconv.Quote(component))
+func classifySignatureKeyProofError(err error) error {
+	if err == nil {
+		return nil
 	}
-	params := "(" + strings.Join(quoted, " ") + ");created=" + strconv.FormatInt(created, 10)
-	if !expires.IsZero() {
-		params += ";expires=" + strconv.FormatInt(expires.Unix(), 10)
+	var proofFailure *signaturekey.Error
+	if errors.As(err, &proofFailure) {
+		return proofFailure
 	}
-	if nonce != "" {
-		params += ";nonce=" + strconv.Quote(nonce)
+	var resolutionFailure *signaturekey.ResolutionError
+	if errors.As(err, &resolutionFailure) {
+		return err
 	}
-	return params
-}
-
-func signatureBase(request *http.Request, components []string, params string) (string, error) {
-	lines := make([]string, 0, len(components)+1)
-	for _, component := range components {
-		var value string
-		switch component {
-		case "@method":
-			value = request.Method
-		case "@authority":
-			var err error
-			value, err = normalizedRequestAuthority(request)
-			if err != nil {
-				return "", err
-			}
-		case "@path":
-			value = request.URL.EscapedPath()
-			if value == "" {
-				value = "/"
-			}
-		default:
-			if strings.HasPrefix(component, "@") {
-				return "", fmt.Errorf("aauth: unsupported derived signature component %q", component)
-			}
-			values := request.Header.Values(http.CanonicalHeaderKey(component))
-			if len(values) == 0 {
-				return "", fmt.Errorf("aauth: covered header %q is absent", component)
-			}
-			// RFC 9421 Section 2.1 derives a single field value by combining
-			// every field line in order with a comma and one space. Covering
-			// only the first value would let an appended field line evade the
-			// signature.
-			value = strings.Join(values, ", ")
-		}
-		lines = append(lines, strconv.Quote(component)+": "+value)
-	}
-	lines = append(lines, `"@signature-params": `+params)
-	return strings.Join(lines, "\n"), nil
-}
-
-func normalizedRequestAuthority(request *http.Request) (string, error) {
-	authority := request.Host
-	if authority == "" {
-		authority = request.URL.Host
-	}
-	if authority == "" {
-		return "", errors.New("aauth: request authority is required")
-	}
-
-	host, port, err := net.SplitHostPort(authority)
-	if err != nil {
-		// A bracketed IPv6 literal without a port is already in the authority
-		// form. Registered host names are case-insensitive.
-		if !strings.Contains(authority, ":") ||
-			strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
-			return strings.ToLower(authority), nil
-		}
-		return "", fmt.Errorf("aauth: request authority %q is invalid: %w", authority, err)
-	}
-	host = strings.ToLower(host)
-	scheme := strings.ToLower(request.URL.Scheme)
-	if scheme == "" {
-		if request.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
-	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
-		if strings.Contains(host, ":") {
-			return "[" + host + "]", nil
-		}
-		return host, nil
-	}
-	return net.JoinHostPort(host, port), nil
-}
-
-func parseSignatureInput(header string) ([]string, int64, *int64, string, error) {
-	if !strings.HasPrefix(header, "sig=(") {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input must contain the sig label")
-	}
-	params := strings.TrimPrefix(header, "sig=")
-	end := strings.IndexByte(params, ')')
-	if end < 1 {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input has invalid parameters")
-	}
-	componentText := params[1:end]
-
-	var components []string
-	for len(strings.TrimSpace(componentText)) > 0 {
-		componentText = strings.TrimSpace(componentText)
-		if componentText[0] != '"' {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input component is not quoted")
-		}
-		endQuote := 1
-		for endQuote < len(componentText) {
-			if componentText[endQuote] == '"' && componentText[endQuote-1] != '\\' {
-				break
-			}
-			endQuote++
-		}
-		if endQuote >= len(componentText) {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input component quote is unterminated")
-		}
-		value, err := strconv.Unquote(componentText[:endQuote+1])
-		if err != nil {
-			return nil, 0, nil, "", fmt.Errorf("aauth: decode Signature-Input component: %w", err)
-		}
-		value = strings.ToLower(value)
-		if contains(components, value) {
-			return nil, 0, nil, "", fmt.Errorf("aauth: duplicate signed component %q", value)
-		}
-		components = append(components, value)
-		componentText = componentText[endQuote+1:]
-	}
-	if len(components) == 0 {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input covers no components")
-	}
-
-	var created int64
-	var expires *int64
-	seenCreated := false
-	seenNonce := false
-	remainder := params[end+1:]
-	for remainder != "" {
-		if !strings.HasPrefix(remainder, ";") {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input parameter separator is invalid")
-		}
-		remainder = remainder[1:]
-		parameterEnd := strings.IndexByte(remainder, ';')
-		parameter := remainder
-		if parameterEnd >= 0 {
-			parameter = remainder[:parameterEnd]
-			remainder = remainder[parameterEnd:]
-		} else {
-			remainder = ""
-		}
-		name, value, ok := strings.Cut(parameter, "=")
-		if !ok || name == "" || value == "" || strings.ContainsAny(name, " ,\t\r\n") || strings.ContainsAny(value, " ,\t\r\n") {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input parameter is invalid")
-		}
-		switch name {
-		case "created":
-			if seenCreated {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input created is duplicated")
-			}
-			parsed, err := strconv.ParseInt(value, 10, 64)
-			if err != nil || parsed <= 0 {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input created is invalid")
-			}
-			created, seenCreated = parsed, true
-		case "expires":
-			if expires != nil {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input expires is duplicated")
-			}
-			parsed, err := strconv.ParseInt(value, 10, 64)
-			if err != nil || parsed <= 0 {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input expires is invalid")
-			}
-			expires = &parsed
-		case "nonce":
-			if seenNonce {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input nonce is duplicated")
-			}
-			nonce, err := strconv.Unquote(value)
-			if err != nil || nonce == "" {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input nonce is invalid")
-			}
-			seenNonce = true
-		}
-	}
-	if !seenCreated {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input created is required")
-	}
-	if expires != nil && *expires <= created {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input expires must be after created")
-	}
-	return components, created, expires, params, nil
+	return signaturekey.NewError(signaturekey.ErrorInvalidSignature, err)
 }
 
 func classifyJWTVerificationError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var resolutionError *KeyResolutionError
+	var proofFailure *signaturekey.Error
+	if errors.As(err, &proofFailure) {
+		return proofFailure
+	}
+	var resolutionError *signaturekey.ResolutionError
 	if errors.As(err, &resolutionError) {
 		switch resolutionError.Code {
-		case KeyResolutionUnknown:
-			return newSignatureError(SignatureErrorUnknownKey, err)
-		case KeyResolutionInvalid:
-			return newSignatureError(SignatureErrorInvalidKey, err)
-		case KeyResolutionIssuerMissing:
-			return newSignatureError(SignatureErrorIssuerMissing, err)
-		case KeyResolutionIssuerMismatch:
-			return newSignatureError(SignatureErrorIssuerMismatch, err)
-		case KeyResolutionUnsupportedAlgorithm:
-			return &SignatureError{
-				Code:               SignatureErrorUnsupportedAlgorithm,
+		case signaturekey.ResolutionUnknown:
+			return signaturekey.NewError(signaturekey.ErrorUnknownKey, err)
+		case signaturekey.ResolutionInvalid:
+			return signaturekey.NewError(signaturekey.ErrorInvalidKey, err)
+		case signaturekey.ResolutionIssuerMissing:
+			return signaturekey.NewError(signaturekey.ErrorIssuerMissing, err)
+		case signaturekey.ResolutionIssuerMismatch:
+			return signaturekey.NewError(signaturekey.ErrorIssuerMismatch, err)
+		case signaturekey.ResolutionUnsupportedAlgorithm:
+			return &signaturekey.Error{
+				Code:               signaturekey.ErrorUnsupportedAlgorithm,
 				AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 				Cause:              err,
 			}
-		case KeyResolutionDenied, KeyResolutionUnavailable:
+		case signaturekey.ResolutionDenied, signaturekey.ResolutionUnavailable:
 			return err
 		}
 	}
@@ -932,189 +394,58 @@ func classifyJWTVerificationError(err error) error {
 	if errors.As(err, &validation) {
 		switch validation.Code {
 		case TokenValidationExpired:
-			return newSignatureError(SignatureErrorExpiredJWT, err)
+			return signaturekey.NewError(signaturekey.ErrorExpiredJWT, err)
 		case TokenValidationInvalidKey:
-			return newSignatureError(SignatureErrorInvalidKey, err)
+			return signaturekey.NewError(signaturekey.ErrorInvalidKey, err)
 		}
 	}
 	var unsupportedAlgorithm *unsupportedTokenAlgorithmError
 	if errors.As(err, &unsupportedAlgorithm) {
-		return &SignatureError{
-			Code:               SignatureErrorUnsupportedAlgorithm,
+		return &signaturekey.Error{
+			Code:               signaturekey.ErrorUnsupportedAlgorithm,
 			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 			Cause:              err,
 		}
 	}
 	var unsupportedClaim *unsupportedTokenClaimError
 	if errors.As(err, &unsupportedClaim) {
-		return &SignatureError{
-			Code:         SignatureErrorInvalidJWT,
-			publicDetail: unsupportedClaim.Error(),
-			Cause:        err,
-		}
+		return signaturekey.NewPublicError(signaturekey.ErrorInvalidJWT, unsupportedClaim.Error(), err)
 	}
-	return newSignatureError(SignatureErrorInvalidJWT, err)
+	return signaturekey.NewError(signaturekey.ErrorInvalidJWT, err)
 }
 
 func classifyJWKSURIResolutionError(err error) error {
-	var resolutionError *KeyResolutionError
+	var resolutionError *signaturekey.ResolutionError
 	if !errors.As(err, &resolutionError) {
-		return normalizeKeyResolutionError(err)
+		return signaturekey.NormalizeResolutionError(err)
 	}
 	switch resolutionError.Code {
-	case KeyResolutionUnknown:
-		return newSignatureError(SignatureErrorUnknownKey, err)
-	case KeyResolutionInvalid:
-		return newSignatureError(SignatureErrorInvalidKey, err)
-	case KeyResolutionIssuerMissing:
-		return newSignatureError(SignatureErrorIssuerMissing, err)
-	case KeyResolutionIssuerMismatch:
-		return newSignatureError(SignatureErrorIssuerMismatch, err)
-	case KeyResolutionUnsupportedAlgorithm:
-		return &SignatureError{
-			Code:               SignatureErrorUnsupportedAlgorithm,
+	case signaturekey.ResolutionUnknown:
+		return signaturekey.NewError(signaturekey.ErrorUnknownKey, err)
+	case signaturekey.ResolutionInvalid:
+		return signaturekey.NewError(signaturekey.ErrorInvalidKey, err)
+	case signaturekey.ResolutionIssuerMissing:
+		return signaturekey.NewError(signaturekey.ErrorIssuerMissing, err)
+	case signaturekey.ResolutionIssuerMismatch:
+		return signaturekey.NewError(signaturekey.ErrorIssuerMismatch, err)
+	case signaturekey.ResolutionUnsupportedAlgorithm:
+		return &signaturekey.Error{
+			Code:               signaturekey.ErrorUnsupportedAlgorithm,
 			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 			Cause:              err,
 		}
-	case KeyResolutionDenied, KeyResolutionUnavailable:
+	case signaturekey.ResolutionDenied, signaturekey.ResolutionUnavailable:
 		return err
 	default:
-		return newSignatureError(SignatureErrorInvalidKey, err)
+		return signaturekey.NewError(signaturekey.ErrorInvalidKey, err)
 	}
 }
 
-type parsedSignatureKey struct {
-	scheme     string
-	parameters map[string]string
-}
-
-type unsupportedSignatureKeySchemeError struct{ scheme string }
-
-func (err *unsupportedSignatureKeySchemeError) Error() string {
-	return fmt.Sprintf("aauth: unsupported Signature-Key scheme %q", err.scheme)
-}
-
-type missingSignatureKeyAlgorithmError struct{ scheme string }
-
-func (err *missingSignatureKeyAlgorithmError) Error() string {
-	return fmt.Sprintf("aauth: Signature-Key %s requires alg", err.scheme)
-}
-
-func parseSignatureKey(values []string) (parsedSignatureKey, error) {
-	var parsed parsedSignatureKey
-	dictionary, err := httpsfv.UnmarshalDictionary(values)
-	if err != nil {
-		return parsed, fmt.Errorf("aauth: parse Signature-Key: %w", err)
-	}
-	member, ok := dictionary.Get("sig")
-	if !ok {
-		return parsed, errors.New("aauth: Signature-Key must contain the sig label")
-	}
-	item, ok := member.(httpsfv.Item)
-	if !ok {
-		return parsed, errors.New("aauth: Signature-Key sig member must be an Item")
-	}
-	scheme, ok := item.Value.(httpsfv.Token)
-	if !ok || scheme == "" {
-		return parsed, errors.New("aauth: Signature-Key scheme must be a token")
-	}
-	parsed.scheme = string(scheme)
-	parsed.parameters = make(map[string]string)
-	required := map[string][]string{
-		SignatureKeyJWT:     {"jwt"},
-		SignatureKeyJWKSURI: {"id", "dwk", "kid"},
-		SignatureKeyHWK:     {"kty", "crv", "x", "alg"},
-		SignatureKeyJKTJWT:  {"jwt"},
-		SignatureKeySelfJWT: {"jwt"},
-	}[parsed.scheme]
-	if required == nil {
-		return parsedSignatureKey{}, &unsupportedSignatureKeySchemeError{scheme: parsed.scheme}
-	}
-	for _, name := range item.Params.Names() {
-		value, _ := item.Params.Get(name)
-		stringValue, ok := value.(string)
-		if !ok || stringValue == "" {
-			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key parameter %q must be a non-empty string", name)
-		}
-		parsed.parameters[name] = stringValue
-	}
-	if parsed.scheme == SignatureKeyHWK && parsed.parameters["alg"] == "" {
-		return parsedSignatureKey{}, &missingSignatureKeyAlgorithmError{scheme: parsed.scheme}
-	}
-	if len(parsed.parameters) != len(required) {
-		return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key %s has unexpected parameters", parsed.scheme)
-	}
-	for _, name := range required {
-		if parsed.parameters[name] == "" {
-			return parsedSignatureKey{}, fmt.Errorf("aauth: Signature-Key %s requires %s", parsed.scheme, name)
-		}
-	}
-	return parsed, nil
-}
-
-func acceptedSignatureKeyTypes(options VerifyRequestOptions) []string {
+func acceptedSignatureKeyTypes(options VerifyRequestOptions) []signaturekey.Scheme {
 	if len(options.AllowedSignatureKeyTypes) == 0 {
-		return []string{SignatureKeyJWT}
+		return []signaturekey.Scheme{signaturekey.SchemeJWT}
 	}
-	return append([]string(nil), options.AllowedSignatureKeyTypes...)
-}
-
-func parseSignature(header string) ([]byte, error) {
-	const prefix = "sig=:"
-	if !strings.HasPrefix(header, prefix) || !strings.HasSuffix(header, ":") {
-		return nil, errors.New("aauth: Signature must contain the sig byte sequence")
-	}
-	encoded := strings.TrimSuffix(strings.TrimPrefix(header, prefix), ":")
-	signature, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, fmt.Errorf("aauth: decode HTTP signature: %w", err)
-	}
-	if len(signature) != ed25519.SignatureSize {
-		return nil, fmt.Errorf("aauth: Ed25519 HTTP signature has %d bytes", len(signature))
-	}
-	return signature, nil
-}
-
-func verifyContentDigest(request *http.Request) error {
-	header := request.Header.Get("Content-Digest")
-	const prefix = "sha-256=:"
-	if !strings.HasPrefix(header, prefix) || !strings.HasSuffix(header, ":") {
-		return errors.New("aauth: Content-Digest must use sha-256")
-	}
-	expected, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(header, prefix), ":"))
-	if err != nil || len(expected) != sha256.Size {
-		return errors.New("aauth: Content-Digest sha-256 value is invalid")
-	}
-	body, err := readRequestBody(request)
-	if err != nil {
-		return err
-	}
-	actual := sha256.Sum256(body)
-	if !bytes.Equal(expected, actual[:]) {
-		return errors.New("aauth: Content-Digest does not match request body")
-	}
-	return nil
-}
-
-func readRequestBody(request *http.Request) ([]byte, error) {
-	if !hasRequestBody(request) {
-		return nil, nil
-	}
-	body, err := io.ReadAll(request.Body)
-	if err != nil {
-		return nil, fmt.Errorf("aauth: read request body: %w", err)
-	}
-	request.Body.Close()
-	request.Body = io.NopCloser(bytes.NewReader(body))
-	request.ContentLength = int64(len(body))
-	request.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	return body, nil
-}
-
-func hasRequestBody(request *http.Request) bool {
-	return request.Body != nil && request.Body != http.NoBody && request.ContentLength != 0
+	return append([]signaturekey.Scheme(nil), options.AllowedSignatureKeyTypes...)
 }
 
 func contains(values []string, target string) bool {

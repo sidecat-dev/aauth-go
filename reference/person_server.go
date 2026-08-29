@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/url"
@@ -18,13 +17,16 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 type PersonServerConfig struct {
 	Identifier                    string
 	SigningKey                    jose.SigningKey
-	KeyResolver                   aauth.KeyResolver
+	KeyResolver                   signaturekey.KeyResolver
 	Clock                         aauth.Clock
 	NewID                         func() string
 	CurrentMissionPolicy          aauth.CurrentMissionPolicy
@@ -48,7 +50,7 @@ type PersonServerConfig struct {
 type PersonServer struct {
 	identifier                    string
 	signingKey                    jose.SigningKey
-	keyResolver                   aauth.KeyResolver
+	keyResolver                   signaturekey.KeyResolver
 	clock                         aauth.Clock
 	newID                         func() string
 	currentMissionPolicy          aauth.CurrentMissionPolicy
@@ -205,7 +207,7 @@ type accessServerExchange struct {
 // signature check fails, so recovery custody must retain the key from the
 // successful resolution path rather than perform a second lookup.
 type retainedKeyResolver struct {
-	resolver aauth.KeyResolver
+	resolver signaturekey.KeyResolver
 	key      jose.JWK
 	found    bool
 }
@@ -226,12 +228,12 @@ func (resolver *retainedKeyResolver) ResolveKey(
 
 type retainedRefreshingKeyResolver struct {
 	*retainedKeyResolver
-	refresher aauth.KeyRefresher
+	refresher signaturekey.KeyRefresher
 }
 
-func newRetainedKeyCapture(resolver aauth.KeyResolver) (*retainedKeyResolver, aauth.KeyResolver) {
+func newRetainedKeyCapture(resolver signaturekey.KeyResolver) (*retainedKeyResolver, signaturekey.KeyResolver) {
 	capture := &retainedKeyResolver{resolver: resolver}
-	if refresher, ok := resolver.(aauth.KeyRefresher); ok {
+	if refresher, ok := resolver.(signaturekey.KeyRefresher); ok {
 		return capture, &retainedRefreshingKeyResolver{
 			retainedKeyResolver: capture,
 			refresher:           refresher,
@@ -266,9 +268,9 @@ func (server *PersonServer) signFederationRequest(request *http.Request) error {
 	if _, err := io.ReadFull(rand.Reader, nonceBytes); err != nil {
 		return fmt.Errorf("reference: generate federation proof nonce: %w", err)
 	}
-	return aauth.SignRequestWithJWKSURIOptions(
+	return signaturekey.SignJWKSURIRequestWithOptions(
 		request, server.signingKey, server.identifier, aauth.PersonDiscoveryDocument, server.clock,
-		aauth.SignRequestOptions{Nonce: base64.RawURLEncoding.EncodeToString(nonceBytes)},
+		signaturekey.SignOptions{Nonce: base64.RawURLEncoding.EncodeToString(nonceBytes)},
 	)
 }
 
@@ -715,7 +717,7 @@ func (server *PersonServer) validatePersonAuthorizationRequestEvidence(
 	proof := value.RequestProof
 	if proof.Method != http.MethodPost || proof.Target != "/token" || proof.Authority == "" ||
 		proof.ContentDigest == "" || proof.ContentType == "" || proof.SignatureInput == "" || proof.Signature == "" ||
-		proof.SignatureKey == "" || proof.SignatureKeyType != aauth.SignatureKeyJWT ||
+		proof.SignatureKey == "" || proof.SignatureKeyType != string(signaturekey.SchemeJWT) ||
 		proof.CredentialType != aauth.AgentTokenType || proof.CredentialIssuer == "" ||
 		proof.Authorization != "" || proof.VerifiedAt.IsZero() {
 		return ErrAuthorizationStateIntegrity
@@ -752,7 +754,7 @@ func (server *PersonServer) validatePersonAuthorizationRequestEvidence(
 	verified, err := aauth.VerifyRequest(
 		context.Background(),
 		request,
-		aauth.StaticKeyResolver{
+		signaturekey.StaticKeyResolver{
 			agent.Issuer: {header.KeyID: value.TokenVerificationKeys.Agent},
 		},
 		aauth.ClockFunc(func() time.Time { return proof.VerifiedAt.UTC() }),
@@ -764,7 +766,7 @@ func (server *PersonServer) validatePersonAuthorizationRequestEvidence(
 	)
 	if err != nil || verified.RawCredential != value.AgentTokenCompact ||
 		verified.Signer != proof.Signer || verified.Agent != proof.Agent ||
-		verified.SignatureKeyType != proof.SignatureKeyType ||
+		verified.SignatureKeyType != signaturekey.Scheme(proof.SignatureKeyType) ||
 		verified.CredentialType != proof.CredentialType ||
 		!verified.PublicKey.Equal(proof.PublicKey) ||
 		!verified.Created.Equal(proof.Created) || !verified.VerifiedAt.Equal(proof.VerifiedAt) ||
@@ -1175,7 +1177,7 @@ func (server *PersonServer) completeCurrentMission(
 	}
 	record := MissionIssuanceRecord{
 		ReplayKey:         verified.ReplayKey,
-		ReplayExpiresAt:   verified.Created.Add(aauth.DefaultSignatureWindow).UTC(),
+		ReplayExpiresAt:   verified.Created.Add(signaturekey.DefaultSignatureWindow).UTC(),
 		State:             MissionIssuancePrepared,
 		Agent:             verified.Agent,
 		Reference:         reference,
@@ -1421,7 +1423,7 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		}
 		missionExpiry = copyTimePointer(mission.ExpiresAt)
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow), verified.VerifiedAt) {
+	if server.seenReplay(verified.ReplayKey, verified.Created.Add(signaturekey.DefaultSignatureWindow), verified.VerifiedAt) {
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
@@ -1737,7 +1739,7 @@ func (server *PersonServer) handlePermission(
 				verified.AgentToken.ExpiresAt,
 				body,
 				proof,
-				verified.Created.Add(aauth.DefaultSignatureWindow),
+				verified.Created.Add(signaturekey.DefaultSignatureWindow),
 			); err != nil {
 				server.writeMissionError(response, err)
 			}
@@ -1758,7 +1760,7 @@ func (server *PersonServer) handlePermission(
 		input,
 		body,
 		proof,
-		verified.Created.Add(aauth.DefaultSignatureWindow),
+		verified.Created.Add(signaturekey.DefaultSignatureWindow),
 		decision,
 	)
 }
@@ -2464,7 +2466,7 @@ func (server *PersonServer) handleAudit(
 			Proof:          requestProof(request, verified),
 		},
 		verified.ReplayKey,
-		verified.Created.Add(aauth.DefaultSignatureWindow),
+		verified.Created.Add(signaturekey.DefaultSignatureWindow),
 	)
 	if err != nil {
 		server.writeMissionError(response, err)
@@ -2683,7 +2685,7 @@ func requestProof(
 		Signature:        request.Header.Get("Signature"),
 		SignatureKey:     request.Header.Get("Signature-Key"),
 		Authorization:    request.Header.Get("Authorization"),
-		SignatureKeyType: verified.SignatureKeyType,
+		SignatureKeyType: string(verified.SignatureKeyType),
 		CredentialType:   verified.CredentialType,
 		CredentialIssuer: credentialIssuer,
 		Signer:           verified.Signer,
@@ -2826,7 +2828,7 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow), verified.VerifiedAt) {
+	if server.seenReplay(verified.ReplayKey, verified.Created.Add(signaturekey.DefaultSignatureWindow), verified.VerifiedAt) {
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
@@ -4065,8 +4067,8 @@ func (server *PersonServer) parseAccessServerGrant(
 		return exchange, err
 	}
 	capturedResolver := &retainedKeyResolver{resolver: server.keyResolver}
-	var verificationResolver aauth.KeyResolver = capturedResolver
-	if refresher, ok := server.keyResolver.(aauth.KeyRefresher); ok {
+	var verificationResolver signaturekey.KeyResolver = capturedResolver
+	if refresher, ok := server.keyResolver.(signaturekey.KeyRefresher); ok {
 		verificationResolver = &retainedRefreshingKeyResolver{
 			retainedKeyResolver: capturedResolver,
 			refresher:           refresher,

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
@@ -16,7 +18,7 @@ func TestJWKSURIRequestIdentitySignsAndVerifies(t *testing.T) {
 	now := time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	personServerKey := testSigningKey(t, "ps-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ps.example": {"ps-key": personServerKey.PublicJWK()},
 	}
 
@@ -29,7 +31,7 @@ func TestJWKSURIRequestIdentitySignsAndVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequestWithJWKSURI(
+	if err := signaturekey.SignJWKSURIRequest(
 		request,
 		personServerKey,
 		"https://ps.example",
@@ -41,12 +43,12 @@ func TestJWKSURIRequestIdentitySignsAndVerifies(t *testing.T) {
 
 	verified, err := aauth.VerifyRequest(context.Background(), request, resolver, clock, aauth.VerifyRequestOptions{
 		RequiredComponents:       []string{"content-digest"},
-		AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
+		AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verified.SignatureKeyType != aauth.SignatureKeyJWKSURI ||
+	if verified.SignatureKeyType != signaturekey.SchemeJWKSURI ||
 		verified.Signer != "https://ps.example" ||
 		!verified.PublicKey.Equal(personServerKey.PublicJWK()) {
 		t.Fatalf("verified PS signing context = %#v", verified)
@@ -60,7 +62,7 @@ func TestJWKSURIRequestRejectsKeyReferenceSubstitution(t *testing.T) {
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	personServerKey := testSigningKey(t, "ps-key")
 	otherKey := testSigningKey(t, "other-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ps.example":    {"ps-key": personServerKey.PublicJWK()},
 		"https://other.example": {"other-key": otherKey.PublicJWK()},
 	}
@@ -69,7 +71,7 @@ func TestJWKSURIRequestRejectsKeyReferenceSubstitution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithJWKSURI(
+	if err := signaturekey.SignJWKSURIRequest(
 		request,
 		personServerKey,
 		"https://ps.example",
@@ -84,7 +86,7 @@ func TestJWKSURIRequestRejectsKeyReferenceSubstitution(t *testing.T) {
 	)
 
 	if _, err := aauth.VerifyRequest(context.Background(), request, resolver, clock, aauth.VerifyRequestOptions{
-		AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI},
+		AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
 	}); err == nil {
 		t.Fatal("substituted jwks_uri key reference was accepted")
 	}

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
 )
@@ -64,7 +66,7 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 	}
 
 	discoveryClient := &http.Client{}
-	keyResolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	keyResolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: discoveryClient,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {

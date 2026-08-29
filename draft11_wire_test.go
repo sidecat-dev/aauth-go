@@ -5,11 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -61,19 +63,19 @@ func TestDraft11Ed25519WireJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithHWK(request, requestKey, clock); err != nil {
+	if err := signaturekey.SignHWKRequest(request, requestKey, clock); err != nil {
 		t.Fatal(err)
 	}
 	if got := request.Header.Get("Signature-Key"); !strings.Contains(got, `;alg="Ed25519"`) {
 		t.Fatalf("Signature-Key = %q, want fully specified hwk alg", got)
 	}
 	verified, err := aauth.VerifyRequest(context.Background(), request, nil, clock, aauth.VerifyRequestOptions{
-		AllowedSignatureKeyTypes: []string{aauth.SignatureKeyHWK},
+		AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verified.SignatureKeyType != aauth.SignatureKeyHWK || verified.PublicKey.Alg != "Ed25519" {
+	if verified.SignatureKeyType != signaturekey.SchemeHWK || verified.PublicKey.Alg != "Ed25519" {
 		t.Fatalf("verified request = %#v", verified)
 	}
 }
@@ -86,43 +88,43 @@ func TestDraft08SignatureKeyFailuresAreTypedAndNegotiable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithHWK(base, key, clock); err != nil {
+	if err := signaturekey.SignHWKRequest(base, key, clock); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, test := range []struct {
 		name   string
 		header string
-		want   aauth.SignatureErrorCode
+		want   signaturekey.ErrorCode
 	}{
 		{
 			name:   "missing hwk alg",
 			header: strings.Replace(base.Header.Get("Signature-Key"), `;alg="Ed25519"`, "", 1),
-			want:   aauth.SignatureErrorUnsupportedAlgorithm,
+			want:   signaturekey.ErrorUnsupportedAlgorithm,
 		},
 		{
 			name:   "polymorphic hwk alg",
 			header: strings.Replace(base.Header.Get("Signature-Key"), `;alg="Ed25519"`, `;alg="EdDSA"`, 1),
-			want:   aauth.SignatureErrorUnsupportedAlgorithm,
+			want:   signaturekey.ErrorUnsupportedAlgorithm,
 		},
 		{
 			name:   "unknown scheme",
 			header: strings.Replace(base.Header.Get("Signature-Key"), "sig=hwk;", "sig=future-key;", 1),
-			want:   aauth.SignatureErrorUnsupportedScheme,
+			want:   signaturekey.ErrorUnsupportedScheme,
 		},
 		{
 			name:   "parameterless unknown scheme",
 			header: "sig=future-key",
-			want:   aauth.SignatureErrorUnsupportedScheme,
+			want:   signaturekey.ErrorUnsupportedScheme,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := base.Clone(context.Background())
 			request.Header.Set("Signature-Key", test.header)
 			_, err := aauth.VerifyRequest(context.Background(), request, nil, clock, aauth.VerifyRequestOptions{
-				AllowedSignatureKeyTypes: []string{aauth.SignatureKeyHWK},
+				AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeHWK},
 			})
-			var signatureError *aauth.SignatureError
+			var signatureError *signaturekey.Error
 			if !errors.As(err, &signatureError) || signatureError.Code != test.want {
 				t.Fatalf("error = %v, want SignatureError %s", err, test.want)
 			}
@@ -133,26 +135,30 @@ func TestDraft08SignatureKeyFailuresAreTypedAndNegotiable(t *testing.T) {
 	response.Header.Set("Signature-Error", "error=unsupported_algorithm")
 	response.Header.Set("Accept-Signature-Alg", "Ed25519, ES256")
 	response.Header.Set("Accept-Signature-Scheme", "jwt, hwk")
-	decoded, err := aauth.DecodeSignatureErrorResponse(response)
+	decoded, err := signaturekey.DecodeErrorResponse(response)
 	if err != nil {
 		t.Fatal(err)
 	}
+	acceptedSchemes := make([]string, 0, len(decoded.AcceptedSchemes))
+	for _, scheme := range decoded.AcceptedSchemes {
+		acceptedSchemes = append(acceptedSchemes, string(scheme))
+	}
 	if strings.Join(decoded.AcceptedAlgorithms, ",") != "Ed25519,ES256" ||
-		strings.Join(decoded.AcceptedSchemes, ",") != "jwt,hwk" {
+		strings.Join(acceptedSchemes, ",") != "jwt,hwk" {
 		t.Fatalf("decoded negotiation = %#v", decoded)
 	}
-	if encoded, err := aauth.FormatSignatureError(*decoded); err != nil || encoded != "error=unsupported_algorithm" {
+	if encoded, err := signaturekey.FormatError(*decoded); err != nil || encoded != "error=unsupported_algorithm" {
 		t.Fatalf("formatted Signature-Error = %q, %v", encoded, err)
 	}
 }
 
 func TestDraft08IssuerMetadataFailuresRetainTheirProtocolCodes(t *testing.T) {
 	for _, test := range []struct {
-		resolution aauth.KeyResolutionCode
-		want       aauth.SignatureErrorCode
+		resolution signaturekey.ResolutionCode
+		want       signaturekey.ErrorCode
 	}{
-		{aauth.KeyResolutionIssuerMissing, aauth.SignatureErrorIssuerMissing},
-		{aauth.KeyResolutionIssuerMismatch, aauth.SignatureErrorIssuerMismatch},
+		{signaturekey.ResolutionIssuerMissing, signaturekey.ErrorIssuerMissing},
+		{signaturekey.ResolutionIssuerMismatch, signaturekey.ErrorIssuerMismatch},
 	} {
 		for _, path := range []struct {
 			name    string
@@ -162,16 +168,16 @@ func TestDraft08IssuerMetadataFailuresRetainTheirProtocolCodes(t *testing.T) {
 			{
 				name:    "jwks_uri",
 				request: draft11JWKSURIRequest(t),
-				options: aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWKSURI}},
+				options: aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI}},
 			},
 			{
 				name:    "jwt",
 				request: draft11JWTRequest(t),
-				options: aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []string{aauth.SignatureKeyJWT}},
+				options: aauth.VerifyRequestOptions{AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWT}},
 			},
 		} {
 			t.Run(string(test.resolution)+"/"+path.name, func(t *testing.T) {
-				err := &aauth.KeyResolutionError{Code: test.resolution, Cause: errors.New("metadata rejected")}
+				err := &signaturekey.ResolutionError{Code: test.resolution, Cause: errors.New("metadata rejected")}
 				_, verifyErr := aauth.VerifyRequest(
 					context.Background(),
 					path.request,
@@ -179,7 +185,7 @@ func TestDraft08IssuerMetadataFailuresRetainTheirProtocolCodes(t *testing.T) {
 					aauth.ClockFunc(func() time.Time { return time.Unix(2_000_000_100, 0) }),
 					path.options,
 				)
-				var signatureError *aauth.SignatureError
+				var signatureError *signaturekey.Error
 				if !errors.As(verifyErr, &signatureError) || signatureError.Code != test.want {
 					t.Fatalf("resolution %s error = %v, want %s", test.resolution, verifyErr, test.want)
 				}
@@ -192,17 +198,17 @@ func TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer(t *testing.T) 
 	for _, test := range []struct {
 		name     string
 		metadata string
-		want     aauth.KeyResolutionCode
+		want     signaturekey.ResolutionCode
 	}{
 		{
 			name:     "missing",
 			metadata: `{"jwks_uri":"https://keys.example/jwks"}`,
-			want:     aauth.KeyResolutionIssuerMissing,
+			want:     signaturekey.ResolutionIssuerMissing,
 		},
 		{
 			name:     "mismatch",
 			metadata: `{"issuer":"https://other.example","jwks_uri":"https://keys.example/jwks"}`,
-			want:     aauth.KeyResolutionIssuerMismatch,
+			want:     signaturekey.ResolutionIssuerMismatch,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -214,7 +220,7 @@ func TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer(t *testing.T) 
 			})
 			defer gateway.Close()
 
-			resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 				Client: gateway.Client(),
 				Clock:  aauth.ClockFunc(func() time.Time { return time.Unix(2_000_000_100, 0) }),
 				Admit:  func(context.Context, string) error { return nil },
@@ -228,7 +234,7 @@ func TestDraft08HTTPDiscoveryClassifiesMissingAndMismatchedIssuer(t *testing.T) 
 				aauth.AgentDiscoveryDocument,
 				"issuer-key",
 			)
-			var resolutionError *aauth.KeyResolutionError
+			var resolutionError *signaturekey.ResolutionError
 			if !errors.As(err, &resolutionError) || resolutionError.Code != test.want {
 				t.Fatalf("resolution error = %v, want %s", err, test.want)
 			}
@@ -249,7 +255,7 @@ func draft11JWKSURIRequest(t *testing.T) *http.Request {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequestWithJWKSURI(
+	if err := signaturekey.SignJWKSURIRequest(
 		request,
 		key,
 		"https://issuer.example",
@@ -284,7 +290,7 @@ func draft11JWTRequest(t *testing.T) *http.Request {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequest(
+	if err := signaturekey.SignJWTRequest(
 		request,
 		requestKey,
 		credential,

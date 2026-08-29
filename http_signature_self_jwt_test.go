@@ -2,13 +2,16 @@ package aauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
@@ -35,12 +38,12 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		key  string
-		want SignatureErrorCode
+		want signaturekey.ErrorCode
 	}{
-		{name: "absent jwt parameter", key: "sig=self-jwt", want: SignatureErrorInvalidKey},
-		{name: "non-string jwt parameter", key: "sig=self-jwt;jwt=token", want: SignatureErrorInvalidKey},
-		{name: "empty jwt parameter", key: `sig=self-jwt;jwt=""`, want: SignatureErrorInvalidKey},
-		{name: "unexpected parameter", key: `sig=self-jwt;jwt="token";kid="extra"`, want: SignatureErrorInvalidKey},
+		{name: "absent jwt parameter", key: "sig=self-jwt", want: signaturekey.ErrorInvalidKey},
+		{name: "non-string jwt parameter", key: "sig=self-jwt;jwt=token", want: signaturekey.ErrorInvalidKey},
+		{name: "empty jwt parameter", key: `sig=self-jwt;jwt=""`, want: signaturekey.ErrorInvalidKey},
+		{name: "unexpected parameter", key: `sig=self-jwt;jwt="token";kid="extra"`, want: signaturekey.ErrorInvalidKey},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
@@ -49,14 +52,14 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := SignRequestWithSelfJWT(request, key, validCompact, clock); err != nil {
+			if err := signaturekey.SignSelfJWTRequest(request, key, validCompact, clock); err != nil {
 				t.Fatal(err)
 			}
 			request.Header.Set("Signature-Key", test.key)
 			resolver := &selfJWTCountingResolver{}
 			_, err = VerifyRequest(context.Background(), request, resolver, clock, VerifyRequestOptions{
 				AllowedCredentialTypes:   []string{EventTokenType},
-				AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+				AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 			})
 			requireSignatureErrorCode(t, err, test.want)
 			if resolver.calls != 0 {
@@ -70,18 +73,18 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 		header jose.Header
 		claims map[string]any
 		rawJWT string
-		want   SignatureErrorCode
+		want   signaturekey.ErrorCode
 	}{
-		{name: "malformed JWT", rawJWT: "not-a-jwt", want: SignatureErrorInvalidJWT},
-		{name: "wrong type", header: jose.Header{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
-		{name: "expired", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "exp", now.Add(-time.Second).Unix()), want: SignatureErrorExpiredJWT},
-		{name: "missing issuer", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", nil), want: SignatureErrorInvalidJWT},
-		{name: "unsafe issuer", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", "http://127.0.0.1"), want: SignatureErrorInvalidJWT},
-		{name: "missing discovery document", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", nil), want: SignatureErrorInvalidKey},
-		{name: "unsafe discovery document", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", "../keys.json"), want: SignatureErrorInvalidKey},
-		{name: "missing key id", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType}, claims: validClaims, want: SignatureErrorInvalidKey},
-		{name: "algorithm none", header: jose.Header{Algorithm: "none", Type: EventTokenType, KeyID: key.ID()}, claims: validClaims, want: SignatureErrorInvalidJWT},
-		{name: "confirmation claim", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "cnf", map[string]any{"jwk": key.PublicJWK()}), want: SignatureErrorInvalidJWT},
+		{name: "malformed JWT", rawJWT: "not-a-jwt", want: signaturekey.ErrorInvalidJWT},
+		{name: "wrong type", header: jose.Header{Algorithm: "Ed25519", Type: SubscribeTokenType, KeyID: key.ID()}, claims: validClaims, want: signaturekey.ErrorInvalidJWT},
+		{name: "expired", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "exp", now.Add(-time.Second).Unix()), want: signaturekey.ErrorExpiredJWT},
+		{name: "missing issuer", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", nil), want: signaturekey.ErrorInvalidJWT},
+		{name: "unsafe issuer", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "iss", "http://127.0.0.1"), want: signaturekey.ErrorInvalidJWT},
+		{name: "missing discovery document", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", nil), want: signaturekey.ErrorInvalidKey},
+		{name: "unsafe discovery document", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "dwk", "../keys.json"), want: signaturekey.ErrorInvalidKey},
+		{name: "missing key id", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType}, claims: validClaims, want: signaturekey.ErrorInvalidKey},
+		{name: "algorithm none", header: jose.Header{Algorithm: "none", Type: EventTokenType, KeyID: key.ID()}, claims: validClaims, want: signaturekey.ErrorInvalidJWT},
+		{name: "confirmation claim", header: jose.Header{Algorithm: "Ed25519", Type: EventTokenType, KeyID: key.ID()}, claims: mutateClaim(validClaims, "cnf", map[string]any{"jwk": key.PublicJWK()}), want: signaturekey.ErrorInvalidJWT},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
@@ -94,15 +97,15 @@ func TestSelfJWTRejectsUnsafeClaimsBeforeDiscovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := signRequestWithSignatureKey(request, key, `sig=self-jwt;jwt=`+strconvQuote(compact), clock, SignRequestOptions{}); err != nil {
+			if err := signRequestWithSignatureKey(request, key, `sig=self-jwt;jwt=`+strconvQuote(compact), clock, signaturekey.SignOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			resolver := &selfJWTCountingResolver{}
 			_, err = VerifyRequest(context.Background(), request, resolver, clock, VerifyRequestOptions{
 				AllowedCredentialTypes:   []string{EventTokenType},
-				AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+				AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 			})
-			var signatureError *SignatureError
+			var signatureError *signaturekey.Error
 			if !errors.As(err, &signatureError) || signatureError.Code != test.want {
 				t.Fatalf("VerifyRequest error = %v (%#v), want %q", err, signatureError, test.want)
 			}
@@ -141,12 +144,12 @@ func TestSelfJWTUsesOneDiscoveredKeyForBothProofs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SignRequestWithSelfJWT(request, issuerKey, compact, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(request, issuerKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	verified, err := VerifyRequest(context.Background(), request, resolver, clock, VerifyRequestOptions{
 		AllowedCredentialTypes:   []string{EventTokenType},
-		AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+		AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -174,15 +177,15 @@ func TestSelfJWTUsesOneDiscoveredKeyForBothProofs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := signRequestWithSignatureKey(mismatched, otherKey, `sig=self-jwt;jwt=`+strconvQuote(compact), clock, SignRequestOptions{}); err != nil {
+		if err := signRequestWithSignatureKey(mismatched, otherKey, `sig=self-jwt;jwt=`+strconvQuote(compact), clock, signaturekey.SignOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		before := resolver.calls
 		_, err = VerifyRequest(context.Background(), mismatched, resolver, clock, VerifyRequestOptions{
 			AllowedCredentialTypes:   []string{EventTokenType},
-			AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 		})
-		requireSignatureErrorCode(t, err, SignatureErrorInvalidSignature)
+		requireSignatureErrorCode(t, err, signaturekey.ErrorInvalidSignature)
 		if resolver.calls != before+1 {
 			t.Fatalf("mismatched proof resolver calls = %d, want %d", resolver.calls, before+1)
 		}
@@ -196,14 +199,14 @@ func TestSelfJWTUsesOneDiscoveredKeyForBothProofs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := signRequestWithSignatureKey(request, issuerKey, `sig=self-jwt;jwt=`+strconvQuote(corrupt), clock, SignRequestOptions{}); err != nil {
+		if err := signRequestWithSignatureKey(request, issuerKey, `sig=self-jwt;jwt=`+strconvQuote(corrupt), clock, signaturekey.SignOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		_, err = VerifyRequest(context.Background(), request, resolver, clock, VerifyRequestOptions{
 			AllowedCredentialTypes:   []string{EventTokenType},
-			AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 		})
-		requireSignatureErrorCode(t, err, SignatureErrorInvalidJWT)
+		requireSignatureErrorCode(t, err, signaturekey.ErrorInvalidJWT)
 		if resolver.refreshCalls != 0 {
 			t.Fatalf("corrupt JWT made %d key refresh calls, want 0", resolver.refreshCalls)
 		}
@@ -213,9 +216,9 @@ func TestSelfJWTUsesOneDiscoveredKeyForBothProofs(t *testing.T) {
 		unknown := &selfJWTCountingResolver{}
 		_, err := VerifyRequest(context.Background(), request, unknown, clock, VerifyRequestOptions{
 			AllowedCredentialTypes:   []string{EventTokenType},
-			AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 		})
-		requireSignatureErrorCode(t, err, SignatureErrorUnknownKey)
+		requireSignatureErrorCode(t, err, signaturekey.ErrorUnknownKey)
 		if unknown.calls != 1 || unknown.refreshCalls != 0 {
 			t.Fatalf("unknown key resolution calls = %d, refreshes = %d, want 1/0", unknown.calls, unknown.refreshCalls)
 		}
@@ -259,7 +262,7 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 	}
 	options := VerifyRequestOptions{
 		AllowedCredentialTypes:   []string{EventTokenType},
-		AllowedSignatureKeyTypes: []string{SignatureKeySelfJWT},
+		AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
 		SelfJWTMaximumLifetime:   2 * time.Minute,
 		SelfJWTClaimPolicy:       policy,
 	}
@@ -267,7 +270,7 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SignRequestWithSelfJWT(request, issuerKey, compact, clock); err != nil {
+	if err := signaturekey.SignSelfJWTRequest(request, issuerKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := VerifyRequest(context.Background(), request, resolver, clock, options); err != nil {
@@ -288,12 +291,12 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := SignRequestWithSelfJWT(request, issuerKey, excessiveCompact, clock); err != nil {
+		if err := signaturekey.SignSelfJWTRequest(request, issuerKey, excessiveCompact, clock); err != nil {
 			t.Fatal(err)
 		}
 		beforePolicy := policyCalls
 		_, err = VerifyRequest(context.Background(), request, resolver, clock, options)
-		requireSignatureErrorCode(t, err, SignatureErrorInvalidJWT)
+		requireSignatureErrorCode(t, err, signaturekey.ErrorInvalidJWT)
 		if policyCalls != beforePolicy {
 			t.Fatal("claim policy ran after maximum-lifetime refusal")
 		}
@@ -312,13 +315,13 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 			issuerKey,
 			`sig=self-jwt;jwt=`+strconvQuote(corrupt),
 			clock,
-			SignRequestOptions{},
+			signaturekey.SignOptions{},
 		); err != nil {
 			t.Fatal(err)
 		}
 		beforePolicy := policyCalls
 		_, err = VerifyRequest(context.Background(), request, resolver, clock, options)
-		requireSignatureErrorCode(t, err, SignatureErrorInvalidJWT)
+		requireSignatureErrorCode(t, err, signaturekey.ErrorInvalidJWT)
 		if policyCalls != beforePolicy {
 			t.Fatal("claim policy ran before JWT proof succeeded")
 		}
@@ -334,7 +337,7 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 			otherKey,
 			`sig=self-jwt;jwt=`+strconvQuote(compact),
 			clock,
-			SignRequestOptions{},
+			signaturekey.SignOptions{},
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -346,8 +349,8 @@ func TestSelfJWTAppliesDeploymentPolicyBeforeHTTPProof(t *testing.T) {
 			return policyFailure
 		}
 		_, err = VerifyRequest(context.Background(), request, resolver, clock, refusing)
-		var signatureError *SignatureError
-		if !errors.As(err, &signatureError) || signatureError.Code != SignatureErrorInvalidJWT ||
+		var signatureError *signaturekey.Error
+		if !errors.As(err, &signatureError) || signatureError.Code != signaturekey.ErrorInvalidJWT ||
 			!errors.Is(err, policyFailure) {
 			t.Fatalf("claim-policy error = %v (%#v), want invalid_jwt policy refusal", err, signatureError)
 		}
@@ -367,7 +370,7 @@ func (resolver *selfJWTCountingResolver) ResolveKey(_ context.Context, _, _, key
 	resolver.calls++
 	key, ok := resolver.keys[keyID]
 	if !ok {
-		return jose.JWK{}, &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("test key is absent")}
+		return jose.JWK{}, &signaturekey.ResolutionError{Code: signaturekey.ResolutionUnknown, Cause: errors.New("test key is absent")}
 	}
 	return key, nil
 }
@@ -376,7 +379,7 @@ func (resolver *selfJWTCountingResolver) RefreshKey(_ context.Context, _, _, key
 	resolver.refreshCalls++
 	key, ok := resolver.keys[keyID]
 	if !ok {
-		return jose.JWK{}, &KeyResolutionError{Code: KeyResolutionUnknown, Cause: errors.New("test key is absent")}
+		return jose.JWK{}, &signaturekey.ResolutionError{Code: signaturekey.ResolutionUnknown, Cause: errors.New("test key is absent")}
 	}
 	return key, nil
 }
@@ -391,12 +394,12 @@ func mintRawToken(t *testing.T, key jose.SigningKey, header jose.Header, claims 
 	if err != nil {
 		t.Fatal(err)
 	}
-	signingInput := rawURL.EncodeToString(headerBytes) + "." + rawURL.EncodeToString(claimsBytes)
+	signingInput := base64.RawURLEncoding.EncodeToString(headerBytes) + "." + base64.RawURLEncoding.EncodeToString(claimsBytes)
 	signature, err := signTestMessage(key, []byte(signingInput))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return signingInput + "." + rawURL.EncodeToString(signature)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func strconvQuote(value string) string {
@@ -404,9 +407,9 @@ func strconvQuote(value string) string {
 	return string(encoded)
 }
 
-func requireSignatureErrorCode(t *testing.T, err error, code SignatureErrorCode) {
+func requireSignatureErrorCode(t *testing.T, err error, code signaturekey.ErrorCode) {
 	t.Helper()
-	var signatureError *SignatureError
+	var signatureError *signaturekey.Error
 	if !errors.As(err, &signatureError) || signatureError.Code != code {
 		t.Fatalf("error = %v (%#v), want %q", err, signatureError, code)
 	}

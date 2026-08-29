@@ -5,13 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -24,7 +26,7 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 	apKey := eventsProviderTestSigningKey(t, "ap-events-key")
 	agentKey := eventsProviderTestSigningKey(t, "agent-events-key")
 	otherAgentKey := eventsProviderTestSigningKey(t, "other-agent-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 	}
 
@@ -79,7 +81,7 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 				compact = mint(t, test.claims, apKey)
 			}
 			request := httptest.NewRequest(http.MethodPost, "https://resource.example/events/subscriptions", nil)
-			if err := aauth.SignRequest(request, test.requestKey, compact, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, test.requestKey, compact, clock); err != nil {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
@@ -105,7 +107,7 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := aauth.SignRequest(request, agentKey, wrongType, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, wrongType, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -119,7 +121,7 @@ func TestPublicEventRegistrationRequiresExactSubscribeTokenAndAgentProof(t *test
 		strings.NewReader(`{"unexpected":"body"}`),
 	)
 	bodyRequest.Header.Set("Content-Type", "application/json")
-	if err := aauth.SignRequest(bodyRequest, agentKey, mint(t, validClaims, apKey), clock); err != nil {
+	if err := signaturekey.SignJWTRequest(bodyRequest, agentKey, mint(t, validClaims, apKey), clock); err != nil {
 		t.Fatal(err)
 	}
 	bodyResponse := httptest.NewRecorder()
@@ -274,7 +276,7 @@ func TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody(t *te
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	apKey, apPrivate := rawEventsTestSigningKey(t, "ap-events-key")
 	agentKey := eventsProviderTestSigningKey(t, "agent-events-key")
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 	}
 	maxUses := 1
@@ -313,7 +315,7 @@ func TestPublicEventRegistrationRejectsRawSubscribeMutationsWithoutCustody(t *te
 			}
 			compact := mintRawEventsTestToken(t, apPrivate, test.header, test.claims)
 			request := httptest.NewRequest(http.MethodPost, "https://resource.example/events/subscriptions", nil)
-			if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+			if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
@@ -343,7 +345,7 @@ func TestPublicEventRegistrationCustodySurvivesReconstruction(t *testing.T) {
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	apKey := eventsProviderTestSigningKey(t, "ap-events-key")
 	agentKey := eventsProviderTestSigningKey(t, "agent-events-key")
-	resolver := aauth.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}}
+	resolver := signaturekey.StaticKeyResolver{"https://ap.example": {apKey.ID(): apKey.PublicJWK()}}
 	claims := aauth.SubscribeTokenClaims{
 		Issuer:       "https://ap.example",
 		DWK:          aauth.AgentDiscoveryDocument,
@@ -387,7 +389,7 @@ func TestPublicEventRegistrationCustodySurvivesReconstruction(t *testing.T) {
 
 	now = now.Add(6 * time.Minute)
 	request := httptest.NewRequest(http.MethodPost, claims.Audience+"/events/subscriptions", nil)
-	if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
@@ -408,7 +410,7 @@ func TestPublicEventRegistrationCustodySurvivesReconstruction(t *testing.T) {
 		t.Fatal(err)
 	}
 	freshRequest := httptest.NewRequest(http.MethodPost, claims.Audience+"/events/subscriptions", nil)
-	if err := aauth.SignRequest(freshRequest, agentKey, freshCompact, clock); err != nil {
+	if err := signaturekey.SignJWTRequest(freshRequest, agentKey, freshCompact, clock); err != nil {
 		t.Fatal(err)
 	}
 	freshResponse := httptest.NewRecorder()
@@ -433,7 +435,7 @@ func TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer(t *testing.T) {
 		"https://ap-one.example": eventsProviderTestSigningKey(t, "ap-one-key"),
 		"https://ap-two.example": eventsProviderTestSigningKey(t, "ap-two-key"),
 	}
-	resolver := aauth.StaticKeyResolver{}
+	resolver := signaturekey.StaticKeyResolver{}
 	for issuer, key := range apKeys {
 		resolver[issuer] = map[string]jose.JWK{key.ID(): key.PublicJWK()}
 	}
@@ -457,7 +459,7 @@ func TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := httptest.NewRequest(http.MethodPost, claims.Audience+"/events/subscriptions", nil)
-		if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+		if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 			t.Fatal(err)
 		}
 		response := httptest.NewRecorder()
@@ -482,7 +484,7 @@ func TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := httptest.NewRequest(http.MethodPost, duplicate.Audience+"/events/subscriptions", nil)
-		if err := aauth.SignRequest(request, agentKey, compact, clock); err != nil {
+		if err := signaturekey.SignJWTRequest(request, agentKey, compact, clock); err != nil {
 			t.Fatal(err)
 		}
 		response := httptest.NewRecorder()
@@ -497,7 +499,7 @@ func TestPublicEventRegistrationsKeyOpaqueEventIDByAPIssuer(t *testing.T) {
 	}
 }
 
-func newRegistrationTestResource(t *testing.T, resolver aauth.KeyResolver, clock aauth.Clock, store ResourceEventStore, activeUntil time.Time) *Resource {
+func newRegistrationTestResource(t *testing.T, resolver signaturekey.KeyResolver, clock aauth.Clock, store ResourceEventStore, activeUntil time.Time) *Resource {
 	t.Helper()
 	resource, err := NewResource(ResourceConfig{
 		Identifier:               "https://resource.example",
@@ -529,7 +531,7 @@ func newRegistrationTestResource(t *testing.T, resolver aauth.KeyResolver, clock
 	return resource
 }
 
-func newRegistrationTestAgent(t *testing.T, resolver aauth.KeyResolver, clock aauth.Clock, key jose.SigningKey, store AgentEventStore, transport http.RoundTripper) *Agent {
+func newRegistrationTestAgent(t *testing.T, resolver signaturekey.KeyResolver, clock aauth.Clock, key jose.SigningKey, store AgentEventStore, transport http.RoundTripper) *Agent {
 	t.Helper()
 	agent, err := NewAgent(AgentConfig{
 		AuthorizationStore: testAuthorizationStateStore(t),

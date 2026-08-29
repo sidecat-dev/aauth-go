@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +15,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -49,7 +51,7 @@ func TestPersonServerGovernanceSurvivesRestart(t *testing.T) {
 	}
 
 	client := &http.Client{}
-	resolver, err := aauth.NewHTTPKeyResolver(aauth.HTTPKeyResolverConfig{
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: client,
 		Clock:  clock,
 		Admit: func(_ context.Context, endpoint string) error {
@@ -434,7 +436,7 @@ func TestPersonServerGovernanceSurvivesRestart(t *testing.T) {
 		len(history[1].Response) == 0 {
 		t.Fatalf("missionless permission history = %#v", history)
 	}
-	now = now.Add(2 * aauth.DefaultSignatureWindow)
+	now = now.Add(2 * signaturekey.DefaultSignatureWindow)
 	if _, err := agent.RequestPermission(
 		context.Background(),
 		"https://ps.example/permission",

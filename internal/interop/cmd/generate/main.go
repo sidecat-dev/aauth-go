@@ -5,11 +5,13 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
@@ -64,7 +66,7 @@ func generateJKTJWTRequest(output string) error {
 	}
 	now := time.Unix(2_000_000_100, 0)
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	delegation, err := aauth.MintJKTJWT(
+	delegation, err := signaturekey.MintJKTJWT(
 		durableKey,
 		ephemeralKey.PublicJWK(),
 		now,
@@ -81,7 +83,7 @@ func generateJKTJWTRequest(output string) error {
 	if err != nil {
 		return err
 	}
-	if err := aauth.SignRequestWithJKTJWT(
+	if err := signaturekey.SignJKTJWTRequest(
 		request,
 		ephemeralKey,
 		delegation,

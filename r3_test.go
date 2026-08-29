@@ -2,11 +2,14 @@ package aauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestR3StandardVocabularyOperationShapes(t *testing.T) {
@@ -199,47 +202,47 @@ func TestVerifyTokensRejectRawUnsupportedExtensionMembersBeforeClaimsDecode(t *t
 		verify    func(string) error
 	}{
 		{"resource r3_uri", ResourceTokenType, resourceBase, "r3_uri", `"https://resource.example/r3/document"`, func(compact string) error {
-			_, err := VerifyResourceToken(context.Background(), compact, StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyResourceToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"resource r3_s256", ResourceTokenType, resourceBase, "r3_s256", `"digest"`, func(compact string) error {
-			_, err := VerifyResourceToken(context.Background(), compact, StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyResourceToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"resource budget", ResourceTokenType, resourceBase, "budget", `{"amount":100,"unit":"USD","decimals":2}`, func(compact string) error {
-			_, err := VerifyResourceToken(context.Background(), compact, StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyResourceToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"resource budget_consumed", ResourceTokenType, resourceBase, "budget_consumed", `[{"jti":"auth-1","consumed":10}]`, func(compact string) error {
-			_, err := VerifyResourceToken(context.Background(), compact, StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyResourceToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"auth r3_uri", AuthTokenType, authBase, "r3_uri", `"https://resource.example/r3/document"`, func(compact string) error {
-			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyAuthToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"auth r3_s256", AuthTokenType, authBase, "r3_s256", `"digest"`, func(compact string) error {
-			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyAuthToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"auth r3_granted", AuthTokenType, authBase, "r3_granted", `{}`, func(compact string) error {
-			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyAuthToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"auth r3_per_call", AuthTokenType, authBase, "r3_per_call", `{}`, func(compact string) error {
-			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyAuthToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"auth r3_conditional", AuthTokenType, authBase, "r3_conditional", `{}`, func(compact string) error {
-			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyAuthToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"auth budget", AuthTokenType, authBase, "budget", `{"amount":100,"unit":"USD","decimals":2}`, func(compact string) error {
-			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyAuthToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 		{"auth budget_consumed", AuthTokenType, authBase, "budget_consumed", `[{"jti":"auth-1","consumed":10}]`, func(compact string) error {
-			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			_, err := VerifyAuthToken(context.Background(), compact, signaturekey.StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
 	} {
@@ -261,10 +264,10 @@ func signRawTestToken(t *testing.T, key jose.SigningKey, tokenType string, claim
 	if err != nil {
 		t.Fatal(err)
 	}
-	signingInput := rawURL.EncodeToString(header) + "." + rawURL.EncodeToString(claims)
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
 	signature, err := signTestMessage(key, []byte(signingInput))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return signingInput + "." + rawURL.EncodeToString(signature)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }

@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"math/big"
 	"net"
 	"net/http"
@@ -23,6 +22,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/reference"
@@ -77,7 +79,7 @@ func TestPersonProcessServesDurableGovernanceOverTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := aauth.StaticKeyResolver{
+	resolver := signaturekey.StaticKeyResolver{
 		"https://ap.example": {apKey.ID(): apKey.PublicJWK()},
 	}
 
@@ -378,7 +380,7 @@ func processTestAgent(
 	roots *x509.CertPool,
 	key jose.SigningKey,
 	token string,
-	resolver aauth.KeyResolver,
+	resolver signaturekey.KeyResolver,
 ) *reference.Agent {
 	t.Helper()
 	transport := &http.Transport{
