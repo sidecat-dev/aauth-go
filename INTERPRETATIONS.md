@@ -148,8 +148,8 @@ retrieval contract.
 
 **Current-product effect:** One immediate four-party direct path is callable and
 partially claimed. Per-call proposal custody, deferred R3, three-party R3,
-caching, and audit-atomic issuance remain explicit gaps; direct-document proof
-does not imply those paths.
+caching, and broader R3 topologies remain explicit gaps; direct-document and
+direct audit proof do not imply those paths.
 
 ## AAG-I005 — Person-token policy denial is an explicit extension
 

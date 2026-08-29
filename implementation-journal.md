@@ -78,9 +78,12 @@ for this library.
 - The AS can issue only a direct grant drawn from the verified document. The
   agent rejects grants outside its request, and the resource refuses an
   ungranted operation before replay consumption or host consequence.
-- Deferred interaction, a same-process PS/AS topology, R3 caching, per-call
-  proposals and retained results, and atomic AS audit retention remain
-  unclaimed.
+- Direct AS issuance commits the required audit fields and exact auth-token
+  response in one private record before release. Exact retry after a lost
+  response and AS reconstruction returns the same token without rerunning
+  trust or grant policy; a conflicting record refuses.
+- Deferred interaction, a same-process PS/AS topology, R3 caching, and per-call
+  proposals and retained results remain unclaimed.
 
 ## 2026-08-28
 

@@ -105,6 +105,13 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(response).Encode(value)
 }
 
+func writeExactJSON(response http.ResponseWriter, status int, exact []byte) {
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(status)
+	_, _ = response.Write(exact)
+}
+
 func writeProblem(response http.ResponseWriter, status int, code string, err error) {
 	writeProblemBody(response, status, problemBody(status, code, err, nil))
 }

@@ -8,11 +8,11 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 35 |
+| Exercised | 36 |
 | Partial | 40 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 519 |
+| Unclaimed | 518 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -22,7 +22,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 17 | 3 | 0 | 211 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
-| `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 1 | 12 | 0 | 0 | 43 |
+| `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 12 | 0 | 0 | 42 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` | 1 | 2 | 2 | 0 | 38 |
 | `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 0 | 0 | 0 | 0 | 91 |
@@ -582,7 +582,7 @@ Evidence:
 
 ### `r3/r3-processing` — Partial
 
-In one immediate four-party profile, the PS and AS independently fetch the exact document with signed server identities and verify its hash before review or grant policy. Caching, deferred authorization, three-party deployment, and audit-atomic issuance remain unclaimed.
+In one immediate four-party profile, the PS and AS independently fetch the exact document with signed server identities and verify its hash before review or grant policy. Direct AS audit and response retention are atomic; caching, deferred authorization, and three-party deployment remain unclaimed.
 
 Evidence:
 
@@ -590,7 +590,7 @@ Evidence:
 
 ### `r3/r3-processing/as-processing` — Partial
 
-The AS verifies the resource token, signed document retrieval, exact document hash, deployment grant policy, and grant membership before issuing an auth token with r3_granted. Atomic R3 audit-log retention is not implemented and remains a blocker to a complete AS-processing claim.
+The AS verifies the resource token, signed document retrieval, exact document hash, deployment grant policy, and grant membership before atomically retaining the required audit fields with the exact r3_granted token response. Exact retry after a lost response and AS reconstruction returns the same record without rerunning trust or grant policy. Caching and deferred R3 remain unclaimed.
 
 Evidence:
 
@@ -599,6 +599,14 @@ Evidence:
 ### `r3/resource-enforcement` — Partial
 
 A configured direct-R3 resource maps each protected request to exactly one operation, requires it in r3_granted, and refuses ungranted or per-call operations before proof consumption or host consequence. Per-call proposal and retained-result enforcement remain unclaimed.
+
+Evidence:
+
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+
+### `r3/security-considerations/audit-log-integrity` — Exercised
+
+For the direct profile, the AS atomically commits the exact auth-token response with r3_uri, r3_s256, PS, subject, agent key thumbprint, agent identity, resource and token identifiers, and issuance instant before release. Exact replay after a lost response and server reconstruction returns that record without policy re-execution; a conflicting record refuses.
 
 Evidence:
 

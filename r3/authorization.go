@@ -152,6 +152,14 @@ func (grant DirectGrant) Granted() (OperationSet, error) {
 	return grant.granted.Clone(), nil
 }
 
+// Reference returns the exact document evidence on which the grant was based.
+func (grant DirectGrant) Reference() (DocumentReference, error) {
+	if !grant.Valid() {
+		return DocumentReference{}, errors.New("aauth: R3 direct grant is invalid")
+	}
+	return grant.reference, nil
+}
+
 // MintResourceToken validates the Core claims and binds the exact R3 document
 // reference into the resulting resource token.
 func MintResourceToken(key jose.SigningKey, claims aauth.ResourceTokenClaims, reference DocumentReference) (string, error) {

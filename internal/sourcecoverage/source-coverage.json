@@ -789,7 +789,7 @@
       "source": "r3",
       "section": "r3-processing",
       "status": "partial",
-      "claim": "In one immediate four-party profile, the PS and AS independently fetch the exact document with signed server identities and verify its hash before review or grant policy. Caching, deferred authorization, three-party deployment, and audit-atomic issuance remain unclaimed.",
+      "claim": "In one immediate four-party profile, the PS and AS independently fetch the exact document with signed server identities and verify its hash before review or grant policy. Direct AS audit and response retention are atomic; caching, deferred authorization, and three-party deployment remain unclaimed.",
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
@@ -801,7 +801,7 @@
       "source": "r3",
       "section": "r3-processing/as-processing",
       "status": "partial",
-      "claim": "The AS verifies the resource token, signed document retrieval, exact document hash, deployment grant policy, and grant membership before issuing an auth token with r3_granted. Atomic R3 audit-log retention is not implemented and remains a blocker to a complete AS-processing claim.",
+      "claim": "The AS verifies the resource token, signed document retrieval, exact document hash, deployment grant policy, and grant membership before atomically retaining the required audit fields with the exact r3_granted token response. Exact retry after a lost response and AS reconstruction returns the same record without rerunning trust or grant policy. Caching and deferred R3 remain unclaimed.",
       "evidence": [
         {
           "file": "r3_direct_journey_test.go",
@@ -866,6 +866,18 @@
         {
           "file": "r3/token_external_test.go",
           "test": "TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest"
+        }
+      ]
+    },
+    {
+      "source": "r3",
+      "section": "security-considerations/audit-log-integrity",
+      "status": "exercised",
+      "claim": "For the direct profile, the AS atomically commits the exact auth-token response with r3_uri, r3_s256, PS, subject, agent key thumbprint, agent identity, resource and token identifiers, and issuance instant before release. Exact replay after a lost response and server reconstruction returns that record without policy re-execution; a conflicting record refuses.",
+      "evidence": [
+        {
+          "file": "r3_direct_journey_test.go",
+          "test": "TestCurrentDirectR3JourneySurvivesResourceReconstruction"
         }
       ]
     },

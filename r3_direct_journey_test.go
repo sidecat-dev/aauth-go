@@ -2,9 +2,12 @@ package aauth_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,36 +125,56 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 	}
 
 	accessPolicies := 0
-	accessServer, err := reference.NewAccessServer(reference.AccessServerConfig{
-		Identifier: "https://as.example", SigningKey: accessKey, KeyResolver: resolver,
-		Clock: clock, NewID: sequentialIDs("auth-token"),
-		AuthorizationStore: testAuthorizationStateStore(t),
-		TrustedPersonServer: func(_ context.Context, identifier string) error {
-			if identifier != "https://ps.example" {
-				return errors.New("untrusted person server")
-			}
-			return nil
-		},
-		AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
-			return aauth.AuthorizationDecision{Subject: request.Subject, Scope: request.Scope}, nil
-		},
-		R3HTTPClient: protocolClient,
-		R3Admit:      admitR3,
-		R3GrantPolicy: func(_ context.Context, _ aauth.AuthorizationRequest, document r3.DocumentReference) (r3.OperationSet, error) {
-			accessPolicies++
-			parsed, err := document.Document()
-			if err != nil {
-				return r3.OperationSet{}, err
-			}
-			return r3.OperationSet{
-				Vocabulary: parsed.Vocabulary,
-				Operations: []json.RawMessage{json.RawMessage(`{"tool":"list_records"}`)},
-			}, nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	accessTrustCalls := 0
+	denyFreshAccessTrust := false
+	authIDCalls := 0
+	issuancePath := filepath.Join(t.TempDir(), "r3-issuance.json")
+	newAccessServer := func() *reference.AccessServer {
+		issuanceStore, storeErr := reference.NewFileR3IssuanceStore(issuancePath)
+		if storeErr != nil {
+			t.Fatal(storeErr)
+		}
+		server, serverErr := reference.NewAccessServer(reference.AccessServerConfig{
+			Identifier: "https://as.example", SigningKey: accessKey, KeyResolver: resolver,
+			Clock: clock, NewID: func() string {
+				authIDCalls++
+				return fmt.Sprintf("auth-token-%d", authIDCalls)
+			},
+			AuthorizationStore: testAuthorizationStateStore(t),
+			TrustedPersonServer: func(_ context.Context, identifier string) error {
+				accessTrustCalls++
+				if identifier != "https://ps.example" {
+					return errors.New("untrusted person server")
+				}
+				if denyFreshAccessTrust {
+					return errors.New("fresh trust disabled")
+				}
+				return nil
+			},
+			AuthorizationPolicy: func(_ context.Context, request aauth.AuthorizationRequest) (aauth.AuthorizationDecision, error) {
+				return aauth.AuthorizationDecision{Subject: request.Subject, Scope: request.Scope}, nil
+			},
+			R3HTTPClient:    protocolClient,
+			R3Admit:         admitR3,
+			R3IssuanceStore: issuanceStore,
+			R3GrantPolicy: func(_ context.Context, _ aauth.AuthorizationRequest, document r3.DocumentReference) (r3.OperationSet, error) {
+				accessPolicies++
+				parsed, err := document.Document()
+				if err != nil {
+					return r3.OperationSet{}, err
+				}
+				return r3.OperationSet{
+					Vocabulary: parsed.Vocabulary,
+					Operations: []json.RawMessage{json.RawMessage(`{"tool":"list_records"}`)},
+				}, nil
+			},
+		})
+		if serverErr != nil {
+			t.Fatal(serverErr)
+		}
+		return server
 	}
+	accessServer := newAccessServer()
 
 	documentDirectory := filepath.Join(t.TempDir(), "r3-documents")
 	if err := os.Mkdir(documentDirectory, 0o700); err != nil {
@@ -211,12 +234,16 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 	resource := newResource()
 
 	resourceHandler := resource.Handler()
+	accessHandler := accessServer.Handler()
 	mutateDocument := false
+	dropAccessResponse := false
 	r3Fetches := 0
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"ap.example": ap.Handler(),
 		"ps.example": personServer.Handler(),
-		"as.example": accessServer.Handler(),
+		"as.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			accessHandler.ServeHTTP(response, request)
+		}),
 		"other.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			switch request.URL.Path {
 			case "/.well-known/aauth-access.json":
@@ -245,7 +272,9 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 		}),
 	})
 	defer gateway.Close()
-	protocolClient.Transport = gateway.Client().Transport
+	protocolClient.Transport = &r3LostResponseTransport{
+		base: gateway.Client().Transport, drop: &dropAccessResponse,
+	}
 
 	agent, err := reference.NewAgent(reference.AgentConfig{
 		Identifier: "aauth:planner@ap.example", SigningKey: agentKey, AgentToken: agentToken,
@@ -309,12 +338,59 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 	_, err = agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", resourceGrant)
 	assertProblemCode(t, err, http.StatusForbidden, "r3_review_denied")
 	denyReview = false
+	dropAccessResponse = true
+	_, err = agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", resourceGrant)
+	assertProblemCode(t, err, http.StatusBadGateway, "federation_failed")
+	requestBody, err := json.Marshal(map[string]string{
+		"resource_token": resourceGrant.ResourceToken,
+		"agent_token":    agentToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyDigest := sha256.Sum256(requestBody)
+	bodySHA256 := base64.RawURLEncoding.EncodeToString(bodyDigest[:])
+	identity := sha256.Sum256([]byte("gitlab.com/sidecat-dev/aauth-go/r3-issuance-request/v1\x00https://ps.example\x00" + bodySHA256))
+	requestKey := base64.RawURLEncoding.EncodeToString(identity[:])
+	issuanceStore, err := reference.NewFileR3IssuanceStore(issuancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := issuanceStore.Load(context.Background(), requestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := issuanceStore.Commit(context.Background(), retained); err != nil {
+		t.Fatalf("exact issuance replay = %v", err)
+	}
+	var retainedResponse struct {
+		AuthToken string `json:"auth_token"`
+		ExpiresIn int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(retained.ResponseBody, &retainedResponse); err != nil {
+		t.Fatal(err)
+	}
+	conflict := retained
+	conflict.ResponseBody = []byte(fmt.Sprintf(`{"expires_in":%d,"auth_token":%q}`, retainedResponse.ExpiresIn, retainedResponse.AuthToken))
+	if err := issuanceStore.Commit(context.Background(), conflict); !errors.Is(err, reference.ErrR3IssuanceConflict) {
+		t.Fatalf("conflicting issuance replay = %v", err)
+	}
+	accessServer = newAccessServer()
+	accessHandler = accessServer.Handler()
+	trustCallsBeforeRecovery := accessTrustCalls
+	denyFreshAccessTrust = true
 	grant, err := agent.ExchangeResourceToken(context.Background(), "https://ps.example/token", resourceGrant)
 	if err != nil || grant.R3 == nil || !grant.R3.Valid() {
 		t.Fatalf("direct R3 grant = %#v, %v", grant.R3, err)
 	}
-	if personReviews != 2 || accessPolicies != 1 || r3Fetches != 5 {
-		t.Fatalf("review/policy/fetch counts = %d/%d/%d", personReviews, accessPolicies, r3Fetches)
+	if grant.AuthToken != retained.AuthToken {
+		t.Fatal("R3 retry after AS reconstruction returned a different auth token")
+	}
+	if accessTrustCalls != trustCallsBeforeRecovery {
+		t.Fatal("R3 recovery reran access-server trust policy")
+	}
+	if personReviews != 3 || accessPolicies != 1 || r3Fetches != 6 || authIDCalls != 1 {
+		t.Fatalf("review/policy/fetch/id counts = %d/%d/%d/%d", personReviews, accessPolicies, r3Fetches, authIDCalls)
 	}
 
 	response, err := agent.DoAuthorized(context.Background(), http.MethodGet, "https://resource.example/records", grant)
@@ -337,4 +413,21 @@ func TestCurrentDirectR3JourneySurvivesResourceReconstruction(t *testing.T) {
 	if err != nil || problem.Code != "r3_operation_not_granted" {
 		t.Fatalf("ungranted problem = %#v, %v", problem, err)
 	}
+}
+
+type r3LostResponseTransport struct {
+	base http.RoundTripper
+	drop *bool
+}
+
+func (transport *r3LostResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := transport.base.RoundTrip(request)
+	if err != nil || transport.drop == nil || !*transport.drop ||
+		request.URL.Host != "as.example" || request.URL.Path != "/token" {
+		return response, err
+	}
+	*transport.drop = false
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	return nil, io.ErrUnexpectedEOF
 }

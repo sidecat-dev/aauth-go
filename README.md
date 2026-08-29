@@ -173,8 +173,11 @@ reconstruction, changed bytes, review denial, and an ungranted operation are
 exercised end to end.
 
 This is not complete R3 conformance. Deferred authorization, three-party R3,
-document caching, per-call proposals and retained results, and atomic AS audit
-retention remain open. Budgets remains entirely unclaimed. Core verification
+document caching, and per-call proposals and retained results remain open.
+Direct AS issuance retains the required audit fields and exact token response
+atomically before release; exact retry after a lost response or AS
+reconstruction returns that record without rerunning policy. Budgets remains
+entirely unclaimed. Core verification
 retains structurally complete companion members only as exact evidence; an
 endpoint must return matching invalid-zero companion evidence or reject those
 members. Existing non-companion endpoints reject them, and the removed

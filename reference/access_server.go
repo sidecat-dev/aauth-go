@@ -42,6 +42,7 @@ type AccessServerConfig struct {
 	R3Admit               func(context.Context, string) error
 	R3GrantPolicy         R3GrantPolicy
 	R3FetchTimeout        time.Duration
+	R3IssuanceStore       R3IssuanceStore
 }
 
 type AccessServer struct {
@@ -61,6 +62,7 @@ type AccessServer struct {
 	r3Admit               func(context.Context, string) error
 	r3GrantPolicy         R3GrantPolicy
 	r3FetchTimeout        time.Duration
+	r3IssuanceStore       R3IssuanceStore
 	replayMu              sync.Mutex
 	replayedProof         map[string]time.Time
 	randomMu              sync.Mutex
@@ -89,6 +91,8 @@ type accessServerAuthorizationContext struct {
 	pollingKey            jose.JWK
 	pollingKeyThumbprint  string
 	r3Grant               *r3.DirectGrant
+	r3RequestKey          string
+	r3RequestBodySHA256   string
 }
 
 type pendingAccessServerAuthorization struct {
@@ -163,8 +167,11 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 	if config.R3GrantPolicy != nil {
 		r3Parts++
 	}
-	if r3Parts != 0 && r3Parts != 3 {
-		return nil, errors.New("reference: access-server R3 requires HTTP client, egress admission, and grant policy")
+	if config.R3IssuanceStore != nil {
+		r3Parts++
+	}
+	if r3Parts != 0 && r3Parts != 4 {
+		return nil, errors.New("reference: access-server R3 requires HTTP client, egress admission, grant policy, and atomic issuance custody")
 	}
 	if config.R3FetchTimeout < 0 {
 		return nil, errors.New("reference: access-server R3 fetch timeout is invalid")
@@ -197,6 +204,7 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		r3Admit:               config.R3Admit,
 		r3GrantPolicy:         config.R3GrantPolicy,
 		r3FetchTimeout:        config.R3FetchTimeout,
+		r3IssuanceStore:       config.R3IssuanceStore,
 		replayedProof:         make(map[string]time.Time),
 		pending:               make(map[string]*pendingAccessServerAuthorization),
 	}
@@ -673,13 +681,30 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return verified.VerifiedAt })
-	if err := server.trustedPersonServer(request.Context(), verified.Signer); err != nil {
-		writeHostPolicyRefusal(response, "untrusted_person_server", "person server is not trusted")
-		return
-	}
 	requestBody, err := readBoundedRequestBody(request)
 	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	r3RequestKey, r3RequestBodySHA256 := r3IssuanceRequestKey(verified.Signer, requestBody)
+	if server.r3IssuanceStore != nil {
+		record, loadErr := server.r3IssuanceStore.Load(request.Context(), r3RequestKey)
+		switch {
+		case loadErr == nil:
+			if record.Signer != verified.Signer || record.RequestBodySHA256 != r3RequestBodySHA256 {
+				writeProblem(response, http.StatusConflict, "r3_issuance_conflict", ErrR3IssuanceConflict)
+				return
+			}
+			writeExactJSON(response, http.StatusOK, record.ResponseBody)
+			return
+		case errors.Is(loadErr, ErrR3IssuanceNotFound):
+		case loadErr != nil:
+			writeProblem(response, http.StatusServiceUnavailable, "r3_issuance_unavailable", loadErr)
+			return
+		}
+	}
+	if err := server.trustedPersonServer(request.Context(), verified.Signer); err != nil {
+		writeHostPolicyRefusal(response, "untrusted_person_server", "person server is not trusted")
 		return
 	}
 	var input accessAuthorizationTokenInput
@@ -895,6 +920,8 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		pollingServer:        verified.Signer,
 		pollingKey:           verified.PublicKey,
 		pollingKeyThumbprint: pollingKeyThumbprint,
+		r3RequestKey:         r3RequestKey,
+		r3RequestBodySHA256:  r3RequestBodySHA256,
 	}
 	authorizationContext.request.PersonServer = resourceToken.PersonServer
 	authorizationContext.request.Subject = resourceToken.Subject
@@ -977,9 +1004,61 @@ func (server *AccessServer) completeAuthorization(
 	authorizationContext accessServerAuthorizationContext,
 	decision aauth.AuthorizationDecision,
 ) {
-	authToken, expiresAt, err := server.mintAuthorization(ctx, authorizationContext, decision, "")
+	tokenID := ""
+	if authorizationContext.r3Grant != nil {
+		tokenID = server.newID()
+	}
+	authToken, expiresAt, err := server.mintAuthorization(ctx, authorizationContext, decision, tokenID)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if authorizationContext.r3Grant != nil {
+		parsed, parseErr := jose.ParseCompact(authToken)
+		var claims aauth.AuthTokenClaims
+		if parseErr != nil || json.Unmarshal(parsed.Payload(), &claims) != nil {
+			writeProblem(response, http.StatusInternalServerError, "r3_issuance_failed", errors.New("issued R3 auth token cannot be audited"))
+			return
+		}
+		reference, referenceErr := authorizationContext.r3Grant.Reference()
+		if referenceErr != nil {
+			writeProblem(response, http.StatusInternalServerError, "r3_issuance_failed", referenceErr)
+			return
+		}
+		responseBody, encodeErr := json.Marshal(struct {
+			AuthToken string `json:"auth_token"`
+			ExpiresIn int64  `json:"expires_in"`
+		}{AuthToken: authToken, ExpiresIn: expiresAt - claims.IssuedAt})
+		if encodeErr != nil {
+			writeProblem(response, http.StatusInternalServerError, "r3_issuance_failed", encodeErr)
+			return
+		}
+		record := R3IssuanceRecord{
+			RequestKey: authorizationContext.r3RequestKey, RequestBodySHA256: authorizationContext.r3RequestBodySHA256,
+			Signer: authorizationContext.pollingServer, AuthToken: authToken, ResponseBody: responseBody,
+			Audit: r3.IssuanceAudit{
+				AccessServer: server.identifier, PersonServer: authorizationContext.resourceToken.PersonServer,
+				Subject: authorizationContext.resourceToken.Subject, Agent: authorizationContext.targetAgent,
+				ParentAgent: authorizationContext.parentAgent, AgentJKT: authorizationContext.resourceToken.AgentJKT,
+				Resource: authorizationContext.resourceToken.Issuer, ResourceTokenID: authorizationContext.resourceToken.JTI,
+				AuthTokenID: claims.JTI, URI: reference.URI(), Digest: reference.Digest(), IssuedAt: time.Unix(claims.IssuedAt, 0).UTC(),
+			},
+		}
+		if commitErr := server.r3IssuanceStore.Commit(ctx, record); commitErr != nil {
+			if errors.Is(commitErr, ErrR3IssuanceConflict) {
+				canonical, loadErr := server.r3IssuanceStore.Load(ctx, record.RequestKey)
+				if loadErr == nil && canonical.Signer == record.Signer &&
+					canonical.RequestBodySHA256 == record.RequestBodySHA256 {
+					writeExactJSON(response, http.StatusOK, canonical.ResponseBody)
+					return
+				}
+				writeProblem(response, http.StatusConflict, "r3_issuance_conflict", commitErr)
+			} else {
+				writeProblem(response, http.StatusServiceUnavailable, "r3_issuance_unavailable", commitErr)
+			}
+			return
+		}
+		writeExactJSON(response, http.StatusOK, responseBody)
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{

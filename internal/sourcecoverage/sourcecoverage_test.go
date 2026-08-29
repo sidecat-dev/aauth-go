@@ -182,6 +182,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"r3\x00r3-document-access-restriction":                                                  StatusPartial,
 		"r3\x00security-considerations/hash-verification":                                       StatusExercised,
 		"r3\x00security-considerations/grant-enforcement":                                       StatusPartial,
+		"r3\x00security-considerations/audit-log-integrity":                                     StatusExercised,
 	}
 	currentEvidence := map[string]bool{
 		"access_client_test.go":                  true,
