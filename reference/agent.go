@@ -2893,6 +2893,36 @@ func (agent *Agent) DoAuthorized(
 	}, grant)
 }
 
+// DoWithPersonToken signs and sends one exact call using a resource-directed
+// person token. The resource, not the person server, owns the authorization
+// decision for this access mode.
+func (agent *Agent) DoWithPersonToken(
+	ctx context.Context,
+	call AuthorizedCall,
+	personToken string,
+) (*http.Response, error) {
+	evidence, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := claimsWithoutAuthorization(evidence)
+	if err != nil {
+		return nil, err
+	}
+	resource, err := endpointIdentifier(call.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if err := aauth.ValidatePersonTokenContext(claims, resource, agent.signingKey.PublicJWK()); err != nil {
+		return nil, err
+	}
+	request, err := agent.newAuthorizedCallRequest(ctx, call, personToken)
+	if err != nil {
+		return nil, err
+	}
+	return agent.httpClient.Do(request)
+}
+
 // DoWithPersonTokenAuthorization starts one exact protected call with a
 // resource-directed person token, satisfies the resource's immediate auth-token
 // challenge through the selected person server, and retries the same call under

@@ -137,11 +137,15 @@
       "source": "core",
       "section": "person-token-usage",
       "status": "exercised",
-      "claim": "An agent presents aa-person+jwt through Signature-Key and signs the authorization request with the token's confirmation key.",
+      "claim": "An agent presents aa-person+jwt through Signature-Key and signs either an authorization request or one exact person-identity protected call with the token's confirmation key.",
       "evidence": [
         {
           "file": "current_person_token_journey_test.go",
           "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        },
+        {
+          "file": "person_token_access_journey_test.go",
+          "test": "TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken"
         }
       ]
     },
@@ -154,6 +158,22 @@
         {
           "file": "current_person_token_journey_test.go",
           "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        },
+        {
+          "file": "person_token_access_journey_test.go",
+          "test": "TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "overview-person-identity",
+      "status": "exercised",
+      "claim": "A person-token resource verifies one directed person token and exact request proof, maps the operation's required local policy scope, consumes replay, and runs one host consequence from ps, sub, mission, and tenant continuity without issuing a resource token or auth token.",
+      "evidence": [
+        {
+          "file": "person_token_access_journey_test.go",
+          "test": "TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken"
         }
       ]
     },

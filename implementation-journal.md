@@ -177,6 +177,22 @@ for this library.
   deferred PS or AS authorization, and automatic agent process-restart recovery
   remain unclaimed.
 
+### Person-token resource access
+
+- `reference.Resource` now composes the current `person-token` access mode as a
+  distinct path rather than treating identity as an incomplete auth-token flow.
+  It accepts only `aa-person+jwt`, verifies the issuer, resource audience,
+  confirmation key, lifetime, and exact signed request, then maps the protected
+  operation's required local policy scopes.
+- Replay admission precedes both local policy and consequence. The policy and
+  host receive the directed person-server namespace and subject plus mission,
+  tenant, proof, exact target, and body context. No resource token or auth token
+  is issued, and the resource owns the authorization decision.
+- One distinct-server journey exercises a query-bearing body call through the
+  public agent and resource APIs. Agent-token, auth-token, wrong-context,
+  replay, and authorization-member failures remain covered by the shared token
+  and request-verification controls before this branch can run.
+
 ## 2026-08-28
 
 ### Incomplete callable R3 authorization removed

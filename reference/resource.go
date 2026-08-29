@@ -294,6 +294,10 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		if config.ProtectedAuthorizationPolicy == nil {
 			return nil, errors.New("reference: auth-token resource requires a protected authorization policy")
 		}
+	case aauth.AccessModePersonToken:
+		if config.PersonServer != "" || config.AccessServer != "" || config.AuthorizationPolicy != nil || config.ProtectedAuthorizationPolicy == nil {
+			return nil, errors.New("reference: person-token resource requires only a protected identity policy")
+		}
 	case aauth.AccessModeSessionToken:
 		if config.AuthorizationPolicy == nil || config.PersonServer != "" || config.AccessServer != "" {
 			return nil, errors.New("reference: session-token resource requires local authorization policy")
@@ -2143,6 +2147,8 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		allowedCredentialTypes = []string{aauth.AgentTokenType}
 	} else if resource.accessMode == aauth.AccessModeAuthToken {
 		allowedCredentialTypes = []string{aauth.AuthTokenType, aauth.PersonTokenType}
+	} else if resource.accessMode == aauth.AccessModePersonToken {
+		allowedCredentialTypes = []string{aauth.PersonTokenType}
 	}
 	credentialKeyCapture, verificationResolver := newRetainedKeyCapture(resource.keyResolver)
 	var r3Result r3.TokenResult
@@ -2173,6 +2179,10 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 			return
 		}
 		resource.challengeProtectedWithPersonToken(response, request, exactBody, verified, personIssuerKey)
+		return
+	}
+	if resource.accessMode == aauth.AccessModePersonToken {
+		resource.servePersonTokenProtected(response, request, exactBody, verified)
 		return
 	}
 	if resource.accessMode == aauth.AccessModeSessionToken {

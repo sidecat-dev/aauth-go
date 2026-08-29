@@ -100,7 +100,8 @@ re-verifies the original person-token request proof, so rewriting a canonical
 snapshot cannot change the held invocation.
 
 This slice is deliberately bounded. `reference.Resource` implements explicit
-`auth-token` and `session-token` modes, not every registered access mode.
+`person-token`, `auth-token`, and `session-token` modes, not every registered
+access mode.
 Companion-bearing deferred calls, refreshed resource tokens during a pending
 call, deferred PS or AS authorization, resource-owned person identity matching,
 collocated PS/AS roles, and dynamic three-party PS
@@ -110,6 +111,13 @@ sub-agents, and upstream-auth-token call chaining through either a PS or AS. Exa
 mission recovery requires replay of the original signed request inside its
 signature window. See [AAG-I005 and AAG-I006](INTERPRETATIONS.md) for the
 person-token denial extension and cross-store recovery contract.
+
+In `person-token` mode, the agent signs the protected call directly with its
+resource-directed person token. The resource verifies the directed identity and
+exact request proof, maps the operation's required local policy scope, consumes
+replay, and gives its policy and host operation the separate person-server,
+subject, mission, and tenant context. No resource token or auth token is minted;
+the resource alone decides what that identity may do.
 
 `reference.Resource` requires an explicit current `access_mode`. Its
 `auth-token` mode accepts only current auth tokens carrying `ps` and `sub` and

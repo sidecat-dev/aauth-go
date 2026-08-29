@@ -8,11 +8,11 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 44 |
+| Exercised | 45 |
 | Partial | 57 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 493 |
+| Unclaimed | 492 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,7 +20,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 20 | 3 | 0 | 208 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 26 | 20 | 3 | 0 | 207 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
@@ -437,6 +437,14 @@ Evidence:
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
 - `current_mission_recovery_test.go:TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries`
 
+### `core/overview-person-identity` — Exercised
+
+A person-token resource verifies one directed person token and exact request proof, maps the operation's required local policy scope, consumes replay, and runs one host consequence from ps, sub, mission, and tenant continuity without issuing a resource token or auth token.
+
+Evidence:
+
+- `person_token_access_journey_test.go:TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken`
+
 ### `core/overview-resource-managed` — Exercised
 
 A protected request signed with the agent token enters the resource-managed authorization state machine. An immediate or deferred result returns an opaque proof-bound AAuth-Access credential, and the protected retry presents that credential with an agent-token proof before the operation runs.
@@ -467,11 +475,12 @@ Evidence:
 
 ### `core/person-token-usage` — Exercised
 
-An agent presents aa-person+jwt through Signature-Key and signs the authorization request with the token's confirmation key.
+An agent presents aa-person+jwt through Signature-Key and signs either an authorization request or one exact person-identity protected call with the token's confirmation key.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `person_token_access_journey_test.go:TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken`
 
 ### `core/person-token-verification` — Exercised
 
@@ -480,6 +489,7 @@ Verification covers type, discovery role, admitted issuer key, signature, time, 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `person_token_access_journey_test.go:TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken`
 
 ### `core/ps-token-endpoint/agent-token-request` — Partial
 
