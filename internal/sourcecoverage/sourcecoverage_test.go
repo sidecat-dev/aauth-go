@@ -210,6 +210,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"reference/r3_document_store_test.go":        true,
 		"reference/protected_challenge_test.go":      true,
 		"reference/deferred_protected_store_test.go": true,
+		"reference/resource_metadata_test.go":         true,
 		"signaturekey/request_external_test.go":      true,
 		"subagent_journey_test.go":                   true,
 	}

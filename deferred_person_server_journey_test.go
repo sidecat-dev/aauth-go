@@ -109,6 +109,12 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	metadataResolver, err := reference.NewHTTPResourceMetadataResolver(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirePersonInteraction := true
+	var interactionPresentation, policyPresentation aauth.ResourcePresentation
 	var personPolicyCalls, policyCalls int
 	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
 	personAuthorizationDirectory := t.TempDir() + "/person-authorization"
@@ -122,12 +128,15 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 		NewID:                ids,
 		PersonTokenStore:     personTokenStore,
 		MissionIssuanceStore: missionIssuanceStore,
-		PersonTokenPolicy: func(_ context.Context, _ aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
+		ResourceMetadata:     metadataResolver,
+		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
 			personPolicyCalls++
+			policyPresentation = request.ResourcePresentation
 			return aauth.PersonTokenDecision{Subject: "pairwise-user-for-resource", Lifetime: time.Hour}, nil
 		},
 		PersonTokenInteractionRequired: func(_ context.Context, request aauth.PersonTokenRequest) (bool, error) {
-			return request.Agent == "aauth:planner@ap.example", nil
+			interactionPresentation = request.ResourcePresentation
+			return requirePersonInteraction && request.Agent == "aauth:planner@ap.example", nil
 		},
 		CurrentMissionPolicy: func(_ context.Context, evaluation aauth.MissionEvaluation) (aauth.MissionDecision, error) {
 			return aauth.MissionDecision{Description: evaluation.Proposal.Description}, nil
@@ -194,6 +203,8 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	}
 
 	psHandler := ps.Handler()
+	resourceHandler := resource.Handler()
+	var resourceMetadataFetches atomic.Int32
 	gateway := newLogicalGateway(t, map[string]http.Handler{
 		"ap.example": ap.Handler(),
 		"ps.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -204,7 +215,21 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 			}
 			psHandler.ServeHTTP(response, request)
 		}),
-		"resource.example": resource.Handler(),
+		"resource.example": http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.Method == http.MethodGet && request.URL.Path == "/.well-known/aauth-resource.json" {
+				resourceMetadataFetches.Add(1)
+				writeTestJSON(t, response, map[string]any{
+					"issuer":                 "https://resource.example",
+					"jwks_uri":               "https://resource.example/jwks",
+					"authorization_endpoint": "https://resource.example/authorize",
+					"name":                   "Example Documents",
+					"description":            "**Example Documents** stores the person's files.",
+					"access_mode":            "auth-token",
+				})
+				return
+			}
+			resourceHandler.ServeHTTP(response, request)
+		}),
 	})
 	defer gateway.Close()
 	client.Transport = gateway.Client().Transport
@@ -263,6 +288,18 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	if personPolicyCalls != 0 {
 		t.Fatalf("person-token policy ran before trusted approval; calls = %d", personPolicyCalls)
 	}
+	wantPresentation := aauth.ResourcePresentation{
+		Issuer:      "https://resource.example",
+		Name:        "Example Documents",
+		Description: "**Example Documents** stores the person's files.",
+		AccessMode:  aauth.AccessModeAuthToken,
+	}
+	if interactionPresentation != wantPresentation {
+		t.Fatalf("person-token interaction resource presentation = %#v, want %#v", interactionPresentation, wantPresentation)
+	}
+	if resourceMetadataFetches.Load() != 1 {
+		t.Fatalf("resource metadata fetches after fresh request = %d, want 1", resourceMetadataFetches.Load())
+	}
 	otherPersonPending := *personPending
 	if _, err := other.PollPersonTokenAuthorization(context.Background(), &otherPersonPending); err == nil {
 		t.Fatal("another agent polled the person-token authorization")
@@ -315,6 +352,9 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	if personPolicyCalls != 1 {
 		t.Fatalf("person-token policy calls after approval = %d", personPolicyCalls)
 	}
+	if policyPresentation != wantPresentation {
+		t.Fatalf("person-token policy resource presentation = %#v, want %#v", policyPresentation, wantPresentation)
+	}
 	if err := personAuthorizationStore.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -359,6 +399,27 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 	if replayedPerson.Grant == nil || replayedPerson.Grant.PersonToken != person.PersonToken || personPolicyCalls != 1 {
 		t.Fatalf("replayed person-token authorization = %#v, policy calls %d", replayedPerson, personPolicyCalls)
 	}
+	if resourceMetadataFetches.Load() != 1 {
+		t.Fatalf("resource metadata fetches after restart and replay = %d, want 1", resourceMetadataFetches.Load())
+	}
+	requirePersonInteraction = false
+	policyPresentation = aauth.ResourcePresentation{}
+	immediatePerson, err := agent.RequestPersonTokenAuthorization(
+		context.Background(), "https://ps.example/person", "https://resource.example", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if immediatePerson.Grant == nil || immediatePerson.Pending != nil {
+		t.Fatalf("immediate person-token authorization = %#v", immediatePerson)
+	}
+	if policyPresentation != wantPresentation {
+		t.Fatalf("immediate person-token policy resource presentation = %#v, want %#v", policyPresentation, wantPresentation)
+	}
+	if resourceMetadataFetches.Load() != 2 || personPolicyCalls != 2 {
+		t.Fatalf("fresh immediate issuance fetched metadata %d times and called policy %d times, want 2 and 2", resourceMetadataFetches.Load(), personPolicyCalls)
+	}
+	requirePersonInteraction = true
 	resourceGrant, err := agent.RequestResourceTokenWithPersonToken(
 		context.Background(),
 		"https://resource.example/authorize",
@@ -715,7 +776,7 @@ func TestCurrentPersonServerDeferredAuthorizationJourney(t *testing.T) {
 			t.Fatalf("expired person-token polling error = %#v", err)
 		}
 	}
-	if personPolicyCalls != 1 {
+	if personPolicyCalls != 2 {
 		t.Fatalf("person-token policy ran for denied or expired interaction; calls = %d", personPolicyCalls)
 	}
 	if _, err := agent.RequestPersonToken(

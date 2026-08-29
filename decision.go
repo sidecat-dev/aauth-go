@@ -67,13 +67,25 @@ type ProtectedAuthorizationPolicy func(context.Context, AuthorizedRequest) error
 // PersonTokenRequest is the verified context a person server presents to its
 // deployment-owned person binding policy before issuing a directed token.
 type PersonTokenRequest struct {
-	Agent          string
-	ParentAgent    string
-	Resource       string
-	MissionS256    string
-	Confirmation   jose.JWK
-	AgentExpiresAt time.Time
-	Upstream       *AuthTokenClaims
+	Agent                string
+	ParentAgent          string
+	Resource             string
+	ResourcePresentation ResourcePresentation
+	MissionS256          string
+	Confirmation         jose.JWK
+	AgentExpiresAt       time.Time
+	Upstream             *AuthTokenClaims
+}
+
+// ResourcePresentation is the verified human-facing subset of one resource's
+// metadata that a person server supplies to person-token interaction and
+// policy. Description remains Markdown; a user interface sanitizes it before
+// rendering.
+type ResourcePresentation struct {
+	Issuer      string
+	Name        string
+	Description string
+	AccessMode  AccessMode
 }
 
 // PersonTokenDecision binds one agent key to one resource-directed person.

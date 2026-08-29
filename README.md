@@ -105,6 +105,13 @@ form. The signing parent or intermediary owns polling, while the terminal token
 is bound to the target agent key and retains the approved upstream and mission
 context.
 
+When a deployment configures the HTTP resource-metadata resolver, every fresh
+person-token request fetches the resource's well-known document before
+interaction or policy. The resolver verifies the exact issuer and supplies the
+resource's name, description, and access mode as a typed presentation. A
+deferred request retains that presentation across restart and replay, so a
+later approval cannot silently observe different resource text.
+
 A resource may instead select the current stateful `202 Accepted` form. It
 retains the exact invocation before releasing a same-origin pending URL. The
 agent obtains the auth token through the same exchange and completes with a

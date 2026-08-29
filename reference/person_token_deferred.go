@@ -23,6 +23,7 @@ type pendingPersonTokenAuthorization struct {
 	targetKey              jose.JWK
 	agentExpiresAt         int64
 	resource               string
+	resourcePresentation   aauth.ResourcePresentation
 	missionS256            string
 	missionExpiresAt       *time.Time
 	decision               aauth.PersonTokenDecision
@@ -32,21 +33,22 @@ type pendingPersonTokenAuthorization struct {
 }
 
 type pendingPersonTokenRecord struct {
-	Interaction            pendingInteractionRecord  `json:"interaction"`
-	Agent                  string                    `json:"agent"`
-	PollingAgent           string                    `json:"polling_agent"`
-	PollingAgentThumbprint string                    `json:"polling_agent_thumbprint"`
-	ParentAgent            string                    `json:"parent_agent,omitempty"`
-	Upstream               *aauth.AuthTokenClaims    `json:"upstream,omitempty"`
-	TargetKey              jose.JWK                  `json:"target_key"`
-	AgentExpiresAt         int64                     `json:"agent_expires_at"`
-	Resource               string                    `json:"resource"`
-	MissionS256            string                    `json:"mission_s256,omitempty"`
-	MissionExpiresAt       *time.Time                `json:"mission_expires_at,omitempty"`
-	Decision               aauth.PersonTokenDecision `json:"decision"`
-	TerminalCompact        string                    `json:"terminal_compact,omitempty"`
-	TerminalClaims         aauth.PersonTokenClaims   `json:"terminal_claims"`
-	TerminalRecord         PersonTokenRecord         `json:"terminal_record"`
+	Interaction            pendingInteractionRecord   `json:"interaction"`
+	Agent                  string                     `json:"agent"`
+	PollingAgent           string                     `json:"polling_agent"`
+	PollingAgentThumbprint string                     `json:"polling_agent_thumbprint"`
+	ParentAgent            string                     `json:"parent_agent,omitempty"`
+	Upstream               *aauth.AuthTokenClaims     `json:"upstream,omitempty"`
+	TargetKey              jose.JWK                   `json:"target_key"`
+	AgentExpiresAt         int64                      `json:"agent_expires_at"`
+	Resource               string                     `json:"resource"`
+	ResourcePresentation   aauth.ResourcePresentation `json:"resource_presentation"`
+	MissionS256            string                     `json:"mission_s256,omitempty"`
+	MissionExpiresAt       *time.Time                 `json:"mission_expires_at,omitempty"`
+	Decision               aauth.PersonTokenDecision  `json:"decision"`
+	TerminalCompact        string                     `json:"terminal_compact,omitempty"`
+	TerminalClaims         aauth.PersonTokenClaims    `json:"terminal_claims"`
+	TerminalRecord         PersonTokenRecord          `json:"terminal_record"`
 }
 
 func snapshotPendingPersonToken(value *pendingPersonTokenAuthorization) *pendingPersonTokenRecord {
@@ -57,8 +59,8 @@ func snapshotPendingPersonToken(value *pendingPersonTokenAuthorization) *pending
 		Interaction: snapshotPendingInteraction(value.pendingInteraction), Agent: value.agent,
 		PollingAgent: value.pollingAgent, PollingAgentThumbprint: value.pollingAgentThumbprint,
 		ParentAgent: value.parentAgent, Upstream: copyAuthorizationRequest(aauth.AuthorizationRequest{Upstream: value.upstream}).Upstream,
-		TargetKey:      value.targetKey,
-		AgentExpiresAt: value.agentExpiresAt, Resource: value.resource, MissionS256: value.missionS256,
+		TargetKey: value.targetKey, AgentExpiresAt: value.agentExpiresAt, Resource: value.resource,
+		ResourcePresentation: value.resourcePresentation, MissionS256: value.missionS256,
 		MissionExpiresAt: copyTimePointer(value.missionExpiresAt), Decision: value.decision,
 		TerminalCompact: value.terminalCompact, TerminalClaims: value.terminalClaims, TerminalRecord: value.terminalRecord,
 	}
@@ -70,7 +72,8 @@ func restorePendingPersonToken(value pendingPersonTokenRecord) (*pendingPersonTo
 		return nil, err
 	}
 	if value.Agent == "" || value.PollingAgent == "" || value.PollingAgentThumbprint == "" || value.AgentExpiresAt <= 0 ||
-		aauth.ValidateServerIdentifier(value.Resource) != nil {
+		aauth.ValidateServerIdentifier(value.Resource) != nil ||
+		!validResourcePresentation(value.ResourcePresentation, value.Resource) {
 		return nil, ErrAuthorizationStateIntegrity
 	}
 	if _, err := value.TargetKey.PublicKey(); err != nil {
@@ -103,7 +106,8 @@ func restorePendingPersonToken(value pendingPersonTokenRecord) (*pendingPersonTo
 		pollingAgentThumbprint: value.PollingAgentThumbprint, parentAgent: value.ParentAgent,
 		upstream:  copyAuthorizationRequest(aauth.AuthorizationRequest{Upstream: value.Upstream}).Upstream,
 		targetKey: value.TargetKey, agentExpiresAt: value.AgentExpiresAt, resource: value.Resource,
-		missionS256: value.MissionS256, missionExpiresAt: copyTimePointer(value.MissionExpiresAt), decision: value.Decision,
+		resourcePresentation: value.ResourcePresentation,
+		missionS256:          value.MissionS256, missionExpiresAt: copyTimePointer(value.MissionExpiresAt), decision: value.Decision,
 		terminalCompact: value.TerminalCompact, terminalClaims: value.TerminalClaims, terminalRecord: value.TerminalRecord,
 	}, nil
 }
@@ -140,7 +144,8 @@ func (server *PersonServer) beginPendingPersonToken(
 		pollingAgentThumbprint: thumbprint, parentAgent: request.ParentAgent,
 		upstream:  copyAuthorizationRequest(aauth.AuthorizationRequest{Upstream: request.Upstream}).Upstream,
 		targetKey: targetKey, agentExpiresAt: agentExpiresAt, resource: request.Resource,
-		missionS256: request.MissionS256, missionExpiresAt: copyTimePointer(missionExpiresAt),
+		resourcePresentation: request.ResourcePresentation,
+		missionS256:          request.MissionS256, missionExpiresAt: copyTimePointer(missionExpiresAt),
 	}
 	server.pendingMu.Lock()
 	defer server.pendingMu.Unlock()
@@ -177,7 +182,8 @@ func (server *PersonServer) ApprovePersonToken(ctx context.Context, pendingID st
 		return errors.New("reference: pending person-token authorization expired")
 	}
 	request := aauth.PersonTokenRequest{
-		Agent: pending.agent, ParentAgent: pending.parentAgent, Resource: pending.resource, MissionS256: pending.missionS256,
+		Agent: pending.agent, ParentAgent: pending.parentAgent, Resource: pending.resource,
+		ResourcePresentation: pending.resourcePresentation, MissionS256: pending.missionS256,
 		Confirmation: pending.targetKey, AgentExpiresAt: time.Unix(pending.agentExpiresAt, 0).UTC(),
 		Upstream: copyAuthorizationRequest(aauth.AuthorizationRequest{Upstream: pending.upstream}).Upstream,
 	}
@@ -205,6 +211,13 @@ func (server *PersonServer) ApprovePersonToken(ctx context.Context, pendingID st
 	pending.decision = decision
 	pending.state = pendingAuthorizationApproved
 	return server.persistAuthorizationStateLocked(ctx)
+}
+
+func validResourcePresentation(presentation aauth.ResourcePresentation, resource string) bool {
+	if presentation.Issuer == "" {
+		return presentation.Name == "" && presentation.Description == "" && presentation.AccessMode == ""
+	}
+	return presentation.Issuer == resource && aauth.ValidateServerIdentifier(presentation.Issuer) == nil
 }
 
 // RejectPersonToken records a trusted terminal denial or abandonment.

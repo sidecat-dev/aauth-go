@@ -39,6 +39,7 @@ type PersonServerConfig struct {
 	PersonTokenStore               PersonTokenStore
 	PersonTokenPolicy              aauth.PersonTokenPolicy
 	PersonTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
+	ResourceMetadata               ResourceMetadataResolver
 	MissionIssuanceStore           MissionIssuanceStore
 	CompletionReviewEnabled        bool
 	InteractionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
@@ -69,6 +70,7 @@ type PersonServer struct {
 	personTokenStore               PersonTokenStore
 	personTokenPolicy              aauth.PersonTokenPolicy
 	personTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
+	resourceMetadata               ResourceMetadataResolver
 	missionIssuanceStore           MissionIssuanceStore
 	completionReviewEnabled        bool
 	interactionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
@@ -415,6 +417,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		personTokenStore:               config.PersonTokenStore,
 		personTokenPolicy:              config.PersonTokenPolicy,
 		personTokenInteractionRequired: config.PersonTokenInteractionRequired,
+		resourceMetadata:               config.ResourceMetadata,
 		missionIssuanceStore:           config.MissionIssuanceStore,
 		completionReviewEnabled:        config.CompletionReviewEnabled,
 		interactionRequired:            config.InteractionRequired,
@@ -1248,6 +1251,7 @@ func (server *PersonServer) completeCurrentMission(
 			verified.PublicKey,
 			agentClaims.ExpiresAt,
 			resource,
+			aauth.ResourcePresentation{},
 			reference.S256,
 			expiresAt,
 			nil,
@@ -1537,9 +1541,18 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		writeSignatureFailure(response, errors.New("request proof was replayed"))
 		return
 	}
+	var resourcePresentation aauth.ResourcePresentation
+	if server.resourceMetadata != nil {
+		resourcePresentation, err = server.resourceMetadata.ResolveResourceMetadata(request.Context(), input.Resource)
+		if err != nil {
+			writeResourceMetadataFailure(response, err)
+			return
+		}
+	}
 	personRequest := aauth.PersonTokenRequest{
 		Agent: targetAgent, ParentAgent: parentAgent, Resource: input.Resource,
-		MissionS256: input.MissionS256, Confirmation: targetKey,
+		ResourcePresentation: resourcePresentation,
+		MissionS256:          input.MissionS256, Confirmation: targetKey,
 		AgentExpiresAt: time.Unix(targetExpiresAt, 0).UTC(), Upstream: upstream,
 	}
 	if server.personTokenInteractionRequired != nil {
@@ -1564,6 +1577,7 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		targetKey,
 		targetExpiresAt,
 		input.Resource,
+		resourcePresentation,
 		input.MissionS256,
 		missionExpiry,
 		upstream,
@@ -1604,7 +1618,10 @@ func (server *PersonServer) issuePersonToken(
 	missionS256 string,
 	missionExpiresAt *time.Time,
 ) (string, aauth.PersonTokenClaims, error) {
-	return server.issuePersonTokenForContext(ctx, agent, "", confirmation, agentExpiresAt, resource, missionS256, missionExpiresAt, nil)
+	return server.issuePersonTokenForContext(
+		ctx, agent, "", confirmation, agentExpiresAt, resource, aauth.ResourcePresentation{},
+		missionS256, missionExpiresAt, nil,
+	)
 }
 
 func (server *PersonServer) issuePersonTokenForContext(
@@ -1614,6 +1631,7 @@ func (server *PersonServer) issuePersonTokenForContext(
 	confirmation jose.JWK,
 	agentExpiresAt int64,
 	resource string,
+	resourcePresentation aauth.ResourcePresentation,
 	missionS256 string,
 	missionExpiresAt *time.Time,
 	upstream *aauth.AuthTokenClaims,
@@ -1625,6 +1643,7 @@ func (server *PersonServer) issuePersonTokenForContext(
 		confirmation,
 		agentExpiresAt,
 		resource,
+		resourcePresentation,
 		missionS256,
 		missionExpiresAt,
 		upstream,
@@ -1645,6 +1664,7 @@ func (server *PersonServer) preparePersonToken(
 	confirmation jose.JWK,
 	agentExpiresAt int64,
 	resource string,
+	resourcePresentation aauth.ResourcePresentation,
 	missionS256 string,
 	missionExpiresAt *time.Time,
 	upstream *aauth.AuthTokenClaims,
@@ -1656,13 +1676,14 @@ func (server *PersonServer) preparePersonToken(
 		policyUpstream = copyAuthorizationRequest(aauth.AuthorizationRequest{Upstream: upstream}).Upstream
 	}
 	decision, err := server.personTokenPolicy(ctx, aauth.PersonTokenRequest{
-		Agent:          agent,
-		ParentAgent:    parentAgent,
-		Resource:       resource,
-		MissionS256:    missionS256,
-		Confirmation:   confirmation,
-		AgentExpiresAt: time.Unix(agentExpiresAt, 0).UTC(),
-		Upstream:       policyUpstream,
+		Agent:                agent,
+		ParentAgent:          parentAgent,
+		Resource:             resource,
+		ResourcePresentation: resourcePresentation,
+		MissionS256:          missionS256,
+		Confirmation:         confirmation,
+		AgentExpiresAt:       time.Unix(agentExpiresAt, 0).UTC(),
+		Upstream:             policyUpstream,
 	})
 	if err != nil {
 		return prepared, claims, &personTokenPolicyDenialError{cause: err}

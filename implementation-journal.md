@@ -251,6 +251,13 @@ for this library.
   with one person-policy call; a target sub-agent cannot take over polling, and
   the issued token remains bound to the target key while retained upstream and
   parent context reaches policy unchanged.
+- A configured HTTP resource-metadata resolver now verifies the exact resource
+  issuer and supplies name, Markdown description, and access mode to both the
+  interaction decision and person-token policy. Deferred custody retains that
+  presentation across PS reconstruction; approval and terminal replay do not
+  refetch mutable resource text. Invalid documents return `invalid_request`,
+  while transport and HTTP availability failures return `server_error`
+  without exposing local diagnostics.
 
 ## 2026-08-28
 

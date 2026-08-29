@@ -456,7 +456,7 @@ Evidence:
 
 ### `core/person-token-endpoint` — Partial
 
-Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. Parent-mediated sub-agent, upstream-auth-token, and chained-sub-agent requests share one typed immediate-or-pending client path. Deferred issuance retains the exact interaction, polling caller and key, target key, resource, parent, upstream and mission context, decision, and precommitted terminal token across PS and agent reconstruction; signed polling returns the same token without rerunning policy or minting. The automatic path discovers issuer-matched metadata, caches missionless tokens until expiry, and reacquires lazily. First-use resource metadata presentation and distinct-resource rate-limit policy remain open.
+Direct issuance retains exact verification records across person-server restart. Mission-bundled issuance recovers one exact response across partial or uncertain journal, person-token, and mission commits. Parent-mediated sub-agent, upstream-auth-token, and chained-sub-agent requests share one typed immediate-or-pending client path. Deferred issuance retains the exact interaction, polling caller and key, target key, resource, parent, upstream and mission context, decision, and precommitted terminal token across PS and agent reconstruction; signed polling returns the same token without rerunning policy or minting. A configured HTTP resolver verifies bounded, unambiguous resource metadata and supplies exact name, description, and access mode to interaction and policy; deferred restart and replay retain that presentation without refetch. The automatic path discovers issuer-matched person-server metadata, caches missionless tokens until expiry, and reacquires lazily. Distinct-resource rate-limit policy remains open.
 
 Evidence:
 
@@ -467,6 +467,9 @@ Evidence:
 - `person_token_access_journey_test.go:TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer`
 - `deferred_person_server_journey_test.go:TestCurrentPersonServerDeferredAuthorizationJourney`
 - `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
+- `reference/resource_metadata_test.go:TestHTTPResourceMetadataResolverReturnsVerifiedPresentation`
+- `reference/resource_metadata_test.go:TestHTTPResourceMetadataResolverClassifiesRefusals`
+- `reference/resource_metadata_test.go:TestResourceMetadataFailuresUseTokenEndpointProblemCodes`
 
 ### `core/person-token-structure` — Exercised
 
