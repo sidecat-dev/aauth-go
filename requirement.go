@@ -35,6 +35,7 @@ type Requirement struct {
 	ResourceToken   string
 	InteractionURL  string
 	InteractionCode string
+	Reason          string
 }
 
 // FormatRequirementHeader serializes one AAuth-Requirement dictionary member.
@@ -46,6 +47,9 @@ func FormatRequirementHeader(requirement Requirement) (string, error) {
 	switch requirement.Type {
 	case RequirementAuthToken:
 		header += `; resource-token=` + quoteStructuredString(requirement.ResourceToken)
+		if requirement.Reason != "" {
+			header += `; reason=` + requirement.Reason
+		}
 	case RequirementInteraction:
 		header += `; url=` + quoteStructuredString(requirement.InteractionURL)
 		header += `; code=` + quoteStructuredString(requirement.InteractionCode)
@@ -75,6 +79,15 @@ func ParseRequirementHeader(header string) (Requirement, error) {
 	switch requirement.Type {
 	case RequirementAuthToken:
 		requirement.ResourceToken, err = requiredStringParameter(item.params, "resource-token")
+		if err == nil {
+			if reason, present := item.params["reason"]; present {
+				if reason.quoted || !isStructuredToken(reason.value) {
+					err = fmt.Errorf("%w: reason", ErrRequirementInvalid)
+				} else {
+					requirement.Reason = reason.value
+				}
+			}
+		}
 	case RequirementInteraction:
 		requirement.InteractionURL, err = requiredStringParameter(item.params, "url")
 		if err == nil {
@@ -99,6 +112,9 @@ func validateRequirement(requirement Requirement) error {
 		if requirement.ResourceToken == "" {
 			return fmt.Errorf("%w: resource-token", ErrRequirementInvalid)
 		}
+		if requirement.Reason != "" && !isStructuredToken(requirement.Reason) {
+			return fmt.Errorf("%w: reason", ErrRequirementInvalid)
+		}
 	case RequirementInteraction:
 		if err := validateInteractionURL(requirement.InteractionURL); err != nil {
 			return err
@@ -106,6 +122,9 @@ func validateRequirement(requirement Requirement) error {
 		if err := validateEmittedInteractionCode(requirement.InteractionCode); err != nil {
 			return err
 		}
+	}
+	if requirement.Type != RequirementAuthToken && requirement.Reason != "" {
+		return fmt.Errorf("%w: reason is only valid for auth-token", ErrRequirementInvalid)
 	}
 	return nil
 }

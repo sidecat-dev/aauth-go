@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -43,6 +44,7 @@ type AccessServerConfig struct {
 	R3AuthorizationPolicy R3AuthorizationPolicy
 	R3FetchTimeout        time.Duration
 	R3IssuanceStore       R3IssuanceStore
+	BudgetPolicy          BudgetPolicy
 }
 
 type AccessServer struct {
@@ -63,6 +65,7 @@ type AccessServer struct {
 	r3AuthorizationPolicy R3AuthorizationPolicy
 	r3FetchTimeout        time.Duration
 	r3IssuanceStore       R3IssuanceStore
+	budgetPolicy          BudgetPolicy
 	replayMu              sync.Mutex
 	replayedProof         map[string]time.Time
 	randomMu              sync.Mutex
@@ -93,6 +96,8 @@ type accessServerAuthorizationContext struct {
 	r3Grant               *r3.AuthorizationGrant
 	r3RequestKey          string
 	r3RequestBodySHA256   string
+	budgetToken           *budgets.TokenResult
+	budgetGrant           *budgets.Budget
 }
 
 type pendingAccessServerAuthorization struct {
@@ -142,10 +147,11 @@ type accessAuthorizationContextRecord struct {
 }
 
 type accessAuthorizationTokenInput struct {
-	ResourceToken string `json:"resource_token"`
-	AgentToken    string `json:"agent_token"`
-	SubagentToken string `json:"subagent_token,omitempty"`
-	UpstreamToken string `json:"upstream_token,omitempty"`
+	ResourceToken string          `json:"resource_token"`
+	AgentToken    string          `json:"agent_token"`
+	SubagentToken string          `json:"subagent_token,omitempty"`
+	UpstreamToken string          `json:"upstream_token,omitempty"`
+	Budget        *budgets.Budget `json:"budget,omitempty"`
 }
 
 func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
@@ -205,6 +211,7 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		r3AuthorizationPolicy: config.R3AuthorizationPolicy,
 		r3FetchTimeout:        config.R3FetchTimeout,
 		r3IssuanceStore:       config.R3IssuanceStore,
+		budgetPolicy:          config.BudgetPolicy,
 		replayedProof:         make(map[string]time.Time),
 		pending:               make(map[string]*pendingAccessServerAuthorization),
 	}
@@ -829,16 +836,28 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	var resourceR3 r3.TokenResult
+	var resourceBudget budgets.TokenResult
 	members, memberErr := resourceTokenEvidence.AuthorizationMembers()
 	var resourceToken aauth.ResourceTokenClaims
 	if memberErr != nil {
 		err = memberErr
 	} else if len(members) == 0 {
 		resourceToken, err = resourceTokenEvidence.Claims()
-	} else if server.r3AuthorizationPolicy == nil {
-		err = resourceTokenEvidence.RequireNoAuthorizationMembers()
 	} else {
-		resourceR3, err = r3.ValidateResourceToken(resourceTokenEvidence)
+		if _, hasR3 := members["r3_uri"]; hasR3 {
+			if server.r3AuthorizationPolicy == nil {
+				err = errors.New("reference: access server does not support R3 authorization")
+			} else {
+				resourceR3, err = r3.ValidateResourceToken(resourceTokenEvidence)
+			}
+		}
+		if _, hasBudget := members["budget"]; err == nil && hasBudget {
+			if server.budgetPolicy == nil {
+				err = resourceTokenEvidence.RequireNoAuthorizationMembers()
+			} else {
+				resourceBudget, err = budgets.ValidateResourceToken(resourceTokenEvidence)
+			}
+		}
 		if err == nil {
 			resourceToken, err = resourceTokenEvidence.Claims()
 		}
@@ -957,6 +976,32 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 		}
 		authorizationContext.r3Grant = &direct
 	}
+	if resourceBudget.Valid() {
+		offer, budgetErr := resourceBudget.Budget()
+		ceiling, ceilingErr := accessServerBudgetCeiling(offer, input.Budget)
+		if budgetErr != nil || ceilingErr != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_budget", errors.New("person-server budget does not narrow the resource offer"))
+			return
+		}
+		evaluation, evaluationErr := budgetEvaluation(resourceBudget, ceiling)
+		grant, policyErr := server.budgetPolicy(
+			request.Context(), copyAuthorizationRequest(authorizationContext.request), evaluation,
+		)
+		if evaluationErr != nil || policyErr != nil {
+			writeHostPolicyRefusal(response, "invalid_budget", "access-server budget policy denied the request")
+			return
+		}
+		if budgets.ValidateNarrowing(ceiling, grant) != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("access-server budget policy returned an invalid narrowing"))
+			return
+		}
+		budgetCopy, grantCopy := resourceBudget, grant
+		authorizationContext.budgetToken = &budgetCopy
+		authorizationContext.budgetGrant = &grantCopy
+	} else if input.Budget != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_budget", errors.New("person server supplied a budget for an unbudgeted resource token"))
+		return
+	}
 	if server.interactionRequired != nil {
 		required, err := server.interactionRequired(
 			request.Context(),
@@ -967,8 +1012,8 @@ func (server *AccessServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		if required {
-			if resourceR3.Valid() {
-				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("immediate R3 authorization does not support deferred interaction"))
+			if resourceR3.Valid() || resourceBudget.Valid() {
+				writeProblem(response, http.StatusNotImplemented, "companion_deferred_not_implemented", errors.New("immediate companion authorization does not support deferred interaction"))
 				return
 			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
@@ -1099,13 +1144,20 @@ func (server *AccessServer) mintAuthorization(
 		MissionS256:  authorizationContext.resourceToken.MissionS256,
 		Tenant:       authorizationContext.resourceToken.Tenant,
 	}
-	var authToken string
-	var err error
-	if authorizationContext.r3Grant != nil {
-		authToken, err = r3.MintAuthToken(server.signingKey, claims, *authorizationContext.r3Grant)
-	} else {
-		authToken, err = aauth.MintAuthToken(server.signingKey, claims)
+	draft, err := aauth.NewAuthTokenDraft(claims)
+	if err != nil {
+		return "", 0, err
 	}
+	if authorizationContext.r3Grant != nil {
+		draft, err = r3.BindAuthToken(draft, *authorizationContext.r3Grant)
+	}
+	if err == nil && authorizationContext.budgetGrant != nil {
+		draft, err = budgets.BindAuthToken(draft, *authorizationContext.budgetGrant)
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	authToken, err := draft.Mint(server.signingKey)
 	if err != nil {
 		return "", 0, err
 	}

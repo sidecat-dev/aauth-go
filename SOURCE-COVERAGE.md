@@ -8,11 +8,11 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Status | Sections |
 | --- | ---: |
-| Exercised | 36 |
-| Partial | 43 |
+| Exercised | 44 |
+| Partial | 54 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 515 |
+| Unclaimed | 496 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -25,7 +25,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
 | `bootstrap` | draft-hardt-aauth-bootstrap-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` | 1 | 2 | 2 | 0 | 38 |
-| `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 0 | 0 | 0 | 0 | 91 |
+| `budgets` | draft-hardt-aauth-budgets-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` | 8 | 11 | 0 | 0 | 72 |
 | `interop-profile` | interop-demo-profile at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195` | 0 | 0 | 0 | 0 | 8 |
 
 ## Explicit section dispositions
@@ -64,6 +64,167 @@ Evidence:
 - `bootstrap_journey_test.go:TestTwoKeyBootstrapIssuesAUsableAgentTokenWithStableInstallIdentity`
 - `bootstrap_journey_test.go:TestBootstrapRefusesUnknownInstallAndExactRequestReplay`
 - `bootstrap_journey_test.go:TestSingleKeyBootstrapCarriesTheDurableKeyIntoTheAgentToken`
+
+### `budgets/aauth-budget-header` — Partial
+
+The public parser and formatter implement remaining, cost, reserved, required, and the optional unit-plus-decimals pair as an RFC 9651 Dictionary, ignore unknown members, and reject negative or contradictory known values. Streaming trailers remain unclaimed.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetHeaderRoundTripsCurrentResponseSemantics`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/ambiguous-failure` — Partial
+
+The reference resource retains a reservation across an ambiguous provider failure. For an applied call whose response is lost, reconstruction returns the exact retained JSON result before fresh policy or changed pricing can run. Agent-side conservative accounting when no response or header arrives remains unclaimed.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/as-token-endpoint` — Partial
+
+In the four-party profile the PS may send its narrowed Budget object to the AS. The AS verifies it against the resource offer and can only narrow it again before issuance; when the PS omits the parameter, the resource offer is its ceiling.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+- `reference/budgets_test.go:TestAccessServerUsesResourceBudgetWhenPersonServerOmitsNarrowing`
+
+### `budgets/auth-token` — Partial
+
+The Budget companion binds the final grant to exact Core auth-token evidence. The PS and agent reject amount widening or unit and scale substitution against the preceding resource and PS offers.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetCompanionBindsNarrowedTokenEvidence`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/authorization-endpoint` — Partial
+
+The reference agent can request one Budget beside scope, and the resource policy may change denomination and lower amount before issuing its resource token. Metadata-driven proactive discovery remains unclaimed.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/budget-consumed` — Partial
+
+Consumption records are strictly parsed as JTI plus non-negative consumed amount and are exposed to PS and AS Budget policy as defensive evidence. The bounded recent-record selection algorithm remains unclaimed.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetCompanionBindsNarrowedTokenEvidence`
+
+### `budgets/budget-model` — Partial
+
+The standalone Budgets package owns one exact allocation value and validates a resource-to-PS-to-AS narrowing chain without moving unit or scale. Mission-wide totals, pricing, payment, and usage-counter policy remain unclaimed.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetValuesNarrowWithoutChangingDenomination`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/budget-object` — Exercised
+
+The public Budget value strictly requires amount, nonempty unit, and decimals and preserves the resource-selected denomination through narrowing and token projections.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetValuesNarrowWithoutChangingDenomination`
+
+### `budgets/concurrency` — Exercised
+
+Two concurrent presentations of one metered call cannot both acquire provider execution; a second distinct reservation that would exceed the same auth token's remainder is refused atomically.
+
+Evidence:
+
+- `reference/budget_store_test.go:TestFileBudgetStoreReservesCommitsAndRecoversExactResult`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/exhaustion` — Partial
+
+A request whose declared maximum exceeds the net remainder is refused before provider execution with 401, a fresh resource-token offer, and an auth-token requirement reason. Zero-remainder and standing reauthorization loops remain unclaimed.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/narrowing-chain` — Exercised
+
+In one immediate four-party journey the agent requests 10 in its own denomination, the resource settles a 5-unit USD offer, the PS narrows to 3, and the AS narrows to 2. Every boundary rejects amount widening or denomination changes.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+- `budgets/external_module_test.go:TestBudgetCompanionBindsNarrowedTokenEvidence`
+
+### `budgets/overshoot` — Exercised
+
+The file store maintains committed cost plus outstanding maximum reservations at or below the auth token amount. It reserves before provider invocation, commits actual cost, releases the difference, and rejects over-bound settlement.
+
+Evidence:
+
+- `reference/budget_store_test.go:TestFileBudgetStoreReservesCommitsAndRecoversExactResult`
+
+### `budgets/ps-token-endpoint` — Partial
+
+The PS validates the exact resource Budget and recent consumption before applying a deployment policy that can only narrow the offer. Clarification, interaction, usage-counter lookup, and suggested-budget refusal remain unclaimed.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/reason-parameter` — Partial
+
+The Core requirement value round-trips an optional auth-token reason token, and the bounded Budget path emits insufficient-budget with its fresh resource token. budget-exhausted is formatted by the same branch but not separately exercised.
+
+Evidence:
+
+- `requirement_test.go:TestAuthTokenRequirementCarriesBudgetReason`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/required-member` — Exercised
+
+An insufficient-budget refusal reports the exact request maximum as required and the current net remainder in AAuth-Budget before any provider consequence.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/requires-auth-token` — Exercised
+
+Reference Budget composition is admitted only for an auth-token resource and requires an exact Budget companion on every metered protected request.
+
+Evidence:
+
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/resource-enforces` — Exercised
+
+The resource, not the PS or AS, atomically reserves and settles the exact Budget carried by the presented auth token and returns the retained cost and remainder.
+
+Evidence:
+
+- `reference/budget_store_test.go:TestFileBudgetStoreReservesCommitsAndRecoversExactResult`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+### `budgets/resource-token` — Partial
+
+A typed companion binds budget and optional budget_consumed to exact Core resource-token evidence. The exact token and person-token JTI are retained in shared resource-token lineage before release. Usage-window production remains unclaimed.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetCompanionBindsNarrowedTokenEvidence`
+- `reference/resource_token_lineage_store_test.go:TestFileResourceTokenLineageStoreRecoversOneExactAuthorizationLineage`
+
+### `budgets/value-representation` — Exercised
+
+Budget amount and decimals are exact non-negative JSON integers. Floating-point, negative, missing, unknown, case-fold-colliding, and over-15-digit forms are rejected.
+
+Evidence:
+
+- `budgets/external_module_test.go:TestBudgetValuesNarrowWithoutChangingDenomination`
 
 ### `core/access-server-federation` — Partial
 

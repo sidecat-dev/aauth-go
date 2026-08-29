@@ -66,6 +66,24 @@ func TestPersonTokenRequirementStructuredFieldRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAuthTokenRequirementCarriesBudgetReason(t *testing.T) {
+	requirement := aauth.Requirement{
+		Type: aauth.RequirementAuthToken, ResourceToken: "resource-token",
+		Reason: "insufficient-budget",
+	}
+	header, err := aauth.FormatRequirementHeader(requirement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header != `requirement=auth-token; resource-token="resource-token"; reason=insufficient-budget` {
+		t.Fatalf("requirement header = %q", header)
+	}
+	parsed, err := aauth.ParseRequirementHeader(header)
+	if err != nil || parsed != requirement {
+		t.Fatalf("parsed = %#v, %v", parsed, err)
+	}
+}
+
 func TestInteractionRequirementRejectsInvalidWireValues(t *testing.T) {
 	t.Parallel()
 

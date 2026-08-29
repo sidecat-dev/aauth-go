@@ -254,9 +254,10 @@ prevents ordinary endpoints from silently treating the token as scope-only.
 - `reference/resource_token_preflight_replay_test.go:TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay`
 
 **Current-product effect:** R3 outside the bounded four-party direct and `401`
-per-call profile, and all Budgets behavior, remain unclaimed. R3 token-member
-validation is a side-effect-free companion result; defined claims still cannot
-be downgraded into the Core scope-only path.
+per-call profile, and Budgets outside the bounded immediate four-party metered
+call, remain unclaimed. R3 and Budget token-member validation are
+side-effect-free companion results; defined claims still cannot be downgraded
+into the Core scope-only path.
 
 ## AAG-I008 — A per-call challenge resolves one retained person-token lineage
 
@@ -289,12 +290,79 @@ an explicit retained lineage makes that recovery deterministic and fail-closed.
 
 **Evidence:**
 
-- `reference/r3_resource_token_store_test.go:TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage`
+- `reference/resource_token_lineage_store_test.go:TestFileResourceTokenLineageStoreRecoversOneExactAuthorizationLineage`
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
 
 **Current-product effect:** The `401` per-call profile requires a durable
-`R3ResourceTokenStore`. A missing, expired, substituted, or ambiguous lineage
+`ResourceTokenLineageStore`. A missing, expired, substituted, or ambiguous lineage
 is rejected before a proposal or provider consequence.
+
+## AAG-I009 — Companion token members compose before one issuer signature
+
+**Status:** adopted
+
+**Source:** AAuth Protocol, `Resource Token Structure` and `Auth Token
+Structure`; R3 and Budgets, their respective resource-token and auth-token
+extension sections.
+
+**Question:** How can independent Go companion packages contribute their
+defined members when a single issuer must produce one Core token?
+
+**Chosen behavior:** Core exposes a sealed generic `TokenDraft` for resource and
+auth claims. Each companion exposes typed binders that add one complete member
+set. Core rejects replacement, unrecognized names, and incomplete groups,
+orders companion names canonically, and signs the final payload once.
+
+**Alternative considered:** Mint a Core token first, then let each companion
+parse, extend, and re-sign it. That makes the result depend on package order,
+changes the issuer's byte representation repeatedly, and gives companion
+packages unnecessary access to token signing.
+
+**Why:** R3 and Budgets are independently optional but may apply to the same
+token. Issuance therefore needs a compositional seam that preserves Core
+ownership of the compact token and companion ownership of its semantics.
+
+**Evidence:**
+
+- `token_draft_external_test.go:TestIndependentCompanionsComposeOneCoreToken`
+- `token_draft_external_test.go:TestCoreTokensWithoutCompanionsKeepTheirExactPayload`
+
+**Current-product effect:** Deployments compose applicable companions through
+typed binders and mint once. `TokenDraft` is issuance material, not verified
+evidence or authorization.
+
+## AAG-I010 — Metered retry identity is independent of local price calculation
+
+**Status:** adopted reference-deployment behavior
+
+**Source:** Budgets, `Resource Enforces the Budget`, `Concurrent Requests`,
+`Ambiguous or Unreported Failures`, and `Resource Requirements`.
+
+**Question:** What identifies one metered provider consequence when a retry
+arrives after response loss, process restart, or a local pricing change?
+
+**Chosen behavior:** The reference deployment derives one stable execution key
+from the signed auth-token issuer and JTI plus a deployment-defined call key.
+The store separately retains the granted Budget and declared maximum and rejects
+a changed pair as a conflict. A completed retry returns the retained result
+before fresh protected policy or price calculation.
+
+**Alternative considered:** Include the calculated maximum, price, or grant in
+the provider key. A deployment change would then turn the same signed call into
+a new provider consequence and could charge or execute twice.
+
+**Why:** The signed authorization and application call identity determine which
+consequence is being retried. Price and maximum are retained attributes of that
+consequence, not a license to create another one.
+
+**Evidence:**
+
+- `reference/budget_store_test.go:TestFileBudgetStoreReservesCommitsAndRecoversExactResult`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+
+**Current-product effect:** The file adapter is a private single-writer
+reference store. This retry rule does not claim a new Budgets wire member or a
+general distributed settlement protocol.
 
 ## Adding or changing an interpretation
 

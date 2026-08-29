@@ -155,17 +155,21 @@ from the later auth token. Claim equality therefore need not identify one
 person-token JTI.
 
 **Observed implementation effect:** The reference resource retains each exact
-R3 resource token and resolves the latest active generation no later than the
-auth token's trusted issuance instant. It converges only repeated issuance for
-the same person-token JTI and requested scope; different bindings in the same
-otherwise indistinguishable generation make per-call resolution fail closed.
+resource token that supplies later authorization context and resolves the latest
+active generation no later than the auth token's trusted issuance instant. It
+converges only repeated issuance for the same person-token JTI, requested scope,
+and companion variant; different bindings in the same otherwise
+indistinguishable generation make later resolution fail closed. The same gap is
+observable in both the R3 per-call challenge and the Budget reauthorization
+challenge.
 This is deterministic, but it is an implementation choice rather than a rule
 stated by the draft.
 
 **Evidence:**
 
-- `reference/r3_resource_token_store_test.go:TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage`
+- `reference/resource_token_lineage_store_test.go:TestFileResourceTokenLineageStoreRecoversOneExactAuthorizationLineage`
 - `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
 
 **Suggested disposition:** Bind the auth token to the resource-token JTI whose
 authorization it represents, or define the exact resource-side lineage rule

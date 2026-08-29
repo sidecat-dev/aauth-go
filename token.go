@@ -217,10 +217,11 @@ func MintAgentToken(issuer string, key jose.SigningKey, request AgentTokenReques
 // MintResourceToken creates the short-lived resource assertion carried to a
 // person or access server.
 func MintResourceToken(key jose.SigningKey, claims ResourceTokenClaims) (string, error) {
-	if err := validateResourceClaims(claims, time.Unix(claims.IssuedAt, 0), false); err != nil {
+	draft, err := NewResourceTokenDraft(claims)
+	if err != nil {
 		return "", err
 	}
-	return mintToken(key, ResourceTokenType, claims)
+	return draft.Mint(key)
 }
 
 // MintPersonToken performs only the cryptographic construction of a
@@ -237,10 +238,11 @@ func MintPersonToken(key jose.SigningKey, claims PersonTokenClaims) (string, err
 
 // MintAuthToken creates the proof-bound authorization assertion.
 func MintAuthToken(key jose.SigningKey, claims AuthTokenClaims) (string, error) {
-	if err := validateAuthClaims(claims, time.Unix(claims.IssuedAt, 0), false); err != nil {
+	draft, err := NewAuthTokenDraft(claims)
+	if err != nil {
 		return "", err
 	}
-	return mintToken(key, AuthTokenType, claims)
+	return draft.Mint(key)
 }
 
 func mintToken(key jose.SigningKey, tokenType string, claims any) (string, error) {

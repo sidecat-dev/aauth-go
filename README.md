@@ -9,8 +9,8 @@ the module has no dependency on a particular product or deployment.
 The repository pins the complete current Dick Hardt editor-source family at
 AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5` and Signature-Key
 `0ff751b571e7fe51336bcc1e526954a202317cc0`. The implementation is bounded:
-its fully specified `Ed25519`, selected Signature-Key behavior, and one
-distinct-server immediate person-token journey use the current topology.
+its fully specified `Ed25519`, selected Signature-Key behavior, and bounded
+distinct-server person-token, R3, and Budget journeys use the current topology.
 [The source coverage report](SOURCE-COVERAGE.md) names the exact current claims;
 sections without current executable evidence remain unclaimed. This is a
 community-oriented standalone Go implementation; it does not claim an official
@@ -41,6 +41,12 @@ not themselves authorize an operation. The reference package composes the
 bounded four-party journey: deployment-owned review and grant policy creates a
 sealed authorization partition, while signed retrieval and resource enforcement remain
 role-specific responsibilities.
+The `budgets` package owns exact Budget values, token-member validation,
+narrowing, and `AAuth-Budget` parsing. Core `TokenDraft` values let R3 and
+Budgets add their typed member sets to one resource or auth token before the
+issuer signs the composed payload once. The reference roles exercise one
+immediate four-party metered call with durable reservation, settlement, and
+exact result recovery.
 The `events` package owns exact AsyncAPI contract parsing and payload
 validation plus admitted resource-contract and agent-endpoint discovery. Event
 and subscribe token profiles remain in root Core for now; their package move is
@@ -177,7 +183,23 @@ This is not complete R3 conformance. Deferred `202` per-call delivery,
 three-party R3, and document caching remain open. Direct and per-call AS
 issuance retains the required audit fields and exact token response atomically
 before release; exact retry after a lost response or AS reconstruction returns
-that record without rerunning policy. Budgets remains entirely unclaimed. Core verification
+that record without rerunning policy.
+
+One bounded immediate four-party Budget path is also callable. The agent's
+requested value is narrowed independently by the resource, PS, and AS without
+changing its denomination. The resource atomically reserves the declared
+maximum before provider execution, prevents concurrent oversubscription,
+settles actual cost, and returns the current remainder. A committed result is
+retained before release: a dropped response and reconstructed resource return
+the same JSON result without rerunning policy, pricing, or the provider. An
+insufficient maximum is refused before the provider with a fresh resource
+token, `AAuth-Requirement` reason, and `AAuth-Budget` remainder and required
+values.
+
+This is not complete Budgets conformance. Metadata-driven discovery, general
+recent-consumption selection, usage counters, streaming trailers, billing
+integration, deferred Budget authorization, and broader deployment topologies
+remain unclaimed. Core verification
 retains structurally complete companion members only as exact evidence; an
 endpoint must return matching invalid-zero companion evidence or reject those
 members. Existing non-companion endpoints reject them, and the removed

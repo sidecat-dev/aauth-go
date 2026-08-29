@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
@@ -79,6 +80,7 @@ type Grant struct {
 	AuthToken string
 	Claims    aauth.AuthTokenClaims
 	R3        *r3.TokenResult
+	Budget    *budgets.TokenResult
 }
 
 // PersonGrant is one verified resource-directed person token obtained from a
@@ -105,6 +107,7 @@ type ResourceGrant struct {
 	ResourceToken string                    `json:"resource_token"`
 	Claims        aauth.ResourceTokenClaims `json:"claims"`
 	RequestedR3   *r3.OperationSet          `json:"requested_r3,omitempty"`
+	Budget        *budgets.TokenResult      `json:"-"`
 }
 
 // TokenAuthorization is either an auth-token grant or a signed-poll
@@ -1777,7 +1780,7 @@ func (agent *Agent) AuthorizeWithPersonToken(
 	if personClaims.Issuer != personServer {
 		return Grant{}, errors.New("reference: person token issuer does not match person-server endpoint")
 	}
-	resourceGrant, err := agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, personClaims, nil)
+	resourceGrant, err := agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, personClaims, nil, nil)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -1839,7 +1842,7 @@ func (agent *Agent) RequestResourceTokenWithPersonToken(
 	if err != nil {
 		return ResourceGrant{}, err
 	}
-	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, nil)
+	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, nil, nil)
 }
 
 // RequestR3ResourceTokenWithPersonToken requests one exact R3 operation
@@ -1862,7 +1865,31 @@ func (agent *Agent) RequestR3ResourceTokenWithPersonToken(
 	if err != nil {
 		return ResourceGrant{}, err
 	}
-	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, &requested)
+	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, &requested, nil)
+}
+
+// RequestBudgetedResourceTokenWithPersonToken requests one resource-denominated
+// Budget offer and retains its sealed companion result beside the Core token.
+func (agent *Agent) RequestBudgetedResourceTokenWithPersonToken(
+	ctx context.Context,
+	resourceEndpoint string,
+	scopes []string,
+	personToken string,
+	requested budgets.Budget,
+) (ResourceGrant, error) {
+	if err := requested.Validate(); err != nil {
+		return ResourceGrant{}, err
+	}
+	evidence, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	claims, err := claimsWithoutAuthorization(evidence)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	copy := requested
+	return agent.requestCurrentResourceToken(ctx, resourceEndpoint, scopes, personToken, claims, nil, &copy)
 }
 
 // RequestR3PerCall presents one operation that the current auth token marks as
@@ -1942,6 +1969,7 @@ func (agent *Agent) requestCurrentResourceToken(
 	personToken string,
 	personClaims aauth.PersonTokenClaims,
 	requestedR3 *r3.OperationSet,
+	requestedBudget *budgets.Budget,
 ) (ResourceGrant, error) {
 	var grant ResourceGrant
 	if err := aauth.ValidateEndpoint(resourceEndpoint); err != nil {
@@ -1962,6 +1990,10 @@ func (agent *Agent) requestCurrentResourceToken(
 	if requestedR3 != nil {
 		requested := requestedR3.Clone()
 		input.R3Operations = &requested
+	}
+	if requestedBudget != nil {
+		copy := *requestedBudget
+		input.Budget = &copy
 	}
 	body, err := json.Marshal(input)
 	if err != nil {
@@ -1994,11 +2026,17 @@ func (agent *Agent) requestCurrentResourceToken(
 		return grant, err
 	}
 	var resourceR3 r3.TokenResult
+	var resourceBudget budgets.TokenResult
 	var resourceClaims aauth.ResourceTokenClaims
-	if requestedR3 == nil {
+	if requestedR3 == nil && requestedBudget == nil {
 		resourceClaims, err = claimsWithoutAuthorization(resourceEvidence)
 	} else {
-		resourceR3, err = r3.ValidateResourceToken(resourceEvidence)
+		if requestedR3 != nil {
+			resourceR3, err = r3.ValidateResourceToken(resourceEvidence)
+		}
+		if err == nil && requestedBudget != nil {
+			resourceBudget, err = budgets.ValidateResourceToken(resourceEvidence)
+		}
 		if err == nil {
 			resourceClaims, err = resourceEvidence.Claims()
 		}
@@ -2035,7 +2073,16 @@ func (agent *Agent) requestCurrentResourceToken(
 		ResourceToken: result.ResourceToken,
 		Claims:        resourceClaims,
 		RequestedR3:   retainedRequest,
+		Budget:        optionalBudgetResult(resourceBudget),
 	}, nil
+}
+
+func optionalBudgetResult(result budgets.TokenResult) *budgets.TokenResult {
+	if !result.Valid() {
+		return nil
+	}
+	copy := result
+	return &copy
 }
 
 func (agent *Agent) ExchangeResourceToken(
@@ -2394,8 +2441,8 @@ func (agent *Agent) requestTokenAuthorization(
 		authorization.Grant = &grant
 		return authorization, nil
 	case http.StatusAccepted:
-		if resourceGrant.RequestedR3 != nil {
-			return authorization, errors.New("reference: deferred R3 authorization is not implemented")
+		if resourceGrant.RequestedR3 != nil || resourceGrant.Budget != nil {
+			return authorization, errors.New("reference: deferred companion authorization is not implemented")
 		}
 		deferred, err := aauth.ParseDeferredResponse(tokenResponse)
 		if err != nil {
@@ -2445,6 +2492,9 @@ func preflightResourceGrantPersonServer(
 			return "", fmt.Errorf("reference: retained R3 request: %w", err)
 		}
 	}
+	if resourceGrant.Budget != nil && !resourceGrant.Budget.Valid() {
+		return "", errors.New("reference: retained Budget result is invalid")
+	}
 	return personServerID, nil
 }
 
@@ -2458,16 +2508,24 @@ func (agent *Agent) verifyResourceGrantForContinuation(
 		return jose.JWK{}, err
 	}
 	var claims aauth.ResourceTokenClaims
-	if resourceGrant.RequestedR3 == nil {
+	if resourceGrant.RequestedR3 == nil && resourceGrant.Budget == nil {
 		claims, err = claimsWithoutAuthorization(evidence)
 	} else {
-		result, validationErr := r3.ValidateResourceToken(evidence)
-		if validationErr != nil {
-			return jose.JWK{}, validationErr
+		if resourceGrant.RequestedR3 != nil {
+			result, validationErr := r3.ValidateResourceToken(evidence)
+			if validationErr != nil {
+				return jose.JWK{}, validationErr
+			}
+			origin, originErr := endpointIdentifier(result.URI())
+			if originErr != nil || origin != resourceGrant.Resource {
+				return jose.JWK{}, errors.New("reference: R3 document is outside the retained resource")
+			}
 		}
-		origin, originErr := endpointIdentifier(result.URI())
-		if originErr != nil || origin != resourceGrant.Resource {
-			return jose.JWK{}, errors.New("reference: R3 document is outside the retained resource")
+		if resourceGrant.Budget != nil {
+			result, validationErr := budgets.ValidateResourceToken(evidence)
+			if validationErr != nil || result.CoreEvidenceID() != resourceGrant.Budget.CoreEvidenceID() {
+				return jose.JWK{}, errors.New("reference: Budget evidence does not match the retained resource token")
+			}
 		}
 		claims, err = evidence.Claims()
 	}
@@ -2586,11 +2644,17 @@ func (agent *Agent) parseTokenGrantResponse(
 		return Grant{}, jose.JWK{}, err
 	}
 	var authR3 r3.TokenResult
+	var authBudget budgets.TokenResult
 	var authClaims aauth.AuthTokenClaims
-	if resourceGrant.RequestedR3 == nil {
+	if resourceGrant.RequestedR3 == nil && resourceGrant.Budget == nil {
 		authClaims, err = claimsWithoutAuthorization(authEvidence)
 	} else {
-		authR3, err = r3.ValidateAuthToken(authEvidence)
+		if resourceGrant.RequestedR3 != nil {
+			authR3, err = r3.ValidateAuthToken(authEvidence)
+		}
+		if err == nil && resourceGrant.Budget != nil {
+			authBudget, err = budgets.ValidateAuthToken(authEvidence)
+		}
 		if err == nil {
 			authClaims, err = authEvidence.Claims()
 		}
@@ -2645,6 +2709,11 @@ func (agent *Agent) parseTokenGrantResponse(
 			return Grant{}, jose.JWK{}, resourceErr
 		}
 	}
+	if resourceGrant.Budget != nil {
+		if err := budgets.ValidateGrant(*resourceGrant.Budget, authBudget); err != nil {
+			return Grant{}, jose.JWK{}, err
+		}
+	}
 	verificationKey, err := capture.retainedKey()
 	if err != nil {
 		return Grant{}, jose.JWK{}, err
@@ -2657,6 +2726,10 @@ func (agent *Agent) parseTokenGrantResponse(
 	if authR3.Valid() {
 		copy := authR3
 		grant.R3 = &copy
+	}
+	if authBudget.Valid() {
+		copy := authBudget
+		grant.Budget = &copy
 	}
 	return grant, verificationKey, nil
 }

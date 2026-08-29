@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
@@ -59,6 +60,25 @@ type ResourceConfig struct {
 	Operation                    func(context.Context, aauth.AuthorizedRequest) (any, error)
 	Events                       *ResourceEventsConfig
 	R3                           *ResourceR3Config
+	Budget                       *ResourceBudgetConfig
+}
+
+// ResourceBudgetConfig selects the resource-denominated offer placed in one
+// resource token. Enforcement custody is added by the metered-operation
+// composition below.
+type ResourceBudgetConfig struct {
+	Offer              func(context.Context, *budgets.Budget) (budgets.Budget, error)
+	Store              BudgetStore
+	ResourceTokenStore ResourceTokenLineageStore
+	MaximumCost        func(context.Context, aauth.AuthorizedRequest) (int64, error)
+	CallKey            func(context.Context, aauth.AuthorizedRequest) (string, error)
+	Operation          func(context.Context, aauth.AuthorizedRequest, string) (BudgetOperationResult, error)
+}
+
+// BudgetOperationResult carries the provider value and exact metered cost.
+type BudgetOperationResult struct {
+	Value any
+	Cost  int64
 }
 
 // ResourceR3Config composes the current immediate four-party R3 resource boundary. Every
@@ -69,7 +89,7 @@ type ResourceR3Config struct {
 	DocumentStore         R3RestrictedDocumentStore
 	DocumentForOperations func(context.Context, r3.OperationSet) ([]byte, error)
 	OperationForRequest   func(context.Context, *http.Request) (r3.OperationSet, error)
-	ResourceTokenStore    R3ResourceTokenStore
+	ResourceTokenStore    ResourceTokenLineageStore
 	ProposalForRequest    func(context.Context, *http.Request, []byte) ([]byte, error)
 	ParametersForRequest  func(context.Context, *http.Request, []byte) (r3.PresentedParameters, error)
 	PerCallStore          R3PerCallStore
@@ -130,11 +150,16 @@ type Resource struct {
 	random                       io.Reader
 	pendingLifetime              time.Duration
 	operation                    func(context.Context, aauth.AuthorizedRequest) (any, error)
+	budgetOffer                  func(context.Context, *budgets.Budget) (budgets.Budget, error)
+	budgetStore                  BudgetStore
+	budgetMaximumCost            func(context.Context, aauth.AuthorizedRequest) (int64, error)
+	budgetCallKey                func(context.Context, aauth.AuthorizedRequest) (string, error)
+	budgetOperation              func(context.Context, aauth.AuthorizedRequest, string) (BudgetOperationResult, error)
 	r3Vocabularies               map[string]json.RawMessage
 	r3DocumentStore              R3RestrictedDocumentStore
 	r3DocumentForOperations      func(context.Context, r3.OperationSet) ([]byte, error)
 	r3OperationForRequest        func(context.Context, *http.Request) (r3.OperationSet, error)
-	r3ResourceTokenStore         R3ResourceTokenStore
+	resourceTokenLineageStore    ResourceTokenLineageStore
 	r3ProposalForRequest         func(context.Context, *http.Request, []byte) ([]byte, error)
 	r3ParametersForRequest       func(context.Context, *http.Request, []byte) (r3.PresentedParameters, error)
 	r3PerCallStore               R3PerCallStore
@@ -227,11 +252,18 @@ type resourceAuthorizationInput struct {
 	Scope        string           `json:"scope"`
 	Account      string           `json:"account,omitempty"`
 	R3Operations *r3.OperationSet `json:"r3_operations,omitempty"`
+	Budget       *budgets.Budget  `json:"budget,omitempty"`
 }
 
 func NewResource(config ResourceConfig) (*Resource, error) {
 	if err := aauth.ValidateServerIdentifier(config.Identifier); err != nil {
 		return nil, err
+	}
+	if config.Budget != nil {
+		if config.AccessMode != aauth.AccessModeAuthToken || config.Budget.Offer == nil || config.Budget.Store == nil || config.Budget.ResourceTokenStore == nil ||
+			config.Budget.MaximumCost == nil || config.Budget.CallKey == nil || config.Budget.Operation == nil {
+			return nil, errors.New("reference: Budgets requires auth-token mode, offer policy, resource-token lineage, reservation custody, cost bound, stable call key, and metered operation")
+		}
 	}
 	switch config.AccessMode {
 	case "":
@@ -274,7 +306,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		return nil, errors.New("reference: deferred resource authorization requires a local authorization policy")
 	}
 	if config.KeyResolver == nil || config.Clock == nil || config.NewID == nil ||
-		len(config.Scopes) == 0 || config.Operation == nil {
+		len(config.Scopes) == 0 || config.Operation == nil && config.Budget == nil {
 		return nil, errors.New("reference: resource requires resolver, clock, id source, scopes, and operation")
 	}
 	if config.ReplayStore == nil {
@@ -287,7 +319,7 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 	var r3DocumentStore R3RestrictedDocumentStore
 	var r3DocumentForOperations func(context.Context, r3.OperationSet) ([]byte, error)
 	var r3OperationForRequest func(context.Context, *http.Request) (r3.OperationSet, error)
-	var r3ResourceTokenStore R3ResourceTokenStore
+	var resourceTokenLineageStore ResourceTokenLineageStore
 	var r3ProposalForRequest func(context.Context, *http.Request, []byte) ([]byte, error)
 	var r3ParametersForRequest func(context.Context, *http.Request, []byte) (r3.PresentedParameters, error)
 	var r3PerCallStore R3PerCallStore
@@ -326,12 +358,18 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 			return nil, errors.New("reference: R3 per-call requires resource-token lineage, proposal construction, parameter projection, single-use result custody, and a provider-keyed operation")
 		}
 		if perCallParts == 5 {
-			r3ResourceTokenStore = config.R3.ResourceTokenStore
+			resourceTokenLineageStore = config.R3.ResourceTokenStore
 			r3ProposalForRequest = config.R3.ProposalForRequest
 			r3ParametersForRequest = config.R3.ParametersForRequest
 			r3PerCallStore = config.R3.PerCallStore
 			r3PerCallOperation = config.R3.PerCallOperation
 		}
+	}
+	if config.Budget != nil {
+		if resourceTokenLineageStore != nil && !reflect.DeepEqual(resourceTokenLineageStore, config.Budget.ResourceTokenStore) {
+			return nil, errors.New("reference: R3 and Budgets must share one resource-token lineage store")
+		}
+		resourceTokenLineageStore = config.Budget.ResourceTokenStore
 	}
 	var eventSubscriptionPath string
 	var eventStore ResourceEventStore
@@ -493,11 +531,12 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		random:                       random,
 		pendingLifetime:              pendingLifetime,
 		operation:                    config.Operation,
+		budgetOffer:                  nil,
 		r3Vocabularies:               r3Vocabularies,
 		r3DocumentStore:              r3DocumentStore,
 		r3DocumentForOperations:      r3DocumentForOperations,
 		r3OperationForRequest:        r3OperationForRequest,
-		r3ResourceTokenStore:         r3ResourceTokenStore,
+		resourceTokenLineageStore:    resourceTokenLineageStore,
 		r3ProposalForRequest:         r3ProposalForRequest,
 		r3ParametersForRequest:       r3ParametersForRequest,
 		r3PerCallStore:               r3PerCallStore,
@@ -519,6 +558,13 @@ func NewResource(config ResourceConfig) (*Resource, error) {
 		eventRegistrationValidator:   eventRegistrationValidator,
 		pending:                      make(map[string]*pendingAuthorization),
 		access:                       make(map[string]localAccessGrant),
+	}
+	if config.Budget != nil {
+		resource.budgetOffer = config.Budget.Offer
+		resource.budgetStore = config.Budget.Store
+		resource.budgetMaximumCost = config.Budget.MaximumCost
+		resource.budgetCallKey = config.Budget.CallKey
+		resource.budgetOperation = config.Budget.Operation
 	}
 	if resource.authorizationStore != nil {
 		if err := resource.loadAuthorizationState(context.Background()); err != nil {
@@ -1384,6 +1430,24 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	var budgetOffer *budgets.Budget
+	if resource.budgetOffer == nil {
+		if input.Budget != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_budget", errors.New("resource does not offer Budgets"))
+			return
+		}
+	} else {
+		offer, offerErr := resource.budgetOffer(request.Context(), input.Budget)
+		if offerErr != nil {
+			writeHostPolicyRefusal(response, "invalid_budget", "resource budget policy denied the request")
+			return
+		}
+		if offer.Validate() != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("resource budget policy returned an invalid offer"))
+			return
+		}
+		budgetOffer = &offer
+	}
 	scopes, err := parseScopes(input.Scope)
 	if err != nil || !scopesContained(scopes, resource.scopes) {
 		writeProblem(response, http.StatusBadRequest, "invalid_scope", err)
@@ -1478,10 +1542,17 @@ func (resource *Resource) handleAuthorize(response http.ResponseWriter, request 
 	claims.Tenant = personClaims.Tenant
 	claims.Agent = ""
 	var token string
-	if r3Reference.Valid() {
-		token, err = resource.mintAndRetainR3ResourceToken(request.Context(), claims, r3Reference, now)
+	if r3Reference.Valid() || budgetOffer != nil {
+		token, err = resource.mintAndRetainResourceToken(request.Context(), claims, r3Reference, budgetOffer, now)
 	} else {
-		token, err = aauth.MintResourceToken(resource.signingKey, claims)
+		draft, draftErr := aauth.NewResourceTokenDraft(claims)
+		if draftErr == nil && budgetOffer != nil {
+			draft, draftErr = budgets.BindResourceToken(draft, *budgetOffer, nil)
+		}
+		if draftErr == nil {
+			token, draftErr = draft.Mint(resource.signingKey)
+		}
+		err = draftErr
 	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -2046,16 +2117,19 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 	}
 	credentialKeyCapture, verificationResolver := newRetainedKeyCapture(resource.keyResolver)
 	var r3Result r3.TokenResult
+	var budgetResult budgets.TokenResult
 	verifyOptions := aauth.VerifyRequestOptions{
 		RequiredComponents:     requiredComponents,
 		RequireExactComponents: true,
 		AllowedCredentialTypes: allowedCredentialTypes,
 	}
-	if resource.r3DocumentStore != nil && resource.accessMode == aauth.AccessModeAuthToken {
+	if (resource.r3DocumentStore != nil || resource.budgetOffer != nil) && resource.accessMode == aauth.AccessModeAuthToken {
 		verifyOptions.AuthTokenCompanion = func(core aauth.VerifiedToken[aauth.AuthTokenClaims]) (aauth.AuthorizationCompanion, error) {
-			validated, validationErr := r3.ValidateAuthToken(core)
-			r3Result = validated
-			return validated, validationErr
+			combined, validatedR3, validatedBudget, validationErr := validateAuthCompanions(
+				core, resource.r3DocumentStore != nil, resource.budgetOffer != nil,
+			)
+			r3Result, budgetResult = validatedR3, validatedBudget
+			return combined, validationErr
 		}
 	}
 	verified, err := aauth.VerifyRequest(request.Context(), request, verificationResolver, resource.clock, verifyOptions)
@@ -2174,6 +2248,10 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 			return
 		}
 	}
+	if resource.budgetOffer != nil && !budgetResult.Valid() {
+		writeProblem(response, http.StatusForbidden, "budget_required", errors.New("protected operation requires a Budget grant"))
+		return
+	}
 	if !resource.consumeProof(response, request, verified) {
 		return
 	}
@@ -2201,11 +2279,43 @@ func (resource *Resource) handleProtected(response http.ResponseWriter, request 
 		Body:               append([]byte(nil), exactBody...),
 		ContentType:        request.Header.Get("Content-Type"),
 	}
+	var budgetCallKey string
+	var recoveredBudget *BudgetRecord
+	if resource.budgetStore != nil {
+		budgetCallKey, err = resource.budgetCallKey(request.Context(), copyAuthorizedRequest(authorized))
+		if err != nil || budgetCallKey == "" {
+			writeProblem(response, http.StatusBadRequest, "invalid_budget_call_key", errors.New("metered call requires a stable provider key"))
+			return
+		}
+		recovered, remaining, recoverErr := resource.budgetStore.Recover(
+			request.Context(), authorized.AuthTokenIssuer, authorized.AuthTokenID, budgetCallKey,
+		)
+		if recoverErr == nil {
+			if recovered.State == "complete" {
+				grant, budgetErr := budgetResult.Budget()
+				if budgetErr != nil || recovered.Execution.Grant != grant {
+					writeProblem(response, http.StatusForbidden, "invalid_budget", errors.New("retained Budget result does not match the presented token"))
+					return
+				}
+				writeBudgetRecord(response, recovered, remaining, grant)
+				return
+			}
+			copy := recovered
+			recoveredBudget = &copy
+		} else if !errors.Is(recoverErr, ErrBudgetNotFound) {
+			writeProblem(response, http.StatusServiceUnavailable, "budget_custody_failed", recoverErr)
+			return
+		}
+	}
 	if err := resource.protectedAuthorizationPolicy(
 		request.Context(),
 		copyAuthorizedRequest(authorized),
 	); err != nil {
 		writeProblem(response, http.StatusForbidden, "invalid_token", errors.New("protected request was denied by resource policy"))
+		return
+	}
+	if resource.budgetStore != nil {
+		resource.executeBudgeted(response, request, authorized, budgetResult, budgetCallKey, recoveredBudget)
 		return
 	}
 	result, err := resource.operation(request.Context(), authorized)

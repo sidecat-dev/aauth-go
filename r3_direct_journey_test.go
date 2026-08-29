@@ -227,7 +227,7 @@ func TestCurrentFourPartyR3JourneySurvivesReconstruction(t *testing.T) {
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
-		resourceTokens, openErr := reference.NewFileR3ResourceTokenStore(resourceTokenPath)
+		resourceTokens, openErr := reference.NewFileResourceTokenLineageStore(resourceTokenPath)
 		if openErr != nil {
 			t.Fatal(openErr)
 		}

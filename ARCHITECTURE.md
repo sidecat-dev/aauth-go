@@ -205,6 +205,39 @@ The command will own deployment files, TLS and listener setup, process
 lifecycle, protected-key adapters, and runnable examples. It is not a second
 protocol implementation.
 
+## Target token issuance composition
+
+A resource or access server constructs one Core `TokenDraft` from validated
+Core claims. Each applicable companion package returns a new draft after adding
+its complete typed member set. The issuer signs only the final payload:
+
+```text
+Core claims -> aauth.TokenDraft
+                    |
+                    +--> r3.Bind* ------+
+                    |                    |
+                    +--> budgets.Bind* -+--> one compact Core token
+                                             signed once by the issuer
+```
+
+Core owns the closed catalog of recognized authorization-member names, their
+token applicability, and co-presence rules. It does not interpret an R3 grant
+or a Budget. R3 and Budgets own the semantics of the members they add and expose
+typed binders rather than asking a deployment to build raw JWT maps.
+
+The draft is sealed, invalid-zero, and copy-safe. A companion cannot replace a
+Core claim, replace another companion's member, add an unrecognized member, or
+leave a recognized member group incomplete. Companion member names are appended
+in canonical order, while a draft with no companions preserves the existing
+Core payload bytes exactly. This avoids a parse, reserialize, and re-sign chain
+whose result would depend on package order or erase the issuer's original byte
+representation.
+
+The draft is issuance material, not verification evidence or authority. On the
+receiving side, Core still verifies the exact compact token first and each
+applicable companion returns its own sealed result bound to the Core
+`EvidenceID`.
+
 ## Target evidence composition
 
 Evidence has two token roots and one independent HTTP-proof root. It is

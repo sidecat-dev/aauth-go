@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -50,6 +51,7 @@ type PersonServerConfig struct {
 	R3Admit                       func(context.Context, string) error
 	R3Review                      R3Review
 	R3FetchTimeout                time.Duration
+	BudgetPolicy                  BudgetPolicy
 }
 
 type PersonServer struct {
@@ -78,6 +80,7 @@ type PersonServer struct {
 	r3Admit                       func(context.Context, string) error
 	r3Review                      R3Review
 	r3FetchTimeout                time.Duration
+	budgetPolicy                  BudgetPolicy
 
 	mu                    sync.RWMutex
 	missionIssuanceMu     sync.Mutex
@@ -172,6 +175,8 @@ type personAuthorizationContext struct {
 	requestProof           *aauth.RequestProof
 	r3Token                *r3.TokenResult
 	r3Document             *r3.DocumentReference
+	budgetToken            *budgets.TokenResult
+	budgetGrant            *budgets.Budget
 }
 
 type pendingPersonAuthorization struct {
@@ -418,6 +423,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		r3Admit:                       config.R3Admit,
 		r3Review:                      config.R3Review,
 		r3FetchTimeout:                config.R3FetchTimeout,
+		budgetPolicy:                  config.BudgetPolicy,
 		missions:                      make(map[string]storedMission),
 		governanceReplays:             make(map[string]time.Time),
 		pending:                       make(map[string]*pendingPersonAuthorization),
@@ -2907,16 +2913,28 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		return
 	}
 	var resourceR3 r3.TokenResult
+	var resourceBudget budgets.TokenResult
 	members, memberErr := resourceEvidence.AuthorizationMembers()
 	var resourceToken aauth.ResourceTokenClaims
 	if memberErr != nil {
 		err = memberErr
 	} else if len(members) == 0 {
 		resourceToken, err = resourceEvidence.Claims()
-	} else if server.r3Review == nil {
-		err = resourceEvidence.RequireNoAuthorizationMembers()
 	} else {
-		resourceR3, err = r3.ValidateResourceToken(resourceEvidence)
+		if _, hasR3 := members["r3_uri"]; hasR3 {
+			if server.r3Review == nil {
+				err = errors.New("reference: person server does not support R3 authorization")
+			} else {
+				resourceR3, err = r3.ValidateResourceToken(resourceEvidence)
+			}
+		}
+		if _, hasBudget := members["budget"]; err == nil && hasBudget {
+			if server.budgetPolicy == nil {
+				err = resourceEvidence.RequireNoAuthorizationMembers()
+			} else {
+				resourceBudget, err = budgets.ValidateResourceToken(resourceEvidence)
+			}
+		}
 		if err == nil {
 			resourceToken, err = resourceEvidence.Claims()
 		}
@@ -3073,6 +3091,24 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 		authorizationContext.r3Token = &tokenCopy
 		authorizationContext.r3Document = &documentCopy
 	}
+	if resourceBudget.Valid() {
+		offer, budgetErr := resourceBudget.Budget()
+		evaluation, evaluationErr := budgetEvaluation(resourceBudget, offer)
+		grant, policyErr := server.budgetPolicy(
+			request.Context(), copyAuthorizationRequest(authorizationContext.request), evaluation,
+		)
+		if budgetErr != nil || evaluationErr != nil || policyErr != nil {
+			writeHostPolicyRefusal(response, "invalid_budget", "person-server budget policy denied the request")
+			return
+		}
+		if budgets.ValidateNarrowing(offer, grant) != nil {
+			writeProblem(response, http.StatusInternalServerError, "invalid_budget", errors.New("person-server budget policy returned an invalid narrowing"))
+			return
+		}
+		budgetCopy, grantCopy := resourceBudget, grant
+		authorizationContext.budgetToken = &budgetCopy
+		authorizationContext.budgetGrant = &grantCopy
+	}
 	if server.interactionRequired != nil {
 		required, err := server.interactionRequired(
 			request.Context(),
@@ -3083,8 +3119,8 @@ func (server *PersonServer) handleToken(response http.ResponseWriter, request *h
 			return
 		}
 		if required {
-			if resourceR3.Valid() {
-				writeProblem(response, http.StatusNotImplemented, "r3_deferred_not_implemented", errors.New("immediate R3 authorization does not support deferred interaction"))
+			if resourceR3.Valid() || resourceBudget.Valid() {
+				writeProblem(response, http.StatusNotImplemented, "companion_deferred_not_implemented", errors.New("immediate companion authorization does not support deferred interaction"))
 				return
 			}
 			if err := server.beginPendingAuthorization(response, authorizationContext); err != nil {
@@ -3137,6 +3173,8 @@ func (server *PersonServer) completeAuthorization(
 			decision,
 			authorizationContext.r3Token,
 			authorizationContext.r3Document,
+			authorizationContext.budgetToken,
+			authorizationContext.budgetGrant,
 		)
 		if err != nil {
 			writeProblem(response, http.StatusBadGateway, "federation_failed", err)
@@ -3210,7 +3248,14 @@ func (server *PersonServer) mintLocalAuthToken(
 		MissionS256:  resourceToken.MissionS256,
 		Tenant:       resourceToken.Tenant,
 	}
-	authToken, err := aauth.MintAuthToken(server.signingKey, claims)
+	draft, err := aauth.NewAuthTokenDraft(claims)
+	if err == nil && authorizationContext.budgetGrant != nil {
+		draft, err = budgets.BindAuthToken(draft, *authorizationContext.budgetGrant)
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	authToken, err := draft.Mint(server.signingKey)
 	if err != nil {
 		return "", 0, err
 	}
@@ -3831,6 +3876,8 @@ func (server *PersonServer) pollFederatedAuthorization(
 			personDecision,
 			authorizationContext.r3Token,
 			authorizationContext.r3Document,
+			authorizationContext.budgetToken,
+			authorizationContext.budgetGrant,
 		)
 		if err != nil {
 			server.failFederatedAuthorization(responseWriter, pendingID, http.StatusBadGateway, "federation_failed", err)
@@ -4124,6 +4171,8 @@ func (server *PersonServer) exchangeWithAccessServer(
 	personDecision aauth.AuthorizationDecision,
 	resourceR3 *r3.TokenResult,
 	r3Document *r3.DocumentReference,
+	resourceBudget *budgets.TokenResult,
+	budgetGrant *budgets.Budget,
 ) (accessServerExchange, error) {
 	var exchange accessServerExchange
 	endpoint, err := server.accessServerEndpoint(ctx, accessServerIdentifier)
@@ -4140,7 +4189,7 @@ func (server *PersonServer) exchangeWithAccessServer(
 	if endpointIssuer != accessServerIdentifier {
 		return exchange, errors.New("access-server endpoint origin does not match resource-token audience")
 	}
-	input := map[string]string{
+	input := map[string]any{
 		"resource_token": resourceTokenCompact,
 		"agent_token":    agentTokenCompact,
 	}
@@ -4149,6 +4198,10 @@ func (server *PersonServer) exchangeWithAccessServer(
 	}
 	if upstreamTokenCompact != "" {
 		input["upstream_token"] = upstreamTokenCompact
+	}
+	if budgetGrant != nil {
+		copy := *budgetGrant
+		input["budget"] = copy
 	}
 	body, err := json.Marshal(input)
 	if err != nil {
@@ -4190,6 +4243,8 @@ func (server *PersonServer) exchangeWithAccessServer(
 			personDecision,
 			resourceR3,
 			r3Document,
+			resourceBudget,
+			budgetGrant,
 		)
 	default:
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
@@ -4207,6 +4262,8 @@ func (server *PersonServer) parseAccessServerGrant(
 	personDecision aauth.AuthorizationDecision,
 	resourceR3 *r3.TokenResult,
 	r3Document *r3.DocumentReference,
+	resourceBudget *budgets.TokenResult,
+	budgetGrant *budgets.Budget,
 ) (accessServerExchange, error) {
 	var exchange accessServerExchange
 	var result struct {
@@ -4228,11 +4285,17 @@ func (server *PersonServer) parseAccessServerGrant(
 		return exchange, err
 	}
 	var authR3 r3.TokenResult
+	var authBudget budgets.TokenResult
 	var claims aauth.AuthTokenClaims
-	if resourceR3 == nil {
+	if resourceR3 == nil && resourceBudget == nil {
 		claims, err = claimsWithoutAuthorization(evidence)
 	} else {
-		authR3, err = r3.ValidateAuthToken(evidence)
+		if resourceR3 != nil {
+			authR3, err = r3.ValidateAuthToken(evidence)
+		}
+		if err == nil && resourceBudget != nil {
+			authBudget, err = budgets.ValidateAuthToken(evidence)
+		}
 		if err == nil {
 			claims, err = evidence.Claims()
 		}
@@ -4255,6 +4318,15 @@ func (server *PersonServer) parseAccessServerGrant(
 		}
 		if _, grantErr := r3.NewAuthorizationGrant(*r3Document, decision); grantErr != nil {
 			return exchange, grantErr
+		}
+	}
+	if resourceBudget != nil {
+		if budgetGrant == nil || budgets.ValidateGrant(*resourceBudget, authBudget) != nil {
+			return exchange, errors.New("access-server auth token carries an invalid Budget grant")
+		}
+		actual, budgetErr := authBudget.Budget()
+		if budgetErr != nil || budgets.ValidateNarrowing(*budgetGrant, actual) != nil {
+			return exchange, errors.New("access-server auth token exceeds the person-server Budget grant")
 		}
 	}
 	if claims.Issuer != accessServerIdentifier || claims.DWK != aauth.AccessDiscoveryDocument {
@@ -4299,10 +4371,15 @@ func (server *PersonServer) parseAccessServerGrant(
 	)
 	var retainedClaims aauth.AuthTokenClaims
 	if retainedErr == nil {
-		if resourceR3 == nil {
+		if resourceR3 == nil && resourceBudget == nil {
 			retainedClaims, retainedErr = claimsWithoutAuthorization(retainedEvidence)
 		} else {
-			_, retainedErr = r3.ValidateAuthToken(retainedEvidence)
+			if resourceR3 != nil {
+				_, retainedErr = r3.ValidateAuthToken(retainedEvidence)
+			}
+			if retainedErr == nil && resourceBudget != nil {
+				_, retainedErr = budgets.ValidateAuthToken(retainedEvidence)
+			}
 			if retainedErr == nil {
 				retainedClaims, retainedErr = retainedEvidence.Claims()
 			}

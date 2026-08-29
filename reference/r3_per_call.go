@@ -8,51 +8,51 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
-func (resource *Resource) mintAndRetainR3ResourceToken(
+func (resource *Resource) mintAndRetainResourceToken(
 	ctx context.Context,
 	claims aauth.ResourceTokenClaims,
 	reference r3.DocumentReference,
+	budget *budgets.Budget,
 	now time.Time,
 ) (string, error) {
-	if resource.r3ResourceTokenStore == nil {
-		return r3.MintResourceToken(resource.signingKey, claims, reference)
-	}
-	lineageKey, err := R3ResourceAuthorizationLineageKey(
-		claims.Issuer, claims.Audience, claims.PersonServer, claims.Subject,
-		claims.AgentJKT, claims.MissionS256, claims.Tenant, claims.Account,
-		reference.URI(), reference.Digest(),
-	)
+	draft, err := aauth.NewResourceTokenDraft(claims)
 	if err != nil {
 		return "", err
 	}
-	contextKey, err := r3ResourceAuthorizationContextKey(lineageKey, claims.PresentedJTI, claims.Scope, claims.IssuedAt)
+	if reference.Valid() {
+		draft, err = r3.BindResourceToken(draft, reference)
+	}
+	if err == nil && budget != nil {
+		draft, err = budgets.BindResourceToken(draft, *budget, nil)
+	}
 	if err != nil {
 		return "", err
 	}
-	if existing, loadErr := resource.r3ResourceTokenStore.Load(ctx, contextKey); loadErr == nil {
+	compact, err := draft.Mint(resource.signingKey)
+	if err != nil || resource.resourceTokenLineageStore == nil {
+		return compact, err
+	}
+	record, err := NewResourceTokenLineageRecord(compact, claims)
+	if err != nil {
+		return "", err
+	}
+	if existing, loadErr := resource.resourceTokenLineageStore.Load(ctx, record.ContextKey); loadErr == nil {
 		if !existing.Active(now) {
-			return "", ErrR3ResourceTokenConflict
+			return "", ErrResourceTokenLineageConflict
 		}
 		return existing.ResourceToken, nil
-	} else if !errors.Is(loadErr, ErrR3ResourceTokenNotFound) {
+	} else if !errors.Is(loadErr, ErrResourceTokenLineageNotFound) {
 		return "", loadErr
 	}
-	compact, err := r3.MintResourceToken(resource.signingKey, claims, reference)
-	if err != nil {
-		return "", err
-	}
-	record, err := NewR3ResourceTokenRecord(compact, claims, reference)
-	if err != nil {
-		return "", err
-	}
-	if err := resource.r3ResourceTokenStore.Commit(ctx, record); err != nil {
-		if !errors.Is(err, ErrR3ResourceTokenConflict) {
+	if err := resource.resourceTokenLineageStore.Commit(ctx, record); err != nil {
+		if !errors.Is(err, ErrResourceTokenLineageConflict) {
 			return "", err
 		}
-		winner, loadErr := resource.r3ResourceTokenStore.Load(ctx, record.ContextKey)
+		winner, loadErr := resource.resourceTokenLineageStore.Load(ctx, record.ContextKey)
 		if loadErr != nil || !winner.Active(now) {
 			return "", errors.Join(err, loadErr)
 		}
@@ -70,7 +70,7 @@ func (resource *Resource) challengeR3PerCall(
 	initial r3.TokenResult,
 	operation r3.OperationSet,
 ) {
-	if resource.r3ResourceTokenStore == nil || resource.r3ProposalForRequest == nil ||
+	if resource.resourceTokenLineageStore == nil || resource.r3ProposalForRequest == nil ||
 		resource.r3ParametersForRequest == nil || resource.r3PerCallStore == nil ||
 		resource.r3PerCallOperation == nil {
 		writeProblem(response, http.StatusNotImplemented, "r3_per_call_not_implemented", errors.New("resource does not implement R3 per-call authorization"))
@@ -81,7 +81,7 @@ func (resource *Resource) challengeR3PerCall(
 		writeProblem(response, http.StatusInternalServerError, "r3_lineage_failed", err)
 		return
 	}
-	lineageKey, err := R3ResourceAuthorizationLineageKey(
+	lineageKey, err := ResourceAuthorizationLineageKey(
 		resource.identifier, claims.Issuer, claims.PersonServer, claims.Subject,
 		thumbprint, claims.MissionS256, claims.Tenant, claims.Account,
 		initial.URI(), initial.Digest(),
@@ -90,7 +90,7 @@ func (resource *Resource) challengeR3PerCall(
 		writeProblem(response, http.StatusInternalServerError, "r3_lineage_failed", err)
 		return
 	}
-	lineage, err := resource.r3ResourceTokenStore.Resolve(request.Context(), lineageKey, claims.IssuedAt)
+	lineage, err := resource.resourceTokenLineageStore.Resolve(request.Context(), lineageKey, claims.IssuedAt)
 	if err != nil || !lineage.Active(time.Unix(claims.IssuedAt, 0)) ||
 		lineage.PersonServer != claims.PersonServer || lineage.Subject != claims.Subject ||
 		lineage.AgentJKT != thumbprint || !scopeStringContains(lineage.Scope, claims.Scope) {
@@ -138,7 +138,7 @@ func (resource *Resource) challengeR3PerCall(
 		PresentedJTI: lineage.PresentedJTI, MissionS256: claims.MissionS256,
 		Tenant: claims.Tenant, Account: claims.Account,
 	}
-	compact, err := resource.mintAndRetainR3ResourceToken(request.Context(), resourceClaims, reference, now)
+	compact, err := resource.mintAndRetainResourceToken(request.Context(), resourceClaims, reference, nil, now)
 	if err != nil {
 		writeProblem(response, http.StatusServiceUnavailable, "r3_custody_unavailable", err)
 		return

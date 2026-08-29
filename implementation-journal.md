@@ -98,6 +98,39 @@ for this library.
 - Deferred `202` delivery, a same-process PS/AS topology, R3 caching, and
   three-party R3 remain unclaimed.
 
+### Composable issuance and immediate four-party Budgets
+
+- Core `TokenDraft` values preserve the existing Core claim bytes, accept only
+  complete member sets from the closed authorization catalog, append companion
+  members in canonical name order, and sign the composed payload once. Typed
+  R3 and Budget binders compose on the same draft; a clean external-module test
+  verifies both results against one exact resource token.
+- The standalone `budgets` package owns strict integer Budget and consumption
+  values, denomination-preserving narrowing, token-member validation bound to
+  Core evidence, and RFC 9651 `AAuth-Budget` parsing and formatting. It does not
+  own role policy, durable stores, provider execution, or Core token signing.
+- One immediate four-party journey narrows a request of 10 to a resource offer
+  of 5 USD, a PS grant of 3, and an AS grant of 2. Each role sees defensive
+  consumption evidence, and every boundary rejects widening or a denomination
+  change before issuing its token.
+- The reference resource derives a stable provider key from the signed auth
+  token and deployment call identity. It atomically reserves the declared
+  maximum before invoking the provider, prevents concurrent oversubscription,
+  settles the actual cost, and releases the difference. A conflicting retry
+  cannot create a second provider identity by changing local pricing or policy.
+- A successful JSON result and cost are retained before response release. An
+  exact signed retry after response loss and reconstruction returns that result
+  before fresh protected policy or pricing. An ambiguous provider failure keeps
+  the reservation because the resource cannot prove that no consequence
+  occurred.
+- An insufficient maximum is refused before provider execution with the exact
+  current remainder and required maximum, a fresh resource-token offer, and an
+  auth-token requirement reason. Resource-token lineage custody is shared by
+  R3 and Budgets rather than implemented by either companion.
+- Metadata-driven Budget discovery, the general recent-consumption selection
+  algorithm, usage counters, streaming trailers, billing interaction, deferred
+  Budget authorization, and broader deployment topologies remain unclaimed.
+
 ## 2026-08-28
 
 ### Incomplete callable R3 authorization removed

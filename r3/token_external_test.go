@@ -126,7 +126,6 @@ func TestR3AuthTokenValidationRefusesMalformedMembers(t *testing.T) {
 		{name: "granted operation is malformed", member: "r3_granted", value: json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{}]}`)},
 		{name: "per-call vocabulary differs", member: "r3_per_call", value: json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:openapi","operations":[{"operationId":"write"}]}`)},
 		{name: "per-call overlaps grant", member: "r3_per_call", value: json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}]}`)},
-		{name: "Budget remains unresolved", member: "budget", value: json.RawMessage(`{"amount":100,"unit":"USD","decimals":2}`)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			members := make(map[string]json.RawMessage, len(base))

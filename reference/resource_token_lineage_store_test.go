@@ -11,7 +11,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
-func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing.T) {
+func TestFileResourceTokenLineageStoreRecoversOneExactAuthorizationLineage(t *testing.T) {
 	now := time.Date(2026, 8, 29, 17, 0, 0, 0, time.UTC)
 	resourceKey := referenceTestSigningKey(t, "resource-r3-lineage")
 	agentKey := referenceTestSigningKey(t, "agent-r3-lineage")
@@ -37,7 +37,7 @@ func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := NewR3ResourceTokenRecord(token, claims, document)
+	record, err := NewResourceTokenLineageRecord(token, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing
 	}
 
 	path := filepath.Join(t.TempDir(), "resource-token-lineage.json")
-	store, err := NewFileR3ResourceTokenStore(path)
+	store, err := NewFileResourceTokenLineageStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing
 		t.Fatalf("exact replay = %v", err)
 	}
 
-	reopened, err := NewFileR3ResourceTokenStore(path)
+	reopened, err := NewFileResourceTokenLineageStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,11 +81,11 @@ func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	conflict, err := NewR3ResourceTokenRecord(changedToken, changedClaims, document)
+	conflict, err := NewResourceTokenLineageRecord(changedToken, changedClaims)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reopened.Commit(context.Background(), conflict); !errors.Is(err, ErrR3ResourceTokenConflict) {
+	if err := reopened.Commit(context.Background(), conflict); !errors.Is(err, ErrResourceTokenLineageConflict) {
 		t.Fatalf("changed replay = %v", err)
 	}
 	scopedClaims := claims
@@ -95,7 +95,7 @@ func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	scoped, err := NewR3ResourceTokenRecord(scopedToken, scopedClaims, document)
+	scoped, err := NewResourceTokenLineageRecord(scopedToken, scopedClaims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	ambiguous, err := NewR3ResourceTokenRecord(ambiguousToken, ambiguousClaims, document)
+	ambiguous, err := NewResourceTokenLineageRecord(ambiguousToken, ambiguousClaims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,15 +119,15 @@ func TestFileR3ResourceTokenStoreRecoversOneExactAuthorizationLineage(t *testing
 	if err := reopened.Commit(context.Background(), ambiguous); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Resolve(context.Background(), record.LineageKey, now.Add(time.Minute).Unix()); !errors.Is(err, ErrR3ResourceTokenConflict) {
+	if _, err := reopened.Resolve(context.Background(), record.LineageKey, now.Add(time.Minute).Unix()); !errors.Is(err, ErrResourceTokenLineageConflict) {
 		t.Fatalf("ambiguous lineage resolution = %v", err)
 	}
-	if _, err := reopened.Load(context.Background(), "missing"); !errors.Is(err, ErrR3ResourceTokenNotFound) {
+	if _, err := reopened.Load(context.Background(), "missing"); !errors.Is(err, ErrResourceTokenLineageNotFound) {
 		t.Fatalf("missing = %v", err)
 	}
 }
 
-func TestR3ResourceTokenRecordRejectsContextOrTokenSubstitution(t *testing.T) {
+func TestResourceTokenLineageRecordRejectsContextOrTokenSubstitution(t *testing.T) {
 	now := time.Date(2026, 8, 29, 17, 30, 0, 0, time.UTC)
 	resourceKey := referenceTestSigningKey(t, "resource-r3-lineage-negative")
 	agentKey := referenceTestSigningKey(t, "agent-r3-lineage-negative")
@@ -151,26 +151,15 @@ func TestR3ResourceTokenRecordRejectsContextOrTokenSubstitution(t *testing.T) {
 	}
 	changed := claims
 	changed.PresentedJTI = "person-token-other"
-	if _, err := NewR3ResourceTokenRecord(token, changed, document); err == nil {
+	if _, err := NewResourceTokenLineageRecord(token, changed); err == nil {
 		t.Fatal("changed presented_jti was accepted against the compact token")
 	}
 	changed = claims
 	changed.Scope = "records.read"
-	if _, err := NewR3ResourceTokenRecord(token, changed, document); err == nil {
+	if _, err := NewResourceTokenLineageRecord(token, changed); err == nil {
 		t.Fatal("changed scope was accepted against the compact token")
 	}
-	otherDocument, err := r3.NewDocumentReference(
-		"https://resource.example/r3/other",
-		[]byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read_record"}],"display":{"summary":"Read records"}}`),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewR3ResourceTokenRecord(token, claims, otherDocument); err == nil {
-		t.Fatal("changed R3 reference was accepted against the compact token")
-	}
-
-	if _, err := NewR3ResourceTokenRecord("not-a-token", claims, document); err == nil {
+	if _, err := NewResourceTokenLineageRecord("not-a-token", claims); err == nil {
 		t.Fatal("malformed compact token was accepted")
 	}
 }

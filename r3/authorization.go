@@ -199,14 +199,27 @@ func (grant AuthorizationGrant) Reference() (DocumentReference, error) {
 // MintResourceToken validates the Core claims and binds the exact R3 document
 // reference into the resulting resource token.
 func MintResourceToken(key jose.SigningKey, claims aauth.ResourceTokenClaims, reference DocumentReference) (string, error) {
-	if !reference.Valid() {
-		return "", errors.New("aauth: R3 document reference is invalid")
-	}
-	base, err := aauth.MintResourceToken(key, claims)
+	draft, err := aauth.NewResourceTokenDraft(claims)
 	if err != nil {
 		return "", err
 	}
-	return extendToken(key, base, map[string]json.RawMessage{
+	draft, err = BindResourceToken(draft, reference)
+	if err != nil {
+		return "", err
+	}
+	return draft.Mint(key)
+}
+
+// BindResourceToken adds one exact R3 document reference to a composable Core
+// resource-token draft.
+func BindResourceToken(
+	draft aauth.TokenDraft[aauth.ResourceTokenClaims],
+	reference DocumentReference,
+) (aauth.TokenDraft[aauth.ResourceTokenClaims], error) {
+	if !reference.Valid() {
+		return aauth.TokenDraft[aauth.ResourceTokenClaims]{}, errors.New("aauth: R3 document reference is invalid")
+	}
+	return draft.WithAuthorizationMembers(map[string]json.RawMessage{
 		"r3_uri":  mustJSON(reference.uri),
 		"r3_s256": mustJSON(reference.digest),
 	})
@@ -215,17 +228,30 @@ func MintResourceToken(key jose.SigningKey, claims aauth.ResourceTokenClaims, re
 // MintAuthToken validates the Core claims and carries one exact R3 policy
 // partition.
 func MintAuthToken(key jose.SigningKey, claims aauth.AuthTokenClaims, grant AuthorizationGrant) (string, error) {
-	if !grant.Valid() {
-		return "", errors.New("aauth: R3 authorization grant is invalid")
-	}
-	base, err := aauth.MintAuthToken(key, claims)
+	draft, err := aauth.NewAuthTokenDraft(claims)
 	if err != nil {
 		return "", err
+	}
+	draft, err = BindAuthToken(draft, grant)
+	if err != nil {
+		return "", err
+	}
+	return draft.Mint(key)
+}
+
+// BindAuthToken adds one exact R3 policy partition to a composable Core
+// auth-token draft.
+func BindAuthToken(
+	draft aauth.TokenDraft[aauth.AuthTokenClaims],
+	grant AuthorizationGrant,
+) (aauth.TokenDraft[aauth.AuthTokenClaims], error) {
+	if !grant.Valid() {
+		return aauth.TokenDraft[aauth.AuthTokenClaims]{}, errors.New("aauth: R3 authorization grant is invalid")
 	}
 	granted, _ := grant.Granted()
 	grantedJSON, err := json.Marshal(granted)
 	if err != nil {
-		return "", err
+		return aauth.TokenDraft[aauth.AuthTokenClaims]{}, err
 	}
 	members := map[string]json.RawMessage{
 		"r3_uri":     mustJSON(grant.reference.uri),
@@ -235,11 +261,11 @@ func MintAuthToken(key jose.SigningKey, claims aauth.AuthTokenClaims, grant Auth
 	if perCall, present := grant.PerCall(); present {
 		perCallJSON, err := json.Marshal(perCall)
 		if err != nil {
-			return "", err
+			return aauth.TokenDraft[aauth.AuthTokenClaims]{}, err
 		}
 		members["r3_per_call"] = perCallJSON
 	}
-	return extendToken(key, base, members)
+	return draft.WithAuthorizationMembers(members)
 }
 
 // ValidateAuthorizationGrant binds an auth-token policy partition to the
@@ -265,25 +291,6 @@ func ValidateAuthorizationGrant(resource TokenResult, auth TokenResult, requeste
 		}
 	}
 	return nil
-}
-
-func extendToken(key jose.SigningKey, compact string, members map[string]json.RawMessage) (string, error) {
-	parsed, err := jose.ParseCompact(compact)
-	if err != nil {
-		return "", err
-	}
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(parsed.Payload(), &payload); err != nil {
-		return "", err
-	}
-	for name, value := range members {
-		payload[name] = append(json.RawMessage(nil), value...)
-	}
-	exact, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return jose.SignCompact(key, parsed.Header(), exact)
 }
 
 func mustJSON(value string) json.RawMessage {

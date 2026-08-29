@@ -68,13 +68,6 @@ func validateToken[T aauth.TokenClaims](core aauth.VerifiedToken[T], tokenType s
 	if err != nil {
 		return result, err
 	}
-	for name := range members {
-		switch name {
-		case "r3_uri", "r3_s256", "r3_granted", "r3_per_call":
-		default:
-			return result, &ValidationError{Member: name, Cause: errors.New("is not validated by R3")}
-		}
-	}
 	uri, err := memberString(members, "r3_uri")
 	if err != nil {
 		return result, err
