@@ -670,8 +670,9 @@ for this library.
 
 ### Current token revocation boundary
 
-- **Status: the reference Person Server's agent-token and auth-token
-  Resource revocation paths are implemented and qualified across restart.**
+- **Status: the reference Person Server's agent-token, auth-token Resource,
+  and Access Server revocation paths are implemented and qualified across
+  restart.**
 - The public request value contains only the protocol's `(iss, jti)` pair. A
   signed `POST /revoke` is accepted only after the request body and caller
   signature are verified; a deployment policy may admit the token issuer or a
@@ -685,9 +686,12 @@ for this library.
   revoked token; the resource journey also covers a four-party AS-issued auth
   token, a trusted PS revoker, an unauthorized server, unknown target, and
   new-proof idempotency.
-- Mission-wide propagation, access-server orchestration, and provider fan-out
-  remain unclaimed; this increment does not imply complete revocation coverage
-  for every token issuer or token type.
+- Mission-wide propagation and provider fan-out remain unclaimed; this
+  increment does not imply complete revocation coverage
+  for every token issuer or token type. The Access Server now records each
+  auth-token identity before release, advertises its endpoint, and accepts the
+  token issuer or a trusted person-server caller with the same durable replay
+  contract.
 
 ### Protected host signing boundary
 

@@ -310,8 +310,10 @@ later requests. An auth-token resource can likewise advertise a revocation
 endpoint, retain each observed auth token by `(iss, jti)`, accept the token
 issuer or a trusted person-server policy, and refuse the revoked token before
 its host operation even after resource reconstruction. Mission-wide
-propagation, access-server orchestration, and provider fan-out remain separate
-profile work.
+propagation and provider fan-out remain separate profile work. An access
+server with the feature enabled advertises its own endpoint, records each
+auth-token identity before releasing it, and accepts the token issuer or a
+trusted person-server caller with the same durable replay behavior.
 
 Governance custody can be injected through the small `GovernanceStore`
 interface. The included single-writer file adapter writes private `0600`

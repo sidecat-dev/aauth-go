@@ -219,6 +219,7 @@ func TestCurrentClaimsUseCurrentEvidenceOnly(t *testing.T) {
 		"mission_test.go":                               true,
 		"revocation_journey_test.go":                    true,
 		"resource_revocation_journey_test.go":           true,
+		"access_server_revocation_journey_test.go":      true,
 		"revocation_test.go":                            true,
 		"reference/token_revocation_test.go":            true,
 		"signaturekey/request_external_test.go":         true,

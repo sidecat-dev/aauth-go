@@ -45,6 +45,8 @@ type AccessServerConfig struct {
 	R3FetchTimeout        time.Duration
 	R3IssuanceStore       R3IssuanceStore
 	BudgetPolicy          BudgetPolicy
+	TokenRevocationStore  TokenRevocationStore
+	TokenRevocationPolicy aauth.TokenRevocationPolicy
 }
 
 type AccessServer struct {
@@ -66,6 +68,8 @@ type AccessServer struct {
 	r3FetchTimeout        time.Duration
 	r3IssuanceStore       R3IssuanceStore
 	budgetPolicy          BudgetPolicy
+	tokenRevocationStore  TokenRevocationStore
+	tokenRevocationPolicy aauth.TokenRevocationPolicy
 	replayMu              sync.Mutex
 	replayedProof         map[string]time.Time
 	randomMu              sync.Mutex
@@ -182,6 +186,9 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 	if config.R3FetchTimeout < 0 {
 		return nil, errors.New("reference: access-server R3 fetch timeout is invalid")
 	}
+	if config.TokenRevocationPolicy != nil && config.TokenRevocationStore == nil {
+		return nil, errors.New("reference: token revocation policy requires a token revocation store")
+	}
 	pendingLifetime := config.PendingLifetime
 	if pendingLifetime == 0 {
 		pendingLifetime = 5 * time.Minute
@@ -212,6 +219,8 @@ func NewAccessServer(config AccessServerConfig) (*AccessServer, error) {
 		r3FetchTimeout:        config.R3FetchTimeout,
 		r3IssuanceStore:       config.R3IssuanceStore,
 		budgetPolicy:          config.BudgetPolicy,
+		tokenRevocationStore:  config.TokenRevocationStore,
+		tokenRevocationPolicy: config.TokenRevocationPolicy,
 		replayedProof:         make(map[string]time.Time),
 		pending:               make(map[string]*pendingAccessServerAuthorization),
 	}
@@ -663,6 +672,9 @@ func restoreAccessAuthorizationContext(value accessAuthorizationContextRecord) a
 func (server *AccessServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", server.handleToken)
+	if server.tokenRevocationStore != nil {
+		mux.HandleFunc("POST /revoke", server.handleTokenRevocation)
+	}
 	mux.HandleFunc("GET /pending/{id}", server.handlePendingAuthorization)
 	mux.HandleFunc("GET /interaction/{id}", server.handleInteraction)
 	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
@@ -1058,6 +1070,10 @@ func (server *AccessServer) completeAuthorization(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if err := server.observeIssuedAuthToken(ctx, authToken); err != nil {
+		writeProblem(response, http.StatusServiceUnavailable, "token_revocation_unavailable", err)
+		return
+	}
 	if authorizationContext.r3Grant != nil {
 		parsed, parseErr := jose.ParseCompact(authToken)
 		var claims aauth.AuthTokenClaims
@@ -1415,6 +1431,10 @@ func (server *AccessServer) handlePendingAuthorization(
 			token := pending.terminalAuthToken
 			expiresAt := pending.terminalExpiresAt
 			server.pendingMu.Unlock()
+			if err := server.observeIssuedAuthToken(request.Context(), token); err != nil {
+				writeProblem(response, http.StatusServiceUnavailable, "token_revocation_unavailable", err)
+				return
+			}
 			writeJSON(response, http.StatusOK, map[string]any{"auth_token": token, "expires_in": expiresAt - server.clock.Now().Unix()})
 			return
 		}
@@ -1427,6 +1447,10 @@ func (server *AccessServer) handlePendingAuthorization(
 		token, expiresAt, err := server.mintAuthorization(request.Context(), authorizationContext, decision, pending.id)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if err := server.observeIssuedAuthToken(request.Context(), token); err != nil {
+			writeProblem(response, http.StatusServiceUnavailable, "token_revocation_unavailable", err)
 			return
 		}
 		server.pendingMu.Lock()
@@ -1531,11 +1555,15 @@ func (server *AccessServer) seenReplay(key string, expiresAt time.Time, verified
 }
 
 func (server *AccessServer) handleMetadata(response http.ResponseWriter, _ *http.Request) {
-	writeJSON(response, http.StatusOK, map[string]any{
+	metadata := map[string]any{
 		"issuer":              server.identifier,
 		"jwks_uri":            server.identifier + "/jwks",
 		"auth_token_endpoint": server.identifier + "/token",
-	})
+	}
+	if server.tokenRevocationStore != nil {
+		metadata["revocation_endpoint"] = server.identifier + "/revoke"
+	}
+	writeJSON(response, http.StatusOK, metadata)
 }
 
 func (server *AccessServer) handleJWKS(response http.ResponseWriter, _ *http.Request) {

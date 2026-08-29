@@ -588,6 +588,93 @@ func (server *PersonServer) handleTokenRevocation(
 	response.WriteHeader(http.StatusOK)
 }
 
+func (server *AccessServer) observeIssuedAuthToken(ctx context.Context, compact string) error {
+	if server.tokenRevocationStore == nil {
+		return nil
+	}
+	evidence, err := aa.VerifyAuthToken(
+		ctx,
+		compact,
+		signaturekey.StaticKeyResolver{server.identifier: {server.signingKey.ID(): server.signingKey.PublicJWK()}},
+		server.clock,
+	)
+	if err != nil {
+		return fmt.Errorf("reference: issued auth-token does not verify for revocation custody: %w", err)
+	}
+	claims, err := evidence.Claims()
+	if err != nil {
+		return fmt.Errorf("reference: read issued auth-token claims for revocation custody: %w", err)
+	}
+	return server.tokenRevocationStore.Observe(ctx, TokenRevocationObservation{
+		Request:   aa.TokenRevocationRequest{Issuer: claims.Issuer, JTI: claims.JTI},
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+	})
+}
+
+func (server *AccessServer) handleTokenRevocation(
+	response http.ResponseWriter,
+	request *http.Request,
+) {
+	if request.URL.RawQuery != "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("revocation endpoint does not accept query parameters"))
+		return
+	}
+	body, err := readBoundedRequestBody(request)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	verified, err := aa.VerifyRequest(
+		request.Context(),
+		request,
+		server.keyResolver,
+		server.clock,
+		aa.VerifyRequestOptions{
+			RequiredComponents:       []string{"content-type", "content-digest"},
+			AllowedSignatureKeyTypes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
+		},
+	)
+	if err != nil {
+		writeSignatureFailure(response, err)
+		return
+	}
+	var input aa.TokenRevocationRequest
+	if err := decodeJSONBytes(bytes.NewReader(body), &input); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	if err := input.Validate(); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	evaluation := aa.TokenRevocationEvaluation{Request: input, CallerIssuer: verified.Signer}
+	if server.tokenRevocationPolicy != nil {
+		err = server.tokenRevocationPolicy(request.Context(), evaluation)
+	} else if verified.Signer != input.Issuer {
+		err = server.trustedPersonServer(request.Context(), verified.Signer)
+	}
+	if err != nil {
+		writeProblem(response, http.StatusForbidden, "revocation_denied", errors.New("revocation policy denied the request"))
+		return
+	}
+	if err := server.tokenRevocationStore.Revoke(
+		request.Context(), input, verified.ReplayKey,
+		verified.Created.Add(signaturekey.DefaultSignatureWindow), verified.VerifiedAt,
+	); err != nil {
+		switch {
+		case errors.Is(err, ErrTokenRevocationNotFound):
+			writeProblem(response, http.StatusNotFound, "token_not_found", errors.New("token revocation target was not observed"))
+		case errors.Is(err, ErrTokenRevocationReplay):
+			writeProblem(response, http.StatusBadRequest, "request_replayed", errors.New("revocation request proof was replayed"))
+		default:
+			writeProblem(response, http.StatusServiceUnavailable, "token_revocation_unavailable", err)
+		}
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(http.StatusOK)
+}
+
 func (resource *Resource) checkAuthToken(
 	response http.ResponseWriter,
 	ctx context.Context,
