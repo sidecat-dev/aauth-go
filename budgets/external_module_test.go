@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,6 +38,77 @@ func TestBudgetValuesNarrowWithoutChangingDenomination(t *testing.T) {
 		if _, err := budgets.ParseBudget(exact); err == nil {
 			t.Fatalf("invalid budget accepted: %s", exact)
 		}
+	}
+}
+
+func TestBudgetConsumptionSelectionKeepsNewestTwentyAndRejectsInvalidHistory(t *testing.T) {
+	records := make([]budgets.Consumption, budgets.MaxConsumptionRecords+3)
+	for index := range records {
+		records[index] = budgets.Consumption{
+			JTI:      fmt.Sprintf("auth-%02d", index),
+			Consumed: int64(index + 1),
+		}
+	}
+	selected, err := budgets.SelectRecentConsumption(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != budgets.MaxConsumptionRecords || selected[0].JTI != "auth-00" || selected[len(selected)-1].JTI != "auth-19" {
+		t.Fatalf("selected records = %#v", selected)
+	}
+	records[0].JTI = "changed"
+	if selected[0].JTI != "auth-00" {
+		t.Fatal("selection aliases input history")
+	}
+	invalid := append([]budgets.Consumption(nil), records...)
+	invalid[budgets.MaxConsumptionRecords+1].JTI = ""
+	if _, err := budgets.SelectRecentConsumption(invalid); err == nil {
+		t.Fatal("invalid record beyond the projection bound was ignored")
+	}
+}
+
+func TestBindResourceTokenUsesBoundedConsumptionSelection(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	resourceKey := budgetSigningKey(t, "resource-selection", 0x61)
+	agentKey := budgetSigningKey(t, "agent-selection", 0x62)
+	thumbprint, err := agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := aauth.NewResourceTokenDraft(aauth.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+		Audience: "https://ps.example", JTI: "resource-selection", AgentJKT: thumbprint,
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Scope: "inference.completions",
+		PersonServer: "https://ps.example", Subject: "directed-person", PresentedJTI: "person-token-selection",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := make([]budgets.Consumption, budgets.MaxConsumptionRecords+3)
+	for index := range records {
+		records[index] = budgets.Consumption{JTI: fmt.Sprintf("auth-%02d", index), Consumed: int64(index + 1)}
+	}
+	draft, err = budgets.BindResourceToken(draft, budgets.Budget{Amount: 5_000_000, Unit: "USD", Decimals: 6}, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := draft.Mint(resourceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := aauth.VerifyResourceToken(context.Background(), compact,
+		signaturekey.StaticKeyResolver{"https://resource.example": {resourceKey.ID(): resourceKey.PublicJWK()}},
+		aauth.ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := budgets.ValidateResourceToken(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumption, err := result.Consumption()
+	if err != nil || len(consumption) != budgets.MaxConsumptionRecords || consumption[0].JTI != "auth-00" || consumption[len(consumption)-1].JTI != "auth-19" {
+		t.Fatalf("bound resource-token consumption = %#v, %v", consumption, err)
 	}
 }
 

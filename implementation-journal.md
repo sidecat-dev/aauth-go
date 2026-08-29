@@ -127,8 +127,13 @@ for this library.
   current remainder and required maximum, a fresh resource-token offer, and an
   auth-token requirement reason. Resource-token lineage custody is shared by
   R3 and Budgets rather than implemented by either companion.
-- Metadata-driven Budget discovery, the general recent-consumption selection
-  algorithm, usage counters, streaming trailers, billing interaction, deferred
+- `budgets.SelectRecentConsumption` validates a most-recent-first history,
+  returns an independent copy of at most 20 newest records, and the resource
+  token binder uses it before serializing `budget_consumed`. This enforces the
+  draft's size bound without claiming that the package owns a consumption
+  ledger or knows record recency beyond the supplied order.
+- Metadata-driven Budget discovery, durable per-person ledger production and
+  lookup, usage counters, streaming trailers, billing interaction, deferred
   Budget authorization, and broader deployment topologies remain unclaimed.
 
 ### Protected-resource auth-token challenge

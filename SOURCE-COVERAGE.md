@@ -110,11 +110,13 @@ Evidence:
 
 ### `budgets/budget-consumed` — Partial
 
-Consumption records are strictly parsed as JTI plus non-negative consumed amount and are exposed to PS and AS Budget policy as defensive evidence. The bounded recent-record selection algorithm remains unclaimed.
+Consumption records are strictly parsed as JTI plus non-negative consumed amount; resource-token composition validates a most-recent-first history and projects at most 20 newest records as independent evidence exposed to PS and AS Budget policy. Durable per-person ledger selection and production remain unclaimed.
 
 Evidence:
 
 - `budgets/external_module_test.go:TestBudgetCompanionBindsNarrowedTokenEvidence`
+- `budgets/external_module_test.go:TestBudgetConsumptionSelectionKeepsNewestTwentyAndRejectsInvalidHistory`
+- `budgets/external_module_test.go:TestBindResourceTokenUsesBoundedConsumptionSelection`
 
 ### `budgets/budget-model` — Partial
 

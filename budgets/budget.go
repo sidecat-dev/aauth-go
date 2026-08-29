@@ -16,6 +16,10 @@ import (
 
 const MaxAmount int64 = 999_999_999_999_999
 
+// MaxConsumptionRecords is the maximum number of recent records a resource
+// should carry in a resource-token projection.
+const MaxConsumptionRecords = 20
+
 // Budget is one non-negative allocation in a resource-selected denomination.
 type Budget struct {
 	Amount   int64  `json:"amount"`
@@ -94,6 +98,19 @@ func ValidateNarrowing(previous, next Budget) error {
 		return errors.New("aauth budgets: narrowing increased the allocation")
 	}
 	return nil
+}
+
+// SelectRecentConsumption validates a most-recent-first history and returns an
+// independent copy of its newest bounded records. Records beyond the bound are
+// omitted from the projection, but are still validated before selection.
+func SelectRecentConsumption(records []Consumption) ([]Consumption, error) {
+	if err := validateConsumption(records); err != nil {
+		return nil, err
+	}
+	if len(records) > MaxConsumptionRecords {
+		records = records[:MaxConsumptionRecords]
+	}
+	return cloneConsumption(records), nil
 }
 
 func validateConsumption(records []Consumption) error {

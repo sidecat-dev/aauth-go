@@ -32,7 +32,8 @@ func BindResourceToken(
 	if err := budget.Validate(); err != nil {
 		return aauth.TokenDraft[aauth.ResourceTokenClaims]{}, err
 	}
-	if err := validateConsumption(consumption); err != nil {
+	selectedConsumption, err := SelectRecentConsumption(consumption)
+	if err != nil {
 		return aauth.TokenDraft[aauth.ResourceTokenClaims]{}, err
 	}
 	budgetJSON, err := json.Marshal(budget)
@@ -40,8 +41,8 @@ func BindResourceToken(
 		return aauth.TokenDraft[aauth.ResourceTokenClaims]{}, err
 	}
 	members := map[string]json.RawMessage{"budget": budgetJSON}
-	if consumption != nil {
-		consumptionJSON, err := json.Marshal(consumption)
+	if selectedConsumption != nil {
+		consumptionJSON, err := json.Marshal(selectedConsumption)
 		if err != nil {
 			return aauth.TokenDraft[aauth.ResourceTokenClaims]{}, err
 		}
