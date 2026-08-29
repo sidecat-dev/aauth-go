@@ -124,10 +124,6 @@
           "test": "TestCurrentPersonServerDeferredAuthorizationJourney"
         },
         {
-          "file": "subagent_journey_test.go",
-          "test": "TestCurrentParentMediatedSubagentAuthorization"
-        },
-        {
           "file": "call_chaining_journey_test.go",
           "test": "TestCurrentCallChainThroughAccessServer"
         }

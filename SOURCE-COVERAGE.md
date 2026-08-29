@@ -466,7 +466,6 @@ Evidence:
 - `call_chaining_journey_test.go:TestCurrentCallChainThroughPersonServer`
 - `person_token_access_journey_test.go:TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer`
 - `deferred_person_server_journey_test.go:TestCurrentPersonServerDeferredAuthorizationJourney`
-- `subagent_journey_test.go:TestCurrentParentMediatedSubagentAuthorization`
 - `call_chaining_journey_test.go:TestCurrentCallChainThroughAccessServer`
 
 ### `core/person-token-structure` — Exercised
