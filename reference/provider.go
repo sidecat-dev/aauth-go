@@ -1,10 +1,14 @@
 package reference
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -323,6 +327,62 @@ func (provider *AgentProvider) IssueAgentToken(request aauth.AgentTokenRequest) 
 		provider.clock.Now(),
 		provider.newID(),
 	)
+}
+
+// RevokeToken asks a Person Server to revoke one provider-issued agent token.
+// The provider signs the request with its server identity; each call gets a
+// fresh nonce so a repeated request is a new proof rather than an accidental
+// HTTP-signature replay.
+func (provider *AgentProvider) RevokeToken(
+	ctx context.Context,
+	client *http.Client,
+	endpoint string,
+	input aauth.TokenRevocationRequest,
+) error {
+	if provider == nil || provider.signingKey.ID() == "" || provider.clock == nil {
+		return errors.New("reference: agent provider is not initialized")
+	}
+	if client == nil {
+		return errors.New("reference: agent provider revocation client is required")
+	}
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return err
+	}
+	if err := input.Validate(); err != nil {
+		return err
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	nonce := make([]byte, bootstrapNonceBytes)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return fmt.Errorf("reference: generate agent revocation nonce: %w", err)
+	}
+	if err := signaturekey.SignJWKSURIRequestWithOptions(
+		request,
+		provider.signingKey,
+		provider.identifier,
+		aauth.AgentDiscoveryDocument,
+		provider.clock,
+		signaturekey.SignOptions{Nonce: base64.RawURLEncoding.EncodeToString(nonce)},
+	); err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return responseError(response)
+	}
+	return nil
 }
 
 func (provider *AgentProvider) Handler() http.Handler {

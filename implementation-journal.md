@@ -695,7 +695,8 @@ for this library.
   for every token issuer or token type. The Access Server now records each
   auth-token identity before release, advertises its endpoint, and accepts the
   token issuer or a trusted person-server caller with the same durable replay
-  contract.
+  contract. The Agent Provider now has a small client for that provider-owned
+  server-signed revocation call, including fresh nonces for repeated proofs.
 
 ### Protected host signing boundary
 

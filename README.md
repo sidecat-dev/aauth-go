@@ -316,6 +316,8 @@ propagation and provider fan-out remain separate profile work. An access
 server with the feature enabled advertises its own endpoint, records each
 auth-token identity before releasing it, and accepts the token issuer or a
 trusted person-server caller with the same durable replay behavior.
+An `AgentProvider` can call a person-server endpoint directly with its own
+server-signed issuer proof and receives the server's typed problem response.
 
 Governance custody can be injected through the small `GovernanceStore`
 interface. The included single-writer file adapter writes private `0600`

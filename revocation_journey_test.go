@@ -215,32 +215,10 @@ func TestCurrentAgentTokenRevocationSurvivesPersonServerRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	serverRevokeBody, err := json.Marshal(aa.TokenRevocationRequest{
+	if err := ap.RevokeToken(context.Background(), client, "https://ps.example/revoke", aa.TokenRevocationRequest{
 		Issuer: "https://ap.example", JTI: "revocation-agent-token",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	serverRevokeRequest, err := http.NewRequestWithContext(
-		context.Background(), http.MethodPost, "https://ps.example/revoke", bytes.NewReader(serverRevokeBody),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serverRevokeRequest.Header.Set("Content-Type", "application/json")
-	if err := signaturekey.SignJWKSURIRequestWithOptions(
-		serverRevokeRequest, apKey, "https://ap.example", aa.AgentDiscoveryDocument, clock,
-		signaturekey.SignOptions{Nonce: "server-revoke"},
-	); err != nil {
-		t.Fatal(err)
-	}
-	serverRevokeResponse, err := client.Do(serverRevokeRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serverRevokeResponse.Body.Close()
-	if serverRevokeResponse.StatusCode != http.StatusOK {
-		t.Fatalf("server-signed idempotent revoke = %d", serverRevokeResponse.StatusCode)
+	}); err != nil {
+		t.Fatalf("provider server-signed idempotent revoke = %v", err)
 	}
 	if err := revoker.RevokeToken(context.Background(), "https://ps.example/revoke", aa.TokenRevocationRequest{
 		Issuer: "https://ap.example", JTI: "revocation-agent-token",
