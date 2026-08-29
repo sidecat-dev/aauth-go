@@ -131,6 +131,26 @@ for this library.
   algorithm, usage counters, streaming trailers, billing interaction, deferred
   Budget authorization, and broader deployment topologies remain unclaimed.
 
+### Protected-resource auth-token challenge
+
+- An auth-token resource now admits a person-token-signed protected call as the
+  current baseline challenge entry. It verifies the directed token and request,
+  maps the exact required scopes, consumes the request proof, and returns a
+  short-lived resource token in `requirement=auth-token` without running local
+  protected policy or the host operation.
+- The reference agent verifies the challenge token's resource, confirmation
+  key, person-server namespace, directed subject, presented person-token JTI,
+  mission, tenant, absent account, scope shape, and expiry before contacting
+  its PS. It then uses the existing immediate PS/AS exchange and retries the
+  same method, target, body, and media type under the resulting auth token.
+- A distinct-server body-bearing journey proves that the protected consequence
+  runs once, only after both PS and AS policy. Substitution tests reject every
+  person and request-context binding before the token exchange.
+- A configured Budget resource can place its default offer in this challenge.
+  Deferred `202` challenge delivery, automatic person-token acquisition, R3
+  challenge selection, and step-up from an existing auth token remain
+  unclaimed.
+
 ## 2026-08-28
 
 ### Incomplete callable R3 authorization removed

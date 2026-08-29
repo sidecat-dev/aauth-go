@@ -9,10 +9,10 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 | Status | Sections |
 | --- | ---: |
 | Exercised | 44 |
-| Partial | 54 |
+| Partial | 55 |
 | Unsupported | 6 |
 | Informational | 0 |
-| Unclaimed | 496 |
+| Unclaimed | 495 |
 
 `Unclaimed` means this module makes no section-level implementation claim. It is visible work, not implicit support. `Exercised` names the supported behavior claimed for that section and binds it to a runnable test; it does not silently claim behavior outside the written claim. `Partial` names an intentionally incomplete implementation, and `Unsupported` names an explicit omission.
 
@@ -20,7 +20,7 @@ Profile: AAuth Go bounded current-editor profile: draft-hardt-oauth-aauth-protoc
 
 | Source | Revision | SHA-256 | Exercised | Partial | Unsupported | Informational | Unclaimed |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 17 | 3 | 0 | 211 |
+| `core` | draft-hardt-oauth-aauth-protocol-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` | 25 | 18 | 3 | 0 | 210 |
 | `signature-key` | draft-hardt-httpbis-signature-key-latest at signature-key 0ff751b571e7fe51336bcc1e526954a202317cc0 | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` | 8 | 2 | 1 | 0 | 71 |
 | `r3` | draft-hardt-aauth-r3-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` | 2 | 15 | 0 | 0 | 39 |
 | `events` | draft-hardt-aauth-events-latest at AAuth a99d353cf18aee81d0c5445bac070164fb3b8bc5 | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` | 0 | 7 | 0 | 0 | 57 |
@@ -482,6 +482,14 @@ Evidence:
 - `deferred_person_server_journey_test.go:TestCurrentPersonServerDeferredAuthorizationJourney`
 - `deferred_four_party_journey_test.go:TestCurrentFourPartyDeferredAuthorizationJourney`
 
+### `core/requirement-auth-token` — Partial
+
+An auth-token resource accepts one person-token-signed protected call, maps its required scope, performs no protected consequence, and returns 401 with a verified resource token. The reference agent exchanges it through the ordinary PS and AS path and retries the exact method, target, body, and media type once. Deferred 202 delivery and existing-auth-token step-up remain unclaimed.
+
+Evidence:
+
+- `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
+
 ### `core/requirement-responses/aauth-requirement-header-structure` — Exercised
 
 The supported requirement header is parsed and serialized as a structured field with strict wire-value validation.
@@ -524,11 +532,13 @@ Evidence:
 
 ### `core/resource-tokens/resource-token/resource-challenge-verification` — Partial
 
-The client checks a proactive authorization response's resource issuer, proof key, ps, sub, presented_jti, mission_s256, and tenant against the person token it presented, including a cross-session substitution control. Extracting and verifying a resource token from a protected-resource 401 challenge remains open.
+The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on both proactive and protected-resource 401 resource tokens before contacting the PS. A distinct-server journey retries the exact protected call under the resulting grant. Deferred 202 challenge delivery, R3 challenge selection, and step-up from an existing auth token remain open.
 
 Evidence:
 
 - `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+- `protected_challenge_journey_test.go:TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall`
+- `reference/protected_challenge_test.go:TestAgentRejectsSubstitutedProtectedResourceChallengeContext`
 
 ### `core/resource-tokens/resource-token/resource-token-structure` — Exercised
 

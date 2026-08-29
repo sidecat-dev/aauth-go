@@ -2893,21 +2893,150 @@ func (agent *Agent) DoAuthorized(
 	}, grant)
 }
 
+// DoWithPersonTokenAuthorization starts one exact protected call with a
+// resource-directed person token, satisfies the resource's immediate auth-token
+// challenge through the selected person server, and retries the same call under
+// the resulting grant. Deferred challenge delivery is not handled here.
+func (agent *Agent) DoWithPersonTokenAuthorization(
+	ctx context.Context,
+	call AuthorizedCall,
+	personServerEndpoint string,
+	personToken string,
+) (*http.Response, Grant, error) {
+	var zero Grant
+	personServer, err := endpointIdentifier(personServerEndpoint)
+	if err != nil {
+		return nil, zero, err
+	}
+	personEvidence, err := aauth.VerifyPersonToken(ctx, personToken, agent.keyResolver, agent.clock)
+	if err != nil {
+		return nil, zero, err
+	}
+	person, err := claimsWithoutAuthorization(personEvidence)
+	if err != nil {
+		return nil, zero, err
+	}
+	if person.Issuer != personServer {
+		return nil, zero, errors.New("reference: person token issuer does not match selected person server")
+	}
+	resource, err := endpointIdentifier(call.Endpoint)
+	if err != nil {
+		return nil, zero, err
+	}
+	if err := aauth.ValidatePersonTokenContext(person, resource, agent.signingKey.PublicJWK()); err != nil {
+		return nil, zero, err
+	}
+	request, err := agent.newAuthorizedCallRequest(ctx, call, personToken)
+	if err != nil {
+		return nil, zero, err
+	}
+	challenge, err := agent.httpClient.Do(request)
+	if err != nil {
+		return nil, zero, err
+	}
+	if challenge.StatusCode != http.StatusUnauthorized {
+		defer challenge.Body.Close()
+		return nil, zero, responseError(challenge)
+	}
+	requirement, err := aauth.ParseRequirementHeader(challenge.Header.Get("AAuth-Requirement"))
+	challenge.Body.Close()
+	if err != nil || requirement.Type != aauth.RequirementAuthToken {
+		return nil, zero, errors.New("reference: protected response is not an auth-token challenge")
+	}
+	resourceGrant, err := agent.resourceGrantFromChallenge(ctx, resource, person, requirement.ResourceToken)
+	if err != nil {
+		return nil, zero, err
+	}
+	grant, err := agent.ExchangeResourceToken(ctx, personServerEndpoint, resourceGrant)
+	if err != nil {
+		return nil, zero, err
+	}
+	response, err := agent.DoAuthorizedRequest(ctx, call, grant)
+	if err != nil {
+		return nil, zero, err
+	}
+	return response, grant, nil
+}
+
+func (agent *Agent) resourceGrantFromChallenge(
+	ctx context.Context,
+	resource string,
+	person aauth.PersonTokenClaims,
+	compact string,
+) (ResourceGrant, error) {
+	evidence, err := aauth.VerifyResourceToken(ctx, compact, agent.keyResolver, agent.clock)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	members, err := evidence.AuthorizationMembers()
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	if _, hasR3 := members["r3_uri"]; hasR3 {
+		return ResourceGrant{}, errors.New("reference: protected-call R3 challenge verification is not implemented")
+	}
+	var budget budgets.TokenResult
+	if _, hasBudget := members["budget"]; hasBudget {
+		budget, err = budgets.ValidateResourceToken(evidence)
+	} else {
+		err = evidence.RequireNoAuthorizationMembers()
+	}
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	claims, err := evidence.Claims()
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	thumbprint, err := agent.signingKey.PublicJWK().Thumbprint()
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	if claims.Issuer != resource || claims.PersonServer != person.Issuer ||
+		claims.Subject != person.Subject || claims.PresentedJTI != person.JTI ||
+		claims.AgentJKT != thumbprint || claims.MissionS256 != person.MissionS256 ||
+		claims.Tenant != person.Tenant || claims.Account != "" || claims.Agent != "" {
+		return ResourceGrant{}, errors.New("reference: resource challenge does not match the presented person token and protected call")
+	}
+	if _, err := parseScopes(claims.Scope); err != nil {
+		return ResourceGrant{}, errors.New("reference: resource challenge carries an invalid scope")
+	}
+	return ResourceGrant{
+		Resource: resource, ResourceToken: compact, Claims: claims,
+		Budget: optionalBudgetResult(budget),
+	}, nil
+}
+
 // DoAuthorizedRequest signs and sends one exact HTTP call under a grant.
 func (agent *Agent) DoAuthorizedRequest(
 	ctx context.Context,
 	call AuthorizedCall,
 	grant Grant,
 ) (*http.Response, error) {
-	if err := aauth.ValidateEndpoint(call.Endpoint); err != nil {
-		return nil, err
-	}
 	resourceID, err := endpointIdentifier(call.Endpoint)
 	if err != nil {
 		return nil, err
 	}
 	if resourceID != grant.Resource || grant.AuthToken == "" {
 		return nil, errors.New("reference: grant does not apply to endpoint")
+	}
+	request, err := agent.newAuthorizedCallRequest(ctx, call, grant.AuthToken)
+	if err != nil {
+		return nil, err
+	}
+	return agent.httpClient.Do(request)
+}
+
+func (agent *Agent) newAuthorizedCallRequest(
+	ctx context.Context,
+	call AuthorizedCall,
+	credential string,
+) (*http.Request, error) {
+	if err := aauth.ValidateEndpoint(call.Endpoint); err != nil {
+		return nil, err
+	}
+	if credential == "" {
+		return nil, errors.New("reference: authorized request credential is required")
 	}
 	if len(call.Body) != 0 && strings.TrimSpace(call.ContentType) == "" {
 		return nil, errors.New("reference: authorized request body requires a content type")
@@ -2923,10 +3052,10 @@ func (agent *Agent) DoAuthorizedRequest(
 	if call.ContentType != "" {
 		request.Header.Set("Content-Type", call.ContentType)
 	}
-	if err := agent.signRequest(request, grant.AuthToken); err != nil {
+	if err := agent.signRequest(request, credential); err != nil {
 		return nil, err
 	}
-	return agent.httpClient.Do(request)
+	return request, nil
 }
 
 // RequestResourceManagedAccess starts the current resource-managed flow at the

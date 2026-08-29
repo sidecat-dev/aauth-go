@@ -81,10 +81,18 @@ stores are private, single-writer reference adapters. They do not coordinate
 multiple processes or compact expired records; long-running or high-volume
 deployments should supply their own store implementations.
 
+The same current path can begin at an ordinary protected operation. The agent
+signs the exact call with its resource-directed person token. The resource maps
+the required scope, performs no host consequence, and returns an auth-token
+challenge carrying its resource token. The agent verifies that token against
+the resource, its own key, and the person token's exact namespace and context;
+exchanges it through the ordinary PS and AS path; then retries the same method,
+target, body, and media type once under the resulting auth token.
+
 This slice is deliberately bounded. `reference.Resource` implements explicit
 `auth-token` and `session-token` modes, not every registered access mode.
-Auth-token discovery from a protected-resource 401 challenge, resource-owned
-person identity matching, collocated PS/AS roles, dynamic three-party PS
+Deferred protected-call challenge delivery, resource-owned person identity
+matching, collocated PS/AS roles, dynamic three-party PS
 selection, and account ownership remain open. The exercised current profile
 includes immediate and deferred PS/AS authorization, one-level parent-mediated
 sub-agents, and upstream-auth-token call chaining through either a PS or AS. Exact
@@ -516,10 +524,11 @@ and bounded single-writer file stores qualify replaceable host boundaries; they
 do not claim distributed, multi-writer, federated, or enterprise storage.
 
 Resource-owned interaction chaining, interaction/payment relay and callbacks,
-question delivery, updated-request/cancel clarification actions, deferred `202`
-and three-party R3, R3 caching and multiple-definition composition, platform
-enrollment/attestation, x509, additional Signature-Key schemes, and broader
-challenge-selection behavior still require implementation and qualification.
+question delivery, updated-request/cancel clarification actions, deferred
+protected-call delivery, existing-token step-up, deferred `202` and three-party
+R3, R3 challenge selection, R3 caching and multiple-definition composition,
+platform enrollment/attestation, x509, and additional Signature-Key schemes
+still require implementation and qualification.
 The Phase-1 `Accept-Signature-Alg` and
 `Accept-Signature-Scheme` failure envelopes are implemented and qualified.
 Without a configured

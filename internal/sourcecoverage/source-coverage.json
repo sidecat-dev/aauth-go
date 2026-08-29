@@ -217,11 +217,31 @@
       "source": "core",
       "section": "resource-tokens/resource-token/resource-challenge-verification",
       "status": "partial",
-      "claim": "The client checks a proactive authorization response's resource issuer, proof key, ps, sub, presented_jti, mission_s256, and tenant against the person token it presented, including a cross-session substitution control. Extracting and verifying a resource token from a protected-resource 401 challenge remains open.",
+      "claim": "The client verifies resource issuer, proof key, ps, sub, presented_jti, mission_s256, tenant, account, scope shape, and expiry on both proactive and protected-resource 401 resource tokens before contacting the PS. A distinct-server journey retries the exact protected call under the resulting grant. Deferred 202 challenge delivery, R3 challenge selection, and step-up from an existing auth token remain open.",
       "evidence": [
         {
           "file": "current_person_token_journey_test.go",
           "test": "TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart"
+        },
+        {
+          "file": "protected_challenge_journey_test.go",
+          "test": "TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall"
+        },
+        {
+          "file": "reference/protected_challenge_test.go",
+          "test": "TestAgentRejectsSubstitutedProtectedResourceChallengeContext"
+        }
+      ]
+    },
+    {
+      "source": "core",
+      "section": "requirement-auth-token",
+      "status": "partial",
+      "claim": "An auth-token resource accepts one person-token-signed protected call, maps its required scope, performs no protected consequence, and returns 401 with a verified resource token. The reference agent exchanges it through the ordinary PS and AS path and retries the exact method, target, body, and media type once. Deferred 202 delivery and existing-auth-token step-up remain unclaimed.",
+      "evidence": [
+        {
+          "file": "protected_challenge_journey_test.go",
+          "test": "TestCurrentProtectedResourceChallengeCompletesOneExactFourPartyCall"
         }
       ]
     },
