@@ -3,6 +3,7 @@ package aauth_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -37,10 +38,12 @@ func TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken(t *testing
 		},
 	})
 	personTokens, issuance := testCurrentPersonServerCustody(t)
+	resourceLimiter := &recordingPersonTokenResourceLimiter{maximum: 1}
 	ps, _ := reference.NewPersonServer(reference.PersonServerConfig{
 		Identifier: "https://ps.example", SigningKey: psKey, KeyResolver: resolver, Clock: clock,
-		NewID: sequentialIDs("person-token"), AuthorizationStore: testAuthorizationStateStore(t),
+		NewID: sequentialIDs("person-token", "person-token-repeat"), AuthorizationStore: testAuthorizationStateStore(t),
 		PersonTokenStore: personTokens, MissionIssuanceStore: issuance,
+		PersonTokenResourceLimiter: resourceLimiter,
 		PersonTokenPolicy: func(context.Context, aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
 			return aauth.PersonTokenDecision{Subject: "directed-person", Tenant: "example-org", Lifetime: time.Hour}, nil
 		},
@@ -85,6 +88,24 @@ func TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	repeated, err := agent.RequestPersonToken(context.Background(), "https://ps.example/person", "https://resource.example", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Resource != person.Resource || resourceLimiter.calls != 2 {
+		t.Fatalf("repeated person-token resource = %#v, limiter calls = %d", repeated, resourceLimiter.calls)
+	}
+	if _, err := agent.RequestPersonToken(context.Background(), "https://ps.example/person", "https://other.example", nil); err == nil {
+		t.Fatal("distinct resource was admitted")
+	} else {
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) || problem.Status != http.StatusTooManyRequests || problem.Code != "resource_limit_exceeded" {
+			t.Fatalf("distinct resource limit error = %v", err)
+		}
+	}
+	if resourceLimiter.lastAgent != "aauth:identity-agent@ap.example" || resourceLimiter.lastResource != "https://other.example" {
+		t.Fatalf("resource limiter saw agent=%q resource=%q", resourceLimiter.lastAgent, resourceLimiter.lastResource)
+	}
 	response, err := agent.DoWithPersonToken(context.Background(), reference.AuthorizedCall{
 		Method: http.MethodPost, Endpoint: "https://resource.example/profile?view=current",
 		Body: []byte(`{"include":"summary"}`), ContentType: "application/json",
@@ -101,6 +122,32 @@ func TestCurrentPersonTokenAccessUsesDirectedIdentityWithoutAuthToken(t *testing
 		result["body"] != `{"include":"summary"}` || policyCalls != 1 || operationCalls != 1 {
 		t.Fatalf("person-token result = %d %#v policy/operation=%d/%d", response.StatusCode, result, policyCalls, operationCalls)
 	}
+}
+
+type recordingPersonTokenResourceLimiter struct {
+	maximum      int
+	resources    map[string]map[string]struct{}
+	calls        int
+	lastAgent    string
+	lastResource string
+}
+
+func (limiter *recordingPersonTokenResourceLimiter) AllowResource(_ context.Context, agent, resource string) error {
+	limiter.calls++
+	limiter.lastAgent, limiter.lastResource = agent, resource
+	if limiter.resources == nil {
+		limiter.resources = make(map[string]map[string]struct{})
+	}
+	set := limiter.resources[agent]
+	if set == nil {
+		set = make(map[string]struct{})
+		limiter.resources[agent] = set
+	}
+	if _, exists := set[resource]; !exists && len(set) >= limiter.maximum {
+		return fmt.Errorf("resource limit: %w", reference.ErrPersonTokenResourceLimit)
+	}
+	set[resource] = struct{}{}
+	return nil
 }
 
 func TestAgentFollowsPersonTokenRequirementThroughDiscoveredPersonServer(t *testing.T) {

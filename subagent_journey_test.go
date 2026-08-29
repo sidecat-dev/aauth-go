@@ -92,6 +92,7 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 	var deferSubagent bool
 	deferPersonToken := true
 	personTokenStore, missionIssuanceStore := testCurrentPersonServerCustody(t)
+	resourceLimiter := &recordingPersonTokenResourceLimiter{maximum: 1}
 	psAuthorizationDirectory := t.TempDir() + "/ps-authorization"
 	psAuthorizationStore := openTestFileAuthorizationStateStore(t, psAuthorizationDirectory)
 	psConfig := reference.PersonServerConfig{
@@ -107,8 +108,9 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 		PersonTokenInteractionRequired: func(_ context.Context, request aauth.PersonTokenRequest) (bool, error) {
 			return deferPersonToken && request.ParentAgent == "aauth:planner@ap.example", nil
 		},
-		PersonTokenStore:     personTokenStore,
-		MissionIssuanceStore: missionIssuanceStore,
+		PersonTokenStore:           personTokenStore,
+		MissionIssuanceStore:       missionIssuanceStore,
+		PersonTokenResourceLimiter: resourceLimiter,
 		PersonTokenPolicy: func(_ context.Context, request aauth.PersonTokenRequest) (aauth.PersonTokenDecision, error) {
 			personPolicyCalls++
 			personPolicyRequest = request
@@ -216,6 +218,9 @@ func TestCurrentParentMediatedSubagentAuthorization(t *testing.T) {
 	}
 	if personAuthorization.Pending == nil || personAuthorization.Grant != nil {
 		t.Fatalf("deferred sub-agent person-token authorization = %#v", personAuthorization)
+	}
+	if resourceLimiter.calls != 1 || resourceLimiter.lastAgent != "aauth:planner@ap.example" || resourceLimiter.lastResource != "https://resource.example" {
+		t.Fatalf("sub-agent resource limiter saw calls=%d agent=%q resource=%q", resourceLimiter.calls, resourceLimiter.lastAgent, resourceLimiter.lastResource)
 	}
 	if _, err := subagent.PollPersonTokenAuthorization(context.Background(), personAuthorization.Pending); err == nil {
 		t.Fatal("target sub-agent polled the parent-owned person-token continuation")

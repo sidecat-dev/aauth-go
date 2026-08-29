@@ -112,6 +112,12 @@ resource's name, description, and access mode as a typed presentation. A
 deferred request retains that presentation across restart and replay, so a
 later approval cannot silently observe different resource text.
 
+Deployments may also configure a person-token resource limiter. It receives the
+verified signing agent and admits repeated requests for an existing resource
+while refusing a new resource after the configured distinct-resource bound. The
+reference in-memory limiter is concurrency-safe; deployments that need restart
+or multi-process continuity should supply a durable adapter.
+
 A resource may instead select the current stateful `202 Accepted` form. It
 retains the exact invocation before releasing a same-origin pending URL. The
 agent obtains the auth token through the same exchange and completes with a

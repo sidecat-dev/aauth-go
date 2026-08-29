@@ -40,6 +40,7 @@ type PersonServerConfig struct {
 	PersonTokenPolicy              aauth.PersonTokenPolicy
 	PersonTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
 	ResourceMetadata               ResourceMetadataResolver
+	PersonTokenResourceLimiter     PersonTokenResourceLimiter
 	MissionIssuanceStore           MissionIssuanceStore
 	CompletionReviewEnabled        bool
 	InteractionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
@@ -71,6 +72,7 @@ type PersonServer struct {
 	personTokenPolicy              aauth.PersonTokenPolicy
 	personTokenInteractionRequired func(context.Context, aauth.PersonTokenRequest) (bool, error)
 	resourceMetadata               ResourceMetadataResolver
+	personTokenResourceLimiter     PersonTokenResourceLimiter
 	missionIssuanceStore           MissionIssuanceStore
 	completionReviewEnabled        bool
 	interactionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
@@ -418,6 +420,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		personTokenPolicy:              config.PersonTokenPolicy,
 		personTokenInteractionRequired: config.PersonTokenInteractionRequired,
 		resourceMetadata:               config.ResourceMetadata,
+		personTokenResourceLimiter:     config.PersonTokenResourceLimiter,
 		missionIssuanceStore:           config.MissionIssuanceStore,
 		completionReviewEnabled:        config.CompletionReviewEnabled,
 		interactionRequired:            config.InteractionRequired,
@@ -1546,6 +1549,16 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		resourcePresentation, err = server.resourceMetadata.ResolveResourceMetadata(request.Context(), input.Resource)
 		if err != nil {
 			writeResourceMetadataFailure(response, err)
+			return
+		}
+	}
+	if server.personTokenResourceLimiter != nil {
+		if err := server.personTokenResourceLimiter.AllowResource(request.Context(), verified.Agent, input.Resource); err != nil {
+			if errors.Is(err, ErrPersonTokenResourceLimit) {
+				writeProblem(response, http.StatusTooManyRequests, "resource_limit_exceeded", errors.New("person-token resource limit was exceeded"))
+			} else {
+				writeProblem(response, http.StatusServiceUnavailable, "server_error", nil)
+			}
 			return
 		}
 	}

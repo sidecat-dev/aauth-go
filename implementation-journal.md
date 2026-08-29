@@ -258,6 +258,11 @@ for this library.
   refetch mutable resource text. Invalid documents return `invalid_request`,
   while transport and HTTP availability failures return `server_error`
   without exposing local diagnostics.
+- Person-token issuance now has an optional deployment-owned distinct-resource
+  limiter. It keys the bound by the verified signing agent, admits repeated
+  resources, and returns a typed `429 resource_limit_exceeded` refusal for a
+  new resource beyond the bound. The reference memory adapter is concurrency
+  safe; durable restart and multi-process adapters remain deployment-owned.
 
 ## 2026-08-28
 
