@@ -138,11 +138,13 @@ Token JSON and reference endpoint request JSON reject exact duplicate member
 names and names that Go would case-fold onto the same struct field before
 decoding.
 
-Current R3 authorization remains unclaimed, and the module exposes no callable
-R3 authorization path. It retains current neutral R3 document values and
-digests used by Events. Bounded current sub-agent and call-chain behavior is
-claimed only for the exact runnable journeys listed in the source coverage
-report; broader delegation and interaction chaining remain explicit gaps.
+Current R3 authorization and Budgets remain unclaimed. The module exposes no
+callable R3 authorization path, and defined R3 or Budget members on resource
+and auth tokens fail closed instead of being silently ignored. It retains
+current neutral R3 document values and digests used by Events. Bounded current
+sub-agent and call-chain behavior is claimed only for the exact runnable
+journeys listed in the source coverage report; broader delegation and
+interaction chaining remain explicit gaps.
 
 ### Governance surfaces
 

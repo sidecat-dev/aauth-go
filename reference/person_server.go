@@ -1336,10 +1336,6 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 		writeProblem(response, http.StatusForbidden, "invalid_agent", errors.New("sub-agent cannot request a person token directly"))
 		return
 	}
-	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow), verified.VerifiedAt) {
-		writeSignatureFailure(response, errors.New("request proof was replayed"))
-		return
-	}
 	var input struct {
 		Resource      string `json:"resource"`
 		MissionS256   string `json:"mission_s256,omitempty"`
@@ -1423,6 +1419,10 @@ func (server *PersonServer) handlePersonToken(response http.ResponseWriter, requ
 			return
 		}
 		missionExpiry = copyTimePointer(mission.ExpiresAt)
+	}
+	if server.seenReplay(verified.ReplayKey, verified.Created.Add(aauth.DefaultSignatureWindow), verified.VerifiedAt) {
+		writeSignatureFailure(response, errors.New("request proof was replayed"))
+		return
 	}
 	compact, claims, err := server.issuePersonTokenForContext(
 		request.Context(),

@@ -360,7 +360,7 @@ func TestCurrentProtectedResourceDurablyConsumesExactProof(t *testing.T) {
 	}
 }
 
-func TestCurrentProtectedResourceRejectsRawUnsupportedR3TokensBeforePolicyReplayAndOperation(t *testing.T) {
+func TestCurrentProtectedResourceRejectsRawUnsupportedExtensionTokensBeforePolicyReplayAndOperation(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 21, 0, 0, 0, time.UTC)
@@ -421,9 +421,11 @@ func TestCurrentProtectedResourceRejectsRawUnsupportedR3TokensBeforePolicyReplay
 		{"r3_granted", `{}`},
 		{"r3_per_call", `{}`},
 		{"r3_conditional", `{}`},
+		{"budget", `{"amount":100,"unit":"USD","decimals":2}`},
+		{"budget_consumed", `[{"jti":"auth-1","consumed":10}]`},
 	} {
 		authToken := signRawReferenceAuthToken(t, accessKey, accessPrivate, claims, test.member, test.value)
-		request := signedCurrentProtectedRequest(t, agentKey, authToken, clock, "/a", nil, fmt.Sprintf("unsupported-r3-%d", index))
+		request := signedCurrentProtectedRequest(t, agentKey, authToken, clock, "/a", nil, fmt.Sprintf("unsupported-extension-%d", index))
 		response := serveProtected(resource, request)
 		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"error":"invalid_jwt"`) {
 			t.Fatalf("raw unsupported %s token = %d: %s", test.member, response.Code, response.Body.String())
@@ -433,7 +435,7 @@ func TestCurrentProtectedResourceRejectsRawUnsupportedR3TokensBeforePolicyReplay
 		}
 	}
 	if replayStore.calls != 0 || policyCalls != 0 || operationCalls != 0 {
-		t.Fatalf("raw unsupported R3 tokens reached replay/policy/operation = %d/%d/%d", replayStore.calls, policyCalls, operationCalls)
+		t.Fatalf("raw unsupported extension tokens reached replay/policy/operation = %d/%d/%d", replayStore.calls, policyCalls, operationCalls)
 	}
 }
 

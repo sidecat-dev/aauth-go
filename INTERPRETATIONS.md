@@ -212,6 +212,45 @@ stores a recoverable state machine without pretending they share a transaction.
 `MissionIssuanceStore`. Exact recovery requires the original signed request
 within its accepted signature window; a newly signed request is a new proposal.
 
+## AAG-I007 — Defined authorization extensions fail closed until implemented
+
+**Status:** adopted current boundary
+
+**Source:** AAuth Protocol, `Resource Token Structure`; R3, `Resource Token
+Extensions` and `Auth Token Extensions`; Budgets, `Resource Token Extensions`
+and `Auth Token Extensions`.
+
+**Question:** May a receiver ignore a signed R3 or Budget claim merely because
+this implementation does not yet support that companion specification?
+
+**Chosen behavior:** No. Resource and auth tokens containing any defined R3 or
+Budget member are rejected by name before ordinary claims decoding, request-
+proof replay admission, authorization-decision policy, new authorization-state
+retention, or protected consequence. Signer authentication, trusted-peer
+policy, and recovery of already-retained state remain earlier independent
+boundaries. Support begins only with the companion extension's complete
+validation and enforcement path.
+
+**Alternative considered:** Treat the members as unknown optional JWT claims.
+That would silently discard signed grants or limits. In particular, accepting a
+Budget-bearing auth token without enforcing its hard cap changes the authority
+the issuer expressed.
+
+**Why:** Cryptographic validity does not authorize a receiver to ignore known
+authorization semantics. A named refusal is safer and interoperable with a
+future complete extension implementation; partial parsing would create a
+second, weaker profile.
+
+**Evidence:**
+
+- `r3_test.go:TestVerifyTokensRejectRawUnsupportedExtensionMembersBeforeClaimsDecode`
+- `reference/resource_replay_store_test.go:TestCurrentProtectedResourceRejectsRawUnsupportedExtensionTokensBeforePolicyReplayAndOperation`
+- `reference/resource_token_preflight_replay_test.go:TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay`
+- `reference/resource_token_preflight_replay_test.go:TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay`
+
+**Current-product effect:** R3 and Budgets remain unclaimed. Their defined
+claims cannot be downgraded into the current Core scope-only path.
+
 ## Adding or changing an interpretation
 
 1. Pin the exact source revision and section.

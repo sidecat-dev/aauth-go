@@ -330,6 +330,8 @@ func VerifyResourceToken(ctx context.Context, compact string, resolver KeyResolv
 		&claims,
 		"r3_uri",
 		"r3_s256",
+		"budget",
+		"budget_consumed",
 	); err != nil {
 		return claims, err
 	}
@@ -357,6 +359,8 @@ func VerifyAuthToken(ctx context.Context, compact string, resolver KeyResolver, 
 		"r3_granted",
 		"r3_per_call",
 		"r3_conditional",
+		"budget",
+		"budget_consumed",
 	); err != nil {
 		return claims, err
 	}

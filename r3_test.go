@@ -151,7 +151,7 @@ func TestR3DocumentRejectsDuplicateNamesAtEveryDepth(t *testing.T) {
 	}
 }
 
-func TestVerifyTokensRejectRawUnsupportedR3MembersBeforeClaimsDecode(t *testing.T) {
+func TestVerifyTokensRejectRawUnsupportedExtensionMembersBeforeClaimsDecode(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 22, 0, 0, 0, time.UTC)
@@ -205,6 +205,14 @@ func TestVerifyTokensRejectRawUnsupportedR3MembersBeforeClaimsDecode(t *testing.
 			_, err := VerifyResourceToken(context.Background(), compact, StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
+		{"resource budget", ResourceTokenType, resourceBase, "budget", `{"amount":100,"unit":"USD","decimals":2}`, func(compact string) error {
+			_, err := VerifyResourceToken(context.Background(), compact, StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			return err
+		}},
+		{"resource budget_consumed", ResourceTokenType, resourceBase, "budget_consumed", `[{"jti":"auth-1","consumed":10}]`, func(compact string) error {
+			_, err := VerifyResourceToken(context.Background(), compact, StaticKeyResolver{"https://resource.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			return err
+		}},
 		{"auth r3_uri", AuthTokenType, authBase, "r3_uri", `"https://resource.example/r3/document"`, func(compact string) error {
 			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
@@ -222,6 +230,14 @@ func TestVerifyTokensRejectRawUnsupportedR3MembersBeforeClaimsDecode(t *testing.
 			return err
 		}},
 		{"auth r3_conditional", AuthTokenType, authBase, "r3_conditional", `{}`, func(compact string) error {
+			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			return err
+		}},
+		{"auth budget", AuthTokenType, authBase, "budget", `{"amount":100,"unit":"USD","decimals":2}`, func(compact string) error {
+			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
+			return err
+		}},
+		{"auth budget_consumed", AuthTokenType, authBase, "budget_consumed", `[{"jti":"auth-1","consumed":10}]`, func(compact string) error {
 			_, err := VerifyAuthToken(context.Background(), compact, StaticKeyResolver{"https://as.example": {issuerKey.ID(): issuerKey.PublicJWK()}}, ClockFunc(func() time.Time { return now }))
 			return err
 		}},
