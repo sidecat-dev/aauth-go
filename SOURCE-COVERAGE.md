@@ -137,7 +137,7 @@ Evidence:
 
 ### `budgets/budget-units` — Partial
 
-Resource-declared BudgetUnit values validate canonical unit, scale, optional maximum, and description fields; the reference resource emits a deterministic budget_units metadata array and refuses offers outside the declaration. Usage-endpoint advertisement and proactive client discovery remain unclaimed.
+Resource-declared BudgetUnit values validate canonical unit, scale, optional maximum, and description fields; the reference resource emits a deterministic budget_units metadata array and refuses offers outside the declaration. The on-demand BudgetUsageClient consumes usage_endpoint metadata; proactive polling remains unclaimed.
 
 Evidence:
 
@@ -244,7 +244,7 @@ Evidence:
 
 ### `budgets/usage-counters` — Partial
 
-The reference resource atomically retains completed Budget consumption with person-server, subject, tenant, mission, and signing-key context; its signed POST usage_endpoint serves UTC day, week, month, year, and all_time counters and omits unknown scopes. Client convenience discovery and wrappers remain unclaimed.
+The reference resource atomically retains completed Budget consumption with person-server, subject, tenant, mission, and signing-key context; its signed POST usage_endpoint serves UTC day, week, month, year, and all_time counters and omits unknown scopes. The on-demand BudgetUsageClient discovers the endpoint and verifies the request-bound response; proactive polling remains unclaimed.
 
 Evidence:
 
@@ -252,6 +252,7 @@ Evidence:
 - `reference/budget_usage_test.go:TestFileBudgetStoreUsageRefusesMixedDenominations`
 - `reference/budget_usage_test.go:TestResourceServesSignedBudgetUsageAndHidesUnknownScopes`
 - `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+- `reference/budget_usage_client_test.go:TestBudgetUsageClientDiscoversSignsAndVerifiesResponse`
 
 ### `budgets/value-representation` — Exercised
 

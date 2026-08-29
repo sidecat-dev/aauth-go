@@ -256,10 +256,11 @@ values.
 This is not complete Budgets conformance. Resource-declared `budget_units`, the
 bounded most-recent-first consumption projection, and an optional signed
 `usage_endpoint` with durable UTC counters and a request-bound response
-signature are implemented in the reference resource. Metadata-driven proactive
-client discovery, a client convenience wrapper, streaming trailers, billing
-integration, deferred Budget authorization, and broader deployment topologies
-remain unclaimed. Core verification
+signature are implemented in the reference resource. The on-demand
+`BudgetUsageClient` discovers that endpoint and verifies its signed response;
+background/proactive polling, broader client convenience wrappers, streaming
+trailers, billing integration, deferred Budget authorization, and broader
+deployment topologies remain unclaimed. Core verification
 retains structurally complete companion members only as exact evidence; an
 endpoint must return matching invalid-zero companion evidence or reject those
 members. Existing non-companion endpoints reject them, and the removed

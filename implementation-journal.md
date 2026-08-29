@@ -143,10 +143,11 @@ for this library.
   tenant, mission, and signing-key context are retained atomically in the
   checksum-bound Budget store; UTC calendar and all-time queries survive
   reopen, exact retry, and unknown-scope requests without disclosure. The
-  resource response can carry a request-bound HTTP Message Signature; a client
-  convenience wrapper remains unclaimed.
-- Metadata-driven proactive client discovery, streaming trailers, billing
-  interaction, deferred Budget authorization, and broader deployment
+  resource response can carry a request-bound HTTP Message Signature. The
+  on-demand `BudgetUsageClient` discovers the resource metadata, submits the
+  signed query, and verifies that response before decoding counters.
+- Background/proactive polling, broader client wrappers, streaming trailers,
+  billing interaction, deferred Budget authorization, and broader deployment
   topologies remain unclaimed.
 
 ### Protected-resource auth-token challenge
