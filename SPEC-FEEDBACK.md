@@ -87,7 +87,7 @@ of them:
 | golden vectors, unpadded mission hashes, exact mission bytes, and mission-header parsing | previously delivered or superseded by the current person-token mission envelope |
 | PS and AS R3 retrieval contradiction | withdrawn: current `R3 Endpoint Access Control` admits the exact PS and AS roles |
 | R3 token `typ` mismatch | withdrawn: current R3 uses `aa-resource+jwt` and `aa-auth+jwt` |
-| R3 grant not bounded by the requested operations | withdrawn: current composed documents contain the union of the requested operations |
+| R3 grant not bounded by the requested operations | reopened as AAG-F014: current composition requires coverage but does not bind the AS to only the requested set |
 | `AAuth-Mission` Structured Fields question | withdrawn: the current protocol removed the header |
 | auth-token agent self-comparison | withdrawn: the current resource-facing topology uses person identity and no agent claim |
 | `act.agent` direction and chaining prose | incorporated: current source and issue 47 name the immediate upstream delegator |
@@ -95,6 +95,45 @@ of them:
 The unresolved candidates below are re-stated against the current source. They
 remain evidence-pending until their current tests or wire captures exist; after
 that evidence is reviewed, they may become ready and unsubmitted.
+
+## Ready, unsubmitted
+
+### AAG-F014 — The AS cannot distinguish requested operations from a broader R3 document
+
+**Status:** ready / unsubmitted
+
+**Source:** current R3 `Authorization Endpoint Extensions / Request`,
+`Operations Spanning Multiple Definitions`, `R3 Processing / AS Processing`,
+and `Auth Token Extensions` at AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5`.
+
+**Question:** Must the R3 document selected or composed for an authorization
+request contain exactly the operations in `r3_operations`, or should the
+original requested set be carried separately and integrity-bound for AS policy?
+If a document may contain additional operations, what prevents the AS from
+placing an unrequested document member in `r3_granted`?
+
+**Why this is ambiguous:** The request gives `r3_operations` to the resource.
+The resource token sent onward carries only `r3_uri` and `r3_s256`. Composition
+must cover the requested operations, but the text does not say that the
+document's `operations` set is equal to them. The AS therefore receives the
+document but not an independent representation of what the agent requested.
+
+**Observed implementation effect:** The direct reference profile must require
+the selected document's operation set to equal the agent request. Without that
+rule, a conforming AS policy can grant a broader document member. A cooperative
+agent can reject the excess grant, but the auth token remains usable by a caller
+that does not perform that client-side check.
+
+**Evidence:**
+
+- `reference/r3_direct_test.go:TestDirectR3DocumentSelectionIsExactlyTheAgentRequest`
+- `r3/token_external_test.go:TestR3DirectGrantIssuanceBindsExactDocumentAndAgentRequest`
+- `r3_direct_journey_test.go:TestCurrentDirectR3JourneySurvivesResourceReconstruction`
+
+**Suggested disposition:** State that a selected/composed direct R3 document
+contains exactly the requested operation set, or add an integrity-bound
+requested-operation set that the AS must use to bound `r3_granted` and
+`r3_per_call`.
 
 ## New, evidence pending
 
