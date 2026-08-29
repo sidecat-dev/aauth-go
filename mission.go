@@ -22,6 +22,36 @@ type MissionProposal struct {
 	Resources   []string `json:"resources,omitempty"`
 }
 
+// MissionUpdate records one accepted change in the work represented by an
+// approved mission. The mission blob remains immutable; the update is part of
+// the ordered mission log.
+type MissionUpdate struct {
+	Action      string `json:"action"`
+	Description string `json:"description"`
+}
+
+// Validate checks the current mission-endpoint update request shape.
+func (update MissionUpdate) Validate() error {
+	if update.Action != "update" {
+		return errors.New("aauth: mission update action must be update")
+	}
+	if strings.TrimSpace(update.Description) == "" {
+		return errors.New("aauth: mission update description is required")
+	}
+	return nil
+}
+
+// MissionUpdateResult is the digest of the exact update bytes retained by the
+// person server.
+type MissionUpdateResult struct {
+	S256 string `json:"s256"`
+}
+
+// Validate checks the digest returned for one accepted mission update.
+func (result MissionUpdateResult) Validate() error {
+	return validateS256("mission update s256", result.S256)
+}
+
 // Validate rejects protocol-invalid mission material before a deployment
 // presents it to a person or policy engine.
 func (proposal MissionProposal) Validate() error {

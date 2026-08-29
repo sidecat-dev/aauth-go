@@ -1128,6 +1128,66 @@ func (agent *Agent) CreateMission(ctx context.Context, endpoint string, proposal
 	return approved, nil
 }
 
+// UpdateMission records one current change in an approved mission. The
+// mission blob remains immutable; the person server returns the digest of the
+// exact update description retained in its ordered log.
+func (agent *Agent) UpdateMission(
+	ctx context.Context,
+	endpoint string,
+	mission aauth.MissionReference,
+	description string,
+) (aauth.MissionUpdateResult, error) {
+	var result aauth.MissionUpdateResult
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return result, err
+	}
+	personServer, err := endpointIdentifier(endpoint)
+	if err != nil {
+		return result, err
+	}
+	if err := mission.Validate(); err != nil {
+		return result, err
+	}
+	if mission.Approver != personServer {
+		return result, errors.New("reference: mission approver does not match person-server endpoint")
+	}
+	input := aauth.MissionUpdate{Action: "update", Description: description}
+	if err := input.Validate(); err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return result, err
+	}
+	target := strings.TrimRight(endpoint, "/") + "/" + mission.S256
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if err := agent.signRequest(request, agent.agentToken); err != nil {
+		return result, err
+	}
+	response, err := agent.httpClient.Do(request)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, responseError(response)
+	}
+	if err := decodeJSONBytes(io.LimitReader(response.Body, maxJSONBody+1), &result); err != nil {
+		return result, err
+	}
+	if err := result.Validate(); err != nil {
+		return result, err
+	}
+	if result.S256 != aauth.S256([]byte(input.Description)) {
+		return result, errors.New("reference: mission update response does not match the submitted description")
+	}
+	return result, nil
+}
+
 // RequestPersonToken obtains a current resource-directed person token. A
 // mission is optional; when supplied its exact bytes and approver are checked
 // before the mission digest is put on the wire.

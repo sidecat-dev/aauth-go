@@ -282,6 +282,14 @@ prior log. A host-owned termination transition permanently refuses later
 permission and audit use, including a deferred grant approved before
 termination but not yet delivered.
 
+An owning agent can record a current change without changing the approved
+mission blob by signing `POST /mission/{mission_s256}` with
+`{"action":"update","description":"..."}`. The person server evaluates the
+deployment's update policy, appends the exact request and proof to the mission
+log, and returns the update description's exact `s256`. Exact retransmission
+after restart returns the retained response instead of appending a second log
+entry; another agent, malformed input, and a terminated mission are refused.
+
 An agent can also propose mission completion through the person server's
 published interaction endpoint. The proposal is signed, bound to the exact
 active mission and initiating key, and placed into a durable approval

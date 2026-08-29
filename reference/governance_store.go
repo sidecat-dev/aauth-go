@@ -934,6 +934,31 @@ func validateMissionLogEntry(
 		if err := validatePermissionDecisionBody(entry.Response); err != nil {
 			return err
 		}
+	case aauth.MissionLogUpdate:
+		var update aauth.MissionUpdate
+		if err := decodeJSONBytes(bytes.NewReader(entry.Request), &update); err != nil {
+			return err
+		}
+		var result aauth.MissionUpdateResult
+		if err := update.Validate(); err != nil ||
+			len(entry.Response) == 0 ||
+			decodeJSONBytes(bytes.NewReader(entry.Response), &result) != nil ||
+			result.Validate() != nil ||
+			result.S256 != aauth.S256([]byte(update.Description)) ||
+			entry.DecidedBy != "" ||
+			entry.Proof == nil ||
+			entry.RequestProofID != entry.Proof.ReplayKey {
+			return errors.New("mission update log entry is invalid")
+		}
+		if err := validateStoredRequestProof(
+			entry.Proof,
+			entry.Request,
+			agent,
+			mission.Approver,
+			"/mission/"+mission.S256,
+		); err != nil {
+			return err
+		}
 	case aauth.MissionLogAudit:
 		var request aauth.AuditRequest
 		if err := decodeJSONBytes(bytes.NewReader(entry.Request), &request); err != nil {

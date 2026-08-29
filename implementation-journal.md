@@ -264,6 +264,19 @@ for this library.
   new resource beyond the bound. The reference memory adapter is concurrency
   safe; durable restart and multi-process adapters remain deployment-owned.
 
+### Current mission updates
+
+- An owning agent can submit `POST /mission/{mission_s256}` with the exact
+  `action=update` and Markdown description. The person server evaluates an
+  optional deployment update policy with a defensive current mission snapshot,
+  appends a proof-bearing ordered log entry, and returns the description's
+  exact `s256`; the approved mission blob remains immutable.
+- The update response is retained with the signed request and replay key. An
+  exact retransmission after person-server restart returns the same response
+  without a duplicate log entry. Unknown, non-owning, malformed, replayed,
+  and terminated requests fail closed. Mission control and the completion
+  endpoint redesign remain unclaimed.
+
 ## 2026-08-28
 
 ### Incomplete callable R3 authorization removed

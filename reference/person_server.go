@@ -42,6 +42,7 @@ type PersonServerConfig struct {
 	ResourceMetadata               ResourceMetadataResolver
 	PersonTokenResourceLimiter     PersonTokenResourceLimiter
 	MissionIssuanceStore           MissionIssuanceStore
+	MissionUpdatePolicy            aauth.MissionUpdatePolicy
 	CompletionReviewEnabled        bool
 	InteractionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	Random                         io.Reader
@@ -74,6 +75,7 @@ type PersonServer struct {
 	resourceMetadata               ResourceMetadataResolver
 	personTokenResourceLimiter     PersonTokenResourceLimiter
 	missionIssuanceStore           MissionIssuanceStore
+	missionUpdatePolicy            aauth.MissionUpdatePolicy
 	completionReviewEnabled        bool
 	interactionRequired            func(context.Context, aauth.AuthorizationRequest) (bool, error)
 	random                         io.Reader
@@ -422,6 +424,7 @@ func NewPersonServer(config PersonServerConfig) (*PersonServer, error) {
 		resourceMetadata:               config.ResourceMetadata,
 		personTokenResourceLimiter:     config.PersonTokenResourceLimiter,
 		missionIssuanceStore:           config.MissionIssuanceStore,
+		missionUpdatePolicy:            config.MissionUpdatePolicy,
 		completionReviewEnabled:        config.CompletionReviewEnabled,
 		interactionRequired:            config.InteractionRequired,
 		random:                         random,
@@ -1117,6 +1120,7 @@ func governanceSaveDefinitelyFailed(err error) bool {
 func (server *PersonServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mission", server.handleMission)
+	mux.HandleFunc("POST /mission/{s256}", server.handleMissionUpdate)
 	mux.HandleFunc("POST /person", server.handlePersonToken)
 	mux.HandleFunc("POST /token", server.handleToken)
 	if server.permissionPolicy != nil {

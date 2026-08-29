@@ -113,5 +113,21 @@ type MissionEvaluation struct {
 // agent identity and person-server binding.
 type CurrentMissionPolicy func(context.Context, MissionEvaluation) (MissionDecision, error)
 
+// MissionUpdateEvaluation is the authenticated context presented to a
+// deployment before accepting one mission update. Mission is a defensive
+// snapshot of the immutable blob plus prior ordered updates.
+type MissionUpdateEvaluation struct {
+	Agent          string
+	Mission        MissionSnapshot
+	Description    string
+	Confirmation   jose.JWK
+	AgentExpiresAt time.Time
+	PersonServer   string
+}
+
+// MissionUpdatePolicy may accept or refuse one current mission update. A nil
+// policy uses the current mission policy as the deployment's update decision.
+type MissionUpdatePolicy func(context.Context, MissionUpdateEvaluation) error
+
 // AuthorizationPolicy is intentionally caller-owned.
 type AuthorizationPolicy func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)

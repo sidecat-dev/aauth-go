@@ -112,6 +112,7 @@ type MissionLogKind string
 const (
 	MissionLogPermissionRequest   MissionLogKind = "permission_request"
 	MissionLogPermissionDecision  MissionLogKind = "permission_decision"
+	MissionLogUpdate              MissionLogKind = "update"
 	MissionLogAudit               MissionLogKind = "audit"
 	MissionLogInteractionRequest  MissionLogKind = "interaction_request"
 	MissionLogClarification       MissionLogKind = "clarification"

@@ -54,3 +54,27 @@ func TestMissionS256MatchesCrossImplementationGoldenVector(t *testing.T) {
 		t.Fatal("one-bit mission mutation did not change s256")
 	}
 }
+
+func TestMissionUpdateValidationAndResult(t *testing.T) {
+	valid := aauth.MissionUpdate{Action: "update", Description: "A concrete change."}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []aauth.MissionUpdate{
+		{},
+		{Action: "completion", Description: valid.Description},
+		{Action: "update"},
+	} {
+		if err := invalid.Validate(); err == nil {
+			t.Fatalf("invalid mission update accepted: %#v", invalid)
+		}
+	}
+	result := aauth.MissionUpdateResult{S256: aauth.S256([]byte(valid.Description))}
+	if err := result.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	result.S256 = "not-a-digest"
+	if err := result.Validate(); err == nil {
+		t.Fatal("invalid mission update result accepted")
+	}
+}

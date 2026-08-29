@@ -415,6 +415,22 @@
     },
     {
       "source": "core",
+      "section": "mission-update",
+      "status": "exercised",
+      "claim": "An owning agent can submit one current mission update at POST /mission/{mission_s256}; the person server validates the exact Markdown request, evaluates deployment policy with the current defensive mission snapshot, appends an ordered proof-bearing log entry, and returns the update's exact s256. The immutable mission blob and mission s256 do not change. Exact signed replay after person-server restart returns the retained result without a duplicate log entry, while unknown, non-owning, malformed, and terminated requests fail closed.",
+      "evidence": [
+        {
+          "file": "mission_update_journey_test.go",
+          "test": "TestCurrentMissionUpdateRoundTripsAndRecoversAfterRestart"
+        },
+        {
+          "file": "mission_test.go",
+          "test": "TestMissionUpdateValidationAndResult"
+        }
+      ]
+    },
+    {
+      "source": "core",
       "section": "mission-approval",
       "status": "partial",
       "claim": "Immediate approval returns s256, base64url exact mission bytes, approved resources, and resource-keyed person tokens. One pre-release journal makes the exact response recoverable across partial and uncertain child commits; broader lifecycle and deferred approval remains open.",
