@@ -35,6 +35,8 @@ const DefaultMaximumResourceTokenLifetime = 5 * time.Minute
 // an issuer and token identifier.
 var ErrPersonTokenNotFound = errors.New("personserver: person token not found")
 
+var errSubagentTokenSyntax = errors.New("personserver: subagent_token must be a non-empty compact token string")
+
 // FederatedAuthorizationConfig supplies a four-party Person Server. It issues
 // person tokens, retains their lineage, and federates auth-token requests to an
 // Access Server.
@@ -90,12 +92,15 @@ type AuthorizationDecision struct {
 	Lifetime time.Duration
 }
 
-// PersonTokenRequest is the verified agent and requested resource presented to
-// person-binding policy.
+// PersonTokenRequest is the verified top-level Agent and requested Resource
+// presented to person-binding policy. Subagent is nonempty only when the
+// parent requested a credential for that verified one-level child.
 type PersonTokenRequest struct {
-	Agent                 string
-	Resource              string
-	AgentAdditionalClaims map[string]json.RawMessage
+	Agent                    string
+	Subagent                 string
+	Resource                 string
+	AgentAdditionalClaims    map[string]json.RawMessage
+	SubagentAdditionalClaims map[string]json.RawMessage
 }
 
 // Person is the directed identity and lifetime selected by person-binding
@@ -107,32 +112,42 @@ type Person struct {
 }
 
 // AuthorizationRequest is the verified Core context presented to policy before
-// direct auth-token issuance or an Access Server exchange.
+// direct auth-token issuance or an Access Server exchange. Agent is always the
+// top-level requester whose grant is evaluated; Subagent names the credential
+// recipient when the parent mediates.
 type AuthorizationRequest struct {
-	Agent                 string
-	Resource              string
-	Subject               string
-	Tenant                string
-	Scopes                []string
-	Capabilities          []string
-	AgentAdditionalClaims map[string]json.RawMessage
+	Agent                    string
+	Subagent                 string
+	Resource                 string
+	Subject                  string
+	Tenant                   string
+	Scopes                   []string
+	Capabilities             []string
+	AgentAdditionalClaims    map[string]json.RawMessage
+	SubagentAdditionalClaims map[string]json.RawMessage
 }
 
 // PersonTokenRecord is the retained binding used to validate a later resource
-// token's presented_jti.
+// token's presented_jti. Agent is the credential recipient; ParentAgent is
+// nonempty only for parent-mediated issuance.
 type PersonTokenRecord struct {
-	JTI          string
-	PersonServer string
-	Resource     string
-	Subject      string
-	MissionS256  string
-	Tenant       string
-	ExpiresAt    time.Time
-	RetainUntil  time.Time
+	JTI           string
+	PersonServer  string
+	Resource      string
+	Subject       string
+	MissionS256   string
+	Tenant        string
+	AgentProvider string
+	Agent         string
+	ParentAgent   string
+	Confirmation  jose.JWK
+	ExpiresAt     time.Time
+	RetainUntil   time.Time
 }
 
 // TokenStore retains and resolves person-token bindings. Implementations must
-// commit one issuer/JTI record atomically.
+// commit one issuer/JTI record atomically and round-trip every
+// PersonTokenRecord field exactly.
 type TokenStore interface {
 	Commit(context.Context, PersonTokenRecord) error
 	Load(context.Context, string, string) (PersonTokenRecord, error)
@@ -328,7 +343,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		return
 	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"mission_s256": input.MissionS256, "subagent_token": input.SubagentToken,
+		"mission_s256":   input.MissionS256,
 		"upstream_token": input.UpstreamToken,
 		"justification":  input.Justification, "login_hint": input.LoginHint,
 		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
@@ -341,9 +356,21 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	subagentToken, credentialAgent, delegated, err := server.verifyOptionalSubagentToken(
+		request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+	)
+	_ = subagentToken
+	if err != nil {
+		server.writeSubagentTokenProblem(response, err)
+		return
+	}
 	personRequest := PersonTokenRequest{
 		Agent: agent.Subject, Resource: input.Resource,
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+	}
+	if delegated {
+		personRequest.Subagent = credentialAgent.Subject
+		personRequest.SubagentAdditionalClaims = cloneClaims(credentialAgent.AdditionalClaims)
 	}
 	if server.requirePersonTokenInteraction != nil {
 		policy, required, err := server.requirePersonTokenInteraction(request.Context(), personRequest)
@@ -352,6 +379,10 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 		if required {
+			if delegated {
+				writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated person-token interaction is not implemented"))
+				return
+			}
 			if err := server.beginPersonTokenInteraction(response, request, personRequest, agent, policy); err != nil {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
@@ -371,10 +402,13 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	if agentExpiry := time.Unix(agent.ExpiresAt, 0); agentExpiry.Before(expiresAt) {
 		expiresAt = agentExpiry
 	}
+	if credentialExpiry := time.Unix(credentialAgent.ExpiresAt, 0); credentialExpiry.Before(expiresAt) {
+		expiresAt = credentialExpiry
+	}
 	claims := aauth.PersonTokenClaims{
 		Issuer: server.issuer, DWK: aauth.PersonDiscoveryDocument,
 		Audience: input.Resource, Subject: person.Subject,
-		Confirmation: aauth.Confirmation{JWK: agent.Confirmation.JWK},
+		Confirmation: aauth.Confirmation{JWK: credentialAgent.Confirmation.JWK},
 		JTI:          server.newID(), IssuedAt: proof.VerifiedAt().Unix(), ExpiresAt: expiresAt.Unix(),
 		Tenant: person.Tenant,
 	}
@@ -387,6 +421,8 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	if err := server.tokens.Commit(request.Context(), PersonTokenRecord{
 		JTI: claims.JTI, PersonServer: claims.Issuer, Resource: claims.Audience,
 		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
+		AgentProvider: credentialAgent.Issuer, Agent: credentialAgent.Subject,
+		ParentAgent: credentialAgent.ParentAgent, Confirmation: credentialAgent.Confirmation.JWK,
 		ExpiresAt: canonicalExpiry, RetainUntil: canonicalExpiry.Add(server.maximumResourceTokenLifetime),
 	}); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -426,8 +462,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		unsupportedCapabilities = nil
 	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"upstream_token": input.UpstreamToken, "subagent_token": input.SubagentToken,
-		"justification": input.Justification, "login_hint": input.LoginHint,
+		"upstream_token": input.UpstreamToken,
+		"justification":  input.Justification, "login_hint": input.LoginHint,
 		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
 		"platform": input.Platform, "device": input.Device, "capabilities": unsupportedCapabilities,
 	}); err != nil {
@@ -441,6 +477,13 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 			return
 		}
+	}
+	subagentToken, credentialAgent, delegated, err := server.verifyOptionalSubagentToken(
+		request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+	)
+	if err != nil {
+		server.writeSubagentTokenProblem(response, err)
+		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
 	resourceToken, err := aauth.VerifyResourceToken(
@@ -476,7 +519,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
-	agentJKT, err := agent.Confirmation.JWK.Thumbprint()
+	agentJKT, err := credentialAgent.Confirmation.JWK.Thumbprint()
 	if err != nil || resourceToken.AgentJKT != agentJKT {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the signing agent key"))
 		return
@@ -502,6 +545,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		record.Subject != resourceToken.Subject ||
 		record.MissionS256 != resourceToken.MissionS256 ||
 		record.Tenant != resourceToken.Tenant ||
+		record.AgentProvider != credentialAgent.Issuer ||
+		record.Agent != credentialAgent.Subject ||
+		record.ParentAgent != credentialAgent.ParentAgent ||
+		!record.Confirmation.Equal(credentialAgent.Confirmation.JWK) ||
 		resourceToken.IssuedAt >= record.ExpiresAt.Unix() ||
 		resourceTokenExpiresAt.After(record.RetainUntil) ||
 		!record.RetainUntil.After(proof.VerifiedAt()) {
@@ -515,6 +562,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		Capabilities:          append([]string(nil), capabilities...),
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 	}
+	if delegated {
+		authorizationRequest.Subagent = credentialAgent.Subject
+		authorizationRequest.SubagentAdditionalClaims = cloneClaims(credentialAgent.AdditionalClaims)
+	}
 	if server.authorizationMode == authorizationModePersonServer {
 		if server.requireAuthorizationInteraction != nil {
 			policyRequest := cloneAuthorizationRequest(authorizationRequest)
@@ -524,6 +575,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 				return
 			}
 			if required {
+				if delegated {
+					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated authorization interaction is not implemented"))
+					return
+				}
 				if !slices.Contains(capabilities, "interaction") {
 					writeProblem(response, http.StatusForbidden, "user_unreachable", errors.New("Agent did not declare interaction capability"))
 					return
@@ -538,7 +593,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("deferred authorization policy did not select interaction and no immediate authorization policy is configured"))
 			return
 		}
-		server.issuePSAuthorizationToken(response, request, proof, agent, resourceToken, authorizationRequest)
+		server.issuePSAuthorizationToken(response, request, proof, agent, credentialAgent, resourceToken, authorizationRequest)
 		return
 	}
 	if err := server.consent(request.Context(), authorizationRequest); err != nil {
@@ -557,7 +612,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	accessInput, err := json.Marshal(struct {
 		ResourceToken string `json:"resource_token"`
 		AgentToken    string `json:"agent_token"`
-	}{ResourceToken: input.ResourceToken, AgentToken: agentToken})
+		SubagentToken string `json:"subagent_token,omitempty"`
+	}{ResourceToken: input.ResourceToken, AgentToken: agentToken, SubagentToken: subagentToken})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -615,6 +671,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if authToken.Issuer != resourceToken.Audience ||
 		authToken.DWK != aauth.AccessDiscoveryDocument ||
 		authToken.ExpiresAt > agent.ExpiresAt ||
+		authToken.ExpiresAt > credentialAgent.ExpiresAt ||
 		authToken.MissionS256 != resourceToken.MissionS256 ||
 		authToken.Tenant != resourceToken.Tenant || authToken.Account != resourceToken.Account {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server auth token changed the authorized context"))
@@ -625,7 +682,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		aauth.AuthTokenContext{
 			Issuer: resourceToken.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
 			Resource: resourceToken.Issuer, PersonServer: server.issuer, Subject: resourceToken.Subject,
-			RequestKey: agent.Confirmation.JWK,
+			RequestKey: credentialAgent.Confirmation.JWK,
 		},
 	); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -667,7 +724,8 @@ func (server *Server) issuePSAuthorizationToken(
 	response http.ResponseWriter,
 	request *http.Request,
 	proof signaturekey.VerifiedRequest,
-	agent aauth.AgentTokenClaims,
+	requestingAgent aauth.AgentTokenClaims,
+	credentialAgent aauth.AgentTokenClaims,
 	resourceToken aauth.ResourceTokenClaims,
 	authorizationRequest AuthorizationRequest,
 ) {
@@ -686,9 +744,13 @@ func (server *Server) issuePSAuthorizationToken(
 		return
 	}
 	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
-	agentExpiresAt := time.Unix(agent.ExpiresAt, 0)
-	if agentExpiresAt.Before(expiresAt) {
-		expiresAt = agentExpiresAt
+	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0)
+	if requestingAgentExpiresAt.Before(expiresAt) {
+		expiresAt = requestingAgentExpiresAt
+	}
+	credentialAgentExpiresAt := time.Unix(credentialAgent.ExpiresAt, 0)
+	if credentialAgentExpiresAt.Before(expiresAt) {
+		expiresAt = credentialAgentExpiresAt
 	}
 	if !expiresAt.After(proof.VerifiedAt()) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization decision has no usable lifetime"))
@@ -697,7 +759,7 @@ func (server *Server) issuePSAuthorizationToken(
 	claims := aauth.AuthTokenClaims{
 		Issuer: server.issuer, DWK: aauth.PersonDiscoveryDocument,
 		Audience: resourceToken.Issuer, JTI: server.newID(), PersonServer: server.issuer,
-		Subject: resourceToken.Subject, Confirmation: aauth.Confirmation{JWK: agent.Confirmation.JWK},
+		Subject: resourceToken.Subject, Confirmation: aauth.Confirmation{JWK: credentialAgent.Confirmation.JWK},
 		IssuedAt: proof.VerifiedAt().Unix(), ExpiresAt: expiresAt.Unix(),
 		Scope: strings.Join(grantedScopes, " "), Tenant: resourceToken.Tenant,
 	}
@@ -746,6 +808,46 @@ func relayAccessServerProblem(response http.ResponseWriter, accessResponse *http
 	return true
 }
 
+func (server *Server) verifyOptionalSubagentToken(
+	ctx context.Context,
+	raw json.RawMessage,
+	parent aauth.AgentTokenClaims,
+	verifiedAt time.Time,
+) (string, aauth.AgentTokenClaims, bool, error) {
+	if raw == nil {
+		return "", parent, false, nil
+	}
+	var compact string
+	if err := json.Unmarshal(raw, &compact); err != nil || compact == "" {
+		return "", aauth.AgentTokenClaims{}, false, errSubagentTokenSyntax
+	}
+	verificationClock := aauth.ClockFunc(func() time.Time { return verifiedAt })
+	child, err := aauth.VerifyAgentToken(ctx, compact, server.keyResolver, verificationClock)
+	if err != nil {
+		return "", aauth.AgentTokenClaims{}, false, &requestTokenError{cause: err}
+	}
+	if child.ParentAgent == "" || child.ParentAgent != parent.Subject {
+		return "", aauth.AgentTokenClaims{}, false, errors.New("personserver: sub-agent token does not name the requesting parent")
+	}
+	if child.Confirmation.JWK.Equal(parent.Confirmation.JWK) {
+		return "", aauth.AgentTokenClaims{}, false, errors.New("personserver: sub-agent token must use a key distinct from the parent")
+	}
+	return compact, child, true, nil
+}
+
+func (server *Server) writeSubagentTokenProblem(response http.ResponseWriter, err error) {
+	var tokenFailure *requestTokenError
+	if errors.As(err, &tokenFailure) {
+		writeEndpointTokenProblem(response, tokenFailure.cause, "invalid_agent_token", "expired_agent_token")
+		return
+	}
+	if errors.Is(err, errSubagentTokenSyntax) {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	writeProblem(response, http.StatusBadRequest, "invalid_agent_token", err)
+}
+
 func (server *Server) verifyAgentRequest(request *http.Request, requiredComponents []string) (string, aauth.AgentTokenClaims, signaturekey.VerifiedRequest, error) {
 	var agent aauth.AgentTokenClaims
 	prepared, err := signaturekey.PrepareRequest(request, server.clock, signaturekey.VerifyOptions{
@@ -765,12 +867,12 @@ func (server *Server) verifyAgentRequest(request *http.Request, requiredComponen
 	if err != nil {
 		return "", agent, signaturekey.VerifiedRequest{}, &requestTokenError{cause: err}
 	}
-	if agent.PersonServer != server.issuer || agent.ParentAgent != "" {
-		return "", agent, signaturekey.VerifiedRequest{}, errors.New("personserver: agent token does not name this person server")
-	}
 	proof, err := prepared.Verify(agent.Confirmation.JWK)
 	if err != nil {
 		return "", agent, signaturekey.VerifiedRequest{}, err
+	}
+	if agent.PersonServer != server.issuer || agent.ParentAgent != "" {
+		return "", agent, signaturekey.VerifiedRequest{}, &requestTopologyError{cause: errors.New("personserver: only a top-level Agent token naming this Person Server may sign the request")}
 	}
 	return compact, agent, proof, nil
 }
@@ -780,10 +882,20 @@ type requestTokenError struct{ cause error }
 func (failure *requestTokenError) Error() string { return failure.cause.Error() }
 func (failure *requestTokenError) Unwrap() error { return failure.cause }
 
+type requestTopologyError struct{ cause error }
+
+func (failure *requestTopologyError) Error() string { return failure.cause.Error() }
+func (failure *requestTopologyError) Unwrap() error { return failure.cause }
+
 func writeAgentTokenProblem(response http.ResponseWriter, err error) {
 	var tokenFailure *requestTokenError
 	if errors.As(err, &tokenFailure) {
 		writeEndpointTokenProblem(response, tokenFailure.cause, "invalid_agent_token", "expired_agent_token")
+		return
+	}
+	var topologyFailure *requestTopologyError
+	if errors.As(err, &topologyFailure) {
+		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", topologyFailure.cause)
 		return
 	}
 	writeProblem(response, http.StatusUnauthorized, "invalid_agent_token", err)
@@ -815,8 +927,24 @@ func (server *Server) handleJWKS(response http.ResponseWriter, _ *http.Request) 
 
 func validatePersonTokenRecord(record PersonTokenRecord) error {
 	if record.JTI == "" || record.PersonServer == "" || record.Resource == "" || record.Subject == "" ||
-		record.ExpiresAt.IsZero() || !record.RetainUntil.After(record.ExpiresAt) {
+		record.AgentProvider == "" || record.Agent == "" || record.ExpiresAt.IsZero() ||
+		!record.RetainUntil.After(record.ExpiresAt) {
 		return errors.New("personserver: retained person token is invalid")
+	}
+	if err := aauth.ValidateServerIdentifier(record.PersonServer); err != nil {
+		return fmt.Errorf("personserver: retained person-token issuer: %w", err)
+	}
+	if err := aauth.ValidateServerIdentifier(record.Resource); err != nil {
+		return fmt.Errorf("personserver: retained person-token resource: %w", err)
+	}
+	if err := aauth.ValidateServerIdentifier(record.AgentProvider); err != nil {
+		return fmt.Errorf("personserver: retained person-token agent provider: %w", err)
+	}
+	if err := aauth.ValidateAgentRelationship(record.Agent, record.ParentAgent); err != nil {
+		return fmt.Errorf("personserver: retained person-token agent relationship: %w", err)
+	}
+	if _, err := record.Confirmation.PublicKey(); err != nil {
+		return fmt.Errorf("personserver: retained person-token confirmation: %w", err)
 	}
 	return nil
 }
@@ -890,6 +1018,7 @@ func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationReques
 	request.Scopes = append([]string(nil), request.Scopes...)
 	request.Capabilities = append([]string(nil), request.Capabilities...)
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
+	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
 	return request
 }
 

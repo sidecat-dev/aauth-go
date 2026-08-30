@@ -9,6 +9,57 @@ Companion-source text alone does not create an implementation interpretation.
 This file gains a companion entry only when an executing path requires a choice;
 source-only questions remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
+## Parent-mediated credentials use the child key and the earlier expiry
+
+**Source:** AAuth Core, `Person Token Endpoint`, `Resource Token
+Verification`, `AS Token Endpoint`, and `Sub-Agents`.
+
+The parent signs both Person Server requests, but the child uses every issued
+credential. The person and auth token are therefore verified and issued
+against the child token's `cnf.jwk`; the resource token's `agent_jkt` must name
+that same key. Each issued token is capped by the earlier of the parent and
+child Agent-token expirations.
+
+The child token's optional `ps` claim does not select this flow; the parent
+selects and authenticates to its Person Server. The Person Server retains the
+child's Agent Provider, child, parent, and child key with the person-token
+record. A later token request must match that record before policy runs. The
+parent and child keys must be distinct, and the Resource receives none of the
+relationship fields.
+
+The record binds the stable relationship, not one compact child token. A later
+valid child token may rotate `jti`, expiry, or additional policy claims when
+issuer, child, parent, and key remain unchanged; policy receives the current
+claims.
+
+The Person Server verifies the HTTP proof before applying the top-level-only
+request rule. A correctly signed direct request from a child returns
+`400 invalid_agent_token` without `Signature-Error`; a forged proof returns
+`401` with its Signature-Key failure. Core requires the direct-child refusal
+but does not assign it an error code.
+
+**Executable examples:**
+`personserver/subagent_test.go:TestServerIssuesImmediatePersonAndAuthTokensForSubagent`
+and
+`integration/subagent_authorization_test.go:TestCurrentCoreParentMediatedSubagentImmediatePSAuthorization`.
+
+## A federated Access Server verifies both Agent tokens
+
+**Source:** AAuth Core, `PS-to-AS Token Request`, `Auth Token Delivery`, and
+`Parent-Mediated Authorization`.
+
+The source sends both tokens to the Access Server but does not explicitly say
+whether the AS verifies them itself. This implementation does. The AS verifies
+the parent and child tokens at the Person Server proof's fixed instant,
+confirms their relationship, and requires the parent token to name the signing
+Person Server. The child's optional `ps` claim does not select the flow. Policy
+receives both identities, and issuance uses only the child key. The Person
+Server then verifies the returned auth token against the child key before
+returning it to the parent.
+
+**Executable example:**
+`integration/subagent_authorization_test.go:TestCurrentCoreParentMediatedSubagentImmediateASAuthorization`.
+
 ## Four-party person identity uses `(ps, sub)`
 
 **Source:** AAuth Core, `Auth Token Structure` and `Auth Token Verification`.

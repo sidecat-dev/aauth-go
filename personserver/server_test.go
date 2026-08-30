@@ -155,7 +155,6 @@ func TestServerIssuesAndRetainsDirectedPersonToken(t *testing.T) {
 
 	for name, unsupportedBody := range map[string]string{
 		"mission":       `{"resource":"https://resource.example","mission_s256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
-		"subagent":      `{"resource":"https://resource.example","subagent_token":"token"}`,
 		"upstream":      `{"resource":"https://resource.example","upstream_token":"token"}`,
 		"justification": `{"resource":"https://resource.example","justification":"because"}`,
 		"login hint":    `{"resource":"https://resource.example","login_hint":"person@example.com"}`,
@@ -364,11 +363,11 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 		}, nil
 	})}
 	store := newMemoryTokenStore()
-	personRecord := PersonTokenRecord{
-		JTI: "person-token-1", PersonServer: "https://person.example",
-		Resource: "https://resource.example", Subject: "person-123", Tenant: "tenant-1",
-		ExpiresAt: now.Add(20 * time.Minute), RetainUntil: now.Add(25 * time.Minute),
-	}
+	personRecord := directPersonTokenRecord(
+		"person-token-1", "https://person.example", "https://resource.example", "person-123", "tenant-1",
+		"https://provider.example", "aauth:planner@provider.example", agentKey.PublicJWK(),
+		now.Add(20*time.Minute), now.Add(25*time.Minute),
+	)
 	if err := store.Commit(context.Background(), personRecord); err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +440,6 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 
 	for name, value := range map[string]any{
 		"upstream_token": "token",
-		"subagent_token": "token",
 		"justification":  "because",
 		"login_hint":     "person@example.com",
 		"tenant":         "tenant-1",
@@ -553,11 +551,11 @@ func TestServerRefusesResourceTokenThatChangesRetainedPerson(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newMemoryTokenStore()
-	if err := store.Commit(context.Background(), PersonTokenRecord{
-		JTI: "person-token-1", PersonServer: "https://person.example",
-		Resource: "https://resource.example", Subject: "person-123", Tenant: "tenant-1",
-		ExpiresAt: now.Add(20 * time.Minute), RetainUntil: now.Add(25 * time.Minute),
-	}); err != nil {
+	if err := store.Commit(context.Background(), directPersonTokenRecord(
+		"person-token-1", "https://person.example", "https://resource.example", "person-123", "tenant-1",
+		"https://provider.example", "aauth:planner@provider.example", agentKey.PublicJWK(),
+		now.Add(20*time.Minute), now.Add(25*time.Minute),
+	)); err != nil {
 		t.Fatal(err)
 	}
 	accessCalls := 0
@@ -684,11 +682,11 @@ func TestServerRefusesUnusableResourceTokenBeforePolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			store := newMemoryTokenStore()
-			if err := store.Commit(context.Background(), PersonTokenRecord{
-				JTI: "person-token-1", PersonServer: "https://person.example",
-				Resource: "https://resource.example", Subject: "person-123", Tenant: "tenant-1",
-				ExpiresAt: now.Add(test.personTokenLifetime), RetainUntil: now.Add(test.retainFor),
-			}); err != nil {
+			if err := store.Commit(context.Background(), directPersonTokenRecord(
+				"person-token-1", "https://person.example", "https://resource.example", "person-123", "tenant-1",
+				"https://provider.example", "aauth:planner@provider.example", agentKey.PublicJWK(),
+				now.Add(test.personTokenLifetime), now.Add(test.retainFor),
+			)); err != nil {
 				t.Fatal(err)
 			}
 			accessCalls := 0
@@ -916,6 +914,25 @@ type memoryTokenStore struct {
 	commits   int
 	loads     int
 	commitErr error
+}
+
+func directPersonTokenRecord(
+	jti string,
+	personServer string,
+	resource string,
+	subject string,
+	tenant string,
+	agentProvider string,
+	agent string,
+	confirmation jose.JWK,
+	expiresAt time.Time,
+	retainUntil time.Time,
+) PersonTokenRecord {
+	return PersonTokenRecord{
+		JTI: jti, PersonServer: personServer, Resource: resource, Subject: subject, Tenant: tenant,
+		AgentProvider: agentProvider, Agent: agent, Confirmation: confirmation,
+		ExpiresAt: expiresAt, RetainUntil: retainUntil,
+	}
 }
 
 func newMemoryTokenStore() *memoryTokenStore {

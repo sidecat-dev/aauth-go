@@ -591,3 +591,120 @@ pre-use tombstone? If it retains one, what bounds its lifetime and how should a
 concurrent first use be resolved?
 
 **Placement:** Add to the focused AAuth Core revocation issue.
+
+### AAG-F038 — Parent-mediated person-token expiry has two Agent-token ceilings
+
+**Source:** AAuth Core, `Person Token Structure` and `Parent-Mediated
+Authorization`.
+
+The person token may not outlive “the agent token presented.” The parent token
+is presented in `Signature-Key`, while `subagent_token` supplies the child key
+bound into the result. The implementation uses the earlier expiration.
+
+**Question:** Should parent-mediated person and auth tokens be capped by the
+earlier of the parent and sub-agent token expirations?
+
+**Placement:** Open one focused Core sub-agent issue containing F038–F045.
+
+### AAG-F039 — Required parent/sub-agent retention fields are unspecified
+
+**Source:** AAuth Core, `Person Token Endpoint` retention and `Sub-Agents`.
+
+The retention list omits parent, child, Agent Provider, and child key, while
+the later text says the PS records the relationship for audit and revocation.
+It also says the PS “issued both tokens,” although the AP issues the child
+token and an AS may issue the auth token. The implementation retains the four
+relationship values with the person-token record.
+
+**Question:** Which exact relationship fields must the PS retain, and which
+token pair does “both tokens” mean?
+
+**Placement:** Add to the focused Core sub-agent issue.
+
+### AAG-F040 — AS verification of forwarded Agent tokens is implicit
+
+**Source:** AAuth Core, `PS-to-AS Token Request` and `Parent-Mediated
+Authorization`.
+
+The AS receives parent and child Agent tokens and is said to record the parent
+authoritatively, but the endpoint steps do not explicitly require verifying
+both signatures, expirations, and the `parent_agent` link. The parent token
+names the signing Person Server; the child's `ps` claim is optional. The
+implementation independently verifies both tokens.
+
+**Question:** Must the AS verify both Agent tokens, or treat the signed PS
+request as an attestation of their already-verified contents?
+
+**Placement:** Add to the focused Core sub-agent issue.
+
+### AAG-F041 — Generic auth-token delivery compares against the wrong key
+
+**Source:** AAuth Core, `Auth Token Delivery` and `Parent-Mediated
+Authorization`.
+
+Generic delivery tells the receiving Agent to compare `cnf.jwk` with its own
+key. In this flow the parent receives a token intentionally bound to the child.
+The implementation verifies it against `subagent_token.cnf.jwk` and the exact
+resource-token context before forwarding it.
+
+**Question:** Should the delivery checks define this parent-mediated branch
+explicitly?
+
+**Placement:** Add to the focused Core sub-agent issue.
+
+### AAG-F042 — The interop profile asks the Resource to verify the wrong signature
+
+**Source:** Interoperability demo profile, Surface 5.
+
+The profile says the auth token is “signed with the sub-agent's key.” The PS or
+AS signs the JWT; the child key appears in `cnf`, signs the HTTP request, and
+is checked by the Resource.
+
+**Question:** Should the profile instead say that the Resource verifies a
+child-signed request whose auth-token `cnf.jwk` matches that request key?
+
+**Placement:** Add to the focused Core sub-agent issue or make the matching
+editorial change directly in the profile.
+
+### AAG-F043 — Parent attenuation has no request parameter
+
+**Source:** AAuth Core, `Parent-Mediated Authorization`.
+
+The text says the parent can attenuate a child request, but the Resource-signed
+resource token fixes the requested scope and the PS request has no narrower
+scope parameter. The parent can refuse or delay forwarding, but cannot express
+attenuation on the wire.
+
+**Question:** Is attenuation intended to require a fresh narrower resource
+token, or should the parent-to-PS request gain an explicit narrowing input?
+
+**Placement:** Add to the focused Core sub-agent issue.
+
+### AAG-F044 — “Own key” does not explicitly require distinct parent and child keys
+
+**Source:** AAuth Core, `Sub-Agent Identity` and `Parent-Mediated
+Authorization`.
+
+The text gives a sub-agent its “own” signing key and repeatedly contrasts that
+key with the parent request key, but never states that the two JWKs must differ.
+If they are equal, the parent can use every child-bound credential. The
+implementation requires distinct keys.
+
+**Question:** Should Core explicitly require a sub-agent token's `cnf.jwk` to
+differ from its parent's current confirmation key?
+
+**Placement:** Add to the focused Core sub-agent issue.
+
+### AAG-F045 — Direct sub-agent PS refusal has no error assignment
+
+**Source:** AAuth Core, `Delegation Depth` and `Token Endpoint Error Codes`.
+
+Core requires a PS to reject a request signed by a sub-agent but assigns no
+status or error. The implementation first verifies proof possession, then
+returns `400 invalid_agent_token` without `Signature-Error`; a forged proof
+still returns `401` with the signature failure.
+
+**Question:** Which registered response should a correctly signed direct
+sub-agent request receive?
+
+**Placement:** Add to the focused Core sub-agent issue.

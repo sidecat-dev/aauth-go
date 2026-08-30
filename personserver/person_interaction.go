@@ -52,7 +52,9 @@ type PendingPersonTokenRecord struct {
 	ID                    string
 	CodeSHA256            [32]byte
 	PersonServer          string
+	AgentProvider         string
 	Agent                 string
+	ParentAgent           string
 	Resource              string
 	Confirmation          jose.JWK
 	AgentExpiresAt        time.Time
@@ -152,6 +154,8 @@ type PersonTokenInteraction struct {
 	id                    string
 	codeSHA256            [32]byte
 	agent                 string
+	agentProvider         string
+	parentAgent           string
 	resource              string
 	confirmation          jose.JWK
 	agentExpiresAt        time.Time
@@ -200,7 +204,8 @@ func validatePersonTokenInteractionPolicy(policy PersonTokenInteractionPolicy) e
 }
 
 func validatePendingPersonTokenRecord(record PendingPersonTokenRecord) error {
-	if record.ID == "" || record.CodeSHA256 == ([32]byte{}) || record.PersonServer == "" || record.Agent == "" || record.Resource == "" ||
+	if record.ID == "" || record.CodeSHA256 == ([32]byte{}) || record.PersonServer == "" || record.AgentProvider == "" ||
+		record.Agent == "" || record.Resource == "" ||
 		record.AgentExpiresAt.IsZero() || record.CreatedAt.IsZero() || !record.ExpiresAt.After(record.CreatedAt) ||
 		record.AgentExpiresAt.Before(record.ExpiresAt) || record.RetryAfter < 0 || record.RetryAfter%time.Second != 0 {
 		return errors.New("personserver: pending person-token record is invalid")
@@ -209,6 +214,12 @@ func validatePendingPersonTokenRecord(record PendingPersonTokenRecord) error {
 		return err
 	}
 	if err := aauth.ValidateAgentIdentifier(record.Agent); err != nil {
+		return err
+	}
+	if err := aauth.ValidateServerIdentifier(record.AgentProvider); err != nil {
+		return err
+	}
+	if err := aauth.ValidateAgentRelationship(record.Agent, record.ParentAgent); err != nil {
 		return err
 	}
 	if err := aauth.ValidateServerIdentifier(record.Resource); err != nil {
@@ -267,7 +278,8 @@ func (server *Server) beginPersonTokenInteraction(
 			return err
 		}
 		record := PendingPersonTokenRecord{
-			ID: id, CodeSHA256: codeSHA256, PersonServer: server.issuer, Agent: personRequest.Agent,
+			ID: id, CodeSHA256: codeSHA256, PersonServer: server.issuer,
+			AgentProvider: agent.Issuer, Agent: personRequest.Agent, ParentAgent: agent.ParentAgent,
 			Resource: personRequest.Resource, Confirmation: agent.Confirmation.JWK,
 			AgentExpiresAt:        agentExpiresAt,
 			AgentAdditionalClaims: cloneClaims(personRequest.AgentAdditionalClaims),
@@ -373,8 +385,9 @@ func (server *Server) ResumePersonTokenInteraction(ctx context.Context, referenc
 func personTokenInteractionFromRecord(issuer string, record PendingPersonTokenRecord) PersonTokenInteraction {
 	return PersonTokenInteraction{
 		kind: personTokenInteractionCorrelated, personServer: issuer, id: record.ID,
-		codeSHA256: record.CodeSHA256,
-		agent:      record.Agent, resource: record.Resource, confirmation: record.Confirmation,
+		codeSHA256:    record.CodeSHA256,
+		agentProvider: record.AgentProvider, agent: record.Agent, parentAgent: record.ParentAgent,
+		resource: record.Resource, confirmation: record.Confirmation,
 		agentExpiresAt: record.AgentExpiresAt, createdAt: record.CreatedAt, expiresAt: record.ExpiresAt,
 		retryAfter:            record.RetryAfter,
 		agentAdditionalClaims: cloneClaims(record.AgentAdditionalClaims),
@@ -428,6 +441,8 @@ func (server *Server) ApprovePersonTokenInteraction(ctx context.Context, interac
 	record := PersonTokenRecord{
 		JTI: claims.JTI, PersonServer: claims.Issuer, Resource: claims.Audience,
 		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
+		AgentProvider: interaction.agentProvider, Agent: interaction.agent,
+		ParentAgent: interaction.parentAgent, Confirmation: interaction.confirmation,
 		ExpiresAt: canonicalExpiry, RetainUntil: canonicalExpiry.Add(server.maximumResourceTokenLifetime),
 	}
 	return server.deferredTokens.ApprovePendingPersonToken(ctx, interaction.id, PersonTokenApproval{
@@ -524,7 +539,8 @@ func (server *Server) validatePendingPersonTokenSnapshot(snapshot PendingPersonT
 
 func pendingRecordMatchesInteraction(record PendingPersonTokenRecord, interaction PersonTokenInteraction) bool {
 	return record.ID == interaction.id && record.CodeSHA256 == interaction.codeSHA256 &&
-		record.PersonServer == interaction.personServer && record.Agent == interaction.agent &&
+		record.PersonServer == interaction.personServer && record.AgentProvider == interaction.agentProvider &&
+		record.Agent == interaction.agent && record.ParentAgent == interaction.parentAgent &&
 		record.Resource == interaction.resource && record.Confirmation.Equal(interaction.confirmation) &&
 		record.AgentExpiresAt.Equal(interaction.agentExpiresAt) && record.CreatedAt.Equal(interaction.createdAt) &&
 		record.ExpiresAt.Equal(interaction.expiresAt) && record.RetryAfter == interaction.retryAfter &&

@@ -55,6 +55,26 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	subagentKey := accessServerTestKey(t, "subagent-key")
+	subagentToken, err := aauth.MintAgentToken(
+		"https://ap.example",
+		apKey,
+		aauth.AgentTokenRequest{
+			Agent:        "aauth:planner+search@ap.example",
+			ParentAgent:  "aauth:planner@ap.example",
+			PersonServer: "https://ps.example",
+			PublicKey:    subagentKey.PublicJWK(),
+			Lifetime:     12 * time.Minute,
+			AdditionalClaims: map[string]json.RawMessage{
+				"workload": json.RawMessage(`"search-worker"`),
+			},
+		},
+		now,
+		"subagent-token-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	agentJKT, err := agentKey.PublicJWK().Thumbprint()
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +204,190 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		t.Fatalf("policy calls: trust=%d authorize=%d", trustCalls, authorizeCalls)
 	}
 
+	t.Run("parent-mediated sub-agent issuance", func(t *testing.T) {
+		subagentJKT, err := subagentKey.PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		subagentResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "https://as.example", JTI: "subagent-resource-token", AgentJKT: subagentJKT,
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(), Scope: "records.read",
+			PersonServer: "https://ps.example", Subject: "directed-person-1", PresentedJTI: "person-token-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := callTokenEndpointWith(map[string]any{
+			"resource_token": subagentResourceToken,
+			"agent_token":    agentToken,
+			"subagent_token": subagentToken,
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var output struct {
+			AuthToken string `json:"auth_token"`
+			ExpiresIn int64  `json:"expires_in"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
+			t.Fatal(err)
+		}
+		claims, err := aauth.VerifyAuthToken(context.Background(), output.AuthToken, resolver, clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !claims.Confirmation.JWK.Equal(subagentKey.PublicJWK()) || claims.ExpiresAt != now.Add(12*time.Minute).Unix() || output.ExpiresIn != 720 {
+			t.Fatalf("sub-agent auth token = %#v; expires_in = %d", claims, output.ExpiresIn)
+		}
+		if evaluated.Agent.Identifier != "aauth:planner@ap.example" || evaluated.Subagent == nil ||
+			evaluated.Subagent.Identifier != "aauth:planner+search@ap.example" ||
+			!evaluated.Subagent.Confirmation.Equal(subagentKey.PublicJWK()) ||
+			string(evaluated.Subagent.AdditionalClaims["workload"]) != `"search-worker"` {
+			t.Fatalf("parent-mediated authorization request = %#v", evaluated)
+		}
+	})
+
+	t.Run("parent expiry caps parent-mediated issuance", func(t *testing.T) {
+		shortParentToken, err := aauth.MintAgentToken(
+			"https://ap.example",
+			apKey,
+			aauth.AgentTokenRequest{
+				Agent: "aauth:planner@ap.example", PersonServer: "https://ps.example",
+				PublicKey: agentKey.PublicJWK(), Lifetime: 7 * time.Minute,
+			},
+			now,
+			"short-parent-token",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subagentJKT, err := subagentKey.PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		subagentResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "https://as.example", JTI: "short-parent-resource-token", AgentJKT: subagentJKT,
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(), Scope: "records.read",
+			PersonServer: "https://ps.example", Subject: "directed-person-1", PresentedJTI: "person-token-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := callTokenEndpointWith(map[string]any{
+			"resource_token": subagentResourceToken,
+			"agent_token":    shortParentToken,
+			"subagent_token": subagentToken,
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var output struct {
+			AuthToken string `json:"auth_token"`
+			ExpiresIn int64  `json:"expires_in"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
+			t.Fatal(err)
+		}
+		claims, err := aauth.VerifyAuthToken(context.Background(), output.AuthToken, resolver, clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claims.ExpiresAt != now.Add(7*time.Minute).Unix() || output.ExpiresIn != 420 {
+			t.Fatalf("parent-capped sub-agent auth token = %#v; expires_in = %d", claims, output.ExpiresIn)
+		}
+	})
+
+	t.Run("parent-mediated request refuses a child of another parent", func(t *testing.T) {
+		otherChildKey := accessServerTestKey(t, "other-child-key")
+		otherChildToken, err := aauth.MintAgentToken(
+			"https://ap.example", apKey,
+			aauth.AgentTokenRequest{
+				Agent: "aauth:other+search@ap.example", ParentAgent: "aauth:other@ap.example",
+				PersonServer: "https://ps.example", PublicKey: otherChildKey.PublicJWK(), Lifetime: time.Hour,
+			}, now, "other-child-token",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		otherJKT, err := otherChildKey.PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		childResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "https://as.example", JTI: "other-child-resource", AgentJKT: otherJKT,
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(), Scope: "records.read",
+			PersonServer: "https://ps.example", Subject: "directed-person-1", PresentedJTI: "person-token-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeAuthorize := authorizeCalls
+		assertAccessProblem(t, callTokenEndpointWith(map[string]any{
+			"resource_token": childResourceToken,
+			"agent_token":    agentToken,
+			"subagent_token": otherChildToken,
+		}), "invalid_agent_token")
+		if authorizeCalls != beforeAuthorize {
+			t.Fatal("wrong-parent sub-agent reached authorization policy")
+		}
+	})
+
+	for name, malformed := range map[string]any{
+		"null":         nil,
+		"empty string": "",
+		"object":       map[string]any{"token": subagentToken},
+	} {
+		name, malformed := name, malformed
+		t.Run("malformed subagent_token "+name, func(t *testing.T) {
+			beforeAuthorize := authorizeCalls
+			assertAccessProblemStatus(t, callTokenEndpointWith(map[string]any{
+				"resource_token": resourceToken,
+				"agent_token":    agentToken,
+				"subagent_token": malformed,
+			}), http.StatusBadRequest, "invalid_request")
+			if authorizeCalls != beforeAuthorize {
+				t.Fatal("malformed sub-agent token reached authorization policy")
+			}
+		})
+	}
+
+	t.Run("parent-mediated request refuses a resource token bound to the parent", func(t *testing.T) {
+		beforeAuthorize := authorizeCalls
+		assertAccessProblem(t, callTokenEndpointWith(map[string]any{
+			"resource_token": resourceToken,
+			"agent_token":    agentToken,
+			"subagent_token": subagentToken,
+		}), "invalid_resource_token")
+		if authorizeCalls != beforeAuthorize {
+			t.Fatal("wrong-key resource token reached authorization policy")
+		}
+	})
+
+	t.Run("parent-mediated request refuses a child sharing the parent key", func(t *testing.T) {
+		sharedKeyToken, err := aauth.MintAgentToken(
+			"https://ap.example", apKey,
+			aauth.AgentTokenRequest{
+				Agent: "aauth:planner+shared@ap.example", ParentAgent: "aauth:planner@ap.example",
+				PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+			}, now, "shared-key-child-token",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeAuthorize := authorizeCalls
+		assertAccessProblem(t, callTokenEndpointWith(map[string]any{
+			"resource_token": resourceToken,
+			"agent_token":    agentToken,
+			"subagent_token": sharedKeyToken,
+		}), "invalid_agent_token")
+		if authorizeCalls != beforeAuthorize {
+			t.Fatal("shared-key sub-agent reached authorization policy")
+		}
+	})
+
 	t.Run("agent-token expiry remains the auth-token ceiling", func(t *testing.T) {
 		shortAgentToken, err := aauth.MintAgentToken(
 			"https://ap.example", apKey,
@@ -264,7 +468,7 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 	}
 	decision = Decision{Scopes: []string{"records.read"}, Lifetime: 30 * time.Minute}
 
-	for _, name := range []string{"subagent_token", "upstream_token"} {
+	for _, name := range []string{"upstream_token"} {
 		name := name
 		t.Run("known unsupported request "+name, func(t *testing.T) {
 			beforeAuthorize := authorizeCalls

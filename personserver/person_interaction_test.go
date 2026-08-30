@@ -424,7 +424,9 @@ func TestDeferredPersonTokenDoesNotTrustStoreSuppliedTokenKey(t *testing.T) {
 		State: PersonTokenPollApproved, Token: compact, ExpiresIn: int64(time.Minute / time.Second),
 		Record: PersonTokenRecord{
 			JTI: claims.JTI, PersonServer: claims.Issuer, Resource: claims.Audience,
-			Subject: claims.Subject, ExpiresAt: expiresAt, RetainUntil: expiresAt.Add(5 * time.Minute),
+			Subject: claims.Subject, AgentProvider: "https://provider.example",
+			Agent: protocol.agentID, Confirmation: protocol.agentKey.PublicJWK(),
+			ExpiresAt: expiresAt, RetainUntil: expiresAt.Add(5 * time.Minute),
 		},
 	}
 	poll := httptest.NewRecorder()

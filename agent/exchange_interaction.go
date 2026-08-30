@@ -171,20 +171,23 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 	if client == nil {
 		return ExchangeResult{}, fail(operation, errors.New("client is required"))
 	}
-	response, resourceClaims, err := client.exchangeRequest(ctx, input)
+	response, resourceClaims, credential, err := client.exchangeRequest(ctx, input)
 	if err != nil {
 		return ExchangeResult{}, fail(operation, err)
 	}
 	switch response.StatusCode {
 	case http.StatusOK:
 		defer response.Body.Close()
-		token, err := client.verifiedExchangeResponse(ctx, response, resourceClaims)
+		token, err := client.verifiedExchangeResponse(ctx, response, resourceClaims, credential)
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
 		return ExchangeResult{kind: exchangeResultToken, token: token}, nil
 	case http.StatusAccepted:
 		defer response.Body.Close()
+		if input.SubagentToken != "" {
+			return ExchangeResult{}, fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
+		}
 		pending, err := client.pendingExchangeResponse(response, input.PersonServer, input.ResourceToken, resourceClaims, PendingExchange{})
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
@@ -292,7 +295,15 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 		}
 		return pendingExchangeResult(next), nil
 	case http.StatusOK:
-		token, err := client.verifiedExchangeResponse(ctx, response, *pending.resourceClaims)
+		token, err := client.verifiedExchangeResponse(
+			ctx,
+			response,
+			*pending.resourceClaims,
+			personServerCredential{
+				requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
+				expirySource: "agent token",
+			},
+		)
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
@@ -305,80 +316,86 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 func (client *Client) exchangeRequest(
 	ctx context.Context,
 	input ExchangeRequest,
-) (*http.Response, aauth.ResourceTokenClaims, error) {
+) (*http.Response, aauth.ResourceTokenClaims, personServerCredential, error) {
 	if ctx == nil {
-		return nil, aauth.ResourceTokenClaims{}, errors.New("context is required")
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("context is required")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	if len(input.Capabilities) > 0 {
 		if _, err := aauth.FormatCapabilities(input.Capabilities); err != nil {
-			return nil, aauth.ResourceTokenClaims{}, fmt.Errorf("capabilities: %w", err)
+			return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, fmt.Errorf("capabilities: %w", err)
 		}
 	}
-	if err := client.requireDirectPersonServerCaller(); err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+	credential, err := client.personServerRequestBinding(ctx, input.SubagentToken)
+	if err != nil {
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {
-		return nil, aauth.ResourceTokenClaims{}, fmt.Errorf("person server: %w", err)
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, fmt.Errorf("person server: %w", err)
 	}
 	if input.PersonServer != client.agentClaims.PersonServer {
-		return nil, aauth.ResourceTokenClaims{}, errors.New("person server does not match agent token")
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("person server does not match agent token")
 	}
 	if input.ResourceToken == "" {
-		return nil, aauth.ResourceTokenClaims{}, errors.New("resource token is required")
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource token is required")
 	}
 	resourceClaims, err := aauth.VerifyResourceToken(ctx, input.ResourceToken, client.keyResolver, client.clock)
 	if err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	if resourceClaims.Interaction != nil {
-		return nil, aauth.ResourceTokenClaims{}, errors.New("resource-token interaction requires the deferred flow")
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource-token interaction requires the deferred flow")
 	}
 	if resourceClaims.Account != "" {
-		return nil, aauth.ResourceTokenClaims{}, errors.New("resource-token account is not supported by the immediate flow")
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource-token account is not supported by the immediate flow")
 	}
 	if resourceClaims.MissionS256 != "" {
-		return nil, aauth.ResourceTokenClaims{}, errors.New("mission-bound resource tokens require the mission flow")
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("mission-bound resource tokens require the mission flow")
 	}
-	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
+	thumbprint, err := credential.requestKey.Thumbprint()
 	if err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	if resourceClaims.PersonServer != input.PersonServer || resourceClaims.AgentJKT != thumbprint {
-		return nil, aauth.ResourceTokenClaims{}, errors.New("resource token does not match person server and signing key")
+		if input.SubagentToken != "" {
+			return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource token does not match person server and sub-agent key")
+		}
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource token does not match person server and signing key")
 	}
 	metadata, err := client.personServerMetadata(ctx, input.PersonServer)
 	if err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	body, err := json.Marshal(struct {
 		ResourceToken string   `json:"resource_token"`
+		SubagentToken string   `json:"subagent_token,omitempty"`
 		Capabilities  []string `json:"capabilities,omitempty"`
-	}{ResourceToken: input.ResourceToken, Capabilities: input.Capabilities})
+	}{ResourceToken: input.ResourceToken, SubagentToken: input.SubagentToken, Capabilities: input.Capabilities})
 	if err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	request, err := newJSONRequest(ctx, metadata.AuthTokenEndpoint, body)
 	if err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	request.Header.Set("Prefer", "wait=0")
 	if err := client.signJSONRequest(request, client.agentToken); err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return nil, aauth.ResourceTokenClaims{}, err
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
-	return response, resourceClaims, nil
+	return response, resourceClaims, credential, nil
 }
 
 func (client *Client) verifiedExchangeResponse(
 	ctx context.Context,
 	response *http.Response,
 	resourceClaims aauth.ResourceTokenClaims,
+	credential personServerCredential,
 ) (string, error) {
 	var output struct {
 		AuthToken string `json:"auth_token"`
@@ -390,7 +407,9 @@ func (client *Client) verifiedExchangeResponse(
 	if output.AuthToken == "" {
 		return "", errors.New("response did not contain an auth token")
 	}
-	if _, err := client.verifyAuthTokenForResource(ctx, output.AuthToken, resourceClaims); err != nil {
+	if _, err := client.verifyAuthTokenForResourceBinding(
+		ctx, output.AuthToken, resourceClaims, credential,
+	); err != nil {
 		return "", err
 	}
 	return output.AuthToken, nil

@@ -265,6 +265,54 @@ selects the verified issuer role; the Agent separately binds `iss` to the
 resource-token audience. Each explicit Resource constructor enforces the role
 it accepts. This remains unambiguous when a PS and AS share one origin.
 
+## Use parent-mediated sub-agent authorization
+
+A one-level sub-agent has its own identifier, key, and Agent token. It calls
+the Resource with that key, but never calls the Person Server. The top-level
+parent supplies a current child token on both Person Server calls:
+
+```go
+personResult, err := parent.PersonToken(ctx, agent.PersonTokenRequest{
+	PersonServer: personServerID, Resource: resourceID,
+	SubagentToken: childToken,
+})
+if err != nil {
+	return err
+}
+personToken, ok := personResult.Token()
+if !ok {
+	return errors.New("parent-mediated interaction is not implemented")
+}
+
+resourceToken, err := child.Authorize(ctx, agent.AuthorizeRequest{
+	Resource: resourceID, PersonToken: personToken,
+	Scopes: []string{"records.read"},
+})
+if err != nil {
+	return err
+}
+authToken, err := parent.Exchange(ctx, agent.ExchangeRequest{
+	PersonServer: personServerID, ResourceToken: resourceToken,
+	SubagentToken: childToken,
+})
+if err != nil {
+	return err
+}
+response, err := child.Do(ctx, agent.Call{Request: request, AuthToken: authToken})
+if err != nil {
+	return err
+}
+defer response.Body.Close()
+```
+
+Person Server and Access Server policy see the parent and child as separate
+ordinary values. The person, resource, and auth tokens bind only the child's
+key; the Resource does not see the relationship. Parent-mediated deferred
+interaction is not implemented. Core does not standardize the out-of-band
+parent-to-child token transfer, so the application must authenticate that
+channel. The child accepts credentials from the valid Person Server selected
+by its parent because the child's own Agent token need not name one.
+
 ## Revoke and explicitly re-authorize
 
 Three-party revocation is optional. Configure the Person Server with an
@@ -605,6 +653,19 @@ Expected output:
 AAuth four-party flow complete: person-123 has records.read
 ```
 
+The sub-agent example shows the parent making both Person Server calls while
+the child makes both Resource calls:
+
+```sh
+go run ./example/subagent
+```
+
+Expected output:
+
+```text
+AAuth parent-mediated sub-agent flow complete: person-123 has records.read
+```
+
 The examples use generated keys, fixed logical HTTPS origins, and in-memory
 stores. They are executable documentation, not deployment templates.
 
@@ -612,18 +673,18 @@ stores. They are executable documentation, not deployment templates.
 
 The current implementation does not provide a general deferred-authorization
 engine, interaction relay, clarification, automatic polling, token renewal or
-general token revocation, parent or sub-agent delegation, call chaining, R3,
-Events, Budgets, Bootstrap, or the complete interoperability demo profile. Its
+general token revocation, call chaining, R3, Events, Budgets, Bootstrap, or the
+complete interoperability demo profile. Its
 narrow deferred paths are person-token interaction, three-party PS consent,
 Resource-managed interaction, and Resource-held auth-token delivery. Its
 revocation path is limited to a PS-issued three-party auth token already
-recognized by the Resource.
+recognized by the Resource. Parent-mediated sub-agent authorization is
+immediate-only; sub-agent enrollment, recursive delegation, delegated
+interaction, and parent-grant revocation remain outside the current path.
 
-The next complete Core seam is parent-mediated sub-agent person- and auth-token
-handling: the parent requests credentials bound to the sub-agent key, and the
-sub-agent uses them itself. The first companion seam after the remaining Core
-paths is one MCP-only R3 direct grant. [Architecture](ARCHITECTURE.md) assigns
-the other companion boundaries without creating placeholder packages.
+The first companion seam after the remaining Core paths is one MCP-only R3
+direct grant. [Architecture](ARCHITECTURE.md) assigns the other companion
+boundaries without creating placeholder packages.
 
 The role packages do not provide TLS listeners, key storage, a durable replay
 store or multi-process coordination. Hosts supply `DeferredTokenStore`,

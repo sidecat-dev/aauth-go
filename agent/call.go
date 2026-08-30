@@ -253,7 +253,7 @@ func (client *Client) Begin(ctx context.Context, input InitialCall) (CallResult,
 	if err != nil {
 		return CallResult{}, fail(operation, err)
 	}
-	if person.Issuer != client.agentClaims.PersonServer {
+	if !client.acceptsPersonServer(person.Issuer) {
 		return CallResult{}, fail(operation, errors.New("person-token issuer does not match agent person server"))
 	}
 	if person.MissionS256 != "" {
@@ -654,7 +654,7 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	if claims.MissionS256 != "" {
 		return nil, fail(operation, errors.New("mission-bound auth tokens require the mission flow"))
 	}
-	if claims.PersonServer != client.agentClaims.PersonServer {
+	if !client.acceptsPersonServer(claims.PersonServer) {
 		return nil, fail(operation, errors.New("auth-token person server does not match agent token"))
 	}
 	if claims.ExpiresAt > client.agentClaims.ExpiresAt {

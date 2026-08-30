@@ -119,11 +119,11 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 		return compact
 	}
 	store := newMemoryTokenStore()
-	if err := store.Commit(context.Background(), PersonTokenRecord{
-		JTI: "three-party-person-token", PersonServer: personID, Resource: resourceID,
-		Subject: "person-123", Tenant: "tenant-1",
-		ExpiresAt: now.Add(20 * time.Minute), RetainUntil: now.Add(25 * time.Minute),
-	}); err != nil {
+	if err := store.Commit(context.Background(), directPersonTokenRecord(
+		"three-party-person-token", personID, resourceID, "person-123", "tenant-1",
+		providerID, "aauth:planner@provider.example", agentKey.PublicJWK(),
+		now.Add(20*time.Minute), now.Add(25*time.Minute),
+	)); err != nil {
 		t.Fatal(err)
 	}
 	var consentRequests []AuthorizationRequest
@@ -292,10 +292,10 @@ func TestFederatedServerUsesAccessRoleWhenAudienceEqualsIssuer(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newMemoryTokenStore()
-	if err := store.Commit(context.Background(), PersonTokenRecord{
-		JTI: "collapsed-person-token", PersonServer: personID, Resource: resourceID,
-		Subject: "person-123", ExpiresAt: now.Add(20 * time.Minute), RetainUntil: now.Add(25 * time.Minute),
-	}); err != nil {
+	if err := store.Commit(context.Background(), directPersonTokenRecord(
+		"collapsed-person-token", personID, resourceID, "person-123", "",
+		providerID, agentID, agentKey.PublicJWK(), now.Add(20*time.Minute), now.Add(25*time.Minute),
+	)); err != nil {
 		t.Fatal(err)
 	}
 	authToken, err := aauth.MintAuthToken(accessKey, aauth.AuthTokenClaims{

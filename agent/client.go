@@ -48,6 +48,12 @@ type Client struct {
 	maxSignedBodyBytes int64
 }
 
+type personServerCredential struct {
+	requestKey   jose.JWK
+	expiresAt    int64
+	expirySource string
+}
+
 // Error identifies the client operation that failed while preserving its
 // underlying protocol, transport, verification, or remote AAuth problem.
 type Error struct {
@@ -69,11 +75,27 @@ func (failure *Error) Unwrap() error {
 	return failure.Cause
 }
 
-// PersonTokenRequest names the person server and resource for one directed
-// person-token request.
+// SubagentInteractionUnsupportedError reports a parent-mediated request that
+// reached a deferred response. This client path supports immediate sub-agent
+// issuance only and never exposes a pending handle for delegated authority.
+type SubagentInteractionUnsupportedError struct {
+	Operation string
+}
+
+func (failure *SubagentInteractionUnsupportedError) Error() string {
+	if failure == nil || failure.Operation == "" {
+		return "aauth agent: parent-mediated sub-agent interaction is not supported"
+	}
+	return "aauth agent: parent-mediated sub-agent " + failure.Operation + " does not support interaction"
+}
+
+// PersonTokenRequest names the Person Server and Resource for one directed
+// person token. A top-level parent sets SubagentToken to request a token bound
+// to that one-level sub-agent's key.
 type PersonTokenRequest struct {
-	PersonServer string
-	Resource     string
+	PersonServer  string
+	Resource      string
+	SubagentToken string
 }
 
 // AuthorizeRequest asks a resource to issue one token for the exact directed
@@ -86,11 +108,14 @@ type AuthorizeRequest struct {
 }
 
 // ExchangeRequest carries one exact resource token and optional request-body
-// capabilities to its Person Server. Exchange remains immediate-only;
-// BeginExchange exposes a verified pending continuation.
+// capabilities to its Person Server. A top-level parent sets SubagentToken
+// when the resource token is bound to that child. Exchange remains
+// immediate-only; BeginExchange exposes a verified pending continuation only
+// for a direct top-level request.
 type ExchangeRequest struct {
 	PersonServer  string
 	ResourceToken string
+	SubagentToken string
 	Capabilities  []string
 }
 
@@ -158,7 +183,8 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 	if ctx == nil {
 		return PersonTokenResult{}, fail(operation, errors.New("context is required"))
 	}
-	if err := client.requireDirectPersonServerCaller(); err != nil {
+	credential, err := client.personServerRequestBinding(ctx, input.SubagentToken)
+	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
 	if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {
@@ -175,8 +201,9 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 		return PersonTokenResult{}, fail(operation, err)
 	}
 	body, err := json.Marshal(struct {
-		Resource string `json:"resource"`
-	}{Resource: input.Resource})
+		Resource      string `json:"resource"`
+		SubagentToken string `json:"subagent_token,omitempty"`
+	}{Resource: input.Resource, SubagentToken: input.SubagentToken})
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
@@ -193,7 +220,7 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 		return PersonTokenResult{}, fail(operation, err)
 	}
 	defer response.Body.Close()
-	result, err := client.personTokenResponse(ctx, response, input)
+	result, err := client.personTokenResponse(ctx, response, input, credential)
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
@@ -220,7 +247,7 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if err != nil {
 		return "", fail(operation, err)
 	}
-	if person.Issuer != client.agentClaims.PersonServer {
+	if !client.acceptsPersonServer(person.Issuer) {
 		return "", fail(operation, errors.New("person-token issuer does not match agent person server"))
 	}
 	if person.MissionS256 != "" {
@@ -289,15 +316,18 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	if client == nil {
 		return "", fail(operation, errors.New("client is required"))
 	}
-	response, resourceClaims, err := client.exchangeRequest(ctx, input)
+	response, resourceClaims, credential, err := client.exchangeRequest(ctx, input)
 	if err != nil {
 		return "", fail(operation, err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusAccepted && input.SubagentToken != "" {
+		return "", fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
+	}
 	if response.StatusCode != http.StatusOK {
 		return "", fail(operation, responseFailure(response))
 	}
-	token, err := client.verifiedExchangeResponse(ctx, response, resourceClaims)
+	token, err := client.verifiedExchangeResponse(ctx, response, resourceClaims, credential)
 	if err != nil {
 		return "", fail(operation, err)
 	}
@@ -314,10 +344,71 @@ func (client *Client) requireDirectPersonServerCaller() error {
 	return nil
 }
 
+func (client *Client) personServerRequestBinding(
+	ctx context.Context,
+	subagentToken string,
+) (personServerCredential, error) {
+	if err := client.requireDirectPersonServerCaller(); err != nil {
+		return personServerCredential{}, err
+	}
+	if subagentToken == "" {
+		return personServerCredential{
+			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
+			expirySource: "agent token",
+		}, nil
+	}
+	claims, err := aauth.VerifyAgentToken(ctx, subagentToken, client.keyResolver, client.clock)
+	if err != nil {
+		return personServerCredential{}, fmt.Errorf("verify subagent token: %w", err)
+	}
+	if claims.ParentAgent == "" {
+		return personServerCredential{}, errors.New("subagent token does not identify a sub-agent")
+	}
+	if claims.ParentAgent != client.agentClaims.Subject {
+		return personServerCredential{}, errors.New("subagent token parent_agent does not match parent")
+	}
+	if claims.Confirmation.JWK.Equal(client.agentClaims.Confirmation.JWK) {
+		return personServerCredential{}, errors.New("subagent token must use a key distinct from the parent")
+	}
+	expiryCeiling := client.agentClaims.ExpiresAt
+	expirySource := "agent token"
+	if claims.ExpiresAt < expiryCeiling {
+		expiryCeiling = claims.ExpiresAt
+		expirySource = "sub-agent token"
+	}
+	return personServerCredential{
+		requestKey: claims.Confirmation.JWK, expiresAt: expiryCeiling, expirySource: expirySource,
+	}, nil
+}
+
+func (client *Client) acceptsPersonServer(personServer string) bool {
+	if client.agentClaims.ParentAgent != "" {
+		return aauth.ValidateServerIdentifier(personServer) == nil
+	}
+	return personServer != "" && personServer == client.agentClaims.PersonServer
+}
+
 func (client *Client) verifyAuthTokenForResource(
 	ctx context.Context,
 	compact string,
 	resource aauth.ResourceTokenClaims,
+) (aauth.AuthTokenClaims, error) {
+	return client.verifyAuthTokenForResourceBinding(
+		ctx,
+		compact,
+		resource,
+		personServerCredential{
+			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
+			expirySource: "agent token",
+		},
+	)
+}
+
+func (client *Client) verifyAuthTokenForResourceBinding(
+	ctx context.Context,
+	compact string,
+	resource aauth.ResourceTokenClaims,
+	credential personServerCredential,
 ) (aauth.AuthTokenClaims, error) {
 	claims, err := aauth.VerifyAuthToken(ctx, compact, client.keyResolver, client.clock)
 	if err != nil {
@@ -333,7 +424,7 @@ func (client *Client) verifyAuthTokenForResource(
 		Resource:          resource.Issuer,
 		PersonServer:      resource.PersonServer,
 		Subject:           resource.Subject,
-		RequestKey:        client.signingKey.PublicJWK(),
+		RequestKey:        credential.requestKey,
 	}); err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
@@ -344,8 +435,8 @@ func (client *Client) verifyAuthTokenForResource(
 		claims.Account != resource.Account {
 		return aauth.AuthTokenClaims{}, errors.New("auth-token context does not match resource token")
 	}
-	if claims.ExpiresAt > client.agentClaims.ExpiresAt {
-		return aauth.AuthTokenClaims{}, errors.New("auth-token lifetime exceeds the agent token")
+	if claims.ExpiresAt > credential.expiresAt {
+		return aauth.AuthTokenClaims{}, errors.New("auth-token lifetime exceeds the " + credential.expirySource)
 	}
 	return claims, nil
 }

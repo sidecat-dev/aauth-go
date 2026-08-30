@@ -84,8 +84,16 @@ func (pending PendingPersonToken) InteractionCode() string { return pending.inte
 // caller should stop prompting the user while continuing explicit polling.
 func (pending PendingPersonToken) Interacting() bool { return pending.interacting }
 
-func (client *Client) personTokenResponse(ctx context.Context, response *http.Response, input PersonTokenRequest) (PersonTokenResult, error) {
+func (client *Client) personTokenResponse(
+	ctx context.Context,
+	response *http.Response,
+	input PersonTokenRequest,
+	credential personServerCredential,
+) (PersonTokenResult, error) {
 	if response.StatusCode == http.StatusAccepted {
+		if input.SubagentToken != "" {
+			return PersonTokenResult{}, &SubagentInteractionUnsupportedError{Operation: "person-token issuance"}
+		}
 		pending, err := client.pendingPersonToken(response, input, PendingPersonToken{})
 		if err != nil {
 			return PersonTokenResult{}, err
@@ -95,7 +103,9 @@ func (client *Client) personTokenResponse(ctx context.Context, response *http.Re
 	if response.StatusCode != http.StatusOK {
 		return PersonTokenResult{}, responseFailure(response)
 	}
-	token, err := client.verifiedPersonToken(ctx, response, input.PersonServer, input.Resource)
+	token, err := client.verifiedPersonToken(
+		ctx, response, input.PersonServer, input.Resource, credential,
+	)
 	if err != nil {
 		return PersonTokenResult{}, err
 	}
@@ -158,7 +168,13 @@ func (client *Client) pendingPersonToken(response *http.Response, input PersonTo
 	}, nil
 }
 
-func (client *Client) verifiedPersonToken(ctx context.Context, response *http.Response, personServer, resource string) (string, error) {
+func (client *Client) verifiedPersonToken(
+	ctx context.Context,
+	response *http.Response,
+	personServer string,
+	resource string,
+	credential personServerCredential,
+) (string, error) {
 	if len(response.Header.Values("Content-Type")) != 1 {
 		return "", errors.New("person-token response requires exactly one Content-Type")
 	}
@@ -179,11 +195,11 @@ func (client *Client) verifiedPersonToken(ctx context.Context, response *http.Re
 	if claims.Issuer != personServer {
 		return "", errors.New("person-token issuer does not match person server")
 	}
-	if err := aauth.ValidatePersonTokenContext(claims, resource, client.signingKey.PublicJWK()); err != nil {
+	if err := aauth.ValidatePersonTokenContext(claims, resource, credential.requestKey); err != nil {
 		return "", err
 	}
-	if claims.ExpiresAt > client.agentClaims.ExpiresAt {
-		return "", errors.New("person-token lifetime exceeds agent token")
+	if claims.ExpiresAt > credential.expiresAt {
+		return "", errors.New("person-token lifetime exceeds " + credential.expirySource)
 	}
 	return output.PersonToken, nil
 }
@@ -246,7 +262,16 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 	if response.StatusCode != http.StatusOK {
 		return PersonTokenResult{}, fail(operation, responseFailure(response))
 	}
-	token, err := client.verifiedPersonToken(ctx, response, pending.personServer, pending.resource)
+	token, err := client.verifiedPersonToken(
+		ctx,
+		response,
+		pending.personServer,
+		pending.resource,
+		personServerCredential{
+			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
+			expirySource: "agent token",
+		},
+	)
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}

@@ -1145,10 +1145,10 @@ func (p *authorizationInteractionProtocol) tokenIDCalls() int {
 
 func (p *authorizationInteractionProtocol) config(store DeferredAuthorizationStore) PSAuthorizationConfig {
 	tokens := newMemoryTokenStore()
-	if err := tokens.Commit(context.Background(), PersonTokenRecord{
-		JTI: "authorization-person-token", PersonServer: p.personServerID, Resource: p.resourceID,
-		Subject: p.subject, Tenant: p.tenant, ExpiresAt: p.now.Add(20 * time.Minute), RetainUntil: p.now.Add(25 * time.Minute),
-	}); err != nil {
+	if err := tokens.Commit(context.Background(), directPersonTokenRecord(
+		"authorization-person-token", p.personServerID, p.resourceID, p.subject, p.tenant,
+		p.providerID, p.agentID, p.agentKey.PublicJWK(), p.now.Add(20*time.Minute), p.now.Add(25*time.Minute),
+	)); err != nil {
 		p.t.Fatal(err)
 	}
 	config := PSAuthorizationConfig{

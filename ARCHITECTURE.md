@@ -175,9 +175,11 @@ performs protected HTTP calls. `CallAsAgent` performs one direct agent-token
 call after Resource metadata discovery. `CallAsAgentWithComponents` performs
 the same call with caller-supplied additional signature components and no
 metadata dependency. A one-level sub-agent can use Resource-side calls with
-its own key, but `PersonToken`, `PollPersonToken`, and `Exchange` refuse its
-direct Person Server calls; the parent-mediated authorization flow is not yet
-implemented. A client whose token names no Person Server closes a valid
+its own key, but Person Server calls remain parent-only. A top-level client
+sets `SubagentToken` on `PersonToken` and `Exchange`; the returned credentials
+are verified against the child's key while the parent signs both requests.
+Delegated pending interactions remain unsupported. A client whose token names
+no Person Server closes a valid
 `person-token` requirement returned by either direct call and surfaces the
 unsatisfiable requirement as an error. `PersonToken` returns either a verified token or a `PendingPersonToken`;
 `PollPersonToken` performs one signed `GET` and returns the next verified
@@ -473,6 +475,42 @@ sequenceDiagram
 The executing version is
 [`TestCurrentCoreImmediatePSAuthorization`](integration/three_party_authorization_test.go).
 
+### Parent-mediated sub-agent variant
+
+```mermaid
+sequenceDiagram
+    participant P as Parent Agent
+    participant C as Sub-agent
+    participant PS as Person Server
+    participant R as Resource
+    participant AS as Access Server (four-party only)
+
+    P->>PS: signed /person + child agent token
+    PS->>PS: verify parent, child, and one-level relationship; retain binding
+    PS-->>P: person token bound to child key
+    P-->>C: person token (out of band)
+    C->>R: signed /authorize with person token
+    R-->>C: resource token bound to child key
+    C-->>P: resource token (out of band)
+    P->>PS: signed /token + resource and child tokens
+    alt three-party
+        PS-->>P: PS auth token bound to child key
+    else four-party
+        PS->>AS: signed request + parent, child, and resource tokens
+        AS-->>PS: AS auth token bound to child key
+        PS-->>P: verified AS token
+    end
+    P-->>C: auth token (out of band)
+    C->>R: signed protected request with auth token
+```
+
+The Person Server retains the parent, child, Agent Provider, and child key in
+the person-token record. Policy receives the parent and child separately. No
+delegation claim appears in the person, resource, or auth token. The executing
+versions are `TestCurrentCoreParentMediatedSubagentImmediatePSAuthorization`
+and `TestCurrentCoreParentMediatedSubagentImmediateASAuthorization` in
+[`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go).
+
 ## Three-party revocation and re-authorization sequence
 
 ```mermaid
@@ -611,6 +649,7 @@ The executing version of this sequence is
 | Person identity access | `resource` verifies the directed person token, proof key, and request signature | `ResolvePerson` matches `(iss, sub)`; the handler applies local policy to `PersonPrincipal` |
 | Resource-managed session | `resource` verifies the current agent token and request proof, exact retained grant, opaque session binding, route scope, and signed `authorization` field | The Resource host decides subject, scope, and lifetime and supplies `SessionStore`; if interaction is enabled, it also authenticates the person and supplies `DeferredSessionStore` |
 | PS authorization | `personserver` verifies the retained token chain and keeps the grant within the resource-token scope and one-hour lifetime | `Authorize` narrows scopes and selects lifetime or refuses access |
+| Parent-mediated sub-agent | `agent`, `personserver`, and `accessserver` verify the parent, one-level child, shared PS, retained child identity and key, and child-bound result; the Resource verifies only the child proof | `BindPerson`, `Authorize`, and AS policy receive parent and child separately; the host transfers credentials between them |
 | Deferred PS consent | `personserver` retains the fully verified request, enforces the fixed three-attempt code bound, correlates one host visit, reauthenticates every poll, and verifies an approved token before delivery | The host authenticates the person and records approval, denial, abandonment, or internal interaction failure through `DeferredAuthorizationStore` |
 | Three-party revocation | `personserver` retains issued-token routing and sends one signed request; `resource` atomically observes and revokes the exact issuer/JTI/digest record before host callbacks | The host selects which issued token to revoke and supplies both role-specific stores and outbound transport policy |
 | Federated consent | `personserver` verifies the retained token chain | `Consent` allows or refuses the request before AS federation |
@@ -624,7 +663,8 @@ The executing version of this sequence is
 The immediate flow requires `personserver.TokenStore`. `/person` must commit a
 `PersonTokenRecord` before returning the token. `/token` must load that record
 and match its Person Server, resource, subject, tenant, mission digest, expiry,
-and retention bound before issuing directly or federating the request.
+retention bound, Agent Provider, credential recipient, optional parent, and
+confirmation key before issuing directly or federating the request.
 
 Interactive person-token issuance requires `personserver.DeferredTokenStore`.
 It creates one pending record before returning `202`; atomically matches the

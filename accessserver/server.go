@@ -52,6 +52,9 @@ type AuthorizationRequest struct {
 	Account      string
 	Scopes       []string
 	Agent        Agent
+	// Subagent is present only for a parent-mediated request. Agent remains
+	// the top-level parent whose grant the policy evaluates.
+	Subagent *Agent
 }
 
 // Decision is the subset of requested scopes and lifetime granted by policy.
@@ -145,13 +148,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	for name, value := range map[string]json.RawMessage{
-		"subagent_token": input.SubagentToken, "upstream_token": input.UpstreamToken,
-	} {
-		if value != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_request", fmt.Errorf("accessserver: request member %q is not supported by the immediate flow", name))
-			return
-		}
+	if input.UpstreamToken != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: request member \"upstream_token\" is not supported by the immediate flow"))
+		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
 	agentClaims, err := aauth.VerifyAgentToken(request.Context(), input.AgentToken, server.keyResolver, verificationClock)
@@ -167,6 +166,34 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if agentClaims.ParentAgent != "" || agentClaims.PersonServer != personServer {
 		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("agent token context does not match the person server"))
 		return
+	}
+	confirmation := agentClaims.Confirmation.JWK
+	credentialExpiresAt := time.Unix(agentClaims.ExpiresAt, 0).UTC()
+	var subagentClaims *aauth.AgentTokenClaims
+	if input.SubagentToken != nil {
+		var compact string
+		if err := json.Unmarshal(input.SubagentToken, &compact); err != nil || compact == "" {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: subagent_token must be a non-empty compact token string"))
+			return
+		}
+		verified, err := aauth.VerifyAgentToken(request.Context(), compact, server.keyResolver, verificationClock)
+		if err != nil {
+			writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
+			return
+		}
+		if verified.ParentAgent != agentClaims.Subject {
+			writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("sub-agent token does not name the requesting parent"))
+			return
+		}
+		if verified.Confirmation.JWK.Equal(agentClaims.Confirmation.JWK) {
+			writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("sub-agent token must use a key distinct from the parent"))
+			return
+		}
+		confirmation = verified.Confirmation.JWK
+		if expiresAt := time.Unix(verified.ExpiresAt, 0).UTC(); expiresAt.Before(credentialExpiresAt) {
+			credentialExpiresAt = expiresAt
+		}
+		subagentClaims = &verified
 	}
 	if resourceClaims.Audience != server.issuer || resourceClaims.PersonServer != personServer ||
 		resourceClaims.Subject == "" || resourceClaims.PresentedJTI == "" {
@@ -185,9 +212,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("mission-bound resource tokens require mission verification"))
 		return
 	}
-	agentJKT, err := agentClaims.Confirmation.JWK.Thumbprint()
+	agentJKT, err := confirmation.Thumbprint()
 	if err != nil || agentJKT != resourceClaims.AgentJKT {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the agent key"))
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the authorized agent key"))
 		return
 	}
 	requestedScopes, err := aauth.ParseScope(resourceClaims.Scope)
@@ -195,7 +222,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
-	decision, err := server.authorize(request.Context(), AuthorizationRequest{
+	policyRequest := AuthorizationRequest{
 		PersonServer: personServer,
 		Resource:     resourceClaims.Issuer,
 		Subject:      resourceClaims.Subject,
@@ -207,7 +234,15 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			ExpiresAt:        time.Unix(agentClaims.ExpiresAt, 0).UTC(),
 			AdditionalClaims: cloneClaims(agentClaims.AdditionalClaims),
 		},
-	})
+	}
+	if subagentClaims != nil {
+		policyRequest.Subagent = &Agent{
+			Identifier: subagentClaims.Subject, Confirmation: subagentClaims.Confirmation.JWK,
+			ExpiresAt:        time.Unix(subagentClaims.ExpiresAt, 0).UTC(),
+			AdditionalClaims: cloneClaims(subagentClaims.AdditionalClaims),
+		}
+	}
+	decision, err := server.authorize(request.Context(), policyRequest)
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
 		return
@@ -217,13 +252,13 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
-	if agentExpiry := time.Unix(agentClaims.ExpiresAt, 0); agentExpiry.Before(expiresAt) {
-		expiresAt = agentExpiry
+	if credentialExpiresAt.Before(expiresAt) {
+		expiresAt = credentialExpiresAt
 	}
 	claims := aauth.AuthTokenClaims{
 		Issuer: server.issuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceClaims.Issuer, JTI: server.newID(),
-		Confirmation: agentClaims.Confirmation,
+		Confirmation: aauth.Confirmation{JWK: confirmation},
 		IssuedAt:     proof.VerifiedAt().Unix(), ExpiresAt: expiresAt.Unix(),
 		Subject: resourceClaims.Subject, Scope: strings.Join(decision.Scopes, " "),
 		PersonServer: personServer, Account: resourceClaims.Account,
