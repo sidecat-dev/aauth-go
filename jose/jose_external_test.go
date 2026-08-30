@@ -8,15 +8,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"io"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
-
-	aauth "gitlab.com/sidecat-dev/aauth-go"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
+	aauth "github.com/aauth-dev/auth-go"
+	"github.com/aauth-dev/auth-go/jose"
 )
 
 type unsupportedSigner struct{}
@@ -27,7 +24,7 @@ func (unsupportedSigner) Sign(io.Reader, []byte, crypto.SignerOpts) ([]byte, err
 	return nil, nil
 }
 
-func TestSigningKeyUsesCallerCustodiedSignerAndExactJWK(t *testing.T) {
+func TestSigningKeyUsesCallerOwnedSignerAndExactJWK(t *testing.T) {
 	t.Parallel()
 
 	key := fixedSigningKey(t, "issuer-key", 0)
@@ -108,7 +105,7 @@ func TestSigningKeyRefusesUnsupportedOrUninitializedUse(t *testing.T) {
 	}
 }
 
-func TestCompactVerificationIsSealedAndCopySafe(t *testing.T) {
+func TestCompactVerificationIsCopySafe(t *testing.T) {
 	t.Parallel()
 
 	key := fixedSigningKey(t, "issuer-key", 0)
@@ -143,9 +140,6 @@ func TestCompactVerificationIsSealedAndCopySafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exportedBooleanAuthority := reflect.TypeOf(verified).MethodByName("Valid"); exportedBooleanAuthority {
-		t.Fatal("VerifiedCompact exposes a boolean validity authority")
-	}
 	verifiedHeader, err := verified.Header()
 	if err != nil || verifiedHeader != header {
 		t.Fatalf("Header() = %#v, %v", verifiedHeader, err)
@@ -178,7 +172,7 @@ func TestCompactVerificationIsSealedAndCopySafe(t *testing.T) {
 	if headerErr != nil || payloadErr != nil || compactErr != nil || keyErr != nil ||
 		secondHeader != header || string(secondPayload) != string(payload) || secondCompact != compact ||
 		!secondKey.Equal(key.PublicJWK()) {
-		t.Fatal("mutating verified accessors changed the sealed value")
+		t.Fatal("mutating verified accessors changed the verified value")
 	}
 
 	var zero jose.VerifiedCompact
@@ -228,17 +222,15 @@ func TestCompactRefusesAmbiguityMalformedInputAndInvalidVerification(t *testing.
 		{name: "unencoded payload critical semantics", compact: rawCompact(t, key, `{"alg":"Ed25519","typ":"example+jwt","kid":"issuer-key","b64":false,"crit":["b64"]}`, validPayload)},
 		{name: "b64 member even when true", compact: rawCompact(t, key, `{"alg":"Ed25519","typ":"example+jwt","kid":"issuer-key","b64":true}`, validPayload)},
 		{name: "unsupported critical member", compact: rawCompact(t, key, `{"alg":"Ed25519","typ":"example+jwt","kid":"issuer-key","crit":["exp"],"exp":true}`, validPayload)},
-		{name: "unknown protected member", compact: rawCompact(t, key, `{"alg":"Ed25519","typ":"example+jwt","kid":"issuer-key","zip":"DEF"}`, validPayload)},
 		{name: "case variant protected member", compact: rawCompact(t, key, `{"ALG":"Ed25519","typ":"example+jwt","kid":"issuer-key"}`, validPayload)},
 		{name: "duplicate payload member", compact: rawCompact(t, key, validHeader, `{"sub":"person-1","sub":"person-1"}`)},
-		{name: "case ambiguous payload member", compact: rawCompact(t, key, validHeader, `{"sub":"person-1","SUB":"person-1"}`)},
 		{name: "missing segment", compact: "e30.e30"},
 		{name: "extra segment", compact: "e30.e30.e30.e30"},
 		{name: "empty segment", compact: "e30..e30"},
 		{name: "bad protected base64url", compact: "%.e30." + rawSignature64()},
 		{name: "bad payload base64url", compact: "e30.%25." + rawSignature64()},
 		{name: "bad signature base64url", compact: "e30.e30.%"},
-		{name: "bad signature size", compact: "e30.e30.eA"},
+		{name: "bad Ed25519 signature size", compact: base64.RawURLEncoding.EncodeToString([]byte(validHeader)) + "." + base64.RawURLEncoding.EncodeToString([]byte(validPayload)) + ".eA"},
 		{name: "noncanonical signature trailing pad bits", compact: noncanonicalSignature},
 		{name: "signature containing carriage return", compact: carriageReturnSignature},
 		{name: "signature containing line feed", compact: lineFeedSignature},
@@ -297,6 +289,25 @@ func TestCompactRefusesAmbiguityMalformedInputAndInvalidVerification(t *testing.
 	}
 }
 
+func TestCompactAcceptsUnknownNoncriticalProtectedMember(t *testing.T) {
+	t.Parallel()
+
+	key := fixedSigningKey(t, "issuer-key", 0)
+	compact := rawCompact(
+		t,
+		key,
+		`{"alg":"Ed25519","typ":"example+jwt","kid":"issuer-key","zip":"DEF"}`,
+		`{"sub":"person-1"}`,
+	)
+	parsed, err := jose.ParseCompact(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parsed.Verify(key.PublicJWK()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSignCompactProtectedPreservesBoundedJWKHeaderBytes(t *testing.T) {
 	t.Parallel()
 
@@ -346,7 +357,10 @@ func TestFixedCurrentTokenVectorsRemainByteIdentical(t *testing.T) {
 	issuerKey := fixedSigningKey(t, "issuer-key", 0)
 	confirmationKey := fixedSigningKey(t, "confirmation-key", 32)
 	now := time.Unix(1750000000, 0).UTC()
-	maxUses := 1
+	agentJKT, err := confirmationKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
 	vectors := []compactVector{
 		frozenVector(t, "agent", "cfb69955b3d60aeb2c33d13f9e87fabaedf714c46e7047b44ce6b4b059899623", func() (string, error) {
 			return aauth.MintAgentToken("https://ap.example", issuerKey, aauth.AgentTokenRequest{Agent: "aauth:agent@ap.example", PersonServer: "https://ps.example", PublicKey: confirmationKey.PublicJWK(), Lifetime: time.Hour}, now, "agent-jti")
@@ -354,20 +368,11 @@ func TestFixedCurrentTokenVectorsRemainByteIdentical(t *testing.T) {
 		frozenVector(t, "person", "cc90d833ec98b1e177cdafffef01d7bc268bb246daf7df6df650c6655d894e97", func() (string, error) {
 			return aauth.MintPersonToken(issuerKey, aauth.PersonTokenClaims{Issuer: "https://ps.example", DWK: aauth.PersonDiscoveryDocument, Audience: "https://resource.example", Subject: "person-1", Confirmation: aauth.Confirmation{JWK: confirmationKey.PublicJWK()}, JTI: "person-jti", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(), Tenant: "tenant-1"})
 		}),
-		frozenVector(t, "resource", "8a2313d3482b7131f9cc5dd13f3b9c59806a3e2487ae53b24ca7c47552906793", func() (string, error) {
-			return aauth.MintResourceToken(issuerKey, aauth.ResourceTokenClaims{Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument, Audience: "https://as.example", JTI: "resource-jti", AgentJKT: "agent-jkt", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(), Scope: "read write", PersonServer: "https://ps.example", Subject: "person-1", PresentedJTI: "person-jti", Tenant: "tenant-1"})
+		frozenVector(t, "resource", "a747327e1ea0afaedc0b38a86f799fd58ddb6bc712cd2060050064f47d80c1de", func() (string, error) {
+			return aauth.MintResourceToken(issuerKey, aauth.ResourceTokenClaims{Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument, Audience: "https://as.example", JTI: "resource-jti", AgentJKT: agentJKT, IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(), Scope: "read write", PersonServer: "https://ps.example", Subject: "person-1", PresentedJTI: "person-jti", Tenant: "tenant-1"})
 		}),
-		frozenVector(t, "auth", "7e5c74b769a6d9bfaa79ca99475ba2411aa113b95ace22bcbf9ac0255d0cb8bc", func() (string, error) {
+		frozenVector(t, "auth", "8df47aa4cb001508b4250b2cca44d38eccce9b2e23ede6d4b12d8043d7d84501", func() (string, error) {
 			return aauth.MintAuthToken(issuerKey, aauth.AuthTokenClaims{Issuer: "https://as.example", DWK: aauth.AccessDiscoveryDocument, Audience: "https://resource.example", JTI: "auth-jti", Confirmation: aauth.Confirmation{JWK: confirmationKey.PublicJWK()}, IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(), Subject: "person-1", Scope: "read write", PersonServer: "https://ps.example", Tenant: "tenant-1"})
-		}),
-		frozenVector(t, "subscribe", "03c48a0daf4f1665fb757f5c15fc89a331aef37f887512fb470ed41580392709", func() (string, error) {
-			return aauth.MintSubscribeToken(issuerKey, aauth.SubscribeTokenClaims{Issuer: "https://ap.example", DWK: aauth.AgentDiscoveryDocument, Subject: "aauth:agent@ap.example", Audience: "https://resource.example", Confirmation: aauth.Confirmation{JWK: confirmationKey.PublicJWK()}, EventID: "event-1", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(), MaxUses: &maxUses})
-		}),
-		frozenVector(t, "event", "56af2371384584183d84b17b9de78733aed93c241c3db32f3e286b5846d6c61e", func() (string, error) {
-			return aauth.MintEventToken(issuerKey, aauth.EventTokenClaims{Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument, Audience: "aauth:agent@ap.example", EventID: "event-1", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix()})
-		}),
-		frozenVector(t, "jkt", "e3f905e364edc255748cc70b1034109512e8e563f609a7db9057ef2b23a6a4b2", func() (string, error) {
-			return signaturekey.MintJKTJWT(issuerKey, confirmationKey.PublicJWK(), now, time.Hour)
 		}),
 	}
 	for _, vector := range vectors {

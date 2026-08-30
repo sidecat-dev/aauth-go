@@ -7,9 +7,14 @@ import (
 	"io"
 	"mime"
 	"net/http"
+
+	"github.com/aauth-dev/auth-go/internal/jsonstrict"
 )
 
 const maxProblemResponseBytes = 1 << 20
+
+// ErrorCode is an AAuth problem-details error member.
+type ErrorCode string
 
 // ProblemError is an AAuth RFC 9457 error response. Code is the required
 // AAuth "error" extension member.
@@ -17,11 +22,9 @@ type ProblemError struct {
 	Type     string
 	Title    string
 	Status   int
-	Code     PollingErrorCode
+	Code     ErrorCode
 	Detail   string
 	Instance string
-	// MissionStatus is present on mission_terminated responses.
-	MissionStatus string
 }
 
 func (problem *ProblemError) Error() string {
@@ -50,19 +53,24 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 	if len(body) > maxProblemResponseBytes {
 		return nil, errors.New("aauth: problem response is too large")
 	}
+	if err := jsonstrict.RejectAmbiguousNames(body); err != nil {
+		return nil, fmt.Errorf("aauth: decode problem response: %w", err)
+	}
 	var wire struct {
-		Type          string           `json:"type"`
-		Title         string           `json:"title"`
-		Status        int              `json:"status"`
-		Code          PollingErrorCode `json:"error"`
-		Detail        string           `json:"detail"`
-		Instance      string           `json:"instance"`
-		MissionStatus string           `json:"mission_status"`
+		Type     string    `json:"type"`
+		Title    string    `json:"title"`
+		Status   int       `json:"status"`
+		Code     ErrorCode `json:"error"`
+		Detail   string    `json:"detail"`
+		Instance string    `json:"instance"`
+	}
+	if err := jsonstrict.RejectCaseVariants(body, &wire); err != nil {
+		return nil, fmt.Errorf("aauth: decode problem response: %w", err)
 	}
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return nil, fmt.Errorf("aauth: decode problem response: %w", err)
 	}
-	if wire.Code == "" || !isStructuredToken(string(wire.Code)) {
+	if !validErrorCode(string(wire.Code)) {
 		return nil, errors.New("aauth: problem response error code is invalid")
 	}
 	if wire.Status != 0 && wire.Status != response.StatusCode {
@@ -71,16 +79,24 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 	if wire.Status == 0 {
 		wire.Status = response.StatusCode
 	}
-	if wire.Code == "mission_terminated" && wire.MissionStatus != "terminated" {
-		return nil, errors.New("aauth: mission_terminated problem must report terminated mission_status")
-	}
 	return &ProblemError{
-		Type:          wire.Type,
-		Title:         wire.Title,
-		Status:        wire.Status,
-		Code:          wire.Code,
-		Detail:        wire.Detail,
-		Instance:      wire.Instance,
-		MissionStatus: wire.MissionStatus,
+		Type: wire.Type, Title: wire.Title, Status: wire.Status,
+		Code: wire.Code, Detail: wire.Detail, Instance: wire.Instance,
 	}, nil
+}
+
+func validErrorCode(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' {
+			continue
+		}
+		if index > 0 && (character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.') {
+			continue
+		}
+		return false
+	}
+	return true
 }

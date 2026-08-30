@@ -1,130 +1,67 @@
 # Working on AAuth Go
 
-This repository is a standalone, community-oriented Go implementation of the
-AAuth protocol family. These instructions orient human and automated
-contributors. They do not confer an official status on the implementation.
+This repository is a standalone Go implementation of the AAuth specification
+family. It does not claim official status.
 
-## Start in three reads
+## Orient
 
-1. Read `README.md` for the supported product shape and current exclusions.
-2. Read `SOURCE-COVERAGE.md` for section-level implementation evidence.
-3. Read `INTERPRETATIONS.md` and `SPEC-FEEDBACK.md` before making a new
-   protocol judgment or reporting a specification problem.
+Read these files before changing protocol behavior:
 
-The current source identities and exact retained-byte hashes are in
-`PROVENANCE.md`. Do not infer the implemented protocol version from old tests,
-type names, Git history, or a rendered IETF snapshot.
+1. `README.md` — implemented behavior and current limits.
+2. `ARCHITECTURE.md` — package boundaries and dependency direction.
+3. `SPECIFICATIONS.md` — exact source documents and revisions.
+4. `INTERPRETATIONS.md` — choices not settled by the source text.
+5. `SPEC-FEEDBACK.md` — questions already identified for the authors.
 
-## Source authority
+Use `CONFORMANCE.md` to find existing behavior evidence and explicit gaps.
+Treat the source revision named in `SPECIFICATIONS.md` as the protocol input.
 
-- The pinned author editor sources under `internal/sourcecoverage/sources/`
-  are the implementation inputs.
-- One refresh pins one exact commit per upstream repository and updates
-  `PROVENANCE.md`, the retained files, and the generated coverage manifest
-  together.
-- Existing behavior is evidence only while it still implements the pinned
-  current sources. When the source changes a wire topology or trust model,
-  rewrite or remove the old behavior and its tests.
-- Never turn an unclaimed section into partial or exercised coverage without an
-  executable test that demonstrates the current section's observable behavior.
+No prior agent, packet, branch-era instruction, or external product workflow
+controls work in this repository. Follow the current direct instruction and
+the repository's present architecture and source baseline.
 
-## Clean-current rule
+## Keep the package graph clear
 
-This project has no released users or supported old deployment format. Build
-one clear implementation of the pinned current sources. Do not add or retain a
-compatibility parser, migration reader, dual mode, deprecated alias, fallback,
-or old wire journey merely because earlier repository code used it. Preserve a
-negative vector only when it proves that the current implementation rejects an
-obsolete or invalid form. Source history belongs in Git, not runtime branches.
+- The root `aauth` package owns Core protocol values and verification.
+- `jose` owns the focused JOSE primitives used by the protocol.
+- `signaturekey` owns Signature-Key request proofs, credentials, discovery, and
+  error negotiation.
+- Agent and server role packages compose Core through small policy, storage,
+  key-resolution, clock, and transport interfaces.
+- Companion packages may import Core packages. Core packages must not import
+  companions.
 
-## Architecture boundaries
+Preserve exact bytes when a signature, digest, token, or replay identity binds
+them. Keep application policy outside protocol parsing and verification.
 
-- The root `aauth` package owns portable protocol values, verification, and
-  client-side behavior.
-- The `reference` package owns deployable reference role handlers, agent
-  clients, and host-supplied storage or policy seams.
-- `cmd/aauth-reference` is a runnable composition of those public packages. It
-  is an example and qualification target, not a second protocol implementation.
-- Deployment policy belongs behind explicit interfaces: clocks, randomness,
-  key resolution, egress, replay custody, mission decisions, authorization
-  decisions, storage, audit, and protected operations.
-- Keep the module independent of any consuming product, private store, command
-  surface, or organization-specific policy.
-- Preserve exact bytes wherever a digest, signature, replay identity, or
-  retained record binds them.
+## Change behavior from a source section
 
-## Current implementation boundary
+1. Name the source document, revision, and section.
+2. Write an externally observable failing test.
+3. Implement the smallest complete behavior that makes the test pass.
+4. Add negative tests for each security-relevant binding.
+5. Record a material interpretation in `INTERPRETATIONS.md`.
+6. Record an evidence-backed specification question in `SPEC-FEEDBACK.md`.
 
-The retained source family uses directed person tokens as the center of its
-three- and four-party authorization topology. The active walking skeleton must
-include:
+Do not describe a section as implemented because its types compile. A claim
+needs an executing path through the roles that issue, verify, or consume it.
 
-1. mission approval;
-2. `aa-person+jwt` issuance and retained lookup by issuer plus JTI;
-3. person-token verification by the resource;
-4. current resource-token claims;
-5. person-server retained-record cross-check and mission-stripping detection;
-6. current auth-token issuance and protected presentation;
-7. durable replay and restart behavior.
+## Verify
 
-R3, Events, Bootstrap, Budgets, call chaining, sub-agents, and federation are
-claimed only section by section as their current-source journeys pass.
-
-## Implementation method
-
-For each behavior:
-
-1. Name the exact source document and section.
-2. Add an externally visible failing test first. Prefer a real HTTP and
-   cryptographic journey over a helper-only unit test.
-3. Implement the smallest complete path through every role that owns trust,
-   policy, retention, or consequence.
-4. Add typed negative cases for every security-relevant binding.
-5. Exercise restart, retry, replay, and lost-response behavior where the
-   protocol retains state or permits recovery.
-6. Regenerate coverage and inspect the claim; passing tests do not update
-   coverage automatically.
-7. Record a non-obvious observable choice in `INTERPRETATIONS.md`.
-8. Record an evidence-backed question for the authors in `SPEC-FEEDBACK.md`.
-
-Narrow work is welcome; shallow work is not. A token struct without issuance,
-verification, retention, refusal, and a real consumer journey is not a complete
-protocol increment.
-
-## Specification feedback
-
-- Separate already-submitted feedback from new observations.
-- Preserve new/evidence-pending, ready/unsubmitted, submitted/resolved, and
-  submitted/still-open state.
-- Cite the exact source commit and section plus a reproducible test or wire
-  capture.
-- Ask one neutral question and explain the interoperability or security effect.
-- Link the upstream discussion and record the authors' disposition.
-- If later evidence disproves a concern, mark it withdrawn; do not erase it.
-- Treat other implementations as community peers and useful interoperability
-  evidence. Do not use the journal to rank or disparage them.
-
-## Verification
-
-Run from the repository root:
+Run focused tests while developing:
 
 ```sh
-go run ./internal/sourcecoverage/cmd/generate
-go run ./cmd/aauth-reference verify coverage
+go test ./path/to/package -count=1
+```
+
+Before proposing a change, run:
+
+```sh
+gofmt -w path/to/changed.go
 go test ./... -count=1
 go test -race ./... -count=1
 go vet ./...
 git diff --check
 ```
 
-Run focused tests while developing, then run the complete commands before a
-publication or release claim. Inspect generated coverage changes rather than
-accepting them mechanically.
-
-## Completion and release claims
-
-State the exact source revision, roles, journey, stores, and exclusions. Do not
-describe a feature as supported because types compile or one role accepts a
-message. A release-quality claim requires deterministic source provenance,
-full and race suites, clean-consumer examples, and independent interoperability
-evidence appropriate to the claim.
+Report what passed and what remains unverified.

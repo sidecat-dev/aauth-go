@@ -1,0 +1,500 @@
+// Package resource implements direct Agent and Person identity access,
+// Resource-managed opaque sessions, and explicit PS-authorized or federated
+// auth-token access for the bounded Core Resource role. Resource-held
+// auth-token delivery belongs to the federated composition.
+package resource
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+
+	aauth "github.com/aauth-dev/auth-go"
+	"github.com/aauth-dev/auth-go/jose"
+	"github.com/aauth-dev/auth-go/signaturekey"
+)
+
+// FederatedAuthorizationConfig supplies a federated auth-token Resource's identity, policy,
+// storage, and application dependencies. Its resource tokens name the
+// configured Access Server.
+type FederatedAuthorizationConfig struct {
+	Issuer                        string
+	AccessServer                  string
+	SigningKey                    jose.SigningKey
+	KeyResolver                   signaturekey.KeyResolver
+	Clock                         aauth.Clock
+	NewID                         func() string
+	ScopeDescriptions             map[string]string
+	AdditionalSignatureComponents []string
+	MaxSignedBodyBytes            int64
+	RequiredScopes                func(*http.Request) []string
+	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
+	Protected                     http.Handler
+	// HeldInvocations enables Resource-held auth-token delivery. The host store
+	// is a trusted persistence and authorization boundary; see
+	// HeldInvocationStore.
+	HeldInvocations HeldInvocationStore
+	// HoldAuthTokenRequest selects held delivery per verified person-token
+	// request. A nil function selects held delivery for every request when
+	// HeldInvocations is configured.
+	HoldAuthTokenRequest func(*http.Request) bool
+	// MaxHeldRequestBodyBytes bounds the retained application request body.
+	MaxHeldRequestBodyBytes int64
+	// MaxHeldResponseBodyBytes bounds the retained application response body.
+	MaxHeldResponseBodyBytes int64
+	// MaxHeldHeaderBytes bounds retained request headers and response headers
+	// plus trailers. All three held limits must be positive when
+	// HeldInvocations is configured and zero otherwise.
+	MaxHeldHeaderBytes int64
+}
+
+// PSAuthorizationConfig supplies a PS-authorization Resource's identity,
+// policy, and application dependencies. Its resource tokens name the Person
+// Server that issued the presented person token. This immediate composition
+// does not include Resource-held delivery.
+type PSAuthorizationConfig struct {
+	Issuer                        string
+	SigningKey                    jose.SigningKey
+	KeyResolver                   signaturekey.KeyResolver
+	Clock                         aauth.Clock
+	NewID                         func() string
+	ScopeDescriptions             map[string]string
+	AdditionalSignatureComponents []string
+	MaxSignedBodyBytes            int64
+	RequiredScopes                func(*http.Request) []string
+	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
+	Protected                     http.Handler
+}
+
+// AgentIdentityConfig constructs a Resource that authorizes application
+// requests from the verified Agent identity. It issues no Resource token and
+// needs no Resource signing key, Access Server, scope catalog, or person
+// resolver.
+type AgentIdentityConfig struct {
+	Issuer                        string
+	KeyResolver                   signaturekey.KeyResolver
+	Clock                         aauth.Clock
+	AdditionalSignatureComponents []string
+	MaxSignedBodyBytes            int64
+	Protected                     http.Handler
+}
+
+// PersonIdentityConfig constructs a Resource that authorizes application
+// requests from the verified Person identity. It issues no Resource token and
+// needs no Resource signing key, Access Server, or scope catalog.
+type PersonIdentityConfig struct {
+	Issuer                        string
+	KeyResolver                   signaturekey.KeyResolver
+	Clock                         aauth.Clock
+	AdditionalSignatureComponents []string
+	MaxSignedBodyBytes            int64
+	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
+	Protected                     http.Handler
+}
+
+// PersonIdentity is the stable person reference asserted to this Resource.
+// ResolvePerson matches it to an existing Resource record or establishes that
+// record on first use.
+type PersonIdentity struct {
+	Issuer  string
+	Subject string
+}
+
+// PersonContext contains current signed assertions that may inform local
+// policy or profile data. It is not part of the stable person identifier.
+type PersonContext struct {
+	Tenant           string
+	AdditionalClaims map[string]json.RawMessage
+}
+
+// AuthPrincipal is the person and scoped grant established by one current
+// auth token.
+type AuthPrincipal struct {
+	PersonServer     string
+	Subject          string
+	Tenant           string
+	Scope            []string
+	Confirmation     jose.JWK
+	AdditionalClaims map[string]json.RawMessage
+}
+
+// PersonPrincipal is the identity established by one verified person token.
+// It carries no authorization scope.
+type PersonPrincipal struct {
+	PersonServer string
+	Subject      string
+	Tenant       string
+	Confirmation jose.JWK
+}
+
+// AgentPrincipal is the Agent identity established by one verified agent
+// token and its matching request proof. ParentAgent is nonempty for a
+// one-level sub-agent. The principal carries identity, not a person or an
+// authorization scope.
+type AgentPrincipal struct {
+	AgentProvider    string
+	Agent            string
+	ParentAgent      string
+	PersonServer     string
+	Confirmation     jose.JWK
+	AdditionalClaims map[string]json.RawMessage
+}
+
+type authPrincipalContextKey struct{}
+type agentPrincipalContextKey struct{}
+type personPrincipalContextKey struct{}
+
+// AuthPrincipalFromContext returns the scoped auth-token principal established
+// for a protected request.
+func AuthPrincipalFromContext(ctx context.Context) (AuthPrincipal, bool) {
+	if ctx == nil {
+		return AuthPrincipal{}, false
+	}
+	principal, ok := ctx.Value(authPrincipalContextKey{}).(AuthPrincipal)
+	if !ok {
+		return AuthPrincipal{}, false
+	}
+	if principal.Scope != nil {
+		principal.Scope = append(make([]string, 0, len(principal.Scope)), principal.Scope...)
+	}
+	principal.AdditionalClaims = cloneAdditionalClaims(principal.AdditionalClaims)
+	return principal, true
+}
+
+// AgentPrincipalFromContext returns the Agent identity established for an
+// agent-identity protected request.
+func AgentPrincipalFromContext(ctx context.Context) (AgentPrincipal, bool) {
+	if ctx == nil {
+		return AgentPrincipal{}, false
+	}
+	principal, ok := ctx.Value(agentPrincipalContextKey{}).(AgentPrincipal)
+	if !ok {
+		return AgentPrincipal{}, false
+	}
+	principal.AdditionalClaims = cloneAdditionalClaims(principal.AdditionalClaims)
+	return principal, true
+}
+
+// PersonPrincipalFromContext returns the Person identity established for a
+// person-identity protected request.
+func PersonPrincipalFromContext(ctx context.Context) (PersonPrincipal, bool) {
+	if ctx == nil {
+		return PersonPrincipal{}, false
+	}
+	principal, ok := ctx.Value(personPrincipalContextKey{}).(PersonPrincipal)
+	return principal, ok
+}
+
+// Server protects one ordinary HTTP handler under one explicit access mode.
+type Server struct {
+	issuer                        string
+	accessMode                    aauth.AccessMode
+	authorizationTopology         authorizationTopology
+	accessServer                  string
+	signingKey                    jose.SigningKey
+	keyResolver                   signaturekey.KeyResolver
+	clock                         aauth.Clock
+	newID                         func() string
+	scopeDescriptions             map[string]string
+	additionalSignatureComponents []string
+	maxSignedBodyBytes            int64
+	requiredScopes                func(*http.Request) []string
+	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
+	protected                     http.Handler
+	heldInvocations               HeldInvocationStore
+	holdAuthTokenRequest          func(*http.Request) bool
+	maxHeldRequestBodyBytes       int64
+	maxHeldResponseBodyBytes      int64
+	maxHeldHeaderBytes            int64
+	handler                       http.Handler
+}
+
+type authorizationTopology uint8
+
+const (
+	authorizationTopologyFederated authorizationTopology = iota + 1
+	authorizationTopologyPersonServer
+)
+
+type directIdentityConfig struct {
+	issuer                        string
+	accessMode                    aauth.AccessMode
+	keyResolver                   signaturekey.KeyResolver
+	clock                         aauth.Clock
+	additionalSignatureComponents []string
+	maxSignedBodyBytes            int64
+	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
+	protected                     http.Handler
+}
+
+// NewAgentIdentity constructs an identity-only Resource that accepts verified
+// agent-token requests.
+func NewAgentIdentity(config AgentIdentityConfig) (*Server, error) {
+	return newDirectIdentityServer(directIdentityConfig{
+		issuer: config.Issuer, accessMode: aauth.AccessModeAgentToken,
+		keyResolver: config.KeyResolver, clock: config.Clock,
+		additionalSignatureComponents: config.AdditionalSignatureComponents,
+		maxSignedBodyBytes:            config.MaxSignedBodyBytes, protected: config.Protected,
+	})
+}
+
+// NewPersonIdentity constructs an identity-only Resource that accepts
+// verified person-token requests.
+func NewPersonIdentity(config PersonIdentityConfig) (*Server, error) {
+	if config.ResolvePerson == nil {
+		return nil, errors.New("aauth: person-identity Resource requires a person resolver")
+	}
+	return newDirectIdentityServer(directIdentityConfig{
+		issuer: config.Issuer, accessMode: aauth.AccessModePersonToken,
+		keyResolver: config.KeyResolver, clock: config.Clock,
+		additionalSignatureComponents: config.AdditionalSignatureComponents,
+		maxSignedBodyBytes:            config.MaxSignedBodyBytes,
+		resolvePerson:                 config.ResolvePerson, protected: config.Protected,
+	})
+}
+
+func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
+	if err := aauth.ValidateServerIdentifier(config.issuer); err != nil {
+		return nil, fmt.Errorf("aauth: resource issuer: %w", err)
+	}
+	if config.keyResolver == nil {
+		return nil, errors.New("aauth: resource key resolver is required")
+	}
+	if config.clock == nil {
+		return nil, errors.New("aauth: resource clock is required")
+	}
+	if config.protected == nil {
+		return nil, errors.New("aauth: protected handler is required")
+	}
+	if config.maxSignedBodyBytes < 0 {
+		return nil, errors.New("aauth: resource maximum signed body size must not be negative")
+	}
+	additionalComponents, err := validateAdditionalSignatureComponents(config.additionalSignatureComponents)
+	if err != nil {
+		return nil, err
+	}
+	server := &Server{
+		issuer: config.issuer, accessMode: config.accessMode,
+		keyResolver: config.keyResolver, clock: config.clock,
+		additionalSignatureComponents: additionalComponents,
+		maxSignedBodyBytes:            config.maxSignedBodyBytes,
+		resolvePerson:                 config.resolvePerson, protected: config.protected,
+	}
+	server.handler = server.newHandler()
+	return server, nil
+}
+
+// NewFederatedAuthorization constructs a federated Resource that challenges person-token
+// requests, issues resource tokens to one Access Server, and accepts scoped
+// auth-token requests from that Access Server.
+func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, error) {
+	if err := aauth.ValidateServerIdentifier(config.AccessServer); err != nil {
+		return nil, fmt.Errorf("aauth: resource access server: %w", err)
+	}
+	return newAuthorizationServer(config, authorizationTopologyFederated)
+}
+
+// NewPSAuthorization constructs a Resource that challenges person-token
+// requests, issues each resource token to the Person Server that issued the
+// presented person token, and accepts scoped auth tokens from that PS.
+func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
+	return newAuthorizationServer(FederatedAuthorizationConfig{
+		Issuer: config.Issuer, SigningKey: config.SigningKey,
+		KeyResolver: config.KeyResolver, Clock: config.Clock, NewID: config.NewID,
+		ScopeDescriptions:             config.ScopeDescriptions,
+		AdditionalSignatureComponents: config.AdditionalSignatureComponents,
+		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
+		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
+		Protected: config.Protected,
+	}, authorizationTopologyPersonServer)
+}
+
+func newAuthorizationServer(config FederatedAuthorizationConfig, topology authorizationTopology) (*Server, error) {
+	if err := aauth.ValidateServerIdentifier(config.Issuer); err != nil {
+		return nil, fmt.Errorf("aauth: resource issuer: %w", err)
+	}
+	if config.SigningKey.ID() == "" {
+		return nil, errors.New("aauth: resource signing key is required")
+	}
+	if _, err := config.SigningKey.PublicJWK().PublicKey(); err != nil {
+		return nil, errors.New("aauth: resource signing key is invalid")
+	}
+	if config.KeyResolver == nil {
+		return nil, errors.New("aauth: resource key resolver is required")
+	}
+	if config.Clock == nil {
+		return nil, errors.New("aauth: resource clock is required")
+	}
+	if config.NewID == nil {
+		return nil, errors.New("aauth: resource token ID source is required")
+	}
+	if config.Protected == nil {
+		return nil, errors.New("aauth: protected handler is required")
+	}
+	if config.MaxSignedBodyBytes < 0 {
+		return nil, errors.New("aauth: resource maximum signed body size must not be negative")
+	}
+	if config.RequiredScopes == nil {
+		return nil, errors.New("aauth: resource required-scope policy is required")
+	}
+	if config.ResolvePerson == nil {
+		return nil, errors.New("aauth: resource person resolver is required")
+	}
+	if config.HoldAuthTokenRequest != nil && config.HeldInvocations == nil {
+		return nil, errors.New("aauth: resource held-request selector requires held invocations")
+	}
+	for _, bound := range []struct {
+		name  string
+		limit int64
+	}{
+		{name: "held request body", limit: config.MaxHeldRequestBodyBytes},
+		{name: "held response body", limit: config.MaxHeldResponseBodyBytes},
+		{name: "held header", limit: config.MaxHeldHeaderBytes},
+	} {
+		name, limit := bound.name, bound.limit
+		if limit < 0 {
+			return nil, fmt.Errorf("aauth: resource maximum %s size must not be negative", name)
+		}
+		if config.HeldInvocations != nil && limit == 0 {
+			return nil, fmt.Errorf("aauth: resource maximum %s size is required with held invocations", name)
+		}
+		if config.HeldInvocations == nil && limit != 0 {
+			return nil, fmt.Errorf("aauth: resource maximum %s size requires held invocations", name)
+		}
+	}
+	scopeDescriptions := make(map[string]string, len(config.ScopeDescriptions))
+	for scope, description := range config.ScopeDescriptions {
+		if err := aauth.ValidateScopeValue(scope); err != nil {
+			return nil, fmt.Errorf("aauth: resource scope: %w", err)
+		}
+		if strings.TrimSpace(description) == "" {
+			return nil, fmt.Errorf("aauth: resource scope %q requires a nonblank description", scope)
+		}
+		scopeDescriptions[scope] = description
+	}
+	if len(scopeDescriptions) == 0 {
+		return nil, errors.New("aauth: resource requires at least one scope")
+	}
+	additionalComponents, err := validateAdditionalSignatureComponents(config.AdditionalSignatureComponents)
+	if err != nil {
+		return nil, err
+	}
+
+	server := &Server{
+		issuer:                        config.Issuer,
+		accessMode:                    aauth.AccessModeAuthToken,
+		authorizationTopology:         topology,
+		accessServer:                  config.AccessServer,
+		signingKey:                    config.SigningKey,
+		keyResolver:                   config.KeyResolver,
+		clock:                         config.Clock,
+		newID:                         config.NewID,
+		scopeDescriptions:             scopeDescriptions,
+		additionalSignatureComponents: additionalComponents,
+		maxSignedBodyBytes:            config.MaxSignedBodyBytes,
+		requiredScopes:                config.RequiredScopes,
+		resolvePerson:                 config.ResolvePerson,
+		protected:                     config.Protected,
+		heldInvocations:               config.HeldInvocations,
+		holdAuthTokenRequest:          config.HoldAuthTokenRequest,
+		maxHeldRequestBodyBytes:       config.MaxHeldRequestBodyBytes,
+		maxHeldResponseBodyBytes:      config.MaxHeldResponseBodyBytes,
+		maxHeldHeaderBytes:            config.MaxHeldHeaderBytes,
+	}
+	server.handler = server.newHandler()
+	return server, nil
+}
+
+func validateAdditionalSignatureComponents(components []string) ([]string, error) {
+	validated := make([]string, len(components))
+	seen := make(map[string]struct{}, len(components))
+	for index, component := range components {
+		if err := signaturekey.ValidateAdditionalComponent(component); err != nil {
+			return nil, fmt.Errorf("aauth: resource: %w", err)
+		}
+		if _, duplicate := seen[component]; duplicate {
+			return nil, fmt.Errorf("aauth: resource additional signature component %q is duplicated", component)
+		}
+		seen[component] = struct{}{}
+		validated[index] = component
+	}
+	return validated, nil
+}
+
+// Handler returns the Resource's discovery, authorization, and protected
+// request surface.
+func (server *Server) Handler() http.Handler {
+	if server == nil || server.handler == nil {
+		return http.NotFoundHandler()
+	}
+	return server.handler
+}
+
+func (server *Server) newHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/aauth-resource.json", server.serveMetadata)
+	if server.signingKey.ID() != "" {
+		mux.HandleFunc("GET /.well-known/jwks.json", server.serveJWKS)
+	}
+	if server.accessMode == aauth.AccessModeAuthToken {
+		mux.HandleFunc("POST /authorize", server.serveAuthorization)
+	}
+	if server.heldInvocations != nil {
+		mux.HandleFunc("GET /pending/{id}", server.serveHeldPoll)
+		mux.HandleFunc("/pending/", server.serveHeldNamespace)
+	}
+	mux.Handle("/", http.HandlerFunc(server.serveProtected))
+	return mux
+}
+
+func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Request) {
+	// The metadata field applies to protected application routes. The
+	// authorization endpoint also requires its JSON content-type and digest,
+	// plus these advertised components.
+	writeJSON(response, http.StatusOK, struct {
+		Issuer                        string            `json:"issuer"`
+		JWKSURI                       string            `json:"jwks_uri,omitempty"`
+		AccessMode                    string            `json:"access_mode"`
+		AuthorizationEndpoint         string            `json:"authorization_endpoint,omitempty"`
+		ScopeDescriptions             map[string]string `json:"scope_descriptions,omitempty"`
+		AdditionalSignatureComponents []string          `json:"additional_signature_components,omitempty"`
+	}{
+		Issuer:                        server.issuer,
+		JWKSURI:                       resourceJWKSURI(server),
+		AccessMode:                    string(server.accessMode),
+		AuthorizationEndpoint:         resourceAuthorizationEndpoint(server),
+		ScopeDescriptions:             cloneScopeDescriptions(server.scopeDescriptions),
+		AdditionalSignatureComponents: append([]string(nil), server.additionalSignatureComponents...),
+	})
+}
+
+func resourceJWKSURI(server *Server) string {
+	if server.signingKey.ID() == "" {
+		return ""
+	}
+	return server.issuer + "/.well-known/jwks.json"
+}
+
+func resourceAuthorizationEndpoint(server *Server) string {
+	if server.accessMode != aauth.AccessModeAuthToken {
+		return ""
+	}
+	return server.issuer + "/authorize"
+}
+
+func (server *Server) serveJWKS(response http.ResponseWriter, _ *http.Request) {
+	writeJSON(response, http.StatusOK, struct {
+		Keys []jose.JWK `json:"keys"`
+	}{Keys: []jose.JWK{server.signingKey.PublicJWK()}})
+}
+
+func cloneScopeDescriptions(descriptions map[string]string) map[string]string {
+	cloned := make(map[string]string, len(descriptions))
+	for scope, description := range descriptions {
+		cloned[scope] = description
+	}
+	return cloned
+}

@@ -19,6 +19,9 @@ func ValidateServerIdentifier(identifier string) error {
 	if identifier == "" {
 		return errors.New("aauth: server identifier is required")
 	}
+	if strings.Contains(identifier, "#") {
+		return errors.New("aauth: server identifier must not contain a fragment")
+	}
 	parsed, err := url.Parse(identifier)
 	if err != nil {
 		return fmt.Errorf("aauth: parse server identifier: %w", err)
@@ -27,7 +30,7 @@ func ValidateServerIdentifier(identifier string) error {
 		return errors.New("aauth: server identifier must use https")
 	}
 	if parsed.User != nil || parsed.Port() != "" || parsed.Path != "" || parsed.RawPath != "" ||
-		parsed.RawQuery != "" || parsed.Fragment != "" {
+		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return errors.New("aauth: server identifier must contain only https scheme and host")
 	}
 	host := parsed.Hostname()
@@ -45,6 +48,9 @@ func ValidateServerIdentifier(identifier string) error {
 
 // ValidateEndpoint validates an HTTPS protocol endpoint while allowing paths.
 func ValidateEndpoint(endpoint string) error {
+	if strings.Contains(endpoint, "#") {
+		return errors.New("aauth: endpoint must not contain a fragment")
+	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return fmt.Errorf("aauth: parse endpoint: %w", err)
@@ -52,7 +58,7 @@ func ValidateEndpoint(endpoint string) error {
 	if parsed.Scheme != "https" || parsed.Host == "" {
 		return errors.New("aauth: endpoint must be an absolute https URL")
 	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return errors.New("aauth: endpoint must not contain userinfo, query, or fragment")
 	}
 	if parsed.Hostname() != strings.ToLower(parsed.Hostname()) {

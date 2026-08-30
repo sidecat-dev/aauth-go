@@ -1,556 +1,515 @@
-# AAuth specification feedback journal
+# AAuth specification feedback
 
-This journal tracks evidence-backed questions and feedback for the AAuth
-authors. Its purpose is to improve shared specification and interoperability
-work. It is not a scorecard for the specification or another implementation.
+This register separates feedback already delivered to the editors from current
+implementation questions. It is not a scorecard. Source text and editor
+answers remain authoritative.
 
 ## Status vocabulary
 
-- **submitted / incorporated** — the feedback reached the authors and the
-  current editor source carries the disposition.
-- **submitted / answered** — the authors answered directly; the answer may not
-  have a public issue URL.
-- **submitted / still open** — the feedback reached the authors and the current
-  source still leaves the question open.
-- **new / evidence pending** — current source inspection supports a question,
-  but the executable test or wire capture needed before submission does not yet
-  exist.
-- **ready / unsubmitted** — current executable evidence supports a question
-  that has not been sent.
-- **withdrawn** — later source or implementation evidence resolved or disproved
-  the concern before submission.
+- **submitted / incorporated** — delivered feedback appears in the current
+  editor source.
+- **submitted / answered** — an editor answered directly, although a public
+  thread may not exist.
+- **submitted / still open** — delivered feedback remains unresolved in the
+  current source.
+- **ready / unsubmitted** — current source and executable evidence support the
+  question, but it has not been sent.
+- **evidence pending** — the source suggests a question, but the repository
+  does not yet contain the executable evidence needed before submission.
+- **withdrawn** — later source or implementation evidence resolved the concern.
 
-## Already submitted
+## Submitted history
 
 ### AAG-H001 — Draft-05 through draft-08 implementation feedback
 
 **Status:** submitted / incorporated
 
-The earlier implementation supplied feedback on mission-reference dereference
-and `approver`/`s256` syntax, agent keying material, `AAuth-Requirement`
-parameters, `AAuth-Access` token grammar, capability forward compatibility,
-same-`kid` refresh, egress admission, auth-token verification ordering,
-approval-endpoint authentication, freshness and replay, interaction codes,
-callback errors, and call-chaining identity.
-
-The current core source records these contributions in its changelog and names
-Joshua Gay in the acknowledgments. Several individual discussions were direct
-with the authors; their public thread URLs were not retained in this repository.
-The source itself is therefore the durable disposition evidence:
-
-- AAuth Protocol, current editor source, changelog entries for revisions 6
-  through 9;
-- `Interaction Codes`, `Interaction Callback Errors`, `Call Chaining`,
-  `Auth Token Verification`, and the security considerations;
-- AAuth issue 47 for the `act.agent` direction correction.
-
-This history must not be re-filed as new feedback merely because a new
-implementation independently encounters the same issue.
+Earlier implementation work supplied feedback on mission references and
+hashes, agent keying material, requirement parameters, capability extensions,
+same-`kid` key refresh, egress admission, auth-token verification, approval
+authentication, proof freshness, interaction codes, callback errors, and
+call-chaining identity. Current Core revisions 6 through 9 incorporate those
+dispositions and acknowledge Joshua Gay. Do not re-file them as new findings.
 
 ### AAG-H002 — Callback authority and issuer-role discovery
 
 **Status:** submitted / answered
 
-Two questions received direct author answers during the June 2026 feedback
-cycle:
-
-- the interaction callback is a user-experience return, not authority to record
-  approval or denial;
-- an auth token's `dwk` selects the issuer-role metadata document, while issuer
-  trust remains an independent verifier decision.
-
-The historical journal recorded those answers and the corresponding local
-changes. No durable public discussion URL was retained. Current implementations
-must follow the current editor text rather than treat this summary as normative.
+The editors answered that an interaction callback is a user-experience return,
+not authority to approve or deny, and that auth-token `dwk` selects issuer-role
+metadata while issuer trust remains a separate verifier decision. No durable
+public discussion URL was retained.
 
 ### AAG-H003 — Recommended `justification` sections
 
 **Status:** submitted / still open
 
-The earlier feedback proposed stakes-proportional Markdown sections for
-purpose, scope and magnitude, effect and reversibility, and optional timing or
-alternatives. The current `PS Token Endpoint` text still contains `TODO: Define
-recommended sections` under `justification`.
+Earlier feedback proposed a small Markdown structure for `justification`. The
+current PS Token Endpoint still contains `TODO: Define recommended sections`.
+Any follow-up should cite the earlier delivery rather than present it as new.
 
-Before re-raising it, prepare a short current-source note that links the prior
-delivery context and supplies examples from an executing consent interface.
-Do not submit the old text as if it were a new observation.
+## Earlier unsubmitted candidates
+
+This compact index preserves the prior register without carrying obsolete
+implementation journals into the library. Detailed current questions appear
+below where evidence is ready.
+
+| ID | Question | Current status |
+| --- | --- | --- |
+| AAG-F001 | Interoperability Surface 3 says Resource metadata contains keys, while Core uses its `jwks_uri` | evidence pending |
+| AAG-F002 | The AS request example uses a `jwks_uri` Signature-Key parameter not defined by that scheme | evidence pending |
+| AAG-F003 | Audit delivery has no stable retry identity after a lost `201` | evidence pending |
+| AAG-F004 | General deferred endpoints do not define recovery of a lost terminal response | ready below with Resource-session and PS-consent evidence |
+| AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | evidence pending until R3 implementation |
+| AAG-F006 | R3 example hashes are not executable SHA-256 vectors | evidence pending until R3 implementation |
+| AAG-F007 | Mission completion still appears in the introductory interaction list after moving endpoints | evidence pending |
+| AAG-F008 | Clarification requires an `agent` claim removed from resource tokens | ready below |
+| AAG-F009 | Person-token policy denial has no registered error | ready below |
+| AAG-F010 | Four-party person and tenant context use the wrong issuer namespace | ready below |
+| AAG-F011 | Closed issues 88 and 89 are not reflected in the person-token endpoint text | ready below |
+| AAG-F012 | A lost initial deferred `202` has no stable recovery identity | evidence pending |
+| AAG-F013 | Restored deferred state can lose the verified request authority | held-store boundary implemented; generic deferred rule remains open |
+| AAG-F014 | R3 protected challenges do not define who selects the exact operation | evidence pending until R3 implementation |
+| AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | evidence pending until R3 implementation |
+| AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | evidence pending until R3 or step-up implementation |
+| AAG-F016 | The mandatory signature set does not bind the query | ready below |
+| AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 
-## Earlier candidates reconciled against the current source
+## Current unsubmitted questions
 
-The July 2026 implementation pass drafted thirteen candidates but explicitly
-marked them unsubmitted. The current editor family now resolves or removes many
-of them:
+The questions below come from the pinned editor sources in
+[SPECIFICATIONS.md](SPECIFICATIONS.md). Their placement notes avoid duplicating
+existing discussions.
 
-| Earlier candidate | Current disposition |
-| --- | --- |
-| golden vectors, unpadded mission hashes, exact mission bytes, and mission-header parsing | previously delivered or superseded by the current person-token mission envelope |
-| PS and AS R3 retrieval contradiction | withdrawn: current `R3 Endpoint Access Control` admits the exact PS and AS roles |
-| R3 token `typ` mismatch | withdrawn: current R3 uses `aa-resource+jwt` and `aa-auth+jwt` |
-| R3 grant not bounded by the requested operations | reopened as AAG-F014: current composition requires coverage but does not bind the AS to only the requested set |
-| `AAuth-Mission` Structured Fields question | withdrawn: the current protocol removed the header |
-| auth-token agent self-comparison | withdrawn: the current resource-facing topology uses person identity and no agent claim |
-| `act.agent` direction and chaining prose | incorporated: current source and issue 47 name the immediate upstream delegator |
-
-The unresolved candidates below are re-stated against the current source. They
-remain evidence-pending until their current tests or wire captures exist; after
-that evidence is reviewed, they may become ready and unsubmitted.
+### AAG-F004 — Deferred terminal delivery has no recovery path
 
-## Ready, unsubmitted
-
-### AAG-F016 — The mandatory signature set does not bind the query
+**Source:** AAuth Core, `Pending URL Security` and `AAuth-Access`.
 
-**Status:** ready / unsubmitted
-
-**Source:** current Protocol `Covered Components`, `Verification`, and
-`Freshness and Replay` at AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5`.
-
-**Question:** Should `@query` be mandatory whenever a request target contains a
-query, and should the replay identity include that covered value?
+After returning one terminal response, a pending URL must return `410 Gone`.
+If a terminal response carrying `AAuth-Access` or an auth token is lost, the
+Agent cannot recover that credential and must not poll again. The source
+defines neither an idempotency key for restarting the interaction nor a replay
+window for the terminal result.
 
-**Why this is ambiguous:** The text says the four mandatory components close
-request-substitution attacks. `@path` excludes the query under RFC 9421. The
-same method, authority, path, and Signature-Key can therefore name different
-operations when query parameters select behavior. The suggested replay tuple
-also omits the query.
+The Resource-managed and deferred PS-consent integration tests follow the
+specified one-terminal-then-`410` behavior. They therefore demonstrate the
+loss window rather than solving it.
 
-**Observed implementation effect:** The Go implementation adds and requires
-`@query` only when one is present. Changing the raw query after signing fails
-verification; query-free request vectors remain byte-identical.
+**Question:** Should a pending URL replay its exact terminal response for a
+bounded period, or should Core define another stable recovery key for a lost
+terminal `AAuth-Access` response?
 
-**Evidence:**
+**Placement:** Open a Core deferred-response issue and cross-link the held
+delivery replay exception.
 
-- `signaturekey/request_external_test.go:TestRequestProofCoversAnExactQueryWhenPresent`
+### AAG-F033 — Three-party deferral does not define the resource-token expiry boundary
 
-**Suggested disposition:** Require `@query` on query-bearing requests and add it
-to the replay tuple, or state explicitly that every resource using query
-semantics must advertise it as an additional required component.
+**Source:** AAuth Core, `Resource Token Structure`, `PS Token Endpoint`, and
+`Deferred Responses`.
 
-### AAG-F014 — The AS cannot distinguish requested operations from a broader R3 document
+Core tells an Agent to obtain a fresh resource token when delayed interaction
+prevents the PS from presenting it to an AS before expiry. It does not say
+whether a three-party PS, which does not present the token again, may approve a
+request after the original resource token expires.
 
-**Status:** ready / unsubmitted
+The implementation caps the three-party pending deadline at the original
+resource-token expiry. This is safe and executable, but another implementation
+could retain the verified request and permit a later decision.
 
-**Source:** current R3 `Authorization Endpoint Extensions / Request`,
-`Operations Spanning Multiple Definitions`, `R3 Processing / AS Processing`,
-and `Auth Token Extensions` at AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5`.
+**Question:** Must a three-party pending authorization expire with its original
+resource token, or may the PS retain the verified request and decide it later?
 
-**Question:** Must the R3 document selected or composed for an authorization
-request contain exactly the operations in `r3_operations`, or should the
-original requested set be carried separately and integrity-bound for AS policy?
-If a document may contain additional operations, what prevents the AS from
-placing an unrequested document member in `r3_granted`?
+**Placement:** Open a focused Core PS Token Endpoint question.
 
-**Why this is ambiguous:** The request gives `r3_operations` to the resource.
-The resource token sent onward carries only `r3_uri` and `r3_s256`. Composition
-must cover the requested operations, but the text does not say that the
-document's `operations` set is equal to them. The AS therefore receives the
-document but not an independent representation of what the agent requested.
+### AAG-F026 — Global body signature components conflict with bodyless polls
 
-**Observed implementation effect:** The direct reference profile must require
-the selected document's operation set to equal the agent request. Without that
-rule, a conforming AS policy can grant a broader document member. A cooperative
-agent can reject the excess grant, but the auth token remains usable by a caller
-that does not perform that client-side check.
+**Source:** AAuth Core, `Resource Metadata` and `Polling with GET`.
 
-**Evidence:**
+Resource metadata says every listed `additional_signature_components` member
+must be covered on requests to that Resource. The metadata example lists
+`content-type` and `content-digest`. Polling then requires a bodyless `GET` and
+forbids resending the original body. The text does not say what content those
+two fields describe on that poll.
 
-- `reference/r3_direct_test.go:TestR3DocumentSelectionIsExactlyTheAgentRequest`
-- `r3/token_external_test.go:TestR3AuthorizationGrantPartitionsTheExactAgentRequest`
-- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
+The implementation covers the RFC 9530 digest of empty content and requires
+the caller to supply fresh values for other advertised fields.
 
-**Suggested disposition:** State that a selected/composed initial R3 document
-contains exactly the requested operation set, or add an integrity-bound
-requested-operation set that the AS must use to bound `r3_granted` and
-`r3_per_call`.
+**Question:** Are body-specific metadata components inapplicable to bodyless
+polls, or should a poll carry and sign an explicit zero-length representation?
+If the former, where is the exception declared so both peers choose the same
+signature base?
 
-### AAG-F015 — A per-call auth token does not identify the resource-token record that supplies `presented_jti`
+**Placement:** Open a Core issue and cross-link Signature-Key covered-component
+processing.
 
-**Status:** ready / unsubmitted
+### AAG-F027 — Resource sessions do not define Agent identity across key rotation
 
-**Source:** current Protocol `Resource Token Structure`, `Resource Token
-Verification`, and `Why presented_jti exists`; current R3 `Per-Call Proposals /
-Flow` at AAuth `a99d353cf18aee81d0c5445bac070164fb3b8bc5`.
+**Source:** AAuth Core, `AAuth-Access` and `Agent Token Verification`.
 
-**Question:** How must a resource select the earlier person-token record when a
-per-call request presents an auth token? The new resource token must carry the
-earlier `presented_jti`, but the auth token carries neither that claim nor the
-identifier of the resource token from which it was issued.
+The session is a relationship with “this agent” and each use requires a valid
+Agent signature. The source does not say whether the Resource binds the Agent
+identifier, the current `cnf` key, or both, nor what happens when the AP issues
+the same Agent a new proof key.
 
-**Why this is ambiguous:** A resource can retain several active resource tokens
-with the same access server, person server, subject, proof key, scope, mission,
-tenant, account, and R3 document. Those are all the relevant values available
-from the later auth token. Claim equality therefore need not identify one
-person-token JTI.
+The implementation binds the stable AP/Agent/parent identity and verifies the
+current AP-issued token and proof on every request. This permits key rotation
+without allowing another Agent to use the session.
 
-**Observed implementation effect:** The reference resource retains each exact
-resource token that supplies later authorization context and resolves the latest
-active generation no later than the auth token's trusted issuance instant. It
-converges only repeated issuance for the same person-token JTI, requested scope,
-and companion variant; different bindings in the same otherwise
-indistinguishable generation make later resolution fail closed. The same gap is
-observable in both the R3 per-call challenge and the Budget reauthorization
-challenge.
-This is deterministic, but it is an implementation choice rather than a rule
-stated by the draft.
+**Question:** Should Core define that stable binding, require a key-bound
+session, or make the choice an explicit Resource policy advertised to Agents?
 
-**Evidence:**
+**Placement:** Open a Core `AAuth-Access` issue.
 
-- `reference/resource_token_lineage_store_test.go:TestFileResourceTokenLineageStoreRecoversOneExactAuthorizationLineage`
-- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
-- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
+### AAG-F028 — Opaque `AAuth-Access` conflicts with the all-JWT statement
 
-**Suggested disposition:** Bind the auth token to the resource-token JTI whose
-authorization it represents, or define the exact resource-side lineage rule
-that recovers `presented_jti` during step-up and per-call challenges.
+**Source:** AAuth Core, `Overview`, `AAuth-Access`, and `Security
+Considerations`.
 
-## New, evidence pending
+The overview says all AAuth tokens are JWTs and the security text describes
+proof through a token `cnf` claim. `AAuth-Access` instead defines an opaque
+`token68`, permits wrapping an existing credential, and defines no JWT claims.
+Its proof binding is the Agent signature covering `Authorization`.
 
-### AAG-F001 — Interoperability Surface 3 and metadata discovery disagree
+**Question:** Should the overview and proof-of-possession text explicitly
+exclude Resource-owned session tokens?
 
-**Status:** new / evidence pending
+**Placement:** Open a focused editorial Core issue.
 
-**Source:** current interoperability profile, `Surface 3`; current AAuth
-Protocol and Signature-Key metadata discovery sections.
+### AAG-F029 — Resource interaction decisions are described as PS records
 
-**Question:** Is `/.well-known/aauth-resource.json` itself intended to contain
-the signing keys, as Surface 3 says, or is it metadata whose `jwks_uri` points
-to a separate JWKS, as the main protocol and Signature-Key flow require?
+**Source:** AAuth Core, `Interaction Requirement` and `Resource-Managed
+Authorization`.
 
-**Evidence needed before submission:** one black-box verifier test showing that
-the same resource cannot satisfy both literal discovery procedures with one
-document shape.
+The generic interaction rules say approve or deny must be recorded through an
+authenticated channel “at the PS.” A two-party Resource-managed interaction
+has no PS; the Resource runs its own login or consent interface.
 
-**Consequence:** two conforming-looking implementations can perform different
-numbers of fetches and parse incompatible documents at the same URL.
+**Question:** Should the rule name the server that issued the interaction, with
+the PS and Resource as explicit examples?
 
-### AAG-F002 — The AS request example uses an undefined Signature-Key parameter
+**Placement:** Add to a Core interaction issue or open an editorial issue.
 
-**Status:** new / evidence pending
+### AAG-F030 — Resource-managed interaction is assigned both `202` and `401`
 
-**Source:** current AAuth Protocol, `AS Token Endpoint`, example request;
-Signature-Key, `jwks_uri` scheme.
+**Source:** AAuth Core, `Resource-Managed Authorization`, `Requirement
+Responses`, `Resource Metadata`, and `Incremental Adoption`.
 
-**Question:** Should the example use the scheme's `id`, `dwk`, and `kid`
-parameters instead of a `jwks_uri` header parameter?
+The dedicated flow and requirement registry use `202 Accepted` for
+`requirement=interaction`. Resource metadata and adoption prose say a Resource
+without an authorization endpoint issues interaction requirements through
+`401` responses.
 
-**Evidence needed before submission:** a strict parser test demonstrating that
-the current example cannot be resolved under the current Signature-Key grammar.
+**Question:** Which status is normative for a direct Resource interaction, and
+should the other passages be corrected?
 
-**Consequence:** an implementer copying the example produces a request that a
-strict Signature-Key implementation cannot authenticate.
+**Placement:** Open one Core Resource-managed-flow issue.
 
-### AAG-F003 — Audit delivery has no stable retry identity
+### AAG-F031 — The Resource authorization endpoint is not a PS-free path
 
-**Status:** new / evidence pending
+**Source:** AAuth Core, `Authorization Endpoint Request` and
+`Response without Resource Token`.
 
-**Source:** current AAuth Protocol, `Audit Endpoint`, `Freshness and Replay`.
+The latter section is described as Resource-managed authorization, but every
+authorization-endpoint request must carry a PS-issued person token. A PS-less
+Agent can use the direct Resource challenge path, not this endpoint.
 
-**Question:** After the PS commits an audit entry but the client loses the
-`201 Created`, how does the agent retry without either replay refusal or a
-second indistinguishable audit record?
+**Question:** Should this branch be described as Resource-local authorization
+after PS identity rather than as a two-party flow, or is another no-person-token
+request shape intended?
 
-**Evidence needed before submission:** a transport-loss test that commits the
-record, drops the response, and shows the absence of a stable request identity.
+**Placement:** Add to the same Resource-managed-flow issue as AAG-F030.
 
-**Provisional alternative:** a client-generated audit request identifier with
-same-body duplicate acknowledgment and different-body conflict.
+### AAG-F032 — Resource sessions have no standardized lifecycle errors
 
-**Consequence:** the current wire shape cannot distinguish a retry from a
-legitimate repeated action.
+**Source:** AAuth Core, `AAuth-Access`, `Token Revocation`, and `Error
+Responses`.
 
-### AAG-F004 — A lost terminal deferred response may be unrecoverable
+Session tokens have no defined lifetime, `iss`, or `jti`, so the token
+revocation endpoint does not identify them. Core also assigns no status,
+challenge, or problem code for an unknown, expired, or revoked session.
 
-**Status:** new / evidence pending
+**Question:** Is the complete session lifecycle intentionally Resource-local?
+If so, should Core state the minimum Agent behavior for an invalid session; if
+not, which identifier and error shape apply?
 
-**Source:** current AAuth Protocol, `Deferred Responses` and pending URL
-security; current R3, per-call retained-result language.
+**Placement:** Open a Core `AAuth-Access` lifecycle issue.
 
-**Question:** Does the general deferred-response contract require bounded
-repeat retrieval of a committed terminal result, as current R3 does for a
-per-call effect, or may a lost first terminal response leave the caller unable
-to learn the outcome?
+### AAG-F008 — Updated clarification requests refer to a removed `agent` claim
 
-**Evidence needed before submission:** one current-profile test that commits a
-terminal result, loses the response, and observes the next legal poll.
+**Source:** AAuth Core, `Updated Request` and `Resource Token Structure`.
 
-**Consequence:** a caller may repeat a consequence or remain permanently
-uncertain after an ordinary transport failure.
+`Updated Request` requires the replacement resource token to retain the same
+`iss`, `agent`, and `agent_jkt`. `Resource Token Structure` says that a resource
+token carries no agent identifier, so a conforming token has no `agent` claim
+to compare. A literal absent-to-absent comparison cannot detect substitution.
 
-### AAG-F005 — R3 same-URI updates conflict with permanent verification
+**Question:** Which surviving claims must remain stable when an agent replaces a
+resource token during clarification? At minimum, the text needs to remove
+`agent` and state the intended person, resource, key, and mission bindings.
 
-**Status:** new / evidence pending
+**Placement:** Add this instance to
+[AAuth issue 104](https://github.com/dickhardt/AAuth/issues/104), which collects
+remaining agent-token references after the person-token change.
 
-**Source:** current R3, `Content Addressing`, `AS Processing`, and auth-token
-audit-provenance text.
+### AAG-F011 — The person-token endpoint omits eight resolved request parameters
 
-**Question:** If a resource serves new bytes at the same `r3_uri`, how can a
-fresh verifier later retrieve the old bytes named by an old `r3_s256` after an
-AS cache entry is gone?
+**Source:** AAuth Core, `Person Token Endpoint` and `Agent Token Request`.
 
-**Evidence needed before submission:** a cache-eviction or fresh-verifier test
-using an old token after same-URI document replacement.
+The person-token endpoint lists four parameters. The auth-token endpoint also
+accepts eight parameters needed by the same person-selection and interaction
+flow: `justification`, `login_hint`, `tenant`, `domain_hint`, `prompt`,
+`platform`, `device`, and `capabilities`.
 
-**Provisional alternative:** require immutable content-addressed URIs, or
-define historical retrieval by hash.
+The authors' recorded resolution on
+[issue 88](https://github.com/dickhardt/AAuth/issues/88) and
+[issue 89](https://github.com/dickhardt/AAuth/issues/89) says that the
+person-token endpoint accepts those eight parameters. The pinned editor source
+does not yet contain that edit.
 
-**Consequence:** an old token may name exact semantics by hash while providing
-no way to obtain the bytes, contradicting the permanent-verification claim.
+**Question:** Should the editor source now copy the eight parameters and their
+semantics into `Person Token Endpoint`, including the rule that a PS should not
+return an interaction requirement when `capabilities` excludes interaction?
 
-### AAG-F006 — R3 example hashes are not executable vectors
-
-**Status:** new / evidence pending
-
-**Source:** current R3 resource-token and auth-token examples.
-
-**Question:** Should the 40-character illustrative `r3_s256` values be replaced
-with 43-character unpadded base64url SHA-256 values over exact example bytes, or
-explicitly labeled as shortened placeholders at each use site?
-
-**Evidence needed before submission:** an example-validation test that checks
-decoded hash length and, when exact document bytes are supplied, digest parity.
-
-**Consequence:** readers cannot copy the examples into a strict parser or use
-them as cross-implementation fixtures.
-
-### AAG-F007 — Mission completion still appears in the interaction list
-
-**Status:** new / evidence pending
-
-**Source:** current AAuth Protocol, the introductory `Interaction Endpoint`
-summary, the normative `Interaction Endpoint` section, and the current document
-history entry that moves mission completion to the mission endpoint.
-
-**Question:** Should the introductory endpoint summary remove mission
-completion so that it agrees with the normative interaction section and the
-documented completion move?
-
-**Evidence needed before submission:** a routing test or endpoint matrix that
-shows the two literal readings and identifies which endpoint a client would
-call for the same completion intent.
-
-**Consequence:** a client following the summary can send a terminal mission
-transition to an endpoint whose normative operation set no longer accepts it.
-
-### AAG-F008 — Clarification still requires an agent claim absent from current resource tokens
-
-**Status:** ready / unsubmitted
-
-**Source:** current AAuth Protocol, `Clarification`, `Resource Token Claims`,
-and the current document history entry that removes the agent identifier from
-resource-facing tokens.
-
-**Question:** When a clarification response produces an updated resource
-token, which retained binding should remain stable in place of the text's
-requirement that the token contain the same `agent`?
-
-**Executable and source evidence:** the current four-party implementation
-constructs and verifies resource tokens without an `agent` claim, matching the
-current `Resource Token Structure`. A literal implementation of the updated
-request rule can therefore only compare two absent values; it cannot enforce
-the anti-substitution check the sentence appears intended to express.
-
-**Provisional alternative:** bind the update to the retained person-token
-reference and the current `ps`, directed `sub`, `presented_jti`, resource, and
-mission digest values.
-
-**Consequence:** implementations must otherwise either invent a removed claim
-or omit an intended anti-substitution check during clarification.
-
-**Submission placement:** add the missing site to open AAuth issue 104, which
-is already collecting lingering agent-token references. Keep the editorial
-correction in that comment; treat any proposal to add new stable `ps` or `sub`
-bindings as a separate normative question if implementation evidence later
-shows it is needed.
+**Placement:** Comment on issue 88 and cross-link issue 89. Both issues are
+closed with the same recorded resolution, so a new issue would duplicate it.
 
 ### AAG-F009 — Person-token policy denial has no registered error
 
-**Status:** ready / unsubmitted
+**Source:** AAuth Core, `Person Token Endpoint` and `Token Endpoint Error
+Codes`.
 
-**Source:** current AAuth Protocol, `Person Token Endpoint` and `Token Endpoint
-Error Codes`.
+The endpoint can receive a structurally valid request and still deny issuance
+under person-server policy. The registry names invalid credentials,
+`user_unreachable`, and internal failure, but not this result.
 
-**Question:** Which error should a PS return when the AgentToken, signed request,
-resource, and mission are valid, but person-binding policy declines to issue a
-person token?
+The implementation provisionally returns HTTP `403` with
+`person_token_denied`. Reusing `user_unreachable` would say that no contact
+channel exists; reusing `invalid_request` would say that valid input is
+malformed.
 
-**Executable evidence:**
+**Question:** Should Core register a terminal policy-denial error, or assign
+this case to an existing error with clarified semantics?
 
-- `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
-  distinguishes missing or wrong `ps` as registered `400 invalid_agent_token`
-  from a valid policy refusal.
+**Placement:** Open a new AAuth issue. No existing issue records this error-code
+gap.
 
-**Provisional choice:** This implementation uses the explicit extension
-`403 person_token_denied`. `user_unreachable` describes a different condition,
-and `invalid_request` would misclassify valid input.
+### AAG-F010 — Four-party person identity uses the access-server namespace in one step
 
-**Consequence:** implementations otherwise invent different codes or overload a
-registered code, making terminal denial handling non-interoperable.
+**Source:** AAuth Core, `Auth Token Structure`, `Auth Token Verification`, and
+`Resource Token Structure`.
 
-### AAG-F010 — Four-party resource identity should be namespaced by the PS
+In four-party mode, auth-token `iss` is the access server, while `ps` is the
+person server whose namespace owns `sub`. `Auth Token Verification` step 7
+nevertheless tells the resource to match or establish the person by
+`(iss, sub)`. That changes the person's identity when the access server changes
+and can merge equal directed subjects from different person servers behind one
+access server.
 
-**Status:** new / evidence pending
+The implementation presents `(ps, sub)` to the protected handler without
+retaining its own person directory. Its test covers namespace separation:
+`resource/server_test.go:TestProtectedHandlerReceivesCurrentPrincipal`.
 
-**Source:** current AAuth Protocol, `Person Token`, `Resource Token Structure`,
-`Auth Token Structure`, and `Auth Token Verification`.
+**Question:** Should the auth-token structure and verification text define the
+person key as `(ps, sub)` in every topology, while keeping `iss` solely as the
+token issuer and trust anchor?
 
-**Question:** In four-party mode, should a resource match or establish the
-directed person as `(ps, sub)`, while separately trusting the authorization
-issuer as `(iss, dwk)`? The verification text currently says `(iss, sub)`, even
-though `iss` is the AS and the directed subject originated in the PS namespace.
+**Placement:** Open a new AAuth issue.
 
-**Evidence needed before submission:** a resource identity adapter test in which
-one AS presents the same `sub` under two different admitted person servers and
-the records remain distinct.
+### AAG-F010a — Four-party tenant changes issuer namespace
 
-**Provisional choice:** Pass verified `ps` and `sub` to host policy, but do not
-claim identity matching or establishment until that adapter and test exist.
+**Source:** AAuth Core, `Auth Token Structure` and `Person Token Structure`.
 
-**Consequence:** keying the person by AS issuer can merge unrelated PS namespaces
-or change identity when the same PS moves between access servers.
+Core says `(iss, tenant)` identifies the organization. A Person Server places
+`tenant` in the person token, but a four-party auth token copies it while
+changing `iss` to the Access Server. The same organization therefore appears
+to change namespace during one flow.
 
-### AAG-F011 — The closed person-token endpoint resolution is absent from the current editor source
+**Question:** Should organization context be keyed by `(ps, tenant)` in
+four-party tokens, while `iss` remains only the token issuer?
 
-**Status:** ready / unsubmitted
+**Placement:** Add to the same new issue as the parallel `(ps, sub)` identity
+question.
 
-**Source:** current AAuth Protocol at
-`a99d353cf18aee81d0c5445bac070164fb3b8bc5`, `Person Token Endpoint`;
-AAuth issues 88 and 89 and their author comments of August 11, 2026.
+### AAG-F017 — Authorization endpoint examples leave authorization input unsigned
 
-**Question:** Were issues 88 and 89 closed before their shared resolution was
-applied to the editor source, or was the resolution later withdrawn?
+**Source:** AAuth Core, `Authorization Endpoint Request`, `Covered Components`,
+and `Resource Metadata`.
 
-**Evidence:** both issue threads record the document author's resolution that
-the person-token endpoint accepts the auth-token endpoint's request parameters,
-except `resource_token`. The current repository HEAD is still `a99d353` and its
-person-token endpoint still lists only `resource`, `mission_s256`,
-`subagent_token`, and `upstream_token`. It therefore still lacks the eight
-resolved parameters: `justification`, `login_hint`, `tenant`, `domain_hint`,
-`prompt`, `platform`, `device`, and `capabilities`.
+The authorization body carries `scope`, but the endpoint example covers only
+the base signature components. Resource metadata can require content type and
+digest globally, but doing so also makes bodyless protected routes require
+body-only components.
 
-**Consequence:** the two closed defects remain in the normative text. A literal
-implementation still cannot select tenant context or tell the PS that it can
-complete deferred interaction on first person-token issuance.
+**Question:** Should Core require `content-type` and `content-digest` at the
+authorization endpoint specifically, while keeping
+`additional_signature_components` as the Resource-wide protected-request
+profile?
 
-**Submission placement:** comment once on issue 88 and cross-link issue 89.
-This is follow-through on the existing shared resolution, not a new issue.
+**Placement:** Open a new AAuth issue and cross-link Signature-Key issue 7.
 
-### AAG-F012 — A lost initial deferred response has no recovery identity
+### AAG-F016 — The mandatory signature set does not bind a query
 
-**Status:** new / evidence pending
+**Source:** AAuth Core, `Covered Components` and `Freshness and Replay`; RFC
+9421, Sections 2.2.6 and 2.2.7.
 
-**Source:** current AAuth Protocol, `Deferred Responses`, `Initial Request`,
-`Polling with GET`, and pending URL security.
+Core requires `@path`, but RFC 9421 defines it without the query. Two operations
+selected by different query strings can therefore share the same mandatory
+signature base. The replay guidance also omits the query.
 
-**Question:** When the server has accepted and retained a deferred operation but
-the caller loses the initial `202 Accepted` response and its random pending URL,
-which proof-covered request identity lets a fresh-proof retry recover that exact
-operation without creating a duplicate or orphan?
+The implementation covers `@query` only when present. Its executable example
+shows that changing the query invalidates the original proof:
+`signaturekey/request_external_test.go:TestRequestProofCoversAnExactQueryWhenPresent`.
 
-**Evidence needed before submission:** an end-to-end transport-loss test that
-commits the initial deferred operation, drops the `202` response, reconstructs
-the caller, and demonstrates that the current request fields cannot identify
-the retained operation. This is distinct from terminal-response recovery after
-the caller already owns the pending URL.
+**Question:** Should AAuth require `@query` for query-bearing requests and add
+it to replay identity, or require each query-sensitive resource to advertise it
+as an additional component?
 
-**Provisional clean-current design:** require a client-generated
-`AAuth-Request-ID` covered by the request proof and retained before the first
-send. A retry with a fresh proof and the same identifier recovers the exact
-retained operation; reuse of that identifier for different authenticated
-semantics returns `409 Conflict`.
+**Placement:** Open a new AAuth issue and cross-link
+[Signature-Key issue 7](https://github.com/dickhardt/signature-key/issues/7),
+which asks where a baseline HTTP Message Signatures profile should live.
 
-**Implementation disposition:** accepted as the next interaction and recovery
-slice, outside the current authorization-state repair. The extension is not yet
-implemented or submitted upstream.
+### AAG-F018 — Missing proof fields have two error classifications
 
-**Consequence:** without a stable recovery identity, a caller that loses the
-initial `202` cannot distinguish recovery from a new operation, while an exact
-wire retransmission conflicts with proof replay protection.
+**Source:** AAuth Core, `Verification (Server)`, step 1; Signature-Key,
+`invalid_signature` and the Signature Error Code Registry.
 
-### AAG-F013 — Restored deferred state can lose the verified request authority
+Core says that a missing `Signature`, `Signature-Input`, or `Signature-Key`
+field returns `invalid_request`. Signature-Key defines `invalid_signature` as
+including a missing signature and lists missing proof fields under that code.
+The implementation follows the more specific AAuth Core profile for AAuth
+endpoints.
 
-**Status:** ready / unsubmitted
+**Question:** Is Core intentionally overriding Signature-Key for these missing
+fields, or should the two sources use one error code?
 
-**Source:** current AAuth Protocol, `Covered Components`, `Verification`,
-`Deferred Responses`, and `Non-Repudiation and Audit After Key Rotation`.
+**Placement:** Open an AAuth issue and cross-link the corresponding
+Signature-Key text so both editors can disposition the profile relationship.
 
-**Question:** When a PS or AS retains a pending authorization, should restart
-recovery be required to re-establish every policy- and continuation-bearing
-field from the verified signed request or from an authenticated receipt that
-binds the same fields?
+### AAG-F019 — `keyid` has no scheme-specific equality rule
 
-**Executable evidence:**
+**Source:** Signature-Key, `Relationship to Accept-Signature`.
 
-- `reference/authorization_state_reconciliation_test.go:TestPersonAndAccessServersRejectSemanticallyCorruptCanonicalStateAfterReopen`
-  mutates the PS's signed `justification`, and separately replaces both the
-  AS polling key and its self-consistent thumbprint. Without retained request
-  evidence, those canonical mutations survive restart even though neither
-  value was authorized by the original signer.
-- The current repair retains a bounded exact request body, covered headers,
-  signature, exact verification key, and original verification instant. It
-  re-verifies offline without network discovery, current policy, or current
-  wall-clock authorization.
+The source requires a `keyid` in `Signature-Input` to identify the same key as
+the selected `Signature-Key` member. It does not define how to compare `keyid`
+with schemes that carry an inline key or a JWT rather than one explicit key ID.
+The implementation therefore does not claim complete `keyid` correlation.
 
-**Source gap:** request-time signature verification is normative. Archiving
-the verified artifacts is only a `SHOULD`, is framed as durable audit guidance,
-and is not connected to the semantics of restored pending state.
+**Question:** Should `keyid` be forbidden when `Signature-Key` is present, or
+should each scheme define the exact value that means “the same key”?
 
-**Provisional choice:** a durable deferred record must contain either the exact
-verified request evidence or a locally authenticated receipt binding every
-authority-bearing projection. Recovery must validate that evidence before the
-record becomes callable.
+**Placement:** Open a new Signature-Key issue.
 
-**Consequence:** otherwise an implementation can authenticate the live request
-correctly but transfer policy input or polling authority through a rewritten
-canonical state record after restart.
+### AAG-F020 — Core and Signature-Key differ on stale JWKS after refresh failure
 
-**Submission placement:** check the current issue tracker for an existing
-deferred-recovery or audit-evidence issue. If none covers restored authority,
-open a focused new issue rather than attaching it to the lost-initial-response
-question in AAG-F012.
+**Source:** AAuth Core, `JWKS Discovery and Caching`; Signature-Key, `Caching
+and Performance`.
 
-### AAG-F014 — R3 operation selection on a protected person-token challenge
+Signature-Key requires appropriate cache expiration and respecting HTTP cache
+headers. Core says that when refresh fails an implementation should use an
+available cached JWKS, retry with backoff, and discard the entry after at most
+24 hours.
 
-**Status:** ready / unsubmitted
+**Question:** Is Core intentionally defining a stale-on-error exception for
+AAuth token verification? If so, should Signature-Key state that profile hook
+or define the same bounded behavior directly?
 
-**Source:** current AAuth Protocol, `Resource Challenge Verification`; current
-R3, `Resource Token Extensions`, `Resource Enforcement`, and `R3 Processing`.
+**Placement:** Open a Signature-Key issue and cross-link the Core caching
+section.
 
-**Question:** When a protected request first presents a person token and the
-resource needs R3 authorization, should the resource map that exact request to
-one operation and select the R3 document before returning `requirement=auth-token`,
-with the agent validating only the returned token context, or must the agent
-also send a caller-supplied operation set for the challenge to be valid?
+### AAG-F021 — Core appears to reuse one proof key across servers
 
-**Executable evidence:**
+**Source:** AAuth Core, the immediate authorization journey; Signature-Key,
+`Security Considerations`.
 
-- `r3_challenge_journey_test.go:TestResourceSelectsAndRetainsR3DocumentForPersonChallenge`
-  proves that the resource can select one operation, retain the exact document
-  for the PS and AS, and release a resource token carrying its digest.
-- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
-  proves the ordinary Agent.Do path can exchange that token through both signed
-  readers and complete the directly granted operation.
+The immediate Core journey binds the agent token to one confirmation key and
+uses that key when the agent calls the Person Server, Resource, and protected
+endpoint. Signature-Key says that clients must use distinct keys with distinct
+servers to reduce linkability. A straightforward implementation cannot satisfy
+both instructions without another key-derivation or token-rebinding step.
 
-**Provisional choice:** The resource is authoritative for the protected call's
-operation mapping and must select a document containing exactly that one
-operation. The agent verifies the resource-token R3 member, document origin,
-and PS/AS exchange result; it does not fetch the restricted document itself.
+**Question:** Does AAuth intentionally profile or override the distinct-server
+key rule for this journey? If not, where should the journey derive and bind a
+server-specific proof key?
 
-**Consequence:** Without a stated handoff, clients may either reject a valid
-resource challenge because they cannot reconstruct the resource's opaque
-operation mapping, or accept a grant broader than the call that triggered it.
+**Placement:** Open a Signature-Key issue and cross-link the immediate AAuth
+journey.
 
-## Adding and submitting an item
+### AAG-F022 — A Resource cannot independently apply the agent-token expiry rule
 
-1. Pin the exact source commit, document, section, and shortest relevant
-   excerpt or faithful paraphrase.
-2. Add a reproducible wire example, failing test, or interoperability capture.
-3. Reconcile the observation against the submitted history above.
-4. Ask one neutral question and name the provisional choice plus a plausible
-   alternative.
-5. Explain the security or interoperability consequence.
-6. Submit under the responsible human maintainer's identity and link the
-   upstream issue or discussion here.
-7. Record the authors' answer and update implementation and coverage separately.
+**Source:** AAuth Core, `Re-authorization`, `Auth Token Structure`, and `Auth
+Token Verification`.
 
-If later evidence disproves a concern, mark it withdrawn. Do not erase it or
-quietly turn it into implementation policy.
+`Re-authorization` says an auth token must not outlive the agent token used to
+obtain it and that a Resource must reject an auth token whose associated agent
+token has expired. The auth token deliberately carries no agent identifier,
+and the Resource receives neither the agent token nor its expiration during an
+auth-token request. The Resource can validate only the auth token's own `exp`
+and proof key.
+
+The immediate implementation caps `exp` at issuance and rechecks that ceiling
+at the Person Server and Agent. The Resource trusts the resulting auth-token
+expiration because it cannot reconstruct the predecessor relation itself.
+
+**Question:** Is issuer-side capping the intended way to satisfy this rule, or
+does the Resource need another claim or lookup that binds an auth token to the
+agent-token expiration?
+
+**Placement:** Open a new AAuth issue and cross-link the removal of agent
+identity from auth tokens.
+
+### AAG-F023 — Held replay does not define auth-token sameness
+
+**Source:** AAuth Core, `Deferred Delivery`.
+
+The Resource must replay a held result when the agent presents “the same auth
+token.” Compact JWTs with identical claims can have different signatures or
+serializations, and two tokens can reuse a `jti` incorrectly. Those choices
+produce different replay and theft boundaries. The general Pending URL
+Security section also says every request after one terminal response must
+return `410 Gone`, directly conflicting with held delivery's required replay.
+
+The implementation binds replay to the SHA-256 digest of the exact compact
+token bytes first presented at the pending URL.
+
+**Question:** Should Core define “the same auth token” as the exact compact JWT,
+the same `jti` under one issuer, or another explicit identity, and state that
+held-result replay is an exception to the general terminal-then-`410` rule?
+
+**Placement:** Open a new AAuth issue for the held-delivery section.
+
+### AAG-F024 — Held execution has no crash-recovery rule
+
+**Source:** AAuth Core, `Deferred Delivery`.
+
+Core requires the Resource to execute once and replay the result, but it does
+not say what to do when the Resource durably claims the invocation and stops
+before retaining a result. A lease permits progress but can execute a
+consequence twice; permanent unresolved state avoids duplication but can lose
+an execution.
+
+**Question:** Is held delivery intentionally at-most-once across this crash
+window, or should Core define an operation-specific idempotency or recovery
+contract?
+
+**Placement:** Open a new AAuth issue for the held-delivery section.
+
+### AAG-F025 — A held application response can itself be `202`
+
+**Source:** AAuth Core, `Deferred Delivery` and `Deferred Responses`.
+
+The held-delivery text says the poll returns the invocation's response. The
+generic deferred rules say every `202` remains pending until a non-`202`
+response. The text does not say whether an application `202` consumes the
+original held record and starts a new pending URL, or keeps the original record
+active.
+
+The implementation retains and replays the application `202` only when it is a
+complete, same-origin deferred response. It returns that response to the caller
+without following either pending URL.
+
+**Question:** Should Core state that a valid application `202` is the held
+invocation's retained result, that the original URL remains its replay URL, and
+that the application `Location` identifies a separate deferred operation?
+
+**Placement:** Add to the held-delivery issue or open a focused deferred-state
+issue if the editors prefer to separate result identity from crash recovery.

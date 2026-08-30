@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"github.com/aauth-dev/auth-go/jose"
 )
 
 // KeyResolver resolves one fully qualified Signature-Key key reference.
@@ -78,17 +78,25 @@ type KeyRefresher interface {
 	RefreshKey(ctx context.Context, issuer, discoveryDocument, keyID string) (jose.JWK, error)
 }
 
-// StaticKeyResolver is an explicit in-memory trust source.
-type StaticKeyResolver map[string]map[string]jose.JWK
+// StaticKeyReference identifies one key within an issuer's discovery
+// document.
+type StaticKeyReference struct {
+	Issuer            string
+	DiscoveryDocument string
+	KeyID             string
+}
 
-func (resolver StaticKeyResolver) ResolveKey(_ context.Context, issuer, _ string, keyID string) (jose.JWK, error) {
-	issuerKeys, ok := resolver[issuer]
+// StaticKeyResolver is an exact in-memory trust source.
+type StaticKeyResolver map[StaticKeyReference]jose.JWK
+
+func (resolver StaticKeyResolver) ResolveKey(_ context.Context, issuer, discoveryDocument, keyID string) (jose.JWK, error) {
+	reference := StaticKeyReference{Issuer: issuer, DiscoveryDocument: discoveryDocument, KeyID: keyID}
+	key, ok := resolver[reference]
 	if !ok {
-		return jose.JWK{}, &ResolutionError{Code: ResolutionInvalid, Cause: fmt.Errorf("aauth: issuer %q is not trusted", issuer)}
-	}
-	key, ok := issuerKeys[keyID]
-	if !ok {
-		return jose.JWK{}, &ResolutionError{Code: ResolutionUnknown, Cause: fmt.Errorf("aauth: issuer %q has no key %q", issuer, keyID)}
+		return jose.JWK{}, &ResolutionError{
+			Code:  ResolutionUnknown,
+			Cause: fmt.Errorf("aauth: issuer %q discovery document %q has no key %q", issuer, discoveryDocument, keyID),
+		}
 	}
 	if key.Kid != "" && key.Kid != keyID {
 		return jose.JWK{}, &ResolutionError{Code: ResolutionInvalid, Cause: fmt.Errorf("aauth: resolved key id %q does not match requested %q", key.Kid, keyID)}

@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 
-	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"github.com/aauth-dev/auth-go/jose"
 )
 
 func Example() {

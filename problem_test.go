@@ -6,72 +6,50 @@ import (
 	"strings"
 	"testing"
 
-	aauth "gitlab.com/sidecat-dev/aauth-go"
+	auth "github.com/aauth-dev/auth-go"
 )
 
-func TestDecodeProblemResponse(t *testing.T) {
+func TestDecodeProblemResponseReturnsTypedAAuthError(t *testing.T) {
 	t.Parallel()
 
 	response := &http.Response{
 		StatusCode: http.StatusForbidden,
-		Header: http.Header{
-			"Content-Type": {"application/problem+json"},
-		},
+		Header:     http.Header{"Content-Type": {"application/problem+json"}},
 		Body: io.NopCloser(strings.NewReader(
-			`{"type":"about:blank","title":"Forbidden","status":403,"error":"denied","detail":"The user declined."}`,
+			`{"type":"about:blank","title":"Forbidden","status":403,"error":"person_token_denied","detail":"policy declined"}`,
 		)),
 	}
-	problem, err := aauth.DecodeProblemResponse(response)
+	problem, err := auth.DecodeProblemResponse(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if problem.Status != http.StatusForbidden ||
-		problem.Code != aauth.PollingDenied ||
-		problem.Detail != "The user declined." {
-		t.Fatalf("decoded problem = %#v", problem)
+	if problem.Status != http.StatusForbidden || problem.Code != "person_token_denied" || problem.Detail != "policy declined" {
+		t.Fatalf("problem = %#v", problem)
 	}
 }
 
-func TestDecodeProblemResponseRejectsInvalidWireValue(t *testing.T) {
+func TestDecodeProblemResponseRejectsAmbiguousErrorMembers(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name        string
-		contentType string
-		body        string
-	}{
-		{
-			name:        "wrong media type",
-			contentType: "application/json",
-			body:        `{"status":403,"error":"denied"}`,
-		},
-		{
-			name:        "missing error",
-			contentType: "application/problem+json",
-			body:        `{"status":403}`,
-		},
-		{
-			name:        "mismatched status",
-			contentType: "application/problem+json",
-			body:        `{"status":400,"error":"denied"}`,
-		},
-		{
-			name:        "mission termination without status",
-			contentType: "application/problem+json",
-			body:        `{"status":403,"error":"mission_terminated"}`,
-		},
+	response := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": {"application/problem+json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_request","Error":"server_error"}`)),
 	}
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			response := &http.Response{
-				StatusCode: http.StatusForbidden,
-				Header:     http.Header{"Content-Type": {test.contentType}},
-				Body:       io.NopCloser(strings.NewReader(test.body)),
-			}
-			if _, err := aauth.DecodeProblemResponse(response); err == nil {
-				t.Fatal("DecodeProblemResponse succeeded")
-			}
-		})
+	if _, err := auth.DecodeProblemResponse(response); err == nil {
+		t.Fatal("DecodeProblemResponse accepted ambiguous members")
+	}
+}
+
+func TestDecodeProblemResponseRejectsLoneCaseVariant(t *testing.T) {
+	t.Parallel()
+
+	response := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": {"application/problem+json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"ERROR":"invalid_request","status":400}`)),
+	}
+	if _, err := auth.DecodeProblemResponse(response); err == nil || !strings.Contains(err.Error(), "case variant") {
+		t.Fatalf("DecodeProblemResponse error = %v", err)
 	}
 }

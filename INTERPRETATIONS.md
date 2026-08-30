@@ -1,455 +1,245 @@
-# AAuth Go implementation interpretations
+# Implementation interpretations
 
-This register explains choices that affect observable protocol behavior. It is
-not a substitute for the AAuth specifications. The exact author editor sources
-and revisions below are authoritative; this file records how this Go
-implementation applies them where a choice, transition, or ambiguity matters.
+This file records choices needed where the pinned editor text is ambiguous or
+internally inconsistent. Explicit requirements are implemented directly and do
+not appear here. See [SPECIFICATIONS.md](SPECIFICATIONS.md) for the exact source
+revisions.
 
-Current source family:
+## Four-party person identity uses `(ps, sub)`
 
-| Source | Author revision |
-| --- | --- |
-| AAuth Protocol, R3, Events, Bootstrap, Budgets, interoperability profile | `dickhardt/AAuth@a99d353cf18aee81d0c5445bac070164fb3b8bc5` |
-| HTTP Signature Keys | `dickhardt/signature-key@0ff751b571e7fe51336bcc1e526954a202317cc0` |
+**Source:** AAuth Core, `Auth Token Structure` and `Auth Token Verification`.
 
-Each adopted interpretation must name the exact source section, the selected
-behavior, a materially plausible alternative, the reason for the choice, and
-executable evidence. An unresolved question stays open; it does not silently
-become implementation policy or a conformance claim.
+An auth token's `iss` names its issuer. In a four-party exchange that issuer is
+the access server, while `ps` names the person server that owns the `sub`
+namespace. The verification text nevertheless says that `(iss, sub)` identifies
+the person.
 
-## AAG-I001 — Author editor sources are the implementation authority
+The Resource exposes person identity to its protected handler as `(ps, sub)`.
+A change of Access Server therefore does not change the identity pair, and the
+same `sub` under two Person Servers still names two people. `tenant` is context,
+not part of this pair. This library does not retain a person directory.
 
-**Status:** adopted
+This choice follows the resource-token chain, where the resource copies `ps`
+and `sub` from the verified person token. It also keeps the identity namespace
+anchored at the server that created the directed identifier.
 
-**Source:** the complete current source family listed above; exact bytes and
-SHA-256 digests are in `internal/sourcecoverage/source-coverage.json`.
+**Executable example:**
+`resource/server_test.go:TestProtectedHandlerReceivesCurrentPrincipal`.
 
-**Question:** Which text controls when an editor source and a rendered or
-published snapshot differ?
+## Person-token policy denial uses `person_token_denied`
 
-**Chosen behavior:** Pin and implement the authors' exact editor-source bytes at
-one named commit per repository. Retain rendered documents only as publication
-artifacts, never as stronger implementation authority.
+**Source:** AAuth Core, `Person Token Endpoint` and `Token Endpoint Error
+Codes`.
 
-**Alternative considered:** Implement the latest IETF-hosted snapshot until a
-new numbered draft is published. That gives a stable citation, but it omits
-accepted editor changes and can make interoperability work knowingly stale.
+The registered errors distinguish malformed or expired credentials from an
+unreachable person, but do not name a valid request denied by person-server
+policy.
 
-**Why:** The editor repositories contain the protocol family as it is being
-developed together. One exact commit and byte digest make that moving authority
-reviewable and reproducible.
+The implementation returns HTTP `403` with
+`error: "person_token_denied"` for that case. It does not reuse
+`user_unreachable` or describe valid input as `invalid_request`.
 
-**Evidence:**
+This is a provisional extension, not a registered AAuth error. Clients must
+treat an unknown terminal `403` as denial. The name can change when the Core
+specification defines this result.
 
-- `internal/sourcecoverage/sourcecoverage_test.go:TestCoveragePinsOneCompleteCurrentEditorFamily`
-- `go run ./cmd/aauth-reference verify coverage`
+## Query-bearing requests cover `@query`
 
-**Current-product effect:** A source refresh may deliberately expose
-implemented behavior as obsolete or unclaimed. A green negative-vector test
-against an old wire shape is not relabeled as current conformance.
+**Source:** AAuth Core, `Covered Components` and `Verification`; RFC 9421,
+Section 2.2.7.
 
-## AAG-I002 — Emit and accept fully specified `Ed25519`, not `EdDSA`
+The mandatory Core set includes `@path`, which excludes the query. A signature
+over only that set can therefore be replayed with another query on an endpoint
+where query parameters select behavior.
 
-**Status:** adopted
+The implementation adds `@query` whenever the request target has a query and
+requires the verifier to cover the same value. A request without a query keeps
+the four-component Core baseline. Changing the query after signing invalidates
+the proof.
 
-**Source:** AAuth Protocol, `Signature Algorithms`; HTTP Signature Keys,
-`Algorithm Determination` and `Unsupported Algorithm`.
+**Executable example:**
+`signaturekey/request_external_test.go:TestRequestProofCoversAnExactQueryWhenPresent`
+and `TestRequestProofCoversAnExplicitEmptyQuery`.
 
-**Question:** Should Ed25519 keys and JWTs accept the polymorphic JOSE name
-`EdDSA` used by retained historical peers?
+## Resource-managed sessions bind the stable Agent identity
 
-**Chosen behavior:** Emit `alg: Ed25519`. Reject missing algorithms,
-polymorphic `EdDSA`, `none`, symmetric algorithms, and structurally invalid
-Ed25519 keys on the applicable current paths. Return the specified negotiable
-unsupported-algorithm response where the HTTP protocol permits it.
+**Source:** AAuth Core, `AAuth-Access` and `Agent Token Verification`.
 
-**Alternative considered:** Accept `EdDSA` while emitting `Ed25519`. That would
-admit historical peer input, but it weakens the current algorithm-determination
-rule and makes the accepted cryptographic operation depend on key shape outside
-the declared algorithm.
+Core says an opaque session token names a relationship with “this agent” and
+must be accompanied by a valid Agent signature, but it does not say whether a
+session survives rotation of the Agent token's `cnf` key.
 
-**Why:** A fully specified algorithm makes the cryptographic operation explicit
-and follows both current author sources.
+The Resource binds a session to the Agent Provider, Agent identifier, and
+optional parent Agent. Every request must still carry a current AP-issued
+agent token and a matching HTTP proof. A new agent token for the same stable
+identity may therefore poll and use the session with a new proof key; a token
+for another Agent cannot. Reassigning the same Agent identifier at the AP also
+preserves the session unless the Resource revokes it.
 
-**Evidence:**
+**Executable examples:**
+`resource/session_test.go:TestResourceManagedInteractionApprovesAcrossRecompositionAndBindsStableAgent`
+and `resource/session_test.go:TestSessionUseVerifiesProofBeforeLoadAndRejectsEveryBindingFailure`.
 
-- `draft11_wire_test.go:TestDraft11Ed25519WireJourney`
-- `draft08_discovery_test.go:TestDraft08SelectedUnsupportedJWKSAlgorithmUsesNegotiableEnvelope`
-- `elixir_interop_test.go:TestHistoricalElixirFixturesUseUnsupportedPolymorphicEdDSA`
+## `AAuth-Access` is an opaque credential, not a JWT profile
 
-**Current-product effect:** Historical `EdDSA` fixtures remain retained only as
-negative evidence. They are not current interoperability vectors.
+**Source:** AAuth Core, `Overview` and `AAuth-Access`.
 
-## AAG-I003 — Only the current person-token topology is supported
+The overview says all AAuth tokens are JWTs. The more specific
+`AAuth-Access` section defines a Resource-owned opaque `token68`, permits it to
+wrap an existing OAuth or session credential, and defines no JWT claims.
 
-**Status:** adopted current boundary
+The library applies the specific `AAuth-Access` rules. It validates only the
+`token68` wire form and never parses the credential as a JWT. Proof of
+possession comes from the Agent signature covering `Authorization`, not from a
+session-token `cnf` claim.
 
-**Source:** AAuth Protocol, `Person Token`, `Resource Access and Resource
-Tokens`, `Person Server`, `Auth Tokens`, and `Sub-Agents`; interoperability
-profile surfaces 1 through 5.
+**Executable example:**
+`integration/resource_managed_session_test.go:TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition`.
 
-**Question:** Can an agent/resource/auth-token journey that omits the current
-person-token claims remain as an alternate runtime path because several
-endpoints and JWT type names are unchanged?
+## Four-party tenant context remains in the Person Server namespace
 
-**Chosen behavior:** No. Resource and auth tokens structurally require the
-current person topology. The implementation issues and retains an
-`aa-person+jwt`, derives `ps`, `sub`, `presented_jti`, and `mission_s256` into
-the resource token, resolves the retained person-token record at the PS, and
-issues and presents only the current auth-token shape.
+**Source:** AAuth Core, `Auth Token Structure` and `Person Token Structure`.
 
-**Alternative considered:** Keep the old journey marked exercised and describe
-the new claims as a later enhancement. That would hide a security-relevant
-topology change: the retained `presented_jti` lookup is what detects subject or
-mission substitution, and current resource-facing tokens no longer identify
-the agent.
+Core says `(iss, tenant)` identifies an organization, but four-party auth-token
+`iss` names the Access Server while `tenant` is copied from the Person Server.
+Changing Access Servers must not silently rename the organization.
 
-**Why:** Similar endpoint names do not make the authorization evidence
-equivalent. The current person-token chain changes what each party may assert
-and what the PS must retain and compare.
+The Resource therefore presents tenant beside `PersonIdentity{Issuer: ps,
+Subject: sub}` in a separate `PersonContext`. Hosts that use tenant as an
+organization hint interpret it in the Person Server namespace. Tenant does not
+participate in stable person matching.
 
-**Evidence:**
+## Authorization requests always bind their JSON body
 
-- `internal/sourcecoverage/sourcecoverage_test.go:TestCurrentClaimsUseCurrentEvidenceOnly`
-- `token_identity_internal_test.go:TestCurrentResourceAndAuthTokensRequirePersonTopology`
-- `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
+**Source:** AAuth Core, `Authorization Endpoint Request`, `Covered Components`,
+and `Resource Metadata`.
 
-**Current-product effect:** Obsolete issuance methods and conditional runtime
-branches are removed. Old wire forms may remain only as raw rejection vectors.
+The authorization request carries `scope`, which decides what the Resource
+may issue. Applying `additional_signature_components` globally cannot safely
+solve this for Resources that also have bodyless protected routes.
 
-## AAG-I004 — Current R3 proposal retrieval must admit both the PS and AS
+This implementation always signs and requires `content-type` and
+`content-digest` at `/authorize`, then adds the Resource's advertised
+components. Advertised components alone govern ordinary protected routes. A
+transport-mutation test proves that changing `scope` after signing is refused.
 
-**Status:** adopted; direct, protected-person, `401` per-call retrieval, and one-hop existing-auth-token step-up handling implemented
+**Executable example:**
+`integration/core_four_party_test.go:TestCurrentCoreFourParty`.
 
-**Source:** R3, `Per-Call Proposals`, `R3 Document`, and `R3 Processing` at the
-current AAuth revision above.
+## A bodyless poll can cover the digest of empty content
 
-**Question:** May a resource expose an exact proposal only to its access server,
-leaving the person server unable to retrieve it?
+**Source:** AAuth Core, `Resource Metadata` and `Polling with GET`; RFC 9530,
+Sections 2 and 6.3.
 
-**Chosen behavior:** An R3 resource retains the exact PS and AS reader
-identities with every initial document and per-call proposal before releasing
-the resource token. A protected request carrying a person token is mapped to
-exactly one operation, and its selected document is retained before the
-auth-token requirement is released. Both roles fetch independently with
-authenticated server requests and bind the exact bytes to Core token evidence.
+Core requires every Resource-advertised signature component on Resource
+requests, while polling switches to `GET` without resending the original body.
+RFC 9530 permits `Content-Digest` over empty content to prove that no content
+was added.
 
-**Alternative considered:** Preserve the earlier AS-only endpoint rule because
-an older draft combined PS display language with AS-only retrieval text. The
-current source resolves that conflict by granting both roles access.
+When a poll profile includes `content-digest`, the signer emits the SHA-256
+digest of empty content and leaves the request body absent. The caller supplies
+fresh values for any other advertised header fields through
+`PollResourceSessionWithComponents`.
 
-**Why:** Continuing the old restriction would prevent the PS from evaluating
-the exact proposal it is asked to authorize and would contradict the current
-retrieval contract.
+**Executable example:**
+`integration/resource_managed_session_test.go:TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition`.
 
-**Evidence:**
+## Failed JWKS refresh may use the bounded cached entry
 
-- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
-- `r3_challenge_journey_test.go:TestCurrentFourPartyR3PersonChallengeCompletesProtectedCall`
-- `reference/r3_document_store_test.go:TestFileR3DocumentStoreRetainsAuthorizedReadersAcrossRestart`
+**Source:** AAuth Core, `JWKS Discovery and Caching`; Signature-Key, `Caching
+and Performance`.
 
-**Current-product effect:** One immediate four-party direct, protected-person,
-and `401` per-call path is callable and partially claimed. The reference agent
-also follows one existing-auth-token step-up challenge and refuses recursive
-challenge loops. Resource-side step-up policy and lineage construction,
-deferred `202` R3, three-party R3, caching, and broader R3 topologies remain
-explicit gaps.
+Signature-Key says to respect HTTP freshness. Core adds the AAuth-specific
+outage rule: after a fetch failure, use an available cached JWKS and discard it
+after at most 24 hours.
 
-## AAG-I005 — Person-token policy denial is an explicit extension
+The resolver attempts refresh when HTTP freshness expires. If that attempt
+fails, it follows Core and may use the previously cached key until the fixed
+24-hour discard bound. It never extends that bound from a failed request.
 
-**Status:** adopted extension pending editor disposition
+**Executable example:**
+`signaturekey/discovery_external_test.go:TestHTTPKeyResolverUsesStaleCacheOnlyWithinCoreDiscardBound`.
 
-**Source:** AAuth Protocol, `Person Token Endpoint` and `Token Endpoint Error
-Codes` at the current AAuth revision above.
+## Held replay binds the exact compact auth token
 
-**Question:** Which wire error represents a valid person-token request that a
-deployment refuses for person-binding policy?
+**Source:** AAuth Core, `Deferred Delivery`.
 
-**Chosen behavior:** Return `403` with `error: person_token_denied` only after
-the AgentToken, request proof, resource, and optional mission are valid. Missing,
-expired, or mismatched tokens continue to use the registered `400` errors.
+Core requires a repeated presentation of “the same auth token” to replay a
+held invocation, but it does not define whether sameness means claims, `jti`,
+signature, or compact serialization. Its general Pending URL Security section
+also says every poll after a terminal response must return `410 Gone`, which
+contradicts the held-delivery replay requirement.
 
-**Alternative considered:** Use `user_unreachable`. That code says the PS has no
-way to reach the user, which is different from a reached policy decision. Using
-`invalid_request` would incorrectly describe valid protocol input as malformed.
+`HeldInvocationStore.Claim` receives the SHA-256 digest of the exact compact
+token bytes. Only that exact token can replay the retained result. A separately
+signed token with identical claims cannot consume the record. The
+held-delivery replay rule is treated as the specific exception to the general
+`410 Gone` rule, and remains available until the auth token expires.
 
-**Why:** The current registry does not name policy denial. An explicit extension
-preserves the distinction without silently assigning another code new meaning.
+**Executable example:**
+`resource/held_test.go:TestHeldAuthTokenInvocationCompletesOnceAndReplays`.
 
-**Evidence:**
+## A lost held execution is never reclaimed automatically
 
-- `current_person_token_journey_test.go:TestCurrentFourPartyPersonTokenJourneySurvivesPersonServerRestart`
-- `SPEC-FEEDBACK.md`, AAG-F009
+**Source:** AAuth Core, `Deferred Delivery`.
 
-**Current-product effect:** Clients must treat an unrecognized terminal `403` as
-denial. The code may change if the editors add or select a registered result.
+Core prohibits re-executing a completed held invocation, but it does not define
+a recovery protocol for a Resource process that stops after an atomic claim and
+before durable result retention. Reclaiming after a timeout could execute an
+application consequence twice.
 
-## AAG-I006 — Mission approval is released only after recoverable cross-store custody
+This implementation has no lease or reclaim transition. After an indeterminate
+claim or retention result, the store exposes either a committed replay or
+`ErrHeldExecutionUnresolved`. A caller can start a new application request, but
+the original pending record never becomes executable again.
 
-**Status:** adopted
+An unresolved poll returns the registered `500 server_error`. It does not use
+`503`: the implementation has no retry schedule or condition under which that
+record becomes executable again.
 
-**Source:** AAuth Protocol, `Mission Approval`, `Person Token Endpoint`, and
-`Freshness and Replay` at the current AAuth revision above.
+The test below injects an uncertain `Retain` result into the store contract.
+This repository has no durable adapter or process-restart proof.
 
-**Question:** When approval spans a mission store and several person-token
-records, what survives a partial write, uncertain commit, restart, or lost
-response?
+**Executable example:**
+`resource/held_test.go:TestHeldAuthTokenRetainFailureWithholdsResultAndNeverReexecutes`.
 
-**Chosen behavior:** Before any child commit, retain one private issuance record
-keyed by the signed request proof. It contains the exact response and every
-exact person-token record. Partial and uncertain writes return retryable
-`503 server_error`; replaying that exact signed request resumes idempotently and
-returns the byte-identical approval only after all stores confirm it.
+## An application `202` starts a nested deferred response
 
-**Alternative considered:** Commit person tokens first and retain only their
-hashes. That can orphan the first token when a later write fails and cannot
-reconstruct the compact response after an uncertain commit.
+**Source:** AAuth Core, `Deferred Delivery` and `Deferred Responses`.
 
-**Why:** The mission bytes returned to the agent and each person-token retention
-record are one authorization decision. The journal makes their separate durable
-stores a recoverable state machine without pretending they share a transaction.
+Core says the held poll returns the invocation's response and separately says
+every `202` is a deferred response whose polling ends only on a non-`202`.
 
-**Evidence:**
+When the protected application returns `202`, the Resource treats it as the
+retained result only if it contains a same-origin `Location`, decimal
+`Retry-After`, `Cache-Control: no-store`, and an unambiguous
+`application/json` body with `status`. The original held record then replays
+that response. `PollAuthToken` returns it without following the new location;
+the caller can continue that separate deferred operation explicitly.
 
-- `current_mission_recovery_test.go:TestCurrentMissionIssuanceRecoversExactResponseAcrossStoreBoundaries`
+**Executable example:**
+`resource/held_test.go:TestHeldAuthTokenRetainsWellFormedApplicationPendingResponse`.
 
-**Current-product effect:** Current person-token server compositions must supply a
-`MissionIssuanceStore`. Exact recovery requires the original signed request
-within its accepted signature window; a newly signed request is a new proposal.
+## Deferred PS consent expires with the original resource token
 
-## AAG-I007 — Defined authorization extensions require an explicit companion result
+**Source:** AAuth Core, `Resource Token Structure`, `PS Token Endpoint`, and
+`Deferred Responses`.
 
-**Status:** adopted current boundary
+Core tells an Agent to obtain a fresh resource token when an AS exchange is
+delayed past expiry, but does not say whether a three-party PS may decide after
+the resource token used to create its pending request expires.
 
-**Source:** AAuth Protocol, `Resource Token Structure`; R3, `Resource Token
-Extensions` and `Auth Token Extensions`; Budgets, `Resource Token Extensions`
-and `Auth Token Extensions`.
+The three-party pending deadline is the earliest of the host policy lifetime,
+the initial Agent-token expiry, and the original resource-token expiry. This
+keeps a later approval inside every credential bound that justified creating
+the pending request.
 
-**Question:** May a receiver ignore a signed R3 or Budget claim merely because
-this implementation does not yet support that companion specification?
+After the first terminal response, the store marks the pending URL gone. Core
+does not register a separate error name for that state, so the implementation
+uses `410 invalid_code`, the registered result for a consumed or unrecognized
+interaction code.
 
-**Chosen behavior:** No. Core verification recognizes current R3 and Budget
-members, enforces their token-profile applicability and required co-presence,
-and retains their exact JSON values in sealed evidence. That evidence is not an
-authorization decision. A caller must pass it through the applicable companion
-validator and enforcement path, or explicitly reject it with
-`RequireNoAuthorizationMembers`. Existing endpoints without a companion
-consumer reject unresolved members before request-proof replay admission,
-authorization-decision policy, new authorization-state retention, or protected
-consequence. Signer authentication, trusted-peer policy, and recovery of
-already-retained state remain independent boundaries.
-
-**Alternative considered:** Treat the members as unknown optional JWT claims.
-That would silently discard signed grants or limits. In particular, accepting a
-Budget-bearing auth token without enforcing its hard cap changes the authority
-the issuer expressed.
-
-**Why:** Cryptographic validity does not authorize a receiver to ignore known
-authorization semantics. Keeping exact signed members attached to Core evidence
-allows a companion package to validate them without reparsing or weakening the
-Core result. Requiring either an explicit companion result or a named refusal
-prevents ordinary endpoints from silently treating the token as scope-only.
-
-**Evidence:**
-
-- `token_authorization_catalog_test.go:TestInapplicableIncompleteAndRemovedAuthorizationMembersFailBeforeKeyResolution`
-- `token_authorization_catalog_test.go:TestCompleteAuthorizationMembersRemainBoundToVerifiedCoreEvidence`
-- `r3/token_external_test.go:TestR3TokenResultsBindExactCoreEvidence`
-- `reference/resource_replay_store_test.go:TestCurrentProtectedResourceRejectsRawUnsupportedExtensionTokensBeforePolicyReplayAndOperation`
-- `reference/resource_token_preflight_replay_test.go:TestTokenAuthoritiesRejectUnsupportedResourceTokenClaimBeforeProofReplay`
-- `reference/resource_token_preflight_replay_test.go:TestPersonTokenAuthorityRejectsUnsupportedUpstreamClaimBeforeProofReplay`
-
-**Current-product effect:** R3 outside the bounded four-party direct and `401`
-per-call profile, and Budgets outside the bounded immediate four-party metered
-call, remain unclaimed. R3 and Budget token-member validation are
-side-effect-free companion results; defined claims still cannot be downgraded
-into the Core scope-only path.
-
-## AAG-I008 — A per-call challenge resolves one retained person-token lineage
-
-**Status:** adopted pending editor clarification
-
-**Source:** AAuth Protocol, `Resource Token Structure` and `Resource Token
-Verification`; R3, `Per-Call Proposals / Flow`.
-
-**Question:** When a per-call request presents an auth token that does not carry
-`presented_jti`, which earlier resource-token record supplies the person-token
-JTI required in the new challenge token?
-
-**Chosen behavior:** Before releasing any R3 resource token, retain its exact
-compact value and person-token JTI under a lineage derived from the context
-shared with the later auth token. At per-call time, resolve the latest active
-generation no later than the auth token's trusted issuance instant. Repeated
-issuance for the same person-token JTI and requested scope within one clock
-second returns the retained token. Distinct person-token JTIs or resource-token
-scopes at the same generation remain distinct and make later resolution fail
-closed as ambiguous.
-
-**Alternative considered:** Select any retained token whose visible claims
-match. That loses the exact person-token binding the current protocol uses to
-detect mission substitution when several person tokens share the same subject
-and proof key.
-
-**Why:** The auth token deliberately omits both `presented_jti` and its source
-resource-token identifier. The resource still must reproduce the earlier JTI;
-an explicit retained lineage makes that recovery deterministic and fail-closed.
-
-**Evidence:**
-
-- `reference/resource_token_lineage_store_test.go:TestFileResourceTokenLineageStoreRecoversOneExactAuthorizationLineage`
-- `r3_direct_journey_test.go:TestCurrentFourPartyR3JourneySurvivesReconstruction`
-
-**Current-product effect:** The `401` per-call profile requires a durable
-`ResourceTokenLineageStore`. A missing, expired, substituted, or ambiguous lineage
-is rejected before a proposal or provider consequence.
-
-## AAG-I009 — Companion token members compose before one issuer signature
-
-**Status:** adopted
-
-**Source:** AAuth Protocol, `Resource Token Structure` and `Auth Token
-Structure`; R3 and Budgets, their respective resource-token and auth-token
-extension sections.
-
-**Question:** How can independent Go companion packages contribute their
-defined members when a single issuer must produce one Core token?
-
-**Chosen behavior:** Core exposes a sealed generic `TokenDraft` for resource and
-auth claims. Each companion exposes typed binders that add one complete member
-set. Core rejects replacement, unrecognized names, and incomplete groups,
-orders companion names canonically, and signs the final payload once.
-
-**Alternative considered:** Mint a Core token first, then let each companion
-parse, extend, and re-sign it. That makes the result depend on package order,
-changes the issuer's byte representation repeatedly, and gives companion
-packages unnecessary access to token signing.
-
-**Why:** R3 and Budgets are independently optional but may apply to the same
-token. Issuance therefore needs a compositional seam that preserves Core
-ownership of the compact token and companion ownership of its semantics.
-
-**Evidence:**
-
-- `token_draft_external_test.go:TestIndependentCompanionsComposeOneCoreToken`
-- `token_draft_external_test.go:TestCoreTokensWithoutCompanionsKeepTheirExactPayload`
-
-**Current-product effect:** Deployments compose applicable companions through
-typed binders and mint once. `TokenDraft` is issuance material, not verified
-evidence or authorization.
-
-## AAG-I010 — Metered retry identity is independent of local price calculation
-
-**Status:** adopted reference-deployment behavior
-
-**Source:** Budgets, `Resource Enforces the Budget`, `Concurrent Requests`,
-`Ambiguous or Unreported Failures`, and `Resource Requirements`.
-
-**Question:** What identifies one metered provider consequence when a retry
-arrives after response loss, process restart, or a local pricing change?
-
-**Chosen behavior:** The reference deployment derives one stable execution key
-from the signed auth-token issuer and JTI plus a deployment-defined call key.
-The store separately retains the granted Budget and declared maximum and rejects
-a changed pair as a conflict. A completed retry returns the retained result
-before fresh protected policy or price calculation.
-
-**Alternative considered:** Include the calculated maximum, price, or grant in
-the provider key. A deployment change would then turn the same signed call into
-a new provider consequence and could charge or execute twice.
-
-**Why:** The signed authorization and application call identity determine which
-consequence is being retried. Price and maximum are retained attributes of that
-consequence, not a license to create another one.
-
-**Evidence:**
-
-- `reference/budget_store_test.go:TestFileBudgetStoreReservesCommitsAndRecoversExactResult`
-- `budget_journey_test.go:TestCurrentFourPartyBudgetJourneyNarrowsEveryIssuanceBoundary`
-
-**Current-product effect:** The file adapter is a private single-writer
-reference store. This retry rule does not claim a new Budgets wire member or a
-general distributed settlement protocol.
-
-## AAG-I011 — Query-bearing requests cover the exact query
-
-**Status:** adopted pending editor clarification
-
-**Source:** AAuth Protocol, `Covered Components`, `Verification`, and
-`Freshness and Replay`; RFC 9421, `@query` derived component.
-
-**Question:** May an AAuth request whose target contains a query rely on the
-four mandatory components even though `@path` excludes that query?
-
-**Chosen behavior:** No. The signer automatically adds `@query` whenever a
-query is present, and the verifier requires it for that request. The exact raw
-query participates in signature verification and replay identity.
-
-**Alternative considered:** Leave query coverage to each resource's advertised
-additional components. That makes an omitted resource declaration silently
-authorize query substitution even though the base profile says its mandatory
-set closes request-substitution attacks.
-
-**Why:** Query parameters commonly select operation semantics. `@path` covers
-none of them. A captured proof for one query must not authorize another at the
-same method, authority, and path.
-
-**Evidence:**
-
-- `signaturekey/request_external_test.go:TestRequestProofCoversAnExactQueryWhenPresent`
-- `deferred_protected_journey_test.go:TestCurrentDeferredProtectedCallRecoversAfterLostResultAndResourceRestart`
-
-**Current-product effect:** Query-free requests preserve their existing exact
-component set. Query-bearing requests require `@query`; peers following only
-the draft's minimum receive a typed missing-component refusal.
-
-## AAG-I012 — Existing auth-token step-up is one exact retry
-
-**Status:** adopted reference-agent behavior pending editor clarification
-
-**Source:** AAuth Protocol, `Auth Token Required` and `Resource Challenge
-Verification`; R3, `Resource Token Structure` and `Resource Enforcement` at the
-current AAuth revision above.
-
-**Question:** When a resource returns a fresh `requirement=auth-token` resource
-token to a request that already carries an auth token, how should an agent
-follow that step-up without changing the protected call or entering an
-unbounded challenge loop?
-
-**Chosen behavior:** The reference agent verifies the fresh resource token
-against the existing auth-token context, including resource, auth issuer,
-person-server namespace, directed subject, account, mission, tenant, and proof
-key. It exchanges the token through the ordinary PS/AS path and retries the
-same call once. Both `401` and stateful `202` challenge delivery are parsed. If
-the retry returns another auth-token challenge, the response is returned to the
-caller rather than followed recursively.
-
-**Alternative considered:** Treat an auth-token challenge received while using
-an auth token as a terminal refusal, or automatically repeat the exchange until
-the resource accepts the request. The first drops a protocol-defined step-up;
-the second can loop and repeatedly invoke policy or token issuance.
-
-**Why:** The current protocol explicitly permits a higher authorization level
-to be requested at runtime and requires agents to be prepared for it. One
-bounded retry preserves exact request semantics and gives the caller a stable
-boundary when policy continues to require more authority.
-
-**Evidence:**
-
-- `auth_token_step_up_journey_test.go:TestCurrentAuthTokenStepUpRetriesTheExactCall`
-- `reference/agent_step_up_test.go:TestAgentAuthTokenStepUpDoesNotFollowASecondChallenge`
-- `reference/agent_step_up_test.go:TestResourceGrantFromAuthChallengeRejectsChangedAuthorizationContext`
-
-**Current-product effect:** The reference client handles one existing-token
-step-up. The resource-side policy that decides when to issue the new resource
-token, and the durable mapping that supplies its `presented_jti`, remain
-deployment-owned and are not claimed by this interpretation.
-
-## Adding or changing an interpretation
-
-1. Pin the exact source revision and section.
-2. Add an externally observable failing test or interoperability capture.
-3. Record the chosen behavior and at least one plausible alternative.
-4. Explain the security and interoperability effect in plain language.
-5. Update source coverage only after the evidence passes.
-6. Preserve a superseded entry with its disposition instead of rewriting
-   history to make the old choice look current.
+**Executable examples:**
+`personserver/authorization_interaction_test.go:TestDeferredAuthorizationDecisionRacesAndDeadlineAreTerminal`
+and
+`integration/deferred_ps_authorization_test.go:TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition`.

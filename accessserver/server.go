@@ -1,0 +1,304 @@
+// Package accessserver implements the Access Server role for the immediate
+// four-party AAuth Core flow.
+package accessserver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	aauth "github.com/aauth-dev/auth-go"
+	"github.com/aauth-dev/auth-go/internal/httpapi"
+	"github.com/aauth-dev/auth-go/jose"
+	"github.com/aauth-dev/auth-go/signaturekey"
+)
+
+const maxRequestBytes = 1 << 20
+
+// Config supplies the protocol and deployment choices owned by an Access
+// Server. The immediate Core server has no deferred or companion behavior.
+type Config struct {
+	Issuer            string
+	SigningKey        jose.SigningKey
+	KeyResolver       signaturekey.KeyResolver
+	Clock             aauth.Clock
+	NewID             func() string
+	TrustPersonServer func(context.Context, string) error
+	Authorize         func(context.Context, AuthorizationRequest) (Decision, error)
+}
+
+// Agent is the verified agent identity presented to authorization policy.
+type Agent struct {
+	Identifier       string
+	Confirmation     jose.JWK
+	ExpiresAt        time.Time
+	AdditionalClaims map[string]json.RawMessage
+}
+
+// AuthorizationRequest is the verified Core context presented to resource
+// authorization policy. It contains ordinary values, not transport or
+// verification objects.
+type AuthorizationRequest struct {
+	PersonServer string
+	Resource     string
+	Subject      string
+	Tenant       string
+	Account      string
+	Scopes       []string
+	Agent        Agent
+}
+
+// Decision is the subset of requested scopes and lifetime granted by policy.
+type Decision struct {
+	Scopes   []string
+	Lifetime time.Duration
+}
+
+// Server is an immediate AAuth Access Server.
+type Server struct {
+	issuer            string
+	signingKey        jose.SigningKey
+	keyResolver       signaturekey.KeyResolver
+	clock             aauth.Clock
+	newID             func() string
+	trustPersonServer func(context.Context, string) error
+	authorize         func(context.Context, AuthorizationRequest) (Decision, error)
+}
+
+// New constructs an immediate Access Server.
+func New(config Config) (*Server, error) {
+	if err := aauth.ValidateServerIdentifier(config.Issuer); err != nil {
+		return nil, fmt.Errorf("accessserver: issuer: %w", err)
+	}
+	if _, err := config.SigningKey.PublicJWK().PublicKey(); err != nil {
+		return nil, fmt.Errorf("accessserver: signing key: %w", err)
+	}
+	if config.KeyResolver == nil {
+		return nil, errors.New("accessserver: key resolver is required")
+	}
+	if config.Clock == nil {
+		return nil, errors.New("accessserver: clock is required")
+	}
+	if config.NewID == nil {
+		return nil, errors.New("accessserver: token ID source is required")
+	}
+	if config.TrustPersonServer == nil {
+		return nil, errors.New("accessserver: Person Server trust policy is required")
+	}
+	if config.Authorize == nil {
+		return nil, errors.New("accessserver: authorization policy is required")
+	}
+	return &Server{
+		issuer: config.Issuer, signingKey: config.SigningKey,
+		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
+		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize,
+	}, nil
+}
+
+// Handler serves the token, metadata, and JWKS endpoints.
+func (server *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /token", server.handleToken)
+	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
+	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
+	return mux
+}
+
+func (server *Server) handleToken(response http.ResponseWriter, request *http.Request) {
+	prepared, err := signaturekey.PrepareRequest(request, server.clock, signaturekey.VerifyOptions{
+		RequiredComponents: []string{"content-type", "content-digest"},
+		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
+		MaxBodyBytes:       maxRequestBytes,
+	})
+	if err != nil {
+		writeProblem(response, http.StatusUnauthorized, "invalid_request", err)
+		return
+	}
+	personServer, discovery, _, ok := prepared.Credential().JWKSURI()
+	if !ok || discovery != aauth.PersonDiscoveryDocument {
+		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("person server proof is required"))
+		return
+	}
+	proof, err := prepared.VerifyJWKSURI(request.Context(), server.keyResolver)
+	if err != nil || proof.Signer() != personServer {
+		writeProblem(response, http.StatusUnauthorized, "invalid_request", err)
+		return
+	}
+	if err := server.trustPersonServer(request.Context(), personServer); err != nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		return
+	}
+
+	var input struct {
+		ResourceToken string          `json:"resource_token"`
+		AgentToken    string          `json:"agent_token"`
+		SubagentToken json.RawMessage `json:"subagent_token"`
+		UpstreamToken json.RawMessage `json:"upstream_token"`
+	}
+	if err := decodeJSON(request.Body, &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	for name, value := range map[string]json.RawMessage{
+		"subagent_token": input.SubagentToken, "upstream_token": input.UpstreamToken,
+	} {
+		if value != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", fmt.Errorf("accessserver: request member %q is not supported by the immediate flow", name))
+			return
+		}
+	}
+	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
+	agentClaims, err := aauth.VerifyAgentToken(request.Context(), input.AgentToken, server.keyResolver, verificationClock)
+	if err != nil {
+		writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
+		return
+	}
+	resourceClaims, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, verificationClock)
+	if err != nil {
+		writeTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
+		return
+	}
+	if agentClaims.ParentAgent != "" || agentClaims.PersonServer != personServer {
+		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("agent token context does not match the person server"))
+		return
+	}
+	if resourceClaims.Audience != server.issuer || resourceClaims.PersonServer != personServer ||
+		resourceClaims.Subject == "" || resourceClaims.PresentedJTI == "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token context does not match the person server or access server"))
+		return
+	}
+	if resourceClaims.Interaction != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token interaction requires the deferred flow"))
+		return
+	}
+	if resourceClaims.Account != "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
+		return
+	}
+	if resourceClaims.MissionS256 != "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("mission-bound resource tokens require mission verification"))
+		return
+	}
+	agentJKT, err := agentClaims.Confirmation.JWK.Thumbprint()
+	if err != nil || agentJKT != resourceClaims.AgentJKT {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the agent key"))
+		return
+	}
+	requestedScopes, err := aauth.ParseScope(resourceClaims.Scope)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+		return
+	}
+	decision, err := server.authorize(request.Context(), AuthorizationRequest{
+		PersonServer: personServer,
+		Resource:     resourceClaims.Issuer,
+		Subject:      resourceClaims.Subject,
+		Tenant:       resourceClaims.Tenant,
+		Account:      resourceClaims.Account,
+		Scopes:       append([]string(nil), requestedScopes...),
+		Agent: Agent{
+			Identifier: agentClaims.Subject, Confirmation: agentClaims.Confirmation.JWK,
+			ExpiresAt:        time.Unix(agentClaims.ExpiresAt, 0).UTC(),
+			AdditionalClaims: cloneClaims(agentClaims.AdditionalClaims),
+		},
+	})
+	if err != nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		return
+	}
+	if err := validateDecision(decision, requestedScopes); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
+	if agentExpiry := time.Unix(agentClaims.ExpiresAt, 0); agentExpiry.Before(expiresAt) {
+		expiresAt = agentExpiry
+	}
+	claims := aauth.AuthTokenClaims{
+		Issuer: server.issuer, DWK: aauth.AccessDiscoveryDocument,
+		Audience: resourceClaims.Issuer, JTI: server.newID(),
+		Confirmation: agentClaims.Confirmation,
+		IssuedAt:     proof.VerifiedAt().Unix(), ExpiresAt: expiresAt.Unix(),
+		Subject: resourceClaims.Subject, Scope: strings.Join(decision.Scopes, " "),
+		PersonServer: personServer, Account: resourceClaims.Account,
+		MissionS256: resourceClaims.MissionS256, Tenant: resourceClaims.Tenant,
+	}
+	authToken, err := aauth.MintAuthToken(server.signingKey, claims)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	writePrivateJSON(response, http.StatusOK, struct {
+		AuthToken string `json:"auth_token"`
+		ExpiresIn int64  `json:"expires_in"`
+	}{AuthToken: authToken, ExpiresIn: claims.ExpiresAt - claims.IssuedAt})
+}
+
+func cloneClaims(claims map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(claims) == 0 {
+		return nil
+	}
+	cloned := make(map[string]json.RawMessage, len(claims))
+	for name, value := range claims {
+		cloned[name] = append(json.RawMessage(nil), value...)
+	}
+	return cloned
+}
+
+func validateDecision(decision Decision, requested []string) error {
+	if decision.Lifetime <= 0 || decision.Lifetime > time.Hour || len(decision.Scopes) == 0 {
+		return errors.New("accessserver: authorization policy returned an invalid decision")
+	}
+	seen := make(map[string]struct{}, len(decision.Scopes))
+	for _, scope := range decision.Scopes {
+		if scope == "" || !slices.Contains(requested, scope) {
+			return errors.New("accessserver: authorization policy granted an unrequested scope")
+		}
+		if _, duplicate := seen[scope]; duplicate {
+			return errors.New("accessserver: authorization policy returned duplicate scopes")
+		}
+		seen[scope] = struct{}{}
+	}
+	return nil
+}
+
+func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Request) {
+	httpapi.WriteJSON(response, http.StatusOK, map[string]string{
+		"issuer":              server.issuer,
+		"auth_token_endpoint": strings.TrimRight(server.issuer, "/") + "/token",
+		"jwks_uri":            strings.TrimRight(server.issuer, "/") + "/.well-known/jwks.json",
+	})
+}
+
+func (server *Server) handleJWKS(response http.ResponseWriter, _ *http.Request) {
+	httpapi.WriteJSON(response, http.StatusOK, map[string]any{"keys": []jose.JWK{server.signingKey.PublicJWK()}})
+}
+
+func decodeJSON(reader io.Reader, destination any) error {
+	return httpapi.DecodeJSON(reader, maxRequestBytes, destination)
+}
+
+func writePrivateJSON(response http.ResponseWriter, status int, value any) {
+	response.Header().Set("Cache-Control", "no-store")
+	httpapi.WriteJSON(response, status, value)
+}
+
+func writeProblem(response http.ResponseWriter, status int, code string, cause error) {
+	response.Header().Set("Cache-Control", "no-store")
+	httpapi.WriteProblem(response, status, code, cause)
+}
+
+func writeTokenProblem(response http.ResponseWriter, err error, invalidCode, expiredCode string) {
+	var tokenFailure *aauth.TokenValidationError
+	if errors.As(err, &tokenFailure) && tokenFailure.Code == aauth.TokenValidationExpired {
+		writeProblem(response, http.StatusBadRequest, expiredCode, err)
+		return
+	}
+	writeProblem(response, http.StatusBadRequest, invalidCode, err)
+}

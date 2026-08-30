@@ -19,8 +19,8 @@ func TestCleanExternalModuleCanSignAndVerifyARequest(t *testing.T) {
 
 	goMod := "module example.com/signaturekey-consumer\n\n" +
 		"go 1.24.0\n\n" +
-		"require gitlab.com/sidecat-dev/aauth-go v0.0.0\n\n" +
-		"replace gitlab.com/sidecat-dev/aauth-go => " + filepath.ToSlash(moduleRoot) + "\n"
+		"require github.com/aauth-dev/auth-go v0.0.0\n\n" +
+		"replace github.com/aauth-dev/auth-go => " + filepath.ToSlash(moduleRoot) + "\n"
 	writeExternalModuleFile(t, externalModule, "go.mod", goMod)
 	writeExternalModuleFile(t, externalModule, "request_test.go", externalModuleRequestTest)
 
@@ -53,9 +53,9 @@ import (
 	"testing"
 	"time"
 
-	aauth "gitlab.com/sidecat-dev/aauth-go"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
-	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	aauth "github.com/aauth-dev/auth-go"
+	"github.com/aauth-dev/auth-go/jose"
+	"github.com/aauth-dev/auth-go/signaturekey"
 )
 
 type clock time.Time
@@ -78,7 +78,9 @@ func TestPublicPackagesCompose(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if err := signaturekey.SignRequest(request, key, credential, clock(now), signaturekey.SignOptions{}); err != nil {
+	if err := signaturekey.SignRequest(request, key, credential, clock(now), signaturekey.SignOptions{
+		AdditionalComponents: []string{"content-type"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := signaturekey.PrepareRequest(request, clock(now), signaturekey.VerifyOptions{
@@ -102,7 +104,7 @@ func TestPublicPackagesCompose(t *testing.T) {
 	}
 }
 
-func TestCoreVerificationReturnsSealedEvidence(t *testing.T) {
+func TestCoreVerificationReturnsTypedClaims(t *testing.T) {
 	now := time.Date(2026, 8, 29, 2, 30, 0, 0, time.UTC)
 	issuerPrivate := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x52}, ed25519.SeedSize))
 	issuerKey, err := jose.NewEd25519SigningKey("issuer-key", issuerPrivate)
@@ -129,24 +131,23 @@ func TestCoreVerificationReturnsSealedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := aauth.VerifyAgentToken(
+	claims, err := aauth.VerifyAgentToken(
 		context.Background(),
 		compact,
 		signaturekey.StaticKeyResolver{
-			"https://provider.example": {issuerKey.ID(): issuerKey.PublicJWK()},
+			{
+				Issuer: "https://provider.example",
+				DiscoveryDocument: aauth.AgentDiscoveryDocument,
+				KeyID: issuerKey.ID(),
+			}: issuerKey.PublicJWK(),
 		},
 		clock(now),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims, err := evidence.Claims()
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := evidence.EvidenceID()
-	if err != nil || identity.String() == "" || claims.Subject != "aauth:external@provider.example" {
-		t.Fatalf("evidence = %q, claims = %#v, error = %v", identity, claims, err)
+	if claims.Subject != "aauth:external@provider.example" {
+		t.Fatalf("claims = %#v", claims)
 	}
 }
 `

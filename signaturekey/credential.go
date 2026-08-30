@@ -6,9 +6,10 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 
+	"github.com/aauth-dev/auth-go/jose"
 	"github.com/dunglas/httpsfv"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 var discoveryNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,254}$`)
@@ -29,16 +30,15 @@ const (
 	SchemeJWT     Scheme = "jwt"
 	SchemeJWKSURI Scheme = "jwks_uri"
 	SchemeHWK     Scheme = "hwk"
-	SchemeJKTJWT  Scheme = "jkt-jwt"
-	SchemeSelfJWT Scheme = "self-jwt"
 )
 
 // Credential is one parsed Signature-Key member. Its parameters are copied
 // and can be interpreted only through scheme-specific accessors.
 type Credential struct {
-	scheme     Scheme
-	parameters map[string]string
-	header     string
+	scheme         Scheme
+	parameters     map[string]string
+	cacheRequested bool
+	header         string
 }
 
 // NewHWKCredential constructs the selected inline Ed25519 JWK profile.
@@ -65,36 +65,13 @@ func NewJWTCredential(compact string) (Credential, error) {
 	if compact == "" {
 		return Credential{}, errors.New("aauth: JWT credential is required")
 	}
+	if err := validateStructuredFieldString(compact); err != nil {
+		return Credential{}, fmt.Errorf("aauth: JWT credential: %w", err)
+	}
 	return Credential{
 		scheme:     SchemeJWT,
 		parameters: map[string]string{"jwt": compact},
 		header:     `sig=jwt;jwt=` + strconv.Quote(compact),
-	}, nil
-}
-
-// NewSelfJWTCredential carries one self-issued compact JWT. Verification of
-// its issuer claims remains a separate stage.
-func NewSelfJWTCredential(compact string) (Credential, error) {
-	if compact == "" {
-		return Credential{}, errors.New("aauth: self-jwt is required")
-	}
-	return Credential{
-		scheme:     SchemeSelfJWT,
-		parameters: map[string]string{"jwt": compact},
-		header:     `sig=self-jwt;jwt=` + strconv.Quote(compact),
-	}, nil
-}
-
-// NewJKTJWTCredential carries one self-issued durable-to-ephemeral key
-// delegation.
-func NewJKTJWTCredential(compact string) (Credential, error) {
-	if compact == "" {
-		return Credential{}, errors.New("aauth: jkt-jwt delegation is required")
-	}
-	return Credential{
-		scheme:     SchemeJKTJWT,
-		parameters: map[string]string{"jwt": compact},
-		header:     `sig=jkt-jwt;jwt=` + strconv.Quote(compact),
 	}, nil
 }
 
@@ -109,6 +86,13 @@ func NewJWKSURICredential(identifier, discoveryDocument, keyID string) (Credenti
 	if keyID == "" {
 		return Credential{}, errors.New("aauth: jwks_uri signing key is required")
 	}
+	for name, value := range map[string]string{
+		"signer": identifier, "discovery document": discoveryDocument, "signing key": keyID,
+	} {
+		if err := validateStructuredFieldString(value); err != nil {
+			return Credential{}, fmt.Errorf("aauth: jwks_uri %s: %w", name, err)
+		}
+	}
 	return Credential{
 		scheme: SchemeJWKSURI,
 		parameters: map[string]string{
@@ -122,13 +106,44 @@ func NewJWKSURICredential(identifier, discoveryDocument, keyID string) (Credenti
 	}, nil
 }
 
+func validateStructuredFieldString(value string) error {
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x20 || value[index] > 0x7e {
+			return errors.New("value is not representable as an RFC 8941 string")
+		}
+	}
+	return nil
+}
+
 // Scheme returns the credential's selected distribution scheme.
 func (credential Credential) Scheme() Scheme { return credential.scheme }
 
-// ParseCredential parses one or more Signature-Key field lines and returns
-// the selected sig member as an immutable credential.
+// CacheRequested reports whether a jwt credential asks the verifier to issue
+// a Signature-Key cache identifier.
+func (credential Credential) CacheRequested() bool { return credential.cacheRequested }
+
+// ParseCredential parses one or more Signature-Key field lines containing one
+// dictionary member and returns that member as an immutable credential.
 func ParseCredential(values []string) (Credential, error) {
-	return parseCredential(append([]string(nil), values...))
+	values = append([]string(nil), values...)
+	dictionary, members, err := parseDictionaryMembers(values, "Signature-Key")
+	if err != nil {
+		return Credential{}, err
+	}
+	if len(members) != 1 || len(dictionary.Names()) != 1 {
+		return Credential{}, errors.New("aauth: Signature-Key must contain exactly one member")
+	}
+	return parseCredentialForLabel(values, dictionary.Names()[0])
+}
+
+// ParseCredentialForLabel selects one Signature-Key dictionary member by the
+// application-selected HTTP Message Signature label. Other members are not
+// interpreted.
+func ParseCredentialForLabel(values []string, label string) (Credential, error) {
+	if label == "" {
+		return Credential{}, errors.New("aauth: signature label is required")
+	}
+	return parseCredentialForLabel(append([]string(nil), values...), label)
 }
 
 // InlineJWK returns an independent JWK for an hwk credential.
@@ -144,17 +159,12 @@ func (credential Credential) InlineJWK() (jose.JWK, bool) {
 	}, true
 }
 
-// JWT returns the opaque compact value carried by jwt, jkt-jwt, or self-jwt.
+// JWT returns the opaque compact value carried by a jwt credential.
 func (credential Credential) JWT() (string, bool) {
-	switch credential.scheme {
-	case SchemeJWT, SchemeJKTJWT, SchemeSelfJWT:
-		if credential.parameters == nil || credential.parameters["jwt"] == "" {
-			return "", false
-		}
-		return credential.parameters["jwt"], true
-	default:
+	if credential.scheme != SchemeJWT || credential.parameters == nil || credential.parameters["jwt"] == "" {
 		return "", false
 	}
+	return credential.parameters["jwt"], true
 }
 
 // JWKSURI returns the identifier, dot-well-known document, and key id carried
@@ -172,18 +182,18 @@ func (credential Credential) JWKSURI() (string, string, string, bool) {
 	return identifier, document, keyID, true
 }
 
-func parseCredential(values []string) (Credential, error) {
-	dictionary, err := httpsfv.UnmarshalDictionary(values)
+func parseCredentialForLabel(values []string, label string) (Credential, error) {
+	dictionary, members, err := parseDictionaryMembers(values, "Signature-Key")
 	if err != nil {
-		return Credential{}, fmt.Errorf("aauth: parse Signature-Key: %w", err)
+		return Credential{}, err
 	}
-	member, ok := dictionary.Get("sig")
+	member, ok := dictionary.Get(label)
 	if !ok {
-		return Credential{}, errors.New("aauth: Signature-Key must contain the sig label")
+		return Credential{}, fmt.Errorf("aauth: Signature-Key has no member for signature label %q", label)
 	}
 	item, ok := member.(httpsfv.Item)
 	if !ok {
-		return Credential{}, errors.New("aauth: Signature-Key sig member must be an Item")
+		return Credential{}, fmt.Errorf("aauth: Signature-Key member %q must be an Item", label)
 	}
 	scheme, ok := item.Value.(httpsfv.Token)
 	if !ok || scheme == "" {
@@ -194,8 +204,6 @@ func parseCredential(values []string) (Credential, error) {
 		SchemeJWT:     {"jwt"},
 		SchemeJWKSURI: {"id", "dwk", "kid"},
 		SchemeHWK:     {"kty", "crv", "x", "alg"},
-		SchemeJKTJWT:  {"jwt"},
-		SchemeSelfJWT: {"jwt"},
 	}[parsed.scheme]
 	if required == nil {
 		return Credential{}, newError(
@@ -203,8 +211,30 @@ func parseCredential(values []string) (Credential, error) {
 			fmt.Errorf("aauth: unsupported Signature-Key scheme %q", parsed.scheme),
 		)
 	}
+	selectedMember := members[label]
+	if countTopLevelDelimiters(selectedMember, ';') != len(item.Params.Names()) {
+		return Credential{}, fmt.Errorf("aauth: Signature-Key member %q has duplicate parameters", label)
+	}
+	allowed := make(map[string]struct{}, len(required)+1)
+	for _, name := range required {
+		allowed[name] = struct{}{}
+	}
+	if parsed.scheme == SchemeJWT {
+		allowed["cache"] = struct{}{}
+	}
 	for _, name := range item.Params.Names() {
+		if _, ok := allowed[name]; !ok {
+			return Credential{}, fmt.Errorf("aauth: Signature-Key %s has unexpected parameter %q", parsed.scheme, name)
+		}
 		value, _ := item.Params.Get(name)
+		if name == "cache" {
+			cache, ok := value.(bool)
+			if !ok || !cache || strings.Contains(selectedMember, ";cache=") {
+				return Credential{}, errors.New("aauth: Signature-Key jwt cache parameter must be bare true")
+			}
+			parsed.cacheRequested = true
+			continue
+		}
 		text, ok := value.(string)
 		if !ok || text == "" {
 			return Credential{}, fmt.Errorf("aauth: Signature-Key parameter %q must be a non-empty string", name)
@@ -217,9 +247,6 @@ func parseCredential(values []string) (Credential, error) {
 			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
 			Cause:              errors.New("aauth: Signature-Key hwk requires alg"),
 		}
-	}
-	if len(parsed.parameters) != len(required) {
-		return Credential{}, fmt.Errorf("aauth: Signature-Key %s has unexpected parameters", parsed.scheme)
 	}
 	for _, name := range required {
 		if parsed.parameters[name] == "" {
@@ -239,16 +266,152 @@ func parseCredential(values []string) (Credential, error) {
 			return Credential{}, &Error{Code: ErrorInvalidKey, Cause: fmt.Errorf("aauth: Signature-Key hwk: %w", err)}
 		}
 	}
-	parsed.header = values[0]
+	parsed.header = strings.Join(values, ", ")
 	return parsed, nil
 }
 
+func parseDictionaryMembers(values []string, field string) (*httpsfv.Dictionary, map[string]string, error) {
+	dictionary, err := httpsfv.UnmarshalDictionary(values)
+	if err != nil {
+		return nil, nil, fmt.Errorf("aauth: parse %s: %w", field, err)
+	}
+	segments, err := splitDictionaryMembers(strings.Join(values, ","))
+	if err != nil {
+		return nil, nil, fmt.Errorf("aauth: parse %s: %w", field, err)
+	}
+	members := make(map[string]string, len(segments))
+	for _, segment := range segments {
+		equals := strings.IndexByte(segment, '=')
+		if equals <= 0 {
+			return nil, nil, fmt.Errorf("aauth: parse %s: dictionary member has no value", field)
+		}
+		label := strings.TrimSpace(segment[:equals])
+		if _, duplicate := members[label]; duplicate {
+			return nil, nil, fmt.Errorf("aauth: parse %s: duplicate member %q", field, label)
+		}
+		members[label] = strings.TrimSpace(segment)
+	}
+	return dictionary, members, nil
+}
+
+func splitDictionaryMembers(value string) ([]string, error) {
+	var members []string
+	start := 0
+	quoted := false
+	escaped := false
+	binary := false
+	depth := 0
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if quoted {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if character == '\\' {
+				escaped = true
+				continue
+			}
+			if character == '"' {
+				quoted = false
+			}
+			continue
+		}
+		if binary {
+			if character == ':' {
+				binary = false
+			}
+			continue
+		}
+		switch character {
+		case '"':
+			quoted = true
+		case ':':
+			binary = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return nil, errors.New("dictionary member has an unmatched parenthesis")
+			}
+		case ',':
+			if depth == 0 {
+				member := strings.TrimSpace(value[start:index])
+				if member == "" {
+					return nil, errors.New("dictionary contains an empty member")
+				}
+				members = append(members, member)
+				start = index + 1
+			}
+		}
+	}
+	if quoted || escaped || binary || depth != 0 {
+		return nil, errors.New("dictionary member is unterminated")
+	}
+	member := strings.TrimSpace(value[start:])
+	if member == "" {
+		return nil, errors.New("dictionary contains an empty member")
+	}
+	members = append(members, member)
+	return members, nil
+}
+
+func countTopLevelDelimiters(value string, delimiter byte) int {
+	count := 0
+	quoted := false
+	escaped := false
+	binary := false
+	depth := 0
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if quoted {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if character == '\\' {
+				escaped = true
+				continue
+			}
+			if character == '"' {
+				quoted = false
+			}
+			continue
+		}
+		if binary {
+			if character == ':' {
+				binary = false
+			}
+			continue
+		}
+		switch character {
+		case '"':
+			quoted = true
+		case ':':
+			binary = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+		default:
+			if character == delimiter && depth == 0 {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 func validateHTTPSIdentifier(identifier string) error {
+	if strings.Contains(identifier, "#") {
+		return errors.New("identifier must not contain a fragment")
+	}
 	parsed, err := url.Parse(identifier)
 	if err != nil {
 		return err
 	}
-	if parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return errors.New("identifier must be an HTTPS URL without user information, query, or fragment")
 	}
 	if parsed.Path != "" && parsed.Path != "/" {

@@ -2,6 +2,7 @@ package signaturekey
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,15 +17,21 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"github.com/aauth-dev/auth-go/jose"
+	"github.com/dunglas/httpsfv"
 )
 
+// DefaultSignatureWindow is the Core request-proof freshness window.
 const DefaultSignatureWindow = 60 * time.Second
+
+const defaultMaxBodyBytes = 1 << 20
 
 // SignOptions controls optional RFC 9421 signature parameters.
 type SignOptions struct {
-	ExpiresAt time.Time
-	Nonce     string
+	ExpiresAt            time.Time
+	Nonce                string
+	AdditionalComponents []string
+	MaxBodyBytes         int64
 }
 
 // VerifyOptions declares the proof schemes and message components accepted by
@@ -33,7 +40,9 @@ type VerifyOptions struct {
 	RequiredComponents     []string
 	RequireExactComponents bool
 	AcceptedSchemes        []Scheme
+	SignatureLabel         string
 	SignatureWindow        time.Duration
+	MaxBodyBytes           int64
 }
 
 // PreparedRequest retains one exact parsed request proof before its selected
@@ -51,8 +60,7 @@ type PreparedRequest struct {
 	path        string
 }
 
-// VerifiedRequest is sealed evidence that one exact prepared request verified
-// under one exact public key.
+// VerifiedRequest contains one prepared request verified under one public key.
 type VerifiedRequest struct {
 	credential Credential
 	publicKey  jose.JWK
@@ -114,44 +122,6 @@ func SignJWKSURIRequestWithOptions(
 	return SignRequest(request, key, credential, clock, options)
 }
 
-// SignSelfJWTRequest verifies that the selected key signed the compact JWT,
-// then uses the same key for the HTTP Message Signature.
-func SignSelfJWTRequest(request *http.Request, key jose.SigningKey, compact string, clock Clock) error {
-	credential, err := NewSelfJWTCredential(compact)
-	if err != nil {
-		return err
-	}
-	parsed, err := jose.ParseCompact(compact)
-	if err != nil {
-		return fmt.Errorf("aauth: self-jwt: %w", err)
-	}
-	header := parsed.Header()
-	if header.Algorithm != jose.Ed25519Algorithm || header.KeyID == "" || header.KeyID != key.ID() {
-		return errors.New("aauth: self-jwt signing key does not match the token header")
-	}
-	if _, err := parsed.Verify(key.PublicJWK()); err != nil {
-		return fmt.Errorf("aauth: self-jwt signing key does not verify the token: %w", err)
-	}
-	return SignRequest(request, key, credential, clock, SignOptions{})
-}
-
-// SignJKTJWTRequest verifies the durable delegation and signs with its exact
-// delegated confirmation key.
-func SignJKTJWTRequest(request *http.Request, key jose.SigningKey, compact string, clock Clock) error {
-	credential, err := NewJKTJWTCredential(compact)
-	if err != nil {
-		return err
-	}
-	verified, err := VerifyJKTJWT(compact, clock)
-	if err != nil {
-		return err
-	}
-	if !verified.Confirmation.Equal(key.PublicJWK()) {
-		return errors.New("aauth: jkt-jwt delegated key does not match the request signing key")
-	}
-	return SignRequest(request, key, credential, clock, SignOptions{})
-}
-
 // SignRequest signs one request with the exact supplied Signature-Key
 // credential.
 func SignRequest(request *http.Request, key jose.SigningKey, credential Credential, clock Clock, options SignOptions) error {
@@ -170,36 +140,63 @@ func SignRequest(request *http.Request, key jose.SigningKey, credential Credenti
 			return errors.New("aauth: hwk credential does not match the request signing key")
 		}
 	}
-	request.Header.Set("Signature-Key", credential.header)
+	if options.MaxBodyBytes < 0 {
+		return errors.New("aauth: maximum request body size must not be negative")
+	}
+	candidate := request.Clone(request.Context())
+	candidate.Header = request.Header.Clone()
+	if candidate.Header == nil {
+		candidate.Header = make(http.Header)
+	}
+	candidate.Header.Set("Signature-Key", credential.header)
 	components := []string{"@method", "@authority", "@path"}
-	if request.URL.RawQuery != "" {
+	if request.URL.RawQuery != "" || request.URL.ForceQuery {
 		components = append(components, "@query")
 	}
-	if request.Header.Get("Authorization") != "" {
+	if candidate.Header.Get("Authorization") != "" {
 		components = append(components, "authorization")
 	}
-	if hasRequestBody(request) {
-		body, err := readRequestBody(request)
-		if err != nil {
+	for _, component := range options.AdditionalComponents {
+		if err := ValidateAdditionalComponent(component); err != nil {
 			return err
 		}
-		digest := sha256.Sum256(body)
-		request.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
-		components = append(components, "content-digest")
-		if request.Header.Get("Content-Type") != "" {
-			components = append(components, "content-type")
+	}
+	additional := uniqueLower(options.AdditionalComponents)
+	if len(additional) != len(options.AdditionalComponents) {
+		return errors.New("aauth: additional signature components contain a duplicate")
+	}
+	if contains(additional, "content-digest") {
+		var body []byte
+		if hasRequestBody(candidate) {
+			maxBodyBytes := options.MaxBodyBytes
+			if maxBodyBytes == 0 {
+				maxBodyBytes = defaultMaxBodyBytes
+			}
+			copied, err := copyRequestBodyForSigning(request, candidate, maxBodyBytes)
+			if err != nil {
+				return err
+			}
+			body = copied
 		}
+		digest := sha256.Sum256(body)
+		candidate.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
+	}
+	for _, component := range additional {
+		if contains(components, component) {
+			continue
+		}
+		components = append(components, component)
 	}
 	components = append(components, "signature-key")
 	now := clock.Now()
 	if !options.ExpiresAt.IsZero() && options.ExpiresAt.Unix() <= now.Unix() {
 		return errors.New("aauth: signature expires time must be after created time")
 	}
-	if strings.ContainsAny(options.Nonce, "\r\n") {
-		return errors.New("aauth: signature nonce must not contain line breaks")
+	if err := validateStructuredFieldString(options.Nonce); err != nil {
+		return fmt.Errorf("aauth: signature nonce: %w", err)
 	}
 	params := signatureParams(components, now.Unix(), options.ExpiresAt, options.Nonce)
-	base, err := signatureBase(request, components, params)
+	base, err := signatureBase(candidate, components, params)
 	if err != nil {
 		return err
 	}
@@ -207,9 +204,67 @@ func SignRequest(request *http.Request, key jose.SigningKey, credential Credenti
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Signature-Input", "sig="+params)
-	request.Header.Set("Signature", "sig=:"+base64.StdEncoding.EncodeToString(signature)+":")
+	candidate.Header.Set("Signature-Input", "sig="+params)
+	candidate.Header.Set("Signature", "sig=:"+base64.StdEncoding.EncodeToString(signature)+":")
+	request.Header = candidate.Header
 	return nil
+}
+
+// copyRequestBodyForSigning gives the temporary signing request an independent
+// body while leaving the caller's request readable on either success or error.
+func copyRequestBodyForSigning(original, candidate *http.Request, maxBodyBytes int64) ([]byte, error) {
+	if original.GetBody != nil {
+		body, err := original.GetBody()
+		if err != nil {
+			return nil, fmt.Errorf("aauth: copy request body: %w", err)
+		}
+		candidate.Body = body
+		return readRequestBody(candidate, maxBodyBytes)
+	}
+
+	originalContentLength := original.ContentLength
+	originalGetBody := original.GetBody
+	body, err := readRequestBody(original, maxBodyBytes)
+	original.ContentLength = originalContentLength
+	original.GetBody = originalGetBody
+	if err != nil {
+		return nil, err
+	}
+	candidate.Body = io.NopCloser(bytes.NewReader(body))
+	candidate.ContentLength = int64(len(body))
+	candidate.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return body, nil
+}
+
+// ValidateAdditionalComponent validates one lowercase HTTP field name that
+// this implementation can add to a request signature.
+func ValidateAdditionalComponent(component string) error {
+	if component == "" || strings.ToLower(component) != component {
+		return fmt.Errorf("aauth: additional signature component %q is invalid", component)
+	}
+	if err := validateStructuredFieldString(component); err != nil {
+		return fmt.Errorf("aauth: additional signature component %q: %w", component, err)
+	}
+	switch component {
+	case "signature", "signature-input", "signature-key":
+		return fmt.Errorf("aauth: additional signature component %q is managed by the signature profile", component)
+	}
+	for index := 0; index < len(component); index++ {
+		character := component[index]
+		if !isHTTPTokenCharacter(character) {
+			return fmt.Errorf("aauth: additional signature component %q is not a supported HTTP field name", component)
+		}
+	}
+	return nil
+}
+
+func isHTTPTokenCharacter(character byte) bool {
+	if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' {
+		return true
+	}
+	return strings.ContainsRune("!#$%&'*+-.^_`|~", rune(character))
 }
 
 // PrepareRequest validates and seals the key-independent parts of a signed
@@ -222,22 +277,29 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	if clock == nil {
 		return prepared, errors.New("aauth: clock is required")
 	}
-	signatureHeader := request.Header.Get("Signature")
-	signatureInput := request.Header.Get("Signature-Input")
-	credentialHeaders := request.Header.Values("Signature-Key")
-	if signatureHeader == "" || signatureInput == "" || len(credentialHeaders) == 0 {
-		return prepared, errors.New("aauth: Signature, Signature-Input, and Signature-Key headers are required")
+	if options.MaxBodyBytes < 0 {
+		return prepared, newError(ErrorInvalidRequest, errors.New("aauth: maximum request body size must not be negative"))
 	}
-	components, created, expires, params, err := parseSignatureInput(signatureInput)
+	maxBodyBytes := options.MaxBodyBytes
+	if maxBodyBytes == 0 {
+		maxBodyBytes = defaultMaxBodyBytes
+	}
+	signatureHeaders := request.Header.Values("Signature")
+	signatureInputs := request.Header.Values("Signature-Input")
+	credentialHeaders := request.Header.Values("Signature-Key")
+	if len(signatureHeaders) == 0 || len(signatureInputs) == 0 || len(credentialHeaders) == 0 {
+		return prepared, newError(
+			ErrorInvalidRequest,
+			errors.New("aauth: Signature, Signature-Input, and Signature-Key headers are required"),
+		)
+	}
+	label, components, created, expires, params, err := parseSignatureInput(signatureInputs, options.SignatureLabel)
 	if err != nil {
 		return prepared, newError(ErrorInvalidSignature, err)
 	}
 	required := append([]string{"@method", "@authority", "@path", "signature-key"}, options.RequiredComponents...)
-	if request.URL.RawQuery != "" {
+	if request.URL.RawQuery != "" || request.URL.ForceQuery {
 		required = append(required, "@query")
-	}
-	if hasRequestBody(request) {
-		required = append(required, "content-digest")
 	}
 	if request.Header.Get("Authorization") != "" {
 		if options.RequireExactComponents && !contains(options.RequiredComponents, "authorization") {
@@ -302,7 +364,7 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	if len(accepted) == 0 {
 		accepted = []Scheme{SchemeJWT}
 	}
-	credential, err := parseCredential(credentialHeaders)
+	credential, err := parseCredentialForLabel(credentialHeaders, label)
 	if err != nil {
 		var failure *Error
 		if errors.As(err, &failure) {
@@ -325,7 +387,11 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		}
 	}
 	if contains(components, "content-digest") {
-		if err := verifyContentDigest(request); err != nil {
+		if err := verifyContentDigest(request, maxBodyBytes); err != nil {
+			var limit *bodyLimitError
+			if errors.As(err, &limit) {
+				return prepared, newError(ErrorInvalidInput, err)
+			}
 			return prepared, newError(ErrorInvalidSignature, err)
 		}
 	}
@@ -333,7 +399,7 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	if err != nil {
 		return prepared, newError(ErrorInvalidSignature, err)
 	}
-	signature, err := parseSignature(signatureHeader)
+	signature, err := parseSignature(signatureHeaders, label)
 	if err != nil {
 		return prepared, newError(ErrorInvalidSignature, err)
 	}
@@ -365,7 +431,12 @@ func (prepared PreparedRequest) Credential() Credential {
 	for name, value := range prepared.credential.parameters {
 		parameters[name] = value
 	}
-	return Credential{scheme: prepared.credential.scheme, parameters: parameters, header: prepared.credential.header}
+	return Credential{
+		scheme:         prepared.credential.scheme,
+		parameters:     parameters,
+		cacheRequested: prepared.credential.cacheRequested,
+		header:         prepared.credential.header,
+	}
 }
 
 // Created returns the trusted created time parsed from Signature-Input.
@@ -416,6 +487,46 @@ func (prepared PreparedRequest) Verify(key jose.JWK) (VerifiedRequest, error) {
 		authority:  prepared.authority,
 		path:       prepared.path,
 	}, nil
+}
+
+// VerifyJWKSURI resolves and verifies a jwks_uri proof. A same-ID signature
+// failure triggers at most one resolver refresh, subject to the resolver's
+// refresh floor and cache policy.
+func (prepared PreparedRequest) VerifyJWKSURI(
+	ctx context.Context,
+	resolver KeyResolver,
+) (VerifiedRequest, error) {
+	if ctx == nil {
+		return VerifiedRequest{}, errors.New("aauth: verification context is required")
+	}
+	if resolver == nil {
+		return VerifiedRequest{}, errors.New("aauth: key resolver is required")
+	}
+	issuer, document, keyID, ok := prepared.credential.JWKSURI()
+	if !ok {
+		return VerifiedRequest{}, errors.New("aauth: prepared request does not use jwks_uri")
+	}
+	key, err := resolver.ResolveKey(ctx, issuer, document, keyID)
+	if err != nil {
+		return VerifiedRequest{}, NormalizeResolutionError(err)
+	}
+	verified, err := prepared.Verify(key)
+	if err == nil {
+		return verified, nil
+	}
+	var signatureFailure *Error
+	if !errors.As(err, &signatureFailure) || signatureFailure.Code != ErrorInvalidSignature {
+		return VerifiedRequest{}, err
+	}
+	refresher, ok := resolver.(KeyRefresher)
+	if !ok {
+		return VerifiedRequest{}, err
+	}
+	refreshed, refreshErr := refresher.RefreshKey(ctx, issuer, document, keyID)
+	if refreshErr != nil {
+		return VerifiedRequest{}, NormalizeResolutionError(refreshErr)
+	}
+	return prepared.Verify(refreshed)
 }
 
 func (verified VerifiedRequest) Scheme() Scheme        { return verified.credential.scheme }
@@ -515,124 +626,100 @@ func normalizedRequestAuthority(request *http.Request) (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
-func parseSignatureInput(header string) ([]string, int64, *int64, string, error) {
-	if !strings.HasPrefix(header, "sig=(") {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input must contain the sig label")
+func parseSignatureInput(values []string, selectedLabel string) (string, []string, int64, *int64, string, error) {
+	dictionary, members, err := parseDictionaryMembers(values, "Signature-Input")
+	if err != nil {
+		return "", nil, 0, nil, "", err
 	}
-	params := strings.TrimPrefix(header, "sig=")
-	end := strings.IndexByte(params, ')')
-	if end < 1 {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input has invalid parameters")
+	label := selectedLabel
+	if label == "" {
+		if len(members) != 1 || len(dictionary.Names()) != 1 {
+			return "", nil, 0, nil, "", errors.New("aauth: Signature-Input contains multiple signatures; select one label")
+		}
+		label = dictionary.Names()[0]
 	}
-	componentText := params[1:end]
-	var components []string
-	for len(strings.TrimSpace(componentText)) > 0 {
-		componentText = strings.TrimSpace(componentText)
-		if componentText[0] != '"' {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input component is not quoted")
+	member, ok := dictionary.Get(label)
+	if !ok {
+		return "", nil, 0, nil, "", fmt.Errorf("aauth: Signature-Input has no member for selected label %q", label)
+	}
+	innerList, ok := member.(httpsfv.InnerList)
+	if !ok {
+		return "", nil, 0, nil, "", errors.New("aauth: Signature-Input member must be an inner list")
+	}
+	if countTopLevelDelimiters(members[label], ';') != len(innerList.Params.Names()) {
+		return "", nil, 0, nil, "", errors.New("aauth: Signature-Input has duplicate parameters")
+	}
+	components := make([]string, 0, len(innerList.Items))
+	for _, item := range innerList.Items {
+		component, ok := item.Value.(string)
+		if !ok || component == "" || len(item.Params.Names()) != 0 {
+			return "", nil, 0, nil, "", errors.New("aauth: Signature-Input component is invalid")
 		}
-		endQuote := 1
-		for endQuote < len(componentText) {
-			if componentText[endQuote] == '"' && componentText[endQuote-1] != '\\' {
-				break
-			}
-			endQuote++
+		component = strings.ToLower(component)
+		if contains(components, component) {
+			return "", nil, 0, nil, "", fmt.Errorf("aauth: duplicate signed component %q", component)
 		}
-		if endQuote >= len(componentText) {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input component quote is unterminated")
-		}
-		value, err := strconv.Unquote(componentText[:endQuote+1])
-		if err != nil {
-			return nil, 0, nil, "", fmt.Errorf("aauth: decode Signature-Input component: %w", err)
-		}
-		value = strings.ToLower(value)
-		if contains(components, value) {
-			return nil, 0, nil, "", fmt.Errorf("aauth: duplicate signed component %q", value)
-		}
-		components = append(components, value)
-		componentText = componentText[endQuote+1:]
+		components = append(components, component)
 	}
 	if len(components) == 0 {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input covers no components")
+		return "", nil, 0, nil, "", errors.New("aauth: Signature-Input covers no components")
 	}
-	var created int64
+	createdValue, ok := innerList.Params.Get("created")
+	created, ok := createdValue.(int64)
+	if !ok || created <= 0 {
+		return "", nil, 0, nil, "", errors.New("aauth: Signature-Input created is required and must be a positive integer")
+	}
 	var expires *int64
-	seenCreated := false
-	seenNonce := false
-	remainder := params[end+1:]
-	for remainder != "" {
-		if !strings.HasPrefix(remainder, ";") {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input parameter separator is invalid")
+	if expiresValue, present := innerList.Params.Get("expires"); present {
+		value, ok := expiresValue.(int64)
+		if !ok || value <= 0 {
+			return "", nil, 0, nil, "", errors.New("aauth: Signature-Input expires is invalid")
 		}
-		remainder = remainder[1:]
-		parameterEnd := strings.IndexByte(remainder, ';')
-		parameter := remainder
-		if parameterEnd >= 0 {
-			parameter = remainder[:parameterEnd]
-			remainder = remainder[parameterEnd:]
-		} else {
-			remainder = ""
-		}
-		name, value, ok := strings.Cut(parameter, "=")
-		if !ok || name == "" || value == "" || strings.ContainsAny(name, " ,\t\r\n") || strings.ContainsAny(value, " ,\t\r\n") {
-			return nil, 0, nil, "", errors.New("aauth: Signature-Input parameter is invalid")
-		}
-		switch name {
-		case "created":
-			if seenCreated {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input created is duplicated")
-			}
-			parsed, err := strconv.ParseInt(value, 10, 64)
-			if err != nil || parsed <= 0 {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input created is invalid")
-			}
-			created, seenCreated = parsed, true
-		case "expires":
-			if expires != nil {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input expires is duplicated")
-			}
-			parsed, err := strconv.ParseInt(value, 10, 64)
-			if err != nil || parsed <= 0 {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input expires is invalid")
-			}
-			expires = &parsed
-		case "nonce":
-			if seenNonce {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input nonce is duplicated")
-			}
-			nonce, err := strconv.Unquote(value)
-			if err != nil || nonce == "" {
-				return nil, 0, nil, "", errors.New("aauth: Signature-Input nonce is invalid")
-			}
-			seenNonce = true
-		}
+		expires = &value
 	}
-	if !seenCreated {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input created is required")
+	if nonceValue, present := innerList.Params.Get("nonce"); present {
+		nonce, ok := nonceValue.(string)
+		if !ok || nonce == "" {
+			return "", nil, 0, nil, "", errors.New("aauth: Signature-Input nonce is invalid")
+		}
 	}
 	if expires != nil && *expires <= created {
-		return nil, 0, nil, "", errors.New("aauth: Signature-Input expires must be after created")
+		return "", nil, 0, nil, "", errors.New("aauth: Signature-Input expires must be after created")
 	}
-	return components, created, expires, params, nil
+	params, err := httpsfv.Marshal(innerList)
+	if err != nil {
+		return "", nil, 0, nil, "", fmt.Errorf("aauth: serialize Signature-Input: %w", err)
+	}
+	return label, components, created, expires, params, nil
 }
 
-func parseSignature(header string) ([]byte, error) {
-	const prefix = "sig=:"
-	if !strings.HasPrefix(header, prefix) || !strings.HasSuffix(header, ":") {
-		return nil, errors.New("aauth: Signature must contain the sig byte sequence")
-	}
-	encoded := strings.TrimSuffix(strings.TrimPrefix(header, prefix), ":")
-	signature, err := base64.StdEncoding.DecodeString(encoded)
+func parseSignature(values []string, expectedLabel string) ([]byte, error) {
+	dictionary, members, err := parseDictionaryMembers(values, "Signature")
 	if err != nil {
-		return nil, fmt.Errorf("aauth: decode HTTP signature: %w", err)
+		return nil, err
+	}
+	if len(members) == 0 {
+		return nil, errors.New("aauth: Signature contains no signatures")
+	}
+	member, ok := dictionary.Get(expectedLabel)
+	if !ok {
+		return nil, fmt.Errorf("aauth: Signature has no member for Signature-Input label %q", expectedLabel)
+	}
+	item, ok := member.(httpsfv.Item)
+	if !ok || len(item.Params.Names()) != 0 {
+		return nil, errors.New("aauth: Signature member must be an unparameterized byte sequence")
+	}
+	signature, ok := item.Value.([]byte)
+	if !ok {
+		return nil, errors.New("aauth: Signature member must be a byte sequence")
 	}
 	if len(signature) != ed25519.SignatureSize {
 		return nil, fmt.Errorf("aauth: Ed25519 HTTP signature has %d bytes", len(signature))
 	}
-	return signature, nil
+	return append([]byte(nil), signature...), nil
 }
 
-func verifyContentDigest(request *http.Request) error {
+func verifyContentDigest(request *http.Request, maxBodyBytes int64) error {
 	header := request.Header.Get("Content-Digest")
 	const prefix = "sha-256=:"
 	if !strings.HasPrefix(header, prefix) || !strings.HasSuffix(header, ":") {
@@ -642,7 +729,7 @@ func verifyContentDigest(request *http.Request) error {
 	if err != nil || len(expected) != sha256.Size {
 		return errors.New("aauth: Content-Digest sha-256 value is invalid")
 	}
-	body, err := readRequestBody(request)
+	body, err := readRequestBody(request, maxBodyBytes)
 	if err != nil {
 		return err
 	}
@@ -653,21 +740,59 @@ func verifyContentDigest(request *http.Request) error {
 	return nil
 }
 
-func readRequestBody(request *http.Request) ([]byte, error) {
+func readRequestBody(request *http.Request, maxBodyBytes int64) ([]byte, error) {
 	if !hasRequestBody(request) {
 		return nil, nil
 	}
-	body, err := io.ReadAll(request.Body)
+	original := request.Body
+	restorePartial := func(prefix []byte) {
+		if request.GetBody != nil {
+			if replacement, err := request.GetBody(); err == nil {
+				request.Body = replacement
+				return
+			}
+		}
+		request.Body = &prefixedReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(prefix), original),
+			closer: original,
+		}
+	}
+	reader := io.Reader(original)
+	if maxBodyBytes > 0 {
+		reader = io.LimitReader(original, maxBodyBytes+1)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
+		restorePartial(body)
 		return nil, fmt.Errorf("aauth: read request body: %w", err)
 	}
-	if err := request.Body.Close(); err != nil {
+	if maxBodyBytes > 0 && int64(len(body)) > maxBodyBytes {
+		restorePartial(body)
+		return nil, &bodyLimitError{maximum: maxBodyBytes}
+	}
+	if err := original.Close(); err != nil {
+		request.Body = io.NopCloser(bytes.NewReader(body))
 		return nil, fmt.Errorf("aauth: close request body: %w", err)
 	}
 	request.Body = io.NopCloser(bytes.NewReader(body))
 	request.ContentLength = int64(len(body))
 	request.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	return body, nil
+}
+
+type prefixedReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (reader *prefixedReadCloser) Close() error {
+	return reader.closer.Close()
+}
+
+type bodyLimitError struct{ maximum int64 }
+
+func (failure *bodyLimitError) Error() string {
+	return fmt.Sprintf("aauth: request body exceeds %d bytes", failure.maximum)
 }
 
 func hasRequestBody(request *http.Request) bool {

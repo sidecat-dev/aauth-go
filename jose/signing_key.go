@@ -8,8 +8,8 @@ import (
 	"io"
 )
 
-// SigningKey holds a caller-custodied protocol signing capability and its
-// public Ed25519 identity. It never exposes private key material.
+// SigningKey holds a caller-provided protocol signer and its public Ed25519
+// identity. It never exposes private key material.
 type SigningKey struct {
 	id        string
 	signer    crypto.Signer
@@ -18,7 +18,7 @@ type SigningKey struct {
 }
 
 // NewSigningKey constructs the mandatory Ed25519 profile around a
-// caller-custodied crypto.Signer.
+// caller-provided crypto.Signer.
 func NewSigningKey(id string, signer crypto.Signer) (SigningKey, error) {
 	if id == "" {
 		return SigningKey{}, errors.New("aauth: signing key id is required")
@@ -54,8 +54,8 @@ func NewSigningKey(id string, signer crypto.Signer) (SigningKey, error) {
 }
 
 // NewEd25519SigningKey constructs the mandatory Ed25519 profile from an
-// in-memory private key. Hosts with protected key custody should prefer
-// NewSigningKey.
+// in-memory private key. Hosts that keep keys behind a crypto.Signer should
+// prefer NewSigningKey.
 func NewEd25519SigningKey(id string, privateKey ed25519.PrivateKey) (SigningKey, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return SigningKey{}, fmt.Errorf("aauth: Ed25519 private key has %d bytes, want %d", len(privateKey), ed25519.PrivateKeySize)

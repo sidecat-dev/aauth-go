@@ -4,13 +4,12 @@ import (
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
-	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
+	"github.com/aauth-dev/auth-go/internal/jsonstrict"
 )
 
 // Header is the protected compact-JWS header used by current AAuth tokens.
@@ -21,7 +20,7 @@ type Header struct {
 }
 
 // ParsedCompact contains structurally parsed but unverified compact-JWS
-// material. Possession of this value establishes no cryptographic authority.
+// material.
 type ParsedCompact struct {
 	header       Header
 	protected    []byte
@@ -55,8 +54,8 @@ func (parsed ParsedCompact) Compact() string {
 }
 
 // ParseCompact structurally parses one three-part, raw-base64url compact JWS.
-// It validates unambiguous JSON and Ed25519 signature length but does not
-// establish trust.
+// It validates unambiguous JSON and, for Ed25519, signature length, but does
+// not establish trust.
 func ParseCompact(compact string) (ParsedCompact, error) {
 	var parsed ParsedCompact
 	parts := strings.Split(compact, ".")
@@ -82,7 +81,7 @@ func ParseCompact(compact string) (ParsedCompact, error) {
 	if err != nil {
 		return parsed, fmt.Errorf("aauth: decode token signature: %w", err)
 	}
-	if len(signature) != ed25519.SignatureSize {
+	if header.Algorithm == Ed25519Algorithm && len(signature) != ed25519.SignatureSize {
 		return parsed, fmt.Errorf("aauth: Ed25519 token signature has %d bytes", len(signature))
 	}
 	parsed = ParsedCompact{
@@ -167,44 +166,67 @@ func SignCompactProtected(key SigningKey, protected, payload []byte) (string, er
 }
 
 func decodeProtectedHeader(value []byte) (Header, *JWK, bool, error) {
+	var wire struct {
+		Algorithm string   `json:"alg"`
+		Type      string   `json:"typ"`
+		KeyID     string   `json:"kid"`
+		JWK       *JWK     `json:"jwk"`
+		Critical  []string `json:"crit"`
+		Unencoded *bool    `json:"b64"`
+	}
 	var header Header
 	if err := jsonstrict.RejectAmbiguousNames(value); err != nil {
+		return header, nil, false, err
+	}
+	if err := jsonstrict.RejectCaseVariants(value, &wire); err != nil {
 		return header, nil, false, err
 	}
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(value, &members); err != nil {
 		return header, nil, false, err
 	}
-	for name := range members {
-		switch name {
-		case "alg", "typ", "kid", "jwk":
-		default:
-			return header, nil, false, fmt.Errorf("unsupported protected header member %q", name)
-		}
-	}
-	if err := json.Unmarshal(value, &header); err != nil {
+	if err := json.Unmarshal(value, &wire); err != nil {
 		return header, nil, false, err
 	}
+	if _, present := members["crit"]; present {
+		if len(wire.Critical) == 0 {
+			return header, nil, false, errors.New("protected header crit must be a nonempty string array")
+		}
+		seen := make(map[string]struct{}, len(wire.Critical))
+		for _, name := range wire.Critical {
+			if name == "" {
+				return header, nil, false, errors.New("protected header crit contains an empty member name")
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return header, nil, false, fmt.Errorf("protected header crit repeats %q", name)
+			}
+			seen[name] = struct{}{}
+			if _, present := members[name]; !present {
+				return header, nil, false, fmt.Errorf("protected header crit names absent member %q", name)
+			}
+			return header, nil, false, fmt.Errorf("unsupported critical protected header member %q", name)
+		}
+	}
+	if _, present := members["b64"]; present {
+		return header, nil, false, errors.New("unsupported protected header member \"b64\"")
+	}
+	header = Header{Algorithm: wire.Algorithm, Type: wire.Type, KeyID: wire.KeyID}
 	_, hasKeyID := members["kid"]
-	encodedJWK, hasJWK := members["jwk"]
+	_, hasJWK := members["jwk"]
 	if hasKeyID && hasJWK {
 		return header, nil, false, errors.New("protected header contains both kid and jwk")
 	}
 	if !hasJWK {
 		return header, nil, hasKeyID, nil
 	}
-	var embeddedJWK *JWK
-	if err := json.Unmarshal(encodedJWK, &embeddedJWK); err != nil {
-		return header, nil, false, err
-	}
+	embeddedJWK := wire.JWK
 	if embeddedJWK == nil {
 		return header, nil, false, errors.New("protected header jwk must be an object")
 	}
 	return header, embeddedJWK, false, nil
 }
 
-// Verify verifies the compact JWS with the supplied Ed25519 JWK and returns a
-// sealed value only after successful verification.
+// Verify verifies the compact JWS with the supplied Ed25519 JWK.
 func (parsed ParsedCompact) Verify(key JWK) (VerifiedCompact, error) {
 	if parsed.header.Algorithm == "none" {
 		return VerifiedCompact{}, errors.New("aauth: alg none is forbidden")
@@ -230,27 +252,27 @@ func (parsed ParsedCompact) Verify(key JWK) (VerifiedCompact, error) {
 		return VerifiedCompact{}, errors.New("aauth: token signature is invalid")
 	}
 	verified := VerifiedCompact{
-		header:  parsed.header,
-		payload: append([]byte(nil), parsed.payload...),
-		compact: parsed.compact,
-		key:     key,
+		initialized: true,
+		header:      parsed.header,
+		payload:     append([]byte(nil), parsed.payload...),
+		compact:     parsed.compact,
+		key:         key,
 	}
-	verified.seal = verified.sealValue()
 	return verified, nil
 }
 
-// VerifiedCompact is cryptographic evidence for one exact compact JWS and
-// verification key. All authority-bearing state is sealed and unexported.
+// VerifiedCompact contains one verified compact JWS and its verification key.
+// Its fields are unexported and its accessors return copies.
 type VerifiedCompact struct {
-	header  Header
-	payload []byte
-	compact string
-	key     JWK
-	seal    [sha256.Size]byte
+	initialized bool
+	header      Header
+	payload     []byte
+	compact     string
+	key         JWK
 }
 
 func (verified VerifiedCompact) valid() bool {
-	return verified.seal != [sha256.Size]byte{} && verified.seal == verified.sealValue()
+	return verified.initialized
 }
 
 // Header returns the verified protected header.
@@ -293,19 +315,4 @@ func (verified VerifiedCompact) VerificationKey() (JWK, error) {
 		return JWK{}, errors.New("aauth: verified compact JWS is not valid")
 	}
 	return verified.key, nil
-}
-
-func (verified VerifiedCompact) sealValue() [sha256.Size]byte {
-	encoded, _ := json.Marshal(struct {
-		Header  Header `json:"header"`
-		Payload []byte `json:"payload"`
-		Compact string `json:"compact"`
-		Key     JWK    `json:"key"`
-	}{
-		Header:  verified.header,
-		Payload: verified.payload,
-		Compact: verified.compact,
-		Key:     verified.key,
-	})
-	return sha256.Sum256(encoded)
 }

@@ -13,7 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"github.com/aauth-dev/auth-go/internal/jsonstrict"
+	"github.com/aauth-dev/auth-go/jose"
 )
 
 const (
@@ -24,16 +25,19 @@ const (
 	defaultDiscoveryPositiveEntries = 1024
 	defaultDiscoveryNegativeEntries = 1024
 	defaultDiscoveryInFlightEntries = 128
+	defaultDiscoveryTimeout         = 10 * time.Second
 )
 
 // EgressAdmitter decides whether a discovery endpoint may be contacted.
 type EgressAdmitter func(ctx context.Context, endpoint string) error
 
+// HTTPKeyResolverConfig supplies network, time, egress, and capacity policy.
 type HTTPKeyResolverConfig struct {
-	Client *http.Client
-	Clock  Clock
-	Admit  EgressAdmitter
-	Limits HTTPKeyResolverLimits
+	Client  *http.Client
+	Clock   Clock
+	Admit   EgressAdmitter
+	Limits  HTTPKeyResolverLimits
+	Timeout time.Duration
 }
 
 // HTTPKeyResolverLimits bounds retained successful issuers, retained remote
@@ -49,10 +53,11 @@ type HTTPKeyResolverLimits struct {
 // path with explicit egress admission, bounded reads, caching, and the AAuth
 // one-minute unknown-kid refresh floor.
 type HTTPKeyResolver struct {
-	client *http.Client
-	clock  Clock
-	admit  EgressAdmitter
-	limits HTTPKeyResolverLimits
+	client  *http.Client
+	clock   Clock
+	admit   EgressAdmitter
+	limits  HTTPKeyResolverLimits
+	timeout time.Duration
 
 	mu       sync.Mutex
 	cache    map[discoveryCacheKey]discoveryCacheEntry
@@ -68,6 +73,7 @@ type discoveryCacheKey struct {
 type discoveryCacheEntry struct {
 	keys          map[string]jose.JWK
 	duplicateKeys map[string]struct{}
+	cacheable     bool
 	fetchedAt     time.Time
 	freshUntil    time.Time
 	discardAt     time.Time
@@ -78,6 +84,12 @@ type discoveryAttempt struct {
 	err error
 }
 
+type discoveryCachePolicy struct {
+	freshness time.Duration
+	storable  bool
+}
+
+// NewHTTPKeyResolver constructs a bounded metadata and JWKS resolver.
 func NewHTTPKeyResolver(config HTTPKeyResolverConfig) (*HTTPKeyResolver, error) {
 	if config.Client == nil || config.Clock == nil || config.Admit == nil {
 		return nil, errors.New("aauth: HTTP key resolver requires client, clock, and egress admitter")
@@ -86,11 +98,19 @@ func NewHTTPKeyResolver(config HTTPKeyResolverConfig) (*HTTPKeyResolver, error) 
 	if err != nil {
 		return nil, err
 	}
+	if config.Timeout < 0 {
+		return nil, errors.New("aauth: HTTP key resolver timeout must not be negative")
+	}
+	timeout := config.Timeout
+	if timeout == 0 {
+		timeout = defaultDiscoveryTimeout
+	}
 	return &HTTPKeyResolver{
 		client:   config.Client,
 		clock:    config.Clock,
 		admit:    config.Admit,
 		limits:   limits,
+		timeout:  timeout,
 		cache:    make(map[discoveryCacheKey]discoveryCacheEntry),
 		inflight: make(map[discoveryCacheKey]chan struct{}),
 		attempts: make(map[discoveryCacheKey]discoveryAttempt),
@@ -253,8 +273,21 @@ func (resolver *HTTPKeyResolver) resolveKey(
 			resolver.rememberDiscoveryFailureLocked(cacheKey, resolver.clock.Now(), fetchErr)
 		}
 		if fetchErr == nil {
-			delete(resolver.attempts, cacheKey)
-			resolver.rememberDiscoveryEntryLocked(cacheKey, resolver.clock.Now(), fetched)
+			fetchedAt := resolver.clock.Now()
+			if fetched.cacheable {
+				delete(resolver.attempts, cacheKey)
+				resolver.rememberDiscoveryEntryLocked(cacheKey, fetchedAt, fetched)
+			} else {
+				delete(resolver.cache, cacheKey)
+				resolver.rememberDiscoveryFailureLocked(
+					cacheKey,
+					fetchedAt,
+					resolutionError(
+						ResolutionUnavailable,
+						errors.New("aauth: discovery response forbids reuse and the one-minute refresh floor is active"),
+					),
+				)
+			}
 			entry = fetched
 		} else if cached {
 			entry = resolver.cache[cacheKey]
@@ -384,13 +417,25 @@ func (resolver *HTTPKeyResolver) fetch(
 	discoveryDocument string,
 ) (discoveryCacheEntry, error) {
 	metadataEndpoint := issuer + "/.well-known/" + discoveryDocument
-	metadataBytes, metadataFreshness, err := resolver.fetchJSON(ctx, metadataEndpoint)
+	metadataBytes, metadataPolicy, err := resolver.fetchJSON(ctx, metadataEndpoint)
 	if err != nil {
 		return discoveryCacheEntry{}, err
+	}
+	if err := jsonstrict.RejectAmbiguousNames(metadataBytes); err != nil {
+		return discoveryCacheEntry{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: validate discovery metadata JSON: %w", err),
+		)
 	}
 	var metadata struct {
 		Issuer  string `json:"issuer"`
 		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := jsonstrict.RejectCaseVariants(metadataBytes, &metadata); err != nil {
+		return discoveryCacheEntry{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: validate discovery metadata fields: %w", err),
+		)
 	}
 	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
 		return discoveryCacheEntry{}, resolutionError(
@@ -416,12 +461,24 @@ func (resolver *HTTPKeyResolver) fetch(
 			fmt.Errorf("aauth: discovery jwks_uri: %w", err),
 		)
 	}
-	keySetBytes, keySetFreshness, err := resolver.fetchJSON(ctx, metadata.JWKSURI)
+	keySetBytes, keySetPolicy, err := resolver.fetchJSON(ctx, metadata.JWKSURI)
 	if err != nil {
 		return discoveryCacheEntry{}, err
 	}
+	if err := jsonstrict.RejectAmbiguousNames(keySetBytes); err != nil {
+		return discoveryCacheEntry{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: validate JWKS JSON: %w", err),
+		)
+	}
 	var keySet struct {
 		Keys []jose.JWK `json:"keys"`
+	}
+	if err := jsonstrict.RejectCaseVariants(keySetBytes, &keySet); err != nil {
+		return discoveryCacheEntry{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: validate JWKS fields: %w", err),
+		)
 	}
 	if err := json.Unmarshal(keySetBytes, &keySet); err != nil {
 		return discoveryCacheEntry{}, resolutionError(
@@ -452,37 +509,40 @@ func (resolver *HTTPKeyResolver) fetch(
 		keys[key.Kid] = key
 	}
 
-	freshness := metadataFreshness
-	if keySetFreshness < freshness {
-		freshness = keySetFreshness
+	freshness := metadataPolicy.freshness
+	if keySetPolicy.freshness < freshness {
+		freshness = keySetPolicy.freshness
 	}
 	now := resolver.clock.Now()
 	return discoveryCacheEntry{
 		keys:          keys,
 		duplicateKeys: duplicateKeys,
+		cacheable:     metadataPolicy.storable && keySetPolicy.storable,
 		fetchedAt:     now,
 		freshUntil:    now.Add(freshness),
 		discardAt:     now.Add(maximumDiscoveryRetention),
 	}, nil
 }
 
-func (resolver *HTTPKeyResolver) fetchJSON(ctx context.Context, endpoint string) ([]byte, time.Duration, error) {
+func (resolver *HTTPKeyResolver) fetchJSON(ctx context.Context, endpoint string) ([]byte, discoveryCachePolicy, error) {
+	ctx, cancel := context.WithTimeout(ctx, resolver.timeout)
+	defer cancel()
 	if err := validateDiscoveryURL(endpoint); err != nil {
-		return nil, 0, resolutionError(ResolutionInvalid, err)
+		return nil, discoveryCachePolicy{}, resolutionError(ResolutionInvalid, err)
 	}
 	if err := resolver.admit(ctx, endpoint); err != nil {
 		code := ResolutionDenied
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			code = ResolutionUnavailable
 		}
-		return nil, 0, resolutionError(
+		return nil, discoveryCachePolicy{}, resolutionError(
 			code,
 			fmt.Errorf("aauth: discovery egress admission failed for %q: %w", endpoint, err),
 		)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, 0, resolutionError(
+		return nil, discoveryCachePolicy{}, resolutionError(
 			ResolutionInvalid,
 			fmt.Errorf("aauth: create discovery request: %w", err),
 		)
@@ -497,12 +557,12 @@ func (resolver *HTTPKeyResolver) fetchJSON(ctx context.Context, endpoint string)
 	if err != nil {
 		var classified *ResolutionError
 		if errors.As(err, &classified) && classified.Code == ResolutionDenied {
-			return nil, 0, resolutionError(
+			return nil, discoveryCachePolicy{}, resolutionError(
 				ResolutionDenied,
 				fmt.Errorf("aauth: discovery connection denied for %q: %w", endpoint, err),
 			)
 		}
-		return nil, 0, resolutionError(
+		return nil, discoveryCachePolicy{}, resolutionError(
 			ResolutionUnavailable,
 			fmt.Errorf("aauth: fetch discovery endpoint %q: %w", endpoint, err),
 		)
@@ -510,28 +570,31 @@ func (resolver *HTTPKeyResolver) fetchJSON(ctx context.Context, endpoint string)
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8<<10))
-		return nil, 0, resolutionError(
+		return nil, discoveryCachePolicy{}, resolutionError(
 			ResolutionUnavailable,
 			fmt.Errorf("aauth: discovery endpoint %q returned %s", endpoint, response.Status),
 		)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumDiscoveryDocument+1))
 	if err != nil {
-		return nil, 0, resolutionError(
+		return nil, discoveryCachePolicy{}, resolutionError(
 			ResolutionUnavailable,
 			fmt.Errorf("aauth: read discovery endpoint %q: %w", endpoint, err),
 		)
 	}
 	if len(body) > maximumDiscoveryDocument {
-		return nil, 0, resolutionError(
+		return nil, discoveryCachePolicy{}, resolutionError(
 			ResolutionInvalid,
 			fmt.Errorf("aauth: discovery endpoint %q exceeds %d bytes", endpoint, maximumDiscoveryDocument),
 		)
 	}
-	return body, cacheFreshness(response.Header.Get("Cache-Control")), nil
+	return body, parseDiscoveryCachePolicy(strings.Join(response.Header.Values("Cache-Control"), ",")), nil
 }
 
 func validateDiscoveryURL(endpoint string) error {
+	if strings.Contains(endpoint, "#") {
+		return errors.New("URL must not contain a fragment")
+	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return fmt.Errorf("parse URL: %w", err)
@@ -545,13 +608,20 @@ func validateDiscoveryURL(endpoint string) error {
 	return nil
 }
 
-func cacheFreshness(cacheControl string) time.Duration {
+func parseDiscoveryCachePolicy(cacheControl string) discoveryCachePolicy {
 	directives := strings.Split(cacheControl, ",")
+	noCache := false
 	for _, directive := range directives {
 		name, _, _ := strings.Cut(strings.TrimSpace(strings.ToLower(directive)), "=")
-		if name == "no-store" || name == "no-cache" {
-			return 0
+		if name == "no-store" {
+			return discoveryCachePolicy{}
 		}
+		if name == "no-cache" {
+			noCache = true
+		}
+	}
+	if noCache {
+		return discoveryCachePolicy{storable: true}
 	}
 	for _, directive := range directives {
 		name, value, found := strings.Cut(strings.TrimSpace(strings.ToLower(directive)), "=")
@@ -564,9 +634,9 @@ func cacheFreshness(cacheControl string) time.Duration {
 		}
 		duration := time.Duration(seconds) * time.Second
 		if duration > maximumDiscoveryRetention {
-			return maximumDiscoveryRetention
+			duration = maximumDiscoveryRetention
 		}
-		return duration
+		return discoveryCachePolicy{freshness: duration, storable: true}
 	}
-	return defaultDiscoveryFreshness
+	return discoveryCachePolicy{freshness: defaultDiscoveryFreshness, storable: true}
 }

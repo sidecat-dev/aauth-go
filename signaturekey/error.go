@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aauth-dev/auth-go/jose"
 	"github.com/dunglas/httpsfv"
 )
 
@@ -46,6 +47,47 @@ func NewError(code ErrorCode, cause error) *Error {
 // adapters may safely disclose. The cause remains local-only.
 func NewPublicError(code ErrorCode, detail string, cause error) *Error {
 	return &Error{Code: code, publicDetail: detail, Cause: cause}
+}
+
+// NormalizeError maps discovery and protocol validation failures to one
+// Signature-Error code. fallback applies when err has no more specific class.
+func NormalizeError(err error, fallback ErrorCode) *Error {
+	if err == nil {
+		return nil
+	}
+	var signatureFailure *Error
+	if errors.As(err, &signatureFailure) {
+		return signatureFailure
+	}
+	var provided interface{ SignatureKeyError() *Error }
+	if errors.As(err, &provided) {
+		if normalized := provided.SignatureKeyError(); normalized != nil {
+			return normalized
+		}
+	}
+	var resolution *ResolutionError
+	if errors.As(err, &resolution) {
+		code := ErrorInvalidKey
+		switch resolution.Code {
+		case ResolutionUnknown:
+			code = ErrorUnknownKey
+		case ResolutionIssuerMissing:
+			code = ErrorIssuerMissing
+		case ResolutionIssuerMismatch:
+			code = ErrorIssuerMismatch
+		case ResolutionUnsupportedAlgorithm:
+			code = ErrorUnsupportedAlgorithm
+		}
+		normalized := NewError(code, err)
+		if code == ErrorUnsupportedAlgorithm {
+			normalized.AcceptedAlgorithms = []string{jose.Ed25519Algorithm}
+		}
+		return normalized
+	}
+	if fallback == "" {
+		fallback = ErrorInvalidSignature
+	}
+	return NewError(fallback, err)
 }
 
 // PublicDetail returns the fixed detail explicitly marked safe for a remote
