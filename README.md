@@ -349,6 +349,9 @@ verified but unsupported requirement while preserving its pending continuation.
 Clarification answers and initial payment continuation are not implemented yet.
 An initial `503` is returned as a caller-owned response without `Pending`; the
 caller applies its `Retry-After` and repeats `BeginExchange` explicitly.
+Role handlers use the registered `500 server_error` for internal store or
+retained-result failures. They reserve `503` for a genuinely retryable response
+that supplies an explicit `Retry-After` contract.
 
 ## Complete a person-token interaction
 
