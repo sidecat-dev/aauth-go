@@ -7,7 +7,9 @@ PS authorization, one four-party federated flow, Person-Server-hosted
 person-token interaction, both specified deliveries of the auth-token
 requirement (`401` retry and Resource-held `202`), bounded three-party
 auth-token revocation with explicit re-authorization, and the HTTP
-Signature-Key behavior those paths need.
+Signature-Key behavior those paths need. It also implements one immediate,
+missionless, PS-authorized call from an authorized Resource to a second
+Resource.
 
 It is not a complete AAuth implementation, an interoperability claim, or an
 official conformance suite. The supported boundary is explicit so applications
@@ -48,6 +50,8 @@ It covers:
   authorization policy callbacks;
 - copy-safe additional agent and auth-token claims at the policy seams that
   can use them;
+- one explicit two-Resource call chain that carries the exact upstream auth
+  token through a separate Person Server policy path;
 - host-supplied person-token, PS-authorization, issued-auth-token,
   Resource-auth-token-status, Resource-session, and held-invocation store
   contracts; and
@@ -61,9 +65,9 @@ It covers:
 | `jose` | The selected Ed25519 JWK and compact-JWS profile |
 | `signaturekey` | HTTP request proof, Signature-Key credentials, and issuer-key discovery |
 | `agentprovider` | Agent-token issuance plus Agent Provider metadata and JWKS |
-| `agent` | Explicit Core calls, including direct Agent identity, Resource-session use, PS consent, one interaction poll, and one held-invocation poll; no hidden loops or retries |
-| `personserver` | Immediate person-token issuance plus either direct PS authorization or AS federation; optional domain-specific stores support person-token interaction, deferred three-party consent, and exact issued-token revocation |
-| `resource` | Direct Agent or Person identity protection, Resource-owned opaque sessions, explicit PS or federated authorization, resource-token issuance, observed-token revocation, and held-request completion |
+| `agent` | Explicit Core calls, including direct Agent identity, Resource-session use, PS consent, one two-Resource call chain, one interaction poll, and one held-invocation poll; no hidden loops or retries |
+| `personserver` | Immediate person-token issuance plus direct PS authorization, one bounded call-chain policy path, or AS federation; optional domain-specific stores support person-token interaction, deferred three-party consent, and exact issued-token revocation |
+| `resource` | Direct Agent or Person identity protection, Resource-owned opaque sessions, explicit PS or federated authorization, exact verified auth-token access for a call-chain intermediary, resource-token issuance, observed-token revocation, and held-request completion |
 | `accessserver` | Person-Server-authenticated policy and auth-token issuance |
 
 Each role is an ordinary Go package. Applications supply keys, clocks, HTTP
@@ -263,6 +267,76 @@ The Agent uses the same explicit `PersonToken`, `Authorize`, `Exchange`, and
 selects the verified issuer role; the Agent separately binds `iss` to the
 resource-token audience. Each explicit Resource constructor enforces the role
 it accepts. This remains unambiguous when a PS and AS share one origin.
+
+## Use immediate two-Resource call chaining
+
+The implemented call-chain path starts after Resource 1 has verified an auth
+token from the original Agent. Resource 1 reads that exact compact token from
+the protected request context, then acts as an Agent with its own Agent token
+and proof key:
+
+```go
+upstream, ok := resource.AuthTokenFromContext(request.Context())
+if !ok {
+	return errors.New("verified upstream auth token is unavailable")
+}
+
+personResult, err := intermediary.PersonToken(ctx, agent.PersonTokenRequest{
+	Resource:      resourceTwoID,
+	UpstreamToken: upstream,
+})
+if err != nil {
+	return err
+}
+personToken, ok := personResult.Token()
+if !ok {
+	return errors.New("call-chain interaction is not implemented")
+}
+
+resourceToken, err := intermediary.Authorize(ctx, agent.AuthorizeRequest{
+	Resource: resourceTwoID, PersonToken: personToken,
+	UpstreamToken: upstream, Scopes: []string{"inventory.reserve"},
+})
+if err != nil {
+	return err
+}
+authToken, err := intermediary.Exchange(ctx, agent.ExchangeRequest{
+	ResourceToken: resourceToken, UpstreamToken: upstream,
+})
+if err != nil {
+	return err
+}
+response, err := intermediary.Do(ctx, agent.Call{
+	Request: downstreamRequest, AuthToken: authToken, UpstreamToken: upstream,
+})
+```
+
+`UpstreamToken` selects the Person Server from the verified token's `ps`; the
+intermediary Agent token's own `ps` does not select the chain. The upstream
+token's `aud` must equal the intermediary Agent token's `iss`. Resource 1 must
+therefore expose Agent Provider metadata at the same identifier it uses as a
+Resource in this path. The upstream token remains bound to the original
+Agent's key; Resource 1 signs its downstream requests with its own, different
+key.
+
+The Person Server enables this path explicitly with
+`PSAuthorizationConfig.CallChaining`. Its separate `BindPerson` callback maps
+the verified upstream person to a new Resource-2-directed subject. Its
+separate `Authorize` callback decides Resource 2's scopes and lifetime. Both
+callbacks receive an independent copy of the verified upstream claims. The
+Person Server retains the upstream `(iss, jti)` and SHA-256 of the exact
+compact token with the new person-token record, then requires the same bytes
+on the later `/token` request.
+
+This section documents one immediate downstream hop. The same seam can be
+composed again for another same-PS hop, but repeated-hop behavior is untested
+and unclaimed. The upstream token must have been issued by the same Person
+Server in PS-authorization mode. Missions, accounts, sub-agents, interaction
+relay, and Access Server federation are not implemented. The upstream and
+downstream directed subjects must differ; downstream scope is an independent
+policy decision and need not be a subset of upstream scope. Verified
+upstream-token failures use the provisional `invalid_upstream_token` error
+because Core registers no upstream-token error.
 
 ## Use parent-mediated sub-agent authorization
 
@@ -652,6 +726,19 @@ Expected output:
 AAuth four-party flow complete: person-123 has records.read
 ```
 
+The call-chaining example authorizes an original Agent at Resource 1, then has
+Resource 1 act as an Agent for one independent Resource 2 operation:
+
+```sh
+go run ./example/callchaining
+```
+
+Expected output:
+
+```text
+AAuth two-resource call chain complete: orders.fulfill used inventory.reserve.
+```
+
 The sub-agent example shows the parent making both Person Server calls while
 the child makes both Resource calls:
 
@@ -672,14 +759,20 @@ stores. They are executable documentation, not deployment templates.
 
 The current implementation does not provide a general deferred-authorization
 engine, interaction relay, clarification, automatic polling, token renewal or
-general token revocation, call chaining, R3, Events, Budgets, Bootstrap, or the
-complete interoperability demo profile. Its
+general token revocation, federated call chaining, tested repeated-hop call
+chaining, R3, Events, Budgets, Bootstrap, or the complete interoperability
+demo profile. Its
 narrow deferred paths are person-token interaction, three-party PS consent,
 Resource-managed interaction, and Resource-held auth-token delivery. Its
 revocation path is limited to a PS-issued three-party auth token already
 recognized by the Resource. Parent-mediated sub-agent authorization is
 immediate-only; sub-agent enrollment, recursive delegation, delegated
 interaction, and parent-grant revocation remain outside the current path.
+Call chaining is evidenced for one immediate, missionless, accountless,
+PS-authorized downstream hop. The seam has no depth marker and can be composed
+again, but repeated same-PS hops are untested and unclaimed. It does not
+combine with a sub-agent or either supported Person Server interaction store;
+ordinary interaction selectors are bypassed for chained requests.
 
 The first companion seam after the remaining Core paths is one MCP-only R3
 direct grant. [Architecture](ARCHITECTURE.md) assigns the other companion
@@ -702,10 +795,10 @@ only the active key, so a host that rotates keys while interactions are
 outstanding must provide a resolver and JWKS policy that retains the required
 prior key.
 
-Each role rejects known mission, delegation, chaining, unsupported deferred,
-R3, and Budget inputs that this cut cannot evaluate. Unknown additive JSON
-members remain available for future extensions instead of forcing a protocol
-version flag day.
+Each role rejects known mission, delegation, federated or interaction chaining,
+unsupported deferred, R3, and Budget inputs that this cut cannot evaluate.
+Unknown additive JSON members remain available for future extensions instead
+of forcing a protocol version flag day.
 
 The HTTP key resolver admits each metadata and JWKS URL through caller policy,
 rejects redirects, and bounds response sizes, cache entries, concurrent work,

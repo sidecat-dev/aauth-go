@@ -43,6 +43,103 @@ but does not assign it an error code.
 and
 `integration/subagent_authorization_test.go:TestCurrentCoreParentMediatedSubagentImmediatePSAuthorization`.
 
+## Immediate call chaining uses token trust plus explicit chain bindings
+
+**Source:** AAuth Core, `Auth Token Verification`, `Upstream Token
+Verification`, and `Call Chaining`.
+
+Generic auth-token verification includes Resource request-context checks that
+do not apply when a Person Server receives an upstream token in a request
+signed by an intermediary. This implementation verifies the upstream JWT's
+type, issuer key, and time first. It then requires a Person-role token with
+`iss == ps` equal to the receiving Person Server and `aud` equal to the
+intermediary Agent token's `iss`.
+
+The upstream token remains bound to the original Agent's key. It is not
+required to match the intermediary's request key. The intermediary proves its
+own identity separately with its Agent token and HTTP signature. Because Core
+compares upstream `aud` with Agent-token `iss`, this path composes Resource 1
+and its Agent Provider at one identifier. The intermediary Agent token's own
+`ps` does not route or authorize the chain.
+
+The same-PS restriction is the complete trusted-issuer policy for this first
+path. It does not claim the general “previously brokered or authorized to
+extend” relationship.
+
+**Executable examples:**
+`agent/call_chaining_test.go:TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly`
+and
+`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`.
+
+## Both Person Server calls bind the same exact upstream token
+
+**Source:** AAuth Core, `Person Token Endpoint`, `PS Token Endpoint`, and
+`Call Chaining`.
+
+Core places `upstream_token` on both Person Server requests but does not define
+how the two presentations relate. This implementation commits the upstream
+token's `(iss, jti)` and SHA-256 of its exact compact serialization with the
+downstream person-token record. The later `/token` request must repeat both the
+same reference and the same bytes. A separately signed token with equal claims
+does not match.
+
+The store retains the reference and digest, not the compact token. Direct and
+parent-mediated person-token records leave both fields empty. A half-populated
+record is invalid.
+
+**Executable example:**
+`personserver/call_chaining_test.go:TestCallChainingRetainedUpstreamRejectsSubstitutionAndByteRewrite`.
+
+## Call-chain policy derives a new person context and independent grant
+
+**Source:** AAuth Core, `Person Token Endpoint`, `Directed Identifiers Across
+a Chain`, `Call Chaining`, and `Agent-Person Binding`.
+
+`CallChaining.BindPerson` receives copy-safe verified upstream claims and maps
+the upstream directed subject to the person context used for Resource 2. It
+must return a different directed subject; the server refuses a copied value.
+This host policy is the missing person-directory boundary. The ordinary
+`BindPerson` callback is not used for a chained request.
+
+`CallChaining.Authorize` receives another independent copy and decides the
+downstream scope and lifetime. The scope need not be a subset of the upstream
+scope. The upstream token must be current at each Person Server request, but
+the downstream person or auth token is not capped by the upstream expiration;
+Core does not state such a derived-token ceiling.
+
+The special person selection applies only when a Resource intermediary
+presents a verified upstream token. Requests without one keep the ordinary
+one-Agent/one-person binding.
+
+**Executable example:**
+`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`.
+
+## Unsupported valid call-chain branches fail as server errors
+
+**Source:** AAuth Core, `Call Chaining`, `Interaction Chaining`, `Sub-Agents`,
+and `Token Endpoint Error Codes`.
+
+The first evidenced call-chain path is immediate, missionless, accountless,
+and PS-authorized. Missions, accounts, sub-agents, and Access Server federation
+are not partially processed. Once their otherwise valid context is recognized,
+the Person Server returns `500 server_error` before chain policy,
+pending-state creation, or issuance. Ordinary interaction selectors are never
+called for a chained request; `CallChaining` is an explicitly immediate policy
+pair.
+
+The public seam has no depth marker. A Resource can compose it again for
+another same-PS hop, but repeated-hop behavior is untested and unclaimed; it is
+not classified as an unsupported branch.
+
+An invalid verified upstream token provisionally returns
+`400 invalid_upstream_token`; Core has no registered upstream-token error. A
+malformed parameter or a configuration without explicit `CallChaining`
+support returns `400 invalid_request`. These names can change when Core defines
+the missing error contract.
+
+**Executable example:**
+`personserver/call_chaining_test.go:TestCallChainingRefusesUnsupportedValidBranchesAndIsolatesOrdinaryInteractions`.
+
 ## A federated Access Server verifies both Agent tokens
 
 **Source:** AAuth Core, `PS-to-AS Token Request`, `Auth Token Delivery`, and

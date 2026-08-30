@@ -129,7 +129,7 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("held invocation store returned an invalid execution claim"))
 		return
 	}
-	applicationResponse := server.executeHeldInvocation(snapshot, authToken, proof.PublicKey(), proof.VerifiedAt())
+	applicationResponse := server.executeHeldInvocation(snapshot, compact, authToken, proof.PublicKey(), proof.VerifiedAt())
 	retained, err := server.heldInvocations.Retain(context.Background(), execution, applicationResponse)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -210,6 +210,7 @@ func (server *Server) verifyHeldCompletion(
 
 func (server *Server) executeHeldInvocation(
 	snapshot heldRequestSnapshot,
+	compact string,
 	claims aauth.AuthTokenClaims,
 	requestKey jose.JWK,
 	verifiedAt time.Time,
@@ -237,6 +238,7 @@ func (server *Server) executeHeldInvocation(
 		PersonServer: claims.PersonServer, Subject: claims.Subject, Tenant: claims.Tenant,
 		Scope: scopes, Confirmation: requestKey, AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
+	executionContext = context.WithValue(executionContext, authTokenContextKey{}, compact)
 	applicationRequest, err := snapshot.request(executionContext, principal)
 	if err != nil {
 		return server.heldInternalFailure()

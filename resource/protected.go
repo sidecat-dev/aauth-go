@@ -216,7 +216,9 @@ func (server *Server) serveAuthTokenProtected(
 		Confirmation:     claims.Confirmation.JWK,
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
-	server.protected.ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), authPrincipalContextKey{}, principal)))
+	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
+	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
+	server.protected.ServeHTTP(response, request.WithContext(protectedContext))
 }
 
 func (server *Server) servePersonTokenChallenge(

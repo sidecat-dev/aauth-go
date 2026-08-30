@@ -188,6 +188,9 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		if input.SubagentToken != "" {
 			return ExchangeResult{}, fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
 		}
+		if input.UpstreamToken != "" {
+			return ExchangeResult{}, fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
+		}
 		pending, err := client.pendingExchangeResponse(response, input.PersonServer, input.ResourceToken, resourceClaims, PendingExchange{})
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
@@ -328,16 +331,13 @@ func (client *Client) exchangeRequest(
 			return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, fmt.Errorf("capabilities: %w", err)
 		}
 	}
-	credential, err := client.personServerRequestBinding(ctx, input.SubagentToken)
+	credential, err := client.personServerRequestBinding(
+		ctx, input.PersonServer, input.SubagentToken, input.UpstreamToken,
+	)
 	if err != nil {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
-	if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {
-		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, fmt.Errorf("person server: %w", err)
-	}
-	if input.PersonServer != client.agentClaims.PersonServer {
-		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("person server does not match agent token")
-	}
+	input.PersonServer = credential.personServer
 	if input.ResourceToken == "" {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource token is required")
 	}
@@ -371,8 +371,12 @@ func (client *Client) exchangeRequest(
 	body, err := json.Marshal(struct {
 		ResourceToken string   `json:"resource_token"`
 		SubagentToken string   `json:"subagent_token,omitempty"`
+		UpstreamToken string   `json:"upstream_token,omitempty"`
 		Capabilities  []string `json:"capabilities,omitempty"`
-	}{ResourceToken: input.ResourceToken, SubagentToken: input.SubagentToken, Capabilities: input.Capabilities})
+	}{
+		ResourceToken: input.ResourceToken, SubagentToken: input.SubagentToken,
+		UpstreamToken: input.UpstreamToken, Capabilities: input.Capabilities,
+	})
 	if err != nil {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}

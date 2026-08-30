@@ -24,9 +24,11 @@ type InitialCall struct {
 }
 
 // Call supplies one exact protected HTTP request and its auth token.
+// UpstreamToken is local call-chain context and is never sent to the Resource.
 type Call struct {
-	Request   *http.Request
-	AuthToken string
+	Request       *http.Request
+	AuthToken     string
+	UpstreamToken string
 }
 
 // AuthTokenPoll supplies one verified held invocation and the auth token that
@@ -654,8 +656,10 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	if claims.MissionS256 != "" {
 		return nil, fail(operation, errors.New("mission-bound auth tokens require the mission flow"))
 	}
-	if !client.acceptsPersonServer(claims.PersonServer) {
-		return nil, fail(operation, errors.New("auth-token person server does not match agent token"))
+	if err := client.acceptIssuedPersonServer(
+		ctx, call.UpstreamToken, claims.PersonServer, time.Unix(claims.IssuedAt, 0),
+	); err != nil {
+		return nil, fail(operation, fmt.Errorf("auth-token person server: %w", err))
 	}
 	if claims.ExpiresAt > client.agentClaims.ExpiresAt {
 		return nil, fail(operation, errors.New("auth-token lifetime exceeds the agent token"))

@@ -94,6 +94,9 @@ func (client *Client) personTokenResponse(
 		if input.SubagentToken != "" {
 			return PersonTokenResult{}, &SubagentInteractionUnsupportedError{Operation: "person-token issuance"}
 		}
+		if input.UpstreamToken != "" {
+			return PersonTokenResult{}, &CallChainingInteractionUnsupportedError{Operation: "person-token issuance"}
+		}
 		pending, err := client.pendingPersonToken(response, input, PendingPersonToken{})
 		if err != nil {
 			return PersonTokenResult{}, err

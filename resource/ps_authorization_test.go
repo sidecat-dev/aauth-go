@@ -68,6 +68,7 @@ func TestPSAuthorizationResourceIssuesToPersonServerAndAcceptsOnlyPSAuthTokens(t
 		{Issuer: accessIssuer, DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}:       accessKey.PublicJWK(),
 	}
 	var principals []AuthPrincipal
+	var presentedAuthTokens []string
 	server, err := NewPSAuthorization(PSAuthorizationConfig{
 		Issuer: resourceIssuer, SigningKey: resourceKey, KeyResolver: resolver,
 		Clock: clock, NewID: func() string { return "three-party-resource-token" },
@@ -75,11 +76,17 @@ func TestPSAuthorizationResourceIssuesToPersonServerAndAcceptsOnlyPSAuthTokens(t
 		RequiredScopes:    func(*http.Request) []string { return []string{"records.read"} },
 		ResolvePerson:     func(context.Context, PersonIdentity, PersonContext) error { return nil },
 		Protected: http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			compact, ok := AuthTokenFromContext(request.Context())
+			if !ok || compact == "" {
+				t.Error("protected request did not carry its verified auth token")
+				return
+			}
 			principal, ok := AuthPrincipalFromContext(request.Context())
 			if !ok {
 				t.Error("protected request did not carry AuthPrincipal")
 				return
 			}
+			presentedAuthTokens = append(presentedAuthTokens, compact)
 			principals = append(principals, principal)
 		}),
 	})
@@ -118,8 +125,8 @@ func TestPSAuthorizationResourceIssuesToPersonServerAndAcceptsOnlyPSAuthTokens(t
 	protected := signedRequest(t, clock, agentKey, psAuthToken, http.MethodGet, resourceIssuer+"/records", "")
 	protectedResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(protectedResponse, protected)
-	if protectedResponse.Code != http.StatusOK || len(principals) != 1 {
-		t.Fatalf("PS auth = %d %s principals=%d", protectedResponse.Code, protectedResponse.Body.String(), len(principals))
+	if protectedResponse.Code != http.StatusOK || len(principals) != 1 || len(presentedAuthTokens) != 1 || presentedAuthTokens[0] != psAuthToken {
+		t.Fatalf("PS auth = %d %s principals=%d auth_tokens=%q", protectedResponse.Code, protectedResponse.Body.String(), len(principals), presentedAuthTokens)
 	}
 	if principal := principals[0]; principal.PersonServer != personIssuer || principal.Subject != "person-1" ||
 		principal.Tenant != "tenant-1" || len(principal.Scope) != 1 || principal.Scope[0] != "records.read" {
@@ -138,6 +145,42 @@ func TestPSAuthorizationResourceIssuesToPersonServerAndAcceptsOnlyPSAuthTokens(t
 		t.Fatalf("AS auth = %d %s principals=%d", wrongTopologyResponse.Code, wrongTopologyResponse.Body.String(), len(principals))
 	}
 
+	wrongProof := signedRequest(t, clock, accessKey, psAuthToken, http.MethodGet, resourceIssuer+"/records", "")
+	wrongProofResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wrongProofResponse, wrongProof)
+	if wrongProofResponse.Code == http.StatusOK || len(presentedAuthTokens) != 1 {
+		t.Fatalf("wrong proof = %d %s auth_tokens=%q", wrongProofResponse.Code, wrongProofResponse.Body.String(), presentedAuthTokens)
+	}
+
+	wrongAudienceToken := mintAuthToken(t, personKey, agentKey.PublicJWK(), now, aauth.AuthTokenClaims{
+		Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument, Audience: "https://other-resource.example",
+		JTI: "wrong-audience-auth-token", PersonServer: personIssuer, Subject: "person-1", Scope: "records.read",
+	})
+	wrongAudience := signedRequest(t, clock, agentKey, wrongAudienceToken, http.MethodGet, resourceIssuer+"/records", "")
+	wrongAudienceResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wrongAudienceResponse, wrongAudience)
+	if wrongAudienceResponse.Code == http.StatusOK || len(presentedAuthTokens) != 1 {
+		t.Fatalf("wrong audience = %d %s auth_tokens=%q", wrongAudienceResponse.Code, wrongAudienceResponse.Body.String(), presentedAuthTokens)
+	}
+
+	wrongScopeToken := mintAuthToken(t, personKey, agentKey.PublicJWK(), now, aauth.AuthTokenClaims{
+		Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument, Audience: resourceIssuer,
+		JTI: "wrong-scope-auth-token", PersonServer: personIssuer, Subject: "person-1", Scope: "records.admin",
+	})
+	wrongScope := signedRequest(t, clock, agentKey, wrongScopeToken, http.MethodGet, resourceIssuer+"/records", "")
+	wrongScopeResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wrongScopeResponse, wrongScope)
+	if wrongScopeResponse.Code == http.StatusOK || len(presentedAuthTokens) != 1 {
+		t.Fatalf("wrong scope = %d %s auth_tokens=%q", wrongScopeResponse.Code, wrongScopeResponse.Body.String(), presentedAuthTokens)
+	}
+
+	malformedToken := signedRequest(t, clock, agentKey, "not-a-compact-token", http.MethodGet, resourceIssuer+"/records", "")
+	malformedResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(malformedResponse, malformedToken)
+	if malformedResponse.Code == http.StatusOK || len(presentedAuthTokens) != 1 {
+		t.Fatalf("malformed token = %d %s auth_tokens=%q", malformedResponse.Code, malformedResponse.Body.String(), presentedAuthTokens)
+	}
+
 	challenge := signedRequest(t, clock, agentKey, personToken, http.MethodGet, resourceIssuer+"/records", "")
 	challengeResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(challengeResponse, challenge)
@@ -148,6 +191,17 @@ func TestPSAuthorizationResourceIssuesToPersonServerAndAcceptsOnlyPSAuthTokens(t
 	}
 	if challengeClaims.Audience != personIssuer || len(principals) != 1 {
 		t.Fatalf("challenge resource token = %#v; principals=%d", challengeClaims, len(principals))
+	}
+}
+
+func TestAuthTokenFromContextRequiresVerifiedResourceContext(t *testing.T) {
+	t.Parallel()
+
+	if compact, ok := AuthTokenFromContext(nil); ok || compact != "" {
+		t.Fatalf("nil context token = %q, present=%t", compact, ok)
+	}
+	if compact, ok := AuthTokenFromContext(context.Background()); ok || compact != "" {
+		t.Fatalf("ordinary context token = %q, present=%t", compact, ok)
 	}
 }
 

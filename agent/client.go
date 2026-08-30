@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	aauth "aauth-go"
 	"aauth-go/internal/jsonstrict"
@@ -49,6 +50,7 @@ type Client struct {
 }
 
 type personServerCredential struct {
+	personServer string
 	requestKey   jose.JWK
 	expiresAt    int64
 	expirySource string
@@ -89,33 +91,55 @@ func (failure *SubagentInteractionUnsupportedError) Error() string {
 	return "aauth agent: parent-mediated sub-agent " + failure.Operation + " does not support interaction"
 }
 
+// CallChainingInteractionUnsupportedError reports a call-chain request that
+// reached a deferred response. The current call-chain path is immediate and
+// does not create or hide an interaction relay.
+type CallChainingInteractionUnsupportedError struct {
+	Operation string
+}
+
+func (failure *CallChainingInteractionUnsupportedError) Error() string {
+	if failure == nil || failure.Operation == "" {
+		return "aauth agent: call-chaining interaction is not supported"
+	}
+	return "aauth agent: call-chaining " + failure.Operation + " does not support interaction"
+}
+
 // PersonTokenRequest names the Person Server and Resource for one directed
 // person token. A top-level parent sets SubagentToken to request a token bound
-// to that one-level sub-agent's key.
+// to that one-level sub-agent's key. A Resource acting as an Agent instead sets
+// UpstreamToken; that verified token selects the Person Server, so
+// PersonServer may be empty or must name the same server.
 type PersonTokenRequest struct {
 	PersonServer  string
 	Resource      string
 	SubagentToken string
+	UpstreamToken string
 }
 
 // AuthorizeRequest asks a resource to issue one token for the exact directed
-// person token and scopes.
+// person token and scopes. UpstreamToken is local call-chain context; it is
+// verified but is not sent to the Resource.
 type AuthorizeRequest struct {
-	Resource    string
-	PersonToken string
-	Scopes      []string
-	Header      http.Header
+	Resource      string
+	PersonToken   string
+	UpstreamToken string
+	Scopes        []string
+	Header        http.Header
 }
 
 // ExchangeRequest carries one exact resource token and optional request-body
 // capabilities to its Person Server. A top-level parent sets SubagentToken
-// when the resource token is bound to that child. Exchange remains
-// immediate-only; BeginExchange exposes a verified pending continuation only
-// for a direct top-level request.
+// when the resource token is bound to that child. A Resource acting as an
+// Agent instead sets UpstreamToken; that verified token selects the Person
+// Server, so PersonServer may be empty or must name the same server. Exchange
+// remains immediate-only; BeginExchange exposes a verified pending
+// continuation only for a direct top-level request.
 type ExchangeRequest struct {
 	PersonServer  string
 	ResourceToken string
 	SubagentToken string
+	UpstreamToken string
 	Capabilities  []string
 }
 
@@ -183,16 +207,13 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 	if ctx == nil {
 		return PersonTokenResult{}, fail(operation, errors.New("context is required"))
 	}
-	credential, err := client.personServerRequestBinding(ctx, input.SubagentToken)
+	credential, err := client.personServerRequestBinding(
+		ctx, input.PersonServer, input.SubagentToken, input.UpstreamToken,
+	)
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
-	if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {
-		return PersonTokenResult{}, fail(operation, fmt.Errorf("person server: %w", err))
-	}
-	if input.PersonServer != client.agentClaims.PersonServer {
-		return PersonTokenResult{}, fail(operation, errors.New("person server does not match agent token"))
-	}
+	input.PersonServer = credential.personServer
 	if err := aauth.ValidateServerIdentifier(input.Resource); err != nil {
 		return PersonTokenResult{}, fail(operation, fmt.Errorf("resource: %w", err))
 	}
@@ -203,7 +224,8 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 	body, err := json.Marshal(struct {
 		Resource      string `json:"resource"`
 		SubagentToken string `json:"subagent_token,omitempty"`
-	}{Resource: input.Resource, SubagentToken: input.SubagentToken})
+		UpstreamToken string `json:"upstream_token,omitempty"`
+	}{Resource: input.Resource, SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken})
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
@@ -247,8 +269,10 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if err != nil {
 		return "", fail(operation, err)
 	}
-	if !client.acceptsPersonServer(person.Issuer) {
-		return "", fail(operation, errors.New("person-token issuer does not match agent person server"))
+	if err := client.acceptIssuedPersonServer(
+		ctx, input.UpstreamToken, person.Issuer, time.Unix(person.IssuedAt, 0),
+	); err != nil {
+		return "", fail(operation, fmt.Errorf("person-token issuer: %w", err))
 	}
 	if person.MissionS256 != "" {
 		return "", fail(operation, errors.New("mission-bound person tokens require the mission flow"))
@@ -324,6 +348,9 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	if response.StatusCode == http.StatusAccepted && input.SubagentToken != "" {
 		return "", fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
 	}
+	if response.StatusCode == http.StatusAccepted && input.UpstreamToken != "" {
+		return "", fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
+	}
 	if response.StatusCode != http.StatusOK {
 		return "", fail(operation, responseFailure(response))
 	}
@@ -346,14 +373,49 @@ func (client *Client) requireDirectPersonServerCaller() error {
 
 func (client *Client) personServerRequestBinding(
 	ctx context.Context,
+	personServer string,
 	subagentToken string,
+	upstreamToken string,
 ) (personServerCredential, error) {
+	if subagentToken != "" && upstreamToken != "" {
+		return personServerCredential{}, errors.New("subagent_token and upstream_token are mutually exclusive")
+	}
+	if client.agentClaims.ParentAgent != "" {
+		return personServerCredential{}, errors.New("sub-agent must not call the Person Server directly")
+	}
+	if upstreamToken != "" {
+		upstream, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
+		if err != nil {
+			return personServerCredential{}, err
+		}
+		if personServer != "" {
+			if err := aauth.ValidateServerIdentifier(personServer); err != nil {
+				return personServerCredential{}, fmt.Errorf("person server: %w", err)
+			}
+			if personServer != upstream.PersonServer {
+				return personServerCredential{}, errors.New("person server does not match upstream token")
+			}
+		}
+		return personServerCredential{
+			personServer: upstream.PersonServer,
+			requestKey:   client.signingKey.PublicJWK(),
+			expiresAt:    client.agentClaims.ExpiresAt,
+			expirySource: "agent token",
+		}, nil
+	}
 	if err := client.requireDirectPersonServerCaller(); err != nil {
 		return personServerCredential{}, err
 	}
+	if err := aauth.ValidateServerIdentifier(personServer); err != nil {
+		return personServerCredential{}, fmt.Errorf("person server: %w", err)
+	}
+	if personServer != client.agentClaims.PersonServer {
+		return personServerCredential{}, errors.New("person server does not match agent token")
+	}
 	if subagentToken == "" {
 		return personServerCredential{
-			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
+			personServer: personServer,
+			requestKey:   client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
 			expirySource: "agent token",
 		}, nil
 	}
@@ -377,8 +439,57 @@ func (client *Client) personServerRequestBinding(
 		expirySource = "sub-agent token"
 	}
 	return personServerCredential{
-		requestKey: claims.Confirmation.JWK, expiresAt: expiryCeiling, expirySource: expirySource,
+		personServer: personServer,
+		requestKey:   claims.Confirmation.JWK, expiresAt: expiryCeiling, expirySource: expirySource,
 	}, nil
+}
+
+func (client *Client) verifyCallChainUpstreamToken(ctx context.Context, compact string) (aauth.AuthTokenClaims, error) {
+	return client.verifyCallChainUpstreamTokenAt(ctx, compact, client.clock.Now())
+}
+
+func (client *Client) verifyCallChainUpstreamTokenAt(
+	ctx context.Context,
+	compact string,
+	verifiedAt time.Time,
+) (aauth.AuthTokenClaims, error) {
+	verificationClock := aauth.ClockFunc(func() time.Time { return verifiedAt })
+	claims, err := aauth.VerifyAuthToken(ctx, compact, client.keyResolver, verificationClock)
+	if err != nil {
+		return aauth.AuthTokenClaims{}, fmt.Errorf("verify upstream token: %w", err)
+	}
+	if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != claims.PersonServer {
+		return aauth.AuthTokenClaims{}, errors.New("upstream token was not issued by its Person Server")
+	}
+	if claims.Audience != client.agentClaims.Issuer {
+		return aauth.AuthTokenClaims{}, errors.New("upstream token audience does not match intermediary Resource")
+	}
+	if claims.MissionS256 != "" || claims.Account != "" {
+		return aauth.AuthTokenClaims{}, errors.New("mission- or account-bound call chaining is not supported")
+	}
+	return claims, nil
+}
+
+func (client *Client) acceptIssuedPersonServer(
+	ctx context.Context,
+	upstreamToken string,
+	personServer string,
+	issuedAt time.Time,
+) error {
+	if upstreamToken == "" {
+		if !client.acceptsPersonServer(personServer) {
+			return errors.New("does not match agent token")
+		}
+		return nil
+	}
+	upstream, err := client.verifyCallChainUpstreamTokenAt(ctx, upstreamToken, issuedAt)
+	if err != nil {
+		return err
+	}
+	if personServer != upstream.PersonServer {
+		return errors.New("does not match upstream token")
+	}
+	return nil
 }
 
 func (client *Client) acceptsPersonServer(personServer string) bool {
@@ -398,7 +509,8 @@ func (client *Client) verifyAuthTokenForResource(
 		compact,
 		resource,
 		personServerCredential{
-			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
+			personServer: resource.PersonServer,
+			requestKey:   client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
 			expirySource: "agent token",
 		},
 	)

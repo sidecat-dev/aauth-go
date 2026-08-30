@@ -74,6 +74,10 @@ type PSAuthorizationConfig struct {
 	BindPerson                    func(context.Context, PersonTokenRequest) (Person, error)
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	Authorize                     func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	// CallChaining explicitly enables one immediate PS-authorized downstream
+	// hop. Existing policies never receive an upstream authorization unless this
+	// separate policy pair is configured.
+	CallChaining *CallChainingConfig
 	// RequireAuthorizationInteraction optionally selects host-authenticated
 	// consent after the complete three-party request has been verified.
 	RequireAuthorizationInteraction func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
@@ -83,6 +87,14 @@ type PSAuthorizationConfig struct {
 	// Revocation optionally retains issued auth-token routing and enables one
 	// explicit Resource revocation attempt.
 	Revocation *AuthTokenRevocationConfig
+}
+
+// CallChainingConfig maps a verified upstream person to a new directed person
+// and applies the independent downstream authorization policy. It does not
+// enable deferred interaction or Access Server federation.
+type CallChainingConfig struct {
+	BindPerson func(context.Context, PersonTokenRequest) (Person, error)
+	Authorize  func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 }
 
 // AuthorizationDecision is the scope and lifetime granted by one
@@ -101,6 +113,9 @@ type PersonTokenRequest struct {
 	Resource                 string
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
+	// Upstream is nonnil only for explicit call chaining. It is an independent
+	// copy of the verified PS-issued auth-token claims.
+	Upstream *aauth.AuthTokenClaims
 }
 
 // Person is the directed identity and lifetime selected by person-binding
@@ -125,6 +140,9 @@ type AuthorizationRequest struct {
 	Capabilities             []string
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
+	// Upstream is nonnil only for explicit call chaining. It is an independent
+	// copy of the same verified authorization bound at person-token issuance.
+	Upstream *aauth.AuthTokenClaims
 }
 
 // PersonTokenRecord is the retained binding used to validate a later resource
@@ -143,6 +161,11 @@ type PersonTokenRecord struct {
 	Confirmation  jose.JWK
 	ExpiresAt     time.Time
 	RetainUntil   time.Time
+	// UpstreamTokenReference and UpstreamTokenSHA256 bind a chained person
+	// token to the exact PS-issued authorization presented at both Person
+	// Server calls. Direct and parent-mediated records leave both zero.
+	UpstreamTokenReference aauth.TokenReference
+	UpstreamTokenSHA256    [32]byte
 }
 
 // TokenStore retains and resolves person-token bindings. Implementations must
@@ -170,6 +193,8 @@ type Server struct {
 	consent                         func(context.Context, AuthorizationRequest) error
 	authorizationMode               authorizationMode
 	authorize                       func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	bindChainedPerson               func(context.Context, PersonTokenRequest) (Person, error)
+	authorizeChained                func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	requireAuthorizationInteraction func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
 	authorizationInteractions       DeferredAuthorizationStore
 	issuedAuthTokens                IssuedAuthTokenStore
@@ -238,6 +263,10 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	if config.Authorize == nil && config.RequireAuthorizationInteraction == nil {
 		return nil, errors.New("personserver: immediate or deferred authorization policy is required")
 	}
+	if config.CallChaining != nil &&
+		(config.CallChaining.BindPerson == nil || config.CallChaining.Authorize == nil) {
+		return nil, errors.New("personserver: call chaining requires person-binding and authorization policies")
+	}
 	server, err := newServer(serverConfig{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
@@ -250,6 +279,10 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	}
 	server.authorizationMode = authorizationModePersonServer
 	server.authorize = config.Authorize
+	if config.CallChaining != nil {
+		server.bindChainedPerson = config.CallChaining.BindPerson
+		server.authorizeChained = config.CallChaining.Authorize
+	}
 	server.requireAuthorizationInteraction = config.RequireAuthorizationInteraction
 	server.authorizationInteractions = config.AuthorizationInteractions
 	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
@@ -318,7 +351,7 @@ func (server *Server) Handler() http.Handler {
 }
 
 func (server *Server) handlePerson(response http.ResponseWriter, request *http.Request) {
-	agentToken, agent, proof, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
+	agentToken, agent, proof, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
 	_ = agentToken
 	if err != nil {
 		writeAgentTokenProblem(response, err)
@@ -342,10 +375,15 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	if input.UpstreamToken == nil {
+		if err := server.validateDirectAgentTopology(agent); err != nil {
+			writeAgentTokenProblem(response, err)
+			return
+		}
+	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"mission_s256":   input.MissionS256,
-		"upstream_token": input.UpstreamToken,
-		"justification":  input.Justification, "login_hint": input.LoginHint,
+		"mission_s256":  input.MissionS256,
+		"justification": input.Justification, "login_hint": input.LoginHint,
 		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
 		"platform": input.Platform, "device": input.Device, "capabilities": input.Capabilities,
 	}); err != nil {
@@ -356,13 +394,29 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	subagentToken, credentialAgent, delegated, err := server.verifyOptionalSubagentToken(
-		request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+	upstream, err := server.verifyOptionalUpstreamToken(
+		request.Context(), input.UpstreamToken, agent, proof.VerifiedAt(),
 	)
-	_ = subagentToken
 	if err != nil {
-		server.writeSubagentTokenProblem(response, err)
+		server.writeUpstreamTokenProblem(response, err)
 		return
+	}
+	credentialAgent := agent
+	delegated := false
+	if upstream != nil && input.SubagentToken != nil {
+		server.writeUpstreamTokenProblem(response, &unsupportedCallChainError{
+			cause: errors.New("personserver: sub-agent and call-chain authorization cannot be combined"),
+		})
+		return
+	}
+	if upstream == nil {
+		_, credentialAgent, delegated, err = server.verifyOptionalSubagentToken(
+			request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+		)
+		if err != nil {
+			server.writeSubagentTokenProblem(response, err)
+			return
+		}
 	}
 	personRequest := PersonTokenRequest{
 		Agent: agent.Subject, Resource: input.Resource,
@@ -372,8 +426,12 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		personRequest.Subagent = credentialAgent.Subject
 		personRequest.SubagentAdditionalClaims = cloneClaims(credentialAgent.AdditionalClaims)
 	}
-	if server.requirePersonTokenInteraction != nil {
-		policy, required, err := server.requirePersonTokenInteraction(request.Context(), personRequest)
+	if upstream != nil {
+		personRequest.Upstream = upstream.policyClaims()
+	}
+	if upstream == nil && server.requirePersonTokenInteraction != nil {
+		policyRequest := clonePersonTokenRequest(personRequest)
+		policy, required, err := server.requirePersonTokenInteraction(request.Context(), policyRequest)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
@@ -389,13 +447,21 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	person, err := server.bindPerson(request.Context(), personRequest)
+	bindPerson := server.bindPerson
+	if upstream != nil {
+		bindPerson = server.bindChainedPerson
+	}
+	person, err := bindPerson(request.Context(), clonePersonTokenRequest(personRequest))
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "person_token_denied", err)
 		return
 	}
 	if person.Subject == "" || person.Lifetime <= 0 || person.Lifetime > maximumPersonLifetime {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("person binding returned an invalid person"))
+		return
+	}
+	if upstream != nil && person.Subject == upstream.claims.Subject {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: downstream directed subject must differ from upstream subject"))
 		return
 	}
 	expiresAt := proof.VerifiedAt().Add(person.Lifetime)
@@ -418,13 +484,15 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		return
 	}
 	canonicalExpiry := time.Unix(claims.ExpiresAt, 0).UTC()
-	if err := server.tokens.Commit(request.Context(), PersonTokenRecord{
+	record := PersonTokenRecord{
 		JTI: claims.JTI, PersonServer: claims.Issuer, Resource: claims.Audience,
 		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
 		AgentProvider: credentialAgent.Issuer, Agent: credentialAgent.Subject,
 		ParentAgent: credentialAgent.ParentAgent, Confirmation: credentialAgent.Confirmation.JWK,
 		ExpiresAt: canonicalExpiry, RetainUntil: canonicalExpiry.Add(server.maximumResourceTokenLifetime),
-	}); err != nil {
+	}
+	upstream.bindRecord(&record)
+	if err := server.tokens.Commit(request.Context(), record); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
@@ -435,7 +503,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 }
 
 func (server *Server) handleToken(response http.ResponseWriter, request *http.Request) {
-	agentToken, agent, proof, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
+	agentToken, agent, proof, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -457,13 +525,18 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	if input.UpstreamToken == nil {
+		if err := server.validateDirectAgentTopology(agent); err != nil {
+			writeAgentTokenProblem(response, err)
+			return
+		}
+	}
 	unsupportedCapabilities := input.Capabilities
 	if server.authorizationMode == authorizationModePersonServer {
 		unsupportedCapabilities = nil
 	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"upstream_token": input.UpstreamToken,
-		"justification":  input.Justification, "login_hint": input.LoginHint,
+		"justification": input.Justification, "login_hint": input.LoginHint,
 		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
 		"platform": input.Platform, "device": input.Device, "capabilities": unsupportedCapabilities,
 	}); err != nil {
@@ -478,12 +551,30 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
-	subagentToken, credentialAgent, delegated, err := server.verifyOptionalSubagentToken(
-		request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+	upstream, err := server.verifyOptionalUpstreamToken(
+		request.Context(), input.UpstreamToken, agent, proof.VerifiedAt(),
 	)
 	if err != nil {
-		server.writeSubagentTokenProblem(response, err)
+		server.writeUpstreamTokenProblem(response, err)
 		return
+	}
+	credentialAgent := agent
+	delegated := false
+	subagentToken := ""
+	if upstream != nil && input.SubagentToken != nil {
+		server.writeUpstreamTokenProblem(response, &unsupportedCallChainError{
+			cause: errors.New("personserver: sub-agent and call-chain authorization cannot be combined"),
+		})
+		return
+	}
+	if upstream == nil {
+		subagentToken, credentialAgent, delegated, err = server.verifyOptionalSubagentToken(
+			request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+		)
+		if err != nil {
+			server.writeSubagentTokenProblem(response, err)
+			return
+		}
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
 	resourceToken, err := aauth.VerifyResourceToken(
@@ -491,6 +582,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	)
 	if err != nil {
 		writeEndpointTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
+		return
+	}
+	if upstream != nil && resourceToken.Audience != server.issuer {
+		server.writeUpstreamTokenProblem(response, &unsupportedCallChainError{
+			cause: errors.New("personserver: Access Server call chaining is not implemented"),
+		})
 		return
 	}
 	if err := server.validateResourceTokenTopology(resourceToken); err != nil {
@@ -555,6 +652,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained person token"))
 		return
 	}
+	if !upstream.matchesRecord(record) {
+		server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
+		return
+	}
 	authorizationRequest := AuthorizationRequest{
 		Agent: agent.Subject, Resource: resourceToken.Issuer,
 		Subject: resourceToken.Subject, Tenant: resourceToken.Tenant,
@@ -566,8 +667,11 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		authorizationRequest.Subagent = credentialAgent.Subject
 		authorizationRequest.SubagentAdditionalClaims = cloneClaims(credentialAgent.AdditionalClaims)
 	}
+	if upstream != nil {
+		authorizationRequest.Upstream = upstream.policyClaims()
+	}
 	if server.authorizationMode == authorizationModePersonServer {
-		if server.requireAuthorizationInteraction != nil {
+		if upstream == nil && server.requireAuthorizationInteraction != nil {
 			policyRequest := cloneAuthorizationRequest(authorizationRequest)
 			policy, required, err := server.requireAuthorizationInteraction(request.Context(), policyRequest)
 			if err != nil {
@@ -589,11 +693,18 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 				return
 			}
 		}
-		if server.authorize == nil {
+		authorize := server.authorize
+		if upstream != nil {
+			authorize = server.authorizeChained
+		}
+		if authorize == nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("deferred authorization policy did not select interaction and no immediate authorization policy is configured"))
 			return
 		}
-		server.issuePSAuthorizationToken(response, request, proof, agent, credentialAgent, resourceToken, authorizationRequest)
+		server.issuePSAuthorizationToken(
+			response, request, proof, agent, credentialAgent, resourceToken,
+			authorizationRequest, authorize,
+		)
 		return
 	}
 	if err := server.consent(request.Context(), authorizationRequest); err != nil {
@@ -728,12 +839,10 @@ func (server *Server) issuePSAuthorizationToken(
 	credentialAgent aauth.AgentTokenClaims,
 	resourceToken aauth.ResourceTokenClaims,
 	authorizationRequest AuthorizationRequest,
+	authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error),
 ) {
-	policyRequest := authorizationRequest
-	policyRequest.Scopes = append([]string(nil), authorizationRequest.Scopes...)
-	policyRequest.Capabilities = append([]string(nil), authorizationRequest.Capabilities...)
-	policyRequest.AgentAdditionalClaims = cloneClaims(authorizationRequest.AgentAdditionalClaims)
-	decision, err := server.authorize(request.Context(), policyRequest)
+	policyRequest := cloneAuthorizationRequest(authorizationRequest)
+	decision, err := authorize(request.Context(), policyRequest)
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
 		return
@@ -849,6 +958,17 @@ func (server *Server) writeSubagentTokenProblem(response http.ResponseWriter, er
 }
 
 func (server *Server) verifyAgentRequest(request *http.Request, requiredComponents []string) (string, aauth.AgentTokenClaims, signaturekey.VerifiedRequest, error) {
+	compact, agent, proof, err := server.verifyAgentProof(request, requiredComponents)
+	if err != nil {
+		return "", agent, signaturekey.VerifiedRequest{}, err
+	}
+	if err := server.validateDirectAgentTopology(agent); err != nil {
+		return "", agent, signaturekey.VerifiedRequest{}, err
+	}
+	return compact, agent, proof, nil
+}
+
+func (server *Server) verifyAgentProof(request *http.Request, requiredComponents []string) (string, aauth.AgentTokenClaims, signaturekey.VerifiedRequest, error) {
 	var agent aauth.AgentTokenClaims
 	prepared, err := signaturekey.PrepareRequest(request, server.clock, signaturekey.VerifyOptions{
 		RequiredComponents: requiredComponents,
@@ -871,10 +991,14 @@ func (server *Server) verifyAgentRequest(request *http.Request, requiredComponen
 	if err != nil {
 		return "", agent, signaturekey.VerifiedRequest{}, err
 	}
-	if agent.PersonServer != server.issuer || agent.ParentAgent != "" {
-		return "", agent, signaturekey.VerifiedRequest{}, &requestTopologyError{cause: errors.New("personserver: only a top-level Agent token naming this Person Server may sign the request")}
-	}
 	return compact, agent, proof, nil
+}
+
+func (server *Server) validateDirectAgentTopology(agent aauth.AgentTokenClaims) error {
+	if agent.PersonServer != server.issuer || agent.ParentAgent != "" {
+		return &requestTopologyError{cause: errors.New("personserver: only a top-level Agent token naming this Person Server may sign the request")}
+	}
+	return nil
 }
 
 type requestTokenError struct{ cause error }
@@ -946,6 +1070,9 @@ func validatePersonTokenRecord(record PersonTokenRecord) error {
 	if _, err := record.Confirmation.PublicKey(); err != nil {
 		return fmt.Errorf("personserver: retained person-token confirmation: %w", err)
 	}
+	if err := validateCallChainRecord(record); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1014,11 +1141,25 @@ func parseAuthorizationCapabilities(raw json.RawMessage) ([]string, error) {
 	return append([]string(nil), capabilities...), nil
 }
 
+func clonePersonTokenRequest(request PersonTokenRequest) PersonTokenRequest {
+	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
+	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
+	if request.Upstream != nil {
+		upstream := cloneAuthTokenClaims(*request.Upstream)
+		request.Upstream = &upstream
+	}
+	return request
+}
+
 func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationRequest {
 	request.Scopes = append([]string(nil), request.Scopes...)
 	request.Capabilities = append([]string(nil), request.Capabilities...)
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
+	if request.Upstream != nil {
+		upstream := cloneAuthTokenClaims(*request.Upstream)
+		request.Upstream = &upstream
+	}
 	return request
 }
 

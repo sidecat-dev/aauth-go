@@ -23,6 +23,7 @@ flowchart TD
     agentexample[example/agentidentity]
     sessionexample[example/resourcesession]
     revocationexample[example/revocation]
+    chainexample[example/callchaining]
     agentprovider[agentprovider]
     agent[agent]
     personserver[personserver]
@@ -76,6 +77,13 @@ flowchart TD
     revocationexample --> core
     revocationexample --> sk
     revocationexample --> jose
+    chainexample --> agentprovider
+    chainexample --> agent
+    chainexample --> personserver
+    chainexample --> resource
+    chainexample --> core
+    chainexample --> sk
+    chainexample --> jose
     agentprovider --> core
     agentprovider --> jose
     agent --> core
@@ -118,7 +126,7 @@ The three private support packages are deliberately small:
 - `internal/interaction` generates and compares human-readable correlation
   codes and derives their non-plaintext store keys.
 
-The six `example` programs are executable compositions. The `integration`
+The programs under `example` are executable compositions. The `integration`
 directory contains an external test package and adds no production import
 edge.
 
@@ -178,6 +186,11 @@ metadata dependency. A one-level sub-agent can use Resource-side calls with
 its own key, but Person Server calls remain parent-only. A top-level client
 sets `SubagentToken` on `PersonToken` and `Exchange`; the returned credentials
 are verified against the child's key while the parent signs both requests.
+For one immediate call chain, a Resource acting as an Agent supplies the exact
+verified upstream auth token to `PersonToken`, `Authorize`, `Exchange`, and
+`Do`. The client derives the Person Server from that token rather than from its
+own Agent token. It sends `upstream_token` only to the Person Server; Resource
+calls use it locally to verify the returned credential lineage.
 Delegated pending interactions remain unsupported. A client whose token names
 no Person Server closes a valid
 `person-token` requirement returned by either direct call and surfaces the
@@ -220,7 +233,8 @@ PS-AS collocation without allowing the returned token to change its issuer.
 
 - `/person` verifies an agent-token request. It either calls `BindPerson` and
   returns a retained person token, or creates a pending interaction selected by
-  `RequirePersonTokenInteraction`.
+  `RequirePersonTokenInteraction`. An explicitly configured call chain instead
+  verifies `upstream_token` and calls `CallChaining.BindPerson`.
 - `/person/pending/{id}` verifies one signed poll and returns pending,
   interacting, or exactly one terminal result followed by permanent `410`.
 - `/token` verifies an agent and resource token and reloads the retained
@@ -229,6 +243,8 @@ PS-AS collocation without allowing the returned token to change its issuer.
   when that policy declines. A deferred-only composition omits `Authorize` and
   fails safely if its interaction policy declines. `NewFederatedAuthorization`
   calls `Consent` and sends a signed exchange to the selected Access Server.
+  The bounded call-chain path reloads the exact upstream-token binding and
+  calls `CallChaining.Authorize` instead of the ordinary policy.
 - `/token/pending/{id}` reauthenticates the original Agent and proof key and
   returns waiting, interacting, or exactly one terminal authorization result.
 
@@ -238,6 +254,11 @@ interactive person-token issuance when that store also implements
 policy and `DeferredAuthorizationStore`, or both. The deferred path parks the
 fully verified three-party request before the host decision. Federation adds
 `Consent`, `AccessServerEndpoint`, and an HTTP client.
+`CallChaining` is separate from both ordinary policies. It accepts only an
+immediate PS-issued upstream token whose `iss` and `ps` name this Person Server
+and whose `aud` equals the intermediary Agent token's `iss`. The new directed
+subject must differ from the upstream subject. The path does not combine with
+missions, accounts, sub-agents, interaction, or Access Server federation.
 Three-party revocation additionally pairs `IssuedAuthTokenStore` with one
 host-supplied HTTP client and egress-admission callback. Immediate issuance
 commits the exact reference and Resource before release. Deferred issuance
@@ -284,6 +305,11 @@ direct modes omit `jwks_uri`, `authorization_endpoint`, and scope descriptions
 because they issue no Resource token. The Resource-managed composition
 publishes scope descriptions but still omits Resource signing keys and an
 authorization endpoint.
+
+For an auth-token-protected request, `AuthTokenFromContext` returns the exact
+compact token that `resource` verified. An intermediary uses that value as
+`upstream_token`; the application must not reconstruct it from claims or log
+it. The value is also present when a retained held invocation executes.
 
 A host can also supply `HeldInvocationStore`. The Resource then snapshots a
 person-token request within explicit limits, durably creates the invocation,
@@ -511,6 +537,47 @@ versions are `TestCurrentCoreParentMediatedSubagentImmediatePSAuthorization`
 and `TestCurrentCoreParentMediatedSubagentImmediateASAuthorization` in
 [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go).
 
+## Immediate two-Resource call-chain sequence
+
+Resource 1 receives an ordinary PS-issued auth token from the original Agent.
+It then acts as an Agent with its own Agent token and proof key. The upstream
+token selects the original person's PS; Resource 1's Agent-token `ps` does not.
+
+```mermaid
+sequenceDiagram
+    participant A as Original Agent
+    participant R1 as Resource 1 / intermediary Agent
+    participant PS as Person Server
+    participant R2 as Resource 2
+
+    A->>R1: signed protected request + upstream auth token
+    R1->>R1: AuthTokenFromContext returns exact compact token
+    R1->>PS: signed /person + upstream_token
+    PS->>PS: verify upstream; CallChaining.BindPerson
+    PS->>PS: retain upstream reference and exact digest
+    PS-->>R1: person token with new Resource-2 subject
+    R1->>R2: signed /authorize + person token
+    R2-->>R1: resource token with independent scope
+    R1->>PS: signed /token + resource token + same upstream_token
+    PS->>PS: reload exact binding; CallChaining.Authorize
+    PS-->>R1: PS-issued auth token for Resource 2
+    R1->>R2: signed protected request + downstream auth token
+```
+
+The upstream auth token stays bound to the original Agent key. Resource 1's
+own key signs every downstream request. The Person Server callbacks receive
+copy-safe upstream claims and must derive a different directed subject for
+Resource 2. Downstream scope and lifetime are independent policy decisions;
+the implementation verifies that the upstream token is current at each Person
+Server call but does not cap the downstream token by the upstream expiration.
+
+This evidenced hop is limited to a same-PS, PS-issued upstream token and
+immediate PS authorization. Mission and account context, sub-agents,
+interaction relay, and Access Server federation remain unsupported. The seam
+has no depth marker and can be composed for another same-PS hop, but repeated
+hops are untested and unclaimed. The executing version is
+[`TestCurrentCoreImmediateTwoResourceCallChain`](integration/call_chaining_test.go).
+
 ## Three-party revocation and re-authorization sequence
 
 ```mermaid
@@ -649,6 +716,7 @@ The executing version of this sequence is
 | Person identity access | `resource` verifies the directed person token, proof key, and request signature | `ResolvePerson` matches `(iss, sub)`; the handler applies local policy to `PersonPrincipal` |
 | Resource-managed session | `resource` verifies the current agent token and request proof, exact retained grant, opaque session binding, route scope, and signed `authorization` field | The Resource host decides subject, scope, and lifetime and supplies `SessionStore`; if interaction is enabled, it also authenticates the person and supplies `DeferredSessionStore` |
 | PS authorization | `personserver` verifies the retained token chain and keeps the grant within the resource-token scope and one-hour lifetime | `Authorize` narrows scopes and selects lifetime or refuses access |
+| Immediate call chain | `agent` and `personserver` verify the upstream token's PS issuer, intermediary audience, exact two-presentation binding, and new downstream subject; `resource` exposes only the exact token it verified | `CallChaining.BindPerson` maps the upstream person to a Resource-2-directed subject; `CallChaining.Authorize` decides independent downstream scope and lifetime |
 | Parent-mediated sub-agent | `agent`, `personserver`, and `accessserver` verify the parent, one-level child, shared PS, retained child identity and key, and child-bound result; the Resource verifies only the child proof | `BindPerson`, `Authorize`, and AS policy receive parent and child separately; the host transfers credentials between them |
 | Deferred PS consent | `personserver` retains the fully verified request, enforces the fixed three-attempt code bound, correlates one host visit, reauthenticates every poll, and verifies an approved token before delivery | The host authenticates the person and records approval, denial, abandonment, or internal interaction failure through `DeferredAuthorizationStore` |
 | Three-party revocation | `personserver` retains issued-token routing and sends one signed request; `resource` atomically observes and revokes the exact issuer/JTI/digest record before host callbacks | The host selects which issued token to revoke and supplies both role-specific stores and outbound transport policy |
@@ -665,6 +733,12 @@ The immediate flow requires `personserver.TokenStore`. `/person` must commit a
 and match its Person Server, resource, subject, tenant, mission digest, expiry,
 retention bound, Agent Provider, credential recipient, optional parent, and
 confirmation key before issuing directly or federating the request.
+
+For a call-chain record, the same commit also retains the upstream token's
+issuer/JTI reference and SHA-256 of its exact compact bytes. `/token` requires
+both values to match the second `upstream_token` presentation before policy or
+issuance. Ordinary and parent-mediated records leave both fields empty. The
+interface does not store the compact token itself.
 
 Interactive person-token issuance requires `personserver.DeferredTokenStore`.
 It creates one pending record before returning `202`; atomically matches the

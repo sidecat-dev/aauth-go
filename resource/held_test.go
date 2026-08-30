@@ -40,6 +40,7 @@ func TestHeldAuthTokenInvocationCompletesOnceAndReplays(t *testing.T) {
 	store := newHeldMemoryStore()
 	resolved := 0
 	protected := 0
+	var expectedAuthToken string
 	server, err := NewFederatedAuthorization(FederatedAuthorizationConfig{
 		Issuer:                        resourceIssuer,
 		AccessServer:                  accessIssuer,
@@ -59,6 +60,10 @@ func TestHeldAuthTokenInvocationCompletesOnceAndReplays(t *testing.T) {
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			protected++
+			compact, ok := AuthTokenFromContext(request.Context())
+			if !ok || compact != expectedAuthToken {
+				t.Fatalf("held verified auth token = %q, present=%t, want %q", compact, ok, expectedAuthToken)
+			}
 			principal, ok := AuthPrincipalFromContext(request.Context())
 			if !ok || principal.PersonServer != personIssuer || principal.Subject != "person-1" ||
 				!reflect.DeepEqual(principal.Scope, []string{"records.read"}) || principal.Tenant != "tenant-1" ||
@@ -138,6 +143,7 @@ func TestHeldAuthTokenInvocationCompletesOnceAndReplays(t *testing.T) {
 		JTI: "held-auth-token-1", PersonServer: personIssuer, Subject: "person-1",
 		Scope: "records.read", Tenant: "tenant-1", IssuedAt: now.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix(),
 	})
+	expectedAuthToken = authToken
 	poll := signedRequest(t, clock, agentKey, authToken, http.MethodGet, initialResponse.Header().Get("Location"), "")
 	pollResponse := httptest.NewRecorder()
 	store.beforeRetain = func() {

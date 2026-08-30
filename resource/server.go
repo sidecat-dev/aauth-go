@@ -148,6 +148,7 @@ type AgentPrincipal struct {
 }
 
 type authPrincipalContextKey struct{}
+type authTokenContextKey struct{}
 type agentPrincipalContextKey struct{}
 type personPrincipalContextKey struct{}
 
@@ -166,6 +167,21 @@ func AuthPrincipalFromContext(ctx context.Context) (AuthPrincipal, bool) {
 	}
 	principal.AdditionalClaims = cloneAdditionalClaims(principal.AdditionalClaims)
 	return principal, true
+}
+
+// AuthTokenFromContext returns the exact compact auth token verified for the
+// current protected request. It is absent from unverified and non-auth-token
+// contexts. Call-chaining intermediaries can pass this value to their Person
+// Server as upstream_token; callers must not log it.
+func AuthTokenFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	compact, ok := ctx.Value(authTokenContextKey{}).(string)
+	if !ok || compact == "" {
+		return "", false
+	}
+	return compact, true
 }
 
 // AgentPrincipalFromContext returns the Agent identity established for an

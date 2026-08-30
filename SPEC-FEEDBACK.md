@@ -708,3 +708,208 @@ still returns `401` with the signature failure.
 sub-agent request receive?
 
 **Placement:** Add to the focused Core sub-agent issue.
+
+### AAG-F046 — Generic auth-token verification has no call-chain context
+
+**Source:** AAuth Core, [Auth Token Verification][core-auth-verification] and
+[Upstream Token Verification][core-upstream-verification].
+
+The upstream rule says to perform Auth Token Verification. Its request-context
+steps assume the verifier is the upstream Resource: `aud` must name that
+Resource, `cnf` must match the current request signer, and `(iss, sub)` matches
+that Resource's person record. A PS or AS processing a downstream request is
+none of those parties, so literal verification rejects a valid chain.
+
+**Question:** Should upstream verification explicitly use JWT Trust
+Verification, followed by its own `iss`, `aud`, person, and intermediary
+bindings, rather than importing Resource Request-Context Binding?
+
+**Placement:** Open one focused Core call-chaining issue containing F046–F057.
+
+### AAG-F047 — The upstream `cnf` description names the wrong key
+
+**Source:** AAuth Core, [Call Chaining][core-call-chaining] and
+[Auth Token Usage][core-auth-verification].
+
+Call Chaining says the upstream token's `cnf` is the intermediary's key. The
+upstream Resource received that token on a request signed by the original
+Agent, so Auth Token Usage requires `cnf` to be the original Agent's key. The
+intermediary later signs with its own Agent-token key; changing `cnf` would
+change the already-issued upstream token.
+
+**Question:** Should the call-chaining text say that upstream `cnf` remains the
+original caller's key and is not compared with the intermediary proof key?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F048 — The audience rule implies Resource/AP collocation
+
+**Source:** AAuth Core, [Upstream Token Verification][core-upstream-verification]
+and [Call Chaining Identity][core-agent-person-binding].
+
+The upstream token's `aud` is Resource 1's identifier. Requiring it to equal
+the intermediary Agent token's `iss` also requires Resource 1's Agent Provider
+to use that same identifier. Publishing Agent metadata at the Resource origin
+supports this arrangement, but the text does not state the resulting role
+collocation requirement.
+
+**Question:** Is Resource-1/Agent-Provider identifier collocation required for
+call chaining? If so, should the topology state it directly?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F049 — Person remapping has no host contract
+
+**Source:** AAuth Core, [Person Token Endpoint][core-person-endpoint] and
+[Directed Identifiers Across a Chain][core-call-chaining].
+
+The PS must determine the person from an upstream Resource-1-directed `sub`,
+then mint a different Resource-2-directed `sub`. The required person-token
+retention fields preserve the directed value but do not identify the PS's
+internal person record or define the lookup and derivation contract.
+
+**Question:** What stable mapping must a PS retain or expose so an upstream
+directed subject can be resolved to the same person and re-derived for a new
+Resource?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F050 — The two upstream-token presentations are not bound
+
+**Source:** AAuth Core, [Person Token Endpoint][core-person-endpoint],
+[PS Token Endpoint][core-ps-token-endpoint], and
+[Call Chaining][core-call-chaining].
+
+The intermediary presents `upstream_token` when obtaining the downstream
+person token and presents one again with the downstream resource token. Core
+does not say whether the second value must be the same compact token, the same
+issuer/JTI, or merely equivalent claims. Without a binding, the second request
+can substitute another authorization after the downstream identity was issued.
+
+**Question:** Must the second request repeat the exact compact upstream token?
+If semantic replacement is allowed, which fields define equivalence?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F051 — Downstream credential lifetime is not derived
+
+**Source:** AAuth Core, [Call Chaining][core-call-chaining],
+[Person Token Structure][core-person-lifetime], and
+[Auth Token Structure][core-auth-token-lifetime].
+
+Core requires the upstream token to be valid when presented but does not say
+whether a downstream person or auth token may outlive it. The ordinary token
+ceilings refer to the intermediary Agent token and an optional mission, not
+the upstream authorization being extended.
+
+**Question:** Must either downstream credential expire no later than the
+upstream auth token, or is validating the upstream token independently at each
+issuance step sufficient?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F052 — Mission ownership and propagation conflict in a chain
+
+**Source:** AAuth Core, [Person Token Endpoint][core-person-endpoint],
+[Upstream Token Verification][core-upstream-verification], and
+[Call Chaining][core-call-chaining].
+
+The person-token endpoint says a requested mission belongs to “this agent,”
+which is the intermediary. Call Chaining instead tells the PS to evaluate the
+mission carried by the upstream token, which belongs to the original Agent.
+It does not say whether that digest enters the downstream person token and
+resource-token lineage or remains policy input only.
+
+**Question:** Whose mission governs a chained request, how does the
+intermediary present it, and which downstream tokens must carry its digest?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F053 — An AS cannot literally verify the forwarded upstream token
+
+**Source:** AAuth Core, [PS-to-AS Token Request][core-ps-as-request],
+[Auth Token Verification][core-auth-verification], and
+[Upstream Token Verification][core-upstream-verification].
+
+In four-party chaining the PS forwards `upstream_token` and the intermediary
+Agent token in a request signed by the PS. Literal Auth Token Verification
+would compare upstream `cnf` with the PS request key. That key belongs to
+neither the original Agent nor the intermediary, so every valid request fails.
+
+**Question:** Which upstream checks must the AS perform itself, which key does
+it compare, and which facts may it accept from the authenticated PS?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F054 — “Trusted issuer” has no evidence model
+
+**Source:** AAuth Core,
+[Upstream Token Verification step 2][core-upstream-verification].
+
+The recipient must trust a PS or AS whose token it “previously brokered or is
+authorized to extend.” Core defines no retained record, trust callback, token
+reference, or proof that establishes either condition. Two conforming
+implementations can therefore admit different issuers for the same request.
+
+**Question:** What evidence establishes that an upstream issuer may be
+extended, and which party retains it for PS and AS verification?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F055 — No error code covers an invalid upstream token
+
+**Source:** AAuth Core, [Upstream Token Verification][core-upstream-verification]
+and [Token Endpoint Error Codes][core-token-errors].
+
+The registry distinguishes invalid Agent and Resource tokens but has no result
+for a malformed, expired, untrusted, misdirected, or substituted
+`upstream_token`. Reusing `invalid_request` hides a verified-token failure;
+reusing `invalid_resource_token` names the wrong token.
+
+**Question:** Should Core register `invalid_upstream_token`, with a distinct
+expired form or one code for every upstream-token validation failure?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F056 — Person-token retention omits upstream-chain custody
+
+**Source:** AAuth Core, [Person-token retention][core-person-endpoint] and
+[Call Chaining][core-call-chaining].
+
+The required record contains only the downstream person-token fields. It does
+not retain the upstream issuer/JTI, exact token digest, upstream person, or
+trust decision. The later PS request therefore has no specified durable fact
+against which to compare its second `upstream_token` presentation.
+
+**Question:** Which upstream reference and integrity fields must be retained
+with a chained person-token record, and for how long?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F057 — One-Agent/one-person conflicts with intermediary Resources
+
+**Source:** AAuth Core, [Agent-Person Binding][core-agent-person-binding] and
+[Call Chaining][core-call-chaining].
+
+Core requires every Agent to be associated with exactly one person. A Resource
+acting as one stable Agent can receive authorized calls for many people and
+uses each caller's upstream token to select the downstream person. Applying
+the general invariant literally would let that intermediary serve only one
+upstream person.
+
+**Question:** Should Core define a narrow exception for a Resource acting as an
+Agent only when a valid upstream token supplies the person, while preserving
+the one-person rule for that Agent's direct requests?
+
+**Placement:** Add to the focused Core call-chaining issue.
+
+[core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
+[core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726
+[core-ps-token-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L1062-L1086
+[core-ps-as-request]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L1781-L1796
+[core-auth-token-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L1984-L2001
+[core-auth-verification]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L2005-L2031
+[core-upstream-verification]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L2043-L2050
+[core-call-chaining]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L2060-L2085
+[core-token-errors]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L2537-L2548
+[core-agent-person-binding]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L3143-L3164
