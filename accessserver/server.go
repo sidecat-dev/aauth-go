@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/internal/httpapi"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/internal/httpapi"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 const maxRequestBytes = 1 << 20

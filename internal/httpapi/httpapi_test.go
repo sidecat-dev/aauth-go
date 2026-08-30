@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aauth-dev/auth-go/internal/httpapi"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	"aauth-go/internal/httpapi"
+	"aauth-go/signaturekey"
 )
 
 func TestDecodeJSONRejectsAmbiguityCaseVariantsTrailingValuesAndOversize(t *testing.T) {

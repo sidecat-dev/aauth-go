@@ -1,4 +1,4 @@
-module github.com/aauth-dev/auth-go
+module aauth-go
 
 go 1.24.0
 

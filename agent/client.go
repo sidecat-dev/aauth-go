@@ -16,10 +16,10 @@ import (
 	"slices"
 	"strings"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/internal/jsonstrict"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/internal/jsonstrict"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 const maxResponseBytes = 1 << 20

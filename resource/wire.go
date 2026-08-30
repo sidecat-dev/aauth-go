@@ -5,8 +5,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/aauth-dev/auth-go/internal/httpapi"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	"aauth-go/internal/httpapi"
+	"aauth-go/signaturekey"
 )
 
 func decodeJSON(body io.Reader, target any) error {

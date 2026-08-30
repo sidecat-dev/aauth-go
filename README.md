@@ -1,6 +1,6 @@
 # AAuth for Go
 
-`auth-go` is a Go implementation of the current AAuth editor drafts. The
+`aauth-go` is a Go implementation of the current AAuth editor drafts. The
 current implementation covers direct Agent and Person identity access,
 Resource-managed opaque sessions, immediate and explicitly deferred three-party
 PS authorization, one four-party federated flow, Person-Server-hosted
@@ -18,10 +18,9 @@ specification family are present.
 
 The module requires Go 1.24 or later.
 
-This implementation has not yet been released under the
-`github.com/aauth-dev/auth-go` module path. Test it from this checkout; do not
-use `go get github.com/aauth-dev/auth-go` to obtain this code until a revision
-containing it is published there.
+This source currently uses the checkout-local module path `aauth-go`. Clone
+the repository and run it from the checkout. It does not advertise a public
+`go get` path.
 
 ## What is implemented
 

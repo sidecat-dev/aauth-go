@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	auth "github.com/aauth-dev/auth-go"
+	auth "aauth-go"
 )
 
 func TestDecodeProblemResponseReturnsTypedAAuthError(t *testing.T) {

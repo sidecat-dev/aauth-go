@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"sync"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/personserver"
-	"github.com/aauth-dev/auth-go/resource"
+	aauth "aauth-go"
+	"aauth-go/personserver"
+	"aauth-go/resource"
 )
 
 type personTokenStore struct {

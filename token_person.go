@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 // PersonTokenClaims identify one person to one resource and bind that identity

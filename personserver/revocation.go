@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/signaturekey"
 )
 
 // ErrIssuedAuthTokenNotFound reports that the Person Server did not retain the

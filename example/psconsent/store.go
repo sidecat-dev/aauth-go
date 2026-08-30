@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aauth-dev/auth-go/personserver"
+	"aauth-go/personserver"
 )
 
 type memoryTokenStore struct {

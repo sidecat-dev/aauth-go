@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 func (server *Server) serveProtected(response http.ResponseWriter, request *http.Request) {

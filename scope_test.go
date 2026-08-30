@@ -3,7 +3,7 @@ package aauth_test
 import (
 	"testing"
 
-	auth "github.com/aauth-dev/auth-go"
+	auth "aauth-go"
 )
 
 func TestValidateScopeValueUsesOAuthScopeTokenGrammar(t *testing.T) {

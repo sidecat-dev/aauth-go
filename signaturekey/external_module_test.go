@@ -19,8 +19,8 @@ func TestCleanExternalModuleCanSignAndVerifyARequest(t *testing.T) {
 
 	goMod := "module example.com/signaturekey-consumer\n\n" +
 		"go 1.24.0\n\n" +
-		"require github.com/aauth-dev/auth-go v0.0.0\n\n" +
-		"replace github.com/aauth-dev/auth-go => " + filepath.ToSlash(moduleRoot) + "\n"
+		"require aauth-go v0.0.0\n\n" +
+		"replace aauth-go => " + filepath.ToSlash(moduleRoot) + "\n"
 	writeExternalModuleFile(t, externalModule, "go.mod", goMod)
 	writeExternalModuleFile(t, externalModule, "request_test.go", externalModuleRequestTest)
 
@@ -53,9 +53,9 @@ import (
 	"testing"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 type clock time.Time

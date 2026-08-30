@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/aauth-dev/auth-go/internal/jsonstrict"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	"aauth-go/internal/jsonstrict"
+	"aauth-go/signaturekey"
 )
 
 // DefaultMaxBodyBytes is the fallback bound for decoded JSON requests.

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 // AgentTokenRequest is the issuer-validated input to agent-token creation.

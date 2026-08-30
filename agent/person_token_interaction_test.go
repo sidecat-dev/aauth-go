@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/agent"
+	aauth "aauth-go"
+	"aauth-go/agent"
 )
 
 const (

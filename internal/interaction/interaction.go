@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"io"
 
-	aauth "github.com/aauth-dev/auth-go"
+	aauth "aauth-go"
 )
 
 const crockfordAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

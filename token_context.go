@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/aauth-dev/auth-go/jose"
+	"aauth-go/jose"
 )
 
 // ValidatePersonTokenContext binds verified claims to one resource request.

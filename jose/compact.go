@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/aauth-dev/auth-go/internal/jsonstrict"
+	"aauth-go/internal/jsonstrict"
 )
 
 // Header is the protected compact-JWS header used by current AAuth tokens.

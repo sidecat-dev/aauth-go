@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 func TestHTTPKeyResolverBoundsPositiveAndNegativeState(t *testing.T) {

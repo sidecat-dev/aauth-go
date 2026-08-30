@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/agent"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/agent"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 func TestCallAsAgentPerformsOneExplicitCurrentProof(t *testing.T) {

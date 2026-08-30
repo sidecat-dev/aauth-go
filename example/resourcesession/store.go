@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aauth-dev/auth-go/resource"
+	"aauth-go/resource"
 )
 
 // memorySessionStore illustrates the storage transitions used by the example.

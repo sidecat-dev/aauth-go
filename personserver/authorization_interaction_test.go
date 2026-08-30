@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/internal/interaction"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/internal/interaction"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 func TestDeferredAuthorizationConfigurationAndImmediateCompatibility(t *testing.T) {

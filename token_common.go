@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aauth-dev/auth-go/internal/jsonstrict"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	"aauth-go/internal/jsonstrict"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 const (

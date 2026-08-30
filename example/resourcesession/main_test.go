@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aauth-dev/auth-go/resource"
+	"aauth-go/resource"
 )
 
 func TestRunCompletesResourceManagedSession(t *testing.T) {

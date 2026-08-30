@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	aauth "github.com/aauth-dev/auth-go"
+	aauth "aauth-go"
 )
 
 func TestCapabilitiesRoundTripKnownAndExtensionTokens(t *testing.T) {

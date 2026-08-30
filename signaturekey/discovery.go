@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aauth-dev/auth-go/internal/jsonstrict"
-	"github.com/aauth-dev/auth-go/jose"
+	"aauth-go/internal/jsonstrict"
+	"aauth-go/jose"
 )
 
 const (

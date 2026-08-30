@@ -3,7 +3,7 @@ package aauth_test
 import (
 	"testing"
 
-	aauth "github.com/aauth-dev/auth-go"
+	aauth "aauth-go"
 )
 
 func TestGenericRequirementParsesCurrentAndExtensionTokens(t *testing.T) {

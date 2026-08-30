@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/signaturekey"
 )
 
 // InitialCall supplies one exact application request and the person token

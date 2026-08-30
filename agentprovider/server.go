@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/internal/httpapi"
-	"github.com/aauth-dev/auth-go/jose"
+	aauth "aauth-go"
+	"aauth-go/internal/httpapi"
+	"aauth-go/jose"
 )
 
 // Config supplies the protocol identity and issuer dependencies of a Server.

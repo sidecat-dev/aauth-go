@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/internal/jsonstrict"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	"aauth-go/internal/jsonstrict"
+	"aauth-go/jose"
+	"aauth-go/signaturekey"
 )
 
 const heldPollRetryAfter = 5 * time.Second

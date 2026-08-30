@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/internal/interaction"
-	"github.com/aauth-dev/auth-go/jose"
+	aauth "aauth-go"
+	"aauth-go/internal/interaction"
+	"aauth-go/jose"
 )
 
 var (

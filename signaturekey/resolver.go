@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/aauth-dev/auth-go/jose"
+	"aauth-go/jose"
 )
 
 // KeyResolver resolves one fully qualified Signature-Key key reference.

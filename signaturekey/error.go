@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/aauth-dev/auth-go/jose"
+	"aauth-go/jose"
 	"github.com/dunglas/httpsfv"
 )
 

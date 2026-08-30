@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	"github.com/aauth-dev/auth-go/internal/interaction"
+	aauth "aauth-go"
+	"aauth-go/internal/interaction"
 )
 
 const sessionInteractionCorrelated = 1

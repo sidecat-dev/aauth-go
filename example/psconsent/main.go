@@ -16,13 +16,13 @@ import (
 	"strings"
 	"time"
 
-	aauth "github.com/aauth-dev/auth-go"
-	clientagent "github.com/aauth-dev/auth-go/agent"
-	"github.com/aauth-dev/auth-go/agentprovider"
-	"github.com/aauth-dev/auth-go/jose"
-	"github.com/aauth-dev/auth-go/personserver"
-	"github.com/aauth-dev/auth-go/resource"
-	"github.com/aauth-dev/auth-go/signaturekey"
+	aauth "aauth-go"
+	clientagent "aauth-go/agent"
+	"aauth-go/agentprovider"
+	"aauth-go/jose"
+	"aauth-go/personserver"
+	"aauth-go/resource"
+	"aauth-go/signaturekey"
 )
 
 const (
