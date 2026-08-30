@@ -1,824 +1,370 @@
 # Architecture
 
-This document defines package ownership and dependency direction for the
-current implementation and the next companion-specification boundaries. The
-design separates token semantics, HTTP request proof, role behavior,
-application policy, and application storage; it does not collect them in one
-universal verification or extension object.
+This repository is a Go implementation of the source family mapped in
+[PROTOCOL.md](PROTOCOL.md). The architecture follows ordinary Go composition:
+small protocol packages own reusable wire semantics, role packages own role
+behavior, and applications provide policy, persistence, keys, clocks, and
+transport.
 
-The exact editor sources behind this design are listed in
-[SPECIFICATIONS.md](SPECIFICATIONS.md). See [CONFORMANCE.md](CONFORMANCE.md) for
-the implemented boundary.
+[CONFORMANCE.md](CONFORMANCE.md) is the implementation-status ledger. An API
+or package name in this document is not by itself a conformance claim.
+
+## Design rules
+
+1. **Keep source terminology recognizable.** A reader should be able to move
+   between an editor draft, a Go type, and a test without learning a private
+   vocabulary first.
+2. **Separate wire truth from policy.** Parsing and cryptographic validation
+   establish what a peer sent. A role-specific policy decides whether to
+   accept it.
+3. **Keep state with the deciding role.** There is no universal store,
+   lifecycle, evidence envelope, or verified-context aggregate.
+4. **Make consequences explicit.** Client methods perform one protocol
+   exchange. They return a result or a typed continuation; they do not hide
+   polling, browser interaction, sleep, or consequence retries.
+5. **Preserve exact bytes when identity depends on bytes.** Compact tokens,
+   signed requests, R3 documents, mission blobs, proposals, and retained
+   results are never reconstructed from a parsed approximation.
+6. **Compose companion behavior explicitly.** Core does not silently accept
+   R3, Events, or Budget semantics. The role handling a token invokes the
+   companion package that understands each authorization-bearing claim.
+7. **Make the easy path runnable.** Every complete journey has an executable
+   example with in-memory policy and stores. Hosts replace those dependencies
+   without replacing protocol code.
+
+## Current and target boundaries
+
+The current repository already has the `aauth`, `jose`, `signaturekey`,
+`agentprovider`, `agent`, `personserver`, `resource`, and `accessserver`
+packages. Their implemented behavior is the subset listed in
+[CONFORMANCE.md](CONFORMANCE.md).
+
+The target model expands those packages and adds `r3`, `budgets`, and `events`.
+Sections below define the target ownership contract. Planned packages use a
+dashed border in the graph; present-tense support must never be inferred from
+this target map.
 
 ## Package graph
 
-Arrows mean “imports.” Solid edges connect public packages. Dashed edges point
-to private support packages. Protocol packages never depend on a role.
+Arrows mean target imports. Protocol packages do not import role packages, and
+role packages do not import one another.
 
 ```mermaid
 flowchart TD
-    example[example/fourparty]
-    psexample[example/threeparty]
-    consentexample[example/psconsent]
-    agentexample[example/agentidentity]
-    sessionexample[example/resourcesession]
-    revocationexample[example/revocation]
-    chainexample[example/callchaining]
-    agentprovider[agentprovider]
-    agent[agent]
-    personserver[personserver]
-    resource[resource]
-    accessserver[accessserver]
-    core[aauth root package]
-    sk[signaturekey]
     jose[jose]
-    httpapi[internal/httpapi]
-    interaction[internal/interaction]
-    jsonstrict[internal/jsonstrict]
+    sk[signaturekey]
+    core[aauth root package]
+    r3[r3]
+    budgets[budgets]
+    events[events]
 
-    example --> agentprovider
-    example --> agent
-    example --> personserver
-    example --> resource
-    example --> accessserver
-    example --> core
-    example --> sk
-    example --> jose
-    psexample --> agentprovider
-    psexample --> agent
-    psexample --> personserver
-    psexample --> resource
-    psexample --> core
-    psexample --> sk
-    psexample --> jose
-    consentexample --> agentprovider
-    consentexample --> agent
-    consentexample --> personserver
-    consentexample --> resource
-    consentexample --> core
-    consentexample --> sk
-    consentexample --> jose
-    agentexample --> agentprovider
-    agentexample --> agent
-    agentexample --> resource
-    agentexample --> core
-    agentexample --> sk
-    agentexample --> jose
-    sessionexample --> agentprovider
-    sessionexample --> agent
-    sessionexample --> resource
-    sessionexample --> core
-    sessionexample --> sk
-    sessionexample --> jose
-    revocationexample --> agentprovider
-    revocationexample --> agent
-    revocationexample --> personserver
-    revocationexample --> resource
-    revocationexample --> core
-    revocationexample --> sk
-    revocationexample --> jose
-    chainexample --> agentprovider
-    chainexample --> agent
-    chainexample --> personserver
-    chainexample --> resource
-    chainexample --> core
-    chainexample --> sk
-    chainexample --> jose
-    agentprovider --> core
-    agentprovider --> jose
+    ap[agentprovider]
+    agent[agent]
+    ps[personserver]
+    resource[resource]
+    as[accessserver]
+    examples[example and integration]
+
+    sk --> jose
+    core --> jose
+    core --> sk
+    r3 --> core
+    budgets --> core
+    events --> core
+    events --> sk
+    events --> r3
+
+    ap --> core
+    ap --> events
     agent --> core
     agent --> sk
-    agent --> jose
-    personserver --> core
-    personserver --> sk
-    personserver --> jose
+    agent --> r3
+    agent --> budgets
+    agent --> events
+    ps --> core
+    ps --> sk
+    ps --> r3
+    ps --> budgets
     resource --> core
     resource --> sk
-    resource --> jose
-    accessserver --> core
-    accessserver --> sk
-    accessserver --> jose
-    core --> sk
-    core --> jose
-    sk --> jose
-    sk -.-> jsonstrict
-    core -.-> jsonstrict
-    jose -.-> jsonstrict
-    agent -.-> jsonstrict
-    agentprovider -.-> httpapi
-    personserver -.-> httpapi
-    personserver -.-> interaction
-    resource -.-> httpapi
-    resource -.-> interaction
-    accessserver -.-> httpapi
-    httpapi -.-> sk
-    httpapi -.-> jsonstrict
-    interaction -.-> core
+    resource --> r3
+    resource --> budgets
+    resource --> events
+    as --> core
+    as --> sk
+    as --> r3
+    as --> budgets
+
+    examples --> ap
+    examples --> agent
+    examples --> ps
+    examples --> resource
+    examples --> as
+
+    classDef planned stroke-dasharray: 6 4
+    class r3,budgets,events planned
 ```
 
-The three private support packages are deliberately small:
+Private packages may provide strict JSON, bounded HTTP, and test helpers.
+They do not own protocol semantics.
 
-- `internal/jsonstrict` rejects duplicate names and non-exact spellings of
-  known struct fields while leaving case-sensitive map keys and additive
-  extension members intact.
-- `internal/httpapi` applies bounded JSON decoding and common HTTP response
-  encoding for server roles.
-- `internal/interaction` generates and compares human-readable correlation
-  codes and derives their non-plaintext store keys.
+## Protocol packages
 
-The programs under `example` are executable compositions. The `integration`
-directory contains an external test package and adds no production import
-edge.
+### Root package `aauth`
 
-## Package ownership
+The current root package owns the implemented Core wire semantics. In the
+target architecture it owns the complete Core value layer:
+
+- Server and Agent identifiers.
+- Core metadata documents and endpoint URL rules.
+- Agent, Person, Resource, and Auth token headers and claims.
+- Token minting, parsing, cryptographic verification, and Core context checks.
+- `AAuth-Requirement`, `AAuth-Access`, `AAuth-Capabilities`, errors, and
+  revocation request values.
+- Mission, permission, audit, interaction, clarification, and deferred-response
+  wire values.
+- Immutable raw extension members from verified tokens.
+
+It does not decide whether an Agent is enrolled, a Person is known, a scope is
+allowed, a mission should be approved, or a Resource is trusted. It does not
+own pending requests, token records, mission state, or application storage.
+
+Token verification has two layers:
+
+1. Core verifies JOSE, issuer discovery, time, audience, proof-key, and Core
+   claim rules.
+2. The accepting role decodes and validates each companion claim it supports
+   before making a policy or serving decision.
+
+Unrecognized additive claims remain available to host policy where the source
+allows them. Recognized authorization-bearing companion claims are never
+treated as inert JSON.
 
 ### `jose`
 
-`jose` owns the selected Ed25519 JOSE profile: JWK validation and thumbprints,
-caller-owned signing keys, compact JWS parsing and signing, and signature
-verification. It has no AAuth role or policy knowledge.
+`jose` owns the deliberately small JOSE profile needed by the protocol:
+
+- JWK validation and RFC 7638 thumbprints.
+- Caller-owned signing keys.
+- Compact JWS parse, sign, and verify.
+- Exact protected-header, payload, signature, and compact bytes.
+- Fully specified algorithm and key-shape checks.
+
+It has no AAuth role, HTTP, policy, discovery, or storage knowledge. Its public
+surface follows Go cryptographic conventions: accept interfaces where callers
+may use hardware or external signers, return immutable parsed values, and make
+unsupported algorithms explicit.
 
 ### `signaturekey`
 
-`signaturekey` owns HTTP Message Signature construction and verification,
-`Signature-Key` credentials, covered-component checks, content-digest checks,
-proof time bounds, typed signature failures, and metadata-to-JWKS key
-resolution. A verifier first prepares a request, then selects the key required
-by the credential profile, then verifies the prepared proof.
+The current `signaturekey` package implements the schemes and proof behavior
+needed by executing paths. The target completes HTTP Signature Keys
+independently of AAuth role policy:
 
-The resolver receives an application-supplied HTTP client and egress-admission
-function. It follows the role metadata document to `jwks_uri`, validates the
-issuer relationship, bounds every fetch, and caches the result in memory. It
-supports the Core one-minute refresh floor for unknown or rotated keys. The
-package exposes a replay key; the current role packages do not provide a replay
-store.
+- Structured-field grammar and signature-label correlation.
+- All defined schemes: `hwk`, `jkt-jwt`, `jwks_uri`, `jwks`, `jwt`,
+  `self-jwt`, `x509`, and opt-in provisional `cached`.
+- Request preparation, covered-component and content-digest validation,
+  signature verification, and proof-time bounds.
+- Scheme and algorithm negotiation.
+- Typed `Signature-Error` results.
+- Bounded discovery with caller-supplied egress admission.
+- Optional bounded key/assertion caches with cache lookup separate from
+  assertion validation.
 
-### Root `aauth`
+The package proves a request and reports the signer/key material. It never
+turns a valid signature into authorization.
 
-The root package owns Core protocol values and checks:
+### `r3`
 
-- server and agent identifiers;
-- agent, person, resource, and auth token claims;
-- token minting and verification;
-- issuer role, discovery-document, type, time, and key checks;
-- person-token and auth-token request-context checks; and
-- typed AAuth problem responses.
+The planned `r3` package will own pure Rich Resource Request semantics:
 
-Token verification returns typed claims. It does not decide whether a person
-is known, a Person Server is trusted, or requested scopes should be granted.
-Additional agent and auth-token claims remain copy-safe JSON values for host
-policy; known R3 and Budget token claims fail closed.
+- Standard and third-party vocabulary identifiers.
+- Per-vocabulary operation types and validation.
+- Authorization request extensions and access annotations.
+- R3 document, display, grant, and proposal values.
+- Exact-byte document identity and parameter digest comparison.
+- Operation membership and grant/per-call matching.
+- Typed R3 token-claim extensions.
+
+It does not fetch documents, decide policy, retain proposals, execute calls,
+or write AS audit records. Those consequences belong to the participating
+roles.
+
+### `budgets`
+
+The planned `budgets` package will own the Budget companion's reusable
+semantics:
+
+- Exact non-negative amount, unit, and decimal-scale values.
+- Monotonic narrowing and denomination checks.
+- Resource/Auth token claim extensions and consumed records.
+- `AAuth-Budget` header and trailer parsing/formatting.
+- Reservation, commit, release, and hard-cap invariants.
+- Usage-query request/response values.
+- Capability and requirement reason values.
+
+It does not choose a person's ceiling, price an operation, decide whether a
+failed call is chargeable, or create a cross-Resource ledger. Those are policy
+inputs owned by PS and Resource compositions.
+
+### `events`
+
+The planned `events` package will own reusable Events semantics:
+
+- AP metadata extension.
+- Subscribe and Event token types and validation.
+- Registration, ticket, subscription, and delivery values.
+- Use-limit transition rules.
+- AsyncAPI/R3 discovery declarations.
+- Agent-side event verification and duplicate identity.
+
+It does not define AP-to-agent transport. The AP role accepts a host delivery
+adapter for polling, push, SSE, WebSocket, or another local mechanism.
+
+### Bootstrap and interoperability
+
+Bootstrap is informational and platform-specific, so it does not become an
+invented portable wire package. The target `agentprovider` API exposes
+enrollment and refresh composition points, while executable examples
+demonstrate the two-key, single-key, and self-hosted patterns using Core and
+Signature-Key primitives.
+
+The interoperability profile is an integration-test and example boundary, not
+a library package. Its five surfaces must run through the same exported APIs
+that applications use.
+
+## Role packages
+
+Each role package already owns Core HTTP handlers or client steps plus small
+interfaces for the policy and state that role controls. The descriptions below
+state their target boundary, including companion behavior not yet implemented.
+Interfaces live next to the code that consumes them.
 
 ### `agentprovider`
 
-`agentprovider` mints top-level agent tokens through a Go API and serves Agent
-Provider metadata and JWKS. The caller decides whether issuance is allowed.
-The package does not expose an enrollment, refresh, or sub-agent endpoint.
+The target owns Agent-token issuance, AP metadata/JWKS, optional enrollment and
+refresh composition, subscribe-token issuance, and the Events inbox. It
+accepts host policy for enrollment, attestation, renewal, revocation, and
+AP-to-agent event delivery.
 
 ### `agent`
 
-`agent` validates its configured agent token, discovers role endpoints,
-obtains and verifies person, resource, and auth tokens, signs each request, and
-performs protected HTTP calls. `CallAsAgent` performs one direct agent-token
-call after Resource metadata discovery. `CallAsAgentWithComponents` performs
-the same call with caller-supplied additional signature components and no
-metadata dependency. A one-level sub-agent can use Resource-side calls with
-its own key, but Person Server calls remain parent-only. A top-level client
-sets `SubagentToken` on `PersonToken` and `Exchange`; the returned credentials
-are verified against the child's key while the parent signs both requests.
-For one immediate call chain, a Resource acting as an Agent supplies the exact
-verified upstream auth token to `PersonToken`, `Authorize`, `Exchange`, and
-`Do`. The client derives the Person Server from that token rather than from its
-own Agent token. It sends `upstream_token` only to the Person Server; Resource
-calls use it locally to verify the returned credential lineage.
-Delegated pending interactions remain unsupported. A client whose token names
-no Person Server closes a valid
-`person-token` requirement returned by either direct call and surfaces the
-unsatisfiable requirement as an error. `PersonToken` returns either a verified token or a `PendingPersonToken`;
-`PollPersonToken` performs one signed `GET` and returns the next verified
-state. `Begin` performs one call with a person token. It returns an ordinary
-response, a verified `401` auth-token requirement, or a verified Resource-held
-`202`. `PollAuthToken` performs one signed `GET` for that held result.
-`BeginExchange` performs one PS token request and returns either a verified auth
-token or a verified `PendingExchange`; `PollExchange` performs one signed
-bodyless `GET`. Generic pending, approval, and interaction are directly
-representable. An unsupported requirement is a typed `Failure` alongside the
-verified continuation. Retryable responses remain caller-owned and do not hide
-another request. The caller supplies PS capabilities explicitly. The
-Resource-session methods are separate: `BeginResourceSession` makes one
-Agent-token request after metadata discovery, `PollResourceSession` makes one
-signed pending `GET`, and `DoWithResourceSession` makes one proof-bound session
-call after metadata discovery. The matching `WithComponents` methods accept an
-exact signature profile and skip metadata. Pending state retains that profile;
-the caller declares interaction capability explicitly, and fresh poll field
-values are always caller-supplied. Retryable `429` and `503`
-poll responses remain caller-owned. `ResourceSessionState` preserves only the
-opaque token, Resource, and stable Agent identity needed for local restore. The
-client never sleeps, opens interaction URLs, exchanges, retries, or resends a
-request implicitly.
+The target owns explicit caller steps:
 
-The client rejects redirects and checks each returned token's identity, key,
-scope, and applicable time bounds. A person token cannot outlive the agent
-token used to request it. A resource token may outlive the person token that
-was valid at issuance, and an auth token may outlive that short resource token
-but not the agent token used to obtain it. The client refuses unsupported token
-branches instead of silently dropping their meaning. For `Exchange`, the
-signed auth token's `dwk` selects the verified issuer role while the verified
-resource-token audience independently fixes the expected issuer. This supports
-PS-AS collocation without allowing the returned token to change its issuer.
+- Discover a role.
+- Obtain or refresh an Agent token through a selected Bootstrap pattern.
+- Propose, inspect, update, and complete a mission.
+- Obtain Person, Resource, and Auth tokens.
+- Follow one deferred, interaction, clarification, or payment continuation.
+- Perform one protected call or one R3 per-call retry.
+- Register an Events subscription and verify a delivered event.
+- Read Budget feedback and decide whether to request reauthorization.
+
+Each method performs one exchange and returns serializable continuation data
+where another exchange is required. The caller decides whether and when to
+continue. A higher-level helper may drive a complete journey, but it is built
+from the same explicit steps and exposes its progress.
 
 ### `personserver`
 
-`personserver` owns four endpoint paths:
-
-- `/person` verifies an agent-token request. It either calls `BindPerson` and
-  returns a retained person token, or creates a pending interaction selected by
-  `RequirePersonTokenInteraction`. An explicitly configured call chain instead
-  verifies `upstream_token` and calls `CallChaining.BindPerson`.
-- `/person/pending/{id}` verifies one signed poll and returns pending,
-  interacting, or exactly one terminal result followed by permanent `410`.
-- `/token` verifies an agent and resource token and reloads the retained
-  binding. `NewPSAuthorization` may select a host-authenticated interaction
-  through `RequireAuthorizationInteraction`, then falls back to `Authorize`
-  when that policy declines. A deferred-only composition omits `Authorize` and
-  fails safely if its interaction policy declines. `NewFederatedAuthorization`
-  calls `Consent` and sends a signed exchange to the selected Access Server.
-  The bounded call-chain path reloads the exact upstream-token binding and
-  calls `CallChaining.Authorize` instead of the ordinary policy.
-- `/token/pending/{id}` reauthenticates the original Agent and proof key and
-  returns waiting, interacting, or exactly one terminal authorization result.
-
-Both compositions require `BindPerson` and `TokenStore` and may select
-interactive person-token issuance when that store also implements
-`DeferredTokenStore`. PS authorization uses `Authorize`, a paired interaction
-policy and `DeferredAuthorizationStore`, or both. The deferred path parks the
-fully verified three-party request before the host decision. Federation adds
-`Consent`, `AccessServerEndpoint`, and an HTTP client.
-`CallChaining` is separate from both ordinary policies. It accepts only an
-immediate PS-issued upstream token whose `iss` and `ps` name this Person Server
-and whose `aud` equals the intermediary Agent token's `iss`. The new directed
-subject must differ from the upstream subject. The path does not combine with
-missions, accounts, sub-agents, interaction, or Access Server federation.
-Three-party revocation additionally pairs `IssuedAuthTokenStore` with one
-host-supplied HTTP client and egress-admission callback. Immediate issuance
-commits the exact reference and Resource before release. Deferred issuance
-commits the same record after the approved token is verified and before its
-terminal result is consumed. `RevokeIssuedAuthToken` admits and discovers the
-retained Resource's endpoint, admits the selected revocation URL, and sends one
-body-bound `jwks_uri` request; caller-controlled retries are idempotent while
-the token records remain retained.
-At the authenticated UI, the host atomically matches the pending URL reference
-and entered code, then separately authenticates the person before approving or
-denying the request. Deferred PS consent permits exactly three failed code
-entries before closing the request. After successful correlation, later code
-entries cannot change it. The host may add UI and network rate limits. Neither
-the code nor reference is decision authority.
+The target owns Agent-person binding, directed identifiers, Person-token
+records, missions, permission/audit/interaction endpoints, three-party
+authorization, and PS-to-AS federation. Its policy inputs receive verified
+Core and companion values in source terminology. Mission approval stores the
+exact approved bytes before returning their digest.
 
 ### `resource`
 
-`resource` has five explicit compositions:
+The target owns Resource metadata/JWKS, the five access modes, Resource-local
+sessions, authorization endpoints, Resource-token issuance, requirements,
+protected calls, revocation, held invocations, R3 document/proposal/result
+state, Events registration/delivery, and Budget reservations.
 
-- `NewAgentIdentity` verifies an agent token and request proof, then supplies
-  `AgentPrincipal` to the handler. It needs no Resource key, PS, AS, scope
-  catalog, or person resolver.
-- `NewPersonIdentity` verifies a directed person token and request proof,
-  resolves `(iss, sub)`, then supplies scope-free `PersonPrincipal` to the
-  handler. It needs no Resource key, AS, or scope catalog.
-- `NewResourceManaged` verifies an agent token and request proof, applies
-  immediate policy and can optionally fall back to Resource-owned interaction,
-  then supplies `SessionPrincipal` for an opaque proof-bound session. The
-  immediate-only composition needs `SessionStore`; interaction adds
-  `DeferredSessionStore`. Neither needs a Resource signing key, PS, AS, or JWT
-  issuance.
-- `NewPSAuthorization` publishes JWKS and `/authorize`, issues each resource
-  token to the verified Person Server, and accepts only PS-issued auth tokens.
-  When supplied `AuthTokenStatusStore`, it also advertises `/revoke`, records
-  each otherwise-valid auth token on first protected use, and refuses a
-  retained revocation before any host callback.
-- `NewFederatedAuthorization` publishes the same surface, issues resource
-  tokens to one configured Access Server, and accepts only AS-issued auth
-  tokens. It alone exposes Resource-held delivery in this cut. Its explicit
-  topology remains federated when the PS and AS share one origin.
-
-Each composition publishes its exact metadata `access_mode`. Identity-only
-direct modes omit `jwks_uri`, `authorization_endpoint`, and scope descriptions
-because they issue no Resource token. The Resource-managed composition
-publishes scope descriptions but still omits Resource signing keys and an
-authorization endpoint.
-
-For an auth-token-protected request, `AuthTokenFromContext` returns the exact
-compact token that `resource` verified. An intermediary uses that value as
-`upstream_token`; the application must not reconstruct it from claims or log
-it. The value is also present when a retained held invocation executes.
-
-A host can also supply `HeldInvocationStore`. The Resource then snapshots a
-person-token request within explicit limits, durably creates the invocation,
-and returns `202` with the same resource-token requirement. A later signed
-`GET` verifies the exact auth-token context before atomically claiming the
-invocation. The Resource reconstructs the application request, executes the
-handler once, retains the complete logical response, and publishes it only
-after retention succeeds. The same exact compact auth token replays the
-retained response; another token cannot consume it.
-
-Held execution models a finite logical HTTP response, not a live connection.
-It preserves ordinary status, headers, bounded body, and valid trailers. It
-rejects request transfer framing and response features that cannot be retained
-and replayed, including streaming, full duplex, hijacking, server push, and
-hop-by-hop framing. Routes that require those features use baseline retry
-delivery, selected through `HoldAuthTokenRequest`.
-
-The original transport connection and middleware context are not serializable
-parts of `HeldInvocation`. Execution uses a fresh context with the auth-token
-remaining verified lifetime as its timeout and does not inherit poll
-cancellation. A host that needs trace, locale, or other application context
-must derive it again from retained authenticated inputs before the protected
-handler runs.
-
-The host supplies the scope catalog, a required-scope function that maps each
-protected request to one or more declared scopes, `ResolvePerson`, optional
-extra signed components, and the protected handler. The federated constructor
-also requires the Access Server identifier. `ResolvePerson` matches or creates
-the stable `(ps, sub)` record; its separate `PersonContext` contains current
-tenant and additional claims that must not redefine that identity. Route
-authorization runs before this potentially stateful callback. Account binding
-is not supported in this cut.
+Access mode is selected by the matched endpoint or R3 operation, not fixed for
+the entire server. Core scope, R3 operations, and Budget constraints are
+evaluated independently; none is projected into another.
 
 ### `accessserver`
 
-`accessserver` accepts a Person Server’s `jwks_uri`-authenticated exchange at
-`/token`. It verifies the agent and resource tokens, calls
-`TrustPersonServer`, calls `Authorize`, and issues an auth token whose scope is
-a subset of the request. Policy selects a lifetime of at most one hour, capped
-by the agent token used for the exchange; it is not capped by the short-lived
-resource token.
-
-The policy callbacks receive ordinary Go values, including copy-safe
-additional agent claims. They do not receive raw HTTP proofs or an all-layer
-verification object.
-
-## Companion package boundaries
-
-Companion packages may import root `aauth`, `signaturekey`, and `jose`; Core
-packages never import companions. Role packages compose the companion they
-need through explicit configuration. There is no universal extension registry
-or all-protocol server configuration.
-
-| Source | Package boundary | Role composition | First complete seam |
-| --- | --- | --- | --- |
-| R3 | New pure `r3`, with one vocabulary leaf at a time beginning at `r3/mcp` | `resource` publishes and enforces; `personserver` and `accessserver` independently fetch and hash-check; `agent` requests and verifies | One four-party MCP direct grant with exact document bytes, dual fetch, policy, audit-before-release, and Resource enforcement; other vocabularies and per-call proposals remain rejected |
-| Events | New pure `events`; `signaturekey` owns the required `self-jwt` proof scheme | `agentprovider` issues subscribe tokens and receives events; `agent` registers and verifies; `resource` stores subscriptions and delivers | Public subscription registration first, then one retained Resource-to-AP delivery; protected tickets and AsyncAPI discovery are later paths |
-| Bootstrap | No generic `bootstrap` package: the source describes platform patterns, not one wire object | Existing `agentprovider`, `agent`, `jose`, and `signaturekey`, with host-owned enrollment policy and storage | One explicit two-key refresh after `jkt-jwt` exists; platform attestation remains opaque host evidence |
-| Budgets | New pure `budget` for values, narrowing, headers, and typed errors | Core exposes an exact Budget carrier seam; `resource`, `personserver`, `accessserver`, and `agent` own their local transitions | One three-party non-streaming hard cap with atomic reserve/commit/release and usage accounting; streaming and usage queries remain separate |
-| Interoperability profile | No production package | External `integration` tests and runnable examples only | Black-box evidence against an independent implementation; internal Go-to-Go composition is not interoperability |
-
-The immediate implementation order still finishes the remaining Core value
-paths first. The first companion path after that is the MCP-only R3 direct
-grant because Events discovery and Budget annotations build on the R3
-boundary. Each later seam remains a complete journey, not a placeholder
-package.
-
-## Direct identity sequences
-
-```mermaid
-sequenceDiagram
-    participant AP as Agent Provider
-    participant A as Agent
-    participant PS as Person Server
-    participant R as Resource
-    participant App as Application handler
-
-    AP->>A: agent token bound to Agent key
-    alt Agent identity access
-        A->>R: signed application request with agent token
-        R->>App: request with AgentPrincipal
-        App-->>A: application response
-    else Person identity access
-        A->>PS: signed person-token request
-        PS-->>A: person token directed to R
-        A->>R: signed application request with person token
-        R->>R: ResolvePerson(PS, subject)
-        R->>App: request with PersonPrincipal
-        App-->>A: application response
-    end
-```
-
-The executing version is
-[`TestCurrentCoreDirectIdentityAccessModes`](integration/direct_identity_access_test.go).
-
-## Resource-managed session sequence
-
-```mermaid
-sequenceDiagram
-    participant AP as Agent Provider
-    participant A as Agent
-    participant R as Resource
-    participant S as DeferredSessionStore
-    participant UI as Authenticated Resource UI
-    participant App as Application handler
-
-    AP->>A: agent token bound to Agent key
-    A->>R: signed application request + interaction capability
-    R->>S: retain verified pending request
-    R-->>A: 202 + pending URL + interaction URL and code
-    UI->>R: reference + entered code
-    R->>S: atomically correlate code
-    UI->>UI: authenticate person and decide
-    UI->>R: approve exact subject, scope, and lifetime
-    R->>S: retain opaque session before publication
-    A->>R: signed GET pending URL
-    R->>S: atomically consume terminal result
-    R-->>A: 200 + AAuth-Access
-    A->>R: signed request covering Authorization: AAuth
-    R->>S: load session bound to stable Agent identity
-    R->>App: request with SessionPrincipal
-    App-->>A: application response
-```
-
-The interaction code is correlation data, not approval authority. The host
-authenticates the person separately. Every poll and session use presents a
-current AP-issued Agent token and matching request proof. The executing path is
-[`TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition`](integration/resource_managed_session_test.go).
-
-## Person-token interaction sequence
-
-```mermaid
-sequenceDiagram
-    participant A as Agent
-    participant PS as Person Server
-    participant S as DeferredTokenStore
-    participant UI as Authenticated host UI
-
-    A->>PS: POST /person, signed agent-token request
-    PS->>S: Create pending request
-    PS-->>A: 202 + Location + interaction URL and code
-    UI->>PS: reference + entered code
-    PS->>S: atomic reference and code match
-    PS-->>UI: correlated request
-    UI->>UI: authenticate person and decide
-    UI->>PS: approve, deny, or invalidate
-    PS->>S: retain decision and exact result
-    A->>PS: signed GET pending URL
-    PS->>S: read terminal result
-    PS->>PS: verify retained token through trusted resolver
-    PS->>S: exact compare and consume
-    PS-->>A: one terminal response
-    A->>PS: later signed GET
-    PS-->>A: 410 Gone
-```
-
-`ResumePersonTokenInteraction` reconstructs the host handle after a `Server`
-value is recomposed around the same store. The integration evidence uses an
-in-memory store; it does not prove persistence across process restart.
-
-## Three-party PS-authorization sequence
-
-The Resource and Person Server use explicit constructors, so neither one
-accepts a four-party token by accidentally treating a PS as an AS.
-
-```mermaid
-sequenceDiagram
-    participant AP as Agent Provider
-    participant A as Agent
-    participant PS as Person Server
-    participant R as Resource
-    participant App as Protected handler
-
-    AP->>A: agent token bound to agent key and PS
-    A->>PS: signed person-token request
-    PS->>PS: BindPerson and TokenStore.Commit
-    PS-->>A: person token directed to R
-    A->>R: signed POST /authorize with person token
-    R-->>A: resource token with aud = PS
-    A->>PS: signed POST /token with resource token
-    PS->>PS: verify lineage and Authorize scope/lifetime
-    PS-->>A: PS-issued auth token
-    A->>R: signed application request with auth token
-    R->>R: ResolvePerson(PS, subject)
-    R->>App: request with AuthPrincipal
-    App-->>A: application response
-```
-
-The executing version is
-[`TestCurrentCoreImmediatePSAuthorization`](integration/three_party_authorization_test.go).
-
-### Parent-mediated sub-agent variant
-
-```mermaid
-sequenceDiagram
-    participant P as Parent Agent
-    participant C as Sub-agent
-    participant PS as Person Server
-    participant R as Resource
-    participant AS as Access Server (four-party only)
-
-    P->>PS: signed /person + child agent token
-    PS->>PS: verify parent, child, and one-level relationship; retain binding
-    PS-->>P: person token bound to child key
-    P-->>C: person token (out of band)
-    C->>R: signed /authorize with person token
-    R-->>C: resource token bound to child key
-    C-->>P: resource token (out of band)
-    P->>PS: signed /token + resource and child tokens
-    alt three-party
-        PS-->>P: PS auth token bound to child key
-    else four-party
-        PS->>AS: signed request + parent, child, and resource tokens
-        AS-->>PS: AS auth token bound to child key
-        PS-->>P: verified AS token
-    end
-    P-->>C: auth token (out of band)
-    C->>R: signed protected request with auth token
-```
-
-The Person Server retains the parent, child, Agent Provider, and child key in
-the person-token record. Policy receives the parent and child separately. No
-delegation claim appears in the person, resource, or auth token. The executing
-versions are `TestCurrentCoreParentMediatedSubagentImmediatePSAuthorization`
-and `TestCurrentCoreParentMediatedSubagentImmediateASAuthorization` in
-[`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go).
-
-## Immediate two-Resource call-chain sequence
-
-Resource 1 receives an ordinary PS-issued auth token from the original Agent.
-It then acts as an Agent with its own Agent token and proof key. The upstream
-token selects the original person's PS; Resource 1's Agent-token `ps` does not.
-
-```mermaid
-sequenceDiagram
-    participant A as Original Agent
-    participant R1 as Resource 1 / intermediary Agent
-    participant PS as Person Server
-    participant R2 as Resource 2
-
-    A->>R1: signed protected request + upstream auth token
-    R1->>R1: AuthTokenFromContext returns exact compact token
-    R1->>PS: signed /person + upstream_token
-    PS->>PS: verify upstream; CallChaining.BindPerson
-    PS->>PS: retain upstream reference and exact digest
-    PS-->>R1: person token with new Resource-2 subject
-    R1->>R2: signed /authorize + person token
-    R2-->>R1: resource token with independent scope
-    R1->>PS: signed /token + resource token + same upstream_token
-    PS->>PS: reload exact binding; CallChaining.Authorize
-    PS-->>R1: PS-issued auth token for Resource 2
-    R1->>R2: signed protected request + downstream auth token
-```
-
-The upstream auth token stays bound to the original Agent key. Resource 1's
-own key signs every downstream request. The Person Server callbacks receive
-copy-safe upstream claims and must derive a different directed subject for
-Resource 2. Downstream scope and lifetime are independent policy decisions;
-the implementation verifies that the upstream token is current at each Person
-Server call but does not cap the downstream token by the upstream expiration.
-
-This evidenced hop is limited to a same-PS, PS-issued upstream token and
-immediate PS authorization. Mission and account context, sub-agents,
-interaction relay, and Access Server federation remain unsupported. The seam
-has no depth marker and can be composed for another same-PS hop, but repeated
-hops are untested and unclaimed. The executing version is
-[`TestCurrentCoreImmediateTwoResourceCallChain`](integration/call_chaining_test.go).
-
-## Three-party revocation and re-authorization sequence
-
-```mermaid
-sequenceDiagram
-    participant A as Agent
-    participant PS as Person Server
-    participant I as IssuedAuthTokenStore
-    participant R as Resource
-    participant S as AuthTokenStatusStore
-    participant App as Protected handler
-
-    PS->>I: retain issued auth-token reference and Resource
-    PS-->>A: auth token 1
-    A->>R: signed protected request with token 1
-    R->>S: observe exact issuer, JTI, digest, and expiry
-    R->>App: execute request
-    PS->>R: signed POST /revoke with issuer and JTI
-    R->>S: atomically mark token 1 revoked
-    R-->>PS: 200 newly or already revoked
-    A->>R: retry protected request with token 1
-    R->>S: exact observation reports revoked
-    R-->>A: 403 access_denied
-    A->>R: ordinary authorization sequence
-    R-->>A: fresh resource token
-    A->>PS: ordinary exchange
-    PS-->>A: auth token 2
-    A->>R: protected request with token 2
-    R->>App: execute request
-```
-
-This implementation does not retain a pre-use tombstone: it returns `404`
-until the Resource has observed `(iss, jti)`. Core supplies no expiry or token
-bytes, so tombstone lifetime and first-use race semantics remain open
-(`AAG-F037`). The executing recovery path is
-[`TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`](integration/revocation_reauthorization_test.go).
-
-## Deferred three-party PS-consent sequence
-
-```mermaid
-sequenceDiagram
-    participant A as Agent
-    participant PS as Person Server
-    participant S as DeferredAuthorizationStore
-    participant UI as Authenticated host UI
-    participant R as Resource
-    participant App as Protected handler
-
-    A->>PS: signed POST /token + resource token + interaction capability
-    PS->>PS: verify proof, tokens, lineage, and scope
-    PS->>S: retain exact pending authorization
-    PS-->>A: 202 + pending URL + interaction URL and code
-    UI->>PS: reference + entered code
-    PS->>S: atomically correlate code
-    UI->>UI: authenticate person and decide
-    UI->>PS: approve narrowed scope and lifetime
-    PS->>S: retain exact auth token and decision
-    A->>PS: signed GET pending URL
-    PS->>PS: verify retained token against pending context
-    PS->>S: atomically consume terminal result
-    PS-->>A: PS-issued auth token
-    A->>R: signed application request with auth token
-    R->>App: request with AuthPrincipal
-    App-->>A: application response
-```
-
-The pending deadline is the earliest of host policy, the initial Agent-token
-expiry, and the original resource-token expiry. Recomposition uses the same
-store and stable Agent identity; no Go object address is authority. The
-authenticated host can also retain denial, abandonment, or an internal
-interaction failure. The first poll returns the registered terminal response;
-every later poll returns `410 invalid_code`. The executing path is
-[`TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition`](integration/deferred_ps_authorization_test.go).
-
-## Four-party auth-token requirement sequence
-
-`agentprovider.Issue` is a local Go call in this cut. Each token or protected
-operation request after that is signed. Metadata and JWKS discovery use
-ordinary HTTPS `GET` requests.
-
-```mermaid
-sequenceDiagram
-    participant AP as Agent Provider
-    participant A as Agent
-    participant PS as Person Server
-    participant R as Resource
-    participant Store as Held store
-    participant AS as Access Server
-    participant App as Protected handler
-
-    AP->>A: agent token bound to agent key and PS
-    A->>PS: POST /person, JWT agent token proof
-    PS->>PS: BindPerson and TokenStore.Commit
-    PS-->>A: person token directed to R
-    A->>R: application request, JWT person token proof
-    alt baseline retry delivery
-        R-->>A: 401 + resource-token requirement
-        A->>PS: POST /token, JWT agent proof + resource token
-        PS->>AS: signed exchange after retained-binding check
-        AS-->>PS: auth token bound to agent key and R
-        PS-->>A: verified auth token
-        A->>R: original request, JWT auth-token proof
-        R->>App: request with AuthPrincipal context
-        App-->>A: application response
-    else Resource-held delivery
-        R->>Store: Create exact bounded invocation
-        Store-->>R: pending identifier
-        R-->>A: 202 + Location + resource-token requirement
-        A->>PS: POST /token, JWT agent proof + resource token
-        PS->>AS: signed exchange after retained-binding check
-        AS-->>PS: auth token bound to agent key and R
-        PS-->>A: verified auth token
-        A->>R: GET pending URL, JWT auth-token proof
-        R->>Store: Load and atomic Claim
-        R->>App: reconstructed request with AuthPrincipal context
-        App-->>R: logical application response
-        R->>Store: Retain before publication
-        R-->>A: retained application response
-    end
-```
-
-The Resource authorization endpoint at `/authorize` is also available when an
-agent wants a resource token before making the application request.
-
-The executing version of this sequence is
-[`TestCurrentCoreFourParty`](integration/core_four_party_test.go).
-
-## Trust and policy boundaries
-
-| Boundary | Library check | Host decision |
-| --- | --- | --- |
-| Token signature | `aauth` resolves the issuer key and verifies the compact token | Which issuers are reachable through the configured resolver |
-| Agent issuance | `agentprovider` validates and signs the claims | Whether the caller may receive that token |
-| Agent identity access | `resource` verifies the agent token, top-level or one-level sub-agent relationship, proof key, and request signature | The application handler applies local policy to `AgentPrincipal` |
-| Person binding | `personserver` verifies the agent token and request proof | `BindPerson` chooses the directed subject and tenant |
-| Person interaction | `personserver` atomically matches issuer, pending reference, and code; verifies a retained token before consuming its terminal result | The host authenticates the person, decides, and rate-limits failed code entries |
-| Person identity access | `resource` verifies the directed person token, proof key, and request signature | `ResolvePerson` matches `(iss, sub)`; the handler applies local policy to `PersonPrincipal` |
-| Resource-managed session | `resource` verifies the current agent token and request proof, exact retained grant, opaque session binding, route scope, and signed `authorization` field | The Resource host decides subject, scope, and lifetime and supplies `SessionStore`; if interaction is enabled, it also authenticates the person and supplies `DeferredSessionStore` |
-| PS authorization | `personserver` verifies the retained token chain and keeps the grant within the resource-token scope and one-hour lifetime | `Authorize` narrows scopes and selects lifetime or refuses access |
-| Immediate call chain | `agent` and `personserver` verify the upstream token's PS issuer, intermediary audience, exact two-presentation binding, and new downstream subject; `resource` exposes only the exact token it verified | `CallChaining.BindPerson` maps the upstream person to a Resource-2-directed subject; `CallChaining.Authorize` decides independent downstream scope and lifetime |
-| Parent-mediated sub-agent | `agent`, `personserver`, and `accessserver` verify the parent, one-level child, shared PS, retained child identity and key, and child-bound result; the Resource verifies only the child proof | `BindPerson`, `Authorize`, and AS policy receive parent and child separately; the host transfers credentials between them |
-| Deferred PS consent | `personserver` retains the fully verified request, enforces the fixed three-attempt code bound, correlates one host visit, reauthenticates every poll, and verifies an approved token before delivery | The host authenticates the person and records approval, denial, abandonment, or internal interaction failure through `DeferredAuthorizationStore` |
-| Three-party revocation | `personserver` retains issued-token routing and sends one signed request; `resource` atomically observes and revokes the exact issuer/JTI/digest record before host callbacks | The host selects which issued token to revoke and supplies both role-specific stores and outbound transport policy |
-| Federated consent | `personserver` verifies the retained token chain | `Consent` allows or refuses the request before AS federation |
-| Federation | `accessserver` verifies the Person Server proof and token context | `TrustPersonServer` admits the PS; `Authorize` narrows scopes and lifetime |
-| Scoped protected call | `resource` verifies the auth token and exact request proof, then enforces the route’s required scopes | `ResolvePerson` matches or creates `(ps, sub)`; the configured handler applies application behavior to `AuthPrincipal` |
-| Held completion | `resource` verifies the retained resource token, exact auth-token scope and proof key, atomic claim, and retained response before publication | The host store makes `Create`, `Claim`, and `Retain` durable; the handler supplies the application result |
-| Discovery network | `signaturekey` validates metadata, issuer, JWKS, and keys | `Admit` filters URLs; the supplied transport pins DNS and rejects forbidden resolved addresses |
-
-## Storage boundary
-
-The immediate flow requires `personserver.TokenStore`. `/person` must commit a
-`PersonTokenRecord` before returning the token. `/token` must load that record
-and match its Person Server, resource, subject, tenant, mission digest, expiry,
-retention bound, Agent Provider, credential recipient, optional parent, and
-confirmation key before issuing directly or federating the request.
-
-For a call-chain record, the same commit also retains the upstream token's
-issuer/JTI reference and SHA-256 of its exact compact bytes. `/token` requires
-both values to match the second `upstream_token` presentation before policy or
-issuance. Ordinary and parent-mediated records leave both fields empty. The
-interface does not store the compact token itself.
-
-Interactive person-token issuance requires `personserver.DeferredTokenStore`.
-It creates one pending record before returning `202`; atomically matches the
-issuer, URL reference, and code digest; retains approval, denial, expiry, or
-invalidation; and serves polling reads without consuming them. For a terminal
-result, the Person Server first validates the exact token through its trusted
-resolver and only then asks the store to compare and consume that result. This
-allows a transient resolver failure to be retried and permits only one terminal
-HTTP response.
-
-Deferred three-party consent requires
-`personserver.DeferredAuthorizationStore`. Its record contains only the
-verified Agent, Resource, person, scope, capability, key, and deadline facts
-needed for the later decision. Creation precedes `202`; the code only
-correlates an authenticated host visit; three wrong code presentations close a
-waiting request, while later presentations cannot change an interacting one;
-approval races converge on the first complete retained token and semantic
-decision; every poll reauthenticates the stable Agent and proof key; and one
-approved, denied, abandoned, expired, or server-error result is consumed before
-delivery. Internal retained-state failures use registered `500 server_error`.
-A later poll returns `410 invalid_code`.
-
-Three-party revocation uses two separate role-owned stores.
-`personserver.IssuedAuthTokenStore` retains the issued reference, Resource, and
-lifetime before either immediate or deferred token publication.
-`resource.AuthTokenStatusStore` recognizes an otherwise-valid token on first
-protected use and atomically preserves active or revoked state keyed by
-`(iss, jti)`, with the exact compact-token digest preventing identity reuse.
-Neither interface is a general token lifecycle store.
-
-Linearizability orders observation and revocation at the store boundary; it
-does not cancel a protected request whose observation already returned active.
-Core defines no in-flight request fence, so hosts that require cancellation of
-already-admitted work need a separate application boundary.
-
-Immediate-only Resource-managed authorization requires `resource.SessionStore`.
-Resource-managed interaction adds `resource.DeferredSessionStore`.
-`CreatePending` precedes the first `202`; code consumption enforces the
-retained attempt and expiry bounds; `Approve` atomically refuses an expired
-pending record or retains the exact proposed session before returning its
-opaque token; each poll reloads the stable Agent identity; and `ConsumeResult`
-changes one terminal result to permanent gone before HTTP delivery. Session
-use reloads the retained `SessionRecord` and rechecks Resource, Agent, lifetime,
-and route scopes after verifying the current Agent proof.
-
-Held delivery additionally requires `resource.HeldInvocationStore`.
-`Create` precedes the first `202`; `Claim` atomically grants execution or
-returns a replay; `Retain` stores an independent logical response before any of
-that response becomes observable. A failed or indeterminate execution never
-returns to the executable state. Store implementations copy mutable headers
-and bodies at every boundary.
-
-These stores are part of the authorization boundary, not just queues. They
-contain sensitive requests, headers, tokens, and decisions. An adapter must
-preserve their confidentiality and exact integrity; changing retained input
-can change the eventual result.
-
-The repository does not provide durable store implementations. The integration
-tests use in-memory stores to exercise these contracts and server-value
-recomposition. They do not prove process-restart persistence. Discovery caches
-and Agent pending handles are process-local. There is no durable revocation
-adapter, person directory, or general deferred-operation store in this cut.
-
-An approved person token is validated before delivery. Its signing key must
-remain trusted and resolvable until delivery or expiry. The built-in Person
-Server JWKS publishes only the active key, so key rotation with outstanding
-interactions requires a host-supplied resolver and JWKS policy that retains the
-required prior key.
-
-## Composition rule
-
-Each layer returns the smallest value needed by its caller:
-
-- `jose` returns verified compact-JWS facts;
-- `signaturekey` returns one verified HTTP proof;
-- `aauth` returns one typed token claim set;
-- role packages turn those results into narrow policy inputs; and
-- the Resource gives the application exactly one of `AgentPrincipal`,
-  `PersonPrincipal`, `SessionPrincipal`, or `AuthPrincipal` for the configured
-  access mode.
-
-Each value stands alone; callers do not need one shared wrapper to use the API.
-Applications can record audit data separately from protocol verification.
+The target owns four-party PS authentication, Resource-token verification,
+policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuance
+boundary commits the token and its URI/hash audit facts together or publishes
+neither.
+
+## State interfaces
+
+Target state is split by protocol fact instead of accumulated in one store.
+Examples include:
+
+- `PersonTokenStore`, `MissionStore`, and `PendingAuthorizationStore` at a PS.
+- `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
+  `R3ProposalStore`, `SubscriptionStore`, and `BudgetLedger` at a Resource.
+- `R3IssuanceStore` at an AS.
+- `EventInbox` at an AP.
+
+An interface states only the atomicity, idempotency, lookup, and retention
+properties required by that state machine. It does not prescribe a database,
+file format, encryption system, process model, or universal record envelope.
+
+Every complete journey ships with concurrency-safe in-memory implementations
+for examples and tests. Applications may replace them with durable stores.
+Where the protocol requires atomic publication or replay, the store contract
+must make that property testable; a handler must not simulate it with a
+sequence of unrelated calls.
+
+## HTTP composition
+
+Role servers are `http.Handler` values. The repository does not own the
+application's listener, TLS termination, process lifecycle, or deployment.
+Handlers still enforce protocol-level bounds: strict JSON where required,
+body limits, time limits, redirect refusal or egress admission, exact issuer
+matching, signature coverage, and typed protocol responses.
+
+The Agent accepts an `http.Client` or narrow transport interface. Tests can
+therefore run roles in process, across `httptest` servers, or against another
+implementation without changing protocol code.
+
+## Failure model
+
+Failures have three layers:
+
+1. Parse and cryptographic errors from `jose` or `signaturekey`.
+2. Typed AAuth protocol outcomes such as requirements, pending responses,
+   denials, expiry, and registered errors.
+3. Host failures from policy, persistence, transport, or application work.
+
+Protocol adapters preserve the typed layer and its recovery action. A store or
+host error is never rewritten as a protocol denial, and a valid protocol
+denial is never returned as an opaque internal error.
+
+## Evidence structure
+
+Tests mirror the package and protocol boundaries:
+
+| Test seam | What it proves |
+| --- | --- |
+| Unit | Grammar, JOSE, exact bytes, claim rules, state transition, and negative vectors |
+| Store contract | Atomicity, idempotency, retention, replay, and concurrent limits for one focused state interface |
+| Role integration | One handler/client exchange with real proof, discovery, policy, and store behavior |
+| Journey | A complete multi-role path, including interruption or duplicate presentation where the protocol requires recovery |
+| Interoperability | The five profile surfaces and selected companion paths against another implementation or black-box role |
+
+The machine-readable map in `internal/specmodel` assigns every normative source
+heading and every uppercase normative or field-presence occurrence to a
+protocol-value package, state-owning role, role-behavior package where
+applicable, dependency set, and proof seam. [CONFORMANCE.md](CONFORMANCE.md)
+then links implemented capabilities to executable tests. This gives a reader a
+straight path from source text to Go ownership to observed behavior without
+turning documentation into a second specification.
+
+## Intentional non-goals
+
+- No all-protocol `VerifiedEvidence`, `Context`, `Transaction`, or `Store`
+  object.
+- No policy language embedded in token parsing.
+- No hidden polling or automatic replay of consequential requests.
+- No invented Bootstrap wire protocol or AP-to-agent Events transport.
+- No claim that examples are deployment templates.
+- The first stable API is designed from the current sources; unpublished
+  prototypes do not define it.

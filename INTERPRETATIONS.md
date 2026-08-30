@@ -1,13 +1,82 @@
 # Implementation interpretations
 
 This file records choices needed where the pinned editor text is ambiguous or
-internally inconsistent. Explicit requirements are implemented directly and do
-not appear here. See [SPECIFICATIONS.md](SPECIFICATIONS.md) for the exact source
+internally inconsistent. Explicit requirements need no interpretation and do
+not appear here; [CONFORMANCE.md](CONFORMANCE.md) says whether they are
+implemented. See [SPECIFICATIONS.md](SPECIFICATIONS.md) for the exact source
 revisions.
 
 Companion-source text alone does not create an implementation interpretation.
-This file gains a companion entry only when an executing path requires a choice;
-source-only questions remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+This file gains a companion entry only when an accepted implementation path
+requires a choice; source-only questions without such a path remain in
+[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+
+## Resource-token scope is optional when a companion claim replaces it
+
+**Source:** AAuth Core, `Resource Token Structure`; R3, `Resource Token
+Extensions`.
+
+Core lists `scope` in the Resource-token payload without marking it REQUIRED
+and permits a companion authorization claim to replace it. R3 expressly treats
+Core scope as optional and requires independent enforcement when both are
+present.
+
+The target implementation accepts a Resource token with no Core scope when a
+configured companion supplies the authorization claim. A token with neither
+Core nor configured companion authorization remains invalid for an
+authorization flow. When both are present, the accepting role validates and
+enforces both; neither is projected into or treated as a substitute for the
+other.
+
+## R3 documents use immutable URIs and exact requested operation sets
+
+**Source:** R3, `Authorization Endpoint Extensions`, `Operations Spanning
+Multiple Definitions`, `Content Addressing`, `Caching`, and `AS Processing`.
+
+R3 requires one URI to serve identical bytes but also permits later replacement
+at that URI, while treating URI plus hash as a permanently refetchable record.
+Those statements cannot all hold after an old body is evicted. The target
+implementation never replaces bytes at a published R3 URI. Changed bytes
+receive a new URI, and the Resource retains referenced bytes for the token and
+audit window its host declares.
+
+The general request mapping also allows a document that merely covers the
+requested operations. Because the AS receives no separate authenticated copy
+of the Agent's requested set, a broader reused document would prevent the AS
+from knowing what was actually requested. The target implementation creates a
+document whose operation set equals the validated requested set. Equal sets may
+reuse one document; different sets do not. Every AS grant must be a subset of
+that exact set.
+
+These choices use the existing wire format. They do not add a request-set claim
+or change the R3 hash algorithm.
+
+## Event replay identity is distinct from subscription identity
+
+**Source:** Events, `Subscribe Token`, `Event Token`, and `Agent
+Verification`.
+
+The draft uses `eid` as the subscription identifier and permits multiple or
+unlimited deliveries, then tells the Agent to deduplicate events by `(iss,
+eid)`. Applying that literally discards every legitimate delivery after the
+first.
+
+The target implementation keeps `(iss, eid)` as subscription and routing
+context. It derives a local delivery fingerprint as SHA-256 over the exact
+compact Event token bytes, one zero byte, and the exact payload bytes. An exact
+replay is ignored; a different authenticated token or payload on the same
+subscription is a different delivery. The fingerprint is local state, not a
+new wire claim.
+
+## Events normative expiry and algorithm rules control conflicting text
+
+**Source:** Events, `Subscribe Token`, `Event Token`, and `Agent
+Verification`.
+
+The draft says both `MUST NOT` and `SHOULD NOT` act after Event-token expiry.
+The target implementation applies `MUST NOT`. It also rejects polymorphic
+`EdDSA` as the normative token rule requires; examples using `EdDSA` are not
+acceptance vectors. Both inconsistencies remain recorded for editor feedback.
 
 ## Parent-mediated credentials use the child key and the earlier expiry
 

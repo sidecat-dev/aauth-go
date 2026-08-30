@@ -41,14 +41,14 @@ stores. The programs are executable documentation, not deployment templates.
 
 | Path | What it demonstrates | Command |
 | --- | --- | --- |
-| [Direct Agent identity](ARCHITECTURE.md#direct-identity-sequences) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
-| [Resource-managed session](ARCHITECTURE.md#resource-managed-session-sequence) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
-| [Immediate three-party authorization](ARCHITECTURE.md#three-party-ps-authorization-sequence) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
-| [Deferred Person Server consent](ARCHITECTURE.md#deferred-three-party-ps-consent-sequence) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
-| [Immediate four-party authorization](ARCHITECTURE.md#four-party-auth-token-requirement-sequence) | Person Server to Access Server federation before Resource access | `go run ./example/fourparty` |
-| [Parent-mediated sub-agent authorization](ARCHITECTURE.md#parent-mediated-sub-agent-variant) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
-| [Revocation and re-authorization](ARCHITECTURE.md#three-party-revocation-and-re-authorization-sequence) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
-| [One chained Resource call](ARCHITECTURE.md#immediate-two-resource-call-chain-sequence) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
+| [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
+| [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
+| [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
+| [Deferred Person Server consent](example/psconsent) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
+| [Immediate four-party authorization](example/fourparty) | Person Server to Access Server federation before Resource access | `go run ./example/fourparty` |
+| [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
+| [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
+| [One chained Resource call](example/callchaining) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
 
 The integration suite also exercises
 [direct Person identity](integration/direct_identity_access_test.go),
@@ -72,7 +72,8 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 The root protocol package and focused JOSE and Signature-Key packages do not
 depend on role packages. Role packages compose them through small policy,
 storage, key-resolution, clock, and transport interfaces. The complete package
-graph and role sequences are in [ARCHITECTURE.md](ARCHITECTURE.md).
+graph is in [ARCHITECTURE.md](ARCHITECTURE.md); executing-path evidence is in
+[CONFORMANCE.md](CONFORMANCE.md).
 
 ## Integration model
 
@@ -90,9 +91,9 @@ graph and role sequences are in [ARCHITECTURE.md](ARCHITECTURE.md).
 - Supported paths preserve exact bytes where a signature, digest, or retained
   store binding requires them.
 
-Start with the runnable example closest to the topology you need. Then use the
-matching sequence in [ARCHITECTURE.md](ARCHITECTURE.md) and the exported
-package documentation in the checkout—for example,
+Start with the runnable example closest to the topology you need. Then use its
+matching [conformance entry](CONFORMANCE.md) and the exported package
+documentation in the checkout—for example,
 `go doc aauth-go/resource`—to replace its in-memory policies and stores with
 application implementations.
 
@@ -118,7 +119,8 @@ and unimplemented behavior. Do not infer support from an exported type alone.
 
 | Document | Use it for |
 | --- | --- |
-| [Architecture](ARCHITECTURE.md) | Package ownership, dependency direction, role sequences, trust boundaries, and storage contracts |
+| [Protocol map](PROTOCOL.md) | How the seven pinned sources compose: roles, wire objects, state ownership, and complete journeys |
+| [Architecture](ARCHITECTURE.md) | Current package boundaries and the target division of policy, state, transport, and proof |
 | [Conformance](CONFORMANCE.md) | Exact implemented boundaries, exclusions, and executable evidence |
 | [Specification baseline](SPECIFICATIONS.md) | Editor-source revisions and content digests used by the implementation |
 | [Interpretations](INTERPRETATIONS.md) | Choices made where the source text does not determine one implementation |

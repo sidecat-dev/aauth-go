@@ -23,6 +23,23 @@ All seven files match the retained local source mirror used for review.
 is a non-normative diagnostic implementation, not an editor source. It is
 tracked by Git commit rather than inserted into the source manifest.
 
+## Verify the protocol map against source bytes
+
+[PROTOCOL.md](PROTOCOL.md) is backed by a machine-readable map of all 612
+normalized Markdown headings and 1,200 uppercase normative or field-presence
+occurrences in these seven files. Given a directory containing the exact
+editor-source files above, verify every digest, line count, heading coordinate,
+title, non-overlapping range, exact-line digest, strength, dependency, and the
+owner and proof seam supplied by each occurrence's heading with:
+
+```sh
+go run ./internal/specmodel/cmd/verify -source-dir /path/to/editor-sources
+```
+
+The ordinary Go suite also verifies that each file, commit, and digest remains
+bound in one row of this manifest and that the model uses controlled
+classification, ownership, state-role, and proof-seam vocabularies.
+
 ## Implementation relationship
 
 ### AAuth Core

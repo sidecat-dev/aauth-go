@@ -77,7 +77,7 @@ below where evidence is ready.
 | AAG-F002 | The AS request example uses a `jwks_uri` Signature-Key parameter not defined by that scheme | evidence pending |
 | AAG-F003 | Audit delivery has no stable retry identity after a lost `201` | evidence pending |
 | AAG-F004 | General deferred endpoints do not define recovery of a lost terminal response | ready below with Resource-session and PS-consent evidence |
-| AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | evidence pending until R3 implementation |
+| AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | immutable-URI interpretation recorded; evidence pending until R3 implementation |
 | AAG-F006 | R3 example hashes are not executable SHA-256 vectors | evidence pending until R3 implementation |
 | AAG-F007 | Mission completion still appears in the introductory interaction list after moving endpoints | evidence pending |
 | AAG-F008 | Clarification requires an `agent` claim removed from resource tokens | ready below |
@@ -86,11 +86,12 @@ below where evidence is ready.
 | AAG-F011 | Closed issues 88 and 89 are not reflected in the person-token endpoint text | ready below |
 | AAG-F012 | A lost initial deferred `202` has no stable recovery identity | evidence pending |
 | AAG-F013 | Restored deferred state can lose the verified request authority | held-store boundary implemented; generic deferred rule remains open |
-| AAG-F014 | R3 protected challenges do not define who selects the exact operation | evidence pending until R3 implementation |
-| AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | evidence pending until R3 implementation |
+| AAG-F014 | R3 protected challenges do not define who selects the exact operation | exact-request interpretation recorded; evidence pending until R3 implementation |
+| AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | exact-request interpretation recorded; evidence pending until R3 implementation |
 | AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | evidence pending until R3 or step-up implementation |
 | AAG-F016 | The mandatory signature set does not bind the query | ready below |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
+| AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | exact-delivery interpretation recorded; evidence pending until Events implementation |
 
 ## Current unsubmitted questions
 
@@ -902,6 +903,31 @@ Agent only when a valid upstream token supplies the person, while preserving
 the one-person rule for that Agent's direct requests?
 
 **Placement:** Add to the focused Core call-chaining issue.
+
+### AAG-F058 — Events uses a subscription identifier as the delivery deduplication key
+
+**Status:** evidence pending
+
+**Source:** AAuth Events, `Subscribe Token`, `Event Token`, and `Agent
+Verification`.
+
+The AP creates one `eid` for a subscription. A subscription may permit several
+or unlimited deliveries, and every Event token repeats that same `eid`. The
+Agent is nevertheless told to deduplicate events by `(iss, eid)`. A literal
+implementation accepts the first delivery and discards every later legitimate
+delivery on the same subscription.
+
+The target implementation keeps `eid` as subscription context and uses an
+exact token-and-payload fingerprint as a local replay key. That avoids data
+loss but cannot establish whether two differently encoded deliveries represent
+the same logical event.
+
+**Question:** Should the Event token carry a Resource-issued per-delivery `jti`
+or another event identifier, and should Agent deduplication use that value
+instead of the subscription `eid`?
+
+**Placement:** Open an Events issue after the executing delivery path provides
+an interoperability vector.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726
