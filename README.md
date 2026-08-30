@@ -17,7 +17,7 @@ specification family are present.
 
 The module requires Go 1.24 or later.
 
-This contribution branch has not been accepted or released under the
+This implementation has not yet been released under the
 `github.com/aauth-dev/auth-go` module path. Test it from this checkout; do not
 use `go get github.com/aauth-dev/auth-go` to obtain this code until a revision
 containing it is published there.
