@@ -182,6 +182,15 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
 		return
 	}
+	if err := server.observeAuthToken(request.Context(), compact, claims); err != nil {
+		switch {
+		case errors.Is(err, ErrAuthTokenRevoked), errors.Is(err, ErrAuthTokenConflict):
+			writeProblem(response, http.StatusForbidden, "access_denied", err)
+		default:
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		}
+		return
+	}
 	if err := server.authorizeScopes(request, scopes); err != nil {
 		var policyFailure *scopePolicyError
 		if errors.As(err, &policyFailure) {

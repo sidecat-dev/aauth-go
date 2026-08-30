@@ -501,7 +501,8 @@ func (server *Server) validateCanonicalAuthorizationApproval(
 	}, result); err != nil {
 		return err
 	}
-	return server.validateApprovedAuthorization(ctx, result)
+	_, err = server.validateApprovedAuthorization(ctx, result)
+	return err
 }
 
 // DenyAuthorizationInteraction durably retains a host-authenticated denial.
@@ -698,7 +699,8 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 	case AuthorizationPollInteracting:
 		server.writePendingAuthorization(response, request.URL.Path, result.RetryAfter, "interacting")
 	case AuthorizationPollApproved:
-		if err := server.validateApprovedAuthorization(request.Context(), result); err != nil {
+		claims, err := server.validateApprovedAuthorization(request.Context(), result)
+		if err != nil {
 			var tokenFailure *aauth.TokenValidationError
 			if errors.As(err, &tokenFailure) && tokenFailure.Code == aauth.TokenValidationExpired {
 				if server.consumePendingAuthorizationResult(response, request, id, result) {
@@ -706,6 +708,10 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 				}
 				return
 			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if err := server.commitIssuedAuthToken(request.Context(), result.Token, claims); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
@@ -774,25 +780,25 @@ func (server *Server) validateAuthorizationPollContext(id string, identity Autho
 	return nil
 }
 
-func (server *Server) validateApprovedAuthorization(ctx context.Context, result AuthorizationPollRecord) error {
+func (server *Server) validateApprovedAuthorization(ctx context.Context, result AuthorizationPollRecord) (aauth.AuthTokenClaims, error) {
 	granted, err := validateAuthorizationDecision(result.Decision, result.Pending.Scopes)
 	if err != nil {
-		return err
+		return aauth.AuthTokenClaims{}, err
 	}
 	if result.DecidedAt.Before(result.Pending.CreatedAt) || !result.DecidedAt.Before(result.Pending.ExpiresAt) ||
 		!result.DecidedAt.Before(result.Pending.AgentExpiresAt) {
-		return errors.New("personserver: approved auth token has an invalid decision time")
+		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token has an invalid decision time")
 	}
 	claims, err := aauth.VerifyAuthToken(ctx, result.Token, server.keyResolver, server.clock)
 	if err != nil {
-		return err
+		return aauth.AuthTokenClaims{}, err
 	}
 	if err := aauth.ValidateCurrentAuthTokenContext(claims, aauth.AuthTokenContext{
 		Issuer: server.issuer, DiscoveryDocument: aauth.PersonDiscoveryDocument,
 		Resource: result.Pending.Resource, PersonServer: server.issuer, Subject: result.Pending.Subject,
 		RequestKey: result.Pending.Confirmation,
 	}); err != nil {
-		return err
+		return aauth.AuthTokenClaims{}, err
 	}
 	expiresAt := result.DecidedAt.Add(result.Decision.Lifetime)
 	if result.Pending.AgentExpiresAt.Before(expiresAt) {
@@ -802,9 +808,9 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 		claims.IssuedAt != result.DecidedAt.Unix() || claims.ExpiresAt != expiresAt.Unix() ||
 		result.ExpiresIn != claims.ExpiresAt-claims.IssuedAt || claims.MissionS256 != "" || claims.Account != "" ||
 		len(claims.AdditionalClaims) != 0 {
-		return errors.New("personserver: approved auth token does not match the retained authorization")
+		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token does not match the retained authorization")
 	}
-	return nil
+	return claims, nil
 }
 
 func (server *Server) consumePendingAuthorizationResult(response http.ResponseWriter, request *http.Request, id string, result AuthorizationPollRecord) bool {

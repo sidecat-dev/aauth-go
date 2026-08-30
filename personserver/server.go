@@ -1,6 +1,7 @@
 // Package personserver implements explicit immediate three-party and
-// federated four-party Person Server compositions. Either composition can also
-// host the bounded person-token interaction.
+// federated four-party Person Server compositions. Either composition can host
+// bounded person-token interaction; three-party composition can also retain
+// and revoke exact issued auth tokens.
 package personserver
 
 import (
@@ -77,6 +78,9 @@ type PSAuthorizationConfig struct {
 	// AuthorizationInteractions durably retains the authorization-specific
 	// pending request and its exact terminal result.
 	AuthorizationInteractions DeferredAuthorizationStore
+	// Revocation optionally retains issued auth-token routing and enables one
+	// explicit Resource revocation attempt.
+	Revocation *AuthTokenRevocationConfig
 }
 
 // AuthorizationDecision is the scope and lifetime granted by one
@@ -153,6 +157,9 @@ type Server struct {
 	authorize                       func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	requireAuthorizationInteraction func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
 	authorizationInteractions       DeferredAuthorizationStore
+	issuedAuthTokens                IssuedAuthTokenStore
+	revocationHTTPClient            *http.Client
+	revocationAdmit                 signaturekey.EgressAdmitter
 }
 
 type authorizationMode uint8
@@ -230,6 +237,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	server.authorize = config.Authorize
 	server.requireAuthorizationInteraction = config.RequireAuthorizationInteraction
 	server.authorizationInteractions = config.AuthorizationInteractions
+	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
+		return nil, err
+	}
 	return server, nil
 }
 
@@ -693,6 +703,10 @@ func (server *Server) issuePSAuthorizationToken(
 	}
 	compact, err := aauth.MintAuthToken(server.signingKey, claims)
 	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if err := server.commitIssuedAuthToken(request.Context(), compact, claims); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}

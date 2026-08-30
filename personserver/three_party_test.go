@@ -3,6 +3,7 @@ package personserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -50,6 +51,15 @@ func TestNewPSAuthorizationRequiresOnlyThreePartyDependencies(t *testing.T) {
 			}
 		}},
 		{name: "negative retention bound", change: func(config *PSAuthorizationConfig) { config.MaximumResourceTokenLifetime = -1 }},
+		{name: "revocation without issued-token store", change: func(config *PSAuthorizationConfig) {
+			config.Revocation = &AuthTokenRevocationConfig{HTTPClient: http.DefaultClient, Admit: allowRevocationEgress}
+		}},
+		{name: "revocation without HTTP client", change: func(config *PSAuthorizationConfig) {
+			config.Revocation = &AuthTokenRevocationConfig{IssuedTokens: newTestIssuedAuthTokenStore(), Admit: allowRevocationEgress}
+		}},
+		{name: "revocation without egress admission", change: func(config *PSAuthorizationConfig) {
+			config.Revocation = &AuthTokenRevocationConfig{IssuedTokens: newTestIssuedAuthTokenStore(), HTTPClient: http.DefaultClient}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config := valid
@@ -119,6 +129,7 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 	var consentRequests []AuthorizationRequest
 	decision := AuthorizationDecision{Scopes: []string{"records.read"}, Lifetime: time.Hour}
 	var authorizationErr error
+	issuedAuthTokens := newTestIssuedAuthTokenStore()
 	server, err := NewPSAuthorization(PSAuthorizationConfig{
 		Issuer: personID, SigningKey: personKey, KeyResolver: resolver, Clock: clock,
 		NewID: func() string { return "three-party-auth-token" }, Tokens: store,
@@ -126,6 +137,13 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 		Authorize: func(_ context.Context, request AuthorizationRequest) (AuthorizationDecision, error) {
 			consentRequests = append(consentRequests, request)
 			return decision, authorizationErr
+		},
+		Revocation: &AuthTokenRevocationConfig{
+			IssuedTokens: issuedAuthTokens,
+			Admit:        allowRevocationEgress,
+			HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return nil, errors.New("unexpected revocation request: " + request.URL.String())
+			})},
 		},
 	})
 	if err != nil {
@@ -175,6 +193,13 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 		claims.ExpiresAt != now.Add(30*time.Minute).Unix() || output.ExpiresIn != int64((30*time.Minute)/time.Second) {
 		t.Fatalf("three-party auth token = %#v; expires_in=%d", claims, output.ExpiresIn)
 	}
+	issued, err := issuedAuthTokens.LoadIssuedAuthToken(context.Background(), aauth.TokenReference{Issuer: personID, JTI: claims.JTI})
+	if err != nil || issued.Reference != (aauth.TokenReference{Issuer: personID, JTI: claims.JTI}) ||
+		issued.Resource != resourceID ||
+		issued.CompactSHA256 != sha256.Sum256([]byte(output.AuthToken)) ||
+		issued.IssuedAt != time.Unix(claims.IssuedAt, 0).UTC() || issued.ExpiresAt != time.Unix(claims.ExpiresAt, 0).UTC() {
+		t.Fatalf("issued auth-token record = %#v, %v", issued, err)
+	}
 	wantConsent := AuthorizationRequest{
 		Agent: agentID, Resource: resourceID, Subject: "person-123", Tenant: "tenant-1",
 		Scopes: []string{"records.read", "records.write"},
@@ -185,9 +210,15 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 	if !reflect.DeepEqual(consentRequests, []AuthorizationRequest{wantConsent}) {
 		t.Fatalf("consent requests = %#v", consentRequests)
 	}
+	issuedAuthTokens.commitError = errors.New("issued auth-token retention unavailable")
+	retentionFailure := callTokenEndpoint(resourceToken(personID, "retention-failure-resource-token", "records.read"))
+	if retentionFailure.Code != http.StatusInternalServerError || bytes.Contains(retentionFailure.Body.Bytes(), []byte(`"auth_token"`)) {
+		t.Fatalf("retention failure = %d %s", retentionFailure.Code, retentionFailure.Body.String())
+	}
+	issuedAuthTokens.commitError = nil
 
 	wrongTopology := callTokenEndpoint(resourceToken("https://access.example", "federated-resource-token", "records.read"))
-	if wrongTopology.Code == http.StatusOK || len(consentRequests) != 1 {
+	if wrongTopology.Code == http.StatusOK || len(consentRequests) != 2 {
 		t.Fatalf("federated token = %d %s; consent=%d", wrongTopology.Code, wrongTopology.Body.String(), len(consentRequests))
 	}
 

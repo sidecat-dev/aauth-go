@@ -5,8 +5,9 @@ current implementation covers direct Agent and Person identity access,
 Resource-managed opaque sessions, immediate and explicitly deferred three-party
 PS authorization, one four-party federated flow, Person-Server-hosted
 person-token interaction, both specified deliveries of the auth-token
-requirement (`401` retry and Resource-held `202`), and the HTTP Signature-Key
-behavior those paths need.
+requirement (`401` retry and Resource-held `202`), bounded three-party
+auth-token revocation with explicit re-authorization, and the HTTP
+Signature-Key behavior those paths need.
 
 It is not a complete AAuth implementation, an interoperability claim, or an
 official conformance suite. The supported boundary is explicit so applications
@@ -48,8 +49,9 @@ It covers:
   authorization policy callbacks;
 - copy-safe additional agent and auth-token claims at the policy seams that
   can use them;
-- host-supplied person-token, PS-authorization, Resource-session, and
-  held-invocation store contracts; and
+- host-supplied person-token, PS-authorization, issued-auth-token,
+  Resource-auth-token-status, Resource-session, and held-invocation store
+  contracts; and
 - a small agent client that performs each protocol step explicitly.
 
 ## Packages
@@ -61,8 +63,8 @@ It covers:
 | `signaturekey` | HTTP request proof, Signature-Key credentials, and issuer-key discovery |
 | `agentprovider` | Agent-token issuance plus Agent Provider metadata and JWKS |
 | `agent` | Explicit Core calls, including direct Agent identity, Resource-session use, PS consent, one interaction poll, and one held-invocation poll; no hidden loops or retries |
-| `personserver` | Immediate person-token issuance plus either direct PS authorization or AS federation; optional domain-specific stores support person-token interaction and deferred three-party consent |
-| `resource` | Direct Agent or Person identity protection, Resource-owned opaque sessions, explicit PS or federated authorization, resource-token issuance, and held-request completion |
+| `personserver` | Immediate person-token issuance plus either direct PS authorization or AS federation; optional domain-specific stores support person-token interaction, deferred three-party consent, and exact issued-token revocation |
+| `resource` | Direct Agent or Person identity protection, Resource-owned opaque sessions, explicit PS or federated authorization, resource-token issuance, observed-token revocation, and held-request completion |
 | `accessserver` | Person-Server-authenticated policy and auth-token issuance |
 
 Each role is an ordinary Go package. Applications supply keys, clocks, HTTP
@@ -262,6 +264,54 @@ The Agent uses the same explicit `PersonToken`, `Authorize`, `Exchange`, and
 selects the verified issuer role; the Agent separately binds `iss` to the
 resource-token audience. Each explicit Resource constructor enforces the role
 it accepts. This remains unambiguous when a PS and AS share one origin.
+
+## Revoke and explicitly re-authorize
+
+Three-party revocation is optional. Configure the Person Server with an
+`IssuedAuthTokenStore` and the Resource with an `AuthTokenStatusStore`. The
+Person Server retains each issued token's reference before release; the
+Resource recognizes a token on its first otherwise-valid protected use.
+
+```go
+people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+	// ordinary three-party fields omitted
+	Revocation: &personserver.AuthTokenRevocationConfig{
+		IssuedTokens: issuedTokens,
+		HTTPClient:   httpClient,
+		Admit:        admitEgress,
+	},
+})
+
+protectedResource, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{
+	// ordinary three-party fields omitted
+	AuthTokenStatuses: authTokenStatuses,
+})
+
+err = people.RevokeIssuedAuthToken(ctx, aauth.TokenReference{
+	Issuer: personServerID,
+	JTI:    authClaims.JTI,
+})
+```
+
+`Admit` runs before the metadata GET and again before the metadata-selected
+revocation endpoint can be contacted; hosts use it to apply their egress
+policy. The supplied HTTP client is cloned; revocation does not use its ambient
+cookie jar or redirect callback, and the caller's client remains unchanged.
+The transport still owns DNS and connection policy.
+
+`RevokeIssuedAuthToken` reads Resource metadata, makes one revocation POST, and
+never retries. While the token records remain retained, a lost response is
+safe to retry explicitly because the Resource returns `200` for both a new and
+an already-retained revocation. After expiry, a removed record may instead be
+unrecognized. The Agent re-authorizes through the ordinary
+`Authorize` and `Exchange` calls; it does not refresh or replace credentials
+automatically. `RevokeIssuedAuthToken` is the convenience call for a Resource
+with no extra signature fields. If metadata advertises additional components,
+that call stops before the POST and names the missing header; use
+`RevokeIssuedAuthTokenWithHeaders` to supply fresh values. This cut does not
+revoke a token before the Resource has first
+recognized it, and it does not implement four-party, Agent-token, mission, or
+session revocation.
 
 ## Complete deferred PS consent
 
@@ -524,6 +574,23 @@ Expected output:
 AAuth deferred PS consent complete: person-123 has records.read
 ```
 
+The revocation example shows a lost response, explicit idempotent retry,
+Resource recomposition, refusal of the old token, and explicit
+re-authorization:
+
+```sh
+go run ./example/revocation
+```
+
+Expected output:
+
+```text
+auth-token-1 accepted
+auth-token-1 revocation response lost; explicit retry succeeded after Resource recomposition
+auth-token-1 refused: 403 access_denied
+auth-token-2 accepted after explicit re-authorization
+```
+
 The four-party example composes all role handlers behind an in-process logical
 transport. It issues all four token types, performs the Person Server to Access
 Server exchange, and calls a protected HTTP handler.
@@ -545,16 +612,19 @@ stores. They are executable documentation, not deployment templates.
 
 The current implementation does not provide a general deferred-authorization
 engine, interaction relay, clarification, automatic polling, token renewal or
-revocation, parent or sub-agent delegation, call chaining, R3, Events,
+general token revocation, parent or sub-agent delegation, call chaining, R3, Events,
 Budgets, Bootstrap, or the complete interoperability demo profile. Its narrow
 deferred paths are person-token interaction, three-party PS consent,
-Resource-managed interaction, and Resource-held auth-token delivery.
+Resource-managed interaction, and Resource-held auth-token delivery. Its
+revocation path is limited to a PS-issued three-party auth token already
+recognized by the Resource.
 
 The role packages do not provide TLS listeners, key storage, a durable replay
 store or multi-process coordination. Hosts supply `DeferredTokenStore`,
-`DeferredAuthorizationStore`, `SessionStore` (or `DeferredSessionStore` when
-interaction is enabled), and `HeldInvocationStore`; this repository supplies
-no durable adapter. The agent client does not cache credentials, retry
+`DeferredAuthorizationStore`, `IssuedAuthTokenStore`, `AuthTokenStatusStore`,
+`SessionStore` (or `DeferredSessionStore` when interaction is enabled), and
+`HeldInvocationStore`; this repository supplies no durable adapter. The agent
+client does not cache credentials, retry
 consequences, or automatically follow a deferred response. A deployment must
 supply those behaviors where its threat model and availability requirements
 need them.

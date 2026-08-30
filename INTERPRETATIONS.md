@@ -243,3 +243,37 @@ interaction code.
 `personserver/authorization_interaction_test.go:TestDeferredAuthorizationDecisionRacesAndDeadlineAreTerminal`
 and
 `integration/deferred_ps_authorization_test.go:TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition`.
+
+## Three choices for bounded three-party revocation
+
+**Source:** AAuth Core, `Token Revocation`, `Keying Material`, `Covered
+Components`, `Authentication Errors`, and `Verification (Server)`.
+
+### Server identity and body binding
+
+The revocation example uses `scheme=jwt`, but a three-party auth token binds
+the Agent's key, not the issuing Person Server's key. The example also signs no
+body component even though `(iss, jti)` selects the token to terminate.
+
+The Person Server therefore signs `/revoke` with its existing `jwks_uri`
+server identity. Both sides require `content-type`, `content-digest`, and the
+Resource's advertised components. The Resource accepts only the PS that equals
+the token issuer in this three-party path.
+
+### Refusal after revocation
+
+A revoked token still has a valid signature and request proof. Because Core
+does not define the protected-use response, this implementation provisionally
+returns `403 access_denied` rather than a misleading `401 Signature-Error`.
+This check stops a request only when the store reports revocation before host
+callbacks; it does not cancel an already-admitted in-flight request.
+
+### No pre-use tombstone
+
+The Resource returns `404` when it has not yet observed `(iss, jti)`; it does
+not invent a pre-use tombstone from an underspecified request.
+
+**Executable examples:**
+`resource/revocation_test.go:TestRevocationEndpointRequiresBoundPersonServerProof`
+and
+`integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`.

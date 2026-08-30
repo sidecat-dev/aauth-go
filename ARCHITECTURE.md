@@ -4,7 +4,8 @@ This repository currently implements direct Agent and Person identity access,
 Resource-managed opaque sessions, immediate and deferred three-party PS
 authorization, and one four-party federated AAuth Core flow in Go. It also
 implements Person-Server-hosted interaction and baseline or Resource-held
-delivery of the auth-token requirement. It separates token semantics, HTTP
+delivery of the auth-token requirement, plus bounded three-party auth-token
+revocation and explicit re-authorization. It separates token semantics, HTTP
 request proof, role behavior, application policy, and application storage. It
 does not define one universal verification object that spans those layers.
 
@@ -24,6 +25,7 @@ flowchart TD
     consentexample[example/psconsent]
     agentexample[example/agentidentity]
     sessionexample[example/resourcesession]
+    revocationexample[example/revocation]
     agentprovider[agentprovider]
     agent[agent]
     personserver[personserver]
@@ -70,6 +72,13 @@ flowchart TD
     sessionexample --> core
     sessionexample --> sk
     sessionexample --> jose
+    revocationexample --> agentprovider
+    revocationexample --> agent
+    revocationexample --> personserver
+    revocationexample --> resource
+    revocationexample --> core
+    revocationexample --> sk
+    revocationexample --> jose
     agentprovider --> core
     agentprovider --> jose
     agent --> core
@@ -112,7 +121,7 @@ The three private support packages are deliberately small:
 - `internal/interaction` generates and compares human-readable correlation
   codes and derives their non-plaintext store keys.
 
-The five `example` programs are executable compositions. The `integration`
+The six `example` programs are executable compositions. The `integration`
 directory contains an external test package and adds no production import
 edge.
 
@@ -230,6 +239,14 @@ interactive person-token issuance when that store also implements
 policy and `DeferredAuthorizationStore`, or both. The deferred path parks the
 fully verified three-party request before the host decision. Federation adds
 `Consent`, `AccessServerEndpoint`, and an HTTP client.
+Three-party revocation additionally pairs `IssuedAuthTokenStore` with one
+host-supplied HTTP client and egress-admission callback. Immediate issuance
+commits the exact reference and Resource before release. Deferred issuance
+commits the same record after the approved token is verified and before its
+terminal result is consumed. `RevokeIssuedAuthToken` admits and discovers the
+retained Resource's endpoint, admits the selected revocation URL, and sends one
+body-bound `jwks_uri` request; caller-controlled retries are idempotent while
+the token records remain retained.
 At the authenticated UI, the host atomically matches the pending URL reference
 and entered code, then separately authenticates the person before approving or
 denying the request. Deferred PS consent permits exactly three failed code
@@ -255,6 +272,9 @@ the code nor reference is decision authority.
   issuance.
 - `NewPSAuthorization` publishes JWKS and `/authorize`, issues each resource
   token to the verified Person Server, and accepts only PS-issued auth tokens.
+  When supplied `AuthTokenStatusStore`, it also advertises `/revoke`, records
+  each otherwise-valid auth token on first protected use, and refuses a
+  retained revocation before any host callback.
 - `NewFederatedAuthorization` publishes the same surface, issues resource
   tokens to one configured Access Server, and accepts only AS-issued auth
   tokens. It alone exposes Resource-held delivery in this cut. Its explicit
@@ -435,6 +455,42 @@ sequenceDiagram
 The executing version is
 [`TestCurrentCoreImmediatePSAuthorization`](integration/three_party_authorization_test.go).
 
+## Three-party revocation and re-authorization sequence
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant PS as Person Server
+    participant I as IssuedAuthTokenStore
+    participant R as Resource
+    participant S as AuthTokenStatusStore
+    participant App as Protected handler
+
+    PS->>I: retain issued auth-token reference and Resource
+    PS-->>A: auth token 1
+    A->>R: signed protected request with token 1
+    R->>S: observe exact issuer, JTI, digest, and expiry
+    R->>App: execute request
+    PS->>R: signed POST /revoke with issuer and JTI
+    R->>S: atomically mark token 1 revoked
+    R-->>PS: 200 newly or already revoked
+    A->>R: retry protected request with token 1
+    R->>S: exact observation reports revoked
+    R-->>A: 403 access_denied
+    A->>R: ordinary authorization sequence
+    R-->>A: fresh resource token
+    A->>PS: ordinary exchange
+    PS-->>A: auth token 2
+    A->>R: protected request with token 2
+    R->>App: execute request
+```
+
+This implementation does not retain a pre-use tombstone: it returns `404`
+until the Resource has observed `(iss, jti)`. Core supplies no expiry or token
+bytes, so tombstone lifetime and first-use race semantics remain open
+(`AAG-F037`). The executing recovery path is
+[`TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`](integration/revocation_reauthorization_test.go).
+
 ## Deferred three-party PS-consent sequence
 
 ```mermaid
@@ -538,6 +594,7 @@ The executing version of this sequence is
 | Resource-managed session | `resource` verifies the current agent token and request proof, exact retained grant, opaque session binding, route scope, and signed `authorization` field | The Resource host decides subject, scope, and lifetime and supplies `SessionStore`; if interaction is enabled, it also authenticates the person and supplies `DeferredSessionStore` |
 | PS authorization | `personserver` verifies the retained token chain and keeps the grant within the resource-token scope and one-hour lifetime | `Authorize` narrows scopes and selects lifetime or refuses access |
 | Deferred PS consent | `personserver` retains the fully verified request, enforces the fixed three-attempt code bound, correlates one host visit, reauthenticates every poll, and verifies an approved token before delivery | The host authenticates the person and records approval, denial, abandonment, or internal interaction failure through `DeferredAuthorizationStore` |
+| Three-party revocation | `personserver` retains issued-token routing and sends one signed request; `resource` atomically observes and revokes the exact issuer/JTI/digest record before host callbacks | The host selects which issued token to revoke and supplies both role-specific stores and outbound transport policy |
 | Federated consent | `personserver` verifies the retained token chain | `Consent` allows or refuses the request before AS federation |
 | Federation | `accessserver` verifies the Person Server proof and token context | `TrustPersonServer` admits the PS; `Authorize` narrows scopes and lifetime |
 | Scoped protected call | `resource` verifies the auth token and exact request proof, then enforces the route’s required scopes | `ResolvePerson` matches or creates `(ps, sub)`; the configured handler applies application behavior to `AuthPrincipal` |
@@ -572,6 +629,19 @@ approved, denied, abandoned, expired, or server-error result is consumed before
 delivery. Internal retained-state failures use registered `500 server_error`.
 A later poll returns `410 invalid_code`.
 
+Three-party revocation uses two separate role-owned stores.
+`personserver.IssuedAuthTokenStore` retains the issued reference, Resource, and
+lifetime before either immediate or deferred token publication.
+`resource.AuthTokenStatusStore` recognizes an otherwise-valid token on first
+protected use and atomically preserves active or revoked state keyed by
+`(iss, jti)`, with the exact compact-token digest preventing identity reuse.
+Neither interface is a general token lifecycle store.
+
+Linearizability orders observation and revocation at the store boundary; it
+does not cancel a protected request whose observation already returned active.
+Core defines no in-flight request fence, so hosts that require cancellation of
+already-admitted work need a separate application boundary.
+
 Immediate-only Resource-managed authorization requires `resource.SessionStore`.
 Resource-managed interaction adds `resource.DeferredSessionStore`.
 `CreatePending` precedes the first `202`; code consumption enforces the
@@ -597,8 +667,8 @@ can change the eventual result.
 The repository does not provide durable store implementations. The integration
 tests use in-memory stores to exercise these contracts and server-value
 recomposition. They do not prove process-restart persistence. Discovery caches
-and Agent pending handles are process-local. There is no token revocation
-store, person directory, or general deferred-operation store in this cut.
+and Agent pending handles are process-local. There is no durable revocation
+adapter, person directory, or general deferred-operation store in this cut.
 
 An approved person token is validated before delivery. Its signing key must
 remain trusted and resolvable until delivery or expiry. The built-in Person

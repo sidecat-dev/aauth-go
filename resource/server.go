@@ -1,7 +1,8 @@
 // Package resource implements direct Agent and Person identity access,
 // Resource-managed opaque sessions, and explicit PS-authorized or federated
-// auth-token access for the bounded Core Resource role. Resource-held
-// auth-token delivery belongs to the federated composition.
+// auth-token access for the bounded Core Resource role. Three-party Resources
+// can retain observed-token revocation state. Resource-held auth-token
+// delivery belongs to the federated composition.
 package resource
 
 import (
@@ -67,6 +68,9 @@ type PSAuthorizationConfig struct {
 	RequiredScopes                func(*http.Request) []string
 	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	Protected                     http.Handler
+	// AuthTokenStatuses enables observation and revocation of accepted auth
+	// tokens. A nil store omits the revocation endpoint.
+	AuthTokenStatuses AuthTokenStatusStore
 }
 
 // AgentIdentityConfig constructs a Resource that authorizes application
@@ -204,6 +208,7 @@ type Server struct {
 	requiredScopes                func(*http.Request) []string
 	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	protected                     http.Handler
+	authTokenStatuses             AuthTokenStatusStore
 	heldInvocations               HeldInvocationStore
 	holdAuthTokenRequest          func(*http.Request) bool
 	maxHeldRequestBodyBytes       int64
@@ -294,7 +299,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if err := aauth.ValidateServerIdentifier(config.AccessServer); err != nil {
 		return nil, fmt.Errorf("aauth: resource access server: %w", err)
 	}
-	return newAuthorizationServer(config, authorizationTopologyFederated)
+	return newAuthorizationServer(config, authorizationTopologyFederated, nil)
 }
 
 // NewPSAuthorization constructs a Resource that challenges person-token
@@ -309,10 +314,14 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
 		Protected: config.Protected,
-	}, authorizationTopologyPersonServer)
+	}, authorizationTopologyPersonServer, config.AuthTokenStatuses)
 }
 
-func newAuthorizationServer(config FederatedAuthorizationConfig, topology authorizationTopology) (*Server, error) {
+func newAuthorizationServer(
+	config FederatedAuthorizationConfig,
+	topology authorizationTopology,
+	authTokenStatuses AuthTokenStatusStore,
+) (*Server, error) {
 	if err := aauth.ValidateServerIdentifier(config.Issuer); err != nil {
 		return nil, fmt.Errorf("aauth: resource issuer: %w", err)
 	}
@@ -398,6 +407,7 @@ func newAuthorizationServer(config FederatedAuthorizationConfig, topology author
 		requiredScopes:                config.RequiredScopes,
 		resolvePerson:                 config.ResolvePerson,
 		protected:                     config.Protected,
+		authTokenStatuses:             authTokenStatuses,
 		heldInvocations:               config.HeldInvocations,
 		holdAuthTokenRequest:          config.HoldAuthTokenRequest,
 		maxHeldRequestBodyBytes:       config.MaxHeldRequestBodyBytes,
@@ -424,8 +434,8 @@ func validateAdditionalSignatureComponents(components []string) ([]string, error
 	return validated, nil
 }
 
-// Handler returns the Resource's discovery, authorization, and protected
-// request surface.
+// Handler returns the Resource's discovery, authorization, optional revocation,
+// and protected request surface.
 func (server *Server) Handler() http.Handler {
 	if server == nil || server.handler == nil {
 		return http.NotFoundHandler()
@@ -441,6 +451,9 @@ func (server *Server) newHandler() http.Handler {
 	}
 	if server.accessMode == aauth.AccessModeAuthToken {
 		mux.HandleFunc("POST /authorize", server.serveAuthorization)
+	}
+	if server.authTokenStatuses != nil {
+		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
 	if server.heldInvocations != nil {
 		mux.HandleFunc("GET /pending/{id}", server.serveHeldPoll)
@@ -459,6 +472,7 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		JWKSURI                       string            `json:"jwks_uri,omitempty"`
 		AccessMode                    string            `json:"access_mode"`
 		AuthorizationEndpoint         string            `json:"authorization_endpoint,omitempty"`
+		RevocationEndpoint            string            `json:"revocation_endpoint,omitempty"`
 		ScopeDescriptions             map[string]string `json:"scope_descriptions,omitempty"`
 		AdditionalSignatureComponents []string          `json:"additional_signature_components,omitempty"`
 	}{
@@ -466,6 +480,7 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		JWKSURI:                       resourceJWKSURI(server),
 		AccessMode:                    string(server.accessMode),
 		AuthorizationEndpoint:         resourceAuthorizationEndpoint(server),
+		RevocationEndpoint:            resourceRevocationEndpoint(server),
 		ScopeDescriptions:             cloneScopeDescriptions(server.scopeDescriptions),
 		AdditionalSignatureComponents: append([]string(nil), server.additionalSignatureComponents...),
 	})
@@ -483,6 +498,13 @@ func resourceAuthorizationEndpoint(server *Server) string {
 		return ""
 	}
 	return server.issuer + "/authorize"
+}
+
+func resourceRevocationEndpoint(server *Server) string {
+	if server.authTokenStatuses == nil {
+		return ""
+	}
+	return server.issuer + "/revoke"
 }
 
 func (server *Server) serveJWKS(response http.ResponseWriter, _ *http.Request) {

@@ -18,7 +18,8 @@ Rendered Internet-Draft publications may be older than these editor revisions.
 
 The current implementation covers direct Agent identity, direct Person
 identity, Resource-managed opaque sessions, immediate and deferred three-party
-PS authorization, and the four-party Core path. A direct Resource verifies the
+PS authorization, bounded three-party auth-token revocation and explicit
+re-authorization, and the four-party Core path. A direct Resource verifies the
 selected agent or person token and matching request proof without requiring an
 Access Server. A Resource-managed session similarly needs no Person Server or
 Access Server: the Resource applies immediate policy and may run its own
@@ -41,6 +42,13 @@ domain-specific and does not claim deferred AS federation. Both authorization
 topologies support a baseline `401` retry. The federated Resource can instead
 hold the request and return `202`, completed through explicit signed `GET`
 polls. Each `PollAuthToken` call makes exactly one poll.
+For three-party revocation, the PS retains issued-token routing before release,
+the Resource recognizes an otherwise-valid token on first protected use, and
+the PS admits each remote URL before making one body-bound signed revocation
+request. A caller explicitly
+retries an uncertain outcome or runs the ordinary authorization sequence for a
+fresh token. This does not claim pre-use, four-party, Agent-token, mission, or
+session revocation.
 
 Core requires fully specified JOSE algorithm identifiers and requires support
 for `Ed25519`. This implementation uses `Ed25519`; it does not accept the
@@ -59,7 +67,8 @@ polymorphic `EdDSA` identifier as an equivalent spelling.
 
 The current implementation uses `jwt` for direct, three-party, and four-party
 protected requests and `jwks_uri` for the Person Server to Access Server
-exchange, plus a small set of supporting key operations. It is not a complete
+exchange and the Person Server to Resource revocation request, plus a small set
+of supporting key operations. It is not a complete
 implementation of every Signature-Key scheme or optional mechanism.
 
 ## Companion sources not implemented

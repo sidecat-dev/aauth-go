@@ -513,3 +513,64 @@ that the application `Location` identifies a separate deferred operation?
 
 **Placement:** Add to the held-delivery issue or open a focused deferred-state
 issue if the editors prefer to separate result identity from crash recovery.
+
+### AAG-F034 — The three-party revocation example cannot authenticate the PS as written
+
+**Source:** AAuth Core, `Token Revocation` and `Keying Material`.
+
+The prose says a PS calls the Resource, but the example targets `ps.example`
+and uses `scheme=jwt`. A three-party auth token is bound to the Agent key, so
+the PS cannot use it to prove its own identity. The implementation uses the
+PS's existing `jwks_uri` server identity.
+
+**Question:** Should the example target the Resource and use the issuing
+server's `jwks_uri` credential, or is another PS credential intended?
+
+**Placement:** Open a focused AAuth Core revocation issue.
+
+### AAG-F035 — The revocation example does not bind the token reference body
+
+**Source:** AAuth Core, `Token Revocation` and `Covered Components`.
+
+The signed example omits `content-type` and `content-digest`. The general body
+rule names PS and AS endpoints, not a Resource `/revoke` endpoint. A captured
+proof can therefore be paired with a different `(iss, jti)` body. The
+implementation requires both body fields plus the Resource's advertised
+components.
+
+**Question:** Should Core require `content-type` and `content-digest` for every
+JSON revocation request?
+
+**Placement:** Add to the focused AAuth Core revocation issue and cross-link
+the Signature-Key covered-components discussion.
+
+### AAG-F036 — Protected use after revocation has no response contract
+
+**Source:** AAuth Core, `Token Revocation`, `Authentication Errors`, and
+`Verification (Server)`.
+
+Core defines `/revoke` responses but not the later protected Resource response.
+It also reserves every `401` for a `Signature-Error`, although the revoked
+token and request proof may both verify. The implementation returns
+`403 access_denied` before route policy or application callbacks.
+
+**Question:** What status and machine-readable error should a Resource return
+when a valid proof presents a revoked auth token?
+
+**Placement:** Add to the focused AAuth Core revocation issue.
+
+### AAG-F037 — Core does not define the lifetime or race semantics of a pre-use tombstone
+
+**Source:** AAuth Core, `Token Revocation`.
+
+The `(iss, jti)` request can identify a pre-use tombstone, but the Resource has
+not seen the token's expiry or exact bytes. Core requires `404` when the pair is
+not recognized and does not say whether that response may still retain state,
+how long such state lasts, how later token bytes are checked, or which side of
+a concurrent first-use/revoke race wins.
+
+**Question:** Must `404` be non-mutating, or should the Resource retain a
+pre-use tombstone? If it retains one, what bounds its lifetime and how should a
+concurrent first use be resolved?
+
+**Placement:** Add to the focused AAuth Core revocation issue.
