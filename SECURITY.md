@@ -23,6 +23,25 @@ fix and disclosure with the reporter. A public specification ambiguity that
 does not reveal an exploitable implementation defect may be reported through
 the normal issue tracker.
 
+## Deployment responsibilities
+
+URL admission is not a network sandbox. The HTTP key resolver validates
+metadata, issuer identity, JWKS documents, and response bounds and rejects
+redirects, but the caller-supplied transport must resolve and pin the admitted
+host, reject forbidden addresses, and prevent DNS rebinding. Give every
+outbound operation a finite context and apply the same destination controls to
+Agent and Person Server clients.
+
+Keep signing keys outside this module and use HTTPS at the process boundary. A
+valid signature authenticates protocol input; it does not replace application
+authorization policy. Durable store implementations contain sensitive tokens,
+requests, and decisions and must preserve the exact integrity,
+confidentiality, and atomicity required by their public contracts.
+
+When a pending result outlives a signing-key rotation, the deployment must keep
+the required prior verification key resolvable until that result is delivered
+or expires. The built-in role JWKS handlers publish only their active key.
+
 ## Supported code
 
 The project is under active development. Security fixes target the current

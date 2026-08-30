@@ -1,8 +1,9 @@
 // Package resource implements direct Agent and Person identity access,
 // Resource-managed opaque sessions, and explicit PS-authorized or federated
-// auth-token access for the bounded Core Resource role. Three-party Resources
-// can retain observed-token revocation state. Resource-held auth-token
-// delivery belongs to the federated composition.
+// auth-token access for the bounded Core Resource role. It also exposes a
+// fully verified auth token to a call-chain intermediary, can retain observed
+// three-party revocation state, and supports Resource-held delivery in the
+// federated composition.
 package resource
 
 import (

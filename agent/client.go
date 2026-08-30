@@ -1,6 +1,7 @@
 // Package agent implements explicit calls for the bounded AAuth Core client
-// flow, including direct Agent identity access, Resource-managed sessions, and
-// one-shot polling of person-token interaction and Resource-held invocations.
+// paths, including direct identity access, Resource-managed sessions,
+// immediate authorization, parent-mediated sub-agents, one Resource call
+// chain, and one-shot polling of supported interactions and held invocations.
 package agent
 
 import (

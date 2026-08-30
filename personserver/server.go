@@ -1,7 +1,8 @@
 // Package personserver implements explicit immediate three-party and
-// federated four-party Person Server compositions. Either composition can host
-// bounded person-token interaction; three-party composition can also retain
-// and revoke exact issued auth tokens.
+// federated four-party Person Server compositions. It supports top-level and
+// parent-mediated issuance. Three-party composition also supports bounded
+// interaction, issued-token revocation, and one same-Person-Server Resource
+// call chain.
 package personserver
 
 import (
