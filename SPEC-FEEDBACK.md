@@ -1,8 +1,9 @@
 # AAuth specification feedback
 
 This register separates feedback already delivered to the editors from current
-implementation questions. It is not a scorecard. Source text and editor
-answers remain authoritative.
+implementation questions against the exact manifest in
+[SPECIFICATIONS.md](SPECIFICATIONS.md). It is not a scorecard. Source text and
+editor answers remain authoritative.
 
 ## Status vocabulary
 
@@ -17,6 +18,22 @@ answers remain authoritative.
 - **evidence pending** — the source suggests a question, but the repository
   does not yet contain the executable evidence needed before submission.
 - **withdrawn** — later source or implementation evidence resolved the concern.
+
+## Source review boundary
+
+The source family is synchronized as one manifest, but review depth follows
+executing behavior. “Mapped” means the source and intended package boundary
+were read; it is not an implementation or conformance claim.
+
+| Source | Review state | Feedback boundary |
+| --- | --- | --- |
+| AAuth Core | implementation-reviewed for current paths | Submitted history and executable current questions appear below; unimplemented Core areas remain evidence-pending |
+| HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
+| R3 | source-reviewed and architecture-mapped | `AAG-F005`, `AAG-F006`, `AAG-F014`, `AAG-F014a`, and `AAG-F015` remain evidence-pending until an R3 path executes |
+| Events | source-synchronized and architecture-mapped | No implementation-backed question yet |
+| Bootstrap | source-synchronized and architecture-mapped | The document is informational; no enrollment or refresh path has produced implementation feedback yet |
+| Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
+| Interoperability demo profile | source-reviewed against current internal paths | `AAG-F001` remains evidence-pending; no independent implementation has been exercised |
 
 ## Submitted history
 

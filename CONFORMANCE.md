@@ -79,15 +79,12 @@ Status terms:
 
 ## Companion specifications
 
-| Document | Status | Boundary |
-| --- | --- | --- |
-| Rich Resource Requests (R3) | Not implemented | Known R3 claims fail closed in Core token verification. |
-| AAuth Events | Not implemented | No event token, subscription, or delivery API. |
-| AAuth Bootstrap | Not implemented | No enrollment or setup flow. |
-| AAuth Budgets | Not implemented | Known Budget claims fail closed in Core token verification. |
-| Interoperability demo profile | Not implemented | No interop-profile conformance claim. |
-
-The exclusions are explicit: deferred behavior other than the four documented
-paths, missions, Bootstrap enrollment, R3, Events, Budgets, broader revocation,
-chaining, Agent Provider sub-agent issuance, parent-mediated authorization,
-durable adapters, and persistence beyond the documented store contracts.
+| Source area | Status | Current boundary | Evidence |
+| --- | --- | --- | --- |
+| R3 vocabularies, metadata, and access annotations | Not implemented | No `r3_vocabularies`, operation annotation, mixed-mode, or vocabulary codec exists. | — |
+| R3 documents and direct grants | Not implemented | Known `r3_uri`, `r3_s256`, and `r3_granted` token claims and the `r3_operations` authorization parameter fail closed. No document store, signed fetch, policy, audit, or Resource enforcement path exists. | [`core_token_api_external_test.go`](core_token_api_external_test.go), [`resource/server_test.go`](resource/server_test.go) |
+| R3 per-call proposals | Not implemented | `per-call` and `r3_per_call` remain unsupported. Core held delivery is not proposal or executed-result custody. | — |
+| Events subscriptions and delivery | Not implemented | No subscribe token, event token, subscription endpoint, AP inbox, `self-jwt` proof, or delivery path exists. | — |
+| Bootstrap enrollment and refresh | Partial | Caller-owned signing keys, agent-token minting and verification, AP metadata/JWKS, and `agentprovider.Issue` are reusable primitives. No enrollment endpoint, durable enrollment record, attestation policy, refresh request, or rotation journey exists. | [`core_token_api_external_test.go`](core_token_api_external_test.go), [`agentprovider/server_test.go`](agentprovider/server_test.go) |
+| Budget grants and enforcement | Not implemented | Known `budget` and `budget_consumed` token claims fail closed. No metadata, narrowing, response header, reservation, hard-cap, exhaustion, or usage path exists. | [`core_token_api_external_test.go`](core_token_api_external_test.go) |
+| Interoperability demo profile | Partial | Internal missionless paths exercise the substance of Surfaces 2–4: person-token presentation, resource-token issuance and discovery, and three- or four-party auth-token issuance and presentation. Surface 1 mission approval and Surface 5 parent-mediated sub-agent handling are absent. There is no profile-specific black-box run or independent-implementation interoperability claim. | [`integration/three_party_authorization_test.go`](integration/three_party_authorization_test.go), [`integration/core_four_party_test.go`](integration/core_four_party_test.go) |

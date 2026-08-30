@@ -612,12 +612,18 @@ stores. They are executable documentation, not deployment templates.
 
 The current implementation does not provide a general deferred-authorization
 engine, interaction relay, clarification, automatic polling, token renewal or
-general token revocation, parent or sub-agent delegation, call chaining, R3, Events,
-Budgets, Bootstrap, or the complete interoperability demo profile. Its narrow
-deferred paths are person-token interaction, three-party PS consent,
+general token revocation, parent or sub-agent delegation, call chaining, R3,
+Events, Budgets, Bootstrap, or the complete interoperability demo profile. Its
+narrow deferred paths are person-token interaction, three-party PS consent,
 Resource-managed interaction, and Resource-held auth-token delivery. Its
 revocation path is limited to a PS-issued three-party auth token already
 recognized by the Resource.
+
+The next complete Core seam is parent-mediated sub-agent person- and auth-token
+handling: the parent requests credentials bound to the sub-agent key, and the
+sub-agent uses them itself. The first companion seam after the remaining Core
+paths is one MCP-only R3 direct grant. [Architecture](ARCHITECTURE.md) assigns
+the other companion boundaries without creating placeholder packages.
 
 The role packages do not provide TLS listeners, key storage, a durable replay
 store or multi-process coordination. Hosts supply `DeferredTokenStore`,

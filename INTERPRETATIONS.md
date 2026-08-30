@@ -5,6 +5,10 @@ internally inconsistent. Explicit requirements are implemented directly and do
 not appear here. See [SPECIFICATIONS.md](SPECIFICATIONS.md) for the exact source
 revisions.
 
+Companion-source text alone does not create an implementation interpretation.
+This file gains a companion entry only when an executing path requires a choice;
+source-only questions remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+
 ## Four-party person identity uses `(ps, sub)`
 
 **Source:** AAuth Core, `Auth Token Structure` and `Auth Token Verification`.

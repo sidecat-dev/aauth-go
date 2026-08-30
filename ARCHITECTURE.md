@@ -1,13 +1,10 @@
 # Architecture
 
-This repository currently implements direct Agent and Person identity access,
-Resource-managed opaque sessions, immediate and deferred three-party PS
-authorization, and one four-party federated AAuth Core flow in Go. It also
-implements Person-Server-hosted interaction and baseline or Resource-held
-delivery of the auth-token requirement, plus bounded three-party auth-token
-revocation and explicit re-authorization. It separates token semantics, HTTP
-request proof, role behavior, application policy, and application storage. It
-does not define one universal verification object that spans those layers.
+This document defines package ownership and dependency direction for the
+current implementation and the next companion-specification boundaries. The
+design separates token semantics, HTTP request proof, role behavior,
+application policy, and application storage; it does not collect them in one
+universal verification or extension object.
 
 The exact editor sources behind this design are listed in
 [SPECIFICATIONS.md](SPECIFICATIONS.md). See [CONFORMANCE.md](CONFORMANCE.md) for
@@ -162,7 +159,7 @@ The root package owns Core protocol values and checks:
 Token verification returns typed claims. It does not decide whether a person
 is known, a Person Server is trusted, or requested scopes should be granted.
 Additional agent and auth-token claims remain copy-safe JSON values for host
-policy; known claims from unimplemented companion specifications fail closed.
+policy; known R3 and Budget token claims fail closed.
 
 ### `agentprovider`
 
@@ -330,6 +327,27 @@ resource token.
 The policy callbacks receive ordinary Go values, including copy-safe
 additional agent claims. They do not receive raw HTTP proofs or an all-layer
 verification object.
+
+## Companion package boundaries
+
+Companion packages may import root `aauth`, `signaturekey`, and `jose`; Core
+packages never import companions. Role packages compose the companion they
+need through explicit configuration. There is no universal extension registry
+or all-protocol server configuration.
+
+| Source | Package boundary | Role composition | First complete seam |
+| --- | --- | --- | --- |
+| R3 | New pure `r3`, with one vocabulary leaf at a time beginning at `r3/mcp` | `resource` publishes and enforces; `personserver` and `accessserver` independently fetch and hash-check; `agent` requests and verifies | One four-party MCP direct grant with exact document bytes, dual fetch, policy, audit-before-release, and Resource enforcement; other vocabularies and per-call proposals remain rejected |
+| Events | New pure `events`; `signaturekey` owns the required `self-jwt` proof scheme | `agentprovider` issues subscribe tokens and receives events; `agent` registers and verifies; `resource` stores subscriptions and delivers | Public subscription registration first, then one retained Resource-to-AP delivery; protected tickets and AsyncAPI discovery are later paths |
+| Bootstrap | No generic `bootstrap` package: the source describes platform patterns, not one wire object | Existing `agentprovider`, `agent`, `jose`, and `signaturekey`, with host-owned enrollment policy and storage | One explicit two-key refresh after `jkt-jwt` exists; platform attestation remains opaque host evidence |
+| Budgets | New pure `budget` for values, narrowing, headers, and typed errors | Core exposes an exact Budget carrier seam; `resource`, `personserver`, `accessserver`, and `agent` own their local transitions | One three-party non-streaming hard cap with atomic reserve/commit/release and usage accounting; streaming and usage queries remain separate |
+| Interoperability profile | No production package | External `integration` tests and runnable examples only | Black-box evidence against an independent implementation; internal Go-to-Go composition is not interoperability |
+
+The immediate implementation order still finishes the remaining Core value
+paths first. The first companion path after that is the MCP-only R3 direct
+grant because Events discovery and Budget annotations build on the R3
+boundary. Each later seam remains a complete journey, not a placeholder
+package.
 
 ## Direct identity sequences
 
