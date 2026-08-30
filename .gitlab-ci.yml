@@ -1,0 +1,26 @@
+image: golang:1.24
+
+stages:
+  - verify
+
+format:
+  stage: verify
+  script:
+    - unformatted="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)"
+    - test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+    - git diff --check
+
+test:
+  stage: verify
+  script:
+    - go test ./... -count=1
+
+race:
+  stage: verify
+  script:
+    - go test -race ./... -count=1
+
+vet:
+  stage: verify
+  script:
+    - go vet ./...
