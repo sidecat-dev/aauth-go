@@ -1,7 +1,7 @@
-// The fourparty example runs immediate missionless and mission-bound AAuth
-// Core flows entirely in process. Each role still communicates through
-// ordinary HTTP handlers and a client, so the messages match a network
-// deployment.
+// The fourparty example runs immediate missionless Core, mission-bound Core,
+// and direct MCP R3 flows entirely in process. Each role still communicates
+// through ordinary HTTP handlers and a client, so the messages match a
+// network deployment.
 package main
 
 import (
@@ -45,6 +45,7 @@ func main() {
 func run(output io.Writer) {
 	runFourParty(output, false)
 	runFourParty(output, true)
+	runR3Direct(output)
 }
 
 func runFourParty(output io.Writer, missionBound bool) {

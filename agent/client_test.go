@@ -197,8 +197,12 @@ func TestClientRefusesUnrelatedAuthTokensBeforeProtectedNetworkUse(t *testing.T)
 				t.Fatal(err)
 			}
 			request, _ := http.NewRequest(http.MethodGet, protocol.resourceID+"/records/42", nil)
-			if _, err := client.Do(context.Background(), agent.Call{Request: request, AuthToken: authToken}); err == nil {
+			_, err = client.Do(context.Background(), agent.Call{Request: request, AuthToken: authToken})
+			if err == nil {
 				t.Fatal("Do accepted an unrelated auth token")
+			}
+			if test.name == "wrong person server" && !strings.Contains(err.Error(), "auth-token person server:") {
+				t.Fatalf("Do error = %v", err)
 			}
 			if len(protocol.paths) != 0 {
 				t.Fatalf("network paths = %v", protocol.paths)
@@ -306,6 +310,22 @@ func TestClientAcceptsOptionalAndExtensionMetadataMembers(t *testing.T) {
 		Resource: protocol.resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAuthorizePreservesCoreEmptyScopeError(t *testing.T) {
+	t.Parallel()
+
+	protocol := newTestProtocol(t)
+	client := protocol.newClient(t)
+	personToken := requestImmediatePersonToken(t, client, agent.PersonTokenRequest{
+		PersonServer: protocol.personServerID, Resource: protocol.resourceID,
+	})
+	_, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
+		Resource: protocol.resourceID, PersonToken: personToken,
+	})
+	if err == nil || !strings.Contains(err.Error(), "at least one scope is required") {
+		t.Fatalf("Authorize error = %v", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	aauth "aauth-go"
+	"aauth-go/internal/r3dispatch"
 	"aauth-go/signaturekey"
 )
 
@@ -646,29 +647,43 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	if err != nil {
 		return nil, fail(operation, err)
 	}
-	claims, err := aauth.VerifyAuthToken(ctx, call.AuthToken, client.keyResolver, client.clock)
+	carriesR3, err := r3dispatch.TokenCarriesClaims(call.AuthToken)
 	if err != nil {
 		return nil, fail(operation, err)
 	}
-	if claims.Account != nil {
-		return nil, fail(operation, errors.New("auth-token account is not supported by the immediate flow"))
+	var claims aauth.AuthTokenClaims
+	if carriesR3 {
+		if call.UpstreamToken != "" {
+			return nil, fail(operation, errors.New("MCP R3 call chaining is not implemented"))
+		}
+		claims, err = client.verifyMCPR3AuthTokenForCall(ctx, call.AuthToken, resource)
+	} else {
+		claims, err = aauth.VerifyAuthToken(ctx, call.AuthToken, client.keyResolver, client.clock)
+		if err == nil && claims.Account != nil {
+			err = errors.New("auth-token account is not supported by the immediate flow")
+		}
+		if err == nil && claims.MissionS256 != "" && call.UpstreamToken != "" {
+			err = errors.New("mission-bound call-chain authorization is not supported")
+		}
+		if err == nil {
+			if acceptErr := client.acceptIssuedPersonServer(
+				ctx, call.UpstreamToken, claims.PersonServer, time.Unix(claims.IssuedAt, 0),
+			); acceptErr != nil {
+				err = fmt.Errorf("auth-token person server: %w", acceptErr)
+			}
+		}
+		if err == nil && claims.ExpiresAt > client.agentClaims.ExpiresAt {
+			err = errors.New("auth-token lifetime exceeds the agent token")
+		}
+		if err == nil && claims.Audience != resource {
+			err = errors.New("auth-token audience does not match request resource")
+		}
+		if err == nil && !claims.Confirmation.JWK.Equal(client.signingKey.PublicJWK()) {
+			err = errors.New("auth-token confirmation key does not match signing key")
+		}
 	}
-	if claims.MissionS256 != "" && call.UpstreamToken != "" {
-		return nil, fail(operation, errors.New("mission-bound call-chain authorization is not supported"))
-	}
-	if err := client.acceptIssuedPersonServer(
-		ctx, call.UpstreamToken, claims.PersonServer, time.Unix(claims.IssuedAt, 0),
-	); err != nil {
-		return nil, fail(operation, fmt.Errorf("auth-token person server: %w", err))
-	}
-	if claims.ExpiresAt > client.agentClaims.ExpiresAt {
-		return nil, fail(operation, errors.New("auth-token lifetime exceeds the agent token"))
-	}
-	if claims.Audience != resource {
-		return nil, fail(operation, errors.New("auth-token audience does not match request resource"))
-	}
-	if !claims.Confirmation.JWK.Equal(client.signingKey.PublicJWK()) {
-		return nil, fail(operation, errors.New("auth-token confirmation key does not match signing key"))
+	if err != nil {
+		return nil, fail(operation, err)
 	}
 	metadata, err := client.resourceMetadata(ctx, resource)
 	if err != nil {

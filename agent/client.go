@@ -1,8 +1,8 @@
-// Package agent implements explicit calls for the bounded AAuth Core client
-// paths, including two-key Agent enrollment and refresh, direct identity
-// access, Resource-managed sessions, immediate authorization, one immediate
-// mission journey, parent-mediated sub-agents, one Resource call chain, and
-// one-shot polling of supported interactions and held invocations.
+// Package agent implements explicit calls for the bounded AAuth Core paths and
+// the immediate direct-grant MCP R3 path. It also composes two-key Agent
+// enrollment and refresh, direct identity access, Resource-managed sessions,
+// one immediate mission journey, parent-mediated sub-agents, one Resource call
+// chain, and one-shot polling of supported interactions and held invocations.
 package agent
 
 import (
@@ -22,6 +22,7 @@ import (
 	aauth "aauth-go"
 	"aauth-go/internal/jsonstrict"
 	"aauth-go/jose"
+	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
@@ -38,8 +39,8 @@ type Config struct {
 	MaxSignedBodyBytes int64
 }
 
-// Client performs explicit Core calls. It does not cache, sleep, retry, or
-// automatically follow requirements or deferred responses.
+// Client performs explicit protocol calls. It does not cache, sleep, retry,
+// or automatically follow requirements or deferred responses.
 type Client struct {
 	identifier         string
 	signingKey         jose.SigningKey
@@ -120,15 +121,18 @@ type PersonTokenRequest struct {
 	UpstreamToken string
 }
 
-// AuthorizeRequest asks a resource to issue one token for the exact directed
-// person token and scopes. UpstreamToken is local call-chain context; it is
-// verified but is not sent to the Resource.
+// AuthorizeRequest asks a Resource to issue one token for the exact directed
+// person token and either Core scopes, MCP R3 operations, or both. Account is
+// supported only with MCP R3 operations. UpstreamToken is local call-chain
+// context; it is verified but is not sent to the Resource.
 type AuthorizeRequest struct {
-	Resource      string
-	PersonToken   string
-	UpstreamToken string
-	Scopes        []string
-	Header        http.Header
+	Resource        string
+	PersonToken     string
+	UpstreamToken   string
+	Scopes          []string
+	Account         *string
+	MCPR3Operations *r3.MCPOperationSet
+	Header          http.Header
 }
 
 // ExchangeRequest carries one exact resource token and optional request-body
@@ -146,7 +150,7 @@ type ExchangeRequest struct {
 	Capabilities  []string
 }
 
-// New constructs a bounded Core Agent and verifies that its configured token
+// New constructs a bounded Agent and verifies that its configured token
 // names the configured identifier and signing key. A Person Server is optional
 // for direct Agent identity access. Discovery and key resolution use ctx.
 func New(ctx context.Context, config Config) (*Client, error) {
@@ -273,8 +277,18 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if input.PersonToken == "" {
 		return "", fail(operation, errors.New("person token is required"))
 	}
-	scopes, err := validateScopes(input.Scopes)
-	if err != nil {
+	if input.Account != nil && input.MCPR3Operations == nil {
+		return "", fail(operation, errors.New("account requires MCP R3 operations in the immediate client profile"))
+	}
+	var scopes []string
+	if len(input.Scopes) > 0 {
+		validated, err := validateScopes(input.Scopes)
+		if err != nil {
+			return "", fail(operation, err)
+		}
+		scopes = validated
+	} else if input.MCPR3Operations == nil {
+		_, err := validateScopes(input.Scopes)
 		return "", fail(operation, err)
 	}
 	person, err := aauth.VerifyPersonToken(ctx, input.PersonToken, client.keyResolver, client.clock)
@@ -299,9 +313,17 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if metadata.AuthorizationEndpoint == "" {
 		return "", fail(operation, errors.New("resource metadata authorization_endpoint is required"))
 	}
+	if input.MCPR3Operations != nil {
+		endpoint := metadata.R3Vocabularies[r3.MCPVocabulary]
+		if err := aauth.ValidateEndpoint(endpoint); err != nil {
+			return "", fail(operation, errors.New("resource metadata does not advertise a valid MCP R3 vocabulary endpoint"))
+		}
+	}
 	body, err := json.Marshal(struct {
-		Scope string `json:"scope"`
-	}{Scope: strings.Join(scopes, " ")})
+		Scope        string              `json:"scope,omitempty"`
+		Account      *string             `json:"account,omitempty"`
+		R3Operations *r3.MCPOperationSet `json:"r3_operations,omitempty"`
+	}{Scope: strings.Join(scopes, " "), Account: input.Account, R3Operations: input.MCPR3Operations})
 	if err != nil {
 		return "", fail(operation, err)
 	}
@@ -339,7 +361,13 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if output.ResourceToken == "" {
 		return "", fail(operation, errors.New("response did not contain a resource token"))
 	}
-	if _, err := client.verifyResourceTokenContext(ctx, output.ResourceToken, input.Resource, person, scopes); err != nil {
+	if input.MCPR3Operations != nil {
+		if _, _, err := client.verifyMCPR3ResourceTokenContext(
+			ctx, output.ResourceToken, input.Resource, person, scopes, input.Account,
+		); err != nil {
+			return "", fail(operation, err)
+		}
+	} else if _, err := client.verifyResourceTokenContext(ctx, output.ResourceToken, input.Resource, person, scopes); err != nil {
 		return "", fail(operation, err)
 	}
 	return output.ResourceToken, nil
@@ -352,11 +380,15 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	if client == nil {
 		return "", fail(operation, errors.New("client is required"))
 	}
-	response, resourceClaims, credential, err := client.exchangeRequest(ctx, input)
+	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input)
 	if err != nil {
 		return "", fail(operation, err)
 	}
 	defer response.Body.Close()
+	resourceClaims := verifiedResource.claims
+	if response.StatusCode == http.StatusAccepted && verifiedResource.r3Reference != nil {
+		return "", fail(operation, errors.New("MCP R3 exchange interaction is not implemented"))
+	}
 	if response.StatusCode == http.StatusAccepted && resourceClaims.MissionS256 != "" {
 		if err := validateUnsupportedMissionContinuation(response); err != nil {
 			return "", fail(operation, err)
@@ -374,7 +406,7 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	if response.StatusCode != http.StatusOK {
 		return "", fail(operation, responseFailure(response))
 	}
-	token, err := client.verifiedExchangeResponse(ctx, response, resourceClaims, credential)
+	token, err := client.verifiedExchangeResponse(ctx, response, verifiedResource, credential)
 	if err != nil {
 		return "", fail(operation, err)
 	}
@@ -599,6 +631,7 @@ type resourceMetadata struct {
 	AccessMode                    string            `json:"access_mode"`
 	ScopeDescriptions             map[string]string `json:"scope_descriptions"`
 	AdditionalSignatureComponents []string          `json:"additional_signature_components"`
+	R3Vocabularies                map[string]string `json:"r3_vocabularies"`
 }
 
 func (client *Client) personServerMetadata(ctx context.Context, issuer string) (personServerMetadata, error) {

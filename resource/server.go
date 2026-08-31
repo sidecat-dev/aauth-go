@@ -1,9 +1,9 @@
 // Package resource implements direct Agent and Person identity access,
 // Resource-managed opaque sessions, and explicit PS-authorized or federated
-// auth-token access for the bounded Core Resource role. It also exposes a
-// fully verified auth token to a call-chain intermediary, can retain observed
-// three-party revocation state, and supports Resource-held delivery in the
-// federated composition.
+// auth-token access. It also implements immediate direct-grant MCP R3
+// documents and enforcement, exposes a verified auth token to a call-chain
+// intermediary, retains observed three-party revocation state, and supports
+// Resource-held delivery in the federated composition.
 package resource
 
 import (

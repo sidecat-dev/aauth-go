@@ -207,15 +207,17 @@ turns a valid signature into authorization.
 
 ### `r3`
 
-The planned `r3` package will own pure Rich Resource Request semantics:
+The current `r3` package owns the implemented pure MCP direct-grant semantics:
 
-- Standard and third-party vocabulary identifiers.
-- Per-vocabulary operation types and validation.
-- Authorization request extensions and access annotations.
-- R3 document, display, grant, and proposal values.
+- MCP vocabulary operations and exact-set validation.
+- R3 document, display, reference, and direct-grant values.
 - Exact-byte document identity and parameter digest comparison.
-- Operation membership and grant/per-call matching.
-- Typed R3 token-claim extensions.
+- Operation membership and direct-grant matching.
+- Strict Resource- and Auth-token R3 claim extensions.
+
+The target adds the other standard and third-party vocabularies, access
+annotations, and per-call proposal/result values without changing that
+ownership boundary.
 
 It does not fetch documents, decide policy, retain proposals, execute calls,
 or write AS audit records. Those consequences belong to the participating
@@ -303,6 +305,12 @@ where another exchange is required. The caller decides whether and when to
 continue. A higher-level helper may drive a complete journey, but it is built
 from the same explicit steps and exposes its progress.
 
+The current immediate MCP R3 path is explicit at the Agent boundary. The
+caller supplies a typed operation set and optional account, receives and
+verifies the Resource token, presents its exact compact form to the Person
+Server, verifies the returned direct-grant Auth token, and signs the protected
+call. R3 documents remain opaque to the Agent.
+
 ### `personserver`
 
 The target owns Agent-person binding, directed identifiers, Person-token
@@ -310,6 +318,13 @@ records, missions, permission/audit/interaction endpoints, three-party
 authorization, and PS-to-AS federation. Its policy inputs receive verified
 Core and companion values in source terminology. Mission approval stores the
 exact approved bytes before returning their digest.
+
+For immediate MCP R3, the Person Server independently fetches the exact
+Resource document after local token and person-lineage checks. A dedicated
+consent callback receives the ordinary Core context plus the typed reference
+and document. The Person Server forwards the original compact tokens to the
+Access Server and verifies the returned reference, account, and grant against
+the document it fetched.
 
 ### `resource`
 
@@ -322,16 +337,15 @@ Access mode is selected by the matched endpoint or R3 operation, not fixed for
 the entire server. Core scope, R3 operations, and Budget constraints are
 evaluated independently; none is projected into another.
 
-The current first R3 increment implements the Resource side of the direct MCP
-path. A host supplies an authoritative tool snapshot, a request-to-tool mapper,
-and an `R3DocumentStore`. Authorization serializes one exact-request document,
-derives an immutable URI bound to its bytes and entitled PS/AS pair, and commits
-the record before exposing the Resource token. The signed fetch endpoint serves
-those exact bytes only to the two entitled roles. Protected use verifies the
-configured AS signature, ordinary scope, URI entitlement, and direct MCP grant;
-as the R3 enforcement algorithm specifies, it does not fetch the document.
-Person Server consent, Access Server policy and atomic audit, per-call proposals,
-and the complete multi-role journey remain later increments.
+The current immediate MCP R3 path supplies an authoritative tool snapshot, a
+request-to-tool mapper, and an `R3DocumentStore`. Authorization serializes one
+exact-request document, derives an immutable URI bound to its bytes and
+entitled PS/AS pair, and commits the record before exposing the Resource token.
+The signed fetch endpoint serves those exact bytes only to the two entitled
+roles. Protected use verifies the configured AS signature, ordinary scope,
+URI entitlement, and direct MCP grant; as the R3 enforcement algorithm
+specifies, it does not fetch the document. Per-call proposals, annotations,
+and the other R3 vocabularies remain later work.
 
 ### `accessserver`
 
@@ -339,6 +353,14 @@ The target owns four-party PS authentication, Resource-token verification,
 policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuance
 boundary commits the token and its URI/hash audit facts together or publishes
 neither.
+
+The current immediate MCP R3 path independently fetches and verifies the exact
+Resource document before policy. The existing policy call receives ordinary
+Core context plus the typed R3 document and returns a grant already proven to
+be a document subset. The Access Server commits the exact compact Auth token
+and every mandatory audit fact through `R3IssuanceStore` before responding. A
+store error withholds the token; the handler performs no hidden retry because
+the source defines no stable request replay key.
 
 ## State interfaces
 
@@ -362,6 +384,11 @@ boundary. It copies values across the interface, converges concurrent exact
 commits, refuses same-URI replacement, keeps committed records loadable across
 server recomposition, and exposes them only through the signed Resource
 handler. It is not a general authorization or evidence store.
+
+`R3IssuanceStore` is another focused boundary. One commit retains the exact
+compact Auth token and its mandatory audit facts. Exact repeats converge and a
+different record at the same token reference conflicts. It has no protocol
+lookup method because immediate R3 defines no caller-visible retry identity.
 
 Every complete journey ships with concurrency-safe in-memory implementations
 for examples and tests. Applications may replace them with durable stores.

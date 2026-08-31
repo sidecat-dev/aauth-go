@@ -14,7 +14,6 @@ import (
 	"time"
 
 	aauth "aauth-go"
-	"aauth-go/jose"
 	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
@@ -28,6 +27,9 @@ type MCPR3Config struct {
 	KnownTools []string
 	// Documents retains exact bytes and their PS/AS fetch entitlement.
 	Documents R3DocumentStore
+	// DisplayForOperations optionally supplies the human-readable consequences
+	// that the Person Server presents during consent.
+	DisplayForOperations func(context.Context, r3.MCPOperationSet, *string) (*r3.Display, error)
 	// OperationForRequest maps a protected request to an MCP tool. A false ok
 	// identifies a Core-only route. The supplied request is an independent
 	// policy view whose body may be read without consuming the application body.
@@ -44,7 +46,19 @@ func (server *Server) issueMCPR3ResourceToken(
 	claims aauth.ResourceTokenClaims,
 	operations r3.MCPOperationSet,
 ) (string, error) {
-	document, err := r3.NewDocument(operations, r3.DocumentOptions{Account: cloneAuthorizationAccount(claims.Account)})
+	var display *r3.Display
+	var err error
+	if server.mcpR3.displayForOperations != nil {
+		display, err = server.mcpR3.displayForOperations(
+			ctx, operations, cloneAuthorizationAccount(claims.Account),
+		)
+		if err != nil {
+			return "", fmt.Errorf("aauth: describe MCP R3 operations: %w", err)
+		}
+	}
+	document, err := r3.NewDocument(operations, r3.DocumentOptions{
+		Account: cloneAuthorizationAccount(claims.Account), Display: display,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -163,25 +177,6 @@ func mcpR3DocumentEntitled(record R3DocumentRecord, issuer, discoveryDocument st
 		issuer == record.AccessServer && discoveryDocument == aauth.AccessDiscoveryDocument
 }
 
-func tokenCarriesMCPR3Authorization(compact string) (bool, error) {
-	parsed, err := jose.ParseCompact(compact)
-	if err != nil {
-		return false, err
-	}
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(parsed.Payload(), &members); err != nil {
-		return false, err
-	}
-	for member := range members {
-		for _, claim := range []string{"r3_uri", "r3_s256", "r3_granted", "r3_per_call"} {
-			if strings.EqualFold(member, claim) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
 func (server *Server) verifyPreparedMCPR3AuthRequest(
 	request *http.Request,
 	prepared signaturekey.PreparedRequest,
@@ -248,10 +243,11 @@ func (server *Server) validateMCPR3ProtectedReference(
 }
 
 type mcpR3Config struct {
-	discoveryEndpoint   string
-	knownTools          []string
-	documents           R3DocumentStore
-	operationForRequest func(*http.Request) (string, bool, error)
+	discoveryEndpoint    string
+	knownTools           []string
+	documents            R3DocumentStore
+	displayForOperations func(context.Context, r3.MCPOperationSet, *string) (*r3.Display, error)
+	operationForRequest  func(*http.Request) (string, bool, error)
 }
 
 func validateMCPR3Config(config *MCPR3Config) (*mcpR3Config, error) {
@@ -279,9 +275,10 @@ func validateMCPR3Config(config *MCPR3Config) (*mcpR3Config, error) {
 		return nil, fmt.Errorf("aauth: Resource authoritative MCP tools: %w", err)
 	}
 	return &mcpR3Config{
-		discoveryEndpoint:   config.DiscoveryEndpoint,
-		knownTools:          append([]string(nil), config.KnownTools...),
-		documents:           config.Documents,
-		operationForRequest: config.OperationForRequest,
+		discoveryEndpoint:    config.DiscoveryEndpoint,
+		knownTools:           append([]string(nil), config.KnownTools...),
+		documents:            config.Documents,
+		displayForOperations: config.DisplayForOperations,
+		operationForRequest:  config.OperationForRequest,
 	}, nil
 }

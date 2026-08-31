@@ -1,5 +1,5 @@
-// Package accessserver implements the Access Server role for the immediate
-// four-party AAuth Core flow.
+// Package accessserver implements the Access Server role for immediate
+// four-party AAuth Core and direct MCP R3 authorization.
 package accessserver
 
 import (
@@ -16,6 +16,7 @@ import (
 	aauth "aauth-go"
 	"aauth-go/internal/httpapi"
 	"aauth-go/jose"
+	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
@@ -27,7 +28,8 @@ const maxRequestBytes = 1 << 20
 var ErrAccessDenied = errors.New("accessserver: access denied")
 
 // Config supplies the protocol and deployment choices owned by an Access
-// Server. The immediate Core server has no deferred or companion behavior.
+// Server. MCPR3 explicitly enables the immediate direct-grant MCP companion;
+// deferred and per-call authorization are not implemented here.
 type Config struct {
 	Issuer            string
 	SigningKey        jose.SigningKey
@@ -36,6 +38,7 @@ type Config struct {
 	NewID             func() string
 	TrustPersonServer func(context.Context, string) error
 	Authorize         func(context.Context, AuthorizationRequest) (Decision, error)
+	MCPR3             *MCPR3Config
 }
 
 // Agent is the verified agent identity presented to authorization policy.
@@ -46,10 +49,11 @@ type Agent struct {
 	AdditionalClaims map[string]json.RawMessage
 }
 
-// AuthorizationRequest is the verified Core context presented to Access
-// Server policy. It contains ordinary values, not transport or verification
-// objects. MissionS256 is opaque correlation context from the verified
-// Resource token; mission content and Person Server history are not exposed.
+// AuthorizationRequest is verified Core context plus any explicitly enabled
+// typed companion input presented to Access Server policy. It contains
+// ordinary values, not transport or verification objects. MissionS256 is
+// opaque correlation context from the verified Resource token; mission
+// content and Person Server history are not exposed.
 type AuthorizationRequest struct {
 	PersonServer string
 	Resource     string
@@ -62,12 +66,19 @@ type AuthorizationRequest struct {
 	// Subagent is present only for a parent-mediated request. Agent remains
 	// the top-level parent whose grant the policy evaluates.
 	Subagent *Agent
+	// MCPR3 is present only after exact document fetch, hash verification, and
+	// account validation for the configured direct MCP profile.
+	MCPR3 *MCPR3Authorization
 }
 
-// Decision is the subset of requested scopes and lifetime granted by policy.
+// Decision is the requested Core-scope subset, optional direct MCP grant, and
+// lifetime granted by policy.
 type Decision struct {
 	Scopes   []string
 	Lifetime time.Duration
+	// MCPR3Grant is required exactly when the policy request carries MCPR3.
+	// Construct it with r3.NewGrant against that request's Document.
+	MCPR3Grant *r3.Grant
 }
 
 // Server is an immediate AAuth Access Server.
@@ -79,6 +90,7 @@ type Server struct {
 	newID             func() string
 	trustPersonServer func(context.Context, string) error
 	authorize         func(context.Context, AuthorizationRequest) (Decision, error)
+	mcpR3             *mcpR3Config
 }
 
 // New constructs an immediate Access Server.
@@ -104,10 +116,14 @@ func New(config Config) (*Server, error) {
 	if config.Authorize == nil {
 		return nil, errors.New("accessserver: authorization policy is required")
 	}
+	mcpR3, err := newMCPR3Config(config.MCPR3, config.SigningKey, config.Issuer, config.Clock)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
-		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize,
+		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize, mcpR3: mcpR3,
 	}, nil
 }
 
@@ -165,7 +181,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
 		return
 	}
-	resourceClaims, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, server.keyResolver, verificationClock)
+	resourceClaims, mcpR3, err := server.verifyResourceTokenForAuthorization(
+		request.Context(), input.ResourceToken, verificationClock,
+	)
 	if err != nil {
 		writeTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
 		return
@@ -211,7 +229,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token interaction requires the deferred flow"))
 		return
 	}
-	if resourceClaims.Account != nil {
+	if resourceClaims.Account != nil && mcpR3 == nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
 		return
 	}
@@ -220,9 +238,15 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the authorized agent key"))
 		return
 	}
-	requestedScopes, err := aauth.ParseScope(resourceClaims.Scope)
-	if err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+	var requestedScopes []string
+	if resourceClaims.Scope != "" {
+		requestedScopes, err = aauth.ParseScope(resourceClaims.Scope)
+		if err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+			return
+		}
+	} else if mcpR3 == nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token has no authorization claim"))
 		return
 	}
 	policyRequest := AuthorizationRequest{
@@ -246,13 +270,40 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			AdditionalClaims: cloneClaims(subagentClaims.AdditionalClaims),
 		}
 	}
+	if mcpR3 != nil {
+		if err := server.fetchMCPR3Document(request.Context(), mcpR3, resourceClaims.Account); err != nil {
+			if isInvalidMCPR3Document(err) {
+				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+			} else {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			}
+			return
+		}
+		policyRequest.MCPR3 = &MCPR3Authorization{Reference: mcpR3.reference, Document: mcpR3.document}
+	}
 	decision, err := server.authorize(request.Context(), policyRequest)
 	if err != nil {
 		writeAccessPolicyProblem(response, err)
 		return
 	}
-	if err := validateDecision(decision, requestedScopes); err != nil {
+	if err := validateDecision(decision, requestedScopes, mcpR3 != nil); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	var mcpGrant *r3.Grant
+	if mcpR3 != nil {
+		if decision.MCPR3Grant == nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: MCP R3 policy returned no direct grant"))
+			return
+		}
+		proven, err := r3.NewGrant(decision.MCPR3Grant.GrantedOperations(), mcpR3.document)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		mcpGrant = &proven
+	} else if decision.MCPR3Grant != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: Core policy returned an MCP R3 grant"))
 		return
 	}
 	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
@@ -278,10 +329,31 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		PersonServer: personServer, Account: resourceClaims.Account,
 		MissionS256: resourceClaims.MissionS256, Tenant: resourceClaims.Tenant,
 	}
-	authToken, err := aauth.MintAuthToken(server.signingKey, claims)
+	var authToken string
+	if mcpR3 != nil {
+		authToken, err = r3.MintMCPDirectAuthToken(
+			server.signingKey, claims, mcpR3.reference, mcpR3.exact, *mcpGrant,
+		)
+	} else {
+		authToken, err = aauth.MintAuthToken(server.signingKey, claims)
+	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
+	}
+	if mcpR3 != nil {
+		auditAgent := agentClaims.Subject
+		parentAgent := ""
+		if subagentClaims != nil {
+			auditAgent = subagentClaims.Subject
+			parentAgent = agentClaims.Subject
+		}
+		if err := server.commitMCPR3Issuance(
+			request.Context(), authToken, claims, resourceClaims, mcpR3, auditAgent, parentAgent,
+		); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
 	}
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
@@ -316,8 +388,17 @@ func cloneClaims(claims map[string]json.RawMessage) map[string]json.RawMessage {
 	return cloned
 }
 
-func validateDecision(decision Decision, requested []string) error {
-	if decision.Lifetime <= 0 || decision.Lifetime > time.Hour || len(decision.Scopes) == 0 {
+func validateDecision(decision Decision, requested []string, mcpR3 bool) error {
+	if decision.Lifetime <= 0 || decision.Lifetime > time.Hour {
+		return errors.New("accessserver: authorization policy returned an invalid decision")
+	}
+	if len(requested) == 0 {
+		if !mcpR3 || len(decision.Scopes) != 0 {
+			return errors.New("accessserver: authorization policy returned an invalid scope decision")
+		}
+		return nil
+	}
+	if len(decision.Scopes) == 0 {
 		return errors.New("accessserver: authorization policy returned an invalid decision")
 	}
 	seen := make(map[string]struct{}, len(decision.Scopes))

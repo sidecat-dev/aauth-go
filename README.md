@@ -47,13 +47,14 @@ stores. The programs are executable documentation, not deployment templates.
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
 | [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Deferred Person Server consent](example/psconsent) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
-| [Four-party authorization variants](example/fourparty) | Missionless federation, then mission approval and update, Access Server issuance, protected use, and person-accepted completion | `go run ./example/fourparty` |
+| [Four-party authorization variants](example/fourparty) | Missionless Core, mission lifecycle, and immediate MCP R3 with independent consent/policy fetches, a narrowed grant, and atomic issuance audit | `go run ./example/fourparty` |
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
 | [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
 | [One chained Resource call](example/callchaining) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
 
 The integration suite also exercises
 [mission-bound four-party authorization](integration/mission_four_party_test.go),
+[immediate MCP R3 four-party authorization](integration/r3_direct_four_party_test.go),
 [direct Person identity](integration/direct_identity_access_test.go),
 [Person-token interaction](integration/person_token_interaction_test.go), and
 both [baseline `401` and Resource-held `202` auth-token delivery](integration/core_four_party_test.go).
@@ -67,10 +68,10 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `jose` | The focused Ed25519 JWK and compact-JWS profile used here |
 | `signaturekey` | HTTP request proofs, credentials, discovery, and error negotiation |
 | `agentprovider` | Agent-token issuance plus Agent Provider metadata and JWKS |
-| `agent` | Explicit protocol calls; no hidden polling, browser use, or consequence retry |
-| `personserver` | Person-token issuance, immediate mission lifecycle, direct authorization, interaction, revocation, call-chain policy, and Access Server federation |
-| `resource` | Identity, session, authorization, protected-call, held-invocation, and revocation behavior |
-| `accessserver` | Person-Server-authenticated policy and auth-token issuance |
+| `agent` | Explicit Core and immediate MCP R3 calls; no hidden polling, browser use, or consequence retry |
+| `personserver` | Person-token issuance, mission lifecycle, direct and R3 consent, interaction, revocation, call-chain policy, and Access Server federation |
+| `resource` | Identity, session, authorization, MCP R3 documents/enforcement, protected-call, held-invocation, and revocation behavior |
+| `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
 The root protocol package and focused JOSE and Signature-Key packages do not
 depend on role packages. Role packages compose them through small policy,
@@ -114,9 +115,12 @@ person-accepted completion through both three-party and four-party
 authorization. Deferred mission actions and mission combinations with
 delegation, call chaining, held delivery, or revocation remain open.
 
-The R3, Events, Bootstrap, and Budgets companion specifications are pinned as
-design inputs but do not yet have complete executing paths. HTTP Signature
-Keys is implemented only to the extent required by the current role paths.
+R3 now has one complete immediate four-party MCP direct-grant path, including
+independent PS/AS document fetches and atomic AS issuance audit. R3 per-call,
+the other vocabularies, and access annotations remain open. Bootstrap has one
+explicit executing profile; Events and Budgets remain design inputs. HTTP
+Signature Keys is implemented only to the extent required by current role
+paths.
 
 The repository does not provide durable stores, key custody, TLS listeners,
 deployment infrastructure, or automatic retry policy. Applications must

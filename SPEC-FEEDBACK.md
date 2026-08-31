@@ -29,7 +29,7 @@ were read; it is not an implementation or conformance claim.
 | --- | --- | --- |
 | AAuth Core | implementation-reviewed for current paths | Submitted history and executable current questions appear below; unimplemented Core areas remain evidence-pending |
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
-| R3 | implementation-reviewed for the typed value/token layer and Resource-side direct MCP path | Resource evidence now supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, and `AAG-F076`; example vectors, PS/AS issuance, per-call behavior, and the complete journey remain evidence-pending |
+| R3 | implementation-reviewed for the immediate four-party MCP direct-grant path | Executing Agent, Resource, PS, and AS evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F069`, and `AAG-F076`; example vectors, per-call behavior, annotations, and other vocabularies remain evidence-pending |
 | Events | source-synchronized and architecture-mapped | No implementation-backed question yet |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
 | Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
@@ -77,8 +77,8 @@ below where evidence is ready.
 | AAG-F002 | The AS request example uses a `jwks_uri` Signature-Key parameter not defined by that scheme | evidence pending |
 | AAG-F003 | Audit delivery has no stable retry identity after a lost `201` | evidence pending |
 | AAG-F004 | General deferred endpoints do not define recovery of a lost terminal response | ready below with Resource-session and PS-consent evidence |
-| AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | immutable Resource store and conflict evidence implemented; complete journey pending |
-| AAG-F006 | R3 example hashes are not executable SHA-256 vectors | evidence pending until R3 implementation |
+| AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | immutable Resource store, conflict evidence, and complete direct-grant journey implemented |
+| AAG-F006 | R3 example hashes are not executable SHA-256 vectors | evidence pending until a source-example vector test is added |
 | AAG-F007 | Mission completion still appears in the introductory interaction list after moving endpoints | evidence pending |
 | AAG-F008 | Clarification requires an `agent` claim removed from resource tokens | ready below |
 | AAG-F009 | Person-token policy denial has no registered error | ready below |
@@ -86,9 +86,9 @@ below where evidence is ready.
 | AAG-F011 | Closed issues 88 and 89 are not reflected in the person-token endpoint text | ready below |
 | AAG-F012 | A lost initial deferred `202` has no stable recovery identity | evidence pending |
 | AAG-F013 | Restored deferred state can lose the verified request authority | held-store boundary implemented; generic deferred rule remains open |
-| AAG-F014 | R3 protected challenges do not define who selects the exact operation | exact-request Resource mapping evidence implemented; per-call pending |
-| AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | exact-request document construction implemented; AS journey pending |
-| AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | evidence pending until R3 or step-up implementation |
+| AAG-F014 | R3 protected challenges do not define who selects the exact operation | exact-request Resource mapping and direct-grant enforcement implemented; per-call pending |
+| AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | exact-request document construction and independent AS fetch/policy evidence implemented |
+| AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | evidence pending until per-call implementation |
 | AAG-F016 | The mandatory signature set does not bind the query | ready below |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | exact-delivery interpretation recorded; evidence pending until Events implementation |
@@ -538,7 +538,10 @@ valid token.
 The implementation commits the mission-bound issuance record before release,
 never retries internally, and exposes this recovery limit. It does not invent
 an exact-result store or silently treat the Resource-token `jti` as a replay
-key.
+key. The immediate R3 path strengthens the retained record to include the
+exact compact token and mandatory audit facts, but reaches the same limit: a
+store error withholds the token, and an explicit repeat may produce another
+independently audited token.
 
 **Question:** Should an immediate Auth-token request be idempotent for one
 Resource-token identity, with bounded exact-result replay after uncertain
@@ -1296,9 +1299,10 @@ The normative rule entitles both the PS and AS to fetch an R3 document and
 explains their distinct consent and policy uses. The later rationale still
 calls document retrieval “restricted to AS-only access.” A literal
 implementation of that rationale prevents the PS from rendering the document's
-human-readable consent material. The executing Resource test accepts the same
-collocated issuer separately as `aauth-person.json` and `aauth-access.json`,
-which also proves that the role distinction is not redundant.
+human-readable consent material. The executing four-party journey observes
+independent PS and AS fetches, while the Resource role test accepts the same
+collocated issuer separately as `aauth-person.json` and `aauth-access.json`.
+Together they prove that the role distinction is not redundant.
 
 **Question:** Should the rationale say that R3 documents are restricted to the
 entitled PS and AS, and that the Agent remains unable to fetch them?

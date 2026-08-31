@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aauth "aauth-go"
+	"aauth-go/internal/r3dispatch"
 	"aauth-go/jose"
 	"aauth-go/r3"
 	"aauth-go/signaturekey"
@@ -152,7 +153,7 @@ func (server *Server) serveAuthTokenProtected(
 		claims        aauth.AuthTokenClaims
 		authorization *mcpR3ProtectedAuthorization
 	)
-	carriesR3, err := tokenCarriesMCPR3Authorization(compact)
+	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
 	if err != nil {
 		writeCredentialProblem(response, "invalid_token", &requestTokenError{cause: err})
 		return

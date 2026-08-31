@@ -96,6 +96,15 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 		{Issuer: resourceIssuer, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
 	}
 	personToken := mintPersonToken(t, personKey, agentKey.PublicJWK(), now, resourceIssuer, "person-token-1")
+	display, err := r3.NewDisplay(
+		"Read and export records",
+		"Exported records may leave the system",
+		"Record contents",
+		"Exported copies cannot be recalled",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, test := range []struct {
 		name    string
@@ -109,6 +118,7 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 		t.Run(test.name, func(t *testing.T) {
 			store := &r3TestDocumentStore{}
 			accountCalls := 0
+			displayCalls := 0
 			config := validConfigWithKey(resourceKey, http.NotFoundHandler())
 			config.Clock = clock
 			config.KeyResolver = resolver
@@ -123,6 +133,16 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 				DiscoveryEndpoint: "https://resource.example/mcp",
 				KnownTools:        []string{"records.read", "records.export", "records.delete"},
 				Documents:         store,
+				DisplayForOperations: func(_ context.Context, operations r3.MCPOperationSet, account *string) (*r3.Display, error) {
+					displayCalls++
+					wantRead, _ := r3.NewMCPOperation("records.read")
+					wantExport, _ := r3.NewMCPOperation("records.export")
+					wantOperations, _ := r3.NewMCPOperationSet(wantRead, wantExport)
+					if !operations.Equal(wantOperations) || !equalR3TestStringPointers(account, test.account) {
+						t.Fatalf("display input = %#v, %v", operations.Operations(), account)
+					}
+					return &display, nil
+				},
 				OperationForRequest: func(*http.Request) (string, bool, error) {
 					return "records.read", true, nil
 				},
@@ -173,6 +193,9 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 			if got := accountCalls; got != boolInt(test.account != nil) {
 				t.Fatalf("account validation calls = %d", got)
 			}
+			if displayCalls != 1 {
+				t.Fatalf("display calls = %d", displayCalls)
+			}
 
 			record, err := store.Load(context.Background(), reference.URI())
 			if err != nil {
@@ -193,6 +216,10 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 			}
 			if err := r3.ValidateDocumentAccount(document, test.account); err != nil {
 				t.Fatalf("document account = %v", err)
+			}
+			gotDisplay, ok := document.Display()
+			if !ok || gotDisplay.Summary() != display.Summary() {
+				t.Fatalf("document display = %#v, %t", gotDisplay, ok)
 			}
 		})
 	}

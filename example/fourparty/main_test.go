@@ -12,7 +12,8 @@ func TestRunCompletesMissionBoundFourPartyJourney(t *testing.T) {
 	run(&output)
 	const want = "AAuth missionless four-party flow complete: person-123 has records.read\n" +
 		"AAuth mission-bound four-party flow complete: person-123 has records.read\n" +
-		"mission completed with person acceptance\n"
+		"mission completed with person acceptance\n" +
+		"AAuth MCP R3 four-party flow complete: person-123 can use records.read\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
