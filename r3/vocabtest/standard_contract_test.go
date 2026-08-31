@@ -10,15 +10,15 @@ import (
 	"strings"
 	"testing"
 
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/asyncapi"
-	"aauth-go/r3/vocab/graphql"
-	grpcvocab "aauth-go/r3/vocab/grpc"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/r3/vocab/odata"
-	"aauth-go/r3/vocab/openapi"
-	"aauth-go/r3/vocab/wsdl"
-	"aauth-go/r3/vocabtest"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/asyncapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/graphql"
+	grpcvocab "gitlab.com/sidecat-dev/aauth-go/r3/vocab/grpc"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/odata"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/openapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/wsdl"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocabtest"
 )
 
 type standardVocabulary struct {

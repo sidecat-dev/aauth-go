@@ -32,7 +32,7 @@ func TestRolePackagesDoNotImportVocabularyAdapters(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unquote import in %s: %v", relative, err)
 			}
-			if importPath == "aauth-go/r3/vocab" || strings.HasPrefix(importPath, "aauth-go/r3/vocab/") {
+			if importPath == "gitlab.com/sidecat-dev/aauth-go/r3/vocab" || strings.HasPrefix(importPath, "gitlab.com/sidecat-dev/aauth-go/r3/vocab/") {
 				position := fileSet.Position(spec.Pos())
 				violations = append(violations, sourceViolation(relative, position.Line, "imports "+importPath))
 			}
@@ -51,7 +51,7 @@ func TestRolePackagesDoNotSelectConcreteVocabularyURIs(t *testing.T) {
 		rootR3Aliases := make(map[string]struct{})
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
-			if err != nil || importPath != "aauth-go/r3" {
+			if err != nil || importPath != "gitlab.com/sidecat-dev/aauth-go/r3" {
 				continue
 			}
 			alias := "r3"

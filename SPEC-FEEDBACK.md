@@ -29,7 +29,7 @@ were read; it is not an implementation or conformance claim.
 | --- | --- | --- |
 | AAuth Core | implementation-reviewed for current paths | Submitted history and executable current questions appear below; unimplemented Core areas remain evidence-pending |
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
-| R3 | implementation-reviewed for the shared seven-vocabulary operation model and current four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, and `AAG-F076`; the seven operation codecs expose `AAG-F077` through `AAG-F081`; full discovery, annotation parsing, invocation binding, and independent interop remain evidence-pending |
+| R3 | implementation-reviewed for the shared seven-vocabulary operation model, bounded definition adapters, and current four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, and `AAG-F076`. The seven definition registrations now provide bounded derivation or typed specification-gap refusal. MCP, OpenAPI, and AsyncAPI parse sparse annotations; OData annotation identity remains unresolved. Complete acquisition, general dependency resolution, invocation binding, and independent interop remain evidence-pending. |
 | Events | source-synchronized and architecture-mapped | No implementation-backed question yet |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
 | Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
@@ -115,6 +115,8 @@ below where evidence is ready.
 | AAG-F079 | OData method narrowing and overload identity are undefined | ready below with explicit algebra evidence |
 | AAG-F080 | AsyncAPI optional `action` has no matching rule | ready below with explicit-presence evidence |
 | AAG-F081 | Per-call parameter projection is not defined by vocabulary | ready below; execution evidence currently covers JSON-shaped HTTP calls |
+| AAG-F082 | OData annotation encoding lacks a resolvable term namespace and target identity | ready below with fail-closed definition-adapter evidence |
+| AAG-F083 | Standard R3 vocabularies do not identify external specification revisions | ready below with seven-adapter implementation evidence |
 
 ## Current unsubmitted questions
 
@@ -1326,9 +1328,11 @@ R3 identifies a GraphQL operation by a client-authored operation name and
 type, then says an Agent discovers available operation names through schema
 introspection. GraphQL operation names belong to executable request documents;
 introspection exposes the server schema, not a registry of client documents or
-their operation names. The Go codec can validate the stated wire object, but a
-Resource cannot validate it against ordinary schema introspection as R3
-requires.
+their operation names. The GraphQL definition adapter checks for a JSON
+response containing object-valued `data.__schema` and then returns
+`operation_identity_unavailable`; the shared definition contract retains that
+as the standard typed-refusal behavior. A Resource therefore cannot validate
+the R3 identifier against ordinary schema introspection as the draft requires.
 
 **Question:** Should the identifier name a schema root field, require a
 persisted-operation registry, or define another server-owned operation
@@ -1350,6 +1354,11 @@ definitions. R3 supplies only `operation` and optional `service`; that pair
 cannot distinguish multiple ports or bindings under one service and does not
 name the port type used by WSDL's own element identifiers.
 
+The WSDL definition adapter derives uniquely bound operations and returns
+`operation_identity_ambiguous` when the R3 `service` and `operation` pair would
+collapse distinct binding meanings. That behavior demonstrates the identity
+gap without inventing an extra identifier.
+
 **Question:** Should the R3 operation include the binding, port, or port type
 needed to identify the actual operation selected by the advertised WSDL?
 
@@ -1369,6 +1378,10 @@ grant may narrow `GET,POST` to `GET`, or how absent and present `methods`
 relate. Separately, OData functions can be overloaded by binding type and
 parameters, while R3 names only `EntitySet/FunctionName`.
 
+The OData definition adapter refuses overloaded bound operations and derives
+no method-qualified or annotation-qualified authority. This demonstrates
+rather than resolves both ambiguities.
+
 **Question:** Should R3 define `methods` as a set with subset/union semantics,
 and extend bound function/action identifiers enough to name one overload?
 
@@ -1386,6 +1399,11 @@ requires `send` or `receive`. R3 does not say whether an omitted action is
 filled from the discovered operation, authorizes either action, or remains a
 distinct operation value. Those interpretations produce different grant and
 proposal matching behavior.
+
+The AsyncAPI definition adapter derives the native required `action`
+explicitly and refuses malformed or unresolved native operations. An R3
+request that omits `action` still has no specified comparison rule against
+that definition.
 
 **Question:** Should omission mean “resolve the required action from the
 operationId,” or should R3 require `action` whenever the vocabulary entry is
@@ -1414,6 +1432,53 @@ cannot use baseline `401` replay?
 
 **Placement:** Open a focused R3 per-call interoperability issue after the
 operation-identity questions are dispositioned.
+
+### AAG-F082 — OData annotation encoding lacks a resolvable term and target
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `Vocabulary Encodings` and `OData Vocabulary`; OData
+CSDL, vocabulary references and bound operation overloads.
+
+The draft names `AAuth.AccessMode` and `AAuth.Budget`, but it does not define
+the CSDL vocabulary namespace or reference needed to resolve those terms. It
+also does not identify which overloaded bound operation an annotation targets.
+An implementation cannot validate the annotation's meaning or attach it to one
+R3 operation without inventing both identities.
+
+The OData definition adapter refuses AAuth annotations and overloaded bound
+operations instead of guessing either identity.
+
+**Question:** Should R3 define the OData vocabulary namespace and import, plus
+an annotation target form that identifies one bound operation overload?
+
+**Placement:** Open a focused R3 OData annotation issue and cross-link
+`AAG-F079`.
+
+### AAG-F083 — Standard vocabularies do not identify source revisions
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `Standard Vocabularies` and its seven vocabulary
+subsections.
+
+R3 assigns operation identities and discovery behavior to MCP, OpenAPI, gRPC,
+GraphQL, AsyncAPI, WSDL, and OData, but cites no version or stable source for
+any of them. These formats change independently. Two conforming implementers
+can therefore choose different Tool requirements, introspection behavior,
+operation objects, or metadata grammars while both following the same R3
+draft.
+
+This repository must carry a separate exact adapter-baseline table in
+`SPECIFICATIONS.md` to make its choices reproducible. That local table cannot
+make the R3 interoperability contract version-independent.
+
+**Question:** Should R3 add normative references and an explicit supported
+revision policy for each standard vocabulary, including how newer compatible
+revisions are admitted?
+
+**Placement:** Open one cross-vocabulary source-reference issue before filing
+format-specific interpretation questions.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

@@ -1,17 +1,17 @@
-// Package standard constructs the explicit registry of the seven standard R3
-// operation vocabularies. Applications may instead register only the
-// vocabularies their Resource actually advertises.
+// Package standard constructs explicit operation and native-definition
+// registries for the seven standard R3 vocabularies. Applications may instead
+// register only the vocabularies their Resource actually advertises.
 package standard
 
 import (
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/asyncapi"
-	"aauth-go/r3/vocab/graphql"
-	"aauth-go/r3/vocab/grpc"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/r3/vocab/odata"
-	"aauth-go/r3/vocab/openapi"
-	"aauth-go/r3/vocab/wsdl"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/asyncapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/graphql"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/grpc"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/odata"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/openapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/wsdl"
 )
 
 // Registry returns a new immutable allowlist containing all seven standard
@@ -25,6 +25,25 @@ func Registry() r3.Registry {
 		asyncapi.Vocabulary(),
 		wsdl.Vocabulary(),
 		odata.Vocabulary(),
+	)
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
+// Definitions returns the immutable allowlist of all seven standard native
+// definition parsers. Some registrations deliberately return typed
+// specification-gap refusals rather than inventing operation identities.
+func Definitions() r3.DefinitionRegistry {
+	registry, err := r3.NewDefinitionRegistry(
+		mcp.DefinitionRegistration(),
+		openapi.DefinitionRegistration(),
+		grpc.DefinitionRegistration(),
+		graphql.DefinitionRegistration(),
+		asyncapi.DefinitionRegistration(),
+		wsdl.DefinitionRegistration(),
+		odata.DefinitionRegistration(),
 	)
 	if err != nil {
 		panic(err)

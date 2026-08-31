@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestSignatureErrorAndNegotiationHeadersRoundTrip(t *testing.T) {

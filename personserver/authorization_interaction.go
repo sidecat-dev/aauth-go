@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/internal/interaction"
-	"aauth-go/jose"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 var (

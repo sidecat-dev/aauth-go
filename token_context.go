@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 // ValidatePersonTokenContext binds verified claims to one resource request.

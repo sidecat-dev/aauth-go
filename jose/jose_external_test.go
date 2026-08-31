@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/jose"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 func TestJWKJSONRejectsPrivateAndSecretMembers(t *testing.T) {

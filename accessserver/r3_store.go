@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/r3"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 // ErrR3IssuanceConflict reports an attempted replacement of one retained

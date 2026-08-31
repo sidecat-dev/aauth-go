@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"aauth-go/internal/httpapi"
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // EnrollmentHandler returns the two-key profile's enrollment operation. The

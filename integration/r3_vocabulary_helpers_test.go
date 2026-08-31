@@ -12,15 +12,16 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
-	aauth "aauth-go"
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/r3/vocab/openapi"
-	"aauth-go/r3/vocabtest"
-	"aauth-go/resource"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/openapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocabtest"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
 )
 
 type integrationR3Vocabulary struct {
@@ -28,6 +29,7 @@ type integrationR3Vocabulary struct {
 	uri               r3.VocabularyURI
 	discoveryEndpoint func(string) string
 	registration      r3.Vocabulary
+	definition        func(*testing.T, string, []string) r3.AuthoritativeSnapshot
 	newOperation      func(*testing.T, string) r3.Operation
 	operationID       func(*testing.T, r3.Operation) string
 }
@@ -36,6 +38,7 @@ func integrationR3Vocabularies() []integrationR3Vocabulary {
 	return []integrationR3Vocabulary{
 		{
 			name: "MCP", uri: mcp.URI, discoveryEndpoint: integrationHTTPSDiscoveryEndpoint("/mcp"), registration: mcp.Vocabulary(),
+			definition: integrationMCPDefinition,
 			newOperation: func(t *testing.T, name string) r3.Operation {
 				t.Helper()
 				typed, err := mcp.NewOperation(name)
@@ -59,6 +62,7 @@ func integrationR3Vocabularies() []integrationR3Vocabulary {
 		},
 		{
 			name: "OpenAPI", uri: openapi.URI, discoveryEndpoint: integrationHTTPSDiscoveryEndpoint("/openapi"), registration: openapi.Vocabulary(),
+			definition: integrationOpenAPIDefinition,
 			newOperation: func(t *testing.T, name string) r3.Operation {
 				t.Helper()
 				typed, err := openapi.NewOperation(name)
@@ -84,6 +88,7 @@ func integrationR3Vocabularies() []integrationR3Vocabulary {
 			name: "ThirdParty", uri: integrationThirdPartyURI,
 			discoveryEndpoint: func(string) string { return integrationThirdPartyDiscoveryEndpoint },
 			registration:      integrationThirdPartyVocabulary,
+			definition:        integrationThirdPartyDefinition,
 			newOperation: func(t *testing.T, name string) r3.Operation {
 				t.Helper()
 				operation, err := newIntegrationThirdPartyOperation(name)
@@ -136,6 +141,19 @@ func newIntegrationR3Registry(t *testing.T) r3.Registry {
 	return registry
 }
 
+func newIntegrationR3DefinitionRegistry(t *testing.T) r3.DefinitionRegistry {
+	t.Helper()
+	registry, err := r3.NewDefinitionRegistry(
+		mcp.DefinitionRegistration(),
+		openapi.DefinitionRegistration(),
+		integrationThirdPartyDefinitions().Registration(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
 func integrationR3ResourceVocabularies(
 	t *testing.T,
 	resourceID string,
@@ -148,9 +166,9 @@ func integrationR3ResourceVocabularies(
 	result := make([]resource.R3VocabularyConfig, 0, len(vocabularies))
 	for _, vocabulary := range vocabularies {
 		expected := vocabulary.operationSet(t, operationNames...)
+		definition := vocabulary.definition(t, vocabulary.discoveryEndpoint(resourceID), operationNames)
 		result = append(result, resource.R3VocabularyConfig{
-			DiscoveryEndpoint:       vocabulary.discoveryEndpoint(resourceID),
-			AuthoritativeOperations: expected,
+			Definition: definition,
 			DisplayForOperations: func(_ context.Context, operations r3.OperationSet, gotAccount *string) (*r3.Display, error) {
 				if !vocabulary.operationSetsEqual(t, operations, expected) || gotAccount == nil || *gotAccount != account {
 					return nil, errors.New("unexpected R3 display input")
@@ -160,6 +178,50 @@ func integrationR3ResourceVocabularies(
 		})
 	}
 	return result
+}
+
+func integrationMCPDefinition(t *testing.T, endpoint string, names []string) r3.AuthoritativeSnapshot {
+	t.Helper()
+	tools := make([]map[string]any, len(names))
+	for index, name := range names {
+		tools[index] = map[string]any{"name": name, "inputSchema": map[string]any{"type": "object"}}
+	}
+	body, err := json.Marshal(map[string]any{"tools": tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := mcp.NewToolsListSnapshot(mcp.NewInitialToolsListPage(body))
+	snapshot, err := mcp.ParseDefinition(endpoint, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func integrationOpenAPIDefinition(t *testing.T, endpoint string, names []string) r3.AuthoritativeSnapshot {
+	t.Helper()
+	paths := make(map[string]any, len(names))
+	for index, name := range names {
+		paths[fmt.Sprintf("/operation/%d", index)] = map[string]any{
+			"post": map[string]any{
+				"operationId": name,
+				"responses":   map[string]any{"204": map[string]any{"description": "ok"}},
+			},
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"openapi": "3.1.0",
+		"info":    map[string]string{"title": "integration", "version": "1"},
+		"paths":   paths,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := openapi.ParseDefinition(endpoint, openapi.NewDocumentSource(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func requireIntegrationR3ResourceMetadata(t *testing.T, handler http.Handler, resourceID string) {
@@ -422,6 +484,83 @@ var integrationThirdPartyVocabulary = func() r3.Vocabulary {
 	}
 	return vocabulary
 }()
+
+type integrationThirdPartyDefinitionSource struct{ exact []byte }
+
+const integrationThirdPartySourceEncoding r3.SourceEncoding = "tag:integration.example,2026:r3:definition-source-v1"
+
+type integrationThirdPartyDefinitionCodec struct{}
+
+func (integrationThirdPartyDefinitionCodec) Vocabulary() r3.Vocabulary {
+	return integrationThirdPartyVocabulary
+}
+
+func (integrationThirdPartyDefinitionCodec) ParseDefinition(source integrationThirdPartyDefinitionSource) (r3.DefinitionMaterial, error) {
+	var document struct {
+		Operations []string `json:"operations"`
+	}
+	if err := json.Unmarshal(source.exact, &document); err != nil {
+		return r3.DefinitionMaterial{}, r3.NewDefinitionError(r3.DefinitionInvalidSource, "invalid third-party definition", err)
+	}
+	if len(document.Operations) == 0 {
+		return r3.DefinitionMaterial{}, r3.NewDefinitionError(r3.DefinitionIncompleteSource, "third-party definition has no operations", nil)
+	}
+	operations := make([]r3.DefinedOperation, len(document.Operations))
+	seen := make(map[string]struct{}, len(document.Operations))
+	for index, name := range document.Operations {
+		if _, duplicate := seen[name]; duplicate {
+			return r3.DefinitionMaterial{}, r3.NewDefinitionError(r3.DefinitionIdentityAmbiguous, "duplicate third-party operation", nil)
+		}
+		seen[name] = struct{}{}
+		operation, err := newIntegrationThirdPartyOperation(name)
+		if err != nil {
+			return r3.DefinitionMaterial{}, r3.NewDefinitionError(r3.DefinitionIdentityUnavailable, "invalid third-party operation", err)
+		}
+		encoded, err := json.Marshal(operation)
+		if err != nil {
+			return r3.DefinitionMaterial{}, err
+		}
+		operations[index], err = r3.NewDefinedOperation(encoded, nil)
+		if err != nil {
+			return r3.DefinitionMaterial{}, err
+		}
+	}
+	return r3.NewDefinitionMaterial(integrationThirdPartySourceEncoding, source.exact, operations...)
+}
+
+var (
+	integrationThirdPartyDefinitionOnce   sync.Once
+	integrationThirdPartyDefinitionParser r3.DefinitionParser[integrationThirdPartyDefinitionSource]
+)
+
+func integrationThirdPartyDefinitions() r3.DefinitionParser[integrationThirdPartyDefinitionSource] {
+	integrationThirdPartyDefinitionOnce.Do(func() {
+		parser, err := r3.NewDefinitionParser[integrationThirdPartyDefinitionSource](integrationThirdPartyDefinitionCodec{})
+		if err != nil {
+			panic(err)
+		}
+		integrationThirdPartyDefinitionParser = parser
+	})
+	return integrationThirdPartyDefinitionParser
+}
+
+func integrationThirdPartyDefinition(t *testing.T, endpoint string, names []string) r3.AuthoritativeSnapshot {
+	t.Helper()
+	exact, err := json.Marshal(struct {
+		Operations []string `json:"operations"`
+	}{Operations: append([]string(nil), names...)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := integrationThirdPartyDefinitions().Parse(
+		endpoint,
+		integrationThirdPartyDefinitionSource{exact: exact},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
 
 var _ r3.Codec[integrationThirdPartySet] = integrationThirdPartyCodec{}
 

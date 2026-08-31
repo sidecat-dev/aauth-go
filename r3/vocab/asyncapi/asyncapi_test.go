@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/asyncapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/asyncapi"
 )
 
 func TestOperationRoundTripPreservesOptionalAction(t *testing.T) {

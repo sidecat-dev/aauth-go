@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/r3"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // R3Call supplies one exact protected HTTP call and the class Auth token

@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"aauth-go/internal/specmodel"
+	"gitlab.com/sidecat-dev/aauth-go/internal/specmodel"
 )
 
 func main() {

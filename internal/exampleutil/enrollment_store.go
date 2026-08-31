@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/agentprovider"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 )
 
 // NewEnrollmentStore returns a concurrency-safe in-memory Agent Provider

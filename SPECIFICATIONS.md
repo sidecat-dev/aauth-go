@@ -23,6 +23,23 @@ All seven files match the retained local source mirror used for review.
 is a non-normative diagnostic implementation, not an editor source. It is
 tracked by Git commit rather than inserted into the source manifest.
 
+## Native R3 vocabulary baselines
+
+R3 names seven external description formats without citing exact revisions.
+The table below fixes the sources used by this implementation. These are
+adapter baselines, not additional AAuth normative sources, and each row states
+the narrower representation this repository actually parses.
+
+| Vocabulary | Reviewed baseline | Current parser boundary |
+| --- | --- | --- |
+| MCP | [MCP 2025-11-25, commit `38c84e9`](https://github.com/modelcontextprotocol/specification/tree/38c84e9f93ad191d9eb26d92b945d17bd0efcaf3/docs/specification/2025-11-25/server) | Exact JSON-encoded `tools/list` result objects with cursor continuity and required object-rooted Tool `inputSchema`; JSON-RPC transport remains outside the parser |
+| OpenAPI | [OpenAPI 3.0.4](https://spec.openapis.org/oas/v3.0.4.html) and [3.1.1](https://spec.openapis.org/oas/v3.1.1.html) | Self-contained JSON or YAML Paths operations with `operationId`; callbacks, webhooks, and external reference acquisition are outside the profile |
+| gRPC | [`google.golang.org/protobuf` v1.36.10](https://github.com/protocolbuffers/protobuf-go/tree/v1.36.10) | Complete binary `google.protobuf.FileDescriptorSet`; reflection and `.proto` acquisition or compilation are outside the parser |
+| GraphQL | [GraphQL September 2025](https://spec.graphql.org/September2025/) | JSON response framing through object-valued `data.__schema`, followed by the typed R3 operation-identity refusal; no full introspection validator |
+| AsyncAPI | [AsyncAPI JSON Schemas v6.11.1, commit `e609fc2`](https://github.com/asyncapi/spec-json-schemas/tree/e609fc2341007395d75df5756fc6fccf662c2087) | Focused self-contained 3.0.0/3.1.0 JSON operation-to-root-channel profile; no YAML conversion or general document validator |
+| WSDL | [WSDL 1.1, W3C Note 15 March 2001](https://www.w3.org/TR/2001/NOTE-wsdl-20010315) | Self-contained service, binding, port-type, and message linkage needed to derive unique operations; no XML Schema or arbitrary extension validation |
+| OData | [OData CSDL XML 4.01](https://docs.oasis-open.org/odata/odata-csdl-xml/v4.01/odata-csdl-xml-v4.01.html) | Self-contained Edmx 4.0 entity-container and bound-operation identity subset; method and AAuth annotation authority remain refused |
+
 ## Verify the protocol map against source bytes
 
 [PROTOCOL.md](PROTOCOL.md) is backed by a machine-readable map of all 612

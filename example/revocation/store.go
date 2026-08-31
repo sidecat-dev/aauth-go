@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"sync"
 
-	aauth "aauth-go"
-	"aauth-go/personserver"
-	"aauth-go/resource"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
 )
 
 type personTokenStore struct {

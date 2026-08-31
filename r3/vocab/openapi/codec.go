@@ -1,4 +1,6 @@
-// Package openapi implements the R3 OpenAPI operation-object grammar and set algebra.
+// Package openapi implements the R3 OpenAPI operation grammar and a
+// self-contained OpenAPI 3.0/3.1 Paths definition adapter. Callbacks, webhooks,
+// external reference acquisition, and network I/O are outside the adapter.
 package openapi
 
 import (
@@ -9,9 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aauth-go/r3"
-	"aauth-go/r3/internal/wirejson"
-	"aauth-go/r3/vocab/internal/discoveryendpoint"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/internal/wirejson"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/internal/discoveryendpoint"
 )
 
 // URI is the standard R3 OpenAPI vocabulary URI.

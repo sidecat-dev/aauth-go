@@ -14,17 +14,26 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/jose"
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/r3/vocab/openapi"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/openapi"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func newResourceR3Registry(t *testing.T) r3.Registry {
 	t.Helper()
 	registry, err := resourceMCPRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func newResourceR3DefinitionRegistry(t *testing.T) r3.DefinitionRegistry {
+	t.Helper()
+	registry, err := r3.NewDefinitionRegistry(mcp.DefinitionRegistration())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +74,41 @@ func newResourceMCPOperationSet(t *testing.T, tools ...string) r3.OperationSet {
 	return set
 }
 
+func newResourceMCPDefinition(t *testing.T, tools ...string) r3.AuthoritativeSnapshot {
+	t.Helper()
+	defined := make([]map[string]any, len(tools))
+	for index, tool := range tools {
+		defined[index] = map[string]any{"name": tool, "inputSchema": map[string]any{"type": "object"}}
+	}
+	body, err := json.Marshal(map[string]any{"tools": defined})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newResourceMCPDefinitionFromBody(t, body)
+}
+
+func newResourceMCPDefinitionFromBody(t *testing.T, body []byte) r3.AuthoritativeSnapshot {
+	t.Helper()
+	source := mcp.NewToolsListSnapshot(mcp.NewInitialToolsListPage(body))
+	snapshot, err := mcp.ParseDefinition("https://resource.example/mcp", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func newResourceOpenAPIDefinition(t *testing.T) r3.AuthoritativeSnapshot {
+	t.Helper()
+	snapshot, err := openapi.ParseDefinition(
+		"https://resource.example/openapi.json",
+		openapi.NewDocumentSource([]byte(`{"openapi":"3.1.0","info":{"title":"records","version":"1"},"paths":{"/read":{"get":{"operationId":"records.read","responses":{"204":{"description":"ok"}}}}}}`)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
 type resourceMCPRequestMapper func(*http.Request) (string, bool, error)
 
 func newResourceMCPConfig(
@@ -75,10 +119,10 @@ func newResourceMCPConfig(
 ) *R3Config {
 	t.Helper()
 	config := &R3Config{
-		Registry: newResourceR3Registry(t),
+		Registry:    newResourceR3Registry(t),
+		Definitions: newResourceR3DefinitionRegistry(t),
 		Vocabularies: []R3VocabularyConfig{{
-			DiscoveryEndpoint:       "https://resource.example/mcp",
-			AuthoritativeOperations: newResourceMCPOperationSet(t, knownTools...),
+			Definition: newResourceMCPDefinition(t, knownTools...),
 		}},
 		Documents: documents,
 	}
@@ -131,33 +175,29 @@ func TestR3ResourceMetadataAdvertisesVocabularyAndValidatesConfiguration(t *test
 			},
 		)
 	}
-	foreignOperation, err := openapi.NewOperation("records.read")
-	if err != nil {
-		t.Fatal(err)
-	}
-	foreignOperations, err := openapi.NewOperationSet(foreignOperation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	foreignDefinition := newResourceOpenAPIDefinition(t)
+	conflictingHints := newResourceMCPDefinitionFromBody(t, []byte(
+		`{"tools":[{"name":"records.read","inputSchema":{"type":"object"},"_meta":{"aauth.dev/access-mode":"person-token","aauth.dev/budget":true}}]}`,
+	))
 
 	for _, test := range []struct {
 		name   string
 		change func(*R3Config)
 	}{
 		{name: "missing registry", change: func(config *R3Config) { config.Registry = r3.Registry{} }},
+		{name: "missing definition registry", change: func(config *R3Config) { config.Definitions = r3.DefinitionRegistry{} }},
 		{name: "missing vocabularies", change: func(config *R3Config) { config.Vocabularies = nil }},
-		{name: "missing endpoint", change: func(config *R3Config) { config.Vocabularies[0].DiscoveryEndpoint = "" }},
-		{name: "non-HTTPS endpoint", change: func(config *R3Config) {
-			config.Vocabularies[0].DiscoveryEndpoint = "http://resource.example/mcp"
-		}},
-		{name: "missing known operations", change: func(config *R3Config) {
-			config.Vocabularies[0].AuthoritativeOperations = r3.OperationSet{}
+		{name: "missing definition", change: func(config *R3Config) {
+			config.Vocabularies[0].Definition = r3.AuthoritativeSnapshot{}
 		}},
 		{name: "unregistered vocabulary", change: func(config *R3Config) {
-			config.Vocabularies[0].AuthoritativeOperations = foreignOperations
+			config.Vocabularies[0].Definition = foreignDefinition
 		}},
 		{name: "duplicate vocabulary", change: func(config *R3Config) {
 			config.Vocabularies = append(config.Vocabularies, config.Vocabularies[0])
+		}},
+		{name: "publisher-conflicting hints", change: func(config *R3Config) {
+			config.Vocabularies[0].Definition = conflictingHints
 		}},
 		{name: "missing document store", change: func(config *R3Config) { config.Documents = nil }},
 		{name: "missing invocation adapter", change: func(config *R3Config) { config.HTTP = R3HTTPAdapter{} }},
@@ -186,9 +226,8 @@ func TestR3ResourceMetadataAdvertisesVocabularyAndValidatesConfiguration(t *test
 		t.Fatal(err)
 	}
 	originalOperations := newResourceMCPOperationSet(t, "records.read", "records.export")
-	config.R3.Vocabularies[0].DiscoveryEndpoint = "https://changed.example/mcp"
-	config.R3.Vocabularies[0].AuthoritativeOperations = newResourceMCPOperationSet(t, "records.delete")
-	got := server.r3.vocabularies[mcp.URI].authoritativeOperations
+	config.R3.Vocabularies[0].Definition = newResourceMCPDefinition(t, "records.delete")
+	got := server.r3.vocabularies[mcp.URI].definition.Operations()
 	equal, equalErr := got.Equal(originalOperations)
 	if equalErr != nil || !equal {
 		t.Fatalf("retained authoritative operations = %#v, error = %v", got.Operations(), equalErr)

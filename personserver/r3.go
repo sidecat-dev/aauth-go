@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/internal/r3dispatch"
-	"aauth-go/internal/r3fetch"
-	"aauth-go/jose"
-	"aauth-go/r3"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
+	"gitlab.com/sidecat-dev/aauth-go/internal/r3fetch"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // R3Config enables immediate class and per-call R3 consent on a federated

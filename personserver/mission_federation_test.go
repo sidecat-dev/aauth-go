@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestFederatedMissionAuthorizationAcceptsAuthTokenWithinMissionAfterResourceExpiry(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
 
 var rawURL = base64.RawURLEncoding.Strict()

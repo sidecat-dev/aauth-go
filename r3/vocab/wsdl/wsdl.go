@@ -1,5 +1,7 @@
-// Package wsdl implements the R3 WSDL operation-object grammar and set algebra.
-// An omitted service overlaps a qualified operation with the same name.
+// Package wsdl implements the R3 WSDL operation grammar and a self-contained
+// WSDL 1.1 service/binding definition adapter. Ambiguous bindings and external
+// imports refuse rather than being guessed. An omitted service overlaps a
+// qualified operation with the same name.
 package wsdl
 
 import (
@@ -9,9 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aauth-go/r3"
-	"aauth-go/r3/internal/wirejson"
-	"aauth-go/r3/vocab/internal/discoveryendpoint"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/internal/wirejson"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/internal/discoveryendpoint"
 )
 
 // URI is the standard R3 WSDL vocabulary URI.

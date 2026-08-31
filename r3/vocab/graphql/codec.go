@@ -1,4 +1,7 @@
-// Package graphql implements the R3 GraphQL operation-object grammar and set algebra.
+// Package graphql implements the R3 GraphQL operation grammar. Its definition
+// adapter checks for JSON containing object-valued data.__schema and then
+// refuses with a typed identity error because schema introspection does not
+// publish client-authored executable operation names.
 package graphql
 
 import (
@@ -9,9 +12,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aauth-go/r3"
-	"aauth-go/r3/internal/wirejson"
-	"aauth-go/r3/vocab/internal/discoveryendpoint"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/internal/wirejson"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/internal/discoveryendpoint"
 )
 
 // URI is the standard R3 GraphQL vocabulary URI.

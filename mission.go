@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
 
 // MissionTool is one tool named in a mission proposal or approved mission.

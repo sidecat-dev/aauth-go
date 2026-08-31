@@ -1,5 +1,7 @@
-// Package asyncapi implements the R3 AsyncAPI operation-object grammar and set
-// algebra. Action presence and value are semantic.
+// Package asyncapi implements the R3 AsyncAPI operation grammar and a focused
+// self-contained AsyncAPI 3.0/3.1 JSON definition adapter. Action presence and
+// value are semantic. YAML conversion, external references, and traits are
+// outside the adapter.
 package asyncapi
 
 import (
@@ -9,9 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aauth-go/r3"
-	"aauth-go/r3/internal/wirejson"
-	"aauth-go/r3/vocab/internal/discoveryendpoint"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/internal/wirejson"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/internal/discoveryendpoint"
 )
 
 // URI is the standard R3 AsyncAPI vocabulary URI.
@@ -21,7 +23,9 @@ const URI r3.VocabularyURI = "urn:aauth:vocabulary:asyncapi"
 type Action string
 
 const (
-	ActionSend    Action = "send"
+	// ActionSend identifies an operation that sends on its channel.
+	ActionSend Action = "send"
+	// ActionReceive identifies an operation that receives from its channel.
 	ActionReceive Action = "receive"
 )
 

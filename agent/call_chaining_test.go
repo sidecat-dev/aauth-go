@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/agent"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {

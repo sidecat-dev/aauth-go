@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"aauth-go"
-	"aauth-go/agentprovider"
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestEnrollmentHTTPHandlersComposeAtCallerSelectedPaths(t *testing.T) {

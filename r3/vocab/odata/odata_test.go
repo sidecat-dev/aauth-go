@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/odata"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/odata"
 )
 
 func TestOperationRoundTripPreservesMethodsPresenceAndOrder(t *testing.T) {

@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	clientagent "aauth-go/agent"
-	"aauth-go/agentprovider"
-	"aauth-go/resource"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition(t *testing.T) {

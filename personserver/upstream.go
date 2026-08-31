@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	aauth "aauth-go"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 var (

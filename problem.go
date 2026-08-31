@@ -8,7 +8,7 @@ import (
 	"mime"
 	"net/http"
 
-	"aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 )
 
 const maxProblemResponseBytes = 1 << 20

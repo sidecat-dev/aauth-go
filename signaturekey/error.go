@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"aauth-go/jose"
 	"github.com/dunglas/httpsfv"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 // ErrorCode is one protocol-visible Signature-Key failure class.

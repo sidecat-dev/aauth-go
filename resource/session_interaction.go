@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/internal/interaction"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 )
 
 const sessionInteractionCorrelated = 1

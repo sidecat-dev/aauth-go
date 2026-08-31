@@ -1,4 +1,6 @@
-// Package mcp implements the R3 MCP operation-object grammar and set algebra.
+// Package mcp implements the R3 MCP operation grammar and native tools/list
+// definition adapter. The adapter validates cursor-linked pages, object-rooted
+// Tool input schemas, and sparse AAuth hints without performing MCP I/O.
 package mcp
 
 import (
@@ -9,9 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aauth-go/r3"
-	"aauth-go/r3/internal/wirejson"
-	"aauth-go/r3/vocab/internal/discoveryendpoint"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/internal/wirejson"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/internal/discoveryendpoint"
 )
 
 // URI is the standard R3 MCP vocabulary URI.

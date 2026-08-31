@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"aauth-go/jose"
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // ResourceInteraction describes a resource-owned user interaction carried by

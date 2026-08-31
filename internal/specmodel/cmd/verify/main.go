@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"aauth-go/internal/specmodel"
+	"gitlab.com/sidecat-dev/aauth-go/internal/specmodel"
 )
 
 func main() {

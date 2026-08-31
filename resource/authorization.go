@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/jose"
-	"aauth-go/r3"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 const maximumAuthorizationRequestBytes = 64 << 10

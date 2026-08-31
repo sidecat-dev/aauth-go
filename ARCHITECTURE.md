@@ -216,18 +216,32 @@ The current `r3` package is the vocabulary-neutral R3 value layer:
 - Adapter-owned operation union, equality, subset, and disjointness.
 - A small copy-safe invocation value containing only one registered operation
   and its presented parameters.
+- An atomic native-definition contract that returns copied operations, sparse
+  advisory hints, and an exact digest-input receipt from one parse.
+- Immutable authoritative snapshots used for operation containment without
+  retaining source bytes, parser state, or an adapter AST.
 - Strict Resource- and Auth-token R3 claim extensions.
 
 The seven standard operation grammars live under `r3/vocab/`; third-party
-vocabularies implement the same typed codec contract. Each codec also declares
-its annotation-encoding capability, including an absolute-URI identifier for a
-third-party mechanism. Full authoritative-definition parsing, annotation
-parsing, and non-HTTP invocation binding remain separate work; an exported
-grammar is not a claim that those paths execute.
+vocabularies implement the same typed operation-codec contract. Each standard
+adapter also owns one bounded native-definition parser. `DefinitionMaterial`
+is the transient output of one parse. `AuthoritativeSnapshot` contains only
+the copied operation set, sparse hints, and `SourceReceipt` over the adapter's
+named digest-input encoding. `DefinitionRegistry` prevents accidental mixing
+of parser registrations; it does not prove that a host selected a trustworthy
+parser or source.
+
+MCP, OpenAPI, and the focused AsyncAPI adapter parse sparse access hints.
+GraphQL introspection returns a typed identity-unavailable refusal. The gRPC,
+WSDL, and GraphQL adapters define no annotation parser; OData refuses AAuth
+annotations until the draft defines a resolvable term namespace and target.
+An exported parser is not a claim of complete native-format coverage.
 
 It does not fetch documents, decide policy, retain proposals, execute calls,
-or write AS audit records. Those consequences belong to the participating
-roles.
+or write AS audit records. Network and external dependency acquisition,
+freshness, and parser-resource bounds remain host responsibilities. "Atomic" means one
+internally consistent parse result; it does not mean a durable transaction,
+retained evidence record, or source attestation.
 
 ### `budgets`
 
@@ -340,13 +354,18 @@ sessions, authorization endpoints, Resource-token issuance, requirements,
 protected calls, revocation, held invocations, R3 document/proposal/result
 state, Events registration/delivery, and Budget reservations.
 
-Access mode is selected by the matched endpoint or R3 operation, not fixed for
-the entire server. Core scope, R3 operations, and Budget constraints are
-evaluated independently; none is projected into another.
+Each current Resource server enforces its configured runtime access mode.
+Parsed operation hints support Agent-side preparation only; they do not select
+Resource enforcement behavior, replace a runtime `AAuth-Requirement`, or grant
+access. Core scope, R3 operations, and Budget constraints are evaluated
+independently; none is projected into another.
 
 The current R3 paths let one Resource advertise several registered
-vocabularies at once. Each registration supplies an authoritative operation
-snapshot and a vocabulary-validated discovery endpoint. The HTTP Resource
+vocabularies at once. Each configured vocabulary supplies a
+parser-registration-validated authoritative snapshot whose receipt names the
+advertised discovery endpoint. Authorization requests and protected-call
+mappings must be semantically contained in that snapshot before document
+creation or enforcement. The HTTP Resource
 binding maps a protected request to one registered operation and, only after
 class lineage succeeds, extracts presented parameters for a per-call
 invocation. Proposal policy receives that transport-independent invocation.
@@ -360,10 +379,10 @@ one-operation Auth token can claim one execution; later presentation of the
 same exact compact token returns the retained result. Proposal fetch custody
 expires separately from execution custody. An Auth token must be issued while
 the proposal Resource token is valid, but may first complete later within the
-bounded Core Auth-token lifetime. The host remains responsible for deriving
-the authoritative operation snapshot from the advertised definition.
-Discovery-definition parsing, annotation parsing, and non-HTTP credential and
-execution bindings remain later work.
+bounded Core Auth-token lifetime. Standard adapters derive snapshots from
+bounded caller-acquired native sources. Network and external dependency
+acquisition, plus non-HTTP credential and execution bindings, remain host
+work.
 
 ### `accessserver`
 

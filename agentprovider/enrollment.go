@@ -7,8 +7,8 @@ import (
 	"errors"
 	"time"
 
-	"aauth-go/jose"
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 var (

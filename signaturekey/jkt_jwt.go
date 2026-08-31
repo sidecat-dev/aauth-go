@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"aauth-go/internal/jsonstrict"
-	"aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 // JKTJWTTypeSHA256 is the mandatory SHA-256 self-issued key-delegation type.

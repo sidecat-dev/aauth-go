@@ -3,8 +3,8 @@ package aauth_test
 import (
 	"testing"
 
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 )
 
 var tokenMCPRegistry = newTokenMCPRegistry()

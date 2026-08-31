@@ -14,9 +14,9 @@ import (
 	"net/http"
 	"strings"
 
-	aauth "aauth-go"
-	"aauth-go/jose"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // FederatedAuthorizationConfig supplies a federated auth-token Resource's
@@ -540,7 +540,7 @@ func resourceR3Vocabularies(server *Server) map[string]string {
 	}
 	vocabularies := make(map[string]string, len(server.r3.vocabularyOrder))
 	for _, uri := range server.r3.vocabularyOrder {
-		vocabularies[string(uri)] = server.r3.vocabularies[uri].discoveryEndpoint
+		vocabularies[string(uri)] = server.r3.vocabularies[uri].definition.Receipt().DiscoveryEndpoint()
 	}
 	return vocabularies
 }

@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/accessserver"
-	clientagent "aauth-go/agent"
-	"aauth-go/agentprovider"
-	"aauth-go/personserver"
-	"aauth-go/resource"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/accessserver"
+	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestCurrentCoreParentMediatedSubagentImmediatePSAuthorization(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"encoding/base64"
 	"testing"
 
-	aauth "aauth-go"
-	"aauth-go/internal/interaction"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 )
 
 func TestGeneratePendingReference(t *testing.T) {

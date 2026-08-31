@@ -11,9 +11,11 @@ claim-to-test matrix is in [CONFORMANCE.md](CONFORMANCE.md).
 
 ## Run it
 
-The module requires Go 1.24 or later. It currently uses the checkout-local
-module path `aauth-go`; run it from a source checkout rather than treating the
-repository as a published `go get` module.
+The module requires Go 1.25 or later. Install the current module with:
+
+```sh
+go get gitlab.com/sidecat-dev/aauth-go
+```
 
 The immediate three-party example runs an Agent Provider, Agent, Person Server,
 and Resource over ordinary HTTP handlers:
@@ -67,10 +69,10 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `aauth` | Core identifiers, token claims, minting, verification, and context checks |
 | `jose` | The focused Ed25519 JWK and compact-JWS profile used here |
 | `signaturekey` | HTTP request proofs, credentials, discovery, and error negotiation |
-| `r3` | Vocabulary-neutral R3 documents, proposals, grants, token claims, exact-byte references, and registered operation algebra |
-| `r3/vocab/<name>` | Strict operation-object grammar and set algebra for one standard R3 vocabulary |
-| `r3/vocab/standard` | An explicit registry containing all seven standard vocabulary codecs |
-| `r3/vocabtest` | Reusable grammar, algebra, copy-safety, and discovery contract checks for third-party codecs |
+| `r3` | Vocabulary-neutral R3 values, registered operation algebra, atomic native-definition parsing, source receipts, advisory hints, and token claims |
+| `r3/vocab/<name>` | One standard vocabulary's operation grammar, set algebra, and bounded native-definition adapter |
+| `r3/vocab/standard` | Explicit registries for all seven standard operation codecs and definition parsers |
+| `r3/vocabtest` | Reusable operation-codec and native-definition contracts for standard and third-party adapters |
 | `agentprovider` | Agent-token issuance plus Agent Provider metadata and JWKS |
 | `agent` | Explicit Core and R3 calls; no hidden polling, browser use, or consequence retry |
 | `personserver` | Person-token issuance, mission lifecycle, direct and R3 consent, interaction, revocation, call-chain policy, and Access Server federation |
@@ -82,6 +84,42 @@ depend on role packages. Role packages compose them through small policy,
 storage, key-resolution, clock, and transport interfaces. The complete package
 graph is in [ARCHITECTURE.md](ARCHITECTURE.md); executing-path evidence is in
 [CONFORMANCE.md](CONFORMANCE.md).
+
+## Parse an R3 native definition
+
+Definition adapters accept already-acquired native values and perform no
+network I/O. For MCP, pass the JSON value inside each JSON-RPC `result`, paired
+with the cursor used to request that page:
+
+```go
+source := mcp.NewToolsListSnapshot(
+	mcp.NewInitialToolsListPage([]byte(
+		`{"tools":[{"name":"records.read","inputSchema":{"type":"object"}}]}`,
+	)),
+)
+snapshot, err := mcp.ParseDefinition("https://resource.example/mcp", source)
+if err != nil {
+	return err
+}
+definitions, err := r3.NewDefinitionRegistry(mcp.DefinitionRegistration())
+if err != nil {
+	return err
+}
+if err := definitions.Validate(snapshot); err != nil {
+	return err
+}
+```
+
+Supply that registry and snapshot through `resource.R3Config.Definitions` and
+`R3VocabularyConfig.Definition`. The complete runnable wiring is in
+[`example/fourparty/r3.go`](example/fourparty/r3.go).
+
+A third-party vocabulary implements two separate interfaces: `r3.Codec` for
+operation grammar and algebra, and `r3.DefinitionCodec` for one deterministic,
+concurrency-safe, I/O-free native parse. Keep both registrations stable, then
+exercise them with `vocabtest.Run` and `vocabtest.RunDefinition`. The complete
+test-local extension is in
+[`integration/r3_vocabulary_helpers_test.go`](integration/r3_vocabulary_helpers_test.go).
 
 ## Integration model
 
@@ -102,7 +140,7 @@ graph is in [ARCHITECTURE.md](ARCHITECTURE.md); executing-path evidence is in
 Start with the runnable example closest to the topology you need. Then use its
 matching [conformance entry](CONFORMANCE.md) and the exported package
 documentation in the checkout—for example,
-`go doc aauth-go/resource`—to replace its in-memory policies and stores with
+`go doc gitlab.com/sidecat-dev/aauth-go/resource`—to replace its in-memory policies and stores with
 application implementations.
 
 ## Current limits
@@ -119,16 +157,30 @@ person-accepted completion through both three-party and four-party
 authorization. Deferred mission actions and mission combinations with
 delegation, call chaining, held delivery, or revocation remain open.
 
-R3 has strict operation-object grammars and set algebra for all seven standard
-vocabularies. MCP and OpenAPI have bounded immediate four-party HTTP paths for
-both direct grants and per-call proposals. The per-call path supports baseline
-`401` retry and Resource-held `202`, independent PS/AS proposal fetch,
-one-operation Auth tokens, single execution, and exact-token result replay.
-The same unchanged HTTP role journeys also run against a private third-party
-codec, proving the registry extension boundary rather than only its type shape.
-Authoritative-definition parsers, annotation parsers, non-HTTP invocation
-bindings, complete discovery resolution for every vocabulary, durable store
-adapters, and independent-implementation interoperability remain open.
+R3 has strict operation-object grammars and bounded native-definition adapters
+for all seven standard vocabularies. One parse atomically derives copied
+operations, sparse advisory hints, and a receipt over the adapter's exact
+digest input. The parser performs no network or external dependency
+acquisition, policy decision, or retention. Each bounded adapter resolves only
+the internal relationships it needs to derive operation identities.
+
+MCP validates complete cursor-linked `tools/list` frames and each Tool's
+object-rooted `inputSchema`. OpenAPI accepts self-contained 3.0 and 3.1 Paths
+operations. gRPC accepts complete binary `FileDescriptorSet` input. AsyncAPI,
+WSDL, and OData each implement a documented self-contained subset. GraphQL
+introspection returns a typed refusal because schema introspection does not
+publish client-authored executable operation names. MCP, OpenAPI, and AsyncAPI
+parse their defined sparse access hints; those hints never grant access or
+select Resource enforcement.
+
+MCP and OpenAPI have bounded immediate four-party HTTP paths for both direct
+grants and per-call proposals. The same unchanged HTTP role journeys also run
+against an integration-test-local codec implemented only through exported
+interfaces. Complete discovery acquisition, general
+dependency resolution, non-HTTP invocation bindings, durable store adapters,
+and independent-implementation interoperability remain open. Callers must
+bound source bytes, nesting, collection sizes, and parser work before passing
+untrusted material to these parsers.
 Bootstrap has one explicit executing profile; Events and Budgets remain design
 inputs. HTTP Signature Keys is implemented only to the extent required by
 current role paths.

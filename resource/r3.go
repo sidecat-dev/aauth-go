@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/r3"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // R3Config enables registered R3 authorization on a federated HTTP Resource.
@@ -26,6 +26,10 @@ type R3Config struct {
 	// Registry is the immutable allowlist used for every operation-bearing R3
 	// artifact and token claim.
 	Registry r3.Registry
+	// Definitions prevents accidental mixing of snapshots from different
+	// parser registrations. The host remains responsible for choosing and
+	// feeding a trustworthy parser.
+	Definitions r3.DefinitionRegistry
 	// Vocabularies are the Resource's simultaneously advertised definitions.
 	Vocabularies []R3VocabularyConfig
 	// Documents retains exact bytes and their PS/AS fetch entitlement.
@@ -53,16 +57,12 @@ type R3HTTPAdapter struct {
 	PresentParameters func(*http.Request, r3.Operation) (map[string]r3.PresentedParameter, error)
 }
 
-// R3VocabularyConfig binds one registered operation grammar to the
-// Resource's advertised endpoint, authoritative operation snapshot, and
+// R3VocabularyConfig binds one parser-derived authoritative snapshot to an
 // optional consent description policy.
 type R3VocabularyConfig struct {
-	// DiscoveryEndpoint is the one endpoint advertised for this vocabulary.
-	DiscoveryEndpoint string
-	// AuthoritativeOperations is the host's validated snapshot of that
-	// endpoint's definition. Every requested and mapped operation must be a
-	// semantic subset of this value before token issuance or protected use.
-	AuthoritativeOperations r3.OperationSet
+	// Definition was derived by a caller-selected parser from the source
+	// advertised at its retained endpoint.
+	Definition r3.AuthoritativeSnapshot
 	// DisplayForOperations optionally describes the consequences of one
 	// validated request for Person Server consent.
 	DisplayForOperations func(
@@ -159,12 +159,8 @@ func (server *Server) parseR3Operations(raw json.RawMessage) (r3.OperationSet, e
 	if !ok {
 		return r3.OperationSet{}, fmt.Errorf("aauth: R3 vocabulary %q is not configured", operations.Vocabulary())
 	}
-	known, err := operations.IsSubsetOf(vocabulary.authoritativeOperations)
-	if err != nil {
+	if err := vocabulary.definition.ValidateDefined(operations); err != nil {
 		return r3.OperationSet{}, fmt.Errorf("aauth: validate r3_operations: %w", err)
-	}
-	if !known {
-		return r3.OperationSet{}, errors.New("aauth: r3_operations contains an operation outside the authoritative definition")
 	}
 	return operations, nil
 }
@@ -426,12 +422,8 @@ func (server *Server) r3OperationForRequest(request *http.Request) (r3.Operation
 	if !ok {
 		return r3.Operation{}, false, fmt.Errorf("aauth: mapped R3 vocabulary %q is not configured", operation.Vocabulary())
 	}
-	known, err := operationSet.IsSubsetOf(vocabulary.authoritativeOperations)
-	if err != nil {
+	if err := vocabulary.definition.ValidateDefined(operationSet); err != nil {
 		return r3.Operation{}, false, fmt.Errorf("aauth: validate mapped R3 operation: %w", err)
-	}
-	if !known {
-		return r3.Operation{}, false, errors.New("aauth: mapped R3 operation is outside the authoritative definition")
 	}
 	return operation, true, nil
 }
@@ -453,9 +445,8 @@ func (server *Server) r3InvocationForRequest(request *http.Request, operation r3
 }
 
 type r3VocabularyConfig struct {
-	discoveryEndpoint       string
-	authoritativeOperations r3.OperationSet
-	displayForOperations    func(context.Context, r3.OperationSet, *string) (*r3.Display, error)
+	definition           r3.AuthoritativeSnapshot
+	displayForOperations func(context.Context, r3.OperationSet, *string) (*r3.Display, error)
 }
 
 type r3PerCallConfig struct {
@@ -471,6 +462,9 @@ func validateR3Config(config *R3Config) (*r3Config, error) {
 	if config.Registry.Len() == 0 {
 		return nil, errors.New("aauth: Resource R3 vocabulary registry is required")
 	}
+	if config.Definitions.Len() == 0 {
+		return nil, errors.New("aauth: Resource R3 definition registry is required")
+	}
 	if len(config.Vocabularies) == 0 {
 		return nil, errors.New("aauth: Resource requires at least one R3 vocabulary")
 	}
@@ -483,15 +477,18 @@ func validateR3Config(config *R3Config) (*r3Config, error) {
 	vocabularies := make(map[r3.VocabularyURI]r3VocabularyConfig, len(config.Vocabularies))
 	order := make([]r3.VocabularyURI, len(config.Vocabularies))
 	for index, candidate := range config.Vocabularies {
-		if err := config.Registry.ValidateOperationSet(candidate.AuthoritativeOperations); err != nil {
-			return nil, fmt.Errorf("aauth: Resource R3 authoritative operations: %w", err)
+		if err := config.Definitions.Validate(candidate.Definition); err != nil {
+			return nil, fmt.Errorf("aauth: Resource R3 authoritative definition: %w", err)
 		}
-		uri := candidate.AuthoritativeOperations.Vocabulary()
-		registered, _ := config.Registry.Vocabulary(uri)
+		operations := candidate.Definition.Operations()
+		if err := config.Registry.ValidateOperationSet(operations); err != nil {
+			return nil, fmt.Errorf("aauth: Resource R3 authoritative definition operations: %w", err)
+		}
+		uri := candidate.Definition.Vocabulary()
 		if _, duplicate := vocabularies[uri]; duplicate {
 			return nil, fmt.Errorf("aauth: duplicate Resource R3 vocabulary %q", uri)
 		}
-		known := candidate.AuthoritativeOperations.Operations()
+		known := operations.Operations()
 		if len(known) == 0 {
 			return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q requires authoritative operations", uri)
 		}
@@ -499,14 +496,19 @@ func validateR3Config(config *R3Config) (*r3Config, error) {
 			if operation.JSON() == nil {
 				return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q operation %d is invalid", uri, operationIndex)
 			}
-		}
-		if err := registered.ValidateDiscoveryEndpoint(candidate.DiscoveryEndpoint); err != nil {
-			return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q discovery endpoint: %w", uri, err)
+			hints, present, err := candidate.Definition.HintsFor(operation)
+			if err != nil {
+				return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q operation %d hints: %w", uri, operationIndex, err)
+			}
+			if present {
+				if err := hints.ValidateForPublication(); err != nil {
+					return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q operation %d publication: %w", uri, operationIndex, err)
+				}
+			}
 		}
 		vocabularies[uri] = r3VocabularyConfig{
-			discoveryEndpoint:       candidate.DiscoveryEndpoint,
-			authoritativeOperations: candidate.AuthoritativeOperations,
-			displayForOperations:    candidate.DisplayForOperations,
+			definition:           candidate.Definition,
+			displayForOperations: candidate.DisplayForOperations,
 		}
 		order[index] = uri
 	}

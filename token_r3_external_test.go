@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"aauth-go"
-	"aauth-go/jose"
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {

@@ -1,6 +1,7 @@
-// Package vocabtest checks the shared contract implemented by an R3 operation
-// vocabulary. It is intended for both the standard adapters and third-party
-// vocabulary packages.
+// Package vocabtest checks the two independent extension contracts implemented
+// by an R3 vocabulary: operation grammar/algebra and native authoritative
+// definition parsing. It is intended for both standard adapters and
+// third-party vocabulary packages.
 //
 // A codec test normally constructs the package's stable registration, a fresh
 // registration of the same codec, and an application registry:
@@ -31,8 +32,15 @@
 //		})
 //	}
 //
-// Run checks representative grammar and algebra laws. The codec must still
-// have exhaustive tests for its operation fields and discovery endpoint
-// grammar. Definition fetching, access annotations, and authorization behavior
-// are outside this package.
+// Run checks representative grammar and algebra laws. RunDefinition separately
+// checks parser-registration isolation, receipt completeness and stable replay,
+// changed-source divergence, known and unknown operation containment, hint
+// lookup, and typed source refusals. It does not impose a common native source
+// representation.
+//
+// A codec must still have exhaustive tests for its own operation fields,
+// discovery endpoint grammar, and bounded native-source profile. Discovery
+// transport, dependency resolution, source freshness, parser-resource limits,
+// application policy, authorization, and enforcement are outside this package.
+// Hints remain advisory even when a definition contract checks them.
 package vocabtest

@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/agent"
-	"aauth-go/jose"
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T) {

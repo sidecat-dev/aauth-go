@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestMissionUpdatesRetainExactOrderedPolicyContext(t *testing.T) {

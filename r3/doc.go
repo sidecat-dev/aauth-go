@@ -7,6 +7,12 @@
 // vocabulary semantics, while references bind the exact bytes independently
 // of parsing or reserialization.
 //
+// DefinitionParser is the separate native-definition boundary. One atomic
+// parse produces a copied AuthoritativeSnapshot containing a semantic
+// operation set, sparse advisory hints, and a receipt over the adapter's named
+// digest input. The snapshot retains no source bytes, parser AST, transport,
+// policy, or lifecycle state.
+//
 // This package does not fetch definitions, decide policy, retain artifacts,
 // execute calls, or write issuance audits. The participating role packages
 // own those effects.

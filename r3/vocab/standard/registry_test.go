@@ -3,15 +3,15 @@ package standard_test
 import (
 	"testing"
 
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/asyncapi"
-	"aauth-go/r3/vocab/graphql"
-	"aauth-go/r3/vocab/grpc"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/r3/vocab/odata"
-	"aauth-go/r3/vocab/openapi"
-	"aauth-go/r3/vocab/standard"
-	"aauth-go/r3/vocab/wsdl"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/asyncapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/graphql"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/grpc"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/odata"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/openapi"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/standard"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/wsdl"
 )
 
 func TestRegistryContainsEveryStandardVocabularyExactlyOnce(t *testing.T) {
@@ -25,6 +25,21 @@ func TestRegistryContainsEveryStandardVocabularyExactlyOnce(t *testing.T) {
 	} {
 		if _, ok := registry.Vocabulary(uri); !ok {
 			t.Fatalf("registry is missing %s", uri)
+		}
+	}
+}
+
+func TestDefinitionRegistryContainsEveryStandardVocabularyExactlyOnce(t *testing.T) {
+	registry := standard.Definitions()
+	if registry.Len() != 7 {
+		t.Fatalf("definition registry length = %d", registry.Len())
+	}
+	for _, uri := range []r3.VocabularyURI{
+		mcp.URI, openapi.URI, grpc.URI, graphql.URI,
+		asyncapi.URI, wsdl.URI, odata.URI,
+	} {
+		if !registry.Contains(uri) {
+			t.Fatalf("definition registry is missing %s", uri)
 		}
 	}
 }

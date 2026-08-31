@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	aauth "aauth-go"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestCapabilitiesRoundTripKnownAndExtensionTokens(t *testing.T) {

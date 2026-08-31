@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 var recognizedClaims = [...]string{"r3_uri", "r3_s256", "r3_granted", "r3_per_call"}

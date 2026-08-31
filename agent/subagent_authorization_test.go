@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/agent"
-	"aauth-go/jose"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 func TestParentMediatedSubagentUsesExactChildTokenAndVerifiesChildBoundResults(t *testing.T) {

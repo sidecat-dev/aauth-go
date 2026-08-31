@@ -1,5 +1,7 @@
-// Package odata implements the R3 OData operation-object grammar and set
-// algebra. Methods are an order-insensitive narrowing set.
+// Package odata implements the R3 OData operation grammar and derives an
+// unambiguous structural subset from self-contained CSDL Edmx 4.0 metadata.
+// Methods are an order-insensitive narrowing set. Overloads, references, and
+// AAuth annotations whose target the draft cannot identify refuse typed.
 package odata
 
 import (
@@ -9,9 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aauth-go/r3"
-	"aauth-go/r3/internal/wirejson"
-	"aauth-go/r3/vocab/internal/discoveryendpoint"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/internal/wirejson"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/internal/discoveryendpoint"
 )
 
 // URI is the standard R3 OData vocabulary URI.

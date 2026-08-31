@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/internal/httpapi"
-	"aauth-go/jose"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 // Config supplies the protocol identity and issuer dependencies of a Server.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func TestMCPProposalJSONRoundTripAndCopySafety(t *testing.T) {

@@ -18,13 +18,13 @@ import (
 	"sync"
 	"time"
 
-	aauth "aauth-go"
-	clientagent "aauth-go/agent"
-	"aauth-go/agentprovider"
-	"aauth-go/internal/exampleutil"
-	"aauth-go/jose"
-	"aauth-go/resource"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 const (

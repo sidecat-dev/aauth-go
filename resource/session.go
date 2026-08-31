@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/jose"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // SessionInteractionPolicy configures the Resource's authenticated user

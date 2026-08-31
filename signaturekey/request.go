@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"aauth-go/jose"
 	"github.com/dunglas/httpsfv"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 // DefaultSignatureWindow is the Core request-proof freshness window.

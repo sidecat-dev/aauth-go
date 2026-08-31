@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/agent"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agent"
 )
 
 func TestExchangeInteractionImmediateResultMatchesExchange(t *testing.T) {

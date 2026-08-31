@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"aauth-go/jose"
 	"github.com/dunglas/httpsfv"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 var discoveryNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,254}$`)

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/agentprovider"
-	"aauth-go/internal/exampleutil"
-	"aauth-go/jose"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
 
 func TestEnrollmentStoreRetainsExactEnrollmentAndRefresh(t *testing.T) {

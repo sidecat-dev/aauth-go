@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/internal/jsonstrict"
-	"aauth-go/internal/r3dispatch"
-	"aauth-go/r3"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 type exchangeResultKind uint8

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func TestOperationRoundTripsThroughNeutralR3(t *testing.T) {

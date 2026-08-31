@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	"aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 // Contract supplies representative values for checking one R3 vocabulary.

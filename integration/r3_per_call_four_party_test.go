@@ -16,15 +16,15 @@ import (
 	"testing"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/accessserver"
-	clientagent "aauth-go/agent"
-	"aauth-go/agentprovider"
-	"aauth-go/jose"
-	"aauth-go/personserver"
-	"aauth-go/r3"
-	"aauth-go/resource"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/accessserver"
+	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 const r3PerCallScope = "records.write"
@@ -216,7 +216,8 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 			},
 			Protected: protected,
 			R3: &resource.R3Config{
-				Registry: registry,
+				Registry:    registry,
+				Definitions: newIntegrationR3DefinitionRegistry(t),
 				Vocabularies: integrationR3ResourceVocabularies(
 					t, resourceID, []string{"records.delete"}, account, &classDisplay,
 				),

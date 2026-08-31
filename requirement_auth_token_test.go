@@ -3,7 +3,7 @@ package aauth_test
 import (
 	"testing"
 
-	auth "aauth-go"
+	auth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestAuthTokenRequirementRoundTrip(t *testing.T) {

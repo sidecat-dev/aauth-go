@@ -633,8 +633,19 @@ For underspecified optional members, the current interpretations are:
 
 The standard annotation-location mechanisms use named constants. A
 third-party codec identifies its own mechanism with an absolute URI so two
-independent extensions cannot silently reuse one local label. This is only a
-capability declaration; it does not parse or enforce the annotation.
+independent extensions cannot silently reuse one local label.
+
+`AnnotationEncoding` is only a capability declaration. Separately, the MCP,
+OpenAPI, and focused AsyncAPI definition adapters parse the encodings defined
+by the draft into sparse `OperationHints`. Those hints preserve independent
+member presence and produce an advisory `ExpectedAccess`; they are never
+enforcement input or grant evidence. Resource configuration rejects the
+publisher-forbidden combination of `budget:true` with explicit `agent-token`
+or `person-token`; Agent planning still applies the draft's required
+`auth-token` fallback when reading a conflicting remote definition. The OData adapter refuses AAuth
+annotations until the draft defines a usable term namespace and an unambiguous
+target. gRPC, GraphQL, and WSDL expose no annotation parser because the draft
+defines no encoding for them.
 
 These rules make authorization algebra deterministic; they do not claim that
 the draft's GraphQL, WSDL, or OData discovery identifiers are sufficient to
@@ -644,6 +655,51 @@ build an authoritative catalog. Those source questions remain in
 **Executable examples:**
 `r3/vocabtest/standard_contract_test.go`, the tests under `r3/vocab/`, and
 `r3/vocabulary_test.go`.
+
+## Authoritative-definition parsing is atomic, not authoritative custody
+
+**Source:** R3, `Resource Metadata Extensions`, `Operation Identifier Scope`,
+`Standard Vocabularies`, `Operation Access Annotations`, and `Operation
+Validation`.
+
+Each definition adapter parses one already-acquired native source in one call
+and emits its operations and hints together. The receipt hashes the adapter's
+exact named digest input, so changed source cannot silently reuse a snapshot
+identity. The snapshot owns copied operations and hints; it retains no source
+bytes, parser AST, resolver, transport, policy, or lifecycle state.
+
+The receipt is not an `r3_s256`, a trust decision, retained evidence, or proof
+that the advertised endpoint was fetched correctly. Parser registration
+prevents an accidental adapter substitution, not a malicious or mistaken host
+choice. The caller still owns acquisition, egress policy, external import and
+reference acquisition, freshness, and parser-resource bounds.
+
+The native adapters deliberately have different complete boundaries:
+
+- MCP binds every JSON-encoded `tools/list` result object to the cursor used to
+  request it, after the caller removes the JSON-RPC envelope, and requires each
+  Tool's object-rooted `inputSchema`.
+- OpenAPI accepts self-contained 3.0 and 3.1 Paths operations with explicit
+  `operationId` values; callbacks and webhooks are outside this profile.
+- gRPC accepts a complete linked binary `FileDescriptorSet`; live reflection
+  and hosted `.proto` text must be acquired and compiled first.
+- GraphQL checks for JSON containing object-valued `data.__schema` and then
+  refuses with `operation_identity_unavailable`, because schema introspection
+  does not contain client-authored operation names.
+- AsyncAPI requires native `action`, validates the direct operation-to-root-
+  channel pointer, and refuses external references and traits. Other nested
+  local references are outside this focused operation-identity profile.
+- WSDL derives only uniquely resolved service, binding, and port-type
+  operations from a self-contained WSDL 1.1 document.
+- OData derives only the unambiguous structural subset and refuses overloads,
+  multiple containers, external references, and AAuth annotations.
+
+These boundaries preserve the open specification questions recorded as
+`AAG-F077` through `AAG-F080`; successful parsing does not answer them.
+
+**Executable examples:** `r3/definition_test.go`,
+`r3/vocabtest/definition_contract_test.go`, the definition tests under
+`r3/vocab/`, and `resource/r3_test.go`.
 
 ## Standard R3 discovery endpoints use a bounded HTTPS URL profile
 
@@ -656,10 +712,11 @@ authority and no userinfo or fragment; query strings are allowed. Third-party
 codecs may define another syntax.
 
 This is an implementation restriction, not complete discovery support. In
-particular, the gRPC codec accepts hosted HTTPS reflection or `.proto` URLs;
-the draft permits a reflection endpoint but does not define a portable target
-grammar. Endpoint validation does not fetch or validate an authoritative
-definition or its annotations.
+particular, the gRPC operation codec accepts hosted HTTPS reflection or
+`.proto` URLs, but the definition adapter performs no network or compilation
+work and accepts only a complete binary `FileDescriptorSet`. The draft permits
+a reflection endpoint but does not define a portable target grammar. Endpoint
+validation alone does not fetch or validate a native definition.
 
 **Executable examples:**
 `r3/vocabulary_test.go:TestVocabularyDelegatesDiscoveryEndpointValidationToCodec`,

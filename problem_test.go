@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	auth "aauth-go"
+	auth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestDecodeProblemResponseReturnsTypedAAuthError(t *testing.T) {

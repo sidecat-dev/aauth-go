@@ -3,7 +3,7 @@ package aauth_test
 import (
 	"testing"
 
-	aauth "aauth-go"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 func TestGenericRequirementParsesCurrentAndExtensionTokens(t *testing.T) {

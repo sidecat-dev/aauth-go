@@ -8,8 +8,8 @@ import (
 	"slices"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 type resourceSessionKind uint8

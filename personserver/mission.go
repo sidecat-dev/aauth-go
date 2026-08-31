@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/internal/httpapi"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 )
 
 // ErrMissionNotFound reports that an owner-scoped MissionStore lookup cannot

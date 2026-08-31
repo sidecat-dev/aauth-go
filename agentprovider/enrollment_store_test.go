@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 )
 
 func TestEnrollmentStoreCommitRefreshExpiryOrdering(t *testing.T) {

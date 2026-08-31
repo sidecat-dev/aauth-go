@@ -74,6 +74,10 @@ authorization context, not identity components.
 A Resource chooses an access mode per endpoint or, with R3, per operation.
 These are different protocol outcomes rather than security levels.
 
+R3 annotations publish expected preparation. In this implementation they
+produce advisory planning values only. The Resource's configured runtime mode
+and any returned `AAuth-Requirement` remain authoritative.
+
 | Mode | Credential presented to the Resource | What the Resource learns |
 | --- | --- | --- |
 | Agent identity | Agent token | AP-attested Agent identity and proof key |
@@ -150,6 +154,15 @@ does not define one global lifecycle or evidence record.
 “Retain,” “durably accept,” and “atomically write” appear only where the
 sources require them or an explicitly named repository profile defines them.
 They do not imply a universal persistence API.
+
+Before issuing an R3 Resource token, the Resource validates the declared
+operation set against a parser-registration-validated snapshot derived from
+its advertised native definition. Parsing is pure and caller-fed: discovery
+I/O, external dependency acquisition, freshness, and resource bounds remain
+outside the R3 value layer. Each bounded adapter resolves only the internal
+relationships needed to derive operation identities. The snapshot receipt
+identifies the parser's exact digest input; it is not the R3 document's
+`r3_s256`.
 
 ## Complete protocol journeys
 

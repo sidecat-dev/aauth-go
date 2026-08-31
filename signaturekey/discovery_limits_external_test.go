@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"aauth-go/jose"
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func TestHTTPKeyResolverBoundsPositiveAndNegativeState(t *testing.T) {

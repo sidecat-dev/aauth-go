@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/r3"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func (client *Client) verifyR3ResourceTokenContext(

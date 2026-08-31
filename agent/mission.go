@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	aauth "aauth-go"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 )
 
 // MissionRequest names one Person Server and the mission proposal to submit.

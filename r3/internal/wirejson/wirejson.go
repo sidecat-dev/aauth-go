@@ -11,6 +11,76 @@ import (
 	"unicode/utf8"
 )
 
+// ValidateSource accepts one JSON value while rejecting duplicate object
+// members at every depth. It leaves vocabulary-specific members unconstrained.
+func ValidateSource(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("JSON must be valid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := validateValue(decoder); err != nil {
+		return err
+	}
+	return eof(decoder)
+}
+
+func validateValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			nameToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := nameToken.(string)
+			if !ok {
+				return errors.New("expected an object member name")
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return fmt.Errorf("duplicate member %q", name)
+			}
+			seen[name] = struct{}{}
+			if err := validateValue(decoder); err != nil {
+				return fmt.Errorf("member %q: %w", name, err)
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return errors.New("invalid JSON object close")
+		}
+		return nil
+	case '[':
+		for decoder.More() {
+			if err := validateValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return errors.New("invalid JSON array close")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+}
+
 // Object decodes exactly one JSON object. Unknown and duplicate members are
 // rejected before a vocabulary adapter can interpret the value.
 func Object(data []byte, handlers map[string]func(json.RawMessage) error) (map[string]struct{}, error) {

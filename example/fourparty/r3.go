@@ -12,16 +12,16 @@ import (
 	"sync"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/accessserver"
-	clientagent "aauth-go/agent"
-	"aauth-go/agentprovider"
-	"aauth-go/internal/exampleutil"
-	"aauth-go/personserver"
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/mcp"
-	"aauth-go/resource"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/accessserver"
+	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 func runR3Direct(output io.Writer) {
@@ -57,6 +57,11 @@ func runR3Direct(output io.Writer) {
 	exportMCP := must(mcp.NewOperation("records.export"))
 	export := must(exportMCP.ToR3())
 	requested := must(mcp.NewOperationSet(readMCP, exportMCP))
+	definitionSource := mcp.NewToolsListSnapshot(mcp.NewInitialToolsListPage([]byte(
+		`{"tools":[{"name":"records.read","inputSchema":{"type":"object"}},{"name":"records.export","inputSchema":{"type":"object"}}]}`,
+	)))
+	definition := must(mcp.ParseDefinition(resourceID+"/mcp", definitionSource))
+	definitions := must(r3.NewDefinitionRegistry(mcp.DefinitionRegistration()))
 	display := must(r3.NewDisplay(
 		"Read and export records",
 		"Exported records may leave the system",
@@ -85,10 +90,10 @@ func runR3Direct(output io.Writer) {
 			return nil
 		},
 		R3: &resource.R3Config{
-			Registry: registry,
+			Registry:    registry,
+			Definitions: definitions,
 			Vocabularies: []resource.R3VocabularyConfig{{
-				DiscoveryEndpoint:       resourceID + "/mcp",
-				AuthoritativeOperations: requested,
+				Definition: definition,
 				DisplayForOperations: func(_ context.Context, operations r3.OperationSet, gotAccount *string) (*r3.Display, error) {
 					equal, err := operations.Equal(requested)
 					if err != nil || !equal || gotAccount == nil || *gotAccount != account {

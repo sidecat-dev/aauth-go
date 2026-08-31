@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	"aauth-go"
-	"aauth-go/internal/httpapi"
-	"aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // Enroll applies host policy to one verified request. EnrollmentHandler is

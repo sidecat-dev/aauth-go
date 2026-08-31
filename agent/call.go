@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/internal/r3dispatch"
-	"aauth-go/signaturekey"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // InitialCall supplies one exact application request and the person token

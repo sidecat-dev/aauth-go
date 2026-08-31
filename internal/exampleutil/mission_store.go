@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	aauth "aauth-go"
-	"aauth-go/personserver"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
 
 // NewMissionStore returns a concurrency-safe in-memory Person Server mission

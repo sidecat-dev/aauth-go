@@ -1,12 +1,13 @@
 package resource
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"aauth-go/r3"
-	"aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 )
 
 func TestR3HTTPAdapterProducesANeutralInvocation(t *testing.T) {
@@ -52,5 +53,31 @@ func TestR3HTTPAdapterProducesANeutralInvocation(t *testing.T) {
 	}
 	if typed.Tool() != "records.read" {
 		t.Fatalf("operation = %q", typed.Tool())
+	}
+}
+
+func TestR3HTTPAdapterRejectsMappedOperationAbsentFromDefinition(t *testing.T) {
+	config := newResourceMCPConfig(
+		t,
+		&r3TestDocumentStore{},
+		[]string{"records.read"},
+		func(*http.Request) (string, bool, error) {
+			return "records.delete", true, nil
+		},
+	)
+	serverConfig := validConfig(t, http.NotFoundHandler())
+	serverConfig.R3 = config
+	server, err := NewFederatedAuthorization(serverConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodDelete, "https://resource.example/records/1", nil)
+	operation, mapped, err := server.r3OperationForRequest(request)
+	if operation.JSON() != nil || mapped {
+		t.Fatalf("rejected mapping returned operation=%s mapped=%t", operation.JSON(), mapped)
+	}
+	var refusal *r3.DefinitionError
+	if !errors.As(err, &refusal) || refusal.Kind != r3.DefinitionOperationNotDefined {
+		t.Fatalf("mapped-operation refusal = %T %v", err, err)
 	}
 }

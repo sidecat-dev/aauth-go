@@ -1,4 +1,6 @@
-// Package grpc implements the R3 gRPC operation-object grammar and set algebra.
+// Package grpc implements the R3 gRPC operation grammar and derives fully
+// qualified methods from complete binary FileDescriptorSet input. Reflection,
+// hosted .proto acquisition, compilation, and network I/O remain caller work.
 package grpc
 
 import (
@@ -9,9 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aauth-go/r3"
-	"aauth-go/r3/internal/wirejson"
-	"aauth-go/r3/vocab/internal/discoveryendpoint"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/internal/wirejson"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/internal/discoveryendpoint"
 )
 
 // URI is the standard R3 gRPC vocabulary URI.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	aauth "aauth-go"
-	"aauth-go/agentprovider"
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 )
 
 type integrationEnrollmentStore struct {
