@@ -1030,3 +1030,41 @@ contract.
 `updated_request` remains unsupported. Its current equality rule requires an
 `agent` claim that current Resource tokens do not carry; choosing a replacement
 binding here would hide the source problem recorded as `AAG-F008`.
+
+## Permission decisions stay specific to the Permission Endpoint
+
+**Sources:** AAuth Core, `Permission Endpoint`, `Permission Response`, and
+`Deferred Response State Machine`.
+
+The Permission Endpoint explicitly defines both immediate grant and denial as
+`200` responses carrying `permission`. The generic deferred state machine
+instead shows terminal denial as `403 denied`. This implementation keeps the
+endpoint-specific representation for both immediate and deferred host
+decisions. The Agent also accepts a generic `403 denied` while polling so it
+can interoperate with a server that follows the generic state machine. It does
+not treat any other `403` problem as a permission decision. `AAG-F096` asks the
+editors to choose one terminal wire representation.
+
+The first executing profile is top-level and missionless. Supplying
+`mission_s256`, even as JSON `null`, is an explicit `invalid_request` rather
+than a silently ignored field. Mission-bound tool matching and mission-log
+recording require their own source-defined semantics; this profile does not
+guess them.
+
+An application may defer policy while it authenticates and consults the
+person through its own channel. `ResumePermission` reconstructs the verified
+intent from retained state, but the resulting handle is not person authority.
+The host must authenticate the person independently and sanitize the raw
+Markdown description before display. The library never executes the named
+action. It returns a typed decision, and the application decides what that
+action means.
+
+The source defines no stable identity for the initial POST. A transport error,
+malformed success, or non-retryable server failure after handoff therefore
+returns `PermissionSubmissionUncertainError` and is never retried
+automatically (`AAG-F098`). A definite `4xx` rejection remains an ordinary
+failure; `429` and `503` remain caller-owned responses under the source's
+explicit backoff rules. Once a terminal poll response is consumed, the source
+requires later polls to return `410`; the implementation follows that rule and
+therefore inherits the lost-terminal-response gap already recorded as
+`AAG-F004`.

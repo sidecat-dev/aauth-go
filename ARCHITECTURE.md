@@ -68,6 +68,14 @@ Resource owns registration and outbound delivery, and the Agent owns local
 context and replay correlation. Each role receives its own small store
 interface; no shared Events lifecycle object crosses those boundaries.
 
+The current Permission slice is one top-level missionless local-action path.
+The root package owns the `granted` and `denied` wire values; `agent` performs
+one signed request or poll; and `personserver` owns verified intent, immediate
+or deferred policy, and the purpose-specific `PermissionStore`. A host handle
+recovers retained intent after Server recomposition but carries no person
+authority. The application authenticates the person, interprets parameters,
+and executes an action only after receiving the typed grant.
+
 The current model includes focused `r3`, `events`, and `budgets` protocol
 packages. Sections below distinguish their implemented profiles from target
 ownership. Present-tense support must never be inferred from the target import
@@ -378,6 +386,13 @@ idempotent. Cancellation is terminal. The host—not the protocol library—auth
 sanitizes Markdown, and decides whether the answer permits authorization.
 There is no cross-domain pending-request or evidence container.
 
+The missionless Permission path is independent of token authorization state.
+`PermissionStore` retains one complete verified action request and either its
+immediate decision or a bounded pending state. Host grant and denial compare
+that exact context, first-writer wins, and one terminal Agent poll consumes the
+decision before delivery. This focused store is not reused for missions,
+clarification, interaction relay, or application execution.
+
 ### `resource`
 
 The target owns Resource metadata/JWKS, the five access modes, Resource-local
@@ -437,7 +452,8 @@ Examples include:
 
 - `EnrollmentStore` at an AP for a durable-key enrollment and exact refresh
   result keyed by the verified identity and delegation JTI.
-- `PersonTokenStore`, `MissionStore`, and `PendingAuthorizationStore` at a PS.
+- `PersonTokenStore`, `MissionStore`, `PendingAuthorizationStore`, and
+  `PermissionStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
   `R3ProposalStore`, `SubscriptionStore`, and `BudgetStore` at a Resource.
 - `r3.IssuanceStore` at whichever PS or AS issues the R3 Auth token.

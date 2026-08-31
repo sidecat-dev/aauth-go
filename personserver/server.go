@@ -4,9 +4,10 @@
 // class or per-call R3 consent. Both compositions support top-level
 // and parent-mediated issuance and can compose the immediate mission lifecycle:
 // approval, ordered accepted updates, person-accepted completion, and
-// mission-bound credential issuance. Three-party composition additionally
-// supports deferred authorization, issued-token revocation, and one
-// same-Person-Server Resource call chain.
+// mission-bound credential issuance. Both compositions can add missionless
+// local-action permission. Three-party composition additionally supports
+// deferred authorization, issued-token revocation, and one same-Person-Server
+// Resource call chain.
 package personserver
 
 import (
@@ -76,6 +77,8 @@ type FederatedAuthorizationConfig struct {
 	// mission-bound Person and federated Auth-token issuance. When nonnil,
 	// Tokens must implement MissionStore.
 	Missions *MissionConfig
+	// Permission optionally enables missionless top-level permission decisions.
+	Permission *PermissionConfig
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -116,6 +119,8 @@ type PSAuthorizationConfig struct {
 	// Revocation optionally retains issued auth-token routing and enables one
 	// explicit Resource revocation attempt.
 	Revocation *AuthTokenRevocationConfig
+	// Permission optionally enables missionless top-level permission decisions.
+	Permission *PermissionConfig
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -255,6 +260,8 @@ type Server struct {
 	issuedAuthTokens                IssuedAuthTokenStore
 	revocationHTTPClient            *http.Client
 	revocationAdmit                 signaturekey.EgressAdmitter
+	permissionPolicy                func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
+	permissions                     PermissionStore
 }
 
 type authorizationMode uint8
@@ -275,6 +282,7 @@ type serverConfig struct {
 	bindPerson                    func(context.Context, PersonTokenRequest) (Person, error)
 	requirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	missions                      *MissionConfig
+	permission                    *PermissionConfig
 }
 
 // NewFederatedAuthorization constructs a four-party Person Server.
@@ -295,6 +303,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		tokens:                       config.Tokens, bindPerson: config.BindPerson,
 		requirePersonTokenInteraction: config.RequirePersonTokenInteraction,
 		missions:                      config.Missions,
+		permission:                    config.Permission,
 	})
 	if err != nil {
 		return nil, err
@@ -312,6 +321,8 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	}
 	server.r3 = r3Config
 	server.authorizationMode = authorizationModeFederated
+	server.permissionPolicy = permissionPolicy(config.Permission)
+	server.permissions = permissionStore(config.Permission)
 	return server, nil
 }
 
@@ -347,6 +358,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		tokens:                       config.Tokens, bindPerson: config.BindPerson,
 		requirePersonTokenInteraction: config.RequirePersonTokenInteraction,
 		missions:                      config.Missions,
+		permission:                    config.Permission,
 	})
 	if err != nil {
 		return nil, err
@@ -367,6 +379,8 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	}
 	server.requireAuthorizationInteraction = config.RequireAuthorizationInteraction
 	server.authorizationInteractions = config.AuthorizationInteractions
+	server.permissionPolicy = permissionPolicy(config.Permission)
+	server.permissions = permissionStore(config.Permission)
 	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
 		return nil, err
 	}
@@ -374,6 +388,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 }
 
 func newServer(config serverConfig) (*Server, error) {
+	if config.permission != nil && (config.permission.Policy == nil || config.permission.Store == nil) {
+		return nil, errors.New("personserver: permission policy and store are required together")
+	}
 	if err := aauth.ValidateServerIdentifier(config.issuer); err != nil {
 		return nil, fmt.Errorf("personserver: issuer: %w", err)
 	}
@@ -457,6 +474,10 @@ func (server *Server) Handler() http.Handler {
 	if server.missions != nil {
 		mux.HandleFunc("POST /mission", server.handleMission)
 		mux.HandleFunc("POST /mission/{s256}", server.handleMissionAction)
+	}
+	if server.permissions != nil {
+		mux.HandleFunc("POST /permission", server.handlePermission)
+		mux.HandleFunc("GET /permission/pending/{id}", server.handlePendingPermission)
 	}
 	return mux
 }
@@ -1388,6 +1409,9 @@ func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Reque
 	}
 	if server.missions != nil {
 		metadata["mission_endpoint"] = server.issuer + "/mission"
+	}
+	if server.permissions != nil {
+		metadata["permission_endpoint"] = server.issuer + "/permission"
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }

@@ -46,6 +46,7 @@ stores. The programs are executable documentation, not deployment templates.
 | --- | --- | --- |
 | [Two-key Agent bootstrap](example/bootstrap) | Application-selected `hwk` enrollment, `jkt-jwt` refresh to a fresh Agent key, and direct Agent identity access | `go run ./example/bootstrap` |
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
+| [Missionless local-action permission](example/permission) | Agent asks its Person Server about one local action; the host records a decision; the application acts only after a typed grant | `go run ./example/permission` |
 | [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
 | [Direct three-party R3](example/r3threeparty) | MCP operations narrowed and issued by the Person Server with no Access Server | `go run ./example/r3threeparty` |
@@ -70,6 +71,10 @@ proves a retained host question, a typed Agent view, a signed answer,
 serialized continuation and value recomposition, explicit approval and
 polling, one protected call, and a typed wrong-Agent refusal. No library step
 polls or retries automatically.
+The [missionless Permission journey](integration/permission_missionless_test.go)
+proves a signed local-action request, Person Server recomposition around the
+retained request, explicit host grant and denial, one caller-driven poll, one
+application action after the grant, and no Resource or Access Server calls.
 The [fixed-price Budget journey](integration/budget_three_party_test.go) proves
 direct Resource offer selection, Person Server amount narrowing, and
 concurrent hard-cap enforcement.
@@ -99,7 +104,7 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `r3/vocabtest` | Reusable operation-codec and native-definition contracts for standard and third-party adapters |
 | `agentprovider` | Agent-token and subscribe-token issuance, metadata/JWKS, and the Events inbox |
 | `agent` | Explicit Core, R3, Events, and fixed-price Budget calls; no hidden polling, browser use, or consequence retry |
-| `personserver` | Person-token issuance, mission lifecycle, direct Core/class-R3/Budget verification and narrowing, interaction, revocation, call-chain policy, and Access Server federation |
+| `personserver` | Person-token issuance, mission lifecycle, missionless local-action permission, direct Core/class-R3/Budget verification and narrowing, interaction, revocation, call-chain policy, and Access Server federation |
 | `resource` | Identity, session, authorization, registered R3 documents/enforcement, Events registration/delivery, Budget metadata/offers/fixed-price accounting/step-up verification, protected-call, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
@@ -180,6 +185,10 @@ during host-authenticated consent. Updated requests, Access Server relay,
 mission-bound clarification, and other general deferred paths remain open, as
 do the remaining mission log and control
 surfaces, and several delegation and revocation variants also remain open.
+Permission covers top-level missionless actions with immediate or deferred
+decisions. Mission association, `approved_tools` matching, mission-log
+recording, durable adapters, and recovery of an uncertain initial submission
+remain open.
 Mission support currently covers immediate
 top-level approval, ordered accepted updates, protected use, and
 person-accepted completion through both three-party and four-party

@@ -147,6 +147,9 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F093 | Clarification timeout does not define the recipient's reference instant | ready below with Agent and Person Server deadline evidence |
 | AAG-F094 | Clarification answer and cancellation do not define success responses | ready below with explicit one-request action evidence |
 | AAG-F095 | A clarification answer does not identify the question or round it answers | ready below with retained multi-round evidence |
+| AAG-F096 | Permission-specific denial uses `200`, while generic deferred denial uses `403` | ready below with immediate and deferred Permission evidence |
+| AAG-F097 | The Permission Endpoint has no registered error table | ready below with typed request, policy, store, and polling failures |
+| AAG-F098 | An uncertain initial Permission POST has no recovery identity | ready below with one-shot transport evidence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -1804,6 +1807,79 @@ or question digest supplied by the `202` response, so retries and delayed
 delivery cannot bind an answer to a different question?
 
 **Placement:** Open a focused Core clarification-correlation issue.
+
+### AAG-F096 — Permission denial has two terminal wire representations
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Permission Response` and `Deferred Response State
+Machine`.
+
+The Permission Endpoint says an immediate grant or denial returns `200` with a
+`permission` field. The generic deferred state machine says a terminal denial
+returns `403` with `error=denied`. The Permission text does not say whether a
+deferred permission decision returns the endpoint-specific body or the generic
+polling problem.
+
+The Person Server implementation uses the endpoint-specific `200` decision for
+both immediate and deferred results. The Agent accepts that representation and
+also recognizes `403 denied` while polling, but no implementation can infer
+which form another server will emit from the current text.
+
+**Question:** Should a deferred Permission denial return the same `200
+permission=denied` body as an immediate decision, or the generic `403 denied`
+polling problem?
+
+**Placement:** Open a focused Core Permission Endpoint issue.
+
+### AAG-F097 — The Permission Endpoint has no registered errors
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Permission Endpoint`, `Permission Request`,
+`Permission Response`, and `Error Responses`.
+
+The endpoint can receive malformed input, an unsupported mission association,
+a policy or storage failure, an expired pending request, an identity-mismatched
+poll, or an already consumed reference. Core defines general authentication
+and polling errors but does not assign a Permission-specific registry or say
+which general registries apply to the initial POST.
+
+The implementation uses `invalid_request` for malformed or unsupported input,
+`server_error` for operational failure, and the generic polling errors for the
+pending URL. Those are explicit local choices rather than a conformance claim.
+
+**Question:** Which error registry applies to the initial Permission request,
+and should the endpoint define any additional policy or mission-reference
+errors?
+
+**Placement:** Combine with the Permission response issue if the editors prefer
+one endpoint-contract pass.
+
+### AAG-F098 — An uncertain initial Permission submission cannot be recovered
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Permission Request` and `Deferred Responses`.
+
+The initial signed POST carries no request identifier, idempotency key, or
+lookup reference. If transport fails after the Person Server accepts and
+retains the request, the Agent cannot discover whether a decision exists or
+recover its pending URL. Repeating the POST may create another person-visible
+request and another decision.
+
+The Agent performs the POST exactly once and returns a typed uncertain-outcome
+error after a transport failure, malformed success, or non-retryable server
+failure. A definite `4xx` rejection remains ordinary; `429` and `503` remain
+caller-owned under the source's backoff rules. The Agent does not retry or
+claim recovery.
+
+**Question:** Should Permission requests carry a stable caller-selected
+identity, or should the Person Server define exact-request replay and lookup
+semantics for uncertain initial submissions?
+
+**Placement:** Cross-link the general deferred initial-request recovery
+discussion rather than treating this as a Permission-only transport issue.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

@@ -61,7 +61,7 @@ protocol responsibilities.
 | Agent | `aauth:local@domain`; AP-issued Agent token | Its signing key, requests, local context, and explicit retry decisions |
 | Agent Provider (AP) | HTTPS issuer; `aauth-agent.json` | Agent identity and keys; optional enrollment/refresh policy; Events inbox |
 | Resource | HTTPS issuer; `aauth-resource.json` | API policy, Resource tokens, local sessions, held calls, R3 documents and proposals, subscriptions, and budget enforcement |
-| Person Server (PS) | HTTPS issuer; `aauth-person.json` | Agent-person binding, directed person identity, consent, missions, Person tokens, and three-party Auth tokens |
+| Person Server (PS) | HTTPS issuer; `aauth-person.json` | Agent-person binding, directed person identity, local-action permission, consent, missions, Person tokens, and three-party Auth tokens |
 | Access Server (AS) | HTTPS issuer; `aauth-access.json` | Four-party policy, Auth-token issuance, and R3 issuance audit |
 | Person | No Core wire identifier | Approval, denial, clarification, and other human decisions exposed through a PS or Resource interaction |
 
@@ -201,6 +201,34 @@ that document, selects a subset through host policy, signs the Auth token, and
 atomically retains its mandatory R3 audit record before returning the token.
 The Resource then enforces `r3_granted` without fetching the document again.
 Per-call R3 remains a four-party path in this implementation.
+
+### Missionless local-action permission
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant P as Person
+    participant PS as Person Server
+    participant App as Application
+
+    A->>PS: Signed POST with action, description, and parameters
+    PS->>PS: Retain pending request before 202
+    PS-->>A: 202 + same-origin pending URL
+    P->>PS: Host-authenticated grant or denial
+    PS->>PS: Atomically retain first decision
+    A->>PS: One signed bodyless GET
+    PS-->>A: Typed grant or denial; consume result
+    A->>App: Execute only after grant
+```
+
+The Permission Endpoint governs an action that has no remote Resource. The
+library verifies and carries intent but does not render the description,
+authenticate the person, interpret the parameters, or execute the action.
+Immediate policy returns a retained decision in one request. Deferred policy
+returns a private continuation and requires an explicit caller poll; no method
+sleeps or loops. The current profile is top-level and missionless. Mission
+association, pre-approved-tool matching, and mission-log recording remain
+separate unimplemented source requirements.
 
 ### Clarification during three-party consent
 

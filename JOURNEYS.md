@@ -146,10 +146,22 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     and `go run ./example/revocation`.
   - Missing: pre-use, four-party, Agent-token, mission, and session revocation.
 
+- [x] **Missionless local-action permission — Implemented**
+  - Flow: Agent → PS with one signed local-action request → immediate decision
+    or retained pending URL → independently authenticated host decision → one
+    explicit Agent poll → application acts only after a typed grant.
+  - Start with: `Client.RequestPermission`, `Client.PollPermission`,
+    `personserver.PermissionConfig`, `personserver.PermissionStore`,
+    `Server.ResumePermission`, `GrantPermission`, and `DenyPermission`.
+  - Evidence: [`integration/permission_missionless_test.go`](integration/permission_missionless_test.go),
+    [`personserver/storetest/permission.go`](personserver/storetest/permission.go),
+    and `go run ./example/permission`.
+  - Missing from the wider Permission Endpoint: mission association,
+    `approved_tools` matching, mission-log recording, durable adapters, and
+    recovery of an uncertain initial submission.
+
 ### Not implemented
 
-- [ ] **Permission endpoint — Not implemented.** There is no Agent-to-PS
-  journey for governing an action that has no remote Resource.
 - [ ] **Audit endpoint — Not implemented.** There is no Agent-to-PS audit
   record submission and response journey.
 - [ ] **Interaction endpoint — Not implemented.** Existing interaction codes
