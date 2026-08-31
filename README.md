@@ -6,8 +6,9 @@ compose the protocol roles they need and supply their own policy, keys,
 transport, clocks, and storage.
 
 The implementation is incomplete. It is not an official conformance suite,
-and independent interoperability has not yet been demonstrated. The exact
-claim-to-test matrix is in [CONFORMANCE.md](CONFORMANCE.md).
+and independent interoperability has not yet been demonstrated. Start with the
+plain role-to-role catalog in [JOURNEYS.md](JOURNEYS.md); use
+[CONFORMANCE.md](CONFORMANCE.md) for the denser claim-to-test matrix.
 
 ## Run it
 
@@ -155,9 +156,10 @@ test-local extension is in
 - Hosts decide who may receive credentials and what scopes and lifetimes to
   grant. Verification code does not replace application policy.
 - Hosts supply the store implementations required by each stateful role. The
-  repository provides only in-memory examples; Agent pending handles and
-  discovery caches remain process-local, so these examples do not prove
-  complete process-restart recovery.
+  repository provides only in-memory examples. The direct clarification path
+  can serialize its Agent continuation, but most other pending handles and all
+  example stores remain process-local. These examples do not prove complete
+  process-restart recovery.
 - Supported paths preserve exact bytes where a signature, digest, or retained
   store binding requires them.
 
