@@ -30,7 +30,7 @@ were read; it is not an implementation or conformance claim.
 | AAuth Core | implementation-reviewed for current paths | Submitted history and executable current questions appear below; unimplemented Core areas remain evidence-pending |
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
 | R3 | implementation-reviewed for the shared seven-vocabulary operation model, bounded definition adapters, and current four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, and `AAG-F076`. The seven definition registrations now provide bounded derivation or typed specification-gap refusal. MCP, OpenAPI, and AsyncAPI parse sparse annotations; OData annotation identity remains unresolved. Complete acquisition, general dependency resolution, invocation binding, and independent interop remain evidence-pending. |
-| Events | source-synchronized and architecture-mapped | No implementation-backed question yet |
+| Events | implementation-reviewed for the public-subscription path | `AAG-F058`, `AAG-F084`, and `AAG-F085` now have executing token, registration, endpoint-resolution, delivery, use-limit, and Agent-correlation evidence. Protected tickets and independent interoperability remain evidence-pending. |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
 | Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
 | Interoperability demo profile | source-reviewed against current internal paths | `AAG-F001` remains evidence-pending; no independent implementation has been exercised |
@@ -91,7 +91,7 @@ below where evidence is ready.
 | AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | implementation bridge evidenced: exact class/proposal token lineage at the Resource plus bounded original Person-token retention at the PS; editor clarification remains useful |
 | AAG-F016 | The mandatory signature set does not bind the query | ready below |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
-| AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | exact-delivery interpretation recorded; evidence pending until Events implementation |
+| AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
 | AAG-F059 | Mission proposal policy denial has no registered error | ready below with immediate mission evidence |
 | AAG-F060 | Unknown mission references at the Person Token Endpoint have no assigned error | ready below with ownership-safe refusal evidence |
 | AAG-F061 | A Resource and Access Server cannot directly enforce mission expiry without receiving mission content | implementation bridges recorded; ready below |
@@ -117,6 +117,8 @@ below where evidence is ready.
 | AAG-F081 | Per-call parameter projection is not defined by vocabulary | ready below; execution evidence currently covers JSON-shaped HTTP calls |
 | AAG-F082 | OData annotation encoding lacks a resolvable term namespace and target identity | ready below with fail-closed definition-adapter evidence |
 | AAG-F083 | Standard R3 vocabularies do not identify external specification revisions | ready below with seven-adapter implementation evidence |
+| AAG-F084 | The Events public-registration example leaves subscription parameters outside the signed content digest | ready below with body-bound registration evidence |
+| AAG-F085 | Events disagrees on whether the Resource stores or re-resolves the AP event endpoint | ready below with delivery-time endpoint-change evidence |
 
 ## Current unsubmitted questions
 
@@ -1169,7 +1171,7 @@ the one-person rule for that Agent's direct requests?
 
 ### AAG-F058 — Events uses a subscription identifier as the delivery deduplication key
 
-**Status:** evidence pending
+**Status:** ready / unsubmitted
 
 **Source:** AAuth Events, `Subscribe Token`, `Event Token`, and `Agent
 Verification`.
@@ -1180,17 +1182,60 @@ Agent is nevertheless told to deduplicate events by `(iss, eid)`. A literal
 implementation accepts the first delivery and discards every later legitimate
 delivery on the same subscription.
 
-The target implementation keeps `eid` as subscription context and uses an
-exact token-and-payload fingerprint as a local replay key. That avoids data
-loss but cannot establish whether two differently encoded deliveries represent
-the same logical event.
+The implementation keeps `eid` as subscription context and uses an exact
+token, signed-content-type, and payload fingerprint as a local replay key.
+That avoids data loss but cannot establish whether two differently encoded
+deliveries represent the same logical event.
 
 **Question:** Should the Event token carry a Resource-issued per-delivery `jti`
 or another event identifier, and should Agent deduplication use that value
 instead of the subscription `eid`?
 
-**Placement:** Open an Events issue after the executing delivery path provides
-an interoperability vector.
+**Placement:** Check the current tracker, then open a focused Events issue.
+The executing journey supplies implementation evidence but is not an
+independent-interoperability claim.
+
+### AAG-F084 — Events leaves public-registration parameters outside the content digest
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Events, `Subscribe Token Presentation` and `Public
+Subscriptions`; HTTP Signature Keys, `Covered Components`.
+
+The public-registration request body can select event types and other
+Resource-defined parameters. The example covers `content-type` but not
+`content-digest`, and the verification procedure does not add a body-binding
+requirement. The executing public path requires both fields whenever
+parameters are present; its bodyless form still signs the digest of zero bytes.
+
+**Question:** Should Events require `content-digest` for subscription
+registration requests, with `content-type` additionally required when the
+body is nonempty?
+
+**Placement:** Add to a focused Events issue and cross-link the general
+Signature-Key covered-components discussion.
+
+### AAG-F085 — Events gives two incompatible event-endpoint retention rules
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Events, `Overview`, `Subscribe Token Verification`, and
+`Event Delivery: Resource to AP`.
+
+The overview says registration stores the AP's `event_endpoint`. The detailed
+verification and delivery sections instead require resolving the current
+endpoint from AP metadata when an event fires. Those models differ after an AP
+moves its inbox.
+
+The executing path retains the AP issuer rather than its endpoint, then
+re-resolves and separately admits the current metadata and delivery URLs for
+each explicit delivery attempt. Its journey changes the advertised endpoint
+after registration and reaches the new endpoint.
+
+**Question:** Should the overview say the Resource stores the AP issuer and
+resolves its current `event_endpoint` at delivery time?
+
+**Placement:** Add to the same focused Events issue.
 
 ### AAG-F071 — The `jkt-jwt` example omits the required `alg` in both JWKs
 

@@ -260,24 +260,34 @@ retained first result on duplicate valid presentation.
 
 ### Events delivery
 
-The AP issues a subscribe token for one Resource. The Agent registers it at a
-public endpoint or at a short-lived, single-use ticket obtained from an
-earlier protected interaction. The Resource later resolves the AP's current
-event endpoint, signs a self-issued event token and request with the same key,
-and posts it. The AP validates the subscription and any use limit, durably
-accepts the delivery, then uses its own out-of-scope mechanism to reach the
-Agent.
+The implemented path is the public-subscription variant. The AP first retains
+one subscription and issues its subscribe token. The Agent verifies the token,
+retains its own context, and signs one body-bound registration request. The
+Resource retains the registration, resolves the AP's current event endpoint at
+delivery time, admits that endpoint, then signs a self-issued Event token and
+the request with the same key. The AP validates the subscription, atomically
+enforces any use limit, durably accepts the exact token, signed content type,
+and payload, and only then returns `202`. Its host uses an out-of-scope
+mechanism to reach the Agent, which independently verifies the Event token and
+correlates it with its local context.
+
+Registration retries with the same subscribe token and exact parameters
+recover the first Resource record; changed parameters conflict. Delivery has
+an explicit prepare/send split and no hidden retry. An exact token, signed
+content type, and payload retry recovers the first AP acceptance without
+consuming another use. The
+optional bodyless form signs an empty `content-digest` and omits
+`content-type`. Protected subscription tickets are not implemented.
 
 The Events draft conflicts with itself on expired events (`MUST NOT` versus
-`SHOULD NOT`) and its examples use polymorphic `EdDSA` where normative text
-forbids it. The target implementation follows the stricter normative behavior
-and does not use the conflicting example as an acceptance vector.
+`SHOULD NOT`). The implementation follows the stricter normative behavior.
 
 The draft also reuses `eid` for every delivery in a subscription while telling
 the Agent to deduplicate by `(iss, eid)`. That would discard every legitimate
-event after the first. The target treats `eid` only as subscription context and
-deduplicates an exact accepted delivery by hashing the compact Event token, a
-zero separator, and the exact payload bytes.
+event after the first. The implementation treats `eid` only as subscription context and
+deduplicates an exact accepted delivery by hashing the compact Event token,
+the signed content type, and the exact payload bytes with unambiguous
+separators.
 
 ### Budgeted access
 
@@ -302,8 +312,7 @@ remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 | R3 permits same-URI replacement but also treats URI plus hash as a permanent refetchable record (`AAG-F005`) | Published document URIs are immutable; new bytes receive a new URI and referenced bytes remain available |
 | R3 lets a broader document merely cover a request, so the AS may not know the exact requested operations (`AAG-F014`, `AAG-F014a`) | Issue an exact-request document and constrain every AS grant to its operation set |
 | Events gives two strengths for expired-token refusal | Apply `MUST NOT` |
-| Events examples use `EdDSA` where normative text forbids it | Follow the prohibition; do not use the example as a vector |
-| Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`) | Use an exact token-and-payload delivery fingerprint; retain `eid` as routing context |
+| Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`) | Use an exact token, signed-content-type, and payload fingerprint; retain `eid` as routing context |
 | Signature-Key labels `cached` an open design | Keep it opt-in and visibly provisional |
 | Bootstrap defines a two-key pattern but no portable wire or replay rule | Keep routes application-selected and document one AP-owned exact-result profile rather than adding metadata fields or a generic Bootstrap package |
 

@@ -53,6 +53,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
 | [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
 | [One chained Resource call](example/callchaining) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
+| [Public event subscription](example/events) | AP-issued subscribe token, Agent context binding, public Resource registration, current AP endpoint discovery, `self-jwt` delivery, and Agent correlation | `go run ./example/events` |
 
 The integration suite also exercises
 [mission-bound four-party authorization](integration/mission_four_party_test.go),
@@ -60,6 +61,10 @@ The integration suite also exercises
 [direct Person identity](integration/direct_identity_access_test.go),
 [Person-token interaction](integration/person_token_interaction_test.go), and
 both [baseline `401` and Resource-held `202` auth-token delivery](integration/core_four_party_test.go).
+The [public Events journey](integration/events_public_subscription_test.go)
+also exercises exact registration recovery, bodyless delivery, bounded uses,
+delivery replay, and two distinct payloads that share one deterministic Event
+token.
 See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 
 ## Packages
@@ -69,14 +74,15 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `aauth` | Core identifiers, token claims, minting, verification, and context checks |
 | `jose` | The focused Ed25519 JWK and compact-JWS profile used here |
 | `signaturekey` | HTTP request proofs, credentials, discovery, and error negotiation |
+| `events` | Subscribe-token and Event-token values, AP metadata, and exact delivery identity |
 | `r3` | Vocabulary-neutral R3 values, registered operation algebra, atomic native-definition parsing, source receipts, advisory hints, and token claims |
 | `r3/vocab/<name>` | One standard vocabulary's operation grammar, set algebra, and bounded native-definition adapter |
 | `r3/vocab/standard` | Explicit registries for all seven standard operation codecs and definition parsers |
 | `r3/vocabtest` | Reusable operation-codec and native-definition contracts for standard and third-party adapters |
-| `agentprovider` | Agent-token issuance plus Agent Provider metadata and JWKS |
-| `agent` | Explicit Core and R3 calls; no hidden polling, browser use, or consequence retry |
+| `agentprovider` | Agent-token and subscribe-token issuance, metadata/JWKS, and the Events inbox |
+| `agent` | Explicit Core, R3, and Events calls; no hidden polling, browser use, or consequence retry |
 | `personserver` | Person-token issuance, mission lifecycle, direct and R3 consent, interaction, revocation, call-chain policy, and Access Server federation |
-| `resource` | Identity, session, authorization, registered R3 documents/enforcement, protected-call, held-invocation, and revocation behavior |
+| `resource` | Identity, session, authorization, registered R3 documents/enforcement, Events registration/delivery, protected-call, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
 The root protocol package and focused JOSE and Signature-Key packages do not
@@ -181,9 +187,16 @@ dependency resolution, non-HTTP invocation bindings, durable store adapters,
 and independent-implementation interoperability remain open. Callers must
 bound source bytes, nesting, collection sizes, and parser work before passing
 untrusted material to these parsers.
-Bootstrap has one explicit executing profile; Events and Budgets remain design
-inputs. HTTP Signature Keys is implemented only to the extent required by
-current role paths.
+Events has one complete public-subscription path. It covers AP retention before
+subscribe-token release, Agent context retention before registration, exact
+Resource registration recovery, current AP endpoint discovery with explicit
+egress admission, body-bearing and bodyless `self-jwt` delivery, AP retention
+before `202`, bounded-use feedback, and Agent-side context correlation and
+exact replay detection. Protected subscription tickets, AP-to-Agent transport,
+automatic AsyncAPI payload validation, and durable store adapters remain host
+or future concerns. Bootstrap has one explicit executing profile; Budgets
+remains a design input. HTTP Signature Keys is implemented only to the extent
+required by current role paths.
 
 The repository does not provide durable stores, key custody, TLS listeners,
 deployment infrastructure, or automatic retry policy. Applications must

@@ -61,10 +61,17 @@ authenticated client. The endpoint paths, JSON envelopes, replay rule, and
 policy errors are documented implementation choices because Bootstrap does
 not standardize them.
 
-The target model expands those packages and adds `budgets` and `events` around
-the current `r3` package. Sections below define the target ownership contract.
-Planned packages use a dashed border in the graph; present-tense support must
-never be inferred from this target map.
+The current Events slice adds the `events` value package plus explicit
+`agentprovider`, `resource`, and `agent` role surfaces for public
+subscriptions. The AP owns subscribe-token issuance and its inbox, the
+Resource owns registration and outbound delivery, and the Agent owns local
+context and replay correlation. Each role receives its own small store
+interface; no shared Events lifecycle object crosses those boundaries.
+
+The target model expands those packages and adds `budgets` around the current
+`r3` and `events` packages. Sections below define the target ownership
+contract. Planned packages use a dashed border in the graph; present-tense
+support must never be inferred from this target map.
 
 ## Package graph
 
@@ -94,7 +101,6 @@ flowchart TD
     budgets --> core
     events --> core
     events --> sk
-    events --> r3
 
     ap --> core
     ap --> events
@@ -124,7 +130,7 @@ flowchart TD
     examples --> as
 
     classDef planned stroke-dasharray: 6 4
-    class budgets,events planned
+    class budgets planned
 ```
 
 Private packages may provide strict JSON, bounded HTTP, and test helpers.
@@ -262,17 +268,18 @@ inputs owned by PS and Resource compositions.
 
 ### `events`
 
-The planned `events` package will own reusable Events semantics:
+The current `events` package owns reusable Events semantics for the public
+subscription path:
 
 - AP metadata extension.
 - Subscribe and Event token types and validation.
-- Registration, ticket, subscription, and delivery values.
-- Use-limit transition rules.
-- AsyncAPI/R3 discovery declarations.
+- Exact token, signed-content-type, and payload delivery identity.
 - Agent-side event verification and duplicate identity.
 
-It does not define AP-to-agent transport. The AP role accepts a host delivery
-adapter for polling, push, SSE, WebSocket, or another local mechanism.
+Role packages own registration, subscription, use-limit, and delivery state.
+It does not define AP-to-Agent transport or automatically validate payloads
+against AsyncAPI. Protected ticket URLs and a complete Events-specific
+AsyncAPI discovery surface are not implemented.
 
 ### Bootstrap and interoperability
 
@@ -302,10 +309,10 @@ Interfaces live next to the code that consumes them.
 
 ### `agentprovider`
 
-The target owns Agent-token issuance, AP metadata/JWKS, optional enrollment and
-refresh composition, subscribe-token issuance, and the Events inbox. It
-accepts host policy for enrollment, attestation, renewal, revocation, and
-AP-to-agent event delivery.
+The current package owns Agent-token issuance, AP metadata/JWKS, optional
+enrollment and refresh composition, subscribe-token issuance, and the Events
+inbox. It accepts host policy for enrollment, attestation, renewal,
+revocation, and AP-to-Agent event delivery.
 
 ### `agent`
 

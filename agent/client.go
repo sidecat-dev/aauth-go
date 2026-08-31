@@ -2,7 +2,8 @@
 // the immediate and per-call R3 paths. It also composes two-key Agent
 // enrollment and refresh, direct identity access, Resource-managed sessions,
 // one immediate mission journey, parent-mediated sub-agents, one Resource call
-// chain, and one-shot polling of supported interactions and held invocations.
+// chain, public Events registration and correlation, and one-shot polling of
+// supported interactions and held invocations.
 package agent
 
 import (
@@ -40,6 +41,8 @@ type Config struct {
 	// R3 explicitly enables vocabulary-neutral R3 authorization and call
 	// continuations through an immutable vocabulary allowlist.
 	R3 *R3Config
+	// Events enables public subscription context and event replay handling.
+	Events *EventsConfig
 }
 
 // R3Config supplies the operation vocabularies this Agent may interpret.
@@ -59,6 +62,7 @@ type Client struct {
 	clock              aauth.Clock
 	maxSignedBodyBytes int64
 	r3                 *R3Config
+	events             *eventsClientConfig
 }
 
 type personServerCredential struct {
@@ -194,6 +198,10 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	if config.R3 != nil && config.R3.Registry.Len() == 0 {
 		return nil, fail(operation, errors.New("R3 vocabulary registry is required"))
 	}
+	eventsConfig, err := normalizeAgentEventsConfig(config.Events)
+	if err != nil {
+		return nil, fail(operation, err)
+	}
 	httpClient := *config.HTTPClient
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return errors.New("aauth agent: HTTP redirects are not permitted")
@@ -217,6 +225,7 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	if config.R3 != nil {
 		client.r3 = &R3Config{Registry: config.R3.Registry}
 	}
+	client.events = eventsConfig
 	return client, nil
 }
 

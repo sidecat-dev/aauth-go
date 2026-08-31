@@ -31,6 +31,7 @@ const (
 	SchemeJKTJWT  Scheme = "jkt-jwt"
 	SchemeJWKSURI Scheme = "jwks_uri"
 	SchemeHWK     Scheme = "hwk"
+	SchemeSelfJWT Scheme = "self-jwt"
 )
 
 // Credential is one parsed Signature-Key member. Its parameters are copied
@@ -89,6 +90,22 @@ func NewJKTJWTCredential(compact string) (Credential, error) {
 		scheme:     SchemeJKTJWT,
 		parameters: map[string]string{"jwt": compact},
 		header:     `sig=jkt-jwt;jwt=` + strconv.Quote(compact),
+	}, nil
+}
+
+// NewSelfJWTCredential carries a self-issued compact JWT whose discovered
+// signing key also signs the accompanying HTTP request.
+func NewSelfJWTCredential(compact string) (Credential, error) {
+	if compact == "" {
+		return Credential{}, errors.New("aauth: self-jwt credential is required")
+	}
+	if err := validateStructuredFieldString(compact); err != nil {
+		return Credential{}, fmt.Errorf("aauth: self-jwt credential: %w", err)
+	}
+	return Credential{
+		scheme:     SchemeSelfJWT,
+		parameters: map[string]string{"jwt": compact},
+		header:     `sig=self-jwt;jwt=` + strconv.Quote(compact),
 	}, nil
 }
 
@@ -193,6 +210,15 @@ func (credential Credential) JKTJWT() (string, bool) {
 	return credential.parameters["jwt"], true
 }
 
+// SelfJWT returns the opaque compact value carried by a self-jwt credential.
+// Trust is established only by PreparedRequest.VerifySelfJWT.
+func (credential Credential) SelfJWT() (string, bool) {
+	if credential.scheme != SchemeSelfJWT || credential.parameters == nil || credential.parameters["jwt"] == "" {
+		return "", false
+	}
+	return credential.parameters["jwt"], true
+}
+
 // JWKSURI returns the identifier, dot-well-known document, and key id carried
 // by a jwks_uri credential.
 func (credential Credential) JWKSURI() (string, string, string, bool) {
@@ -231,6 +257,7 @@ func parseCredentialForLabel(values []string, label string) (Credential, error) 
 		SchemeJKTJWT:  {"jwt"},
 		SchemeJWKSURI: {"id", "dwk", "kid"},
 		SchemeHWK:     {"kty", "crv", "x", "alg"},
+		SchemeSelfJWT: {"jwt"},
 	}[parsed.scheme]
 	if required == nil {
 		return Credential{}, newError(

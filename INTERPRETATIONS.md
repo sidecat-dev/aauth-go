@@ -83,22 +83,52 @@ unlimited deliveries, then tells the Agent to deduplicate events by `(iss,
 eid)`. Applying that literally discards every legitimate delivery after the
 first.
 
-The target implementation keeps `(iss, eid)` as subscription and routing
+The implementation keeps `(iss, eid)` as subscription and routing
 context. It derives a local delivery fingerprint as SHA-256 over the exact
-compact Event token bytes, one zero byte, and the exact payload bytes. An exact
-replay is ignored; a different authenticated token or payload on the same
-subscription is a different delivery. The fingerprint is local state, not a
-new wire claim.
+compact Event token bytes, a separator, the signed content type, another
+separator, and the exact payload bytes. An exact replay is ignored; a different
+authenticated token, content type, or payload on the same subscription is a
+different delivery. The fingerprint is local state, not a new wire claim.
 
-## Events normative expiry and algorithm rules control conflicting text
+## Events uses the stricter normative expiry rule
 
 **Source:** Events, `Subscribe Token`, `Event Token`, and `Agent
 Verification`.
 
 The draft says both `MUST NOT` and `SHOULD NOT` act after Event-token expiry.
-The target implementation applies `MUST NOT`. It also rejects polymorphic
-`EdDSA` as the normative token rule requires; examples using `EdDSA` are not
-acceptance vectors. Both inconsistencies remain recorded for editor feedback.
+The implementation applies `MUST NOT`. The inconsistency remains recorded for
+editor feedback.
+
+## Events registration has exact retry and delivery-time endpoint resolution
+
+**Source:** Events, `Overview`, `Subscribe Token Verification`, `Event
+Delivery`, and `Subscribe Token Replay at Registration`.
+
+The overview says the Resource stores the AP event endpoint at registration,
+while both detailed delivery sections require resolving the current endpoint
+at delivery time. This implementation retains only the AP issuer and resolves
+current metadata for every explicit delivery attempt. Both the metadata URL
+and the discovered delivery endpoint pass host egress admission.
+
+The replay section recommends rejecting a repeated `eid`, but does not define
+the response to an exact retry after a lost registration result. This
+implementation hashes the compact subscribe token, content type, and exact
+parameter bytes. The same registration recovers the first retained Resource
+record; changed bytes under that `eid` conflict.
+
+## Bodyless Events deliveries sign the exact empty body
+
+**Source:** Events, `Event Delivery: Resource to AP`; HTTP Signature Keys,
+`Covered Components`.
+
+Events makes the payload optional but shows only a body-bearing signature. The
+bodyless profile here omits `content-type` and still covers a
+`content-digest` for zero bytes. That preserves the distinction between an
+intentional empty payload and bytes injected after signing without inventing a
+wire field. The same profile requires both `content-type` and
+`content-digest` when registration parameters or an event payload are present;
+that body-binding requirement is an implementation hardening recorded as
+`AAG-F084`, not a claim that the current Events text already requires it.
 
 ## Mission-bound Resource and federated Auth tokens inherit upstream expiry ceilings
 

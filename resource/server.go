@@ -3,7 +3,8 @@
 // auth-token access. It also implements immediate R3 class and per-call
 // documents and enforcement, exposes a verified auth token to a call-chain
 // intermediary, retains observed three-party revocation state, and supports
-// Resource-held delivery in the federated composition.
+// Resource-held delivery in the federated composition. A separate EventService
+// owns public Events registration and outbound delivery.
 package resource
 
 import (

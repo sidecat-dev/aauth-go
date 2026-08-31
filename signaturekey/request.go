@@ -92,6 +92,28 @@ func SignJWTRequestWithOptions(request *http.Request, key jose.SigningKey, compa
 	return SignRequest(request, key, credential, clock, options)
 }
 
+// SignSelfJWTRequest signs with a self-issued JWT whose discovered signing
+// key is also the HTTP request key.
+func SignSelfJWTRequest(request *http.Request, key jose.SigningKey, compact string, clock Clock) error {
+	return SignSelfJWTRequestWithOptions(request, key, compact, clock, SignOptions{})
+}
+
+// SignSelfJWTRequestWithOptions signs with a self-issued JWT and optional
+// RFC 9421 signature parameters.
+func SignSelfJWTRequestWithOptions(
+	request *http.Request,
+	key jose.SigningKey,
+	compact string,
+	clock Clock,
+	options SignOptions,
+) error {
+	credential, err := NewSelfJWTCredential(compact)
+	if err != nil {
+		return err
+	}
+	return SignRequest(request, key, credential, clock, options)
+}
+
 // SignHWKRequest signs with an inline pseudonymous Ed25519 JWK.
 func SignHWKRequest(request *http.Request, key jose.SigningKey, clock Clock) error {
 	credential, err := NewHWKCredential(key.PublicJWK())
