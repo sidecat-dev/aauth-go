@@ -154,6 +154,7 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F100 | Audit says both `201 Created` and “fire-and-forget” without defining non-blocking behavior | ready below with one-shot Agent evidence |
 | AAG-F101 | An uncertain Interaction question submission has no recovery identity | ready below with exact one-shot Agent evidence |
 | AAG-F102 | Resource-hosted relay resolution has no terminal success response shape | ready below with retained relay and terminal-poll evidence |
+| AAG-F103 | Third-party login requires a Resource token before its required person claims exist | ready below from the current token grammar and flow sequence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -2007,6 +2008,32 @@ claiming that the underlying Resource interaction completed?
 
 **Placement:** Open a focused Core Interaction Endpoint question and cross-link
 the deferred-response state machine.
+
+### AAG-F103 — Third-party login requires person context it has not obtained
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Third-Party Login`, `Login Endpoint`, `Login Flow`,
+`Person Token`, and `Resource Token Structure`.
+
+The Login Flow says that an Agent or Resource receiving an untrusted login URL
+validates `ps`, creates a Resource token, and POSTs that token to the Person
+Server's token endpoint. The diagram contains no Person-token request. Current
+Resource tokens require both `sub` and `presented_jti`, and the Resource Token
+section says these come from the Person token presented to the Resource.
+
+At login initiation the user has not authenticated at the selected Person
+Server, so the recipient has neither value. Minting placeholders, omitting the
+claims, or using a retained identity from another Person Server would all
+violate the current token grammar or bind the wrong person context.
+
+**Question:** Should third-party login first obtain a Person token through a
+browser-correlated Person-token interaction and then create the Resource token,
+or is the first POST intended to carry a different signed request object whose
+claims do not require prior person context?
+
+**Placement:** Open a focused Core Third-Party Login issue; this blocks an
+interoperable implementation of the flow as currently written.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

@@ -1160,3 +1160,22 @@ with `{"status":"interacting"}` for engagement and
 defined status values and are explicitly local profile choices (`AAG-F102`).
 The Resource's original pending URL remains authoritative for whether the
 underlying operation completed.
+
+## Third-party login cannot yet construct its first protocol message
+
+**Sources:** AAuth Core, `Third-Party Login`, `Login Endpoint`, `Login Flow`,
+`Person Token`, and `Resource Token Structure`.
+
+The Login Flow tells an Agent or Resource to create a Resource token and POST
+it directly to the selected Person Server's token endpoint. At that point the
+user has not authenticated. A current Resource token nevertheless requires
+`sub` and `presented_jti`, both derived from a Person token issued for that
+user. The flow contains no Person-token request and its diagram begins with the
+Resource-token POST.
+
+This is not a choice between two equivalent Go compositions: the first
+required message cannot satisfy the current token grammar. The implementation
+therefore does not mint placeholder person claims, omit required claims, or
+define a login-only Resource-token dialect. `AAG-F103` asks whether the flow
+must first obtain a Person token through an additional browser-correlated step
+or whether Login intends a different signed request object.
