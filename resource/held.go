@@ -169,7 +169,7 @@ func (server *Server) verifyHeldCompletion(
 		resourceToken.DWK != aauth.ResourceDiscoveryDocument {
 		return errors.New("held resource token does not match Resource and Access Server")
 	}
-	if resourceToken.Account != "" || resourceToken.MissionS256 != "" || resourceToken.Interaction != nil {
+	if resourceToken.Account != nil || resourceToken.MissionS256 != "" || resourceToken.Interaction != nil {
 		return errors.New("held resource token uses an unsupported authorization branch")
 	}
 	if resourceToken.IssuedAt != invocation.ResourceTokenIssuedAt.Unix() ||
@@ -187,7 +187,7 @@ func (server *Server) verifyHeldCompletion(
 	if err != nil || !slices.Equal(resourceScopes, invocation.RequiredScopes) {
 		return errors.New("held resource-token scopes do not match retained route scopes")
 	}
-	if authToken.Account != "" || authToken.MissionS256 != "" {
+	if authToken.Account != nil || authToken.MissionS256 != "" {
 		return errors.New("held auth token uses an unsupported authorization branch")
 	}
 	authScopes, err := server.validateScopes(authToken.Scope)

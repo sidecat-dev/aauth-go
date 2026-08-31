@@ -1,6 +1,7 @@
 package aauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -101,19 +102,22 @@ func (failure *unsupportedTokenAlgorithmError) SignatureKeyError() *signaturekey
 	}
 }
 
-type unsupportedTokenClaimError struct {
-	tokenType string
-	claim     string
-	reason    string
+// UnsupportedTokenClaimError identifies a token member that this API cannot
+// safely interpret. A companion-aware API may accept the same token only
+// after validating that companion's complete claim set.
+type UnsupportedTokenClaimError struct {
+	TokenType string
+	Claim     string
+	Reason    string
 }
 
-func (failure *unsupportedTokenClaimError) Error() string {
+func (failure *UnsupportedTokenClaimError) Error() string {
 	if failure == nil {
 		return "aauth: token contains an unsupported claim"
 	}
-	detail := fmt.Sprintf("aauth: %s contains unsupported %s claim", failure.tokenType, failure.claim)
-	if failure.reason != "" {
-		detail += ": " + failure.reason
+	detail := fmt.Sprintf("aauth: %s contains unsupported %s claim", failure.TokenType, failure.Claim)
+	if failure.Reason != "" {
+		detail += ": " + failure.Reason
 	}
 	return detail
 }
@@ -188,8 +192,26 @@ func verifyCoreToken[T any](
 func rejectClaims(tokenType string, members map[string]json.RawMessage, reason string, names ...string) error {
 	for _, name := range names {
 		if _, present := members[name]; present {
-			return &unsupportedTokenClaimError{tokenType: tokenType, claim: name, reason: reason}
+			return &UnsupportedTokenClaimError{TokenType: tokenType, Claim: name, Reason: reason}
 		}
+	}
+	return nil
+}
+
+func validateOptionalStringClaim(tokenType string, members map[string]json.RawMessage, name string, allowEmpty bool) error {
+	raw, present := members[name]
+	if !present {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("aauth: %s %s claim must be a string, not null", tokenType, name)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fmt.Errorf("aauth: %s %s claim must be a string: %w", tokenType, name, err)
+	}
+	if !allowEmpty && value == "" {
+		return fmt.Errorf("aauth: %s contains an empty %s claim; omit it when unused", tokenType, name)
 	}
 	return nil
 }

@@ -165,7 +165,7 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token context does not match resource"))
 		return
 	}
-	if claims.Account != "" {
+	if claims.Account != nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}

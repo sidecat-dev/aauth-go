@@ -484,7 +484,7 @@ func (client *Client) verifyCallChainUpstreamTokenAt(
 	if claims.Audience != client.agentClaims.Issuer {
 		return aauth.AuthTokenClaims{}, errors.New("upstream token audience does not match intermediary Resource")
 	}
-	if claims.MissionS256 != "" || claims.Account != "" {
+	if claims.MissionS256 != "" || claims.Account != nil {
 		return aauth.AuthTokenClaims{}, errors.New("mission- or account-bound call chaining is not supported")
 	}
 	return claims, nil
@@ -564,13 +564,20 @@ func (client *Client) verifyAuthTokenForResourceBinding(
 		return aauth.AuthTokenClaims{}, errors.New("auth-token scope is outside resource token")
 	}
 	if claims.MissionS256 != resource.MissionS256 || claims.Tenant != resource.Tenant ||
-		claims.Account != resource.Account {
+		!equalStringPointers(claims.Account, resource.Account) {
 		return aauth.AuthTokenClaims{}, errors.New("auth-token context does not match resource token")
 	}
 	if claims.ExpiresAt > credential.expiresAt {
 		return aauth.AuthTokenClaims{}, errors.New("auth-token lifetime exceeds the " + credential.expirySource)
 	}
 	return claims, nil
+}
+
+func equalStringPointers(first, second *string) bool {
+	if first == nil || second == nil {
+		return first == nil && second == nil
+	}
+	return *first == *second
 }
 
 func fail(operation string, cause error) error {

@@ -158,6 +158,14 @@ Token verification has two layers:
 2. The accepting role decodes and validates each companion claim it supports
    before making a policy or serving decision.
 
+`MintResourceTokenCore`, `VerifyResourceTokenCore`, `MintAuthTokenCore`, and
+`VerifyAuthTokenCore` are extension-author seams, not application
+authorization APIs. They expose the verified Core layer plus raw companion
+members so an independent Go package can implement a companion specification
+without reversing the dependency graph. A companion package must consume its
+complete recognized claim set before returning an authorization value. The
+ordinary token APIs remain fail-closed when those claims are present.
+
 Unrecognized additive claims remain available to host policy where the source
 allows them. Recognized authorization-bearing companion claims are never
 treated as inert JSON.

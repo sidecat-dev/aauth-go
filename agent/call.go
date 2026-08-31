@@ -517,7 +517,7 @@ func (client *Client) verifyResourceTokenContext(
 	if claims.Interaction != nil {
 		return aauth.ResourceTokenClaims{}, errors.New("resource-token interaction requires the deferred flow")
 	}
-	if claims.Account != "" {
+	if claims.Account != nil {
 		return aauth.ResourceTokenClaims{}, errors.New("resource-token account is not supported by the immediate flow")
 	}
 	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
@@ -650,7 +650,7 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	if err != nil {
 		return nil, fail(operation, err)
 	}
-	if claims.Account != "" {
+	if claims.Account != nil {
 		return nil, fail(operation, errors.New("auth-token account is not supported by the immediate flow"))
 	}
 	if claims.MissionS256 != "" && call.UpstreamToken != "" {

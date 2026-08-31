@@ -683,7 +683,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated or call-chain authorization is not implemented"))
 		return
 	}
-	if resourceToken.Account != "" {
+	if resourceToken.Account != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
 		return
 	}
@@ -891,7 +891,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		authToken.ExpiresAt > agent.ExpiresAt ||
 		authToken.ExpiresAt > credentialAgent.ExpiresAt ||
 		authToken.MissionS256 != resourceToken.MissionS256 ||
-		authToken.Tenant != resourceToken.Tenant || authToken.Account != resourceToken.Account {
+		authToken.Tenant != resourceToken.Tenant || !equalStringPointers(authToken.Account, resourceToken.Account) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server auth token changed the authorized context"))
 		return
 	}
@@ -943,6 +943,13 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		AuthToken: accessOutput.AuthToken,
 		ExpiresIn: authToken.ExpiresAt - server.clock.Now().Unix(),
 	})
+}
+
+func equalStringPointers(first, second *string) bool {
+	if first == nil || second == nil {
+		return first == nil && second == nil
+	}
+	return *first == *second
 }
 
 func (server *Server) validateResourceTokenTopology(resourceToken aauth.ResourceTokenClaims) error {

@@ -273,7 +273,7 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	accountClaims := missionClaims
 	accountClaims.JTI = "account-upstream"
 	accountClaims.MissionS256 = ""
-	accountClaims.Account = "account-17"
+	accountClaims.Account = testStringPointer("account-17")
 	accountBound, err := aauth.MintAuthToken(protocol.personServerKey, accountClaims)
 	if err != nil {
 		t.Fatal(err)

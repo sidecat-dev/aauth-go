@@ -811,7 +811,7 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 	}
 	if claims.Tenant != result.Pending.Tenant || claims.Scope != strings.Join(granted, " ") ||
 		claims.IssuedAt != result.DecidedAt.Unix() || claims.ExpiresAt != expiresAt.Unix() ||
-		result.ExpiresIn != claims.ExpiresAt-claims.IssuedAt || claims.MissionS256 != "" || claims.Account != "" ||
+		result.ExpiresIn != claims.ExpiresAt-claims.IssuedAt || claims.MissionS256 != "" || claims.Account != nil ||
 		len(claims.AdditionalClaims) != 0 {
 		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token does not match the retained authorization")
 	}

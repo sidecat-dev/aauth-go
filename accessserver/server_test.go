@@ -541,7 +541,7 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		{name: "wrong audience", change: func(claims *aauth.ResourceTokenClaims) { claims.Audience = "https://other-as.example" }},
 		{name: "wrong person server", change: func(claims *aauth.ResourceTokenClaims) { claims.PersonServer = "https://other-ps.example" }},
 		{name: "wrong agent key", change: func(claims *aauth.ResourceTokenClaims) { claims.AgentJKT = otherAgentJKT }},
-		{name: "account", change: func(claims *aauth.ResourceTokenClaims) { claims.Account = "account-123" }},
+		{name: "account", change: func(claims *aauth.ResourceTokenClaims) { claims.Account = testStringPointer("account-123") }},
 		{name: "interaction", change: func(claims *aauth.ResourceTokenClaims) {
 			claims.Interaction = &aauth.ResourceInteraction{URL: "https://resource.example/interaction", Code: "ABCD-EFGH"}
 		}},
@@ -724,3 +724,5 @@ func (resolver *refreshingKeyResolver) RefreshCalls() int {
 	defer resolver.mu.Unlock()
 	return resolver.refreshCalls
 }
+
+func testStringPointer(value string) *string { return &value }

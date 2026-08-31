@@ -698,7 +698,7 @@ func TestServerRefusesUnusableResourceTokenBeforePolicy(t *testing.T) {
 				IssuedAt: now.Unix(), ExpiresAt: now.Add(test.resourceTokenLifetime).Unix(), Scope: "records.read",
 				PersonServer: "https://person.example", Subject: "person-123",
 				PresentedJTI: "person-token-1", Tenant: "tenant-1",
-				Account: test.account, Interaction: test.interaction,
+				Account: optionalTestStringPointer(test.account), Interaction: test.interaction,
 				MissionS256: test.missionS256,
 			})
 			if err != nil {
@@ -1016,4 +1016,13 @@ func assertPersonTokenRecordEqual(t *testing.T, got, want PersonTokenRecord) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("person token record = %#v, want %#v", got, want)
 	}
+}
+
+func testStringPointer(value string) *string { return &value }
+
+func optionalTestStringPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }

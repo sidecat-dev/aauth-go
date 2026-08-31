@@ -86,13 +86,17 @@ func TestCoreTokenVerificationReturnsTypedClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	missionS256 := coreTokenS256("approved mission")
+	account := "account-123"
 	resourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
 		Issuer: resource, DWK: aauth.ResourceDiscoveryDocument, Audience: access,
 		JTI: "resource-token-1", PersonServer: person, Subject: personClaims.Subject,
 		PresentedJTI: personClaims.JTI, AgentJKT: agentJKT, Scope: "records.read",
-		Account: "account-123", MissionS256: missionS256, Tenant: "tenant-123",
+		Account: &account, MissionS256: missionS256, Tenant: "tenant-123",
 		Interaction: &aauth.ResourceInteraction{
 			URL: "https://resource.example/interaction", Code: "A1B2-C3D4",
+		},
+		AdditionalClaims: map[string]json.RawMessage{
+			"resource_profile": json.RawMessage(`{"tier":"example"}`),
 		},
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 	})
@@ -106,18 +110,21 @@ func TestCoreTokenVerificationReturnsTypedClaims(t *testing.T) {
 	if resourceClaims.PresentedJTI != personClaims.JTI || resourceClaims.AgentJKT != agentJKT {
 		t.Fatalf("resource claims = %#v", resourceClaims)
 	}
-	if resourceClaims.Account != "account-123" || resourceClaims.MissionS256 != missionS256 ||
+	if resourceClaims.Account == nil || *resourceClaims.Account != account || resourceClaims.MissionS256 != missionS256 ||
 		resourceClaims.Tenant != "tenant-123" || resourceClaims.Interaction == nil ||
 		resourceClaims.Interaction.URL != "https://resource.example/interaction" ||
 		resourceClaims.Interaction.Code != "A1B2-C3D4" {
 		t.Fatalf("resource optional claims = %#v", resourceClaims)
+	}
+	if string(resourceClaims.AdditionalClaims["resource_profile"]) != `{"tier":"example"}` {
+		t.Fatalf("resource additional claims = %#v", resourceClaims.AdditionalClaims)
 	}
 
 	authToken, err := aauth.MintAuthToken(accessKey, aauth.AuthTokenClaims{
 		Issuer: access, DWK: aauth.AccessDiscoveryDocument, Audience: resource,
 		JTI: "auth-token-1", PersonServer: person, Subject: personClaims.Subject,
 		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()}, Scope: "records.read",
-		Account: "account-123", MissionS256: missionS256, Tenant: "tenant-123",
+		Account: &account, MissionS256: missionS256, Tenant: "tenant-123",
 		AdditionalClaims: map[string]json.RawMessage{
 			"email":  json.RawMessage(`"person@example.com"`),
 			"groups": json.RawMessage(`["engineering"]`),
@@ -134,7 +141,7 @@ func TestCoreTokenVerificationReturnsTypedClaims(t *testing.T) {
 	if authClaims.PersonServer != person || authClaims.Subject != personClaims.Subject {
 		t.Fatalf("auth claims = %#v", authClaims)
 	}
-	if authClaims.Account != "account-123" || authClaims.MissionS256 != missionS256 || authClaims.Tenant != "tenant-123" {
+	if authClaims.Account == nil || *authClaims.Account != account || authClaims.MissionS256 != missionS256 || authClaims.Tenant != "tenant-123" {
 		t.Fatalf("auth optional claims = %#v", authClaims)
 	}
 	if string(authClaims.AdditionalClaims["email"]) != `"person@example.com"` ||
@@ -162,6 +169,71 @@ func TestMintAuthTokenRejectsAdditionalClaimCollision(t *testing.T) {
 		if _, err := aauth.MintAuthToken(key, claims); err == nil {
 			t.Fatalf("MintAuthToken accepted additional claim %q", name)
 		}
+	}
+}
+
+func TestMintResourceTokenRejectsAdditionalClaimCollision(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 29, 21, 0, 0, 0, time.UTC)
+	key := coreTokenKey(t, "resource-key")
+	base := aauth.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+		Audience: "https://access.example", JTI: "resource-token-1",
+		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
+		AgentJKT: coreTokenS256("agent-key"), Scope: "records.read",
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+	}
+	for _, name := range []string{"scope", "SCOPE", "r3_per_call"} {
+		claims := base
+		claims.AdditionalClaims = map[string]json.RawMessage{name: json.RawMessage(`true`)}
+		if _, err := aauth.MintResourceToken(key, claims); err == nil {
+			t.Fatalf("MintResourceToken accepted additional claim %q", name)
+		}
+	}
+}
+
+func TestResourceTokenAdditionalClaimsAreCopied(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 29, 21, 0, 0, 0, time.UTC)
+	key := coreTokenKey(t, "resource-key")
+	raw := json.RawMessage(`{"tier":"original"}`)
+	additional := map[string]json.RawMessage{"resource_profile": raw}
+	compact, err := aauth.MintResourceToken(key, aauth.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+		Audience: "https://access.example", JTI: "resource-token-1",
+		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
+		AgentJKT: coreTokenS256("agent-key"), Scope: "records.read",
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		AdditionalClaims: additional,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[0] = '['
+	additional["resource_profile"] = json.RawMessage(`null`)
+
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: key.ID()}: key.PublicJWK(),
+	}
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	first, err := aauth.VerifyResourceToken(context.Background(), compact, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(first.AdditionalClaims["resource_profile"]); got != `{"tier":"original"}` {
+		t.Fatalf("first verified additional claim = %s", got)
+	}
+	first.AdditionalClaims["resource_profile"][0] = '['
+	first.AdditionalClaims["resource_profile"] = json.RawMessage(`null`)
+
+	second, err := aauth.VerifyResourceToken(context.Background(), compact, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(second.AdditionalClaims["resource_profile"]); got != `{"tier":"original"}` {
+		t.Fatalf("second verified additional claim = %s", got)
 	}
 }
 

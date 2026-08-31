@@ -55,7 +55,7 @@ type AuthorizationRequest struct {
 	Resource     string
 	Subject      string
 	Tenant       string
-	Account      string
+	Account      *string
 	MissionS256  string
 	Scopes       []string
 	Agent        Agent
@@ -211,7 +211,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token interaction requires the deferred flow"))
 		return
 	}
-	if resourceClaims.Account != "" {
+	if resourceClaims.Account != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
 		return
 	}
@@ -230,7 +230,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		Resource:     resourceClaims.Issuer,
 		Subject:      resourceClaims.Subject,
 		Tenant:       resourceClaims.Tenant,
-		Account:      resourceClaims.Account,
+		Account:      cloneStringPointer(resourceClaims.Account),
 		MissionS256:  resourceClaims.MissionS256,
 		Scopes:       append([]string(nil), requestedScopes...),
 		Agent: Agent{
@@ -287,6 +287,14 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
 	}{AuthToken: authToken, ExpiresIn: claims.ExpiresAt - claims.IssuedAt})
+}
+
+func cloneStringPointer(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func writeAccessPolicyProblem(response http.ResponseWriter, err error) {

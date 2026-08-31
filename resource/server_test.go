@@ -169,7 +169,7 @@ func TestAuthorizationEndpointIssuesCurrentResourceToken(t *testing.T) {
 		claims.PresentedJTI != "person-token-1" ||
 		claims.AgentJKT != wantJKT ||
 		claims.Scope != "records.read" ||
-		claims.Account != "" ||
+		claims.Account != nil ||
 		claims.Tenant != "tenant-1" {
 		t.Fatalf("resource-token claims = %#v", claims)
 	}
@@ -681,7 +681,7 @@ func TestProtectedHandlerReceivesCurrentPrincipal(t *testing.T) {
 			name: "account outside immediate slice",
 			claims: func() aauth.AuthTokenClaims {
 				claims := authClaims()
-				claims.Account = "primary"
+				claims.Account = testStringPointer("primary")
 				return claims
 			}(),
 			issuerKey: accessKey,
@@ -1040,3 +1040,5 @@ func testSigningKey(t *testing.T, id string, fill byte) jose.SigningKey {
 	}
 	return key
 }
+
+func testStringPointer(value string) *string { return &value }

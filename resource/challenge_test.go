@@ -134,7 +134,7 @@ func TestAuthTokenRequirementCarriesRouteBoundResourceToken(t *testing.T) {
 		claims.PresentedJTI != "person-token-exact" ||
 		claims.MissionS256 != "" ||
 		claims.Tenant != "tenant-1" ||
-		claims.Account != "" ||
+		claims.Account != nil ||
 		claims.Interaction != nil {
 		t.Fatalf("resource-token claims = %#v", claims)
 	}

@@ -267,7 +267,7 @@ func TestBeginRejectsInvalidAuthTokenRequirement(t *testing.T) {
 		{name: "interaction", change: func(claims *aauth.ResourceTokenClaims) {
 			claims.Interaction = &aauth.ResourceInteraction{URL: "https://resource.example/interaction", Code: "ABCD-EFGH"}
 		}},
-		{name: "account", change: func(claims *aauth.ResourceTokenClaims) { claims.Account = "primary" }},
+		{name: "account", change: func(claims *aauth.ResourceTokenClaims) { claims.Account = testStringPointer("primary") }},
 		{name: "mission", change: func(claims *aauth.ResourceTokenClaims) { claims.MissionS256 = strings.Repeat("A", 43) }},
 		{name: "expired resource token", change: func(claims *aauth.ResourceTokenClaims) {
 			claims.IssuedAt -= int64((10 * time.Minute) / time.Second)
@@ -926,7 +926,7 @@ func TestPollAuthTokenRejectsUnboundAuthTokensBeforeNetwork(t *testing.T) {
 			},
 			change: func(claims *aauth.AuthTokenClaims) { claims.Scope = "records.read" },
 		},
-		{name: "account mismatch", change: func(claims *aauth.AuthTokenClaims) { claims.Account = "other-account" }},
+		{name: "account mismatch", change: func(claims *aauth.AuthTokenClaims) { claims.Account = testStringPointer("other-account") }},
 		{name: "mission mismatch", change: func(claims *aauth.AuthTokenClaims) { claims.MissionS256 = strings.Repeat("A", 43) }},
 		{name: "tenant mismatch", change: func(claims *aauth.AuthTokenClaims) { claims.Tenant = "other-tenant" }},
 		{name: "expired", change: func(claims *aauth.AuthTokenClaims) {
@@ -1501,4 +1501,13 @@ type trackedBody struct {
 func (body *trackedBody) Close() error {
 	body.closed = true
 	return nil
+}
+
+func testStringPointer(value string) *string { return &value }
+
+func optionalTestStringPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }

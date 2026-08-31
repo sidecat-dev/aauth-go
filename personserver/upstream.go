@@ -64,7 +64,7 @@ func (server *Server) verifyOptionalUpstreamToken(
 	if claims.Audience != intermediary.Issuer {
 		return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token audience does not match the intermediary Resource")}
 	}
-	if claims.MissionS256 != "" || claims.Account != "" {
+	if claims.MissionS256 != "" || claims.Account != nil {
 		return nil, &unsupportedCallChainError{cause: errors.New("personserver: mission- or account-bound call chaining is not implemented")}
 	}
 	return &verifiedUpstreamToken{

@@ -1071,7 +1071,7 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 			AgentJKT: thumbprint, IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(protocol.resourceTokenLifetime).Unix(),
 			Scope: protocol.resourceScope, PersonServer: protocol.personServerID,
 			Subject: personClaims.Subject, PresentedJTI: personClaims.JTI,
-			Account: protocol.resourceAccount, Interaction: protocol.resourceInteraction,
+			Account: optionalTestStringPointer(protocol.resourceAccount), Interaction: protocol.resourceInteraction,
 			MissionS256: protocol.resourceMissionS256,
 		})
 		if err != nil {

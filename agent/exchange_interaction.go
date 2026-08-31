@@ -359,7 +359,7 @@ func (client *Client) exchangeRequest(
 	if resourceClaims.Interaction != nil {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource-token interaction requires the deferred flow")
 	}
-	if resourceClaims.Account != "" {
+	if resourceClaims.Account != nil {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource-token account is not supported by the immediate flow")
 	}
 	thumbprint, err := credential.requestKey.Thumbprint()

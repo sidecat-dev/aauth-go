@@ -25,7 +25,7 @@ type AuthTokenClaims struct {
 	ExpiresAt        int64                      `json:"exp"`
 	NotBefore        int64                      `json:"nbf,omitempty"`
 	Scope            string                     `json:"scope,omitempty"`
-	Account          string                     `json:"account,omitempty"`
+	Account          *string                    `json:"account,omitempty"`
 	MissionS256      string                     `json:"mission_s256,omitempty"`
 	Tenant           string                     `json:"tenant,omitempty"`
 	AdditionalClaims map[string]json.RawMessage `json:"-"`
@@ -39,6 +39,21 @@ var authTokenClaimNames = map[string]struct{}{
 
 // MintAuthToken creates a proof-bound authorization assertion.
 func MintAuthToken(key jose.SigningKey, claims AuthTokenClaims) (string, error) {
+	return mintAuthToken(key, claims, validateAuthTokenMembers)
+}
+
+// MintAuthTokenCore validates only the Core claim layer and deliberately
+// leaves raw companion claims to a typed companion package. Calling it
+// directly does not establish companion authorization.
+func MintAuthTokenCore(key jose.SigningKey, claims AuthTokenClaims) (string, error) {
+	return mintAuthToken(key, claims, validateAuthTokenCoreMembers)
+}
+
+func mintAuthToken(
+	key jose.SigningKey,
+	claims AuthTokenClaims,
+	validateMembers func(map[string]json.RawMessage) error,
+) (string, error) {
 	if err := validateAuthClaims(claims, time.Time{}); err != nil {
 		return "", err
 	}
@@ -46,7 +61,7 @@ func MintAuthToken(key jose.SigningKey, claims AuthTokenClaims) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if err := validateAuthTokenMembers(members); err != nil {
+	if err := validateMembers(members); err != nil {
 		return "", err
 	}
 	return mintTokenPayload(key, AuthTokenType, payload)
@@ -57,21 +72,53 @@ func MintAuthToken(key jose.SigningKey, claims AuthTokenClaims) (string, error) 
 // Known R3 and Budgets claims fail closed until their companion package is
 // integrated with this API.
 func VerifyAuthToken(ctx context.Context, compact string, resolver signaturekey.KeyResolver, clock Clock) (AuthTokenClaims, error) {
+	return verifyAuthToken(ctx, compact, resolver, clock, validateAuthTokenMembers)
+}
+
+// VerifyAuthTokenCore verifies only Core trust and claims while returning
+// immutable copies of raw companion claims. A typed companion verifier must
+// consume every recognized authorization claim before policy or use.
+func VerifyAuthTokenCore(
+	ctx context.Context,
+	compact string,
+	resolver signaturekey.KeyResolver,
+	clock Clock,
+) (AuthTokenClaims, error) {
+	return verifyAuthToken(ctx, compact, resolver, clock, validateAuthTokenCoreMembers)
+}
+
+func verifyAuthToken(
+	ctx context.Context,
+	compact string,
+	resolver signaturekey.KeyResolver,
+	clock Clock,
+	validateMembers func(map[string]json.RawMessage) error,
+) (AuthTokenClaims, error) {
 	var claims AuthTokenClaims
 	return verifyCoreToken(
 		ctx, compact, AuthTokenType, []string{PersonDiscoveryDocument, AccessDiscoveryDocument}, resolver, clock,
 		&claims,
 		func(value AuthTokenClaims) (string, string) { return value.Issuer, value.DWK },
-		validateAuthTokenMembers,
+		validateMembers,
 		validateAuthClaims,
 	)
 }
 
 func validateAuthTokenMembers(members map[string]json.RawMessage) error {
-	if err := rejectClaims(AuthTokenType, members, "the claim was removed from the current specification", "agent", "act", "mission", "r3_conditional"); err != nil {
+	if err := validateAuthTokenCoreMembers(members); err != nil {
 		return err
 	}
 	return rejectUnsupportedAuthorizationClaims(AuthTokenType, members)
+}
+
+func validateAuthTokenCoreMembers(members map[string]json.RawMessage) error {
+	if err := rejectClaims(AuthTokenType, members, "the claim was removed from the current specification", "agent", "act", "mission", "r3_conditional"); err != nil {
+		return err
+	}
+	if err := validateOptionalStringClaim(AuthTokenType, members, "scope", false); err != nil {
+		return err
+	}
+	return validateOptionalStringClaim(AuthTokenType, members, "account", true)
 }
 
 func marshalAuthTokenClaims(claims AuthTokenClaims) ([]byte, map[string]json.RawMessage, error) {

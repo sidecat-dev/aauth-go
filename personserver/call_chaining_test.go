@@ -418,7 +418,7 @@ func TestCallChainingRefusesUnsupportedValidBranchesAndIsolatesOrdinaryInteracti
 		{
 			name: "account-bound upstream",
 			change: func(claims *aauth.AuthTokenClaims) {
-				claims.Account = "account-17"
+				claims.Account = testStringPointer("account-17")
 			},
 		},
 	} {
