@@ -1100,7 +1100,7 @@ exist (`AAG-F003`). The source's simultaneous `201` contract and
 `AAG-F100` asks whether it describes application control flow or the HTTP
 exchange itself.
 
-## The first Interaction Endpoint path is one immediate missionless question
+## Interaction questions are a focused exact-document path
 
 **Sources:** AAuth Core, `Interaction Endpoint`, `Interaction Request`,
 `Interaction Response`, and `Deferred Responses`.
@@ -1111,14 +1111,13 @@ signed JSON and additive members, and rejects relay-only `url`, `code`, and
 Person Server host must sanitize them before display and chooses how to reach
 the person; the protocol library performs neither action.
 
-The first role journey is top-level and missionless. Policy returns one
+The question role journey is top-level and missionless. Policy returns one
 immediate answer or a bounded deferred policy. Deferred state is retained
 before `202`; a separately authenticated host reconstructs a non-authoritative
 handle, records one answer or unreachable result, and the Agent makes one
 explicit poll. Mission association would require cross-event mission-log
-composition, while `interaction` and `payment` require a separate relay store
-and completion contract. Those valid source branches fail before policy rather
-than being silently treated as questions.
+composition. Relay requests are decoded and retained by their separate
+purpose-specific path rather than being silently treated as questions.
 
 Core recommends recording every Interaction request and response. The deferred
 path retains the exact request and answer, while the immediate path leaves
@@ -1132,3 +1131,32 @@ question may already have reached the person. `AAG-F101` records the missing
 uncertain-initial-submission identity. Once the pending URL is received, the
 ordinary deferred state machine applies, including its separate lost-terminal
 response gap.
+
+## Resource-hosted relays report delivery progress, not operation completion
+
+**Sources:** AAuth Core, `Interaction Request`, `Interaction Response`,
+`Interaction Relay`, and `Deferred Responses`.
+
+The relay path is top-level and missionless. `interaction` and `payment`
+documents preserve the exact signed JSON while exposing a validated HTTPS URL,
+code, optional untrusted Markdown description, and whole-second `max_wait`.
+The Person Server retains a focused relay record before `202`. Host policy
+chooses whether it has a person channel; `interaction_unavailable` is the
+defined non-terminal refusal and returns the original document to the Agent
+application for direct presentation.
+
+An accepted relay creates only Person Server delivery-progress authority. A
+separately authenticated host marks that the person engaged or that the server
+can make no further progress. The requested `max_wait`, when present, can only
+shorten the host policy's lifetime. One signed poll consumes the terminal relay
+state. The library does not open the URL, render the description, contact the
+person, sleep, loop, or poll the Resource.
+
+Core says the Person Server returns `status: interacting` once the user engages
+and a terminal response when engagement, timeout, or no-progress occurs, but it
+does not assign a terminal HTTP status or body. This implementation uses `200`
+with `{"status":"interacting"}` for engagement and
+`{"status":"pending"}` for timeout or no progress. These reuse only Core's
+defined status values and are explicitly local profile choices (`AAG-F102`).
+The Resource's original pending URL remains authoritative for whether the
+underlying operation completed.

@@ -2,6 +2,7 @@ package personserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -55,14 +56,10 @@ func interactionQuestionStore(config *InteractionQuestionConfig) InteractionQues
 	return config.Store
 }
 
-func (server *Server) handleInteractionQuestion(response http.ResponseWriter, request *http.Request) {
+func (server *Server) handleInteraction(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		response.Header().Set("Allow", http.MethodPost)
 		writeProblem(response, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("interaction endpoint requires POST"))
-		return
-	}
-	if server.interactionQuestionPolicy == nil {
-		writeProblem(response, http.StatusNotFound, "not_found", errors.New("interaction endpoint is not configured"))
 		return
 	}
 	_, agent, _, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
@@ -78,6 +75,33 @@ func (server *Server) handleInteractionQuestion(response http.ResponseWriter, re
 	exactJSON, err := httpapi.DecodeExactJSON(request.Body, maxRequestBytes, &raw)
 	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(exactJSON, &envelope); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("interaction request must be one JSON object"))
+		return
+	}
+	switch envelope.Type {
+	case "question":
+		server.handleVerifiedInteractionQuestion(response, request, agent, exactJSON)
+	case string(aauth.InteractionRelayInteraction), string(aauth.InteractionRelayPayment):
+		server.handleVerifiedInteractionRelay(response, request, agent, exactJSON)
+	default:
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("interaction type must be interaction, payment, or question"))
+	}
+}
+
+func (server *Server) handleVerifiedInteractionQuestion(
+	response http.ResponseWriter,
+	request *http.Request,
+	agent aauth.AgentTokenClaims,
+	exactJSON []byte,
+) {
+	if server.interactionQuestionPolicy == nil {
+		writeProblem(response, http.StatusNotFound, "not_found", errors.New("interaction questions are not configured"))
 		return
 	}
 	document, err := aauth.DecodeInteractionQuestion(exactJSON)
@@ -118,7 +142,7 @@ func (server *Server) handleInteractionQuestion(response http.ResponseWriter, re
 		writeAgentTokenProblem(response, err)
 		return
 	}
-	createdAt := server.clock.Now().UTC()
+	createdAt := receivedAt
 	agentExpiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
 	for attempt := 0; attempt < 3; attempt++ {
 		id, err := interaction.GeneratePendingReference(nil)

@@ -284,8 +284,43 @@ communication channel. The Agent submits once and does not retry an uncertain
 initial result. Policy may answer immediately or retain a bounded question
 before `202`; a separately authenticated host later answers, and the Agent
 polls explicitly once per call. This path is top-level and missionless.
-Mission-log composition and the separate interaction and payment relay state
-machines remain outside this increment.
+Mission-log composition remains outside this path.
+
+### Resource-hosted interaction relay
+
+```mermaid
+sequenceDiagram
+    participant R as Resource
+    participant A as Agent
+    participant PS as Person Server
+    participant Host as Host policy
+    participant P as Person
+    R-->>A: 202 + Resource pending URL + URL/code requirement
+    A->>PS: One signed interaction or payment relay
+    PS->>PS: Retain exact relay before 202
+    PS-->>A: PS relay pending URL
+    PS->>Host: Exact untrusted description, URL, and code
+    Host->>P: Present the relay through a host-selected channel
+    P-->>Host: Engage with the Resource URL
+    Host->>PS: Mark engagement
+    A->>PS: One signed bodyless GET
+    PS-->>A: Terminal interacting state
+    A->>R: Continue polling the authoritative Resource URL
+```
+
+`RequestInteractionRelay` submits one missionless `interaction` or `payment`.
+The Person Server retains the exact request before `202`; a separately
+authenticated host either marks engagement or states that it can make no more
+progress. `max_wait` can shorten the policy window. `PollInteractionRelay`
+performs exactly one poll and never follows the Resource URL.
+
+When the Person Server returns `424 interaction_unavailable`, the Agent result
+returns the original verified URL and code for direct presentation. Once a
+relay was accepted, its pending URL reports only relay progress. The Resource's
+original pending URL remains authoritative for completing the underlying
+operation. Core names `pending` and `interacting` but does not define the
+terminal success response shape; this implementation uses `200` with the same
+one-member status document and records that choice as `AAG-F102`.
 
 ### Clarification during three-party consent
 

@@ -86,17 +86,20 @@ func TestInteractionQuestionRejectsUnsupportedShapeMissionAndTopologyBeforePolic
 		},
 	})
 	mission := aauth.MissionS256([]byte("question mission"))
-	for _, body := range []string{
-		`[]`,
-		`{"type":"question"}`,
-		`{"type":"interaction","url":"https://resource.example/act","code":"ABCD-EFGH"}`,
-		`{"type":"payment","url":"https://resource.example/pay","code":"ABCD-EFGH"}`,
-		`{"type":"question","question":"Choose?","mission_s256":"` + mission + `"}`,
-		`{"type":"question","question":"Choose?","url":"https://resource.example/act"}`,
+	for _, test := range []struct {
+		body   string
+		status int
+	}{
+		{body: `[]`, status: http.StatusBadRequest},
+		{body: `{"type":"question"}`, status: http.StatusBadRequest},
+		{body: `{"type":"interaction","url":"https://resource.example/act","code":"ABCD-EFGH"}`, status: http.StatusFailedDependency},
+		{body: `{"type":"payment","url":"https://resource.example/pay","code":"ABCD-EFGH"}`, status: http.StatusFailedDependency},
+		{body: `{"type":"question","question":"Choose?","mission_s256":"` + mission + `"}`, status: http.StatusBadRequest},
+		{body: `{"type":"question","question":"Choose?","url":"https://resource.example/act"}`, status: http.StatusBadRequest},
 	} {
-		response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken, body)
-		if response.Code != http.StatusBadRequest {
-			t.Fatalf("unsupported question body %s = %d %s", body, response.Code, response.Body.String())
+		response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken, test.body)
+		if response.Code != test.status {
+			t.Fatalf("unsupported question body %s = %d %s", test.body, response.Code, response.Body.String())
 		}
 	}
 

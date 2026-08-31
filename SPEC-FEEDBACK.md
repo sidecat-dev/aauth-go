@@ -153,7 +153,7 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F099 | The Audit Endpoint has no endpoint-specific error contract | ready below with authenticated request, mission, and append evidence |
 | AAG-F100 | Audit says both `201 Created` and “fire-and-forget” without defining non-blocking behavior | ready below with one-shot Agent evidence |
 | AAG-F101 | An uncertain Interaction question submission has no recovery identity | ready below with exact one-shot Agent evidence |
-| AAG-F102 | Resource-hosted relay resolution has no terminal success response shape | evidence pending until the deferred relay journey executes |
+| AAG-F102 | Resource-hosted relay resolution has no terminal success response shape | ready below with retained relay and terminal-poll evidence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -1978,6 +1978,35 @@ semantics after uncertain submission?
 
 **Placement:** Cross-link the general initial-request recovery discussion and
 the corresponding Permission and Audit delivery gaps.
+
+### AAG-F102 — Resource-hosted relay resolution has no terminal success shape
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Interaction Response`, `Interaction Relay`, and
+`Deferred Responses`.
+
+For a Resource-hosted interaction, Core says the Person Server returns
+`status: interacting` once the user engages and a terminal response when the
+user engages, `max_wait` elapses, or the Person Server can make no more
+progress. It does not assign that terminal response an HTTP status or body.
+The generic deferred state machine defines `202` for pending and interacting,
+then only error-shaped terminal outcomes. None represents successful relay
+delivery without claiming the Resource operation completed.
+
+The implementation retains the exact relay before `202`, bounds it by
+`max_wait`, and gives one terminal poll consumer. Its provisional profile uses
+`200 {"status":"interacting"}` after engagement and
+`200 {"status":"pending"}` after timeout or no progress. The Agent continues
+to treat the Resource's original pending URL as authoritative for operation
+completion.
+
+**Question:** What HTTP status and response body should terminate a successful
+Resource-hosted relay after engagement, timeout, or no progress, without
+claiming that the underlying Resource interaction completed?
+
+**Placement:** Open a focused Core Interaction Endpoint question and cross-link
+the deferred-response state machine.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

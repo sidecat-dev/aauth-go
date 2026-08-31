@@ -6,9 +6,9 @@
 // approval, ordered accepted updates, person-accepted completion, and
 // mission-bound credential issuance. Both compositions can add missionless
 // local-action permission, mission-bound post-action audit, and one immediate
-// or deferred missionless Interaction question. Three-party composition also
-// supports deferred authorization, issued-token revocation, and one
-// same-Person-Server Resource call chain.
+// or deferred missionless Interaction question or relay. Three-party
+// composition also supports deferred authorization, issued-token revocation,
+// and one same-Person-Server Resource call chain.
 package personserver
 
 import (
@@ -85,6 +85,9 @@ type FederatedAuthorizationConfig struct {
 	Audit *AuditConfig
 	// InteractionQuestion optionally enables immediate top-level questions.
 	InteractionQuestion *InteractionQuestionConfig
+	// InteractionRelay optionally relays missionless interaction and payment
+	// requirements through a retained deferred response.
+	InteractionRelay *InteractionRelayConfig
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -132,6 +135,9 @@ type PSAuthorizationConfig struct {
 	Audit *AuditConfig
 	// InteractionQuestion optionally enables immediate top-level questions.
 	InteractionQuestion *InteractionQuestionConfig
+	// InteractionRelay optionally relays missionless interaction and payment
+	// requirements through a retained deferred response.
+	InteractionRelay *InteractionRelayConfig
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -276,6 +282,8 @@ type Server struct {
 	missionAudits                   MissionAuditStore
 	interactionQuestionPolicy       func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
 	interactionQuestionStore        InteractionQuestionStore
+	interactionRelayPolicy          func(context.Context, InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error)
+	interactionRelayStore           InteractionRelayStore
 }
 
 type authorizationMode uint8
@@ -299,6 +307,7 @@ type serverConfig struct {
 	permission                    *PermissionConfig
 	audit                         *AuditConfig
 	interactionQuestion           *InteractionQuestionConfig
+	interactionRelay              *InteractionRelayConfig
 }
 
 // NewFederatedAuthorization constructs a four-party Person Server.
@@ -322,6 +331,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		permission:                    config.Permission,
 		audit:                         config.Audit,
 		interactionQuestion:           config.InteractionQuestion,
+		interactionRelay:              config.InteractionRelay,
 	})
 	if err != nil {
 		return nil, err
@@ -379,6 +389,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		permission:                    config.Permission,
 		audit:                         config.Audit,
 		interactionQuestion:           config.InteractionQuestion,
+		interactionRelay:              config.InteractionRelay,
 	})
 	if err != nil {
 		return nil, err
@@ -416,6 +427,10 @@ func newServer(config serverConfig) (*Server, error) {
 	}
 	if config.interactionQuestion != nil && config.interactionQuestion.Policy == nil {
 		return nil, errors.New("personserver: interaction question policy is required")
+	}
+	if config.interactionRelay != nil &&
+		(config.interactionRelay.Policy == nil || config.interactionRelay.Store == nil) {
+		return nil, errors.New("personserver: interaction relay policy and store are required together")
 	}
 	if err := aauth.ValidateServerIdentifier(config.issuer); err != nil {
 		return nil, fmt.Errorf("personserver: issuer: %w", err)
@@ -494,6 +509,8 @@ func newServer(config serverConfig) (*Server, error) {
 		missionAudits:             missionAudits,
 		interactionQuestionPolicy: interactionQuestionPolicy(config.interactionQuestion),
 		interactionQuestionStore:  interactionQuestionStore(config.interactionQuestion),
+		interactionRelayPolicy:    interactionRelayPolicy(config.interactionRelay),
+		interactionRelayStore:     interactionRelayStore(config.interactionRelay),
 	}, nil
 }
 
@@ -518,11 +535,14 @@ func (server *Server) Handler() http.Handler {
 	if server.missionAudits != nil {
 		mux.HandleFunc("POST /audit", server.handleAudit)
 	}
-	if server.interactionQuestionPolicy != nil {
-		mux.HandleFunc("POST /interaction", server.handleInteractionQuestion)
+	if server.interactionQuestionPolicy != nil || server.interactionRelayPolicy != nil {
+		mux.HandleFunc("POST /interaction", server.handleInteraction)
 	}
 	if server.interactionQuestionStore != nil {
 		mux.HandleFunc("GET /interaction/pending/{id}", server.handlePendingInteractionQuestion)
+	}
+	if server.interactionRelayStore != nil {
+		mux.HandleFunc("GET /interaction/relay/{id}", server.handlePendingInteractionRelay)
 	}
 	return mux
 }
@@ -1461,7 +1481,7 @@ func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Reque
 	if server.missionAudits != nil {
 		metadata["audit_endpoint"] = server.issuer + "/audit"
 	}
-	if server.interactionQuestionPolicy != nil {
+	if server.interactionQuestionPolicy != nil || server.interactionRelayPolicy != nil {
 		metadata["interaction_endpoint"] = server.issuer + "/interaction"
 	}
 	writeJSON(response, http.StatusOK, metadata)

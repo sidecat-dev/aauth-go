@@ -53,6 +53,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Mission-bound action audit](example/audit) | Application performs one local action; Agent submits its exact post-action record; Person Server appends it to the active mission | `go run ./example/audit` |
 | [Missionless question through the Person Server](example/interactionquestion) | Agent sends one raw-Markdown question; the PS parks it; a host answers; one explicit poll returns the retained answer | `go run ./example/interactionquestion` |
+| [Resource-hosted interaction relay](example/interactionrelay) | Agent forwards a URL and code; the PS retains the relay; a host marks engagement; one explicit poll returns the relay state | `go run ./example/interactionrelay` |
 | [Clarification during Person Server consent](example/psconsent) | A verified request is parked; the host asks one bounded question; the Agent signs one answer; explicit polling returns the approved token | `go run ./example/psconsent` |
 | [Four-party authorization variants](example/fourparty) | Missionless Core, mission lifecycle, and one runnable MCP R3 path with independent consent/policy fetches, a narrowed grant, and atomic issuance audit | `go run ./example/fourparty` |
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
@@ -84,6 +85,10 @@ The [Interaction question journey](integration/interaction_question_test.go)
 proves immediate and retained deferred answers, Person Server recomposition,
 one explicit poll, terminal consumption, and typed `user_unreachable` without
 Resource or Access Server calls.
+The [Interaction relay journey](integration/interaction_relay_test.go) proves
+retention before `202`, Person Server recomposition, host engagement, one
+terminal consumer, and typed direct fallback when the Person Server cannot
+relay a Resource-hosted URL and code.
 The [fixed-price Budget journey](integration/budget_three_party_test.go) proves
 direct Resource offer selection, Person Server amount narrowing, and
 concurrent hard-cap enforcement.
@@ -112,8 +117,8 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `r3/vocab/standard` | Explicit registries for all seven standard operation codecs and definition parsers |
 | `r3/vocabtest` | Reusable operation-codec and native-definition contracts for standard and third-party adapters |
 | `agentprovider` | Agent-token and subscribe-token issuance, metadata/JWKS, and the Events inbox |
-| `agent` | Explicit Core, mission Audit, missionless Interaction question, R3, Events, and fixed-price Budget calls; no hidden polling, browser use, or consequence retry |
-| `personserver` | Person-token issuance, mission lifecycle and Audit, missionless local-action permission and Interaction question, direct Core/class-R3/Budget verification and narrowing, consent interaction, revocation, call-chain policy, and Access Server federation |
+| `agent` | Explicit Core, mission Audit, missionless Interaction questions and relays, R3, Events, and fixed-price Budget calls; no hidden polling, browser use, or consequence retry |
+| `personserver` | Person-token issuance, mission lifecycle and Audit, missionless local-action permission and Interaction, direct Core/class-R3/Budget verification and narrowing, consent interaction, revocation, call-chain policy, and Access Server federation |
 | `resource` | Identity, session, authorization, registered R3 documents/enforcement, Events registration/delivery, Budget metadata/offers/fixed-price accounting/step-up verification, protected-call, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
@@ -203,10 +208,11 @@ active mission. The Person Server appends before acknowledging; the Agent
 never retries an uncertain result. Deferred audit delivery, sub-agent and
 call-chain composition, durable adapters, and the cross-event mission log and
 Agent-facing read remain open.
-Interaction covers one top-level missionless `question` with either an
-immediate answer or a retained, explicitly polled host answer. Durable store
-adapters, mission association and logging, and the distinct `interaction` and
-`payment` relay state machines remain open.
+Interaction covers top-level missionless questions plus retained `interaction`
+and `payment` relays. The relay path preserves a Resource-hosted pending URL as
+the completion authority; its own explicit poll reports only Person Server
+progress. Durable store adapters, mission association and logging, and stable
+recovery after a lost initial response remain open.
 Mission support currently covers immediate
 top-level approval, ordered accepted updates, protected use, and
 person-accepted completion through both three-party and four-party
