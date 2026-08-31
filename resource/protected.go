@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
@@ -152,13 +153,29 @@ func (server *Server) serveAuthTokenProtected(
 		proof         signaturekey.VerifiedRequest
 		claims        aauth.AuthTokenClaims
 		authorization *r3ProtectedAuthorization
+		budgetGrant   *budgets.Value
 	)
 	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
 	if err != nil {
 		writeCredentialProblem(response, "invalid_token", &requestTokenError{cause: err})
 		return
 	}
-	if server.r3 != nil && carriesR3 {
+	carriesBudget, err := budgets.TokenCarriesClaims(compact)
+	if err != nil {
+		writeCredentialProblem(response, "invalid_token", &requestTokenError{cause: err})
+		return
+	}
+	if carriesR3 && carriesBudget {
+		writeCredentialProblem(response, "invalid_token", &requestTokenError{
+			cause: errors.New("aauth: combined R3 and Budget auth tokens are not supported by this profile"),
+		})
+		return
+	}
+	if server.budget != nil && carriesBudget {
+		var grant budgets.Value
+		proof, claims, grant, err = server.verifyPreparedBudgetAuthRequest(request, prepared, compact)
+		budgetGrant = &grant
+	} else if server.r3 != nil && carriesR3 {
 		var reference r3.Reference
 		var operations r3.AuthTokenOperations
 		proof, claims, reference, operations, err = server.verifyPreparedR3AuthRequest(request, prepared, compact)
@@ -184,7 +201,7 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token context does not match resource"))
 		return
 	}
-	if claims.Account != nil && (authorization == nil || server.validateAccount == nil) {
+	if server.budget == nil && claims.Account != nil && (authorization == nil || server.validateAccount == nil) {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}
@@ -203,6 +220,16 @@ func (server *Server) serveAuthTokenProtected(
 	} else if authorization == nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token has no authorization claim"))
 		return
+	}
+	if server.budget != nil {
+		switch {
+		case budgetGrant == nil:
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("metered route requires a signed Budget grant"))
+			return
+		case claims.MissionS256 != "" || claims.Account != nil:
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("fixed-price Budget grants do not compose with mission or account authorization"))
+			return
+		}
 	}
 	if err := server.observeAuthToken(request.Context(), compact, claims); err != nil {
 		switch {
@@ -284,9 +311,179 @@ func (server *Server) serveAuthTokenProtected(
 		Confirmation:     claims.Confirmation.JWK,
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
+	if server.budget != nil {
+		if !server.enforceFixedBudget(response, request, claims, principal, *budgetGrant) {
+			return
+		}
+	}
 	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
 	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
 	server.protected.ServeHTTP(response, request.WithContext(protectedContext))
+}
+
+func (server *Server) verifyPreparedBudgetAuthRequest(
+	request *http.Request,
+	prepared signaturekey.PreparedRequest,
+	compact string,
+) (signaturekey.VerifiedRequest, aauth.AuthTokenClaims, budgets.Value, error) {
+	verificationClock := aauth.ClockFunc(func() time.Time { return prepared.VerifiedAt() })
+	claims, grant, err := budgets.VerifyAuthToken(request.Context(), compact, server.keyResolver, verificationClock)
+	if err != nil {
+		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, budgets.Value{}, &requestTokenError{cause: err}
+	}
+	verifiedProof, err := prepared.Verify(claims.Confirmation.JWK)
+	return verifiedProof, claims, grant, err
+}
+
+func (server *Server) enforceFixedBudget(
+	response http.ResponseWriter,
+	request *http.Request,
+	claims aauth.AuthTokenClaims,
+	principal AuthPrincipal,
+	grant budgets.Value,
+) bool {
+	policyRequest, finish, err := cloneScopePolicyRequest(request)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("prepare Resource Budget cost request: %w", err))
+		return false
+	}
+	cost, policyErr := server.budget.cost(request.Context(), BudgetCostRequest{
+		Request: policyRequest, Principal: cloneBudgetPrincipal(principal), Grant: grant,
+	})
+	finishErr := finish()
+	if policyErr != nil || finishErr != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget cost policy: %w", errors.Join(policyErr, finishErr)))
+		return false
+	}
+	if _, err := budgets.NewValue(cost, grant.Unit()); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget cost policy: %w", err))
+		return false
+	}
+	result, err := server.budget.store.Charge(request.Context(), BudgetCharge{
+		Token:        aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+		PersonServer: claims.PersonServer,
+		Subject:      claims.Subject,
+		Audience:     claims.Audience,
+		MissionS256:  claims.MissionS256,
+		Tenant:       claims.Tenant,
+		Account:      cloneBudgetAccount(claims.Account),
+		Grant:        grant,
+		Cost:         cost,
+	})
+	if err == nil {
+		if result.Cost != cost || result.Remaining < 0 || result.Remaining > grant.Amount() ||
+			result.Cost+result.Remaining > grant.Amount() {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("Resource Budget store returned an invalid charge result"))
+			return false
+		}
+		feedback, err := budgets.NewSuccessFeedback(grant, result.Cost, result.Remaining)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return false
+		}
+		formatted, err := budgets.FormatFeedback(feedback)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return false
+		}
+		response.Header().Set("AAuth-Budget", formatted)
+		return true
+	}
+	if !errors.Is(err, ErrBudgetInsufficient) && !errors.Is(err, ErrBudgetExhausted) {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
+	}
+	if result.Cost != 0 || result.Remaining < 0 || result.Remaining > grant.Amount() {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("Resource Budget store returned an invalid refusal result"))
+		return false
+	}
+	reason := budgets.ReasonInsufficientBudget
+	var required *int64
+	switch {
+	case errors.Is(err, ErrBudgetExhausted):
+		if result.Remaining != 0 {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("Resource Budget store reported exhaustion with a nonzero remainder"))
+			return false
+		}
+		reason = budgets.ReasonBudgetExhausted
+	case result.Remaining == 0 || cost <= result.Remaining:
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("Resource Budget store reported inconsistent insufficiency"))
+		return false
+	default:
+		value := cost
+		required = &value
+	}
+	feedback, err := budgets.NewRefusalFeedback(grant, result.Remaining, required)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
+	}
+	formattedFeedback, err := budgets.FormatFeedback(feedback)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
+	}
+	challengeToken, err := server.budget.challenge(request.Context(), BudgetChallengeRequest{
+		Token:     aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+		Principal: cloneBudgetPrincipal(principal), Grant: grant,
+		Remaining: result.Remaining, Required: cost, Reason: reason,
+	})
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
+		return false
+	}
+	if err := server.validateBudgetChallenge(request.Context(), challengeToken, principal); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
+		return false
+	}
+	formattedRequirement, err := budgets.FormatAuthTokenRequirement(
+		aauth.AuthTokenRequirement{ResourceToken: challengeToken}, reason,
+	)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
+	}
+	response.Header().Set("AAuth-Budget", formattedFeedback)
+	response.Header().Set("AAuth-Requirement", formattedRequirement)
+	response.WriteHeader(http.StatusUnauthorized)
+	return false
+}
+
+func (server *Server) validateBudgetChallenge(
+	ctx context.Context,
+	compact string,
+	principal AuthPrincipal,
+) error {
+	claims, offer, _, err := budgets.VerifyResourceToken(ctx, compact, server.keyResolver, server.clock)
+	if err != nil {
+		return err
+	}
+	thumbprint, err := principal.Confirmation.Thumbprint()
+	if err != nil {
+		return err
+	}
+	if claims.Issuer != server.issuer || claims.DWK != aauth.ResourceDiscoveryDocument ||
+		claims.Audience != principal.PersonServer || claims.PersonServer != principal.PersonServer ||
+		claims.Subject != principal.Subject || claims.AgentJKT != thumbprint || claims.PresentedJTI == "" ||
+		claims.MissionS256 != principal.MissionS256 || claims.Tenant != principal.Tenant ||
+		!sameBudgetAccount(claims.Account, principal.Account) {
+		return errors.New("fresh Resource token does not preserve the protected Budget context")
+	}
+	scopes, err := server.validateScopes(claims.Scope)
+	if err != nil || !sameScopeSet(scopes, principal.Scope) {
+		return errors.New("fresh Resource token does not preserve the protected scopes")
+	}
+	if !server.budget.declared(offer) {
+		return errors.New("fresh Resource token carries an undeclared Budget offer")
+	}
+	return nil
+}
+
+func cloneBudgetPrincipal(principal AuthPrincipal) AuthPrincipal {
+	principal.Scope = append([]string(nil), principal.Scope...)
+	principal.Account = cloneBudgetAccount(principal.Account)
+	principal.AdditionalClaims = cloneAdditionalClaims(principal.AdditionalClaims)
+	return principal
 }
 
 func (server *Server) servePersonTokenChallenge(

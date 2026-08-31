@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
@@ -23,6 +24,7 @@ type exchangeResultKind uint8
 type verifiedExchangeResource struct {
 	claims      aauth.ResourceTokenClaims
 	r3Reference *r3.Reference
+	budget      *budgets.Value
 }
 
 const (
@@ -195,6 +197,9 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		if verifiedResource.r3Reference != nil {
 			return ExchangeResult{}, fail(operation, errors.New("R3 exchange interaction is not implemented"))
 		}
+		if verifiedResource.budget != nil {
+			return ExchangeResult{}, fail(operation, errors.New("Budget exchange interaction is not implemented"))
+		}
 		resourceClaims := verifiedResource.claims
 		if resourceClaims.MissionS256 != "" {
 			if err := validateUnsupportedMissionContinuation(response); err != nil {
@@ -364,6 +369,13 @@ func (client *Client) exchangeRequest(
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
 	}
+	carriesBudget, err := budgets.TokenCarriesClaims(input.ResourceToken)
+	if err != nil {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, err
+	}
+	if carriesR3 && carriesBudget {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("combined R3 and Budget Resource tokens are not implemented")
+	}
 	verifiedResource := verifiedExchangeResource{}
 	if carriesR3 {
 		if client.r3 == nil {
@@ -375,6 +387,19 @@ func (client *Client) exchangeRequest(
 		}
 		verifiedResource.claims = claims
 		verifiedResource.r3Reference = &reference
+	} else if carriesBudget {
+		claims, budget, _, err := budgets.VerifyResourceToken(ctx, input.ResourceToken, client.keyResolver, client.clock)
+		if err != nil {
+			return nil, verifiedExchangeResource{}, personServerCredential{}, err
+		}
+		verifiedResource.claims = claims
+		verifiedResource.budget = &budget
+		if !slices.Contains(input.Capabilities, "budget") {
+			input.Capabilities = append(append([]string(nil), input.Capabilities...), "budget")
+		}
+		if _, err := aauth.FormatCapabilities(input.Capabilities); err != nil {
+			return nil, verifiedExchangeResource{}, personServerCredential{}, fmt.Errorf("capabilities: %w", err)
+		}
 	} else {
 		claims, err := aauth.VerifyResourceToken(ctx, input.ResourceToken, client.keyResolver, client.clock)
 		if err != nil {
@@ -383,6 +408,10 @@ func (client *Client) exchangeRequest(
 		verifiedResource.claims = claims
 	}
 	resourceClaims := verifiedResource.claims
+	if verifiedResource.budget != nil &&
+		(input.SubagentToken != "" || input.UpstreamToken != "" || resourceClaims.MissionS256 != "") {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("delegated, call-chain, or mission-bound Budget exchange is not implemented")
+	}
 	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")
 	}
@@ -454,6 +483,19 @@ func (client *Client) verifiedExchangeResponse(
 		_, err = client.verifyR3AuthTokenForResourceBinding(
 			ctx, output.AuthToken, resource.claims, *resource.r3Reference, credential,
 		)
+	} else if resource.budget != nil {
+		claims, granted, verifyErr := budgets.VerifyAuthToken(
+			ctx, output.AuthToken, client.keyResolver, client.clock,
+		)
+		if verifyErr != nil {
+			err = verifyErr
+		} else if validateErr := client.validateAuthTokenForResourceBinding(
+			claims, resource.claims, credential,
+		); validateErr != nil {
+			err = validateErr
+		} else if narrowErr := budgets.ValidateNarrowing(*resource.budget, granted); narrowErr != nil {
+			err = fmt.Errorf("auth-token Budget did not narrow the Resource offer: %w", narrowErr)
+		}
 	} else {
 		_, err = client.verifyAuthTokenForResourceBinding(ctx, output.AuthToken, resource.claims, credential)
 	}

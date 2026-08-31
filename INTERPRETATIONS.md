@@ -895,3 +895,93 @@ not invent a pre-use tombstone from an underspecified request.
 `resource/revocation_test.go:TestRevocationEndpointRequiresBoundPersonServerProof`
 and
 `integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`.
+
+## Budget fields follow their declared RFC 9651 Dictionary shape
+
+**Source:** AAuth Budgets, `AAuth-Budget Response Header` and “The `reason`
+Parameter”.
+
+The draft declares `AAuth-Budget` to be an RFC 9651 Dictionary, but its
+examples separate apparent dictionary members with semicolons. Semicolons
+introduce parameters on one member; commas separate dictionary members. This
+implementation follows the declared Dictionary contract and emits canonical
+comma-separated members.
+
+## The Resource selects a declared denomination; later issuers preserve it
+
+**Source:** AAuth Budgets, `The Narrowing Chain`.
+
+The draft explicitly lets the Resource change the Agent's requested
+denomination because only the Resource knows its pricing. The Agent therefore
+accepts the Resource token's value when it uses one current `budget_units`
+declaration. From that point, the Person Server preserves the exact unit and
+scale and may only lower the amount. The library defines no conversion
+algorithm: an optional Resource offer policy owns any request-to-offer
+conversion. This is not a claim that cross-denomination output is a
+protocol-verifiable numeric lowering; that source question is `AAG-F088`.
+
+## A metered route treats a missing signed Budget as no grant
+
+**Source:** AAuth Budgets, `Auth Token Extensions` and `The Resource Enforces`.
+
+The draft permits an Auth-token issuer to omit an offered Budget and then asks
+the Resource to apply a default. A positive default would bypass Person Server
+narrowing. The fixed-price profile therefore treats omission as no metering
+authorization and refuses the operation; it does not construct a synthetic
+zero-valued grant. This choice covers the implemented direct three-party path;
+the separate four-party PS-to-AS omission rule remains unimplemented. An
+unmetered Resource remains unchanged.
+
+## Fixed-price calls charge atomically before application execution
+
+**Source:** AAuth Budgets, `Concurrency`, `The Budget Is a Hard Cap`, and
+`Failed Calls`.
+
+For the first non-streaming profile, the Resource knows the exact charge
+before dispatch. One atomic store operation binds the signed grant and context,
+increments token consumption, and posts the same amount to person accounting.
+The application runs only after that operation succeeds. Application failures
+are chargeable in this profile, as permitted by the Resource-owned failed-call
+policy. Variable-cost and streaming work require a later reservation and
+settlement profile.
+
+## A refused Budget request reports no current-request cost
+
+**Source:** AAuth Budgets, `Budget Exhaustion` and `AAuth-Budget Response
+Header`.
+
+The draft says an insufficient or exhausted request consumes nothing, while
+one example reports a nonzero `cost`. This implementation omits `cost` on both
+refusals. Exhaustion reports `remaining=0` and may report the denomination;
+insufficiency reports the remainder and may also report `required`.
+
+## The host selects retained lineage for a Budget step-up token
+
+**Source:** AAuth Budgets, `Budget Exhaustion`; AAuth Core, `Resource Token
+Structure`.
+
+A Budget refusal must carry a fresh Resource token. The presented Auth token
+does not identify the earlier Resource token or its `presented_jti`, so the
+Resource library cannot select that lineage without guessing. A metered
+Resource therefore requires a host callback that owns retained Person-token
+state and returns the fresh token. Before releasing the initial Resource token,
+the Resource passes its exact `BudgetLineage` to a required host retention
+callback; the example no longer obtains this state from the Agent side. The
+Resource and Agent verify every context field they can observe, including a
+nonempty `presented_jti`; neither library claims to prove that the host selected
+the exact prior Person-token record. The Agent returns the verified step-up and
+performs no automatic exchange or retry.
+
+## An ambiguous Budget call carries the full signed grant, never a retry
+
+**Source:** AAuth Budgets, `Ambiguous Failures` and `The Budget Is a Hard Cap`.
+
+The draft requires an Agent to assume that a lost response cost the request's
+maximum as the Resource would have bounded it, but defines no generic pricing
+carrier from which the Agent library can verify that figure. After the
+protected request is handed to HTTP, an unverifiable result therefore returns
+`BudgetCallUncertainError` carrying the complete signed grant—the only local
+upper bound the Agent can prove—and is never retried. The implementation
+ignores feedback on any response carrying a valid `Age` field, including
+`Age: 0`. This is a conservative observable approximation of the draft's
+positive-`current_age` rule; HTTP exposes integer Age, not subsecond cache age.

@@ -68,10 +68,10 @@ Resource owns registration and outbound delivery, and the Agent owns local
 context and replay correlation. Each role receives its own small store
 interface; no shared Events lifecycle object crosses those boundaries.
 
-The target model expands those packages and adds `budgets` around the current
-`r3` and `events` packages. Sections below define the target ownership
-contract. Planned packages use a dashed border in the graph; present-tense
-support must never be inferred from this target map.
+The current model includes focused `r3`, `events`, and `budgets` protocol
+packages. Sections below distinguish their implemented profiles from target
+ownership. Present-tense support must never be inferred from the target import
+map alone.
 
 ## Package graph
 
@@ -129,8 +129,6 @@ flowchart TD
     examples --> resource
     examples --> as
 
-    classDef planned stroke-dasharray: 6 4
-    class budgets planned
 ```
 
 Private packages may provide strict JSON, bounded HTTP, and test helpers.
@@ -251,20 +249,24 @@ transaction, retained evidence record, or source attestation.
 
 ### `budgets`
 
-The planned `budgets` package will own the Budget companion's reusable
-semantics:
+The current `budgets` package owns the Budget companion's reusable semantics:
 
 - Exact non-negative amount, unit, and decimal-scale values.
-- Monotonic narrowing and denomination checks.
+- Same-denomination amount narrowing, Resource-declared denomination checks,
+  and later-issuer denomination preservation.
 - Resource/Auth token claim extensions and consumed records.
-- `AAuth-Budget` header and trailer parsing/formatting.
-- Reservation, commit, release, and hard-cap invariants.
-- Usage-query request/response values.
-- Capability and requirement reason values.
+- Fixed-price `AAuth-Budget` response parsing and formatting.
+- Budget-specific `AAuth-Requirement` reasons without replacing Core's
+  Resource-token requirement.
 
 It does not choose a person's ceiling, price an operation, decide whether a
 failed call is chargeable, or create a cross-Resource ledger. Those are policy
-inputs owned by PS and Resource compositions.
+inputs owned by PS and Resource compositions. The current Resource profile
+retains a purpose-specific `BudgetLineage` through host storage before releasing
+the Resource token, then uses one atomic `BudgetStore.Charge` after every other
+authorization check and before application dispatch. Variable-cost
+reservation/settlement, streaming, usage queries, four-party forwarding, and
+prior-consumption policy remain separate unimplemented profiles.
 
 ### `events`
 
@@ -325,12 +327,13 @@ The target owns explicit caller steps:
 - Follow one deferred, interaction, clarification, or payment continuation.
 - Perform one protected call or one R3 per-call retry.
 - Register an Events subscription and verify a delivered event.
-- Read Budget feedback and decide whether to request reauthorization.
+- Begin one Budget call, read its feedback, and decide whether to request reauthorization.
 
-Each method performs one exchange and returns serializable continuation data
-where another exchange is required. The caller decides whether and when to
-continue. A higher-level helper may drive a complete journey, but it is built
-from the same explicit steps and exposes its progress.
+Each method attempts at most one protocol or application consequence; read-only
+discovery may precede it. Methods return serializable continuation data where
+another exchange is required. The caller decides whether and when to continue.
+A higher-level helper may drive a complete journey, but it is built from the
+same explicit steps and exposes its progress.
 
 The current R3 path is explicit at the Agent boundary. The caller supplies a
 registered operation set and optional account, receives and verifies the
@@ -338,6 +341,12 @@ Resource token, presents its exact compact form to the Person Server, verifies
 the returned Auth token, and chooses whether to begin, retry, or poll one HTTP
 call. Each method performs one network consequence. R3 documents remain opaque
 to the Agent.
+
+The current fixed-price Budget path follows the same shape. The caller supplies
+the request and signed Budget Auth token. `BeginBudgetCall` returns either one
+caller-owned response or one verified step-up. An unverifiable result after
+HTTP handoff is a typed uncertain outcome carrying the full signed grant, not
+an automatic retry.
 
 ### `personserver`
 
@@ -363,7 +372,7 @@ artifact.
 The target owns Resource metadata/JWKS, the five access modes, Resource-local
 sessions, authorization endpoints, Resource-token issuance, requirements,
 protected calls, revocation, held invocations, R3 document/proposal/result
-state, Events registration/delivery, and Budget reservations.
+state, Events registration/delivery, and Budget accounting.
 
 Each current Resource server enforces its configured runtime access mode.
 Parsed operation hints support Agent-side preparation only; they do not select
@@ -419,7 +428,7 @@ Examples include:
   result keyed by the verified identity and delegation JTI.
 - `PersonTokenStore`, `MissionStore`, and `PendingAuthorizationStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
-  `R3ProposalStore`, `SubscriptionStore`, and `BudgetLedger` at a Resource.
+  `R3ProposalStore`, `SubscriptionStore`, and `BudgetStore` at a Resource.
 - `r3.IssuanceStore` at whichever PS or AS issues the R3 Auth token.
 - `EventInbox` at an AP.
 

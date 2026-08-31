@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -84,6 +85,9 @@ type PSAuthorizationConfig struct {
 	// R3 optionally enables registered class authorization on this HTTP
 	// Resource. Per-call authorization remains a federated-only composition.
 	R3 *R3Config
+	// Budget optionally enables proactive Budget offers and fixed-price
+	// enforcement for metered protected routes.
+	Budget *BudgetConfig
 	// AuthTokenStatuses enables observation and revocation of accepted auth
 	// tokens. A nil store omits the revocation endpoint.
 	AuthTokenStatuses AuthTokenStatusStore
@@ -252,6 +256,7 @@ type Server struct {
 	maxRetainedResponseBodyBytes  int64
 	maxRetainedHeaderBytes        int64
 	r3                            *r3Config
+	budget                        *budgetConfig
 	handler                       http.Handler
 }
 
@@ -337,7 +342,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if err := aauth.ValidateServerIdentifier(config.AccessServer); err != nil {
 		return nil, fmt.Errorf("aauth: resource access server: %w", err)
 	}
-	return newAuthorizationServer(config, authorizationTopologyFederated, nil)
+	return newAuthorizationServer(config, authorizationTopologyFederated, nil, nil)
 }
 
 // NewPSAuthorization constructs a Resource that challenges person-token
@@ -354,13 +359,14 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
 		Protected: config.Protected,
 		R3:        config.R3,
-	}, authorizationTopologyPersonServer, config.AuthTokenStatuses)
+	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
 }
 
 func newAuthorizationServer(
 	config FederatedAuthorizationConfig,
 	topology authorizationTopology,
 	authTokenStatuses AuthTokenStatusStore,
+	budget *BudgetConfig,
 ) (*Server, error) {
 	if err := aauth.ValidateServerIdentifier(config.Issuer); err != nil {
 		return nil, fmt.Errorf("aauth: resource issuer: %w", err)
@@ -401,6 +407,10 @@ func newAuthorizationServer(
 	}
 	if validatedR3 != nil && topology == authorizationTopologyPersonServer && validatedR3.perCall != nil {
 		return nil, errors.New("aauth: Resource R3 per-call authorization requires federated authorization")
+	}
+	validatedBudget, err := validateBudgetConfig(budget, topology)
+	if err != nil {
+		return nil, err
 	}
 	retainsApplication := config.HeldInvocations != nil || validatedR3 != nil && validatedR3.perCall != nil
 	for _, bound := range []struct {
@@ -466,6 +476,7 @@ func newAuthorizationServer(
 		maxRetainedResponseBodyBytes:  config.MaxRetainedResponseBodyBytes,
 		maxRetainedHeaderBytes:        config.MaxRetainedHeaderBytes,
 		r3:                            validatedR3,
+		budget:                        validatedBudget,
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -524,14 +535,15 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 	// authorization endpoint also requires its JSON content-type and digest,
 	// plus these advertised components.
 	writeJSON(response, http.StatusOK, struct {
-		Issuer                        string            `json:"issuer"`
-		JWKSURI                       string            `json:"jwks_uri,omitempty"`
-		AccessMode                    string            `json:"access_mode"`
-		AuthorizationEndpoint         string            `json:"authorization_endpoint,omitempty"`
-		RevocationEndpoint            string            `json:"revocation_endpoint,omitempty"`
-		ScopeDescriptions             map[string]string `json:"scope_descriptions,omitempty"`
-		AdditionalSignatureComponents []string          `json:"additional_signature_components,omitempty"`
-		R3Vocabularies                map[string]string `json:"r3_vocabularies,omitempty"`
+		Issuer                        string                    `json:"issuer"`
+		JWKSURI                       string                    `json:"jwks_uri,omitempty"`
+		AccessMode                    string                    `json:"access_mode"`
+		AuthorizationEndpoint         string                    `json:"authorization_endpoint,omitempty"`
+		RevocationEndpoint            string                    `json:"revocation_endpoint,omitempty"`
+		ScopeDescriptions             map[string]string         `json:"scope_descriptions,omitempty"`
+		AdditionalSignatureComponents []string                  `json:"additional_signature_components,omitempty"`
+		R3Vocabularies                map[string]string         `json:"r3_vocabularies,omitempty"`
+		BudgetUnits                   []budgets.UnitDeclaration `json:"budget_units,omitempty"`
 	}{
 		Issuer:                        server.issuer,
 		JWKSURI:                       resourceJWKSURI(server),
@@ -541,7 +553,15 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		ScopeDescriptions:             cloneScopeDescriptions(server.scopeDescriptions),
 		AdditionalSignatureComponents: append([]string(nil), server.additionalSignatureComponents...),
 		R3Vocabularies:                resourceR3Vocabularies(server),
+		BudgetUnits:                   resourceBudgetUnits(server),
 	})
+}
+
+func resourceBudgetUnits(server *Server) []budgets.UnitDeclaration {
+	if server == nil || server.budget == nil {
+		return nil
+	}
+	return append([]budgets.UnitDeclaration(nil), server.budget.units...)
 }
 
 func resourceR3Vocabularies(server *Server) map[string]string {

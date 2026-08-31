@@ -13,6 +13,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -515,45 +516,57 @@ func (client *Client) verifyResourceTokenContext(
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, err
 	}
+	if err := client.validateResourceTokenContext(claims, resource, person, requestedScopes); err != nil {
+		return aauth.ResourceTokenClaims{}, err
+	}
+	return claims, nil
+}
+
+func (client *Client) validateResourceTokenContext(
+	claims aauth.ResourceTokenClaims,
+	resource string,
+	person aauth.PersonTokenClaims,
+	requestedScopes []string,
+) error {
 	if claims.Interaction != nil {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token interaction requires the deferred flow")
+		return errors.New("resource-token interaction requires the deferred flow")
 	}
 	if claims.Account != nil {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token account is not supported by the immediate flow")
+		return errors.New("resource-token account is not supported by the immediate flow")
 	}
 	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, err
+		return err
 	}
 	if claims.Issuer != resource {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token issuer does not match resource")
+		return errors.New("resource-token issuer does not match resource")
 	}
 	if claims.PersonServer != person.Issuer {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token person server does not match person token")
+		return errors.New("resource-token person server does not match person token")
 	}
 	if claims.Subject != person.Subject {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token subject does not match person token")
+		return errors.New("resource-token subject does not match person token")
 	}
 	if claims.PresentedJTI != person.JTI {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token presented_jti does not match person token")
+		return errors.New("resource-token presented_jti does not match person token")
 	}
 	if claims.AgentJKT != thumbprint {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token agent_jkt does not match signing key")
+		return errors.New("resource-token agent_jkt does not match signing key")
 	}
 	if requestedScopes != nil && !scopeSubset(strings.Fields(claims.Scope), requestedScopes) {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token scope is empty, duplicated, or outside the request")
+		return errors.New("resource-token scope is empty, duplicated, or outside the request")
 	}
 	if claims.MissionS256 != person.MissionS256 || claims.Tenant != person.Tenant {
-		return aauth.ResourceTokenClaims{}, errors.New("resource-token context does not match person token")
+		return errors.New("resource-token context does not match person token")
 	}
 	if claims.IssuedAt < person.IssuedAt || claims.IssuedAt >= person.ExpiresAt ||
 		(person.NotBefore != 0 && claims.IssuedAt < person.NotBefore) {
-		return aauth.ResourceTokenClaims{}, errors.New("resource token was issued outside the person-token validity window")
+		return errors.New("resource token was issued outside the person-token validity window")
 	}
 	if person.MissionS256 != "" && claims.ExpiresAt > person.ExpiresAt {
-		return aauth.ResourceTokenClaims{}, errors.New("resource token outlives the mission-bound person token")
+		return errors.New("resource token outlives the mission-bound person token")
 	}
-	return claims, nil
+	return nil
 }
 
 // PollAuthToken presents one locally verified auth token in one signed GET to
@@ -651,6 +664,16 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	if err != nil {
 		return nil, fail(operation, err)
 	}
+	carriesBudget, err := budgets.TokenCarriesClaims(call.AuthToken)
+	if err != nil {
+		return nil, fail(operation, err)
+	}
+	if carriesR3 && carriesBudget {
+		return nil, fail(operation, errors.New("combined R3 and Budget Auth tokens are not implemented"))
+	}
+	if carriesBudget {
+		return nil, fail(operation, errors.New("Budget Auth tokens require BeginBudgetCall so metering feedback and uncertain outcomes are not discarded"))
+	}
 	var claims aauth.AuthTokenClaims
 	if carriesR3 {
 		if call.UpstreamToken != "" {
@@ -659,27 +682,8 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 		claims, err = client.verifyR3AuthTokenForCall(ctx, call.AuthToken, resource)
 	} else {
 		claims, err = aauth.VerifyAuthToken(ctx, call.AuthToken, client.keyResolver, client.clock)
-		if err == nil && claims.Account != nil {
-			err = errors.New("auth-token account is not supported by the immediate flow")
-		}
-		if err == nil && claims.MissionS256 != "" && call.UpstreamToken != "" {
-			err = errors.New("mission-bound call-chain authorization is not supported")
-		}
 		if err == nil {
-			if acceptErr := client.acceptIssuedPersonServer(
-				ctx, call.UpstreamToken, claims.PersonServer, time.Unix(claims.IssuedAt, 0),
-			); acceptErr != nil {
-				err = fmt.Errorf("auth-token person server: %w", acceptErr)
-			}
-		}
-		if err == nil && claims.ExpiresAt > client.agentClaims.ExpiresAt {
-			err = errors.New("auth-token lifetime exceeds the agent token")
-		}
-		if err == nil && claims.Audience != resource {
-			err = errors.New("auth-token audience does not match request resource")
-		}
-		if err == nil && !claims.Confirmation.JWK.Equal(client.signingKey.PublicJWK()) {
-			err = errors.New("auth-token confirmation key does not match signing key")
+			err = client.validateAuthTokenForDirectCall(ctx, claims, resource, call.UpstreamToken)
 		}
 	}
 	if err != nil {
@@ -728,4 +732,33 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 		}
 	}
 	return response, nil
+}
+
+func (client *Client) validateAuthTokenForDirectCall(
+	ctx context.Context,
+	claims aauth.AuthTokenClaims,
+	resource string,
+	upstreamToken string,
+) error {
+	if claims.Account != nil {
+		return errors.New("auth-token account is not supported by the immediate flow")
+	}
+	if claims.MissionS256 != "" && upstreamToken != "" {
+		return errors.New("mission-bound call-chain authorization is not supported")
+	}
+	if err := client.acceptIssuedPersonServer(
+		ctx, upstreamToken, claims.PersonServer, time.Unix(claims.IssuedAt, 0),
+	); err != nil {
+		return fmt.Errorf("auth-token person server: %w", err)
+	}
+	if claims.ExpiresAt > client.agentClaims.ExpiresAt {
+		return errors.New("auth-token lifetime exceeds the agent token")
+	}
+	if claims.Audience != resource {
+		return errors.New("auth-token audience does not match request resource")
+	}
+	if !claims.Confirmation.JWK.Equal(client.signingKey.PublicJWK()) {
+		return errors.New("auth-token confirmation key does not match signing key")
+	}
+	return nil
 }

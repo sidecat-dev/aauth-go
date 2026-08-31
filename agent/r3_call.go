@@ -225,7 +225,7 @@ func (client *Client) BeginR3Call(ctx context.Context, input R3Call) (R3CallResu
 	if err != nil {
 		return R3CallResult{}, fail(operation, err)
 	}
-	if err := validateR3ResponseOrigin(response, resource); err != nil {
+	if err := validateCallResponseOrigin(response, resource); err != nil {
 		closeResponse(response)
 		return R3CallResult{}, fail(operation, err)
 	}
@@ -302,7 +302,7 @@ func (client *Client) RetryR3Call(ctx context.Context, input R3Retry) (*http.Res
 	if err != nil {
 		return nil, fail(operation, err)
 	}
-	if err := validateR3ResponseOrigin(response, input.Authorization.proposal.resourceClaims.Issuer); err != nil {
+	if err := validateCallResponseOrigin(response, input.Authorization.proposal.resourceClaims.Issuer); err != nil {
 		closeResponse(response)
 		return nil, fail(operation, err)
 	}
@@ -345,7 +345,7 @@ func (client *Client) PollR3Call(ctx context.Context, input R3Poll) (*http.Respo
 	if err != nil {
 		return nil, fail(operation, err)
 	}
-	if err := validateR3ResponseOrigin(response, input.Pending.proposal.resourceClaims.Issuer); err != nil {
+	if err := validateCallResponseOrigin(response, input.Pending.proposal.resourceClaims.Issuer); err != nil {
 		closeResponse(response)
 		return nil, fail(operation, err)
 	}
@@ -537,7 +537,7 @@ func (client *Client) finishR3Response(operation string, response *http.Response
 	return response, nil
 }
 
-func validateR3ResponseOrigin(response *http.Response, resource string) error {
+func validateCallResponseOrigin(response *http.Response, resource string) error {
 	if response == nil {
 		return errors.New("Resource response is required")
 	}

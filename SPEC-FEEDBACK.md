@@ -32,7 +32,7 @@ were read; it is not an implementation or conformance claim.
 | R3 | implementation-reviewed for the shared seven-vocabulary operation model, bounded definition adapters, and current three- and four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, `AAG-F076`, and `AAG-F086`. The seven definition registrations now provide bounded derivation or typed specification-gap refusal. MCP, OpenAPI, and AsyncAPI parse sparse annotations; OData annotation identity remains unresolved. Complete acquisition, general dependency resolution, invocation binding, and independent interop remain evidence-pending. |
 | Events | implementation-reviewed for the public-subscription path | `AAG-F058`, `AAG-F084`, and `AAG-F085` now have executing token, registration, endpoint-resolution, delivery, use-limit, and Agent-correlation evidence. Protected tickets and independent interoperability remain evidence-pending. |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
-| Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
+| Budgets | implementation-reviewed for the direct fixed-price profile | `AAG-F087` through `AAG-F092` record field grammar, first-hop denomination ordering, omission, refusal examples, step-up lineage, and ambiguous-failure accounting questions exposed by executing code. Four-party forwarding, consumption-record policy, variable-cost settlement, streaming/trailers, and usage queries remain evidence-pending. |
 | Interoperability demo profile | source-reviewed against current internal paths | `AAG-F001` remains evidence-pending; no independent implementation has been exercised |
 
 ## Submitted history
@@ -1552,6 +1552,119 @@ rather than only the AS.
 
 **Placement:** Open a focused R3 role-wording issue with the executable direct
 three-party journey as evidence.
+
+### AAG-F087 — `AAuth-Budget` examples are not RFC 9651 Dictionaries
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Budgets, `AAuth-Budget Response Header`.
+
+The field is declared an RFC 9651 Dictionary, but the examples separate
+members with semicolons. Under RFC 9651 those are parameters on one member;
+dictionary members require commas. The implementation follows the declared
+Dictionary model.
+
+**Question:** Should every `AAuth-Budget` example use comma-separated members?
+
+**Placement:** Open a focused Budgets editorial issue.
+
+### AAG-F088 — First-hop denomination selection contradicts numeric narrowing
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Budgets, `The Narrowing Chain`.
+
+The chain first says every stage must not exceed its predecessor and later
+calls the Resource offer the minimum of the Agent request and Resource maximum.
+It also lets the Resource change denomination, says only later issuers preserve
+that denomination, and tells the Agent that its request and grant may be
+incomparable. A numeric no-increase rule has no defined meaning across that
+first denomination change.
+
+**Question:** Is Resource denomination selection an explicit exception to the
+first-hop numeric narrowing and “minimum” language, or what conversion/order
+proves that a cross-denomination offer does not exceed the request?
+
+**Placement:** Open a focused Budgets narrowing issue with the cross-unit
+Resource offer policy as implementation evidence.
+
+### AAG-F089 — Auth-token Budget omission can bypass Person Server narrowing
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Budgets, `PS-to-AS Token Request Extensions`, `Auth Token
+Extensions`, and `The Resource Enforces`.
+
+The PS-to-AS `budget` parameter is optional; omission tells the AS to treat the
+full Resource-token offer as the PS ceiling. Separately, an Auth-token issuer
+may omit `budget` after the Resource token carried one, after which the
+Resource applies its own default. Either omission is fail-open when the PS
+intended to withhold metered authorization.
+
+**Question:** When a Resource token carries Budget, should every successful
+hop carry an explicit equal-or-narrower Budget, with omission meaning no grant
+or refusal at both PS-to-AS and Auth-token issuance?
+
+**Placement:** Open a focused Budgets authorization issue.
+
+### AAG-F090 — The exhausted example charges a refused request
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Budgets, `Budget Exhaustion` and `AAuth-Budget Response
+Header`.
+
+The draft says a refused request must not draw down Budget or enter accounting,
+but the exhausted response example includes a nonzero `cost`, whose definition
+is the cost of the current request.
+
+**Question:** Should the exhausted example omit `cost` and report only
+`remaining=0` plus the optional denomination pair? `required` is defined only
+for `insufficient-budget`.
+
+**Placement:** Add to the Budgets editorial issue.
+
+### AAG-F091 — Core names retained lineage but not its Auth-token lookup binding
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Budgets, `Budget Exhaustion`; AAuth Core, `Resource Token
+Structure`.
+
+Exhaustion requires a fresh Resource token. Core says its `presented_jti`
+comes from the Resource's retained record of the earlier Person token, but the
+protected request presents only an Auth token. That token carries neither the
+earlier Resource-token reference nor `presented_jti`, so it does not select
+one exact retained record when several live tokens share the same person,
+Resource, and proof key.
+
+**Question:** Should Core require a retained mapping from the current Auth
+token `(iss, jti)` to the original Person-token `jti`, or another exact lookup
+binding, so the replacement token's lineage and freshness are not host
+assertions?
+
+**Placement:** Open a focused Core/Budgets step-up issue with the executable
+Resource-side lineage-retention and challenge seams as implementation evidence.
+
+### AAG-F092 — Ambiguous failure has no interoperable maximum-cost input
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Budgets, `Ambiguous Failures` and `The Budget Is a Hard
+Cap`.
+
+After a lost response, the Agent must assume the request cost the maximum the
+Resource would have bounded. The draft also says that maximum comes from an
+application request bound or a Resource default and does not require the
+Resource to publish pricing. A generic Agent therefore cannot independently
+derive or verify the required accounting figure.
+
+**Question:** Should the protocol define how an Agent learns the Resource's
+maximum for ambiguous-failure accounting, or explicitly require the full
+signed grant as the conservative fallback when no interoperable bound exists?
+
+**Placement:** Open a focused Budgets ambiguous-failure issue with the
+full-grant fallback as implementation evidence.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

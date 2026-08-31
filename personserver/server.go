@@ -22,6 +22,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
@@ -95,6 +96,10 @@ type PSAuthorizationConfig struct {
 	// MissionStore.
 	Missions  *MissionConfig
 	Authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	// Budget enables the direct fixed-price companion. The resolver must return
+	// the Resource's trusted current budget_units metadata so the Person Server
+	// independently checks the signed offer before policy.
+	Budget *BudgetConfig
 	// R3 optionally enables immediate direct class-document authorization and
 	// exact issuance retention. Per-call proposals remain federated-only.
 	R3 *DirectR3Config
@@ -113,6 +118,12 @@ type PSAuthorizationConfig struct {
 	Revocation *AuthTokenRevocationConfig
 }
 
+// BudgetConfig supplies the Resource-metadata resolution required before a
+// direct Person Server can accept a Budget offer.
+type BudgetConfig struct {
+	ResolveResourceUnits func(context.Context, string) ([]budgets.UnitDeclaration, error)
+}
+
 // CallChainingConfig maps a verified upstream person to a new directed person
 // and applies the independent downstream authorization policy. It does not
 // enable deferred interaction or Access Server federation.
@@ -126,6 +137,10 @@ type CallChainingConfig struct {
 type AuthorizationDecision struct {
 	Scopes   []string
 	Lifetime time.Duration
+	// Budget is required when AuthorizationRequest.Budget is present and must
+	// be an amount-only narrowing of that Resource-selected offer. It must be
+	// nil when the Resource token carried no Budget.
+	Budget *budgets.Value
 }
 
 // PersonTokenRequest is the verified top-level Agent and requested Resource
@@ -158,14 +173,17 @@ type Person struct {
 // top-level requester whose grant is evaluated; Subagent names the credential
 // recipient when the parent mediates.
 type AuthorizationRequest struct {
-	Agent                    string
-	Subagent                 string
-	Resource                 string
-	Subject                  string
-	Tenant                   string
-	Account                  *string
-	Scopes                   []string
-	Capabilities             []string
+	Agent        string
+	Subagent     string
+	Resource     string
+	Subject      string
+	Tenant       string
+	Account      *string
+	Scopes       []string
+	Capabilities []string
+	// Budget is the verified Resource-token offer. The callback receives an
+	// independent copy and may return only an amount-narrowed value.
+	Budget                   *budgets.Value
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
 	// Mission is nonnil when the retained person-token lineage names an active
@@ -229,6 +247,7 @@ type Server struct {
 	r3                              *r3Config
 	authorizationMode               authorizationMode
 	authorize                       func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	resolveBudgetResourceUnits      func(context.Context, string) ([]budgets.UnitDeclaration, error)
 	bindChainedPerson               func(context.Context, PersonTokenRequest) (Person, error)
 	authorizeChained                func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	requireAuthorizationInteraction func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
@@ -309,6 +328,14 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	if config.Authorize == nil && config.R3 == nil && config.RequireAuthorizationInteraction == nil {
 		return nil, errors.New("personserver: Core, R3, or deferred authorization policy is required")
 	}
+	if config.Budget != nil {
+		if config.Authorize == nil {
+			return nil, errors.New("personserver: Budget requires a direct authorization policy")
+		}
+		if config.Budget.ResolveResourceUnits == nil {
+			return nil, errors.New("personserver: Budget Resource-unit resolver is required")
+		}
+	}
 	if config.CallChaining != nil &&
 		(config.CallChaining.BindPerson == nil || config.CallChaining.Authorize == nil) {
 		return nil, errors.New("personserver: call chaining requires person-binding and authorization policies")
@@ -326,6 +353,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	}
 	server.authorizationMode = authorizationModePersonServer
 	server.authorize = config.Authorize
+	if config.Budget != nil {
+		server.resolveBudgetResourceUnits = config.Budget.ResolveResourceUnits
+	}
 	r3Config, err := newDirectR3Config(config.R3, config.SigningKey, config.Issuer, config.Clock)
 	if err != nil {
 		return nil, err
@@ -681,7 +711,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	resourceToken, r3Context, err := server.verifyResourceTokenForAuthorization(
+	resourceToken, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err != nil {
@@ -715,6 +745,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 			return
 		}
+	}
+	if budgetOffer != nil && (delegated || upstream != nil || resourceToken.MissionS256 != "") {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: direct Budget does not compose with delegation, call chaining, or missions"))
+		return
 	}
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()
 	resourceTokenIssuedAt := time.Unix(resourceToken.IssuedAt, 0).UTC()
@@ -776,6 +810,21 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
 		return
 	}
+	if budgetOffer != nil {
+		if server.resolveBudgetResourceUnits == nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: Budget authorization is not configured"))
+			return
+		}
+		declarations, err := server.resolveBudgetResourceUnits(request.Context(), resourceToken.Issuer)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("resolve Resource Budget metadata: %w", err))
+			return
+		}
+		if err := budgets.ValidateDeclaredValue(declarations, *budgetOffer); err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", fmt.Errorf("resource-token Budget metadata: %w", err))
+			return
+		}
+	}
 	if r3Context != nil {
 		if err := server.fetchR3Artifact(request.Context(), r3Context, resourceToken.Account); err != nil {
 			if isInvalidR3Artifact(err) {
@@ -817,6 +866,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		Account:               cloneAuthorizationAccount(resourceToken.Account),
 		Scopes:                append([]string(nil), scopes...),
 		Capabilities:          append([]string(nil), capabilities...),
+		Budget:                cloneBudgetValue(budgetOffer),
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		Mission:               missionContext,
 	}
@@ -847,6 +897,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 				return
 			}
 			if required {
+				if budgetOffer != nil {
+					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: Budget authorization interaction is not implemented"))
+					return
+				}
 				if authorizationRequest.Mission != nil {
 					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission-bound authorization interaction is not implemented"))
 					return
@@ -1083,6 +1137,11 @@ func (server *Server) issuePSAuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	grantedBudget, err := validateBudgetDecision(authorizationRequest.Budget, decision.Budget)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
 	issuedAt := server.clock.Now().UTC()
 	if missionRecord != nil {
 		current, err := server.recheckActiveMission(request.Context(), *missionRecord, issuedAt)
@@ -1116,7 +1175,12 @@ func (server *Server) issuePSAuthorizationToken(
 		IssuedAt: issuedAt.Unix(), ExpiresAt: expiresAt.Unix(),
 		Scope: strings.Join(grantedScopes, " "), MissionS256: resourceToken.MissionS256, Tenant: resourceToken.Tenant,
 	}
-	compact, err := aauth.MintAuthToken(server.signingKey, claims)
+	var compact string
+	if grantedBudget != nil {
+		compact, err = budgets.MintAuthToken(server.signingKey, claims, *grantedBudget)
+	} else {
+		compact, err = aauth.MintAuthToken(server.signingKey, claims)
+	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -1167,6 +1231,22 @@ func validateAuthorizationDecision(decision AuthorizationDecision, requested []s
 		return nil, errors.New("authorization decision grants an unrequested scope")
 	}
 	return granted, nil
+}
+
+func validateBudgetDecision(offered, granted *budgets.Value) (*budgets.Value, error) {
+	if offered == nil {
+		if granted != nil {
+			return nil, errors.New("authorization decision cannot invent a Budget")
+		}
+		return nil, nil
+	}
+	if granted == nil {
+		return nil, errors.New("authorization decision must preserve the Resource-token Budget")
+	}
+	if err := budgets.ValidateNarrowing(*offered, *granted); err != nil {
+		return nil, fmt.Errorf("authorization decision Budget: %w", err)
+	}
+	return cloneBudgetValue(granted), nil
 }
 
 func relayAccessServerProblem(response http.ResponseWriter, accessResponse *http.Response) bool {
@@ -1425,6 +1505,7 @@ func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationReques
 	request.Account = cloneAuthorizationAccount(request.Account)
 	request.Scopes = append([]string(nil), request.Scopes...)
 	request.Capabilities = append([]string(nil), request.Capabilities...)
+	request.Budget = cloneBudgetValue(request.Budget)
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
 	request.Mission = cloneMissionContext(request.Mission)
@@ -1433,6 +1514,14 @@ func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationReques
 		request.Upstream = &upstream
 	}
 	return request
+}
+
+func cloneBudgetValue(value *budgets.Value) *budgets.Value {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneClaims(claims map[string]json.RawMessage) map[string]json.RawMessage {

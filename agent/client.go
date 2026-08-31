@@ -21,6 +21,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
@@ -145,7 +146,11 @@ type AuthorizeRequest struct {
 	Scopes        []string
 	Account       *string
 	R3Operations  *r3.OperationSet
-	Header        http.Header
+	// Budget requests one denomination. The Resource selects one of its own
+	// declared denominations; later Auth-token issuers may only lower that
+	// selected amount without changing its unit or scale.
+	Budget *budgets.Value
+	Header http.Header
 }
 
 // ExchangeRequest carries one exact resource token and optional request-body
@@ -302,6 +307,12 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if input.PersonToken == "" {
 		return "", fail(operation, errors.New("person token is required"))
 	}
+	if input.Budget != nil && input.R3Operations != nil {
+		return "", fail(operation, errors.New("combined R3 and Budget authorization is not implemented"))
+	}
+	if input.Budget != nil && (input.UpstreamToken != "" || client.agentClaims.ParentAgent != "") {
+		return "", fail(operation, errors.New("delegated or call-chain Budget authorization is not implemented"))
+	}
 	if input.R3Operations != nil {
 		if client.r3 == nil {
 			return "", fail(operation, errors.New("R3 is not configured"))
@@ -336,6 +347,9 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if person.MissionS256 != "" && input.UpstreamToken != "" {
 		return "", fail(operation, errors.New("mission-bound call-chain authorization is not supported"))
 	}
+	if input.Budget != nil && person.MissionS256 != "" {
+		return "", fail(operation, errors.New("mission-bound Budget authorization is not implemented"))
+	}
 	if err := aauth.ValidatePersonTokenContext(person, input.Resource, client.signingKey.PublicJWK()); err != nil {
 		return "", fail(operation, err)
 	}
@@ -345,6 +359,16 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	}
 	if metadata.AuthorizationEndpoint == "" {
 		return "", fail(operation, errors.New("resource metadata authorization_endpoint is required"))
+	}
+	if input.Budget != nil {
+		budgetUnits, err := parseBudgetUnitDeclarations(metadata.BudgetUnits)
+		if err != nil {
+			return "", fail(operation, fmt.Errorf("resource metadata budget_units: %w", err))
+		}
+		if err := validateRequestedBudget(*input.Budget, budgetUnits); err != nil {
+			return "", fail(operation, err)
+		}
+		metadata.parsedBudgetUnits = budgetUnits
 	}
 	if input.R3Operations != nil {
 		uri := input.R3Operations.Vocabulary()
@@ -364,7 +388,11 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		Scope        string           `json:"scope,omitempty"`
 		Account      *string          `json:"account,omitempty"`
 		R3Operations *r3.OperationSet `json:"r3_operations,omitempty"`
-	}{Scope: strings.Join(scopes, " "), Account: input.Account, R3Operations: input.R3Operations})
+		Budget       *budgets.Value   `json:"budget,omitempty"`
+	}{
+		Scope: strings.Join(scopes, " "), Account: input.Account,
+		R3Operations: input.R3Operations, Budget: input.Budget,
+	})
 	if err != nil {
 		return "", fail(operation, err)
 	}
@@ -408,6 +436,24 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		); err != nil {
 			return "", fail(operation, err)
 		}
+	} else if input.Budget != nil {
+		claims, offered, _, err := budgets.VerifyResourceToken(
+			ctx, output.ResourceToken, client.keyResolver, client.clock,
+		)
+		if err != nil {
+			return "", fail(operation, err)
+		}
+		if err := client.validateResourceTokenContext(claims, input.Resource, person, scopes); err != nil {
+			return "", fail(operation, err)
+		}
+		if offered.Unit().Equal(input.Budget.Unit()) {
+			if err := budgets.ValidateNarrowing(*input.Budget, offered); err != nil {
+				return "", fail(operation, fmt.Errorf("resource-token Budget did not narrow the request: %w", err))
+			}
+		}
+		if err := validateOfferedBudget(offered, metadata.parsedBudgetUnits); err != nil {
+			return "", fail(operation, err)
+		}
 	} else if _, err := client.verifyResourceTokenContext(ctx, output.ResourceToken, input.Resource, person, scopes); err != nil {
 		return "", fail(operation, err)
 	}
@@ -429,6 +475,9 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	resourceClaims := verifiedResource.claims
 	if response.StatusCode == http.StatusAccepted && verifiedResource.r3Reference != nil {
 		return "", fail(operation, errors.New("R3 exchange interaction is not implemented"))
+	}
+	if response.StatusCode == http.StatusAccepted && verifiedResource.budget != nil {
+		return "", fail(operation, errors.New("Budget exchange interaction is not implemented"))
 	}
 	if response.StatusCode == http.StatusAccepted && resourceClaims.MissionS256 != "" {
 		if err := validateUnsupportedMissionContinuation(response); err != nil {
@@ -619,6 +668,17 @@ func (client *Client) verifyAuthTokenForResourceBinding(
 	if err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
+	if err := client.validateAuthTokenForResourceBinding(claims, resource, credential); err != nil {
+		return aauth.AuthTokenClaims{}, err
+	}
+	return claims, nil
+}
+
+func (client *Client) validateAuthTokenForResourceBinding(
+	claims aauth.AuthTokenClaims,
+	resource aauth.ResourceTokenClaims,
+	credential personServerCredential,
+) error {
 	// The verified auth token's dwk identifies the issuer role. Equality between
 	// resource-token aud and ps cannot do so because a PS and AS may be
 	// collocated at one origin.
@@ -631,19 +691,19 @@ func (client *Client) verifyAuthTokenForResourceBinding(
 		Subject:           resource.Subject,
 		RequestKey:        credential.requestKey,
 	}); err != nil {
-		return aauth.AuthTokenClaims{}, err
+		return err
 	}
 	if !scopeSubset(strings.Fields(claims.Scope), strings.Fields(resource.Scope)) {
-		return aauth.AuthTokenClaims{}, errors.New("auth-token scope is outside resource token")
+		return errors.New("auth-token scope is outside resource token")
 	}
 	if claims.MissionS256 != resource.MissionS256 || claims.Tenant != resource.Tenant ||
 		!equalStringPointers(claims.Account, resource.Account) {
-		return aauth.AuthTokenClaims{}, errors.New("auth-token context does not match resource token")
+		return errors.New("auth-token context does not match resource token")
 	}
 	if claims.ExpiresAt > credential.expiresAt {
-		return aauth.AuthTokenClaims{}, errors.New("auth-token lifetime exceeds the " + credential.expirySource)
+		return errors.New("auth-token lifetime exceeds the " + credential.expirySource)
 	}
-	return claims, nil
+	return nil
 }
 
 func equalStringPointers(first, second *string) bool {
@@ -673,6 +733,22 @@ type resourceMetadata struct {
 	ScopeDescriptions             map[string]string `json:"scope_descriptions"`
 	AdditionalSignatureComponents []string          `json:"additional_signature_components"`
 	R3Vocabularies                map[string]string `json:"r3_vocabularies"`
+	BudgetUnits                   json.RawMessage   `json:"budget_units"`
+	parsedBudgetUnits             []budgets.UnitDeclaration
+}
+
+func parseBudgetUnitDeclarations(raw json.RawMessage) ([]budgets.UnitDeclaration, error) {
+	if raw == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var declarations []budgets.UnitDeclaration
+	if err := json.Unmarshal(raw, &declarations); err != nil {
+		return nil, err
+	}
+	if err := budgets.ValidateUnitDeclarations(declarations); err != nil {
+		return nil, err
+	}
+	return declarations, nil
 }
 
 func (client *Client) personServerMetadata(ctx context.Context, issuer string) (personServerMetadata, error) {
@@ -706,6 +782,23 @@ func (client *Client) resourceMetadata(ctx context.Context, issuer string) (reso
 		}
 	}
 	return metadata, nil
+}
+
+func validateRequestedBudget(requested budgets.Value, declarations []budgets.UnitDeclaration) error {
+	if _, err := budgets.NewValue(requested.Amount(), requested.Unit()); err != nil {
+		return fmt.Errorf("Budget request: %w", err)
+	}
+	if _, ok := budgets.FindUnitDeclaration(declarations, requested.Unit()); !ok {
+		return errors.New("Budget request denomination is not declared by Resource metadata")
+	}
+	return nil
+}
+
+func validateOfferedBudget(offered budgets.Value, declarations []budgets.UnitDeclaration) error {
+	if err := budgets.ValidateDeclaredValue(declarations, offered); err != nil {
+		return fmt.Errorf("resource-token Budget: %w", err)
+	}
+	return nil
 }
 
 func (client *Client) fetchMetadata(ctx context.Context, endpoint string, destination any) error {

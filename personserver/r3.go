@@ -8,6 +8,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3fetch"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
@@ -180,23 +181,43 @@ func (server *Server) verifyResourceTokenForAuthorization(
 	ctx context.Context,
 	compact string,
 	clock aauth.Clock,
-) (aauth.ResourceTokenClaims, *verifiedR3, error) {
+) (aauth.ResourceTokenClaims, *verifiedR3, *budgets.Value, error) {
 	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, nil, err
+		return aauth.ResourceTokenClaims{}, nil, nil, err
+	}
+	carriesBudget, err := budgets.TokenCarriesClaims(compact)
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, nil, nil, err
+	}
+	if carriesR3 && carriesBudget {
+		return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: Resource token cannot combine R3 and Budget claims")
+	}
+	if carriesBudget {
+		if server.authorizationMode != authorizationModePersonServer {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: Budget resource token requires direct Person Server authorization")
+		}
+		claims, offer, consumed, err := budgets.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
+		if err != nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, err
+		}
+		if len(consumed) != 0 {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: Budget consumption records require retained grant resolution")
+		}
+		return claims, nil, cloneBudgetValue(&offer), nil
 	}
 	if !carriesR3 {
 		claims, err := aauth.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
-		return claims, nil, err
+		return claims, nil, nil, err
 	}
 	if server.r3 == nil {
-		return aauth.ResourceTokenClaims{}, nil, errors.New("personserver: R3 resource token is not supported")
+		return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: R3 resource token is not supported")
 	}
 	claims, reference, err := r3.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, nil, err
+		return aauth.ResourceTokenClaims{}, nil, nil, err
 	}
-	return claims, &verifiedR3{reference: reference}, nil
+	return claims, &verifiedR3{reference: reference}, nil, nil
 }
 
 func (server *Server) fetchR3Artifact(

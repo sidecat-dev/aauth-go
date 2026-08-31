@@ -121,7 +121,7 @@ or serving decision.
 | `AAuth-Requirement` | Name the next protocol requirement and its bounded parameters |
 | `AAuth-Access` / `Authorization: AAuth` | Carry a Resource-owned opaque session, proof-bound by the request signature |
 | `AAuth-Capabilities` | Advertise additive Agent capabilities without making unknown values fatal |
-| `AAuth-Budget` | Report unsigned pacing and accounting information; signed token claims remain authoritative |
+| `AAuth-Budget` | Report unsigned per-response cost, remaining, reservation, or required figures; ignore cached or denomination-conflicting feedback, and keep signed token claims authoritative |
 | Role metadata and JWKS | Discover role endpoints and keys while exact-matching the advertised issuer to the retrieval origin |
 
 Signature-Key defines eight schemes: `hwk`, `jkt-jwt`, `jwks_uri`, `jwks`,
@@ -148,7 +148,7 @@ does not define one global lifecycle or evidence record.
 | R3 per-call proposal and result | Resource | Exact parameters, one approval consumption, one execution, retained replay |
 | Events subscription | Resource and AP | Resource retains route identity; AP retains active inbox state and atomically advances any use limit |
 | Accepted event delivery | AP | Return `202` only after durable acceptance for delivery |
-| Budget reservation and consumption | Resource | Atomically reserve, commit, or release without exceeding the token cap |
+| Fixed-price Budget consumption | Resource | Atomically charge the exact precomputed cost without exceeding the token cap |
 | Person-level budget ceiling | PS | Narrow allocations without disclosing or inventing a cross-Resource grant |
 
 “Retain,” “durably accept,” and “atomically write” appear only where the
@@ -299,13 +299,30 @@ separators.
 
 ### Budgeted access
 
-The Resource declares the denomination and offers a maximum. The PS and,
-where present, AS may only narrow it. The final Auth token is the signed cap.
-The Resource atomically reserves a finite maximum before chargeable work,
-commits or releases it afterward, and reports remaining/cost information.
-Exhaustion never consumes budget. Usage queries are independently signed and
-can return only dimensions previously observed in accepted Auth tokens from
-the calling PS.
+The implemented profile is proactive, direct three-party, fixed-price, and
+non-streaming. The Agent requests one denomination. For a same-denomination
+offer, the Resource may only lower the amount. It may instead select another
+denomination from its own `budget_units`; that establishes the Resource's new
+offer, while its ordering against the Agent request remains unresolved by
+`AAG-F088`. The Person Server then preserves that Resource-selected unit and
+scale and may only lower the amount; its Auth token is the signed cap. After
+all ordinary authorization checks, the Resource atomically charges the exact
+known cost before application dispatch and reports cost and remaining Budget
+as an RFC 9651 Dictionary.
+
+An insufficient or exhausted request consumes nothing. Its `401` carries a
+host-asserted replacement Resource token selected from retained Person-token
+state, the ordinary Core auth-token requirement, and a typed Budget reason.
+The Resource calls `RetainLineage` before releasing the initial Resource token,
+so a host can retain that state without observing the Agent's token flow. The
+libraries verify the replacement's observable context but cannot prove which
+retained record the host selected or its freshness from the presented Auth
+token alone.
+`BeginBudgetCall` verifies and returns that step-up without exchanging or
+retrying it. When a post-send outcome cannot be verified, it carries the full
+signed grant as the only locally proved upper bound. Variable-cost settlement,
+streaming trailers, four-party forwarding, `budget_consumed` policy, usage
+queries, and automatic reauthorization are not part of this profile.
 
 ## Source tensions and implementation choices
 

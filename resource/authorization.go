@@ -10,6 +10,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -41,11 +42,9 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("request member \"account\" is not supported by the immediate Core resource flow"))
 		return
 	}
-	for name, value := range map[string]json.RawMessage{"budget": input.Budget} {
-		if value != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_request", fmt.Errorf("request member %q is not supported by the immediate resource flow", name))
-			return
-		}
+	if input.Budget != nil && server.budget == nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("request member \"budget\" is not supported by the immediate resource flow"))
+		return
 	}
 	var operations *r3.OperationSet
 	if input.R3Operations != nil {
@@ -82,8 +81,26 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 		writeProblem(response, http.StatusBadRequest, "invalid_account", err)
 		return
 	}
+	var budgetOffer *budgets.Value
+	if input.Budget != nil {
+		if operations != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("Budget and R3 authorization are not composable in the fixed-price profile"))
+			return
+		}
+		offer, err := server.budget.offerFor(request.Context(), claims, scopes, input.Budget)
+		if err != nil {
+			var policyFailure *budgetOfferPolicyError
+			if errors.As(err, &policyFailure) {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				return
+			}
+			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
+			return
+		}
+		budgetOffer = &offer
+	}
 	compact, err := server.issueAuthorizationResourceToken(
-		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, account, operations,
+		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, account, operations, budgetOffer,
 	)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -128,10 +145,31 @@ func (server *Server) issueAuthorizationResourceToken(
 	scopes []string,
 	account *string,
 	operations *r3.OperationSet,
+	budgetOffer *budgets.Value,
 ) (string, error) {
 	claims, err := server.resourceTokenClaims(verifiedAt, requestKey, person, scopes, account)
 	if err != nil {
 		return "", err
+	}
+	if budgetOffer != nil {
+		compact, err := budgets.MintResourceToken(server.signingKey, claims, *budgetOffer, nil)
+		if err != nil {
+			return "", err
+		}
+		if err := server.budget.retain(request.Context(), BudgetLineage{
+			ResourceToken: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+			Person:        PersonIdentity{Issuer: claims.PersonServer, Subject: claims.Subject},
+			PersonContext: PersonContext{MissionS256: claims.MissionS256, Tenant: claims.Tenant},
+			PresentedJTI:  claims.PresentedJTI,
+			AgentJKT:      claims.AgentJKT,
+			Scope:         append([]string(nil), scopes...),
+			Offer:         *budgetOffer,
+			IssuedAt:      claims.IssuedAt,
+			ExpiresAt:     claims.ExpiresAt,
+		}); err != nil {
+			return "", fmt.Errorf("retain Resource Budget lineage: %w", err)
+		}
+		return compact, nil
 	}
 	if operations == nil {
 		return aauth.MintResourceToken(server.signingKey, claims)
