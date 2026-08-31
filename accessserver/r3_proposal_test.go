@@ -255,7 +255,7 @@ func TestR3MCPProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 		t.Fatalf("proposal policy context = %#v", evaluated)
 	}
 	records := issuances.recordsCopy()
-	if len(records) != 1 || records[0].ExactAuthToken != output.AuthToken ||
+	if len(records) != 1 ||
 		records[0].AuthTokenReference != (aauth.TokenReference{Issuer: "https://access.example", JTI: "proposal-auth-token-1"}) ||
 		records[0].Resource != "https://resource.example" || records[0].R3Reference != reference ||
 		records[0].Vocabulary != mcp.URI ||

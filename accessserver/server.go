@@ -383,7 +383,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			parentAgent = agentClaims.Subject
 		}
 		if err := server.commitR3Issuance(
-			request.Context(), authToken, claims, resourceClaims, r3Context, auditAgent, parentAgent,
+			request.Context(), claims, resourceClaims, r3Context, auditAgent, parentAgent,
 		); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return

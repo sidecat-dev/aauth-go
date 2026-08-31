@@ -449,7 +449,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 	if ps, as := observations.classCounts(); ps != 1 || as != 1 {
 		t.Fatalf("class PS/AS policy calls = %d/%d, want 1/1", ps, as)
 	}
-	if record, ok := issuances.recordForReference(classReference); !ok || record.ExactAuthToken != classAuthToken {
+	if record, ok := issuances.recordForReference(classReference); !ok || record.AuthTokenReference.JTI == "" {
 		t.Fatalf("class issuance audit = %#v, present=%t", record, ok)
 	}
 
@@ -990,7 +990,7 @@ func requireR3PerCallProposalExchange(
 		t.Fatalf("proposal fetch roles = %v", roles)
 	}
 	audit, ok := issuances.recordForReference(reference)
-	if !ok || audit.ExactAuthToken != compact || audit.R3Reference != reference ||
+	if !ok || audit.R3Reference != reference ||
 		audit.Resource != "https://resource.example" || audit.PersonServer != "https://ps.example" ||
 		audit.Subject != "person-123" || audit.Account == nil || *audit.Account != wantAccount ||
 		audit.PresentedJTI != wantPresentedJTI || audit.AgentJKT == "" ||
@@ -1156,7 +1156,7 @@ func r3PerCallAuditBeforeReleaseHandler(next http.Handler, store *r3PerCallIssua
 
 type r3PerCallIssuanceStore struct {
 	mu                sync.Mutex
-	records           []accessserver.R3IssuanceRecord
+	records           []r3.IssuanceRecord
 	releaseViolations int
 }
 
@@ -1164,7 +1164,7 @@ func newR3PerCallIssuanceStore() *r3PerCallIssuanceStore {
 	return &r3PerCallIssuanceStore{}
 }
 
-func (store *r3PerCallIssuanceStore) Commit(_ context.Context, record accessserver.R3IssuanceRecord) error {
+func (store *r3PerCallIssuanceStore) Commit(_ context.Context, record r3.IssuanceRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	record = cloneIntegrationR3Issuance(record)
@@ -1173,7 +1173,7 @@ func (store *r3PerCallIssuanceStore) Commit(_ context.Context, record accessserv
 			continue
 		}
 		if !reflect.DeepEqual(retained, record) {
-			return accessserver.ErrR3IssuanceConflict
+			return r3.ErrIssuanceConflict
 		}
 		return nil
 	}
@@ -1187,7 +1187,7 @@ func (store *r3PerCallIssuanceStore) count() int {
 	return len(store.records)
 }
 
-func (store *r3PerCallIssuanceStore) recordForReference(reference r3.Reference) (accessserver.R3IssuanceRecord, bool) {
+func (store *r3PerCallIssuanceStore) recordForReference(reference r3.Reference) (r3.IssuanceRecord, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	for _, record := range store.records {
@@ -1195,7 +1195,7 @@ func (store *r3PerCallIssuanceStore) recordForReference(reference r3.Reference) 
 			return cloneIntegrationR3Issuance(record), true
 		}
 	}
-	return accessserver.R3IssuanceRecord{}, false
+	return r3.IssuanceRecord{}, false
 }
 
 func (store *r3PerCallIssuanceStore) recordReleaseViolation() {
@@ -1210,7 +1210,7 @@ func (store *r3PerCallIssuanceStore) releaseViolationCount() int {
 	return store.releaseViolations
 }
 
-var _ accessserver.R3IssuanceStore = (*r3PerCallIssuanceStore)(nil)
+var _ r3.IssuanceStore = (*r3PerCallIssuanceStore)(nil)
 
 type r3PerCallProposalStore struct {
 	mu       sync.Mutex

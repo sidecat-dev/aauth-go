@@ -249,6 +249,281 @@ func TestR3ResourceMetadataAdvertisesVocabularyAndValidatesConfiguration(t *test
 	}
 }
 
+func TestPSAuthorizationWithoutR3RemainsCoreOnly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	personKey := testSigningKey(t, "PS-core-only-person", 151)
+	resourceKey := testSigningKey(t, "PS-core-only-resource", 152)
+	agentKey := testSigningKey(t, "PS-core-only-agent", 153)
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: personIssuer, DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personKey.ID()}:       personKey.PublicJWK(),
+		{Issuer: resourceIssuer, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+	}
+	server, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: resourceIssuer, SigningKey: resourceKey, KeyResolver: resolver, Clock: clock,
+		NewID:             func() string { return "PS-core-only-resource-token" },
+		ScopeDescriptions: map[string]string{"records.read": "Read records"},
+		RequiredScopes:    func(*http.Request) []string { return []string{"records.read"} },
+		ResolvePerson:     func(context.Context, PersonIdentity, PersonContext) error { return nil },
+		Protected:         http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metadataResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		metadataResponse,
+		httptest.NewRequest(http.MethodGet, resourceIssuer+"/.well-known/aauth-resource.json", nil),
+	)
+	var metadata map[string]json.RawMessage
+	if metadataResponse.Code != http.StatusOK || json.Unmarshal(metadataResponse.Body.Bytes(), &metadata) != nil {
+		t.Fatalf("Core-only metadata = %d %s", metadataResponse.Code, metadataResponse.Body.String())
+	}
+	if _, present := metadata["r3_vocabularies"]; present {
+		t.Fatalf("Core-only metadata advertised R3: %s", metadataResponse.Body.String())
+	}
+
+	personToken := mintPersonToken(t, personKey, agentKey.PublicJWK(), now, resourceIssuer, "PS-core-only-person-token")
+	coreResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		coreResponse,
+		signedRequest(
+			t, clock, agentKey, personToken, http.MethodPost, resourceIssuer+"/authorize",
+			`{"scope":"records.read"}`,
+		),
+	)
+	var authorization struct {
+		ResourceToken string `json:"resource_token"`
+	}
+	if coreResponse.Code != http.StatusOK || json.Unmarshal(coreResponse.Body.Bytes(), &authorization) != nil || authorization.ResourceToken == "" {
+		t.Fatalf("Core-only authorization = %d %s", coreResponse.Code, coreResponse.Body.String())
+	}
+	claims, err := aauth.VerifyResourceToken(context.Background(), authorization.ResourceToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Audience != personIssuer || claims.Scope != "records.read" || len(claims.AdditionalClaims) != 0 {
+		t.Fatalf("Core-only Resource token = %#v", claims)
+	}
+
+	r3Response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		r3Response,
+		signedRequest(
+			t, clock, agentKey, personToken, http.MethodPost, resourceIssuer+"/authorize",
+			`{"r3_operations":{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}}`,
+		),
+	)
+	if r3Response.Code != http.StatusBadRequest || !strings.Contains(r3Response.Body.String(), `"error":"invalid_request"`) {
+		t.Fatalf("Core-only R3 request = %d %s", r3Response.Code, r3Response.Body.String())
+	}
+}
+
+func TestPSAuthorizationAcceptsClassR3AndEnforcesPersonServerGrant(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 12, 30, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	personKey := testSigningKey(t, "PS-class-R3-person", 154)
+	resourceKey := testSigningKey(t, "PS-class-R3-resource", 155)
+	agentKey := testSigningKey(t, "PS-class-R3-agent", 156)
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: personIssuer, DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personKey.ID()}:       personKey.PublicJWK(),
+		{Issuer: resourceIssuer, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+	}
+	documents := &r3TestDocumentStore{}
+	classR3 := newResourceMCPConfig(
+		t,
+		documents,
+		[]string{"records.read", "records.export"},
+		func(request *http.Request) (string, bool, error) {
+			switch request.URL.Path {
+			case "/records":
+				return "records.read", true, nil
+			case "/exports":
+				return "records.export", true, nil
+			default:
+				return "", false, nil
+			}
+		},
+	)
+	registry := classR3.Registry
+	resolveCalls := 0
+	protectedCalls := 0
+	server, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: resourceIssuer, SigningKey: resourceKey, KeyResolver: resolver, Clock: clock,
+		NewID:             func() string { return "PS-class-R3-resource-token" },
+		ScopeDescriptions: map[string]string{"records.read": "Read records"},
+		RequiredScopes:    func(*http.Request) []string { return []string{"records.read"} },
+		ResolvePerson: func(_ context.Context, identity PersonIdentity, personContext PersonContext) error {
+			resolveCalls++
+			if identity != (PersonIdentity{Issuer: personIssuer, Subject: "person-1"}) || personContext.Tenant != "tenant-1" {
+				return errors.New("unexpected PS-class R3 person context")
+			}
+			return nil
+		},
+		Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			protectedCalls++
+			response.WriteHeader(http.StatusNoContent)
+		}),
+		R3: classR3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metadataResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		metadataResponse,
+		httptest.NewRequest(http.MethodGet, resourceIssuer+"/.well-known/aauth-resource.json", nil),
+	)
+	var metadata struct {
+		R3Vocabularies map[string]string `json:"r3_vocabularies"`
+	}
+	if metadataResponse.Code != http.StatusOK || json.Unmarshal(metadataResponse.Body.Bytes(), &metadata) != nil ||
+		metadata.R3Vocabularies[string(mcp.URI)] != "https://resource.example/mcp" {
+		t.Fatalf("PS-class R3 metadata = %d %s", metadataResponse.Code, metadataResponse.Body.String())
+	}
+
+	personToken := mintPersonToken(t, personKey, agentKey.PublicJWK(), now, resourceIssuer, "PS-class-R3-person-token")
+	authorizeResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		authorizeResponse,
+		signedRequest(
+			t, clock, agentKey, personToken, http.MethodPost, resourceIssuer+"/authorize",
+			`{"scope":"records.read","r3_operations":{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}}`,
+		),
+	)
+	var authorization struct {
+		ResourceToken string `json:"resource_token"`
+	}
+	if authorizeResponse.Code != http.StatusOK || json.Unmarshal(authorizeResponse.Body.Bytes(), &authorization) != nil || authorization.ResourceToken == "" {
+		t.Fatalf("PS-class R3 authorization = %d %s", authorizeResponse.Code, authorizeResponse.Body.String())
+	}
+	resourceClaims, reference, err := r3.VerifyResourceToken(
+		context.Background(), authorization.ResourceToken, resolver, clock,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resourceClaims.Audience != personIssuer || resourceClaims.PersonServer != personIssuer || resourceClaims.Scope != "records.read" {
+		t.Fatalf("PS-class R3 Resource token = %#v", resourceClaims)
+	}
+	record, err := documents.Load(context.Background(), reference.URI())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.PersonServer != personIssuer || record.AuthTokenIssuer != personIssuer ||
+		record.AuthTokenIssuerDocument != aauth.PersonDiscoveryDocument ||
+		record.ClassContext.ResourceToken.JTI != resourceClaims.JTI || r3.Digest(record.ExactJSON) != reference.Digest() {
+		t.Fatalf("PS-class R3 retained document = %#v", record)
+	}
+	document, err := registry.ParseReferencedDocument(reference, record.ExactJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOperations := newResourceMCPOperationSet(t, "records.read")
+	equal, err := document.OperationSet().Equal(wantOperations)
+	if err != nil || !equal {
+		t.Fatalf("PS-class R3 document operations = %#v, %v", document.OperationSet().Operations(), err)
+	}
+
+	fetchRequest := httptest.NewRequest(http.MethodGet, reference.URI(), nil)
+	if err := signaturekey.SignJWKSURIRequest(
+		fetchRequest, personKey, personIssuer, aauth.PersonDiscoveryDocument, clock,
+	); err != nil {
+		t.Fatal(err)
+	}
+	fetchResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(fetchResponse, fetchRequest)
+	if fetchResponse.Code != http.StatusOK || !bytes.Equal(fetchResponse.Body.Bytes(), record.ExactJSON) {
+		t.Fatalf("PS-class R3 document fetch = %d %s", fetchResponse.Code, fetchResponse.Body.String())
+	}
+
+	read := newResourceMCPOperation(t, "records.read")
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := r3.NewGrant(granted, document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authToken, err := r3.MintDirectAuthToken(registry, personKey, aauth.AuthTokenClaims{
+		Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument,
+		Audience: resourceIssuer, JTI: "PS-class-R3-auth-token",
+		PersonServer: personIssuer, Subject: "person-1", Scope: "records.read", Tenant: "tenant-1",
+		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+		IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}, reference, record.ExactJSON, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadsBeforeProtectedUse := documents.loadCount()
+	readResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		readResponse,
+		signedRequest(t, clock, agentKey, authToken, http.MethodGet, resourceIssuer+"/records", ""),
+	)
+	if readResponse.Code != http.StatusNoContent || resolveCalls != 1 || protectedCalls != 1 {
+		t.Fatalf(
+			"PS-class R3 granted use = %d %s; resolve=%d protected=%d",
+			readResponse.Code, readResponse.Body.String(), resolveCalls, protectedCalls,
+		)
+	}
+	exportResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		exportResponse,
+		signedRequest(t, clock, agentKey, authToken, http.MethodGet, resourceIssuer+"/exports", ""),
+	)
+	if exportResponse.Code != http.StatusForbidden || resolveCalls != 1 || protectedCalls != 1 {
+		t.Fatalf(
+			"PS-class R3 ungranted use = %d %s; resolve=%d protected=%d",
+			exportResponse.Code, exportResponse.Body.String(), resolveCalls, protectedCalls,
+		)
+	}
+	if documents.loadCount() != loadsBeforeProtectedUse {
+		t.Fatalf("PS-class R3 protected use loaded the document store")
+	}
+}
+
+func TestPSAuthorizationRejectsPerCallR3Configuration(t *testing.T) {
+	t.Parallel()
+
+	classR3 := newResourceMCPConfig(
+		t,
+		&r3TestDocumentStore{},
+		[]string{"records.delete"},
+		func(*http.Request) (string, bool, error) { return "records.delete", true, nil },
+	)
+	classR3.HTTP.PresentParameters = func(*http.Request, r3.Operation) (map[string]r3.PresentedParameter, error) {
+		return nil, nil
+	}
+	classR3.PerCall = &R3PerCallConfig{
+		DescribeCall: func(context.Context, r3.Invocation, *string) (R3CallDescription, error) {
+			return R3CallDescription{}, nil
+		},
+		Proposals: &r3ProposalTestStore{},
+		Retries:   &r3RetryTestStore{},
+	}
+	_, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: resourceIssuer, SigningKey: testSigningKey(t, "PS-per-call-resource", 157),
+		KeyResolver: signaturekey.StaticKeyResolver{}, Clock: aauth.SystemClock{},
+		NewID:             func() string { return "PS-per-call-resource-token" },
+		ScopeDescriptions: map[string]string{"records.read": "Read records"},
+		RequiredScopes:    func(*http.Request) []string { return []string{"records.read"} },
+		ResolvePerson:     func(context.Context, PersonIdentity, PersonContext) error { return nil },
+		Protected:         http.NotFoundHandler(),
+		R3:                classR3,
+	})
+	if err == nil || !strings.Contains(err.Error(), "per-call") || !strings.Contains(err.Error(), "federated") {
+		t.Fatalf("PS per-call R3 configuration error = %v", err)
+	}
+}
+
 func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testing.T) {
 	t.Parallel()
 
@@ -367,7 +642,8 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			if record.Reference != reference || record.PersonServer != personIssuer || record.AccessServer != accessIssuer ||
+			if record.Reference != reference || record.PersonServer != personIssuer || record.AuthTokenIssuer != accessIssuer ||
+				record.AuthTokenIssuerDocument != aauth.AccessDiscoveryDocument ||
 				record.ClassContext.ResourceToken.JTI != claims.JTI ||
 				record.ClassContext.ResourceToken.PresentedJTI != claims.PresentedJTI ||
 				r3.Digest(record.ExactJSON) != reference.Digest() {
@@ -751,7 +1027,7 @@ func TestMCPDirectDocumentFetchAllowsOnlyEntitledSignedPersonAndAccessServers(t 
 		{
 			name: "Access Server entitlement", document: aauth.AccessDiscoveryDocument,
 			originalKey: accessKey, originalIssuer: accessIssuer,
-			corruptEntitlement: func(record *R3DocumentRecord) { record.AccessServer = otherIssuer },
+			corruptEntitlement: func(record *R3DocumentRecord) { record.AuthTokenIssuer = otherIssuer },
 		},
 	} {
 		t.Run("corrupt retained "+corruption.name, func(t *testing.T) {
@@ -825,8 +1101,9 @@ func TestMCPDirectDocumentFetchDistinguishesCollocatedServerRoles(t *testing.T) 
 	store := &r3TestDocumentStore{}
 	if err := store.Commit(context.Background(), R3DocumentRecord{
 		Reference: reference, ExactJSON: exactDocument,
-		PersonServer: collocatedIssuer, AccessServer: collocatedIssuer,
-		ClassContext: r3TestClassContext(resourceIssuer, collocatedIssuer, collocatedIssuer, "collocated-resource-token", "person-token"),
+		PersonServer: collocatedIssuer, AuthTokenIssuer: collocatedIssuer,
+		AuthTokenIssuerDocument: aauth.AccessDiscoveryDocument,
+		ClassContext:            r3TestClassContext(resourceIssuer, collocatedIssuer, collocatedIssuer, "collocated-resource-token", "person-token"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1189,8 +1466,20 @@ func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *test
 	)
 	record := R3DocumentRecord{
 		Reference: reference, ExactJSON: exactDocument,
-		PersonServer: personIssuer, AccessServer: accessIssuer,
-		ClassContext: r3TestClassContext(resourceIssuer, personIssuer, accessIssuer, "class-resource-token", "person-token"),
+		PersonServer: personIssuer, AuthTokenIssuer: accessIssuer,
+		AuthTokenIssuerDocument: aauth.AccessDiscoveryDocument,
+		ClassContext:            r3TestClassContext(resourceIssuer, personIssuer, accessIssuer, "class-resource-token", "person-token"),
+	}
+	account := "account-1"
+	record.ClassContext.ResourceToken.Account = &account
+	record.ClassContext.ResourceToken.Interaction = &aauth.ResourceInteraction{URL: resourceIssuer + "/interact", Code: "code-1"}
+	record.ClassContext.ResourceToken.AdditionalClaims = map[string]json.RawMessage{"urn:example:claim": json.RawMessage(`{"value":1}`)}
+	emptyMapRecord := record
+	emptyMapRecord.ClassContext.ResourceToken.AdditionalClaims = make(map[string]json.RawMessage)
+	emptyMapClone := emptyMapRecord.Clone()
+	emptyMapRecord.ClassContext.ResourceToken.AdditionalClaims["urn:example:later"] = json.RawMessage(`true`)
+	if len(emptyMapClone.ClassContext.ResourceToken.AdditionalClaims) != 0 {
+		t.Fatal("clone aliases an initially empty additional-claims map")
 	}
 	store := &r3TestDocumentStore{}
 	input := cloneR3TestRecord(record)
@@ -1198,6 +1487,9 @@ func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *test
 		t.Fatal(err)
 	}
 	input.ExactJSON[0] ^= 0xff
+	*input.ClassContext.ResourceToken.Account = "mutated-account"
+	input.ClassContext.ResourceToken.Interaction.Code = "mutated-code"
+	input.ClassContext.ResourceToken.AdditionalClaims["urn:example:claim"][0] ^= 0xff
 	loaded, err := store.Load(context.Background(), reference.URI())
 	if err != nil {
 		t.Fatal(err)
@@ -1206,6 +1498,9 @@ func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *test
 		t.Fatalf("caller mutation changed retained record: %#v", loaded)
 	}
 	loaded.ExactJSON[0] ^= 0xff
+	*loaded.ClassContext.ResourceToken.Account = "mutated-loaded-account"
+	loaded.ClassContext.ResourceToken.Interaction.Code = "mutated-loaded-code"
+	loaded.ClassContext.ResourceToken.AdditionalClaims["urn:example:claim"][0] ^= 0xff
 	loadedAgain, err := store.Load(context.Background(), reference.URI())
 	if err != nil {
 		t.Fatal(err)
@@ -1222,10 +1517,10 @@ func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *test
 
 	differentReference, _ := r3.NewReference(reference.URI(), r3.Digest([]byte(`{"vocabulary":"different","operations":[]}`)))
 	conflicts := []R3DocumentRecord{
-		{Reference: reference, ExactJSON: append(append([]byte(nil), exactDocument...), ' '), PersonServer: personIssuer, AccessServer: accessIssuer, ClassContext: record.ClassContext},
-		{Reference: differentReference, ExactJSON: exactDocument, PersonServer: personIssuer, AccessServer: accessIssuer, ClassContext: record.ClassContext},
-		{Reference: reference, ExactJSON: exactDocument, PersonServer: "https://other-person.example", AccessServer: accessIssuer, ClassContext: record.ClassContext},
-		{Reference: reference, ExactJSON: exactDocument, PersonServer: personIssuer, AccessServer: "https://other-access.example", ClassContext: record.ClassContext},
+		{Reference: reference, ExactJSON: append(append([]byte(nil), exactDocument...), ' '), PersonServer: personIssuer, AuthTokenIssuer: accessIssuer, AuthTokenIssuerDocument: aauth.AccessDiscoveryDocument, ClassContext: record.ClassContext},
+		{Reference: differentReference, ExactJSON: exactDocument, PersonServer: personIssuer, AuthTokenIssuer: accessIssuer, AuthTokenIssuerDocument: aauth.AccessDiscoveryDocument, ClassContext: record.ClassContext},
+		{Reference: reference, ExactJSON: exactDocument, PersonServer: "https://other-person.example", AuthTokenIssuer: accessIssuer, AuthTokenIssuerDocument: aauth.AccessDiscoveryDocument, ClassContext: record.ClassContext},
+		{Reference: reference, ExactJSON: exactDocument, PersonServer: personIssuer, AuthTokenIssuer: "https://other-access.example", AuthTokenIssuerDocument: aauth.AccessDiscoveryDocument, ClassContext: record.ClassContext},
 	}
 	changedJTI := cloneR3TestRecord(record)
 	changedJTI.ClassContext.ResourceToken.JTI = "different-resource-token"
@@ -1233,6 +1528,9 @@ func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *test
 	changedPresented := cloneR3TestRecord(record)
 	changedPresented.ClassContext.ResourceToken.PresentedJTI = "different-person-token"
 	conflicts = append(conflicts, changedPresented)
+	changedIssuerRole := cloneR3TestRecord(record)
+	changedIssuerRole.AuthTokenIssuerDocument = aauth.PersonDiscoveryDocument
+	conflicts = append(conflicts, changedIssuerRole)
 	for index, conflicting := range conflicts {
 		if err := store.Commit(context.Background(), conflicting); !errors.Is(err, ErrR3DocumentConflict) {
 			t.Fatalf("conflict %d = %v", index, err)
@@ -1425,16 +1723,14 @@ func (store *r3TestDocumentStore) mutate(uri string, change func(*R3DocumentReco
 }
 
 func cloneR3TestRecord(record R3DocumentRecord) R3DocumentRecord {
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	record.ClassContext.ResourceToken.Account = cloneAuthorizationAccount(record.ClassContext.ResourceToken.Account)
-	record.ClassContext.ResourceToken.AdditionalClaims = cloneAdditionalClaims(record.ClassContext.ResourceToken.AdditionalClaims)
-	return record
+	return record.Clone()
 }
 
 func equalR3TestRecords(first, second R3DocumentRecord) bool {
 	return first.Reference == second.Reference &&
 		first.PersonServer == second.PersonServer &&
-		first.AccessServer == second.AccessServer &&
+		first.AuthTokenIssuer == second.AuthTokenIssuer &&
+		first.AuthTokenIssuerDocument == second.AuthTokenIssuerDocument &&
 		reflect.DeepEqual(first.ClassContext, second.ClassContext) &&
 		bytes.Equal(first.ExactJSON, second.ExactJSON)
 }

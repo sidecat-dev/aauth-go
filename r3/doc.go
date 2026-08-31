@@ -13,7 +13,8 @@
 // digest input. The snapshot retains no source bytes, parser AST, transport,
 // policy, or lifecycle state.
 //
-// This package does not fetch definitions, decide policy, retain artifacts,
-// execute calls, or write issuance audits. The participating role packages
-// own those effects.
+// This package defines the narrow issuance-audit record and store contract
+// shared by token issuers. It does not implement persistence, fetch definitions,
+// decide policy, retain artifacts, execute calls, or write issuance audits. The
+// participating role packages own those effects.
 package r3

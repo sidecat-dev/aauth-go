@@ -81,6 +81,9 @@ type PSAuthorizationConfig struct {
 	RequiredScopes                func(*http.Request) []string
 	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	Protected                     http.Handler
+	// R3 optionally enables registered class authorization on this HTTP
+	// Resource. Per-call authorization remains a federated-only composition.
+	R3 *R3Config
 	// AuthTokenStatuses enables observation and revocation of accepted auth
 	// tokens. A nil store omits the revocation endpoint.
 	AuthTokenStatuses AuthTokenStatusStore
@@ -339,7 +342,8 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 
 // NewPSAuthorization constructs a Resource that challenges person-token
 // requests, issues each resource token to the Person Server that issued the
-// presented person token, and accepts scoped auth tokens from that PS.
+// presented person token, and accepts scoped or class-R3 auth tokens from that
+// PS.
 func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	return newAuthorizationServer(FederatedAuthorizationConfig{
 		Issuer: config.Issuer, SigningKey: config.SigningKey,
@@ -349,6 +353,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
 		Protected: config.Protected,
+		R3:        config.R3,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses)
 }
 
@@ -381,7 +386,7 @@ func newAuthorizationServer(
 	if config.MaxSignedBodyBytes < 0 {
 		return nil, errors.New("aauth: resource maximum signed body size must not be negative")
 	}
-	if config.RequiredScopes == nil {
+	if config.RequiredScopes == nil && config.R3 == nil {
 		return nil, errors.New("aauth: resource required-scope policy is required")
 	}
 	if config.ResolvePerson == nil {
@@ -394,8 +399,8 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
-	if validatedR3 != nil && topology != authorizationTopologyFederated {
-		return nil, errors.New("aauth: R3 requires federated authorization")
+	if validatedR3 != nil && topology == authorizationTopologyPersonServer && validatedR3.perCall != nil {
+		return nil, errors.New("aauth: Resource R3 per-call authorization requires federated authorization")
 	}
 	retainsApplication := config.HeldInvocations != nil || validatedR3 != nil && validatedR3.perCall != nil
 	for _, bound := range []struct {
@@ -427,8 +432,12 @@ func newAuthorizationServer(
 		}
 		scopeDescriptions[scope] = description
 	}
-	if len(scopeDescriptions) == 0 {
+	if len(scopeDescriptions) == 0 && validatedR3 == nil {
 		return nil, errors.New("aauth: resource requires at least one scope")
+	}
+	requiredScopes := config.RequiredScopes
+	if requiredScopes == nil {
+		requiredScopes = func(*http.Request) []string { return nil }
 	}
 	additionalComponents, err := validateAdditionalSignatureComponents(config.AdditionalSignatureComponents)
 	if err != nil {
@@ -446,7 +455,7 @@ func newAuthorizationServer(
 		scopeDescriptions:             scopeDescriptions,
 		additionalSignatureComponents: additionalComponents,
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes,
-		requiredScopes:                config.RequiredScopes,
+		requiredScopes:                requiredScopes,
 		resolvePerson:                 config.ResolvePerson,
 		validateAccount:               config.ValidateAccount,
 		protected:                     config.Protected,

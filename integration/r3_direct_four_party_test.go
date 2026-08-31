@@ -1,7 +1,6 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -302,6 +301,10 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 	if err != nil {
 		t.Fatal(err)
 	}
+	authClaims, _, _, err := r3.VerifyDirectAuthToken(ctx, registry, authToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/read", nil)
 	response, err := agent.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken})
 	if err != nil {
@@ -353,7 +356,9 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 		t.Fatalf("calls protected/consent/PS-fetch/AS-fetch/document-load = %d/%d/%d/%d/%d", protectedCalls, consentCalls, personFetches, accessFetches, documents.loadCount())
 	}
 	records := issuances.recordsCopy()
-	if len(records) != 2 || records[0].ExactAuthToken != authToken || records[1].ExactAuthToken != mixedAuthToken {
+	if len(records) != 2 ||
+		records[0].AuthTokenReference != (aauth.TokenReference{Issuer: authClaims.Issuer, JTI: authClaims.JTI}) ||
+		records[1].AuthTokenReference != (aauth.TokenReference{Issuer: mixedClaims.Issuer, JTI: mixedClaims.JTI}) {
 		t.Fatalf("R3 issuance audit = %#v", records)
 	}
 	if err := issuances.Commit(ctx, records[0]); err != nil || len(issuances.recordsCopy()) != 2 {
@@ -361,7 +366,7 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 	}
 	changedIssuance := records[0]
 	changedIssuance.Resource = "https://other-resource.example"
-	if err := issuances.Commit(ctx, changedIssuance); !errors.Is(err, accessserver.ErrR3IssuanceConflict) {
+	if err := issuances.Commit(ctx, changedIssuance); !errors.Is(err, r3.ErrIssuanceConflict) {
 		t.Fatalf("changed issuance repeat = %v", err)
 	}
 }
@@ -379,15 +384,14 @@ func newIntegrationR3DocumentStore() *integrationR3DocumentStore {
 func (store *integrationR3DocumentStore) Commit(_ context.Context, record resource.R3DocumentRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	owned := record.Clone()
 	if existing, ok := store.records[record.Reference.URI()]; ok {
-		if existing.Reference != record.Reference || existing.PersonServer != record.PersonServer ||
-			existing.AccessServer != record.AccessServer || !bytes.Equal(existing.ExactJSON, record.ExactJSON) {
+		if !reflect.DeepEqual(existing, owned) {
 			return resource.ErrR3DocumentConflict
 		}
 		return nil
 	}
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	store.records[record.Reference.URI()] = record
+	store.records[record.Reference.URI()] = owned
 	return nil
 }
 
@@ -399,8 +403,7 @@ func (store *integrationR3DocumentStore) Load(_ context.Context, uri string) (re
 	if !ok {
 		return resource.R3DocumentRecord{}, resource.ErrR3DocumentNotFound
 	}
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	return record, nil
+	return record.Clone(), nil
 }
 
 func (store *integrationR3DocumentStore) loadCount() int {
@@ -411,10 +414,10 @@ func (store *integrationR3DocumentStore) loadCount() int {
 
 type integrationR3IssuanceStore struct {
 	mu      sync.Mutex
-	records []accessserver.R3IssuanceRecord
+	records []r3.IssuanceRecord
 }
 
-func (store *integrationR3IssuanceStore) Commit(_ context.Context, record accessserver.R3IssuanceRecord) error {
+func (store *integrationR3IssuanceStore) Commit(_ context.Context, record r3.IssuanceRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	record = cloneIntegrationR3Issuance(record)
@@ -423,7 +426,7 @@ func (store *integrationR3IssuanceStore) Commit(_ context.Context, record access
 			continue
 		}
 		if !reflect.DeepEqual(retained, record) {
-			return accessserver.ErrR3IssuanceConflict
+			return r3.ErrIssuanceConflict
 		}
 		return nil
 	}
@@ -431,18 +434,17 @@ func (store *integrationR3IssuanceStore) Commit(_ context.Context, record access
 	return nil
 }
 
-func (store *integrationR3IssuanceStore) recordsCopy() []accessserver.R3IssuanceRecord {
+func (store *integrationR3IssuanceStore) recordsCopy() []r3.IssuanceRecord {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	records := make([]accessserver.R3IssuanceRecord, len(store.records))
+	records := make([]r3.IssuanceRecord, len(store.records))
 	for index, record := range store.records {
 		records[index] = cloneIntegrationR3Issuance(record)
 	}
 	return records
 }
 
-func cloneIntegrationR3Issuance(record accessserver.R3IssuanceRecord) accessserver.R3IssuanceRecord {
-	record.ExactAuthToken = strings.Clone(record.ExactAuthToken)
+func cloneIntegrationR3Issuance(record r3.IssuanceRecord) r3.IssuanceRecord {
 	if record.Account != nil {
 		account := *record.Account
 		record.Account = &account

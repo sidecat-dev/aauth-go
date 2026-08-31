@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
@@ -240,15 +238,14 @@ func newExampleR3DocumentStore() *exampleR3DocumentStore {
 func (store *exampleR3DocumentStore) Commit(_ context.Context, record resource.R3DocumentRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	owned := record.Clone()
 	if retained, ok := store.records[record.Reference.URI()]; ok {
-		if retained.Reference != record.Reference || retained.PersonServer != record.PersonServer ||
-			retained.AccessServer != record.AccessServer || !bytes.Equal(retained.ExactJSON, record.ExactJSON) {
+		if !reflect.DeepEqual(retained, owned) {
 			return resource.ErrR3DocumentConflict
 		}
 		return nil
 	}
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	store.records[record.Reference.URI()] = record
+	store.records[record.Reference.URI()] = owned
 	return nil
 }
 
@@ -259,26 +256,25 @@ func (store *exampleR3DocumentStore) Load(_ context.Context, uri string) (resour
 	if !ok {
 		return resource.R3DocumentRecord{}, resource.ErrR3DocumentNotFound
 	}
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	return record, nil
+	return record.Clone(), nil
 }
 
 type exampleR3IssuanceStore struct {
 	mu      sync.Mutex
-	records map[aauth.TokenReference]accessserver.R3IssuanceRecord
+	records map[aauth.TokenReference]r3.IssuanceRecord
 }
 
 func newExampleR3IssuanceStore() *exampleR3IssuanceStore {
-	return &exampleR3IssuanceStore{records: make(map[aauth.TokenReference]accessserver.R3IssuanceRecord)}
+	return &exampleR3IssuanceStore{records: make(map[aauth.TokenReference]r3.IssuanceRecord)}
 }
 
-func (store *exampleR3IssuanceStore) Commit(_ context.Context, record accessserver.R3IssuanceRecord) error {
+func (store *exampleR3IssuanceStore) Commit(_ context.Context, record r3.IssuanceRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	record = cloneExampleR3Issuance(record)
 	if retained, ok := store.records[record.AuthTokenReference]; ok {
 		if !reflect.DeepEqual(retained, record) {
-			return accessserver.ErrR3IssuanceConflict
+			return r3.ErrIssuanceConflict
 		}
 		return nil
 	}
@@ -292,8 +288,7 @@ func (store *exampleR3IssuanceStore) Count() int {
 	return len(store.records)
 }
 
-func cloneExampleR3Issuance(record accessserver.R3IssuanceRecord) accessserver.R3IssuanceRecord {
-	record.ExactAuthToken = strings.Clone(record.ExactAuthToken)
+func cloneExampleR3Issuance(record r3.IssuanceRecord) r3.IssuanceRecord {
 	if record.Account != nil {
 		account := *record.Account
 		record.Account = &account

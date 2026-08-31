@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -15,9 +16,8 @@ var (
 	ErrR3DocumentConflict = errors.New("resource: R3 document conflicts with retained state")
 )
 
-// R3DocumentRecord is one exact Resource-owned document and the two server
-// roles entitled to fetch it. ExactJSON is the byte identity named by
-// Reference; it is not a re-serializable model.
+// R3ClassAuthorizationContext retains the original verified token lineage
+// needed to validate and extend one class authorization.
 type R3ClassAuthorizationContext struct {
 	ExactResourceToken   string
 	ResourceToken        aauth.ResourceTokenClaims
@@ -30,11 +30,38 @@ type R3ClassAuthorizationContext struct {
 // the original verified Person-token lineage needed to form a later per-call
 // Resource token.
 type R3DocumentRecord struct {
-	Reference    r3.Reference
-	ExactJSON    []byte
-	PersonServer string
-	AccessServer string
-	ClassContext R3ClassAuthorizationContext
+	Reference       r3.Reference
+	ExactJSON       []byte
+	PersonServer    string
+	AuthTokenIssuer string
+	// AuthTokenIssuerDocument is aauth-person.json for direct three-party
+	// issuance and aauth-access.json for federated issuance.
+	AuthTokenIssuerDocument string
+	ClassContext            R3ClassAuthorizationContext
+}
+
+// Clone returns an independent copy suitable for crossing an R3DocumentStore
+// boundary.
+func (record R3DocumentRecord) Clone() R3DocumentRecord {
+	cloned := record
+	cloned.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	claims := record.ClassContext.ResourceToken
+	if claims.Account != nil {
+		account := *claims.Account
+		claims.Account = &account
+	}
+	if claims.Interaction != nil {
+		interaction := *claims.Interaction
+		claims.Interaction = &interaction
+	}
+	if claims.AdditionalClaims != nil {
+		claims.AdditionalClaims = make(map[string]json.RawMessage, len(claims.AdditionalClaims))
+		for name, value := range record.ClassContext.ResourceToken.AdditionalClaims {
+			claims.AdditionalClaims[name] = append(json.RawMessage(nil), value...)
+		}
+	}
+	cloned.ClassContext.ResourceToken = claims
+	return cloned
 }
 
 // R3DocumentStore durably and confidentially retains exact R3 bytes before

@@ -144,7 +144,7 @@ does not define one global lifecycle or evidence record.
 | Deferred request | Issuing server | Polling follows the returned same-origin location and terminal status rules |
 | Held invocation and first result | Resource | Execute once; replay the retained result for duplicate valid presentation |
 | R3 document bytes | Resource | Persist exact bytes, serve them at an immutable URI, and use their SHA-256 as identity; changed bytes receive a new URI |
-| R3 issuance audit | AS | Commit the URI/hash and issuance facts atomically with token issuance |
+| R3 issuance audit | Auth-token issuer | Commit the URI/hash and issuance facts atomically with token issuance; the issuer is the PS in three-party or the AS in four-party |
 | R3 per-call proposal and result | Resource | Exact parameters, one approval consumption, one execution, retained replay |
 | Events subscription | Resource and AP | Resource retains route identity; AP retains active inbox state and atomically advances any use limit |
 | Accepted event delivery | AP | Return `202` only after durable acceptance for delivery |
@@ -192,6 +192,14 @@ Three-party authorization removes the AS exchange and has the PS issue the
 Auth token. Agent identity, Person identity, and Resource-managed access are
 narrower compositions of the same proof, discovery, and requirement
 primitives.
+
+For direct three-party R3, the Resource first validates the requested
+operations against its authoritative definition and returns a PS-audience
+Resource token naming the exact retained document. The PS fetches and verifies
+that document, selects a subset through host policy, signs the Auth token, and
+atomically retains its mandatory R3 audit record before returning the token.
+The Resource then enforces `r3_granted` without fetching the document again.
+Per-call R3 remains a four-party path in this implementation.
 
 ### Two-key Agent bootstrap profile
 

@@ -18,10 +18,12 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-// R3Config enables registered R3 authorization on a federated HTTP Resource.
-// Operation, document, token, and proposal semantics remain vocabulary
-// neutral; HTTP is the explicit protected-invocation binding used by Server.
-// Core-only authorization remains available when r3_operations is absent.
+// R3Config enables registered R3 authorization on an HTTP Resource. Class
+// authorization composes with federated or Person-Server authorization;
+// per-call authorization requires the federated composition. Operation,
+// document, token, and proposal semantics remain vocabulary neutral; HTTP is
+// the explicit protected-invocation binding used by Server. Core-only
+// authorization remains available when r3_operations is absent.
 type R3Config struct {
 	// Registry is the immutable allowlist used for every operation-bearing R3
 	// artifact and token claim.
@@ -130,9 +132,14 @@ func (server *Server) issueR3ResourceToken(
 	if err != nil {
 		return "", err
 	}
+	authTokenIssuerDocument := aauth.AccessDiscoveryDocument
+	if server.authorizationTopology == authorizationTopologyPersonServer {
+		authTokenIssuerDocument = aauth.PersonDiscoveryDocument
+	}
 	record := R3DocumentRecord{
 		Reference: reference, ExactJSON: append([]byte(nil), exactJSON...),
-		PersonServer: claims.PersonServer, AccessServer: claims.Audience,
+		PersonServer: claims.PersonServer, AuthTokenIssuer: claims.Audience,
+		AuthTokenIssuerDocument: authTokenIssuerDocument,
 		ClassContext: R3ClassAuthorizationContext{
 			ExactResourceToken:   compact,
 			ResourceToken:        claims,
@@ -165,12 +172,12 @@ func (server *Server) parseR3Operations(raw json.RawMessage) (r3.OperationSet, e
 	return operations, nil
 }
 
-func r3DocumentURI(issuer string, exactJSON []byte, personServer, accessServer, resourceTokenJTI string) string {
-	return r3DocumentURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer, resourceTokenJTI)
+func r3DocumentURI(issuer string, exactJSON []byte, personServer, authTokenIssuer, resourceTokenJTI string) string {
+	return r3DocumentURIFromDigest(issuer, r3.Digest(exactJSON), personServer, authTokenIssuer, resourceTokenJTI)
 }
 
-func r3DocumentURIFromDigest(issuer, documentDigest, personServer, accessServer, resourceTokenJTI string) string {
-	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, accessServer})
+func r3DocumentURIFromDigest(issuer, documentDigest, personServer, authTokenIssuer, resourceTokenJTI string) string {
+	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, authTokenIssuer})
 	entitlementDigest := sha256.Sum256(entitlementJSON)
 	lineageDigest := sha256.Sum256([]byte("aauth-r3-lineage-v1\x00" + resourceTokenJTI))
 	return issuer + "/r3/c." + documentDigest + "." +
@@ -221,7 +228,7 @@ func (server *Server) serveR3Document(response http.ResponseWriter, request *htt
 		return
 	}
 	var exactJSON []byte
-	var personServer, accessServer string
+	var personServer, authTokenIssuer, authTokenIssuerDocument string
 	var validateArtifact func() error
 	switch {
 	case strings.HasPrefix(documentID, "c."):
@@ -234,12 +241,13 @@ func (server *Server) serveR3Document(response http.ResponseWriter, request *htt
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		exactJSON, personServer, accessServer = record.ExactJSON, record.PersonServer, record.AccessServer
+		exactJSON, personServer, authTokenIssuer = record.ExactJSON, record.PersonServer, record.AuthTokenIssuer
+		authTokenIssuerDocument = record.AuthTokenIssuerDocument
 		validateArtifact = func() error {
-			if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AccessServer == "" ||
+			if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AuthTokenIssuer == "" ||
 				!validR3ClassContext(record) ||
 				r3DocumentURIFromDigest(
-					server.issuer, record.Reference.Digest(), record.PersonServer, record.AccessServer,
+					server.issuer, record.Reference.Digest(), record.PersonServer, record.AuthTokenIssuer,
 					record.ClassContext.ResourceToken.JTI,
 				) != exactURI {
 				return errors.New("aauth: retained R3 class context is invalid")
@@ -267,7 +275,8 @@ func (server *Server) serveR3Document(response http.ResponseWriter, request *htt
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		exactJSON, personServer, accessServer = record.ExactJSON, record.PersonServer, record.AccessServer
+		exactJSON, personServer, authTokenIssuer = record.ExactJSON, record.PersonServer, record.AccessServer
+		authTokenIssuerDocument = aauth.AccessDiscoveryDocument
 		validateArtifact = func() error {
 			if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AccessServer == "" ||
 				record.ResourceTokenJTI == "" ||
@@ -285,7 +294,7 @@ func (server *Server) serveR3Document(response http.ResponseWriter, request *htt
 		response.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if !r3FetchEntitled(personServer, accessServer, issuer, discoveryDocument) {
+	if !r3FetchEntitled(personServer, authTokenIssuer, authTokenIssuerDocument, issuer, discoveryDocument) {
 		response.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -311,10 +320,14 @@ func (server *Server) serveR3Document(response http.ResponseWriter, request *htt
 func validR3ClassContext(record R3DocumentRecord) bool {
 	claims := record.ClassContext.ResourceToken
 	if claims.Issuer == "" || claims.JTI == "" || claims.PersonServer != record.PersonServer ||
-		claims.Audience != record.AccessServer || claims.PresentedJTI == "" ||
+		claims.Audience != record.AuthTokenIssuer || claims.PresentedJTI == "" ||
 		claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt ||
 		record.ClassContext.PersonTokenIssuedAt <= 0 ||
 		record.ClassContext.PersonTokenExpiresAt <= record.ClassContext.PersonTokenIssuedAt {
+		return false
+	}
+	if record.AuthTokenIssuerDocument != aauth.PersonDiscoveryDocument &&
+		record.AuthTokenIssuerDocument != aauth.AccessDiscoveryDocument {
 		return false
 	}
 	if record.ClassContext.PersonTokenNotBefore < 0 ||
@@ -324,9 +337,9 @@ func validR3ClassContext(record R3DocumentRecord) bool {
 	return strings.HasPrefix(record.Reference.URI(), claims.Issuer+"/r3/")
 }
 
-func r3FetchEntitled(personServer, accessServer, issuer, discoveryDocument string) bool {
+func r3FetchEntitled(personServer, authTokenIssuer, authTokenIssuerDocument, issuer, discoveryDocument string) bool {
 	return issuer == personServer && discoveryDocument == aauth.PersonDiscoveryDocument ||
-		issuer == accessServer && discoveryDocument == aauth.AccessDiscoveryDocument
+		issuer == authTokenIssuer && discoveryDocument == authTokenIssuerDocument
 }
 
 func (server *Server) verifyPreparedR3AuthRequest(

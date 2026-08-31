@@ -244,10 +244,10 @@ annotations until the draft defines a resolvable term namespace and target.
 An exported parser is not a claim of complete native-format coverage.
 
 It does not fetch documents, decide policy, retain proposals, execute calls,
-or write AS audit records. Network and external dependency acquisition,
-freshness, and parser-resource bounds remain host responsibilities. "Atomic" means one
-internally consistent parse result; it does not mean a durable transaction,
-retained evidence record, or source attestation.
+or write issuance audit records. Network and external dependency acquisition,
+freshness, and parser-resource bounds remain host responsibilities. "Atomic"
+means one internally consistent parse result; it does not mean a durable
+transaction, retained evidence record, or source attestation.
 
 ### `budgets`
 
@@ -348,11 +348,15 @@ Core and companion values in source terminology. Mission approval stores the
 exact approved bytes before returning their digest.
 
 For R3, the Person Server independently fetches the exact Resource artifact
-after local token and person-lineage checks. Separate document and proposal
-consent callbacks receive ordinary Core context plus vocabulary-neutral typed
-values. The Person Server forwards the original compact tokens to the Access
-Server and verifies the returned reference, account, and authorization against
-the same registered vocabulary and exact artifact.
+after local token and person-lineage checks. In direct three-party class
+authorization, one typed policy receives Core context plus the exact document,
+narrows both Core scope and operations, and the PS signs the token after
+atomically retaining its mandatory R3 audit through `r3.IssuanceStore`. In
+four-party authorization, separate document and proposal consent callbacks
+receive their corresponding typed artifacts; the PS forwards the original
+compact tokens to the Access Server and verifies the returned reference,
+account, and authorization against the same registered vocabulary and exact
+artifact.
 
 ### `resource`
 
@@ -378,7 +382,7 @@ class lineage succeeds, extracts presented parameters for a per-call
 invocation. Proposal policy receives that transport-independent invocation.
 Document, proposal, retry, and held stores remain shared across vocabularies.
 Authorization commits the exact class document before exposing its Resource
-token. Direct protected use verifies the AS-signed class grant without an
+token. Direct protected use verifies the PS- or AS-signed class grant without an
 enforcement-time fetch. For a per-call operation, the Resource constructs and
 retains one exact proposal, exposes it to the entitled PS and AS, and returns
 either a baseline `401` retry or Resource-held `202`. The resulting
@@ -394,18 +398,17 @@ work.
 ### `accessserver`
 
 The target owns four-party PS authentication, Resource-token verification,
-policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuance
-boundary commits the token and its URI/hash audit facts together or publishes
-neither.
+policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuer
+commits the mandatory audit record before publishing the token.
 
 The current R3 path independently fetches and verifies the exact Resource
 artifact before policy. Separate class-document and per-call-proposal callbacks
 receive ordinary Core context plus vocabulary-neutral typed values. Class
 policy returns an authorization already proven through the registered codec.
-The Access Server commits the exact compact Auth token, vocabulary URI, and
-mandatory audit facts through `R3IssuanceStore` before responding. A store
-error withholds the token; the handler performs no hidden retry because the
-source defines no stable request replay key.
+The Access Server commits the Auth-token reference, vocabulary URI, and
+mandatory audit facts through the shared `r3.IssuanceStore` before responding.
+A store error withholds the token; the handler performs no hidden retry because
+the source defines no stable request replay key.
 
 ## State interfaces
 
@@ -417,7 +420,7 @@ Examples include:
 - `PersonTokenStore`, `MissionStore`, and `PendingAuthorizationStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
   `R3ProposalStore`, `SubscriptionStore`, and `BudgetLedger` at a Resource.
-- `R3IssuanceStore` at an AS.
+- `r3.IssuanceStore` at whichever PS or AS issues the R3 Auth token.
 - `EventInbox` at an AP.
 
 An interface states only the atomicity, idempotency, lookup, and retention
@@ -436,10 +439,13 @@ permanent audit provenance. `R3RetryStore` and
 `HeldInvocationStore` separately own single-use execution, fencing, uncertain
 retention, and exact-token replay. None is a universal lifecycle store.
 
-`R3IssuanceStore` is another focused boundary. One commit retains the exact
-compact Auth token and its mandatory audit facts. Exact repeats converge and a
+`r3.IssuanceStore` is another focused boundary. One commit retains the
+Auth-token reference and mandatory audit facts. Exact repeats converge and a
 different record at the same token reference conflicts. It has no protocol
 lookup method because immediate R3 defines no caller-visible retry identity.
+When direct R3 also enables revocation, the mandatory R3 audit commits first.
+A later revocation-store error still withholds the token, but may leave an
+audit record for a minted token that was never disclosed.
 
 Every complete journey ships with concurrency-safe in-memory implementations
 for examples and tests. Applications may replace them with durable stores.

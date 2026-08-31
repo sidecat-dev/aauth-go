@@ -225,9 +225,10 @@ func MintPerCallAuthToken(
 
 // VerifyDirectAuthToken verifies Core trust, one complete R3 reference,
 // and a strict r3_granted claim while refusing per-call and Budget claims.
-// A Resource may enforce the trusted AS-signed grant directly without fetching
-// the document. An issuer constructing a token without MintDirectAuthToken
-// must first call ParseReferencedDocument, ValidateDocumentAccount, and NewGrant.
+// The caller must still bind the verified claims, reference, and proof key to
+// one protected request and the Resource's retained context. An issuer
+// constructing a token without MintDirectAuthToken must first call
+// ParseReferencedDocument, ValidateDocumentAccount, and NewGrant.
 func VerifyDirectAuthToken(
 	ctx context.Context,
 	registry Registry,

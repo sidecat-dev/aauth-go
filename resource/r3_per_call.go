@@ -622,9 +622,10 @@ func (server *Server) verifyR3ClassContext(
 	}
 	if reference != record.Reference || !reflect.DeepEqual(claims, record.ClassContext.ResourceToken) ||
 		claims.Issuer != server.issuer || claims.DWK != aauth.ResourceDiscoveryDocument ||
-		claims.PersonServer != record.PersonServer || claims.Audience != record.AccessServer ||
+		claims.PersonServer != record.PersonServer || claims.Audience != record.AuthTokenIssuer ||
+		record.AuthTokenIssuerDocument != aauth.AccessDiscoveryDocument ||
 		r3DocumentURIFromDigest(
-			server.issuer, record.Reference.Digest(), record.PersonServer, record.AccessServer, claims.JTI,
+			server.issuer, record.Reference.Digest(), record.PersonServer, record.AuthTokenIssuer, claims.JTI,
 		) != record.Reference.URI() {
 		return aauth.ResourceTokenClaims{}, errors.New("retained R3 class Resource token does not match its context")
 	}

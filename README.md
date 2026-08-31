@@ -47,6 +47,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
 | [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
+| [Direct three-party R3](example/r3threeparty) | MCP operations narrowed and issued by the Person Server with no Access Server | `go run ./example/r3threeparty` |
 | [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Deferred Person Server consent](example/psconsent) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
 | [Four-party authorization variants](example/fourparty) | Missionless Core, mission lifecycle, and one runnable MCP R3 path with independent consent/policy fetches, a narrowed grant, and atomic issuance audit | `go run ./example/fourparty` |
@@ -57,6 +58,7 @@ stores. The programs are executable documentation, not deployment templates.
 
 The integration suite also exercises
 [mission-bound four-party authorization](integration/mission_four_party_test.go),
+[direct three-party MCP R3 authorization](integration/r3_direct_three_party_test.go),
 [immediate MCP, OpenAPI, and private-codec R3 four-party authorization](integration/r3_direct_four_party_test.go),
 [direct Person identity](integration/direct_identity_access_test.go),
 [Person-token interaction](integration/person_token_interaction_test.go), and
@@ -75,13 +77,13 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `jose` | The focused Ed25519 JWK and compact-JWS profile used here |
 | `signaturekey` | HTTP request proofs, credentials, discovery, and error negotiation |
 | `events` | Subscribe-token and Event-token values, AP metadata, and exact delivery identity |
-| `r3` | Vocabulary-neutral R3 values, registered operation algebra, atomic native-definition parsing, source receipts, advisory hints, and token claims |
+| `r3` | Vocabulary-neutral R3 values, registered operation algebra, atomic native-definition parsing, source receipts, advisory hints, token claims, and the shared issuance-audit contract |
 | `r3/vocab/<name>` | One standard vocabulary's operation grammar, set algebra, and bounded native-definition adapter |
 | `r3/vocab/standard` | Explicit registries for all seven standard operation codecs and definition parsers |
 | `r3/vocabtest` | Reusable operation-codec and native-definition contracts for standard and third-party adapters |
 | `agentprovider` | Agent-token and subscribe-token issuance, metadata/JWKS, and the Events inbox |
 | `agent` | Explicit Core, R3, and Events calls; no hidden polling, browser use, or consequence retry |
-| `personserver` | Person-token issuance, mission lifecycle, direct and R3 consent, interaction, revocation, call-chain policy, and Access Server federation |
+| `personserver` | Person-token issuance, mission lifecycle, direct Core and class-R3 authorization, interaction, revocation, call-chain policy, and Access Server federation |
 | `resource` | Identity, session, authorization, registered R3 documents/enforcement, Events registration/delivery, protected-call, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
@@ -117,8 +119,9 @@ if err := definitions.Validate(snapshot); err != nil {
 ```
 
 Supply that registry and snapshot through `resource.R3Config.Definitions` and
-`R3VocabularyConfig.Definition`. The complete runnable wiring is in
-[`example/fourparty/r3.go`](example/fourparty/r3.go).
+`R3VocabularyConfig.Definition`. See the direct
+[`example/r3threeparty`](example/r3threeparty) or federated
+[`example/fourparty/r3.go`](example/fourparty/r3.go) wiring.
 
 A third-party vocabulary implements two separate interfaces: `r3.Codec` for
 operation grammar and algebra, and `r3.DefinitionCodec` for one deterministic,
@@ -169,6 +172,10 @@ operations, sparse advisory hints, and a receipt over the adapter's exact
 digest input. The parser performs no network or external dependency
 acquisition, policy decision, or retention. Each bounded adapter resolves only
 the internal relationships it needs to derive operation identities.
+
+MCP class authorization runs through both direct three-party PS issuance and
+four-party AS issuance. OpenAPI and the integration-local codec run through
+four-party issuance. Per-call R3 remains four-party-only.
 
 MCP validates complete cursor-linked `tools/list` frames and each Tool's
 object-rooted `inputSchema`. OpenAPI accepts self-contained 3.0 and 3.1 Paths

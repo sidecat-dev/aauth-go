@@ -39,18 +39,64 @@ type R3Config struct {
 	FetchTimeout time.Duration
 }
 
+// DirectR3Config enables immediate class-document R3 authorization on a
+// three-party Person Server. It is separate from federated R3 consent because
+// this Person Server selects the grant, signs the Auth token, and retains the
+// issuance itself. It does not compose with deferred authorization, per-call
+// proposals, missions, sub-agents, or call chaining.
+type DirectR3Config struct {
+	// Registry is the required immutable allowlist used to parse fetched R3
+	// documents and construct operation-bearing Auth-token claims.
+	Registry r3.Registry
+	// HTTPClient is required. The fetcher clones it, disables cookies, refuses
+	// redirects, and leaves the caller's client unchanged.
+	HTTPClient *http.Client
+	// Admit is required and approves the exact document URI before transport.
+	Admit signaturekey.EgressAdmitter
+	// AuthorizeDocument receives verified Core context plus the exact class
+	// document and returns the Core and R3 grant selected by policy.
+	AuthorizeDocument func(
+		context.Context,
+		AuthorizationRequest,
+		r3.Reference,
+		r3.Document,
+	) (DirectR3Decision, error)
+	// Issuances atomically retains the mandatory R3 audit facts before the token
+	// is returned.
+	Issuances r3.IssuanceStore
+	// MaximumDocumentBytes defaults to 1 MiB when zero.
+	MaximumDocumentBytes int64
+	// FetchTimeout defaults to 10 seconds when zero.
+	FetchTimeout time.Duration
+}
+
+// DirectR3Decision selects Core scopes and lifetime plus an R3 grant proven
+// against the exact document passed to AuthorizeDocument.
+type DirectR3Decision struct {
+	Scopes   []string
+	Lifetime time.Duration
+	Grant    r3.Grant
+}
+
 type r3Config struct {
-	registry        r3.Registry
-	artifacts       *r3fetch.Client
-	consentDocument func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) error
-	consentProposal func(context.Context, AuthorizationRequest, r3.Reference, r3.Proposal) error
+	registry          r3.Registry
+	artifacts         *r3fetch.Client
+	consentDocument   func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) error
+	consentProposal   func(context.Context, AuthorizationRequest, r3.Reference, r3.Proposal) error
+	authorizeDocument func(
+		context.Context,
+		AuthorizationRequest,
+		r3.Reference,
+		r3.Document,
+	) (DirectR3Decision, error)
+	issuances r3.IssuanceStore
 }
 
 type verifiedR3 struct {
 	reference     r3.Reference
 	document      r3.Document
 	proposal      r3.Proposal
-	exactProposal []byte
+	exactArtifact []byte
 	kind          r3.ArtifactKind
 }
 
@@ -91,6 +137,42 @@ func newR3Config(
 	return &r3Config{
 		registry: config.Registry, artifacts: artifacts, consentDocument: config.ConsentDocument,
 		consentProposal: config.ConsentProposal,
+	}, nil
+}
+
+func newDirectR3Config(
+	config *DirectR3Config,
+	signingKey jose.SigningKey,
+	issuer string,
+	clock aauth.Clock,
+) (*r3Config, error) {
+	if config == nil {
+		return nil, nil
+	}
+	if config.HTTPClient == nil {
+		return nil, errors.New("personserver: direct R3 HTTP client is required")
+	}
+	if config.AuthorizeDocument == nil {
+		return nil, errors.New("personserver: direct R3 document authorization policy is required")
+	}
+	if config.Issuances == nil {
+		return nil, errors.New("personserver: direct R3 issuance store is required")
+	}
+	artifacts, err := r3fetch.New(r3fetch.Config{
+		Registry:   config.Registry,
+		HTTPClient: config.HTTPClient, SigningKey: signingKey,
+		Issuer: issuer, DiscoveryDocument: aauth.PersonDiscoveryDocument,
+		Clock: clock, Admit: config.Admit,
+		MaximumDocumentBytes: config.MaximumDocumentBytes,
+		Timeout:              config.FetchTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("personserver: direct R3: %w", err)
+	}
+	return &r3Config{
+		registry: config.Registry, artifacts: artifacts,
+		authorizeDocument: config.AuthorizeDocument,
+		issuances:         config.Issuances,
 	}, nil
 }
 
@@ -137,6 +219,7 @@ func (server *Server) fetchR3Artifact(
 			return &invalidR3ArtifactError{cause: fmt.Errorf("personserver: R3 account: %w", err)}
 		}
 		verified.document = document
+		verified.exactArtifact = artifact.ExactBytes()
 		verified.kind = r3.ArtifactDocument
 		return nil
 	}
@@ -145,7 +228,7 @@ func (server *Server) fetchR3Artifact(
 			return &invalidR3ArtifactError{cause: fmt.Errorf("personserver: R3 proposal account: %w", err)}
 		}
 		verified.proposal = proposal
-		verified.exactProposal = artifact.ExactBytes()
+		verified.exactArtifact = artifact.ExactBytes()
 		verified.kind = r3.ArtifactProposal
 		return nil
 	}
@@ -183,7 +266,7 @@ func (server *Server) verifyR3AccessResult(
 	case r3.ArtifactProposal:
 		claims, _, _, err := r3.VerifyPerCallAuthToken(
 			ctx, server.r3.registry, compact, server.keyResolver, server.clock,
-			verified.reference, verified.exactProposal,
+			verified.reference, verified.exactArtifact,
 		)
 		if err != nil {
 			return aauth.AuthTokenClaims{}, fmt.Errorf("personserver: Access Server R3 proposal result: %w", err)

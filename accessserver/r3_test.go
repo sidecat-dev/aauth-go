@@ -189,8 +189,7 @@ func TestR3MCPClassIssuesOnlyAfterIndependentFetchPolicyAndAtomicAudit(t *testin
 		t.Fatalf("sequence = %#v", sequence)
 	}
 	records := issuances.recordsCopy()
-	if len(records) != 1 || records[0].ExactAuthToken != output.AuthToken ||
-		records[0].R3Reference != reference || records[0].Vocabulary != mcp.URI ||
+	if len(records) != 1 || records[0].R3Reference != reference || records[0].Vocabulary != mcp.URI ||
 		records[0].PersonServer != "https://person.example" ||
 		records[0].Subject != "person-123" || records[0].AgentJKT != agentJKT ||
 		records[0].Agent != "aauth:planner@provider.example" || records[0].ParentAgent != "" {
@@ -374,126 +373,15 @@ func accessServerGrantedOperationsEqual(t *testing.T, left, right r3.GrantedOper
 	return equal
 }
 
-func TestR3IssuanceStoreFixturePreservesThePublicContract(t *testing.T) {
-	t.Parallel()
-
-	account := "account-1"
-	reference, err := r3.NewReference(
-		"https://resource.example/r3/document",
-		r3.Digest([]byte(`{"operations":[{"tool":"records.read"}]}`)),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := R3IssuanceRecord{
-		AuthTokenReference: aauth.TokenReference{Issuer: "https://access.example", JTI: "auth-token-1"},
-		ExactAuthToken:     "exact-token",
-		Resource:           "https://resource.example",
-		R3Reference:        reference,
-		Vocabulary:         mcp.URI,
-		IssuedAt:           time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC),
-		PersonServer:       "https://person.example",
-		Subject:            "person-1",
-		Account:            &account,
-		AgentJKT:           "agent-thumbprint",
-		Agent:              "aauth:planner@provider.example",
-	}
-	store := &r3TestIssuanceStore{}
-	if err := store.Commit(context.Background(), record); err != nil {
-		t.Fatal(err)
-	}
-
-	account = "mutated-by-caller"
-	retained := store.recordsCopy()
-	if len(retained) != 1 || retained[0].Vocabulary != mcp.URI ||
-		retained[0].Account == nil || *retained[0].Account != "account-1" {
-		t.Fatalf("retained record aliases caller state: %#v", retained)
-	}
-	if err := store.Commit(context.Background(), retained[0]); err != nil {
-		t.Fatalf("exact repeat: %v", err)
-	}
-	if got := len(store.recordsCopy()); got != 1 {
-		t.Fatalf("exact repeat retained %d records, want 1", got)
-	}
-
-	changed := retained[0]
-	changed.Resource = "https://other-resource.example"
-	if err := store.Commit(context.Background(), changed); !errors.Is(err, ErrR3IssuanceConflict) {
-		t.Fatalf("changed repeat error = %v, want %v", err, ErrR3IssuanceConflict)
-	}
-
-	concurrent := &r3TestIssuanceStore{}
-	const repeatCount = 16
-	start := make(chan struct{})
-	errorsSeen := make(chan error, repeatCount)
-	var wait sync.WaitGroup
-	for range repeatCount {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			<-start
-			errorsSeen <- concurrent.Commit(context.Background(), retained[0])
-		}()
-	}
-	close(start)
-	wait.Wait()
-	close(errorsSeen)
-	for err := range errorsSeen {
-		if err != nil {
-			t.Fatalf("concurrent exact repeat: %v", err)
-		}
-	}
-	if got := len(concurrent.recordsCopy()); got != 1 {
-		t.Fatalf("concurrent exact repeats retained %d records, want 1", got)
-	}
-
-	competing := &r3TestIssuanceStore{}
-	changed = retained[0]
-	changed.Resource = "https://other-resource.example"
-	start = make(chan struct{})
-	errorsSeen = make(chan error, repeatCount)
-	wait = sync.WaitGroup{}
-	for index := range repeatCount {
-		candidate := retained[0]
-		if index%2 != 0 {
-			candidate = changed
-		}
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			<-start
-			errorsSeen <- competing.Commit(context.Background(), candidate)
-		}()
-	}
-	close(start)
-	wait.Wait()
-	close(errorsSeen)
-	conflicts := 0
-	for err := range errorsSeen {
-		switch {
-		case err == nil:
-		case errors.Is(err, ErrR3IssuanceConflict):
-			conflicts++
-		default:
-			t.Fatalf("competing commit: %v", err)
-		}
-	}
-	winner := competing.recordsCopy()
-	if len(winner) != 1 || conflicts == 0 ||
-		!reflect.DeepEqual(winner[0], retained[0]) && !reflect.DeepEqual(winner[0], changed) {
-		t.Fatalf("competing commits retained %#v with %d conflicts", winner, conflicts)
-	}
-}
-
 type r3TestIssuanceStore struct {
 	mu             sync.Mutex
-	records        []R3IssuanceRecord
+	records        []r3.IssuanceRecord
 	commitErr      error
 	commitThenFail bool
 	onCommit       func()
 }
 
-func (store *r3TestIssuanceStore) Commit(_ context.Context, record R3IssuanceRecord) error {
+func (store *r3TestIssuanceStore) Commit(_ context.Context, record r3.IssuanceRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.onCommit != nil {
@@ -508,7 +396,7 @@ func (store *r3TestIssuanceStore) Commit(_ context.Context, record R3IssuanceRec
 			continue
 		}
 		if !reflect.DeepEqual(retained, copy) {
-			return ErrR3IssuanceConflict
+			return r3.ErrIssuanceConflict
 		}
 		return store.commitErr
 	}
@@ -519,10 +407,10 @@ func (store *r3TestIssuanceStore) Commit(_ context.Context, record R3IssuanceRec
 	return nil
 }
 
-func (store *r3TestIssuanceStore) recordsCopy() []R3IssuanceRecord {
+func (store *r3TestIssuanceStore) recordsCopy() []r3.IssuanceRecord {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	records := make([]R3IssuanceRecord, len(store.records))
+	records := make([]r3.IssuanceRecord, len(store.records))
 	for i, record := range store.records {
 		records[i] = cloneR3IssuanceRecord(record)
 	}
@@ -537,7 +425,7 @@ func (store *r3TestIssuanceStore) reset() {
 	store.commitThenFail = false
 }
 
-func cloneR3IssuanceRecord(record R3IssuanceRecord) R3IssuanceRecord {
+func cloneR3IssuanceRecord(record r3.IssuanceRecord) r3.IssuanceRecord {
 	copy := record
 	if record.Account != nil {
 		account := *record.Account

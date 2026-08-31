@@ -1,6 +1,7 @@
 // Package personserver implements explicit immediate three-party and federated
-// four-party Person Server compositions. Federated authorization can add
-// independently fetched R3 consent. Both compositions support top-level
+// four-party Person Server compositions. Three-party authorization can issue
+// direct class-document R3 grants; federation can add independently fetched
+// class or per-call R3 consent. Both compositions support top-level
 // and parent-mediated issuance and can compose the immediate mission lifecycle:
 // approval, ordered accepted updates, person-accepted completion, and
 // mission-bound credential issuance. Three-party composition additionally
@@ -94,6 +95,9 @@ type PSAuthorizationConfig struct {
 	// MissionStore.
 	Missions  *MissionConfig
 	Authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	// R3 optionally enables immediate direct class-document authorization and
+	// exact issuance retention. Per-call proposals remain federated-only.
+	R3 *DirectR3Config
 	// CallChaining explicitly enables one immediate PS-authorized downstream
 	// hop. Existing policies never receive an upstream authorization unless this
 	// separate policy pair is configured.
@@ -293,14 +297,17 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 }
 
 // NewPSAuthorization constructs a three-party Person Server. Authorize supplies
-// the immediate path. A paired interaction policy and store may supply the
-// deferred path instead or act as a fallback before immediate authorization.
+// immediate Core authorization, R3 supplies immediate class authorization,
+// and a paired interaction policy and store may supply the deferred Core path.
 func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	if (config.RequireAuthorizationInteraction == nil) != (config.AuthorizationInteractions == nil) {
 		return nil, errors.New("personserver: authorization interaction policy and store must be configured together")
 	}
-	if config.Authorize == nil && config.RequireAuthorizationInteraction == nil {
-		return nil, errors.New("personserver: immediate or deferred authorization policy is required")
+	if config.R3 != nil && config.RequireAuthorizationInteraction != nil {
+		return nil, errors.New("personserver: direct R3 does not compose with deferred Core authorization")
+	}
+	if config.Authorize == nil && config.R3 == nil && config.RequireAuthorizationInteraction == nil {
+		return nil, errors.New("personserver: Core, R3, or deferred authorization policy is required")
 	}
 	if config.CallChaining != nil &&
 		(config.CallChaining.BindPerson == nil || config.CallChaining.Authorize == nil) {
@@ -319,6 +326,11 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	}
 	server.authorizationMode = authorizationModePersonServer
 	server.authorize = config.Authorize
+	r3Config, err := newDirectR3Config(config.R3, config.SigningKey, config.Issuer, config.Clock)
+	if err != nil {
+		return nil, err
+	}
+	server.r3 = r3Config
 	if config.CallChaining != nil {
 		server.bindChainedPerson = config.CallChaining.BindPerson
 		server.authorizeChained = config.CallChaining.Authorize
@@ -698,6 +710,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
 		return
 	}
+	if server.authorizationMode == authorizationModePersonServer && r3Context != nil {
+		if err := directR3UnsupportedCombination(delegated, upstream, resourceToken.MissionS256 != ""); err != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+			return
+		}
+	}
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()
 	resourceTokenIssuedAt := time.Unix(resourceToken.IssuedAt, 0).UTC()
 	if resourceTokenExpiresAt.Sub(resourceTokenIssuedAt) > server.maximumResourceTokenLifetime {
@@ -810,6 +828,17 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		authorizationRequest.Upstream = upstream.policyClaims()
 	}
 	if server.authorizationMode == authorizationModePersonServer {
+		if r3Context != nil {
+			if r3Context.kind != r3.ArtifactDocument {
+				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: direct R3 supports class documents only"))
+				return
+			}
+			server.issueDirectR3AuthorizationToken(
+				response, request, agent, credentialAgent, resourceToken,
+				authorizationRequest, r3Context,
+			)
+			return
+		}
 		if upstream == nil && server.requireAuthorizationInteraction != nil {
 			policyRequest := cloneAuthorizationRequest(authorizationRequest)
 			policy, required, err := server.requireAuthorizationInteraction(request.Context(), policyRequest)
@@ -841,6 +870,13 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			authorize = server.authorizeChained
 		}
 		if authorize == nil {
+			if server.r3 != nil && upstream == nil {
+				writeAccessPolicyProblem(response, errors.Join(
+					ErrAccessDenied,
+					errors.New("personserver: Core authorization is not configured"),
+				))
+				return
+			}
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("deferred authorization policy did not select interaction and no immediate authorization policy is configured"))
 			return
 		}

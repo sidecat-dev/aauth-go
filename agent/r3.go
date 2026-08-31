@@ -75,8 +75,11 @@ func (client *Client) verifyR3AuthTokenForResourceBinding(
 	if authReference != reference {
 		return aauth.AuthTokenClaims{}, errors.New("auth token changed the R3 document reference")
 	}
+	// The signed token's dwk selects the issuing role. A class grant may come
+	// directly from the Person Server or from a distinct or collocated Access
+	// Server, so the Resource-token audience alone cannot select that role.
 	if err := aauth.ValidateCurrentAuthTokenContext(claims, aauth.AuthTokenContext{
-		Issuer: resource.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
+		Issuer: resource.Audience, DiscoveryDocument: claims.DWK,
 		Resource: resource.Issuer, PersonServer: resource.PersonServer,
 		Subject: resource.Subject, RequestKey: credential.requestKey,
 	}); err != nil {

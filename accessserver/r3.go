@@ -48,8 +48,9 @@ type R3Config struct {
 		r3.Reference,
 		r3.Proposal,
 	) (R3ProposalDecision, error)
-	// Issuances is required and atomically retains the token and audit record.
-	Issuances R3IssuanceStore
+	// Issuances is required and atomically retains the mandatory audit record
+	// before the token is returned.
+	Issuances r3.IssuanceStore
 }
 
 // R3DocumentDecision is the Core scope, lifetime, and operation decision for
@@ -83,7 +84,7 @@ type r3Config struct {
 		r3.Reference,
 		r3.Proposal,
 	) (R3ProposalDecision, error)
-	issuances R3IssuanceStore
+	issuances r3.IssuanceStore
 }
 
 type verifiedR3 struct {
@@ -201,7 +202,6 @@ func (server *Server) fetchR3Artifact(
 
 func (server *Server) commitR3Issuance(
 	ctx context.Context,
-	compact string,
 	claims aauth.AuthTokenClaims,
 	resource aauth.ResourceTokenClaims,
 	verified *verifiedR3,
@@ -210,9 +210,9 @@ func (server *Server) commitR3Issuance(
 	if verified == nil || server.r3 == nil {
 		return errors.New("accessserver: R3 issuance context is incomplete")
 	}
-	record := R3IssuanceRecord{
+	record := r3.IssuanceRecord{
 		AuthTokenReference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
-		ExactAuthToken:     compact, Resource: claims.Audience, R3Reference: verified.reference,
+		Resource:           claims.Audience, R3Reference: verified.reference,
 		Vocabulary: verified.vocabulary,
 		IssuedAt:   time.Unix(claims.IssuedAt, 0).UTC(), PersonServer: claims.PersonServer,
 		Subject: claims.Subject, Account: cloneStringPointer(claims.Account),

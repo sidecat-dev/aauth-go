@@ -29,7 +29,7 @@ were read; it is not an implementation or conformance claim.
 | --- | --- | --- |
 | AAuth Core | implementation-reviewed for current paths | Submitted history and executable current questions appear below; unimplemented Core areas remain evidence-pending |
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
-| R3 | implementation-reviewed for the shared seven-vocabulary operation model, bounded definition adapters, and current four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, and `AAG-F076`. The seven definition registrations now provide bounded derivation or typed specification-gap refusal. MCP, OpenAPI, and AsyncAPI parse sparse annotations; OData annotation identity remains unresolved. Complete acquisition, general dependency resolution, invocation binding, and independent interop remain evidence-pending. |
+| R3 | implementation-reviewed for the shared seven-vocabulary operation model, bounded definition adapters, and current three- and four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, `AAG-F076`, and `AAG-F086`. The seven definition registrations now provide bounded derivation or typed specification-gap refusal. MCP, OpenAPI, and AsyncAPI parse sparse annotations; OData annotation identity remains unresolved. Complete acquisition, general dependency resolution, invocation binding, and independent interop remain evidence-pending. |
 | Events | implementation-reviewed for the public-subscription path | `AAG-F058`, `AAG-F084`, and `AAG-F085` now have executing token, registration, endpoint-resolution, delivery, use-limit, and Agent-correlation evidence. Protected tickets and independent interoperability remain evidence-pending. |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
 | Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
@@ -90,6 +90,7 @@ below where evidence is ready.
 | AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | exact-request document construction and independent AS fetch/policy evidence implemented |
 | AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | implementation bridge evidenced: exact class/proposal token lineage at the Resource plus bounded original Person-token retention at the PS; editor clarification remains useful |
 | AAG-F016 | The mandatory signature set does not bind the query | ready below |
+| AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
 | AAG-F059 | Mission proposal policy denial has no registered error | ready below with immediate mission evidence |
@@ -547,10 +548,10 @@ valid token.
 The implementation commits the mission-bound issuance record before release,
 never retries internally, and exposes this recovery limit. It does not invent
 an exact-result store or silently treat the Resource-token `jti` as a replay
-key. The immediate R3 path strengthens the retained record to include the
-exact compact token and mandatory audit facts, but reaches the same limit: a
-store error withholds the token, and an explicit repeat may produce another
-independently audited token.
+key. The immediate R3 path retains the mandatory audit facts but not the
+credential itself, and reaches the same limit: a store error withholds the
+token, while an explicit repeat may produce another independently audited
+token.
 
 **Question:** Should an immediate Auth-token request be idempotent for one
 Resource-token identity, with bounded exact-result replay after uncertain
@@ -1524,6 +1525,33 @@ revisions are admitted?
 
 **Placement:** Open one cross-vocabulary source-reference issue before filing
 format-specific interpretation questions.
+
+### AAG-F086 — Direct R3 leaves Auth-token-issuer duties assigned only to an AS
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `R3 Processing`, `AS Processing`, `Audit Log Integrity`,
+and `R3 Document Access Restriction`; AAuth Core, `PS-AS Collapse` and `Auth
+Token Structure`.
+
+Core defines three-party authorization as a PS issuing a Person-role Auth
+token. R3 says the PS and AS are the same party in three-party document access,
+but its common processing rules still assign document verification, operation
+narrowing, R3 claim issuance, and atomic audit only to “the AS.” A direct PS
+can implement the intended behavior, but only by transposing every applicable
+issuer duty from AS to PS.
+
+The direct three-party MCP journey exercises that interpretation: the PS
+fetches the exact document, narrows the grant, issues the token, and commits
+the shared R3 issuance record without an AS call.
+
+**Question:** Should the common requirements name the “Auth-token issuer—an AS
+in four-party or the PS in three-party” and add one explicit direct-PS
+processing paragraph? The `r3_uri` description should likewise name the issuer
+rather than only the AS.
+
+**Placement:** Open a focused R3 role-wording issue with the executable direct
+three-party journey as evidence.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726
