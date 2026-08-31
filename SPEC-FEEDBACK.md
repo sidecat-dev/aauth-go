@@ -5,6 +5,38 @@ implementation questions against the exact manifest in
 [SPECIFICATIONS.md](SPECIFICATIONS.md). It is not a scorecard. Source text and
 editor answers remain authoritative.
 
+## Submission dashboard
+
+**Last reconciled:** 2026-08-31
+
+- No current `AAG-F` finding in this register has been submitted upstream.
+- `AAG-H001`, `AAG-H002`, and `AAG-H003` are delivered historical feedback.
+- A submitted item must name its submission date and public issue, pull
+  request, or comment URL. If no public record exists, it must say so
+  explicitly. A missing upstream record never means “probably submitted.”
+- When an editor changes the source, the affected item is rechecked against
+  the new remote commit before its status changes to incorporated, answered,
+  withdrawn, or superseded.
+
+## Remote editor baseline
+
+Findings cite the upstream editor revisions below, not the retained local
+mirror. The `Source` field in each finding selects the applicable document and
+headings from this baseline.
+
+| Source | Exact upstream revision |
+| --- | --- |
+| AAuth Core | [`draft-hardt-oauth-aauth-protocol.md` at `a99d353`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md) |
+| R3 | [`draft-hardt-aauth-r3.md` at `a99d353`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-r3.md) |
+| Events | [`draft-hardt-aauth-events.md` at `a99d353`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-events.md) |
+| Bootstrap | [`draft-hardt-aauth-bootstrap.md` at `a99d353`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-bootstrap.md) |
+| Budgets | [`draft-hardt-aauth-budgets.md` at `a99d353`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-budgets.md) |
+| Interoperability profile | [`interop-demo-profile.md` at `a99d353`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/interop-demo-profile.md) |
+| HTTP Signature Keys | [`draft-hardt-httpbis-signature-key.md` at `0ff751b`](https://github.com/dickhardt/signature-key/blob/0ff751b571e7fe51336bcc1e526954a202317cc0/draft-hardt-httpbis-signature-key.md) |
+
+The byte digests and retained verification mirror are recorded separately in
+[SPECIFICATIONS.md](SPECIFICATIONS.md).
+
 ## Status vocabulary
 
 - **submitted / incorporated** — delivered feedback appears in the current
@@ -18,6 +50,11 @@ editor answers remain authoritative.
 - **evidence pending** — the source suggests a question, but the repository
   does not yet contain the executable evidence needed before submission.
 - **withdrawn** — later source or implementation evidence resolved the concern.
+
+Every submitted status must be accompanied by `**Submitted:** YYYY-MM-DD` and
+`**Upstream record:** URL` in that item. Historical feedback whose exact date
+or public URL cannot be recovered says `date not retained` or `record not
+retained` instead; it is never left blank.
 
 ## Source review boundary
 
@@ -41,6 +78,10 @@ were read; it is not an implementation or conformance claim.
 
 **Status:** submitted / incorporated
 
+**Submitted:** date not retained
+
+**Upstream record:** record not retained
+
 Earlier implementation work supplied feedback on mission references and
 hashes, agent keying material, requirement parameters, capability extensions,
 same-`kid` key refresh, egress admission, auth-token verification, approval
@@ -52,6 +93,10 @@ dispositions and acknowledge Joshua Gay. Do not re-file them as new findings.
 
 **Status:** submitted / answered
 
+**Submitted:** date not retained
+
+**Upstream record:** record not retained
+
 The editors answered that an interaction callback is a user-experience return,
 not authority to approve or deny, and that auth-token `dwk` selects issuer-role
 metadata while issuer trust remains a separate verifier decision. No durable
@@ -60,6 +105,10 @@ public discussion URL was retained.
 ### AAG-H003 — Recommended `justification` sections
 
 **Status:** submitted / still open
+
+**Submitted:** date not retained
+
+**Upstream record:** record not retained
 
 Earlier feedback proposed a small Markdown structure for `justification`. The
 current PS Token Endpoint still contains `TODO: Define recommended sections`.
@@ -70,6 +119,11 @@ Any follow-up should cite the earlier delivery rather than present it as new.
 This compact index preserves the prior register without carrying obsolete
 implementation journals into the library. Detailed current questions appear
 below where evidence is ready.
+
+Every `AAG-F` item in this index and in **Current unsubmitted questions** is
+unsubmitted unless its own section is moved to submitted history and names an
+upstream record. Descriptions such as “implementation bridge evidenced” report
+local evidence maturity; they do not mean the question was sent.
 
 | ID | Question | Current status |
 | --- | --- | --- |
@@ -90,6 +144,9 @@ below where evidence is ready.
 | AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | exact-request document construction and independent AS fetch/policy evidence implemented |
 | AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | implementation bridge evidenced: exact class/proposal token lineage at the Resource plus bounded original Person-token retention at the PS; editor clarification remains useful |
 | AAG-F016 | The mandatory signature set does not bind the query | ready below |
+| AAG-F093 | Clarification timeout does not define the recipient's reference instant | ready below with Agent and Person Server deadline evidence |
+| AAG-F094 | Clarification answer and cancellation do not define success responses | ready below with explicit one-request action evidence |
+| AAG-F095 | A clarification answer does not identify the question or round it answers | ready below with retained multi-round evidence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -282,6 +339,8 @@ not, which identifier and error shape apply?
 
 ### AAG-F008 — Updated clarification requests refer to a removed `agent` claim
 
+**Status:** ready / unsubmitted
+
 **Source:** AAuth Core, `Updated Request` and `Resource Token Structure`.
 
 `Updated Request` requires the replacement resource token to retain the same
@@ -292,6 +351,12 @@ to compare. A literal absent-to-absent comparison cannot detect substitution.
 **Question:** Which surviving claims must remain stable when an agent replaces a
 resource token during clarification? At minimum, the text needs to remove
 `agent` and state the intended person, resource, key, and mission bindings.
+
+The executable direct clarification path now covers a signed
+`clarification_response`, signed cancellation, bounded rounds, exact replay,
+and Person Server value recomposition around retained state while deliberately
+refusing to implement `updated_request`. That separation confirms this is a
+source-binding gap, not a missing common clarification primitive.
 
 **Placement:** Add this instance to
 [AAuth issue 104](https://github.com/dickhardt/AAuth/issues/104), which collects
@@ -1665,6 +1730,80 @@ signed grant as the conservative fallback when no interoperable bound exists?
 
 **Placement:** Open a focused Budgets ambiguous-failure issue with the
 full-grant fallback as implementation evidence.
+
+### AAG-F093 — Clarification timeout has no recipient reference instant
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Clarification Required`.
+
+The response carries `timeout` as seconds until the server times out the
+request and requires the recipient to answer before that deadline. The text
+does not say whether the interval begins when the server creates the response,
+when the response is sent, or when the recipient receives it. Network delay
+therefore prevents an Agent from deriving the server's exact deadline from the
+wire value alone.
+
+The direct clarification implementation treats the instant at which the Agent
+finishes validating the response as its local reference and refuses a locally
+late answer before network I/O. The Person Server separately enforces its
+canonical retained deadline, so the local check is not proof of the server's
+clock boundary.
+
+**Question:** What instant starts `timeout`, and should the response carry an
+absolute deadline or signed response time so recipients can enforce the MUST
+without guessing across transport delay and clock skew?
+
+**Placement:** Open a focused Core clarification-timing issue.
+
+### AAG-F094 — Clarification actions have no success-response contract
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Clarification Response` and `Cancel Request`.
+
+The draft defines the signed POST and DELETE requests and says the Agent
+resumes polling, but assigns no success status, response body, cache rule, or
+error mapping to either action. An implementation that requires one status can
+reject an otherwise compatible server; accepting an arbitrary response can
+mistake a failed action for success.
+
+The Agent implementation treats any `2xx` as action acceptance, returns no
+terminal authorization from that response, and leaves the next poll explicit.
+Redirects, non-`2xx` responses, hidden polling, and hidden retries remain
+refused.
+
+**Question:** Which status codes and response fields are valid after
+`clarification_response` and cancellation, and must successful responses carry
+`Cache-Control: no-store`?
+
+**Placement:** Open a focused Core clarification-action response issue.
+
+### AAG-F095 — Clarification answers do not identify their question
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Agent Response to Clarification`, `Clarification
+Response`, and `Clarification Limits`.
+
+Every round reuses the same pending URL, while the answer POST carries only
+`action=clarification_response` and the Markdown response. After one answer is
+accepted and the server opens a later question, a delayed replay of the first
+POST is therefore indistinguishable from an answer to the later question. The
+recommended five-round dialogue makes this more than a single-request edge.
+The current safe implementation therefore permits only one round until the
+wire provides an answer-to-question binding.
+
+The implementation exposes each answer as one explicit request and performs
+no hidden retry. It can make an exact replay idempotent while the answered
+round remains latest, but it cannot recover a round identity that the wire
+request never carried.
+
+**Question:** Should each clarification response name a stable round identifier
+or question digest supplied by the `202` response, so retries and delayed
+delivery cannot bind an answer to a different question?
+
+**Placement:** Open a focused Core clarification-correlation issue.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

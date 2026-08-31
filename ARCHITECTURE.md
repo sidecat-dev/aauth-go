@@ -367,6 +367,17 @@ compact tokens to the Access Server and verifies the returned reference,
 account, and authorization against the same registered vocabulary and exact
 artifact.
 
+The direct clarification path extends one already verified pending
+authorization rather than creating a second consent object. The ordinary
+`DeferredAuthorizationStore` continues to own interaction and terminal token
+state. Applications that enable chat additionally implement the focused
+`AuthorizationClarificationStore` over those same records. That extension
+retains a bounded question and an answer accepted through a signed Agent
+request, enforces the deadline, and makes a same-state answer retry
+idempotent. Cancellation is terminal. The host—not the protocol library—authenticates the person,
+sanitizes Markdown, and decides whether the answer permits authorization.
+There is no cross-domain pending-request or evidence container.
+
 ### `resource`
 
 The target owns Resource metadata/JWKS, the five access modes, Resource-local

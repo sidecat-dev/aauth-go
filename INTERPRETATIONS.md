@@ -985,3 +985,48 @@ upper bound the Agent can prove—and is never retried. The implementation
 ignores feedback on any response carrying a valid `Age` field, including
 `Age: 0`. This is a conservative observable approximation of the draft's
 positive-`current_age` rule; HTTP exposes integer Age, not subsecond cache age.
+
+## Clarification extends the retained consent request
+
+**Sources:** AAuth Core, `Clarification Chat`, `Clarification Required`,
+`Agent Response to Clarification`, and `Clarification Limits`.
+
+One direct three-party profile lets the host ask a question only after the
+ordinary interaction code has correlated the pending authorization. The
+question, options, deadline, and signed Agent answer remain attached to that
+same pending request. They do not create another authorization or a generic
+workflow record.
+
+The source recommends at most five rounds but gives an answer no round
+identifier. This implementation therefore fixes one as the safe maximum until
+`AAG-F095` is resolved. One question or answer is bounded at 64 KiB and one
+question may carry at most 32 distinct options of at most 4 KiB each. Those
+are local resource bounds, not wire-format extensions. The strings remain
+untrusted Markdown. The library validates and retains them but never renders
+or sanitizes them on a host's behalf.
+
+The wire `timeout` is relative but does not identify its reference instant.
+The Agent starts a conservative local answer window when it finishes
+validating the response and refuses an answer at or after that local deadline.
+The Person Server independently enforces the canonical retained deadline.
+This implementation choice does not claim the two clocks or instants are
+identical; `AAG-F093` asks the editors to define the binding.
+
+While an answered round remains latest and no later question is active, an
+exact answer replay is idempotent and a changed replay conflicts. Once another
+question opens, Core carries no round identifier that can distinguish a late
+replay from a new answer; `AAG-F095` records that gap and the current profile
+therefore stops after one round. A signed cancellation makes every later
+request to the pending URL return `410 Gone`, including a repeat cancellation.
+Agent APIs perform one answer, cancellation, or poll request and never continue
+automatically.
+
+Core assigns no success response to the answer POST or cancellation DELETE.
+The Agent therefore accepts any `2xx` as action acceptance and requires the
+caller to poll explicitly for authorization state. Redirects and non-`2xx`
+responses remain failures. `AAG-F094` asks the editors to define this response
+contract.
+
+`updated_request` remains unsupported. Its current equality rule requires an
+`agent` claim that current Resource tokens do not carry; choosing a replacement
+binding here would hide the source problem recorded as `AAG-F008`.

@@ -58,7 +58,7 @@ func (result ExchangeResult) Failure() error { return result.failure }
 func pendingExchangeResult(p PendingExchange) ExchangeResult {
 	r := ExchangeResult{kind: exchangeResultPending, pending: p}
 	switch p.requirement {
-	case "", aauth.RequirementApproval, aauth.RequirementInteraction:
+	case "", aauth.RequirementApproval, aauth.RequirementInteraction, aauth.RequirementClarification:
 	default:
 		r.failure = &UnsupportedRequirementError{Requirement: p.requirement}
 	}
@@ -100,20 +100,23 @@ const pendingExchangeVerified pendingExchangeKind = 1
 // result or requirement. Its private fields retain the exact original
 // resource-token verification context.
 type PendingExchange struct {
-	kind               pendingExchangeKind
-	personServer       string
-	location           string
-	retryAfter         time.Duration
-	interactionURL     string
-	interactionCode    string
-	interacting        bool
-	requirement        aauth.Requirement
-	interactionCapable bool
-	resourceToken      string
-	resourceClaims     *aauth.ResourceTokenClaims
-	agentProvider      string
-	agent              string
-	agentJKT           string
+	kind                 pendingExchangeKind
+	personServer         string
+	location             string
+	origin               string
+	retryAfter           time.Duration
+	interactionURL       string
+	interactionCode      string
+	interacting          bool
+	requirement          aauth.Requirement
+	interactionCapable   bool
+	clarification        ClarificationQuestion
+	clarificationCapable bool
+	resourceToken        string
+	resourceClaims       *aauth.ResourceTokenClaims
+	agentProvider        string
+	agent                string
+	agentJKT             string
 }
 
 // PersonServer returns the Person Server that accepted the exchange.
@@ -174,7 +177,7 @@ func (pending PendingExchange) Interacting() bool {
 // BeginExchange performs one signed PS token request after metadata discovery.
 // It returns either an immediate verified auth token or a verified pending
 // exchange and never polls, sleeps, retries, or opens an interaction URL.
-// Initial payment responses and clarification answers are not implemented.
+// Initial payment responses are not implemented.
 func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) (ExchangeResult, error) {
 	const operation = "begin exchange"
 	if client == nil {
@@ -220,8 +223,9 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 			return ExchangeResult{}, fail(operation, err)
 		}
 		pending.interactionCapable = slices.Contains(input.Capabilities, "interaction")
-		if pending.requirement == aauth.RequirementInteraction && !pending.interactionCapable {
-			return ExchangeResult{}, fail(operation, errors.New("pending interaction requires the declared interaction capability"))
+		pending.clarificationCapable = slices.Contains(input.Capabilities, "clarification")
+		if err := validatePendingExchangeRequirement(pending); err != nil {
+			return ExchangeResult{}, fail(operation, err)
 		}
 		return pendingExchangeResult(pending), nil
 	case http.StatusServiceUnavailable:
@@ -238,47 +242,14 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 
 // PollExchange performs exactly one bodyless Agent-token-signed GET for a
 // verified pending exchange. A typed 410 invalid_code response is terminal and
-// MUST NOT be retried. Clarification-answer actions are not implemented.
+// MUST NOT be retried.
 func (client *Client) PollExchange(ctx context.Context, pending PendingExchange) (ExchangeResult, error) {
 	const operation = "poll exchange"
 	if client == nil {
 		return ExchangeResult{}, fail(operation, errors.New("client is required"))
 	}
-	if ctx == nil {
-		return ExchangeResult{}, fail(operation, errors.New("context is required"))
-	}
-	if err := ctx.Err(); err != nil {
+	if err := client.validatePendingExchange(ctx, pending); err != nil {
 		return ExchangeResult{}, fail(operation, err)
-	}
-	if err := client.requireDirectPersonServerCaller(); err != nil {
-		return ExchangeResult{}, fail(operation, err)
-	}
-	if pending.kind != pendingExchangeVerified || pending.personServer == "" ||
-		pending.location == "" ||
-		pending.resourceToken == "" || pending.resourceClaims == nil || pending.agentProvider == "" ||
-		pending.agent == "" || pending.agentJKT == "" {
-		return ExchangeResult{}, fail(operation, errors.New("verified pending exchange for this client is required"))
-	}
-	if pending.requirement == aauth.RequirementInteraction {
-		if pending.interactionURL == "" || pending.interactionCode == "" {
-			return ExchangeResult{}, fail(operation, errors.New("pending interaction URL and code are required"))
-		}
-	} else if pending.interactionURL != "" || pending.interactionCode != "" {
-		return ExchangeResult{}, fail(operation, errors.New("non-interaction pending exchange must not carry interaction fields"))
-	}
-	if pending.agentProvider != client.agentClaims.Issuer || pending.personServer != client.agentClaims.PersonServer ||
-		pending.agent != client.identifier {
-		return ExchangeResult{}, fail(operation, errors.New("pending exchange does not match client identity"))
-	}
-	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
-	if err != nil {
-		return ExchangeResult{}, fail(operation, err)
-	}
-	if thumbprint != pending.agentJKT {
-		return ExchangeResult{}, fail(operation, errors.New("pending exchange does not match client key"))
-	}
-	if pending.resourceClaims.PersonServer != pending.personServer || pending.resourceClaims.AgentJKT != pending.agentJKT {
-		return ExchangeResult{}, fail(operation, errors.New("pending exchange resource-token context does not match client"))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.location, nil)
 	if err != nil {
@@ -338,6 +309,44 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 	default:
 		return ExchangeResult{}, fail(operation, responseFailure(response))
 	}
+}
+
+func (client *Client) validatePendingExchange(ctx context.Context, pending PendingExchange) error {
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := client.requireDirectPersonServerCaller(); err != nil {
+		return err
+	}
+	if pending.kind != pendingExchangeVerified || pending.personServer == "" || pending.location == "" ||
+		pending.resourceToken == "" || pending.resourceClaims == nil || pending.agentProvider == "" ||
+		pending.agent == "" || pending.agentJKT == "" {
+		return errors.New("verified pending exchange for this client is required")
+	}
+	if err := validatePendingExchangeLocation(pending); err != nil {
+		return err
+	}
+	if err := validatePendingExchangeRequirement(pending); err != nil {
+		return err
+	}
+	if pending.agentProvider != client.agentClaims.Issuer || pending.personServer != client.agentClaims.PersonServer ||
+		pending.agent != client.identifier {
+		return errors.New("pending exchange does not match client identity")
+	}
+	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
+	if err != nil {
+		return err
+	}
+	if thumbprint != pending.agentJKT {
+		return errors.New("pending exchange does not match client key")
+	}
+	if pending.resourceClaims.PersonServer != pending.personServer || pending.resourceClaims.AgentJKT != pending.agentJKT {
+		return errors.New("pending exchange resource-token context does not match client")
+	}
+	return nil
 }
 
 func (client *Client) exchangeRequest(
@@ -512,9 +521,17 @@ func (client *Client) pendingExchangeResponse(
 	resourceClaims aauth.ResourceTokenClaims,
 	prior PendingExchange,
 ) (PendingExchange, error) {
+	observedAt := client.clock.Now()
 	location, err := parsePendingLocation(response)
 	if err != nil {
 		return PendingExchange{}, err
+	}
+	if prior.kind != 0 && location != prior.location {
+		return PendingExchange{}, errors.New("pending exchange Location changed while polling")
+	}
+	origin, err := httpOrigin(response.Request.URL)
+	if err != nil {
+		return PendingExchange{}, errors.New("pending response request origin is invalid")
 	}
 	retryAfter, err := parseRetryAfter(response.Header.Values("Retry-After"))
 	if err != nil {
@@ -540,9 +557,10 @@ func (client *Client) pendingExchangeResponse(
 		return PendingExchange{}, errors.New("pending response status is required")
 	}
 	requirementValues := response.Header.Values("AAuth-Requirement")
-	requirement := prior.requirement
-	interactionURL := prior.interactionURL
-	interactionCode := prior.interactionCode
+	var requirement aauth.Requirement
+	var interactionURL string
+	var interactionCode string
+	var clarification ClarificationQuestion
 	if len(requirementValues) > 0 {
 		requirement, err = aauth.ParseRequirement(requirementValues)
 		if err != nil {
@@ -553,50 +571,20 @@ func (client *Client) pendingExchangeResponse(
 			if err != nil {
 				return PendingExchange{}, err
 			}
-			if prior.requirement == aauth.RequirementInteraction {
-				if interaction.URL != interactionURL || !aauth.MatchInteractionCode(interactionCode, interaction.Code) {
-					return PendingExchange{}, errors.New("pending exchange interaction changed while polling")
-				}
-			} else {
-				interactionURL = interaction.URL
-				interactionCode = interaction.Code
-			}
-		} else {
-			interactionURL = ""
-			interactionCode = ""
+			interactionURL = interaction.URL
+			interactionCode = interaction.Code
 		}
 	}
 	if requirement == aauth.RequirementInteraction && prior.kind != 0 && !prior.interactionCapable {
 		return PendingExchange{}, errors.New("pending interaction requires the declared interaction capability")
 	}
+	if requirement == aauth.RequirementClarification && prior.kind != 0 && !prior.clarificationCapable {
+		return PendingExchange{}, errors.New("pending clarification requires the declared clarification capability")
+	}
 	if requirement == aauth.RequirementClarification {
-		var body struct {
-			Clarification json.RawMessage `json:"clarification"`
-			Timeout       json.RawMessage `json:"timeout"`
-			Options       json.RawMessage `json:"options"`
-		}
-		if err := decodePendingExchangeBody(encodedBody, &body); err != nil {
+		clarification, err = client.parseClarification(encodedBody, observedAt)
+		if err != nil {
 			return PendingExchange{}, err
-		}
-		var clarification string
-		if len(body.Clarification) == 0 || string(body.Clarification) == "null" ||
-			json.Unmarshal(body.Clarification, &clarification) != nil || strings.TrimSpace(clarification) == "" {
-			return PendingExchange{}, errors.New("pending clarification is required and must be a string")
-		}
-		if len(body.Timeout) > 0 {
-			var timeout int64
-			if string(body.Timeout) == "null" || json.Unmarshal(body.Timeout, &timeout) != nil {
-				return PendingExchange{}, errors.New("pending clarification timeout must be an integer")
-			}
-			if timeout < 0 {
-				return PendingExchange{}, errors.New("pending clarification timeout must be nonnegative")
-			}
-		}
-		if len(body.Options) > 0 {
-			var options []string
-			if string(body.Options) == "null" || json.Unmarshal(body.Options, &options) != nil {
-				return PendingExchange{}, errors.New("pending clarification options must be a string array")
-			}
 		}
 	}
 	if requirement == aauth.RequirementClaims {
@@ -624,9 +612,10 @@ func (client *Client) pendingExchangeResponse(
 	claims := resourceClaims
 	return PendingExchange{
 		kind: pendingExchangeVerified, personServer: personServer,
-		location: location, retryAfter: retryAfter, interactionURL: interactionURL,
+		location: location, origin: origin, retryAfter: retryAfter, interactionURL: interactionURL,
 		interactionCode: interactionCode, interacting: prior.interacting || commonBody.Status == "interacting",
 		requirement: requirement, interactionCapable: prior.interactionCapable,
+		clarification: clarification, clarificationCapable: prior.clarificationCapable,
 		resourceToken: resourceToken, resourceClaims: &claims,
 		agentProvider: client.agentClaims.Issuer, agent: client.identifier, agentJKT: thumbprint,
 	}, nil

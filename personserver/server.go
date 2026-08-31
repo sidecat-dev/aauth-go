@@ -451,7 +451,7 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /person", server.handlePerson)
 	mux.HandleFunc("GET /person/pending/{id}", server.handlePendingPersonToken)
 	mux.HandleFunc("POST /token", server.handleToken)
-	mux.HandleFunc("GET /token/pending/{id}", server.handlePendingAuthorization)
+	mux.HandleFunc("/token/pending/{id}", server.handlePendingAuthorization)
 	mux.HandleFunc("GET /.well-known/aauth-person.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
 	if server.missions != nil {

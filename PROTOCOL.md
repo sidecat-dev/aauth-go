@@ -142,6 +142,7 @@ does not define one global lifecycle or evidence record.
 | Mission blob and updates | PS | Exact approved bytes determine `s256`; termination is one-way |
 | Resource session | Resource | Opaque to the Agent and proof-bound on every use |
 | Deferred request | Issuing server | Polling follows the returned same-origin location and terminal status rules |
+| Authorization clarification dialogue | PS | Retain each bounded question and signed Agent answer with the pending three-party authorization; the host renders sanitized content and makes the eventual decision |
 | Held invocation and first result | Resource | Execute once; replay the retained result for duplicate valid presentation |
 | R3 document bytes | Resource | Persist exact bytes, serve them at an immutable URI, and use their SHA-256 as identity; changed bytes receive a new URI |
 | R3 issuance audit | Auth-token issuer | Commit the URI/hash and issuance facts atomically with token issuance; the issuer is the PS in three-party or the AS in four-party |
@@ -200,6 +201,41 @@ that document, selects a subset through host policy, signs the Auth token, and
 atomically retains its mandatory R3 audit record before returning the token.
 The Resource then enforces `r3_granted` without fetching the document again.
 Per-call R3 remains a four-party path in this implementation.
+
+### Clarification during three-party consent
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant P as Person
+    participant PS as Person Server
+    participant R as Resource
+
+    A->>PS: Signed Auth-token request; interaction + clarification capabilities
+    PS-->>A: 202 interaction + pending URL
+    P->>PS: Open consent session
+    PS-->>A: Explicit poll returns 202 clarification + question
+    A->>PS: One signed clarification_response
+    PS->>PS: Retain exact answer with pending authorization
+    P->>PS: Host-authenticated approval
+    A->>PS: One explicit poll
+    PS-->>A: Auth token
+    A->>R: One protected call
+```
+
+The Agent receives the question and optional choices as typed values, but the
+library does not render their Markdown. The host sanitizes both questions and
+answers before showing them to a person. A question has a bounded deadline.
+The current safe profile permits one round because Core gives an answer no
+round identifier (`AAG-F095`). An exact same-state answer replay is idempotent;
+a changed replay conflicts. A signed `DELETE` cancels the active question and
+makes every later pending-URL request return `410 Gone`.
+
+Each clarification answer, cancellation, or poll sends one request. No method
+continues to another step on the caller's behalf. This profile deliberately
+defers `updated_request`:
+the current editor text requires equality of a Resource-token `agent` claim
+that current Resource tokens do not contain (`AAG-F008`).
 
 ### Two-key Agent bootstrap profile
 

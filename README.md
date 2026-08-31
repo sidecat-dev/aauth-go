@@ -49,7 +49,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
 | [Direct three-party R3](example/r3threeparty) | MCP operations narrowed and issued by the Person Server with no Access Server | `go run ./example/r3threeparty` |
 | [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
-| [Deferred Person Server consent](example/psconsent) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
+| [Clarification during Person Server consent](example/psconsent) | A verified request is parked; the host asks one bounded question; the Agent signs one answer; explicit polling returns the approved token | `go run ./example/psconsent` |
 | [Four-party authorization variants](example/fourparty) | Missionless Core, mission lifecycle, and one runnable MCP R3 path with independent consent/policy fetches, a narrowed grant, and atomic issuance audit | `go run ./example/fourparty` |
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
 | [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
@@ -64,6 +64,11 @@ The integration suite also exercises
 [direct Person identity](integration/direct_identity_access_test.go),
 [Person-token interaction](integration/person_token_interaction_test.go), and
 both [baseline `401` and Resource-held `202` auth-token delivery](integration/core_four_party_test.go).
+The [three-party clarification journey](integration/clarification_three_party_test.go)
+proves a retained host question, a typed Agent view, a signed answer,
+serialized continuation and value recomposition, explicit approval and
+polling, one protected call, and a typed wrong-Agent refusal. No library step
+polls or retries automatically.
 The [fixed-price Budget journey](integration/budget_three_party_test.go) proves
 direct Resource offer selection, Person Server amount narrowing, and
 concurrent hard-cap enforcement.
@@ -167,8 +172,11 @@ application implementations.
 The repository does not yet implement all of AAuth Core. Agent enrollment and
 renewal currently cover one explicit Ed25519 two-key profile with
 application-selected Agent Provider routes; single-key, platform-attestation,
-durable-key replacement, and self-hosted patterns remain open. General
-deferred and clarification paths, the remaining mission log and control
+durable-key replacement, and self-hosted patterns remain open. Clarification
+currently covers one direct three-party question, answer, and cancellation
+during host-authenticated consent. Updated requests, Access Server relay,
+mission-bound clarification, and other general deferred paths remain open, as
+do the remaining mission log and control
 surfaces, and several delegation and revocation variants also remain open.
 Mission support currently covers immediate
 top-level approval, ordered accepted updates, protected use, and

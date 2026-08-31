@@ -29,11 +29,49 @@ var (
 	ErrAuthorizationInteractionCodeInvalid = errors.New("personserver: authorization interaction code is invalid")
 	// ErrAuthorizationInteractionCodeUsed reports a code already consumed.
 	ErrAuthorizationInteractionCodeUsed = errors.New("personserver: authorization interaction code was already used")
+	// ErrAuthorizationClarificationUnsupported reports that the Agent did not
+	// declare the clarification capability on the retained authorization.
+	ErrAuthorizationClarificationUnsupported = errors.New("personserver: authorization clarification was not declared by the Agent")
 )
 
 // MaximumAuthorizationCodeAttempts is the fixed failed-code bound for one
 // pending authorization interaction.
 const MaximumAuthorizationCodeAttempts = 3
+
+// MaximumAuthorizationClarificationRounds is the safe dialogue bound for one
+// pending authorization. Core carries no round identifier in an answer, so a
+// later round cannot safely distinguish a delayed earlier answer (AAG-F095).
+const MaximumAuthorizationClarificationRounds = 1
+
+// MaximumAuthorizationClarificationBytes bounds one Markdown question or
+// answer before it reaches host rendering or durable storage.
+const MaximumAuthorizationClarificationBytes = 64 << 10
+
+const (
+	maximumAuthorizationClarificationOptions     = 32
+	maximumAuthorizationClarificationOptionBytes = 4 << 10
+)
+
+// AuthorizationClarificationRequest is one host-authenticated question for
+// the Agent. Question and Options are untrusted Markdown/display input at the
+// receiving boundary; applications must sanitize them before rendering.
+type AuthorizationClarificationRequest struct {
+	Question string
+	Options  []string
+	Lifetime time.Duration
+}
+
+// AuthorizationClarificationRound is one durably retained question and its
+// optional Agent response. Empty Response and RespondedAt identify an active
+// question. Values returned by this package are independent copies.
+type AuthorizationClarificationRound struct {
+	Question    string
+	Options     []string
+	RequestedAt time.Time
+	ExpiresAt   time.Time
+	Response    string
+	RespondedAt time.Time
+}
 
 // AuthorizationInteractionPolicy requests host-authenticated consent for a
 // fully verified three-party auth-token request.
@@ -101,33 +139,39 @@ type AuthorizationPollState uint8
 const (
 	AuthorizationPollWaiting AuthorizationPollState = iota + 1
 	AuthorizationPollInteracting
+	AuthorizationPollClarifying
 	AuthorizationPollApproved
 	AuthorizationPollDenied
 	AuthorizationPollAbandoned
 	AuthorizationPollServerError
 	AuthorizationPollExpired
 	AuthorizationPollGone
+	AuthorizationPollCancelled
 )
 
 // AuthorizationPollRecord is the exact store result about to become one HTTP
 // response. Pending is returned atomically with the state so the Person Server
 // can validate the retained result against its original verified context.
 type AuthorizationPollRecord struct {
-	State      AuthorizationPollState
-	Pending    PendingAuthorizationRecord
-	Token      string
-	Decision   AuthorizationDecision
-	ExpiresIn  int64
-	DecidedAt  time.Time
-	RetryAfter time.Duration
+	State   AuthorizationPollState
+	Pending PendingAuthorizationRecord
+	// Clarification is present only while the Agent owes an answer.
+	Clarification *AuthorizationClarificationRound
+	Token         string
+	Decision      AuthorizationDecision
+	ExpiresIn     int64
+	DecidedAt     time.Time
+	RetryAfter    time.Duration
 }
 
 // PendingAuthorizationSnapshot lets an authenticated host resume an
 // interaction and recover the canonical result of an uncertain decision.
 type PendingAuthorizationSnapshot struct {
-	Record   PendingAuthorizationRecord
-	State    AuthorizationPollState
-	Approval AuthorizationApproval
+	Record         PendingAuthorizationRecord
+	State          AuthorizationPollState
+	Clarifications []AuthorizationClarificationRound
+	CancelledAt    time.Time
+	Approval       AuthorizationApproval
 }
 
 // DeferredAuthorizationStore owns only PS auth-token interaction state. It is
@@ -175,11 +219,44 @@ type DeferredAuthorizationStore interface {
 	ConsumePendingAuthorizationResult(context.Context, string, AuthorizationPollRecord) error
 }
 
+// AuthorizationClarificationStore is the optional clarification extension to
+// DeferredAuthorizationStore. Keeping it separate means an application that
+// supports ordinary interaction is not required to implement chat state. A
+// configured store that supports clarification implements both interfaces over
+// the same pending records.
+//
+// Every method first atomically materializes pending or active-question expiry.
+// Identity mismatch is reported as ErrPendingAuthorizationNotFound. Mutable
+// inputs and outputs are independent copies, and an error commits no partial
+// transition.
+//
+// RequestPendingAuthorizationClarification changes Interacting to Clarifying
+// and appends one round, up to MaximumAuthorizationClarificationRounds. An
+// exact repeat while that question is active returns the first canonical round
+// and timestamps; a changed repeat conflicts. AnswerPendingAuthorizationClarification
+// changes Clarifying back to Interacting and retains the answer. While that
+// answered round remains latest and no later question is active, an exact
+// answer replay succeeds and a changed replay conflicts.
+// CancelPendingAuthorizationClarification changes Clarifying to Cancelled and
+// retains CancelledAt for host observation. Every later request to that
+// pending URL is gone. Other terminal or non-clarifying states conflict.
+// PollPendingAuthorization must expose only
+// the active question and return ErrPendingAuthorizationGone after cancellation;
+// LoadPendingAuthorization exposes the complete ordered dialogue and terminal
+// cancellation time.
+type AuthorizationClarificationStore interface {
+	RequestPendingAuthorizationClarification(context.Context, string, AuthorizationClarificationRequest, time.Time) (AuthorizationClarificationRound, error)
+	AnswerPendingAuthorizationClarification(context.Context, string, AuthorizationPollIdentity, string, time.Time) error
+	CancelPendingAuthorizationClarification(context.Context, string, AuthorizationPollIdentity, time.Time) error
+}
+
 // AuthorizationInteraction is a correlated auth-token request. It is not
 // proof that a host authenticated the person and carries no decision authority.
 type AuthorizationInteraction struct {
-	kind   uint8
-	record PendingAuthorizationRecord
+	kind           uint8
+	record         PendingAuthorizationRecord
+	clarifications []AuthorizationClarificationRound
+	cancelledAt    time.Time
 }
 
 const authorizationInteractionCorrelated uint8 = 1
@@ -405,9 +482,11 @@ func (server *Server) ResumeAuthorizationInteraction(ctx context.Context, refere
 		return AuthorizationInteraction{}, ErrPendingAuthorizationConflict
 	}
 	switch snapshot.State {
-	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollApproved, AuthorizationPollDenied,
+	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollApproved, AuthorizationPollDenied,
 		AuthorizationPollAbandoned, AuthorizationPollServerError:
-		return authorizationInteractionFromRecord(snapshot.Record), nil
+		return authorizationInteractionFromSnapshot(snapshot), nil
+	case AuthorizationPollCancelled:
+		return authorizationInteractionFromSnapshot(snapshot), nil
 	case AuthorizationPollExpired:
 		return AuthorizationInteraction{}, ErrPendingAuthorizationExpired
 	case AuthorizationPollGone:
@@ -445,7 +524,7 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 		return ErrPendingAuthorizationConflict
 	case AuthorizationPollExpired:
 		return ErrPendingAuthorizationExpired
-	case AuthorizationPollGone:
+	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollInteracting:
 		// Continue below.
@@ -519,7 +598,7 @@ func (server *Server) DenyAuthorizationInteraction(ctx context.Context, value Au
 		return ErrPendingAuthorizationConflict
 	case AuthorizationPollExpired:
 		return ErrPendingAuthorizationExpired
-	case AuthorizationPollGone:
+	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollInteracting:
 		// Continue below.
@@ -543,7 +622,7 @@ func (server *Server) AbandonAuthorizationInteraction(ctx context.Context, value
 	switch snapshot.State {
 	case AuthorizationPollAbandoned:
 		return nil
-	case AuthorizationPollGone:
+	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollInteracting:
 		return server.authorizationInteractions.AbandonPendingAuthorization(ctx, value.record.ID, now)
@@ -565,7 +644,7 @@ func (server *Server) FailAuthorizationInteraction(ctx context.Context, value Au
 	switch snapshot.State {
 	case AuthorizationPollServerError:
 		return nil
-	case AuthorizationPollGone:
+	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollWaiting, AuthorizationPollInteracting:
 		return server.authorizationInteractions.FailPendingAuthorization(ctx, value.record.ID, now)
@@ -578,6 +657,13 @@ func (server *Server) FailAuthorizationInteraction(ctx context.Context, value Au
 
 func authorizationInteractionFromRecord(record PendingAuthorizationRecord) AuthorizationInteraction {
 	return AuthorizationInteraction{kind: authorizationInteractionCorrelated, record: clonePendingAuthorizationRecord(record)}
+}
+
+func authorizationInteractionFromSnapshot(snapshot PendingAuthorizationSnapshot) AuthorizationInteraction {
+	return AuthorizationInteraction{
+		kind: authorizationInteractionCorrelated, record: clonePendingAuthorizationRecord(snapshot.Record),
+		clarifications: cloneAuthorizationClarifications(snapshot.Clarifications), cancelledAt: snapshot.CancelledAt,
+	}
 }
 
 func (server *Server) validateAuthorizationInteraction(ctx context.Context, value AuthorizationInteraction) error {
@@ -617,13 +703,28 @@ func (server *Server) validatePendingAuthorizationSnapshot(ctx context.Context, 
 	if err := validatePendingAuthorizationRecord(snapshot.Record); err != nil || snapshot.Record.PersonServer != server.issuer {
 		return ErrPendingAuthorizationConflict
 	}
+	if err := validateAuthorizationClarificationHistory(snapshot.Record, snapshot.State, snapshot.Clarifications); err != nil {
+		return err
+	}
 	switch snapshot.State {
-	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollDenied,
+	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollDenied,
 		AuthorizationPollAbandoned, AuthorizationPollServerError, AuthorizationPollExpired, AuthorizationPollGone:
 		if !authorizationApprovalIsZero(snapshot.Approval) {
 			return ErrPendingAuthorizationConflict
 		}
+		if !snapshot.CancelledAt.IsZero() {
+			return ErrPendingAuthorizationConflict
+		}
+	case AuthorizationPollCancelled:
+		last := snapshot.Clarifications[len(snapshot.Clarifications)-1]
+		if !authorizationApprovalIsZero(snapshot.Approval) || snapshot.CancelledAt.Before(last.RequestedAt) ||
+			!snapshot.CancelledAt.Before(last.ExpiresAt) {
+			return ErrPendingAuthorizationConflict
+		}
 	case AuthorizationPollApproved:
+		if !snapshot.CancelledAt.IsZero() {
+			return ErrPendingAuthorizationConflict
+		}
 		if err := validateAuthorizationApprovalShape(snapshot.Record, snapshot.Approval); err != nil {
 			return ErrPendingAuthorizationConflict
 		}
@@ -648,9 +749,18 @@ func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bo
 }
 
 func (server *Server) handlePendingAuthorization(response http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet {
-		response.Header().Set("Allow", http.MethodGet)
-		writeProblem(response, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("authorization polling requires GET"))
+	switch request.Method {
+	case http.MethodPost:
+		server.handlePendingAuthorizationClarificationAnswer(response, request)
+		return
+	case http.MethodDelete:
+		server.handlePendingAuthorizationCancellation(response, request)
+		return
+	case http.MethodGet:
+		// Continue below.
+	default:
+		response.Header().Set("Allow", "GET, POST, DELETE")
+		writeProblem(response, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("authorization continuation requires GET, POST, or DELETE"))
 		return
 	}
 	if server.authorizationInteractions == nil {
@@ -666,7 +776,7 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 		writeAgentTokenProblem(response, err)
 		return
 	}
-	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	identity, err := authorizationPollIdentity(server.issuer, agent)
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -675,9 +785,6 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 	if id == "" {
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
 		return
-	}
-	identity := AuthorizationPollIdentity{
-		PersonServer: server.issuer, AgentProvider: agent.Issuer, Agent: agent.Subject, ConfirmationThumbprint: thumbprint,
 	}
 	result, err := server.authorizationInteractions.PollPendingAuthorization(request.Context(), id, identity, proof.VerifiedAt())
 	if err != nil {
@@ -698,6 +805,8 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 		server.writePendingAuthorization(response, request.URL.Path, result.RetryAfter, "pending")
 	case AuthorizationPollInteracting:
 		server.writePendingAuthorization(response, request.URL.Path, result.RetryAfter, "interacting")
+	case AuthorizationPollClarifying:
+		server.writePendingAuthorizationClarification(response, request.URL.Path, result, proof.VerifiedAt())
 	case AuthorizationPollApproved:
 		claims, err := server.validateApprovedAuthorization(request.Context(), result)
 		if err != nil {
@@ -754,6 +863,17 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 	}
 }
 
+func authorizationPollIdentity(personServer string, agent aauth.AgentTokenClaims) (AuthorizationPollIdentity, error) {
+	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	if err != nil {
+		return AuthorizationPollIdentity{}, err
+	}
+	return AuthorizationPollIdentity{
+		PersonServer: personServer, AgentProvider: agent.Issuer, Agent: agent.Subject,
+		ConfirmationThumbprint: thumbprint,
+	}, nil
+}
+
 func (server *Server) validateAuthorizationPollContext(id string, identity AuthorizationPollIdentity, result AuthorizationPollRecord) error {
 	if err := validatePendingAuthorizationRecord(result.Pending); err != nil || result.Pending.ID != id ||
 		result.Pending.PersonServer != identity.PersonServer || result.Pending.AgentProvider != identity.AgentProvider ||
@@ -768,15 +888,23 @@ func (server *Server) validateAuthorizationPollContext(id string, identity Autho
 	switch result.State {
 	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollDenied,
 		AuthorizationPollAbandoned, AuthorizationPollServerError, AuthorizationPollExpired:
-		if result.Token != "" || !emptyDecision || result.ExpiresIn != 0 || !result.DecidedAt.IsZero() {
+		if result.Clarification != nil || result.Token != "" || !emptyDecision || result.ExpiresIn != 0 || !result.DecidedAt.IsZero() {
+			return ErrPendingAuthorizationConflict
+		}
+	case AuthorizationPollClarifying:
+		if result.Clarification == nil || validateAuthorizationClarificationRound(*result.Clarification) != nil ||
+			result.Clarification.Response != "" || result.Token != "" || !emptyDecision ||
+			result.ExpiresIn != 0 || !result.DecidedAt.IsZero() ||
+			result.Clarification.RequestedAt.Before(result.Pending.CreatedAt) ||
+			result.Clarification.ExpiresAt.After(result.Pending.ExpiresAt) {
 			return ErrPendingAuthorizationConflict
 		}
 	case AuthorizationPollApproved:
-		if result.Token == "" || result.ExpiresIn <= 0 || result.DecidedAt.IsZero() {
+		if result.Clarification != nil || result.Token == "" || result.ExpiresIn <= 0 || result.DecidedAt.IsZero() {
 			return ErrPendingAuthorizationConflict
 		}
 	case AuthorizationPollGone:
-		if result.Token != "" || !emptyDecision || result.ExpiresIn != 0 || !result.DecidedAt.IsZero() {
+		if result.Clarification != nil || result.Token != "" || !emptyDecision || result.ExpiresIn != 0 || !result.DecidedAt.IsZero() {
 			return ErrPendingAuthorizationConflict
 		}
 	default:
@@ -902,5 +1030,9 @@ func validateAuthorizationApprovalShape(pending PendingAuthorizationRecord, appr
 func cloneAuthorizationPollRecord(record AuthorizationPollRecord) AuthorizationPollRecord {
 	record.Pending = clonePendingAuthorizationRecord(record.Pending)
 	record.Decision = cloneAuthorizationDecision(record.Decision)
+	if record.Clarification != nil {
+		cloned := cloneAuthorizationClarification(*record.Clarification)
+		record.Clarification = &cloned
+	}
 	return record
 }

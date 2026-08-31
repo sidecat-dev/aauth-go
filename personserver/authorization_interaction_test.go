@@ -1270,9 +1270,11 @@ type memoryDeferredAuthorizationStore struct {
 type memoryPendingAuthorization struct {
 	record             PendingAuthorizationRecord
 	state              AuthorizationPollState
+	clarifications     []AuthorizationClarificationRound
 	approval           AuthorizationApproval
 	deniedAt           time.Time
 	failedCodeAttempts int
+	cancelledAt        time.Time
 }
 
 func newMemoryDeferredAuthorizationStore() *memoryDeferredAuthorizationStore {
@@ -1302,11 +1304,11 @@ func (store *memoryDeferredAuthorizationStore) ConsumeAuthorizationInteractionCo
 	}
 	materializeMemoryAuthorizationExpiry(pending, now)
 	switch pending.state {
-	case AuthorizationPollGone:
+	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return PendingAuthorizationRecord{}, ErrPendingAuthorizationGone
 	case AuthorizationPollExpired:
 		return PendingAuthorizationRecord{}, ErrPendingAuthorizationExpired
-	case AuthorizationPollInteracting:
+	case AuthorizationPollInteracting, AuthorizationPollClarifying:
 		return PendingAuthorizationRecord{}, ErrAuthorizationInteractionCodeUsed
 	case AuthorizationPollApproved, AuthorizationPollDenied, AuthorizationPollAbandoned, AuthorizationPollServerError:
 		return PendingAuthorizationRecord{}, ErrAuthorizationInteractionCodeUsed
@@ -1338,11 +1340,125 @@ func (store *memoryDeferredAuthorizationStore) LoadPendingAuthorization(_ contex
 		return PendingAuthorizationSnapshot{}, ErrPendingAuthorizationNotFound
 	}
 	materializeMemoryAuthorizationExpiry(pending, now)
-	snapshot := PendingAuthorizationSnapshot{Record: clonePendingAuthorizationRecord(pending.record), State: pending.state}
+	snapshot := PendingAuthorizationSnapshot{
+		Record: clonePendingAuthorizationRecord(pending.record), State: pending.state,
+		Clarifications: cloneAuthorizationClarifications(pending.clarifications),
+		CancelledAt:    pending.cancelledAt,
+	}
 	if pending.state == AuthorizationPollApproved {
 		snapshot.Approval = cloneAuthorizationApproval(pending.approval)
 	}
 	return snapshot, nil
+}
+
+func (store *memoryDeferredAuthorizationStore) RequestPendingAuthorizationClarification(
+	_ context.Context,
+	id string,
+	request AuthorizationClarificationRequest,
+	now time.Time,
+) (AuthorizationClarificationRound, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok {
+		return AuthorizationClarificationRound{}, ErrPendingAuthorizationNotFound
+	}
+	materializeMemoryAuthorizationExpiry(pending, now)
+	if pending.state == AuthorizationPollClarifying {
+		current := pending.clarifications[len(pending.clarifications)-1]
+		if current.Question == request.Question && reflect.DeepEqual(current.Options, request.Options) &&
+			current.ExpiresAt.Sub(current.RequestedAt) == request.Lifetime {
+			return cloneAuthorizationClarification(current), nil
+		}
+		return AuthorizationClarificationRound{}, ErrPendingAuthorizationConflict
+	}
+	if pending.state == AuthorizationPollExpired {
+		return AuthorizationClarificationRound{}, ErrPendingAuthorizationExpired
+	}
+	if pending.state == AuthorizationPollGone || pending.state == AuthorizationPollCancelled {
+		return AuthorizationClarificationRound{}, ErrPendingAuthorizationGone
+	}
+	if pending.state != AuthorizationPollInteracting || len(pending.clarifications) >= MaximumAuthorizationClarificationRounds {
+		return AuthorizationClarificationRound{}, ErrPendingAuthorizationConflict
+	}
+	if err := validateAuthorizationClarificationRequest(request, now, pending.record.ExpiresAt); err != nil {
+		return AuthorizationClarificationRound{}, err
+	}
+	round := AuthorizationClarificationRound{
+		Question: request.Question, Options: append([]string(nil), request.Options...),
+		RequestedAt: now, ExpiresAt: now.Add(request.Lifetime),
+	}
+	pending.clarifications = append(pending.clarifications, cloneAuthorizationClarification(round))
+	pending.state = AuthorizationPollClarifying
+	return cloneAuthorizationClarification(round), nil
+}
+
+func (store *memoryDeferredAuthorizationStore) AnswerPendingAuthorizationClarification(
+	_ context.Context,
+	id string,
+	identity AuthorizationPollIdentity,
+	answer string,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok || !memoryAuthorizationIdentityMatches(pending, identity) {
+		return ErrPendingAuthorizationNotFound
+	}
+	materializeMemoryAuthorizationExpiry(pending, now)
+	if pending.state == AuthorizationPollExpired {
+		return ErrPendingAuthorizationExpired
+	}
+	if pending.state == AuthorizationPollGone || pending.state == AuthorizationPollCancelled {
+		return ErrPendingAuthorizationGone
+	}
+	if len(pending.clarifications) == 0 {
+		return ErrPendingAuthorizationConflict
+	}
+	latest := &pending.clarifications[len(pending.clarifications)-1]
+	if pending.state == AuthorizationPollInteracting && latest.Response != "" {
+		if latest.Response == answer {
+			return nil
+		}
+		return ErrPendingAuthorizationConflict
+	}
+	if pending.state != AuthorizationPollClarifying || latest.Response != "" ||
+		strings.TrimSpace(answer) == "" || len(answer) > MaximumAuthorizationClarificationBytes ||
+		!now.Before(latest.ExpiresAt) {
+		return ErrPendingAuthorizationConflict
+	}
+	latest.Response = answer
+	latest.RespondedAt = now
+	pending.state = AuthorizationPollInteracting
+	return nil
+}
+
+func (store *memoryDeferredAuthorizationStore) CancelPendingAuthorizationClarification(
+	_ context.Context,
+	id string,
+	identity AuthorizationPollIdentity,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok || !memoryAuthorizationIdentityMatches(pending, identity) {
+		return ErrPendingAuthorizationNotFound
+	}
+	materializeMemoryAuthorizationExpiry(pending, now)
+	if pending.state == AuthorizationPollExpired {
+		return ErrPendingAuthorizationExpired
+	}
+	if pending.state == AuthorizationPollGone || pending.state == AuthorizationPollCancelled {
+		return ErrPendingAuthorizationGone
+	}
+	if pending.state != AuthorizationPollClarifying {
+		return ErrPendingAuthorizationConflict
+	}
+	pending.state = AuthorizationPollCancelled
+	pending.cancelledAt = now
+	return nil
 }
 
 func (store *memoryDeferredAuthorizationStore) ApprovePendingAuthorization(_ context.Context, id string, approval AuthorizationApproval) (AuthorizationApproval, error) {
@@ -1468,11 +1584,15 @@ func (store *memoryDeferredAuthorizationStore) PollPendingAuthorization(_ contex
 		store.pollError = nil
 		return AuthorizationPollRecord{}, err
 	}
-	if pending.state == AuthorizationPollGone {
+	if pending.state == AuthorizationPollGone || pending.state == AuthorizationPollCancelled {
 		return AuthorizationPollRecord{}, ErrPendingAuthorizationGone
 	}
 	result := AuthorizationPollRecord{
 		State: pending.state, Pending: clonePendingAuthorizationRecord(pending.record), RetryAfter: pending.record.RetryAfter,
+	}
+	if pending.state == AuthorizationPollClarifying {
+		clarification := cloneAuthorizationClarification(pending.clarifications[len(pending.clarifications)-1])
+		result.Clarification = &clarification
 	}
 	if pending.state == AuthorizationPollApproved {
 		result.Token = pending.approval.Token
@@ -1490,7 +1610,7 @@ func (store *memoryDeferredAuthorizationStore) ConsumePendingAuthorizationResult
 	if !ok {
 		return ErrPendingAuthorizationNotFound
 	}
-	if pending.state == AuthorizationPollGone {
+	if pending.state == AuthorizationPollGone || pending.state == AuthorizationPollCancelled {
 		return ErrPendingAuthorizationGone
 	}
 	if store.consumeError != nil {
@@ -1574,4 +1694,17 @@ func materializeMemoryAuthorizationExpiry(pending *memoryPendingAuthorization, n
 		!now.Before(pending.record.ExpiresAt) {
 		pending.state = AuthorizationPollExpired
 	}
+	if pending.state == AuthorizationPollClarifying {
+		deadline := pending.clarifications[len(pending.clarifications)-1].ExpiresAt
+		if !now.Before(deadline) || !now.Before(pending.record.ExpiresAt) {
+			pending.state = AuthorizationPollExpired
+		}
+	}
+}
+
+func memoryAuthorizationIdentityMatches(pending *memoryPendingAuthorization, identity AuthorizationPollIdentity) bool {
+	thumbprint, err := pending.record.Confirmation.Thumbprint()
+	return err == nil && identity.PersonServer == pending.record.PersonServer &&
+		identity.AgentProvider == pending.record.AgentProvider && identity.Agent == pending.record.Agent &&
+		identity.ConfirmationThumbprint == thumbprint
 }

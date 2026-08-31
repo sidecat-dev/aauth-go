@@ -17,6 +17,7 @@ import (
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/personserver/storetest"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -322,6 +323,16 @@ func TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition(t *testing.T) {
 	}
 }
 
+func TestDeferredPSAuthorizationStoreClarificationContract(t *testing.T) {
+	t.Parallel()
+
+	storetest.RunClarification(t, storetest.Contract{
+		New: func(testing.TB) storetest.ClarificationStore {
+			return newIntegrationDeferredAuthorizationStore()
+		},
+	})
+}
+
 type integrationDeferredAuthorizationStore struct {
 	mu               sync.Mutex
 	pending          map[string]*integrationPendingAuthorization
@@ -334,9 +345,11 @@ type integrationDeferredAuthorizationStore struct {
 type integrationPendingAuthorization struct {
 	record             personserver.PendingAuthorizationRecord
 	state              personserver.AuthorizationPollState
+	clarifications     []personserver.AuthorizationClarificationRound
 	approval           personserver.AuthorizationApproval
 	deniedAt           time.Time
 	failedCodeAttempts int
+	cancelledAt        time.Time
 }
 
 func newIntegrationDeferredAuthorizationStore() *integrationDeferredAuthorizationStore {
@@ -381,11 +394,11 @@ func (store *integrationDeferredAuthorizationStore) ConsumeAuthorizationInteract
 	}
 	materializeIntegrationAuthorizationExpiry(pending, now)
 	switch pending.state {
-	case personserver.AuthorizationPollGone:
+	case personserver.AuthorizationPollGone, personserver.AuthorizationPollCancelled:
 		return personserver.PendingAuthorizationRecord{}, personserver.ErrPendingAuthorizationGone
 	case personserver.AuthorizationPollExpired:
 		return personserver.PendingAuthorizationRecord{}, personserver.ErrPendingAuthorizationExpired
-	case personserver.AuthorizationPollInteracting:
+	case personserver.AuthorizationPollInteracting, personserver.AuthorizationPollClarifying:
 		return personserver.PendingAuthorizationRecord{}, personserver.ErrAuthorizationInteractionCodeUsed
 	case personserver.AuthorizationPollApproved, personserver.AuthorizationPollDenied,
 		personserver.AuthorizationPollAbandoned, personserver.AuthorizationPollServerError:
@@ -421,11 +434,124 @@ func (store *integrationDeferredAuthorizationStore) LoadPendingAuthorization(
 	materializeIntegrationAuthorizationExpiry(pending, now)
 	snapshot := personserver.PendingAuthorizationSnapshot{
 		Record: cloneIntegrationPendingAuthorization(pending.record), State: pending.state,
+		Clarifications: cloneIntegrationAuthorizationClarifications(pending.clarifications),
+		CancelledAt:    pending.cancelledAt,
 	}
 	if pending.state == personserver.AuthorizationPollApproved {
 		snapshot.Approval = cloneIntegrationAuthorizationApproval(pending.approval)
 	}
 	return snapshot, nil
+}
+
+func (store *integrationDeferredAuthorizationStore) RequestPendingAuthorizationClarification(
+	_ context.Context,
+	id string,
+	request personserver.AuthorizationClarificationRequest,
+	now time.Time,
+) (personserver.AuthorizationClarificationRound, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok {
+		return personserver.AuthorizationClarificationRound{}, personserver.ErrPendingAuthorizationNotFound
+	}
+	materializeIntegrationAuthorizationExpiry(pending, now)
+	if pending.state == personserver.AuthorizationPollClarifying {
+		current := pending.clarifications[len(pending.clarifications)-1]
+		if current.Question == request.Question && reflect.DeepEqual(current.Options, request.Options) &&
+			current.ExpiresAt.Sub(current.RequestedAt) == request.Lifetime {
+			return cloneIntegrationAuthorizationClarification(current), nil
+		}
+		return personserver.AuthorizationClarificationRound{}, personserver.ErrPendingAuthorizationConflict
+	}
+	if pending.state == personserver.AuthorizationPollExpired {
+		return personserver.AuthorizationClarificationRound{}, personserver.ErrPendingAuthorizationExpired
+	}
+	if pending.state == personserver.AuthorizationPollGone || pending.state == personserver.AuthorizationPollCancelled {
+		return personserver.AuthorizationClarificationRound{}, personserver.ErrPendingAuthorizationGone
+	}
+	if pending.state != personserver.AuthorizationPollInteracting ||
+		len(pending.clarifications) >= personserver.MaximumAuthorizationClarificationRounds {
+		return personserver.AuthorizationClarificationRound{}, personserver.ErrPendingAuthorizationConflict
+	}
+	if err := validateIntegrationAuthorizationClarificationRequest(request, now, pending.record.ExpiresAt); err != nil {
+		return personserver.AuthorizationClarificationRound{}, err
+	}
+	round := personserver.AuthorizationClarificationRound{
+		Question: request.Question, Options: append([]string(nil), request.Options...),
+		RequestedAt: now, ExpiresAt: now.Add(request.Lifetime),
+	}
+	pending.clarifications = append(pending.clarifications, cloneIntegrationAuthorizationClarification(round))
+	pending.state = personserver.AuthorizationPollClarifying
+	return cloneIntegrationAuthorizationClarification(round), nil
+}
+
+func (store *integrationDeferredAuthorizationStore) AnswerPendingAuthorizationClarification(
+	_ context.Context,
+	id string,
+	identity personserver.AuthorizationPollIdentity,
+	answer string,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok || !integrationAuthorizationIdentityMatches(pending, identity) {
+		return personserver.ErrPendingAuthorizationNotFound
+	}
+	materializeIntegrationAuthorizationExpiry(pending, now)
+	if pending.state == personserver.AuthorizationPollExpired {
+		return personserver.ErrPendingAuthorizationExpired
+	}
+	if pending.state == personserver.AuthorizationPollGone || pending.state == personserver.AuthorizationPollCancelled {
+		return personserver.ErrPendingAuthorizationGone
+	}
+	if len(pending.clarifications) == 0 {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	latest := &pending.clarifications[len(pending.clarifications)-1]
+	if pending.state == personserver.AuthorizationPollInteracting && latest.Response != "" {
+		if latest.Response == answer {
+			return nil
+		}
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if pending.state != personserver.AuthorizationPollClarifying || latest.Response != "" ||
+		strings.TrimSpace(answer) == "" || len(answer) > personserver.MaximumAuthorizationClarificationBytes ||
+		!now.Before(latest.ExpiresAt) {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	latest.Response = answer
+	latest.RespondedAt = now
+	pending.state = personserver.AuthorizationPollInteracting
+	return nil
+}
+
+func (store *integrationDeferredAuthorizationStore) CancelPendingAuthorizationClarification(
+	_ context.Context,
+	id string,
+	identity personserver.AuthorizationPollIdentity,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok || !integrationAuthorizationIdentityMatches(pending, identity) {
+		return personserver.ErrPendingAuthorizationNotFound
+	}
+	materializeIntegrationAuthorizationExpiry(pending, now)
+	if pending.state == personserver.AuthorizationPollExpired {
+		return personserver.ErrPendingAuthorizationExpired
+	}
+	if pending.state == personserver.AuthorizationPollGone || pending.state == personserver.AuthorizationPollCancelled {
+		return personserver.ErrPendingAuthorizationGone
+	}
+	if pending.state != personserver.AuthorizationPollClarifying {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	pending.state = personserver.AuthorizationPollCancelled
+	pending.cancelledAt = now
+	return nil
 }
 
 func (store *integrationDeferredAuthorizationStore) ApprovePendingAuthorization(
@@ -550,12 +676,10 @@ func (store *integrationDeferredAuthorizationStore) PollPendingAuthorization(
 		return personserver.AuthorizationPollRecord{}, personserver.ErrPendingAuthorizationNotFound
 	}
 	materializeIntegrationAuthorizationExpiry(pending, now)
-	wantThumbprint, _ := pending.record.Confirmation.Thumbprint()
-	if identity.PersonServer != pending.record.PersonServer || identity.AgentProvider != pending.record.AgentProvider ||
-		identity.Agent != pending.record.Agent || identity.ConfirmationThumbprint != wantThumbprint {
+	if !integrationAuthorizationIdentityMatches(pending, identity) {
 		return personserver.AuthorizationPollRecord{}, personserver.ErrPendingAuthorizationNotFound
 	}
-	if pending.state == personserver.AuthorizationPollGone {
+	if pending.state == personserver.AuthorizationPollGone || pending.state == personserver.AuthorizationPollCancelled {
 		return personserver.AuthorizationPollRecord{}, personserver.ErrPendingAuthorizationGone
 	}
 	return integrationAuthorizationPollRecord(pending), nil
@@ -572,7 +696,7 @@ func (store *integrationDeferredAuthorizationStore) ConsumePendingAuthorizationR
 	if !ok {
 		return personserver.ErrPendingAuthorizationNotFound
 	}
-	if pending.state == personserver.AuthorizationPollGone {
+	if pending.state == personserver.AuthorizationPollGone || pending.state == personserver.AuthorizationPollCancelled {
 		return personserver.ErrPendingAuthorizationGone
 	}
 	if pending.state != personserver.AuthorizationPollApproved && pending.state != personserver.AuthorizationPollDenied &&
@@ -623,6 +747,10 @@ func integrationAuthorizationPollRecord(pending *integrationPendingAuthorization
 		State: pending.state, Pending: cloneIntegrationPendingAuthorization(pending.record),
 		RetryAfter: pending.record.RetryAfter,
 	}
+	if pending.state == personserver.AuthorizationPollClarifying {
+		clarification := cloneIntegrationAuthorizationClarification(pending.clarifications[len(pending.clarifications)-1])
+		result.Clarification = &clarification
+	}
 	if pending.state == personserver.AuthorizationPollApproved {
 		result.Token = pending.approval.Token
 		result.Decision = cloneIntegrationAuthorizationDecision(pending.approval.Decision)
@@ -653,6 +781,26 @@ func cloneIntegrationAuthorizationDecision(decision personserver.AuthorizationDe
 func cloneIntegrationAuthorizationApproval(approval personserver.AuthorizationApproval) personserver.AuthorizationApproval {
 	approval.Decision = cloneIntegrationAuthorizationDecision(approval.Decision)
 	return approval
+}
+
+func cloneIntegrationAuthorizationClarification(
+	round personserver.AuthorizationClarificationRound,
+) personserver.AuthorizationClarificationRound {
+	round.Options = append([]string(nil), round.Options...)
+	return round
+}
+
+func cloneIntegrationAuthorizationClarifications(
+	rounds []personserver.AuthorizationClarificationRound,
+) []personserver.AuthorizationClarificationRound {
+	if len(rounds) == 0 {
+		return nil
+	}
+	cloned := make([]personserver.AuthorizationClarificationRound, len(rounds))
+	for index, round := range rounds {
+		cloned[index] = cloneIntegrationAuthorizationClarification(round)
+	}
+	return cloned
 }
 
 func integrationAuthorizationApprovalIsZero(approval personserver.AuthorizationApproval) bool {
@@ -722,6 +870,53 @@ func materializeIntegrationAuthorizationExpiry(pending *integrationPendingAuthor
 		!now.Before(pending.record.ExpiresAt) {
 		pending.state = personserver.AuthorizationPollExpired
 	}
+	if pending.state == personserver.AuthorizationPollClarifying {
+		deadline := pending.clarifications[len(pending.clarifications)-1].ExpiresAt
+		if !now.Before(deadline) || !now.Before(pending.record.ExpiresAt) {
+			pending.state = personserver.AuthorizationPollExpired
+		}
+	}
+}
+
+func integrationAuthorizationIdentityMatches(
+	pending *integrationPendingAuthorization,
+	identity personserver.AuthorizationPollIdentity,
+) bool {
+	thumbprint, err := pending.record.Confirmation.Thumbprint()
+	return err == nil && identity.PersonServer == pending.record.PersonServer &&
+		identity.AgentProvider == pending.record.AgentProvider && identity.Agent == pending.record.Agent &&
+		identity.ConfirmationThumbprint == thumbprint
+}
+
+func validateIntegrationAuthorizationClarificationRequest(
+	request personserver.AuthorizationClarificationRequest,
+	now time.Time,
+	pendingExpiry time.Time,
+) error {
+	if strings.TrimSpace(request.Question) == "" || len(request.Question) > personserver.MaximumAuthorizationClarificationBytes {
+		return errors.New("personserver: clarification question must be nonempty and at most 65536 bytes")
+	}
+	if request.Lifetime <= 0 || request.Lifetime%time.Second != 0 {
+		return errors.New("personserver: clarification lifetime must be positive whole seconds")
+	}
+	if !now.Add(request.Lifetime).After(now) || now.Add(request.Lifetime).After(pendingExpiry) {
+		return errors.New("personserver: clarification deadline exceeds the pending authorization")
+	}
+	if len(request.Options) > 32 {
+		return errors.New("personserver: clarification has too many options")
+	}
+	seen := make(map[string]struct{}, len(request.Options))
+	for _, option := range request.Options {
+		if strings.TrimSpace(option) == "" || len(option) > 4<<10 {
+			return errors.New("personserver: clarification option must be nonempty and at most 4096 bytes")
+		}
+		if _, duplicate := seen[option]; duplicate {
+			return errors.New("personserver: clarification options must be distinct")
+		}
+		seen[option] = struct{}{}
+	}
+	return nil
 }
 
 var _ personserver.DeferredAuthorizationStore = (*integrationDeferredAuthorizationStore)(nil)
+var _ personserver.AuthorizationClarificationStore = (*integrationDeferredAuthorizationStore)(nil)
