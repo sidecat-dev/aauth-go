@@ -677,6 +677,34 @@ func TestCoreTokenVerificationRejectsAmbiguousPayloadNames(t *testing.T) {
 	})
 }
 
+func TestAgentTokenVerificationRejectsPrivateConfirmationJWK(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 29, 21, 0, 0, 0, time.UTC)
+	issuerKey := coreTokenKey(t, "private-confirmation-provider-key")
+	agentKey := coreTokenKey(t, "private-confirmation-agent-key")
+	confirmation := map[string]any{
+		"kty": agentKey.PublicJWK().Kty, "crv": agentKey.PublicJWK().Crv,
+		"alg": agentKey.PublicJWK().Alg, "x": agentKey.PublicJWK().X,
+		"d": "private-material",
+	}
+	compact := signCoreTokenPayload(t, issuerKey, aauth.AgentTokenType, map[string]any{
+		"iss": "https://agents.example", "dwk": aauth.AgentDiscoveryDocument,
+		"sub": "aauth:reader@agents.example", "jti": "private-confirmation-agent-token",
+		"cnf": map[string]any{"jwk": confirmation},
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	_, err := aauth.VerifyAgentToken(
+		context.Background(), compact,
+		signaturekey.StaticKeyResolver{
+			{Issuer: "https://agents.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: issuerKey.ID()}: issuerKey.PublicJWK(),
+		},
+		aauth.ClockFunc(func() time.Time { return now }),
+	)
+	if err == nil || !strings.Contains(err.Error(), "private JWK member") {
+		t.Fatalf("VerifyAgentToken error = %v", err)
+	}
+}
+
 func TestPersonTokenVerificationRejectsAuthorizationClaims(t *testing.T) {
 	t.Parallel()
 

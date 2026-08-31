@@ -1,10 +1,12 @@
-// Package agentprovider provides the minimal Agent Provider role needed to
-// issue current AAuth agent tokens and publish their verification key.
+// Package agentprovider issues current AAuth Agent tokens, publishes Agent
+// Provider discovery, and composes one explicit two-key enrollment profile
+// through host policy and storage interfaces.
 package agentprovider
 
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	aauth "aauth-go"
 	"aauth-go/internal/httpapi"
@@ -61,16 +63,30 @@ func (server *Server) Issue(request aauth.AgentTokenRequest) (string, error) {
 	if server == nil {
 		return "", errors.New("aauth: agent provider is required")
 	}
-	if request.ParentAgent != "" {
-		return "", errors.New("aauth: this Agent Provider implements top-level agent tokens only")
+	compact, _, err := server.issueAt(request, server.clock.Now())
+	return compact, err
+}
+
+func (server *Server) issueAt(request aauth.AgentTokenRequest, issuedAt time.Time) (string, time.Time, error) {
+	if server == nil {
+		return "", time.Time{}, errors.New("aauth: agent provider is required")
 	}
-	return aauth.MintAgentToken(
+	if request.ParentAgent != "" {
+		return "", time.Time{}, errors.New("aauth: this Agent Provider implements top-level agent tokens only")
+	}
+	issuedAt = issuedAt.UTC().Truncate(time.Second)
+	compact, err := aauth.MintAgentToken(
 		server.issuer,
 		server.signingKey,
 		request,
-		server.clock.Now(),
+		issuedAt,
 		server.newID(),
 	)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Unix(issuedAt.Add(request.Lifetime).Unix(), 0).UTC()
+	return compact, expiresAt, nil
 }
 
 // Handler serves the Agent Provider metadata and JWKS documents.

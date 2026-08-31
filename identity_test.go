@@ -47,6 +47,17 @@ func TestAgentIdentifierAndOneLevelRelationship(t *testing.T) {
 	}
 }
 
+func TestAgentIssuerBindsAgentDomainToProvider(t *testing.T) {
+	t.Parallel()
+
+	if err := auth.ValidateAgentIssuer("aauth:reader@agents.example", "https://agents.example"); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.ValidateAgentIssuer("aauth:reader@other.example", "https://agents.example"); err == nil {
+		t.Fatal("mismatched Agent issuer succeeded")
+	}
+}
+
 func TestEndpointAllowsPathsButNotQueryOrFragment(t *testing.T) {
 	t.Parallel()
 

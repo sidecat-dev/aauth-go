@@ -28,6 +28,7 @@ type Scheme string
 
 const (
 	SchemeJWT     Scheme = "jwt"
+	SchemeJKTJWT  Scheme = "jkt-jwt"
 	SchemeJWKSURI Scheme = "jwks_uri"
 	SchemeHWK     Scheme = "hwk"
 )
@@ -75,6 +76,22 @@ func NewJWTCredential(compact string) (Credential, error) {
 	}, nil
 }
 
+// NewJKTJWTCredential carries one self-issued durable-to-ephemeral key
+// delegation. Verification remains coupled to the outer request proof.
+func NewJKTJWTCredential(compact string) (Credential, error) {
+	if compact == "" {
+		return Credential{}, errors.New("aauth: jkt-jwt credential is required")
+	}
+	if err := validateStructuredFieldString(compact); err != nil {
+		return Credential{}, fmt.Errorf("aauth: jkt-jwt credential: %w", err)
+	}
+	return Credential{
+		scheme:     SchemeJKTJWT,
+		parameters: map[string]string{"jwt": compact},
+		header:     `sig=jkt-jwt;jwt=` + strconv.Quote(compact),
+	}, nil
+}
+
 // NewJWKSURICredential constructs a two-hop metadata and JWKS key reference.
 func NewJWKSURICredential(identifier, discoveryDocument, keyID string) (Credential, error) {
 	if err := validateHTTPSIdentifier(identifier); err != nil {
@@ -118,8 +135,8 @@ func validateStructuredFieldString(value string) error {
 // Scheme returns the credential's selected distribution scheme.
 func (credential Credential) Scheme() Scheme { return credential.scheme }
 
-// CacheRequested reports whether a jwt credential asks the verifier to issue
-// a Signature-Key cache identifier.
+// CacheRequested reports whether a jwt or jkt-jwt credential asks the verifier
+// to issue a Signature-Key cache identifier.
 func (credential Credential) CacheRequested() bool { return credential.cacheRequested }
 
 // ParseCredential parses one or more Signature-Key field lines containing one
@@ -167,6 +184,15 @@ func (credential Credential) JWT() (string, bool) {
 	return credential.parameters["jwt"], true
 }
 
+// JKTJWT returns the opaque compact delegation carried by a jkt-jwt
+// credential. Trust is established only by PreparedRequest.VerifyJKTJWT.
+func (credential Credential) JKTJWT() (string, bool) {
+	if credential.scheme != SchemeJKTJWT || credential.parameters == nil || credential.parameters["jwt"] == "" {
+		return "", false
+	}
+	return credential.parameters["jwt"], true
+}
+
 // JWKSURI returns the identifier, dot-well-known document, and key id carried
 // by a jwks_uri credential.
 func (credential Credential) JWKSURI() (string, string, string, bool) {
@@ -202,6 +228,7 @@ func parseCredentialForLabel(values []string, label string) (Credential, error) 
 	parsed := Credential{scheme: Scheme(scheme), parameters: make(map[string]string)}
 	required := map[Scheme][]string{
 		SchemeJWT:     {"jwt"},
+		SchemeJKTJWT:  {"jwt"},
 		SchemeJWKSURI: {"id", "dwk", "kid"},
 		SchemeHWK:     {"kty", "crv", "x", "alg"},
 	}[parsed.scheme]
@@ -219,7 +246,7 @@ func parseCredentialForLabel(values []string, label string) (Credential, error) 
 	for _, name := range required {
 		allowed[name] = struct{}{}
 	}
-	if parsed.scheme == SchemeJWT {
+	if parsed.scheme == SchemeJWT || parsed.scheme == SchemeJKTJWT {
 		allowed["cache"] = struct{}{}
 	}
 	for _, name := range item.Params.Names() {
@@ -230,7 +257,7 @@ func parseCredentialForLabel(values []string, label string) (Credential, error) 
 		if name == "cache" {
 			cache, ok := value.(bool)
 			if !ok || !cache || strings.Contains(selectedMember, ";cache=") {
-				return Credential{}, errors.New("aauth: Signature-Key jwt cache parameter must be bare true")
+				return Credential{}, fmt.Errorf("aauth: Signature-Key %s cache parameter must be bare true", parsed.scheme)
 			}
 			parsed.cacheRequested = true
 			continue

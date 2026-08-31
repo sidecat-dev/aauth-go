@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -15,6 +16,22 @@ import (
 	aauth "aauth-go"
 	"aauth-go/jose"
 )
+
+func TestJWKJSONRejectsPrivateAndSecretMembers(t *testing.T) {
+	t.Parallel()
+	for _, member := range []string{"d", "D", "k", "p", "q", "dp", "dq", "qi", "oth"} {
+		member := member
+		t.Run(member, func(t *testing.T) {
+			encoded := `{"kty":"OKP","crv":"Ed25519","alg":"Ed25519",` +
+				`"x":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",` +
+				`"` + member + `":"private"}`
+			var key jose.JWK
+			if err := json.Unmarshal([]byte(encoded), &key); err == nil {
+				t.Fatalf("accepted private JWK member %q", member)
+			}
+		})
+	}
+}
 
 type unsupportedSigner struct{}
 

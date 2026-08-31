@@ -52,6 +52,15 @@ opaque PS-validated context and copies it into the Auth token. Mission text and
 updates never cross the Person Server boundary, and no generic lifecycle or
 evidence object joins these boundaries.
 
+The current Bootstrap slice is one explicit Ed25519 two-key profile. The
+Agent Provider verifies a durable-key `hwk` enrollment, retains the stable
+Agent identity, verifies a durable-to-ephemeral `jkt-jwt` refresh, and retains
+the exact first Agent-token result before release. `agent` performs each
+caller-selected exchange once and returns material for a new immutable
+authenticated client. The endpoint paths, JSON envelopes, replay rule, and
+policy errors are documented implementation choices because Bootstrap does
+not standardize them.
+
 The target model expands those packages and adds `r3`, `budgets`, and `events`.
 Sections below define the target ownership contract. Planned packages use a
 dashed border in the graph; present-tense support must never be inferred from
@@ -243,6 +252,13 @@ enrollment and refresh composition points, while executable examples
 demonstrate the two-key, single-key, and self-hosted patterns using Core and
 Signature-Key primitives.
 
+The implemented first profile covers the two-key pattern only. Hosts mount
+the two path-agnostic handlers at Agent-Provider-origin URLs they configure in
+the explicit Agent caller. The profile requires body-bound JSON requests,
+uses `hwk` for enrollment and `jkt-jwt` for refresh, and stores refresh replay
+state with the Agent Provider. It is not added to Agent Provider metadata and
+is not described as a portable Bootstrap protocol.
+
 The interoperability profile is an integration-test and example boundary, not
 a library package. Its five surfaces must run through the same exported APIs
 that applications use.
@@ -310,6 +326,8 @@ neither.
 Target state is split by protocol fact instead of accumulated in one store.
 Examples include:
 
+- `EnrollmentStore` at an AP for a durable-key enrollment and exact refresh
+  result keyed by the verified identity and delegation JTI.
 - `PersonTokenStore`, `MissionStore`, and `PendingAuthorizationStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
   `R3ProposalStore`, `SubscriptionStore`, and `BudgetLedger` at a Resource.

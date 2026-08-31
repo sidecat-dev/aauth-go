@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+
+	"aauth-go/internal/jsonstrict"
 )
 
 var rawURL = base64.RawURLEncoding.Strict()
@@ -42,6 +45,39 @@ type JWK struct {
 	Alg string `json:"alg,omitempty"`
 	Kid string `json:"kid,omitempty"`
 	Use string `json:"use,omitempty"`
+}
+
+// UnmarshalJSON rejects private and secret key material before decoding the
+// bounded public JWK representation.
+func (key *JWK) UnmarshalJSON(value []byte) error {
+	if key == nil {
+		return errors.New("aauth: JWK destination is required")
+	}
+	if err := jsonstrict.RejectAmbiguousNames(value); err != nil {
+		return err
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(value, &members); err != nil {
+		return err
+	}
+	private := map[string]struct{}{
+		"d": {}, "k": {}, "p": {}, "q": {}, "dp": {}, "dq": {}, "qi": {}, "oth": {},
+	}
+	for name := range members {
+		if _, forbidden := private[strings.ToLower(name)]; forbidden {
+			return fmt.Errorf("aauth: private JWK member %q is not permitted", name)
+		}
+	}
+	type publicJWK JWK
+	var decoded publicJWK
+	if err := jsonstrict.RejectCaseVariants(value, &decoded); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(value, &decoded); err != nil {
+		return err
+	}
+	*key = JWK(decoded)
+	return nil
 }
 
 // PublicKey validates and decodes the JWK.

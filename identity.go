@@ -86,6 +86,12 @@ func ValidateAgentIdentifier(identifier string) error {
 	return nil
 }
 
+// ValidateAgentIssuer requires an Agent identifier's domain to match its
+// Agent Provider issuer.
+func ValidateAgentIssuer(agent, issuer string) error {
+	return validateAgentIssuerDomain(agent, issuer)
+}
+
 // ValidateAgentRelationship enforces top-level and single-level sub-agent
 // naming alongside the authoritative parent_agent relationship.
 func ValidateAgentRelationship(agent, parent string) error {

@@ -565,6 +565,12 @@ func TestHTTPKeyResolverRejectsAmbiguousDiscoveryJSONNames(t *testing.T) {
 				return `{"keys":[` + strings.Replace(key, `"alg":"Ed25519"`, `"ALG":"Ed25519"`, 1) + `]}`
 			},
 		},
+		{
+			name: "private JWK member",
+			keySet: func(key string) string {
+				return `{"keys":[` + strings.Replace(key, `"kid":"issuer-key"`, `"kid":"issuer-key","d":"private-material"`, 1) + `]}`
+			},
+		},
 	}
 
 	for _, test := range tests {

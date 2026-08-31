@@ -47,7 +47,7 @@ func TestHWKRequestProofIsPortableAndCopySafe(t *testing.T) {
 		signingKey,
 		credential,
 		fixedClock(now),
-		signaturekey.SignOptions{Nonce: "attempt-1", AdditionalComponents: []string{"content-type"}},
+		signaturekey.SignOptions{Nonce: "attempt-1", AdditionalComponents: []string{"content-type", "content-digest"}},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestHWKRequestProofIsPortableAndCopySafe(t *testing.T) {
 		fixedClock(now.Add(10*time.Second)),
 		signaturekey.VerifyOptions{
 			AcceptedSchemes:        []signaturekey.Scheme{signaturekey.SchemeHWK},
-			RequiredComponents:     []string{"content-type"},
+			RequiredComponents:     []string{"content-type", "content-digest"},
 			RequireExactComponents: true,
 		},
 	)
@@ -103,6 +103,14 @@ func TestHWKRequestProofIsPortableAndCopySafe(t *testing.T) {
 	components[0] = "mutated"
 	if verified.CoveredComponents()[0] == "mutated" {
 		t.Fatal("covered components alias internal proof state")
+	}
+	exactBody := verified.ExactBody()
+	if string(exactBody) != `{"answer":42}` {
+		t.Fatalf("exact body = %q", exactBody)
+	}
+	exactBody[0] = 'x'
+	if string(verified.ExactBody()) != `{"answer":42}` {
+		t.Fatal("exact body aliases internal proof state")
 	}
 	if _, err := (signaturekey.PreparedRequest{}).Verify(proofKey); err == nil {
 		t.Fatal("zero prepared request verified")

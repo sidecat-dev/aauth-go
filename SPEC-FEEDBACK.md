@@ -31,7 +31,7 @@ were read; it is not an implementation or conformance claim.
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
 | R3 | source-reviewed and architecture-mapped | `AAG-F005`, `AAG-F006`, `AAG-F014`, `AAG-F014a`, and `AAG-F015` remain evidence-pending until an R3 path executes |
 | Events | source-synchronized and architecture-mapped | No implementation-backed question yet |
-| Bootstrap | source-synchronized and architecture-mapped | The document is informational; no enrollment or refresh path has produced implementation feedback yet |
+| Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
 | Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
 | Interoperability demo profile | source-reviewed against current internal paths | `AAG-F001` remains evidence-pending; no independent implementation has been exercised |
 
@@ -1175,6 +1175,110 @@ instead of the subscription `eid`?
 
 **Placement:** Open an Events issue after the executing delivery path provides
 an interoperability vector.
+
+### AAG-F071 — The `jkt-jwt` example omits the required `alg` in both JWKs
+
+**Status:** ready / unsubmitted
+
+**Source:** HTTP Signature Keys, `Header Web Key (hwk)` and `JKT JWT
+Self-Issued Key Delegation (jkt-jwt)`.
+
+The text requires a fully specified algorithm on the durable protected-header
+JWK and the delegated `cnf.jwk`. Its example omits `alg` from both. The
+executing Ed25519 profile rejects either omission, so copying the example does
+not produce a valid assertion.
+
+**Question:** Should the example add `"alg":"ES256"` to the durable P-256
+protected-header JWK and `"alg":"Ed25519"` to the delegated Ed25519
+`cnf.jwk`?
+
+**Placement:** Open or add to a Signature-Key examples issue after checking
+the current tracker for the same vector defect.
+
+### AAG-F072 — Bootstrap names `jti` replay protection without defining replay
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Bootstrap, `Two-Key Refresh`; HTTP Signature Keys, `JKT JWT
+Self-Issued Key Delegation (jkt-jwt)` and `Client Processing`.
+
+Bootstrap says the naming JWT includes `jti` for replay protection.
+Signature-Key requires `jti` only when assertion caching is requested and its
+verification procedure does not consume or retain it. Neither source defines
+the replay key's namespace, lifetime, exact-request binding, duplicate result,
+or lost-response recovery.
+
+The executing profile requires `jti`, keys it with the durable thumbprint,
+binds the exact naming JWT and JSON body, freshly signs the outer retry,
+returns the retained first Agent token for an exact retry, and rejects changed
+stable input. Those are implementation choices rather than inferred
+requirements.
+
+**Question:** Should Bootstrap define the minimum replay and lost-response
+contract for a two-key refresh, or state explicitly that every AP profile must
+define it?
+
+**Placement:** Open a focused Bootstrap/Signature-Key cross-spec issue.
+
+### AAG-F073 — The delegated software key is described as enclave-determined
+
+**Status:** ready / unsubmitted
+
+**Source:** HTTP Signature Keys, `JKT JWT Self-Issued Key Delegation
+(jkt-jwt)`; AAuth Bootstrap, `Mobile App Enrollment` and `Two-Key Refresh`.
+
+Both sources describe software generating the fresh ephemeral request key.
+The Signature-Key algorithm step later says that key's algorithm is
+“enclave-determined,” which instead describes the durable platform key. The
+executing profile treats both algorithms as explicit supported inputs and
+currently supports Ed25519 only.
+
+**Question:** Should the algorithm text say that the durable signing
+algorithm is platform-determined while the delegated request-key algorithm is
+chosen by the client within peer support?
+
+**Placement:** Add to a Signature-Key `jkt-jwt` clarification issue.
+
+### AAG-F074 — Stable Agent `sub` does not distinguish the two key rotations
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Agent Token Structure`; AAuth Bootstrap, `Agent
+Identifier Strategies`, `Per-Install Identity`, and `Key Rotation vs Token
+Refresh`.
+
+Core says Agent `sub` is stable across key rotations. Bootstrap preserves it
+when only the ephemeral token key changes, but treats a replacement durable
+enrollment key as a new Agent identity. The executing API makes that
+distinction explicit: refresh rotates the ephemeral key under one enrollment;
+a different durable key does not enter that enrollment.
+
+**Question:** Should Core distinguish proof-key rotation from durable
+enrollment-key replacement when describing `sub` stability?
+
+**Placement:** Open a focused Core/Bootstrap terminology issue.
+
+### AAG-F075 — Bootstrap examples use AP-internal endpoints after removing discovery
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Bootstrap, `Per-Platform Enrollment Sketches` and `Document
+History`.
+
+The document deliberately removes `bootstrap_endpoint`, `refresh_endpoint`,
+and `webauthn_endpoint` from AP metadata while its examples continue to use
+unnamed AP-internal endpoints and one sample `/refresh` request. Because the
+document is informational, independent implementations can follow the same
+key pattern while exposing incompatible routes, envelopes, statuses, and
+errors. The executing Go profile therefore requires application-selected AP
+URLs and labels its JSON as an implementation choice.
+
+**Question:** Should Bootstrap include one explicitly non-normative reference
+HTTP profile for interoperability, or state more directly that it defines
+only the key and role pattern and intentionally provides no portable wire?
+
+**Placement:** Open a Bootstrap scope question rather than presenting the Go
+profile as source-defined.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

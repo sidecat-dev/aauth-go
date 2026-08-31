@@ -58,6 +58,7 @@ type PreparedRequest struct {
 	method      string
 	authority   string
 	path        string
+	exactBody   []byte
 }
 
 // VerifiedRequest contains one prepared request verified under one public key.
@@ -72,6 +73,7 @@ type VerifiedRequest struct {
 	method     string
 	authority  string
 	path       string
+	exactBody  []byte
 }
 
 // SignJWTRequest signs with an opaque JWT credential and the key selected by
@@ -386,8 +388,10 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 			Cause:           fmt.Errorf("aauth: Signature-Key type %q is not accepted", credential.scheme),
 		}
 	}
+	var exactBody []byte
 	if contains(components, "content-digest") {
-		if err := verifyContentDigest(request, maxBodyBytes); err != nil {
+		exactBody, err = verifyContentDigest(request, maxBodyBytes)
+		if err != nil {
 			var limit *bodyLimitError
 			if errors.As(err, &limit) {
 				return prepared, newError(ErrorInvalidInput, err)
@@ -422,6 +426,7 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		method:      request.Method,
 		authority:   authority,
 		path:        path,
+		exactBody:   append([]byte(nil), exactBody...),
 	}, nil
 }
 
@@ -486,6 +491,7 @@ func (prepared PreparedRequest) Verify(key jose.JWK) (VerifiedRequest, error) {
 		method:     prepared.method,
 		authority:  prepared.authority,
 		path:       prepared.path,
+		exactBody:  append([]byte(nil), prepared.exactBody...),
 	}, nil
 }
 
@@ -538,6 +544,12 @@ func (verified VerifiedRequest) VerifiedAt() time.Time { return verified.verifie
 func (verified VerifiedRequest) Method() string        { return verified.method }
 func (verified VerifiedRequest) Authority() string     { return verified.authority }
 func (verified VerifiedRequest) Path() string          { return verified.path }
+
+// ExactBody returns the independently copied request body authenticated by a
+// covered Content-Digest. It is empty when the body is empty or not covered.
+func (verified VerifiedRequest) ExactBody() []byte {
+	return append([]byte(nil), verified.exactBody...)
+}
 func (verified VerifiedRequest) CoveredComponents() []string {
 	return append([]string(nil), verified.components...)
 }
@@ -719,25 +731,25 @@ func parseSignature(values []string, expectedLabel string) ([]byte, error) {
 	return append([]byte(nil), signature...), nil
 }
 
-func verifyContentDigest(request *http.Request, maxBodyBytes int64) error {
+func verifyContentDigest(request *http.Request, maxBodyBytes int64) ([]byte, error) {
 	header := request.Header.Get("Content-Digest")
 	const prefix = "sha-256=:"
 	if !strings.HasPrefix(header, prefix) || !strings.HasSuffix(header, ":") {
-		return errors.New("aauth: Content-Digest must use sha-256")
+		return nil, errors.New("aauth: Content-Digest must use sha-256")
 	}
 	expected, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(header, prefix), ":"))
 	if err != nil || len(expected) != sha256.Size {
-		return errors.New("aauth: Content-Digest sha-256 value is invalid")
+		return nil, errors.New("aauth: Content-Digest sha-256 value is invalid")
 	}
 	body, err := readRequestBody(request, maxBodyBytes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	actual := sha256.Sum256(body)
 	if !bytes.Equal(expected, actual[:]) {
-		return errors.New("aauth: Content-Digest does not match request body")
+		return nil, errors.New("aauth: Content-Digest does not match request body")
 	}
-	return nil
+	return body, nil
 }
 
 func readRequestBody(request *http.Request, maxBodyBytes int64) ([]byte, error) {

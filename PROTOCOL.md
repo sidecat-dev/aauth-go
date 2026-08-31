@@ -12,12 +12,12 @@ that every mapped behavior is implemented; that claim belongs in
 ```mermaid
 flowchart LR
     sig[HTTP Signature Keys]
-    core[AAuth Core]
-    boot[AAuth Bootstrap guidance]
-    r3[Rich Resource Requests]
+    core[AAuth Protocol]
+    boot[AAuth Bootstrap Guidance]
+    r3["AAuth Rich Resource Requests (R3)"]
     budgets[AAuth Budgets]
     events[AAuth Events]
-    interop[Interoperability profile]
+    interop[AAuth Interoperability Demo Profile]
     async[AsyncAPI 3.0]
 
     sig --> core
@@ -42,13 +42,13 @@ The documents have different authority:
 
 | Source | What it defines | Status in this model |
 | --- | --- | --- |
-| AAuth Core | Roles, identities, token profiles, requirements, endpoints, missions, deferred responses, delegation, revocation, discovery, and five access modes | Normative protocol |
+| AAuth Protocol | Roles, identities, token profiles, requirements, endpoints, missions, deferred responses, delegation, revocation, discovery, and five access modes | Normative protocol |
 | HTTP Signature Keys | How a signed HTTP message conveys or discovers its verification key | Normative protocol; `cached` remains explicitly provisional in the editor source |
-| Rich Resource Requests (R3) | Machine-readable operations, grants, per-call proposals, and exact-byte authorization descriptions | Normative companion protocol |
+| AAuth Rich Resource Requests (R3) | Machine-readable operations, grants, per-call proposals, and exact-byte authorization descriptions | Normative companion protocol |
 | AAuth Events | Resource-to-Agent-Provider subscription and event delivery | Normative companion protocol; AP-to-agent delivery is deliberately unspecified |
 | AAuth Budgets | Budget offers, narrowing, hard-cap accounting, feedback, and usage queries | Normative companion protocol |
-| AAuth Bootstrap | Platform-specific enrollment and refresh patterns | Informational guidance, not a new conformance surface |
-| Interoperability demo profile | Five complete demonstrations that implementations should be able to compose | Informational profile using the protocols above |
+| AAuth Bootstrap Guidance | Platform-specific enrollment and refresh patterns | Informational guidance, not a new conformance surface |
+| AAuth Interoperability Demo Profile | Five complete demonstrations that implementations should be able to compose | Informational profile using the protocols above |
 
 ## Roles and identities
 
@@ -130,8 +130,9 @@ network egress admission are separate decisions.
 State stays with the role whose decision or consequence it represents. AAuth
 does not define one global lifecycle or evidence record.
 
-| State | Owner | Required boundary |
+| State | Owner | Source or named profile boundary |
 | --- | --- | --- |
+| Agent enrollment and refresh result | AP | Repository two-key profile: bind one durable-key identity to one stable Agent; retain an exact Agent-token result for a valid refresh replay |
 | Agent-person binding and directed identifiers | PS | Stable within the PS and Resource pair; opaque outside the PS |
 | Issued Person-token record | PS | Retained long enough to verify any Resource token that names it |
 | Mission blob and updates | PS | Exact approved bytes determine `s256`; termination is one-way |
@@ -147,7 +148,8 @@ does not define one global lifecycle or evidence record.
 | Person-level budget ceiling | PS | Narrow allocations without disclosing or inventing a cross-Resource grant |
 
 “Retain,” “durably accept,” and “atomically write” appear only where the
-sources require them. They do not imply a universal persistence API.
+sources require them or an explicitly named repository profile defines them.
+They do not imply a universal persistence API.
 
 ## Complete protocol journeys
 
@@ -177,6 +179,32 @@ Three-party authorization removes the AS exchange and has the PS issue the
 Auth token. Agent identity, Person identity, and Resource-managed access are
 narrower compositions of the same proof, discovery, and requirement
 primitives.
+
+### Two-key Agent bootstrap profile
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant AP as Agent Provider
+    participant R as Resource
+
+    A->>AP: Application-selected enrollment POST, durable hwk proof
+    AP-->>A: Stable Agent identifier after enrollment retention
+    A->>AP: Application-selected refresh POST, durable jkt-jwt plus ephemeral HTTP proof
+    AP-->>A: Exact retained Agent token bound to the ephemeral key
+    A->>R: Ordinary Agent-token protected request with ephemeral proof
+```
+
+Bootstrap supplies the two-key pattern but does not define portable endpoint
+discovery, JSON envelopes, statuses, or replay semantics. This repository
+profile makes those choices explicitly: both endpoints are selected
+by the application on the AP origin; request bodies use signed
+`application/json`; enrollment carries `evidence`; refresh carries optional
+`ps` plus `evidence`; and `(durable identity, delegation jti)` identifies one
+exact retained refresh request and result. A retry reuses the exact naming JWT
+and JSON body while freshly signing the outer HTTP request. The same request
+returns the same Agent token; a different naming JWT or body conflicts. The
+generic AAuth token and Signature-Key formats remain unchanged.
 
 ### Mission-bound interoperability profile
 
@@ -264,6 +292,7 @@ remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 | Events examples use `EdDSA` where normative text forbids it | Follow the prohibition; do not use the example as a vector |
 | Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`) | Use an exact token-and-payload delivery fingerprint; retain `eid` as routing context |
 | Signature-Key labels `cached` an open design | Keep it opt-in and visibly provisional |
+| Bootstrap defines a two-key pattern but no portable wire or replay rule | Keep routes application-selected and document one AP-owned exact-result profile rather than adding metadata fields or a generic Bootstrap package |
 
 ## Model-to-code rule
 

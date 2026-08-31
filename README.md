@@ -41,6 +41,7 @@ stores. The programs are executable documentation, not deployment templates.
 
 | Path | What it demonstrates | Command |
 | --- | --- | --- |
+| [Two-key Agent bootstrap](example/bootstrap) | Application-selected `hwk` enrollment, `jkt-jwt` refresh to a fresh Agent key, and direct Agent identity access | `go run ./example/bootstrap` |
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
 | [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
@@ -101,10 +102,13 @@ application implementations.
 
 ## Current limits
 
-The repository does not yet implement all of AAuth Core. Remote Agent
-enrollment and credential renewal, general deferred and clarification paths,
-the remaining mission log and control surfaces, and several delegation and
-revocation variants remain open. Mission support currently covers immediate
+The repository does not yet implement all of AAuth Core. Agent enrollment and
+renewal currently cover one explicit Ed25519 two-key profile with
+application-selected Agent Provider routes; single-key, platform-attestation,
+durable-key replacement, and self-hosted patterns remain open. General
+deferred and clarification paths, the remaining mission log and control
+surfaces, and several delegation and revocation variants also remain open.
+Mission support currently covers immediate
 top-level approval, ordered accepted updates, protected use, and
 person-accepted completion through both three-party and four-party
 authorization. Deferred mission actions and mission combinations with
