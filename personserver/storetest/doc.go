@@ -21,6 +21,16 @@
 //		})
 //	}
 //
+// A mission store that also accepts audit records uses:
+//
+//	func TestMissionAuditStore(t *testing.T) {
+//		storetest.RunAudit(t, storetest.AuditContract{
+//			New: func(testing.TB) (personserver.MissionAuditStore, personserver.MissionRecord) {
+//				return newApplicationMissionAuditStore()
+//			},
+//		})
+//	}
+//
 // New must return a fresh, empty store. The contract checks the public state
 // transitions, identity binding, copy isolation, retry rules, concurrency,
 // expiry, cancellation, and error atomicity appropriate to that store.

@@ -129,7 +129,7 @@ local evidence maturity; they do not mean the question was sent.
 | --- | --- | --- |
 | AAG-F001 | Interoperability Surface 3 says Resource metadata contains keys, while Core uses its `jwks_uri` | evidence pending |
 | AAG-F002 | The AS request example uses a `jwks_uri` Signature-Key parameter not defined by that scheme | evidence pending |
-| AAG-F003 | Audit delivery has no stable retry identity after a lost `201` | evidence pending |
+| AAG-F003 | Audit delivery has no stable retry identity after a lost `201` | ready below with exact append and one-shot submission evidence |
 | AAG-F004 | General deferred endpoints do not define recovery of a lost terminal response | ready below with Resource-session and PS-consent evidence |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | immutable Resource store, conflict evidence, and complete direct-grant journey implemented |
 | AAG-F006 | R3 example hashes are not executable SHA-256 vectors | evidence pending until a source-example vector test is added |
@@ -150,6 +150,8 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F096 | Permission-specific denial uses `200`, while generic deferred denial uses `403` | ready below with immediate and deferred Permission evidence |
 | AAG-F097 | The Permission Endpoint has no registered error table | ready below with typed request, policy, store, and polling failures |
 | AAG-F098 | An uncertain initial Permission POST has no recovery identity | ready below with one-shot transport evidence |
+| AAG-F099 | The Audit Endpoint has no endpoint-specific error contract | ready below with authenticated request, mission, and append evidence |
+| AAG-F100 | Audit says both `201 Created` and “fire-and-forget” without defining non-blocking behavior | ready below with one-shot Agent evidence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -186,6 +188,30 @@ local evidence maturity; they do not mean the question was sent.
 The questions below come from the pinned editor sources in
 [SPECIFICATIONS.md](SPECIFICATIONS.md). Their placement notes avoid duplicating
 existing discussions.
+
+### AAG-F003 — Audit delivery has no stable retry identity after a lost `201`
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Audit Request` and `Audit Response`.
+
+An Audit request carries no request identifier, idempotency key, or lookup
+reference. If the Person Server appends the record but the `201 Created`
+response is lost, the Agent cannot distinguish acceptance from non-delivery.
+Repeating the signed request creates another valid log entry; treating equal
+content as a retry would incorrectly collapse two identical actions.
+
+The implementation appends exact request bytes before acknowledgment and
+keeps identical appends distinct. The Agent submits once and returns a typed
+uncertain-outcome error after an unverifiable post-handoff result. It does not
+retry or claim recovery.
+
+**Question:** Should an Audit request carry a stable caller-selected event
+identity, or should the Person Server define exact-request replay and lookup
+semantics after uncertain delivery?
+
+**Placement:** Open a focused Core Audit Endpoint issue and cross-link the
+general uncertain-submission discussion.
 
 ### AAG-F004 — Deferred terminal delivery has no recovery path
 
@@ -1880,6 +1906,51 @@ semantics for uncertain initial submissions?
 
 **Placement:** Cross-link the general deferred initial-request recovery
 discussion rather than treating this as a Permission-only transport issue.
+
+### AAG-F099 — The Audit Endpoint has no endpoint-specific error contract
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Audit Request`, `Audit Response`, `Mission Status
+Errors`, and `Error Responses`.
+
+The endpoint explicitly names mission-status errors, but it does not say how
+to report malformed JSON, invalid parameter shapes, a mismatched Agent or
+mission owner, or an audit-store failure. The general error section does not
+assign a complete Audit Endpoint mapping.
+
+The implementation uses `invalid_request` for malformed input, owner-safe
+mission lookup and the existing mission-status errors for mission state, and
+`server_error` for operational failure. Those are local choices rather than a
+claim that Core assigns them.
+
+**Question:** Which existing error registry applies to Audit, and should the
+endpoint define any additional owner, validation, or retention failures?
+
+**Placement:** Combine with an Audit Endpoint contract pass if the editors
+prefer one issue for request, response, and error behavior.
+
+### AAG-F100 — “Fire-and-forget” does not define the Audit response behavior
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Audit Response`.
+
+Core requires the Person Server to return `201 Created`, permits a
+mission-status error, and then says the Agent “SHOULD NOT block on the
+response.” An ordinary HTTP request cannot learn either result without waiting
+for a response, while dispatching it in background work hides delivery failure
+and leaves process-lifetime and cancellation behavior undefined.
+
+The implementation exposes one synchronous request. It waits for the response,
+returns a definite typed rejection when possible, returns an uncertain outcome
+after ambiguous handoff, and leaves concurrency to the calling application.
+
+**Question:** Does “SHOULD NOT block” mean that the action must not wait for
+audit completion because audit happens afterward, that the application should
+dispatch asynchronously, or that the Agent may ignore the response entirely?
+
+**Placement:** Combine with `AAG-F003` in a focused Core Audit Endpoint issue.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

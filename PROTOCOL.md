@@ -230,6 +230,30 @@ sleeps or loops. The current profile is top-level and missionless. Mission
 association, pre-approved-tool matching, and mission-log recording remain
 separate unimplemented source requirements.
 
+### Mission-bound action audit
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant A as Agent
+    participant PS as Person Server
+    participant Log as Mission audit store
+    App->>App: Perform action inside active mission
+    App->>A: Supply post-action record
+    A->>PS: One signed POST with exact JSON
+    PS->>PS: Verify Agent and active owned mission
+    PS->>Log: Compare mission and append atomically
+    Log-->>PS: Entry retained in order
+    PS-->>A: 201 Created
+```
+
+Audit reports an action already performed; the library never performs the
+action. The Agent submits once and does not retry an uncertain response because
+Core supplies no stable request identity. The Person Server stores the exact
+request before acknowledging it. Host code can read the ordered Audit-entry
+sublog through `MissionAuditStore`. The complete cross-event mission log and
+an Agent-facing retrieval route are not implemented here.
+
 ### Clarification during three-party consent
 
 ```mermaid

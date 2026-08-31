@@ -76,6 +76,15 @@ recovers retained intent after Server recomposition but carries no person
 authority. The application authenticates the person, interprets parameters,
 and executes an action only after receiving the typed grant.
 
+The current Audit slice is one top-level mission-bound post-action path. The
+root package owns the exact audit document, `agent` makes one signed
+submission, and `personserver` compares stable mission identity and lifecycle
+state while appending through `MissionAuditStore`. Accepted updates do not
+invalidate an append because Core says they do not change the mission. The
+audit store extends the mission lifecycle boundary because an append must race
+atomically with expiry or completion. Audit does not execute the action, and
+it does not create a general evidence container.
+
 The current model includes focused `r3`, `events`, and `budgets` protocol
 packages. Sections below distinguish their implemented profiles from target
 ownership. Present-tense support must never be inferred from the target import
@@ -393,6 +402,13 @@ that exact context, first-writer wins, and one terminal Agent poll consumes the
 decision before delivery. This focused store is not reused for missions,
 clarification, interaction relay, or application execution.
 
+Mission audit state stays with mission lifecycle state. `MissionAuditStore`
+compares stable identity and lifecycle state and appends one exact record in
+Audit-entry order. Identical records are distinct actions, not idempotent
+retries. A host read is owner-scoped; the current HTTP surface exposes
+submission only. Cross-event ordering with updates, tokens, permissions, and
+interactions belongs to the still-unimplemented complete mission log.
+
 ### `resource`
 
 The target owns Resource metadata/JWKS, the five access modes, Resource-local
@@ -452,8 +468,8 @@ Examples include:
 
 - `EnrollmentStore` at an AP for a durable-key enrollment and exact refresh
   result keyed by the verified identity and delegation JTI.
-- `PersonTokenStore`, `MissionStore`, `PendingAuthorizationStore`, and
-  `PermissionStore` at a PS.
+- `PersonTokenStore`, `MissionStore`, `MissionAuditStore`,
+  `PendingAuthorizationStore`, and `PermissionStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
   `R3ProposalStore`, `SubscriptionStore`, and `BudgetStore` at a Resource.
 - `r3.IssuanceStore` at whichever PS or AS issues the R3 Auth token.

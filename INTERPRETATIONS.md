@@ -1068,3 +1068,34 @@ explicit backoff rules. Once a terminal poll response is consumed, the source
 requires later polls to return `410`; the implementation follows that rule and
 therefore inherits the lost-terminal-response gap already recorded as
 `AAG-F004`.
+
+## Audit is one exact post-action append, not action execution
+
+**Sources:** AAuth Core, `Audit Endpoint`, `Audit Request`, and `Audit
+Response`.
+
+An audit request reports an action that the application has already performed.
+The library validates and carries the report; it does not interpret the action,
+execute it, render its Markdown description, or treat the record as permission.
+The description is untrusted raw Markdown and must be sanitized before display.
+The action, parameters, result, and additive members remain untrusted Agent
+input and need host-specific validation before processing or rendering.
+
+The Person Server retains the exact signed JSON request before returning `201
+Created`. This preserves unknown additive members and gives the host log the
+same artifact the Agent authenticated. An audit append compares stable mission
+identity and lifecycle state inside the mission store's atomic boundary, so
+completion or expiry cannot race into a successful later append. An accepted
+update does not invalidate the action's audit because it does not change the
+mission. Identical requests are distinct Audit-sublog entries because Core
+defines no audit identity or replay key. This slice does not claim ordering
+against the other event classes in Core's complete mission log.
+
+`SubmitAudit` performs one request and waits for its protocol status. Any `201`
+acknowledges the append; an optional representation is ignored. It does not
+retry, poll, or hide the call in background work. A transport failure or server
+failure after handoff is an uncertain outcome because the record may already
+exist (`AAG-F003`). The source's simultaneous `201` contract and
+“fire-and-forget” guidance leave the meaning of “SHOULD NOT block” unclear;
+`AAG-F100` asks whether it describes application control flow or the HTTP
+exchange itself.

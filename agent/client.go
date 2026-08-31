@@ -2,9 +2,9 @@
 // the immediate and per-call R3 paths. It also composes two-key Agent
 // enrollment and refresh, direct identity access, Resource-managed sessions,
 // one immediate mission journey, parent-mediated sub-agents, one Resource call
-// chain, missionless local-action permission, public Events registration and
-// correlation, and one-shot polling of supported interactions and held
-// invocations.
+// chain, missionless local-action permission, mission-bound post-action audit,
+// public Events registration and correlation, and one-shot polling of
+// supported interactions and held invocations.
 package agent
 
 import (
@@ -724,6 +724,7 @@ type personServerMetadata struct {
 	AuthTokenEndpoint   string `json:"auth_token_endpoint"`
 	MissionEndpoint     string `json:"mission_endpoint"`
 	PermissionEndpoint  string `json:"permission_endpoint"`
+	AuditEndpoint       string `json:"audit_endpoint"`
 	JWKSURI             string `json:"jwks_uri"`
 }
 

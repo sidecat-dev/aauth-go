@@ -4,6 +4,7 @@ package exampleutil
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -13,12 +14,13 @@ import (
 )
 
 // NewMissionStore returns a concurrency-safe in-memory Person Server mission
-// store for examples.
-func NewMissionStore() personserver.MissionStore {
+// and mission-audit store for examples.
+func NewMissionStore() personserver.MissionAuditStore {
 	return &missionStore{
 		missions: make(map[string]personserver.MissionRecord),
 		tokens:   make(map[string]personserver.PersonTokenRecord),
 		auth:     make(map[string]personserver.IssuedAuthTokenRecord),
+		audits:   make(map[string][]personserver.MissionAuditRecord),
 	}
 }
 
@@ -27,9 +29,10 @@ type missionStore struct {
 	missions map[string]personserver.MissionRecord
 	tokens   map[string]personserver.PersonTokenRecord
 	auth     map[string]personserver.IssuedAuthTokenRecord
+	audits   map[string][]personserver.MissionAuditRecord
 }
 
-var _ personserver.MissionStore = (*missionStore)(nil)
+var _ personserver.MissionAuditStore = (*missionStore)(nil)
 
 func (store *missionStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
 	store.mu.Lock()
@@ -193,6 +196,54 @@ func (store *missionStore) CommitMissionAuthToken(
 	return nil
 }
 
+func (store *missionStore) AppendMissionAudit(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	record personserver.MissionAuditRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if record.RecordedAt.IsZero() || record.Document.Entry.MissionS256 != expected.S256 {
+		return personserver.ErrMissionConflict
+	}
+	decoded, err := aauth.DecodeAudit(record.Document.ExactJSON)
+	if err != nil || !auditDocumentsEqual(decoded, record.Document) {
+		return personserver.ErrMissionConflict
+	}
+	if err := store.requireActiveForAudit(expected, record.RecordedAt); err != nil {
+		return err
+	}
+	key := expected.Agent + "\x00" + expected.S256
+	store.audits[key] = append(store.audits[key], cloneMissionAuditRecord(record))
+	return nil
+}
+
+func (store *missionStore) LoadMissionAuditsForAgent(
+	_ context.Context,
+	agent string,
+	s256 string,
+	at time.Time,
+) ([]personserver.MissionAuditRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := agent + "\x00" + s256
+	mission, ok := store.missions[key]
+	if !ok {
+		return nil, personserver.ErrMissionNotFound
+	}
+	if mission.State == personserver.MissionActive && !mission.ExpiresAt.IsZero() && !at.Before(mission.ExpiresAt) {
+		mission.State = personserver.MissionTerminated
+		mission.TerminationReason = "expired"
+		store.missions[key] = cloneMissionRecord(mission)
+	}
+	records := store.audits[key]
+	cloned := make([]personserver.MissionAuditRecord, len(records))
+	for index := range records {
+		cloned[index] = cloneMissionAuditRecord(records[index])
+	}
+	return cloned, nil
+}
+
 func (store *missionStore) requireActive(expected personserver.MissionRecord, at time.Time) error {
 	key := expected.Agent + "\x00" + expected.S256
 	current, ok := store.missions[key]
@@ -207,6 +258,31 @@ func (store *missionStore) requireActive(expected personserver.MissionRecord, at
 	if current.State == personserver.MissionTerminated {
 		return &personserver.MissionTerminatedError{TerminationReason: current.TerminationReason}
 	}
+	if !current.Equal(expected) {
+		return personserver.ErrMissionConflict
+	}
+	return nil
+}
+
+func (store *missionStore) requireActiveForAudit(expected personserver.MissionRecord, at time.Time) error {
+	key := expected.Agent + "\x00" + expected.S256
+	current, ok := store.missions[key]
+	if !ok {
+		return personserver.ErrMissionNotFound
+	}
+	if current.State == personserver.MissionActive && !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
+		current.State = personserver.MissionTerminated
+		current.TerminationReason = "expired"
+		store.missions[key] = cloneMissionRecord(current)
+	}
+	if current.State == personserver.MissionTerminated {
+		return &personserver.MissionTerminatedError{TerminationReason: current.TerminationReason}
+	}
+	// Core says accepted updates do not change the mission. An audit append
+	// therefore compares stable identity and lifecycle state while permitting
+	// updates that committed after the handler loaded its mission context.
+	current.AcceptedUpdates = nil
+	expected.AcceptedUpdates = nil
 	if !current.Equal(expected) {
 		return personserver.ErrMissionConflict
 	}
@@ -235,4 +311,20 @@ func cloneUpdateDocument(document aauth.MissionUpdateDocument) aauth.MissionUpda
 func cloneCompletionDocument(document aauth.MissionCompletionDocument) aauth.MissionCompletionDocument {
 	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
 	return document
+}
+
+func cloneMissionAuditRecord(record personserver.MissionAuditRecord) personserver.MissionAuditRecord {
+	record.Document.ExactJSON = append([]byte(nil), record.Document.ExactJSON...)
+	record.Document.Entry.Parameters = append(json.RawMessage(nil), record.Document.Entry.Parameters...)
+	record.Document.Entry.Result = append(json.RawMessage(nil), record.Document.Entry.Result...)
+	return record
+}
+
+func auditDocumentsEqual(left, right aauth.AuditDocument) bool {
+	return string(left.ExactJSON) == string(right.ExactJSON) &&
+		left.Entry.MissionS256 == right.Entry.MissionS256 &&
+		left.Entry.Action == right.Entry.Action &&
+		left.Entry.Description == right.Entry.Description &&
+		string(left.Entry.Parameters) == string(right.Entry.Parameters) &&
+		string(left.Entry.Result) == string(right.Entry.Result)
 }

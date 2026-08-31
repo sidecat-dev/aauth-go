@@ -160,10 +160,24 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `approved_tools` matching, mission-log recording, durable adapters, and
     recovery of an uncertain initial submission.
 
+- [x] **Mission-bound action audit — Implemented**
+  - Flow: application performs one action → Agent sends one exact signed
+    post-action record → PS verifies the active owned mission → the mission
+    store appends before `201 Created` → the host can read the ordered
+    Audit-entry sublog.
+  - Start with: `aauth.AuditEntry`, `agent.Client.SubmitAudit`,
+    `personserver.AuditConfig`, and `personserver.MissionAuditStore`.
+  - Evidence: [`integration/audit_mission_test.go`](integration/audit_mission_test.go),
+    [`personserver/storetest/audit.go`](personserver/storetest/audit.go), and
+    `go run ./example/audit`.
+  - Missing from the wider Audit and mission-log surface: cross-event ordering
+    with token, update, permission, interaction, and clarification activity;
+    deferred delivery; sub-agent and call-chain composition; durable adapters;
+    stable recovery after an uncertain acknowledgment; and Agent-facing log
+    retrieval.
+
 ### Not implemented
 
-- [ ] **Audit endpoint — Not implemented.** There is no Agent-to-PS audit
-  record submission and response journey.
 - [ ] **Interaction endpoint — Not implemented.** Existing interaction codes
   support the specific Person-token, session, and consent paths above, but
   there is no general Agent-to-PS interaction relay for work the Agent cannot

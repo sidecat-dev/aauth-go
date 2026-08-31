@@ -5,9 +5,9 @@
 // and parent-mediated issuance and can compose the immediate mission lifecycle:
 // approval, ordered accepted updates, person-accepted completion, and
 // mission-bound credential issuance. Both compositions can add missionless
-// local-action permission. Three-party composition additionally supports
-// deferred authorization, issued-token revocation, and one same-Person-Server
-// Resource call chain.
+// local-action permission and mission-bound post-action audit. Three-party
+// composition additionally supports deferred authorization, issued-token
+// revocation, and one same-Person-Server Resource call chain.
 package personserver
 
 import (
@@ -79,6 +79,9 @@ type FederatedAuthorizationConfig struct {
 	Missions *MissionConfig
 	// Permission optionally enables missionless top-level permission decisions.
 	Permission *PermissionConfig
+	// Audit optionally enables mission-bound audit retention. Missions must be
+	// configured and Tokens must implement MissionAuditStore.
+	Audit *AuditConfig
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -121,6 +124,9 @@ type PSAuthorizationConfig struct {
 	Revocation *AuthTokenRevocationConfig
 	// Permission optionally enables missionless top-level permission decisions.
 	Permission *PermissionConfig
+	// Audit optionally enables mission-bound audit retention. Missions must be
+	// configured and Tokens must implement MissionAuditStore.
+	Audit *AuditConfig
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -262,6 +268,7 @@ type Server struct {
 	revocationAdmit                 signaturekey.EgressAdmitter
 	permissionPolicy                func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
 	permissions                     PermissionStore
+	missionAudits                   MissionAuditStore
 }
 
 type authorizationMode uint8
@@ -283,6 +290,7 @@ type serverConfig struct {
 	requirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	missions                      *MissionConfig
 	permission                    *PermissionConfig
+	audit                         *AuditConfig
 }
 
 // NewFederatedAuthorization constructs a four-party Person Server.
@@ -304,6 +312,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		requirePersonTokenInteraction: config.RequirePersonTokenInteraction,
 		missions:                      config.Missions,
 		permission:                    config.Permission,
+		audit:                         config.Audit,
 	})
 	if err != nil {
 		return nil, err
@@ -359,6 +368,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		requirePersonTokenInteraction: config.RequirePersonTokenInteraction,
 		missions:                      config.Missions,
 		permission:                    config.Permission,
+		audit:                         config.Audit,
 	})
 	if err != nil {
 		return nil, err
@@ -391,6 +401,9 @@ func newServer(config serverConfig) (*Server, error) {
 	if config.permission != nil && (config.permission.Policy == nil || config.permission.Store == nil) {
 		return nil, errors.New("personserver: permission policy and store are required together")
 	}
+	if config.audit != nil && config.missions == nil {
+		return nil, errors.New("personserver: audit requires missions")
+	}
 	if err := aauth.ValidateServerIdentifier(config.issuer); err != nil {
 		return nil, fmt.Errorf("personserver: issuer: %w", err)
 	}
@@ -416,6 +429,7 @@ func newServer(config serverConfig) (*Server, error) {
 	var missionApprove func(context.Context, MissionApprovalRequest) (MissionDecision, error)
 	var missionAcceptUpdate func(context.Context, MissionUpdatePolicyRequest) error
 	var missionConfirmPersonCompletion func(context.Context, MissionCompletionPolicyRequest) error
+	var missionAudits MissionAuditStore
 	if config.missions != nil {
 		if config.missions.Approve == nil {
 			return nil, errors.New("personserver: mission approval policy is required")
@@ -434,6 +448,12 @@ func newServer(config serverConfig) (*Server, error) {
 		missionApprove = config.missions.Approve
 		missionAcceptUpdate = config.missions.AcceptUpdate
 		missionConfirmPersonCompletion = config.missions.ConfirmPersonAcceptedCompletion
+		if config.audit != nil {
+			missionAudits, ok = config.tokens.(MissionAuditStore)
+			if !ok {
+				return nil, errors.New("personserver: audit requires Tokens to implement MissionAuditStore")
+			}
+		}
 	}
 	var deferredTokens DeferredTokenStore
 	if config.requirePersonTokenInteraction != nil {
@@ -458,6 +478,7 @@ func newServer(config serverConfig) (*Server, error) {
 		requirePersonTokenInteraction: config.requirePersonTokenInteraction,
 		missions:                      missions, missionApprove: missionApprove,
 		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
+		missionAudits: missionAudits,
 	}, nil
 }
 
@@ -478,6 +499,9 @@ func (server *Server) Handler() http.Handler {
 	if server.permissions != nil {
 		mux.HandleFunc("POST /permission", server.handlePermission)
 		mux.HandleFunc("GET /permission/pending/{id}", server.handlePendingPermission)
+	}
+	if server.missionAudits != nil {
+		mux.HandleFunc("POST /audit", server.handleAudit)
 	}
 	return mux
 }
@@ -1412,6 +1436,9 @@ func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Reque
 	}
 	if server.permissions != nil {
 		metadata["permission_endpoint"] = server.issuer + "/permission"
+	}
+	if server.missionAudits != nil {
+		metadata["audit_endpoint"] = server.issuer + "/audit"
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }
