@@ -21,34 +21,41 @@ const DefaultMaxBodyBytes int64 = 1 << 20
 // spellings of known fields, permits additive extension members, and leaves no
 // trailing value unread.
 func DecodeJSON(reader io.Reader, maxBytes int64, destination any) error {
+	_, err := DecodeExactJSON(reader, maxBytes, destination)
+	return err
+}
+
+// DecodeExactJSON applies DecodeJSON's validation and returns an independent
+// copy of the exact input bytes.
+func DecodeExactJSON(reader io.Reader, maxBytes int64, destination any) ([]byte, error) {
 	if reader == nil {
-		return errors.New("request body is required")
+		return nil, errors.New("request body is required")
 	}
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxBodyBytes
 	}
 	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if int64(len(body)) > maxBytes {
-		return errors.New("request body is too large")
+		return nil, errors.New("request body is too large")
 	}
 	if err := jsonstrict.RejectAmbiguousNames(body); err != nil {
-		return err
+		return nil, err
 	}
 	if err := jsonstrict.RejectCaseVariants(body, destination); err != nil {
-		return err
+		return nil, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(destination); err != nil {
-		return err
+		return nil, err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("request body must contain exactly one JSON value")
+		return nil, errors.New("request body must contain exactly one JSON value")
 	}
-	return nil
+	return append([]byte(nil), body...), nil
 }
 
 // WriteJSON writes one JSON response.

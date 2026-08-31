@@ -298,6 +298,123 @@
       "blocks": [
         "claim that approved_at alone guarantees unique mission identity"
       ]
+    },
+    {
+      "id": "MODEL-MISSION-UPDATE-EXACTNESS-001",
+      "feedback_id": "AAG-F063",
+      "subject": "Exact bytes identified by an accepted mission update",
+      "status": "implementation_choice",
+      "disposition": "Persist and hash the exact authenticated update request body, retaining unknown additive members byte-for-byte.",
+      "grounding": "Core defines the digest over bytes as the PS persists them but does not say whether the PS may rewrite or canonically re-encode the authenticated request.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            1643,
+            1674,
+            1684
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MODEL-MISSION-ACTION-DENIAL-001",
+      "feedback_id": "AAG-F064",
+      "subject": "Immediate mission action refusal and its error result",
+      "status": "implementation_choice",
+      "disposition": "Return provisional 403 mission_update_denied or mission_completion_denied while leaving the active mission unchanged.",
+      "grounding": "Core defines acceptance, deferred review, and clarification follow-up but neither says whether immediate terminal refusal is allowed nor assigns an error if it is.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            1674,
+            1713,
+            1715,
+            1742,
+            1746
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MODEL-MISSION-ACTION-RECOVERY-001",
+      "feedback_id": "AAG-F065",
+      "subject": "Mission action uncertain-success recovery",
+      "status": "unresolved",
+      "disposition": "Perform one mission-action POST and never retry automatically; do not claim recovery for an uncertain update or person-accepted completion.",
+      "grounding": "Core provides no request identity or lookup that recovers an update or completion whose acceptance or response delivery became uncertain.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            1674,
+            1713,
+            2492
+          ]
+        }
+      ],
+      "blocks": [
+        "mission update retry convergence",
+        "mission update lost-response recovery",
+        "mission completion lost-response recovery"
+      ]
+    },
+    {
+      "id": "MODEL-MISSION-UPDATE-AUTHORITY-001",
+      "feedback_id": "AAG-F066",
+      "subject": "Decision-maker for a mission update",
+      "status": "implementation_choice",
+      "disposition": "Follow the update-specific rule and permit the Person Server's update policy to accept autonomously; keep completion person-confirmed.",
+      "grounding": "The mission overview says the person decides all three operations, while the update section says the PS may accept an update on its own.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            1509,
+            1674
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MODEL-MISSION-TERMINATION-CREDENTIALS-001",
+      "feedback_id": "AAG-F067",
+      "subject": "Outstanding credentials after mission termination",
+      "status": "unresolved",
+      "disposition": "Close later Person Server decisions but do not claim that termination revokes already-issued credentials; the Agent must stop using them.",
+      "grounding": "Core defines no signal by which a Resource that receives only mission_s256 learns that the Person Server terminated the mission.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            1682,
+            1722,
+            1758,
+            3792
+          ]
+        }
+      ],
+      "blocks": [
+        "claim that mission termination revokes outstanding credentials"
+      ]
+    },
+    {
+      "id": "MODEL-DEFERRED-RETRY-AFTER-001",
+      "feedback_id": "AAG-F068",
+      "subject": "Absent Retry-After in a deferred response",
+      "status": "implementation_choice",
+      "disposition": "Honor the explicit receiver fallback and use a five-second interval when Retry-After is absent; validate one present value strictly.",
+      "grounding": "Core marks Retry-After required, then defines a five-second default when the header is absent.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            2474,
+            2488
+          ]
+        }
+      ]
     }
   ],
   "headings": [

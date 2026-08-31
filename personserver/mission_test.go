@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -373,7 +374,7 @@ func TestMissionApprovalPolicyDenialIsTypedAndDoesNotRetain(t *testing.T) {
 
 	protocol := newMissionProtocol(t)
 	protocol.server.missionApprove = func(context.Context, MissionApprovalRequest) (MissionDecision, error) {
-		return MissionDecision{}, errors.New("person declined")
+		return MissionDecision{}, fmt.Errorf("%w: person declined", ErrMissionDenied)
 	}
 	request := httptest.NewRequest(
 		http.MethodPost, protocol.personServerID+"/mission", bytes.NewReader([]byte(`{"description":"Work"}`)),
@@ -390,6 +391,28 @@ func TestMissionApprovalPolicyDenialIsTypedAndDoesNotRetain(t *testing.T) {
 	protocol.store.mu.Unlock()
 	if retained != 0 {
 		t.Fatalf("denied mission retained %d records", retained)
+	}
+}
+
+func TestMissionApprovalOperationalFailureIsNotReportedAsDenial(t *testing.T) {
+	t.Parallel()
+
+	protocol := newMissionProtocol(t)
+	protocol.server.missionApprove = func(context.Context, MissionApprovalRequest) (MissionDecision, error) {
+		return MissionDecision{}, errors.New("policy store unavailable")
+	}
+	request := httptest.NewRequest(
+		http.MethodPost, protocol.personServerID+"/mission", bytes.NewReader([]byte(`{"description":"Work"}`)),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	if err := signPersonServerTestRequest(request, protocol.agentKey, protocol.agentToken, protocol.clock); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	protocol.server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"error":"server_error"`)) {
+		t.Fatalf("operational approval failure = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -432,7 +455,15 @@ func TestMissionConfigurationIsOptionalAndCoherent(t *testing.T) {
 		t.Fatalf("unconfigured metadata = %#v", metadata)
 	}
 
-	base.Missions = &MissionConfig{Approve: protocol.server.missionApprove}
+	base.Missions = &MissionConfig{
+		Approve: protocol.server.missionApprove,
+		AcceptUpdate: func(context.Context, MissionUpdatePolicyRequest) error {
+			return nil
+		},
+		ConfirmPersonAcceptedCompletion: func(context.Context, MissionCompletionPolicyRequest) error {
+			return nil
+		},
+	}
 	if _, err := NewPSAuthorization(base); err == nil {
 		t.Fatal("mission policy with a token-only store was accepted")
 	}
@@ -440,6 +471,20 @@ func TestMissionConfigurationIsOptionalAndCoherent(t *testing.T) {
 	base.Missions = &MissionConfig{}
 	if _, err := NewPSAuthorization(base); err == nil {
 		t.Fatal("mission configuration without approval policy was accepted")
+	}
+	base.Missions = &MissionConfig{
+		Approve:                         protocol.server.missionApprove,
+		ConfirmPersonAcceptedCompletion: func(context.Context, MissionCompletionPolicyRequest) error { return nil },
+	}
+	if _, err := NewPSAuthorization(base); err == nil {
+		t.Fatal("mission configuration without update acceptance was accepted")
+	}
+	base.Missions = &MissionConfig{
+		Approve:      protocol.server.missionApprove,
+		AcceptUpdate: func(context.Context, MissionUpdatePolicyRequest) error { return nil },
+	}
+	if _, err := NewPSAuthorization(base); err == nil {
+		t.Fatal("mission configuration without completion acceptance was accepted")
 	}
 }
 
@@ -452,6 +497,114 @@ func TestMissionDecisionCannotApproveAnExpiredMission(t *testing.T) {
 		if err := validateMissionDecision(decision, aauth.MissionProposal{Description: "Work"}, now); err == nil {
 			t.Fatalf("expiry %s was accepted at %s", expiresAt, now)
 		}
+	}
+}
+
+func TestMemoryMissionStoreCopiesUpdateAndCompletionRecords(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
+	store := newMemoryMissionStore()
+	expiresAt := now.Add(time.Hour)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: "https://person.example", Agent: "aauth:agent@example", ApprovedAt: now,
+		Description: "Test the reference store", ExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := MissionRecord{
+		S256: mission.S256, Agent: mission.Blob.Agent, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: *mission.Blob.ExpiresAt, State: MissionActive,
+	}
+	if err := store.CommitMission(context.Background(), record, nil); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := store.LoadMissionForAgent(context.Background(), record.Agent, record.S256, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{Action: "update", Description: "Refined scope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateBytes := append([]byte(nil), update.ExactJSON...)
+	updated, err := store.AppendMissionUpdate(context.Background(), expected, now.Add(time.Minute), update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update.ExactJSON[0] ^= 0xff
+	updated.AcceptedUpdates[0].Document.ExactJSON[0] ^= 0xff
+	reloaded, err := store.LoadMissionForAgent(context.Background(), record.Agent, record.S256, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.AcceptedUpdates) != 1 ||
+		!bytes.Equal(reloaded.AcceptedUpdates[0].Document.ExactJSON, updateBytes) ||
+		!reloaded.AcceptedUpdates[0].AcceptedAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("retained update = %#v", reloaded.AcceptedUpdates)
+	}
+
+	completion, err := aauth.EncodeMissionCompletion(aauth.MissionCompletion{
+		Action: "completion", Summary: "Reference-store exercise complete",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionBytes := append([]byte(nil), completion.ExactJSON...)
+	completed, err := store.CompleteMission(context.Background(), reloaded, now.Add(3*time.Minute), completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion.ExactJSON[0] ^= 0xff
+	completed.Completion.Document.ExactJSON[0] ^= 0xff
+	reloaded, err = store.LoadMissionForAgent(context.Background(), record.Agent, record.S256, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.State != MissionTerminated || reloaded.TerminationReason != "completed" ||
+		reloaded.Completion == nil || !bytes.Equal(reloaded.Completion.Document.ExactJSON, completionBytes) ||
+		!reloaded.Completion.AcceptedAt.Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("completed mission = %#v", reloaded)
+	}
+}
+
+func TestMemoryMissionStoreLifecycleCASMaterializesExpiry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
+	store := newMemoryMissionStore()
+	expiresAt := now.Add(time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: "https://person.example", Agent: "aauth:agent@example", ApprovedAt: now,
+		Description: "Expire the reference store", ExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := MissionRecord{
+		S256: mission.S256, Agent: mission.Blob.Agent, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: *mission.Blob.ExpiresAt, State: MissionActive,
+	}
+	if err := store.CommitMission(context.Background(), record, nil); err != nil {
+		t.Fatal(err)
+	}
+	update, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{Action: "update", Description: "Too late"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.AppendMissionUpdate(context.Background(), record, record.ExpiresAt, update)
+	var terminated *MissionTerminatedError
+	if !errors.As(err, &terminated) || terminated.TerminationReason != "expired" {
+		t.Fatalf("expired append error = %v", err)
+	}
+	reloaded, err := store.LoadMissionForAgent(context.Background(), record.Agent, record.S256, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.State != MissionTerminated || reloaded.TerminationReason != "expired" ||
+		len(reloaded.AcceptedUpdates) != 0 || reloaded.Completion != nil {
+		t.Fatalf("materialized expiry = %#v", reloaded)
 	}
 }
 
@@ -470,6 +623,8 @@ type missionProtocol struct {
 	resolver        signaturekey.StaticKeyResolver
 	store           *memoryMissionStore
 	approvals       []MissionApprovalRequest
+	updates         []MissionUpdatePolicyRequest
+	completions     []MissionCompletionPolicyRequest
 	bindings        []PersonTokenRequest
 	server          *Server
 }
@@ -512,15 +667,25 @@ func newMissionProtocol(t *testing.T) *missionProtocol {
 		Authorize: func(_ context.Context, request AuthorizationRequest) (AuthorizationDecision, error) {
 			return AuthorizationDecision{Scopes: request.Scopes, Lifetime: time.Hour}, nil
 		},
-		Missions: &MissionConfig{Approve: func(_ context.Context, request MissionApprovalRequest) (MissionDecision, error) {
-			protocol.approvals = append(protocol.approvals, request)
-			expiresAt := protocol.now.Add(12 * time.Minute)
-			return MissionDecision{
-				Description:   "# Reviewed report\n\nPublish only the reviewed report.",
-				ApprovedTools: request.Proposal.Tools, ApprovedResources: request.Proposal.Resources,
-				ExpiresAt: &expiresAt, Capabilities: []string{"interaction"},
-			}, nil
-		}},
+		Missions: &MissionConfig{
+			Approve: func(_ context.Context, request MissionApprovalRequest) (MissionDecision, error) {
+				protocol.approvals = append(protocol.approvals, request)
+				expiresAt := protocol.now.Add(12 * time.Minute)
+				return MissionDecision{
+					Description:   "# Reviewed report\n\nPublish only the reviewed report.",
+					ApprovedTools: request.Proposal.Tools, ApprovedResources: request.Proposal.Resources,
+					ExpiresAt: &expiresAt, Capabilities: []string{"interaction"},
+				}, nil
+			},
+			AcceptUpdate: func(_ context.Context, request MissionUpdatePolicyRequest) error {
+				protocol.updates = append(protocol.updates, request)
+				return nil
+			},
+			ConfirmPersonAcceptedCompletion: func(_ context.Context, request MissionCompletionPolicyRequest) error {
+				protocol.completions = append(protocol.completions, request)
+				return nil
+			},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -549,11 +714,13 @@ func (protocol *missionProtocol) commitMission(t *testing.T, agent string, expir
 }
 
 type memoryMissionStore struct {
-	mu                 sync.Mutex
-	missions           map[string]MissionRecord
-	records            map[string]PersonTokenRecord
-	authTokens         map[string]IssuedAuthTokenRecord
-	commitMissionError error
+	mu                   sync.Mutex
+	missions             map[string]MissionRecord
+	records              map[string]PersonTokenRecord
+	authTokens           map[string]IssuedAuthTokenRecord
+	commitMissionError   error
+	appendMissionError   error
+	completeMissionError error
 }
 
 func newMemoryMissionStore() *memoryMissionStore {
@@ -628,6 +795,54 @@ func (store *memoryMissionStore) LoadMissionForAgent(_ context.Context, agent, s
 	return cloneMissionRecord(record), nil
 }
 
+func (store *memoryMissionStore) AppendMissionUpdate(
+	_ context.Context, expected MissionRecord, acceptedAt time.Time, document aauth.MissionUpdateDocument,
+) (MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.appendMissionError != nil {
+		return MissionRecord{}, store.appendMissionError
+	}
+	if err := validateMissionAcceptanceInstant(acceptedAt); err != nil {
+		return MissionRecord{}, err
+	}
+	if err := store.requireActiveMissionLocked(expected, acceptedAt); err != nil {
+		return MissionRecord{}, err
+	}
+	key := expected.Agent + "\x00" + expected.S256
+	current := store.missions[key]
+	current.AcceptedUpdates = append(current.AcceptedUpdates, MissionUpdateRecord{
+		Document: cloneTestMissionUpdateDocument(document), AcceptedAt: acceptedAt,
+	})
+	store.missions[key] = cloneMissionRecord(current)
+	return cloneMissionRecord(current), nil
+}
+
+func (store *memoryMissionStore) CompleteMission(
+	_ context.Context, expected MissionRecord, acceptedAt time.Time, document aauth.MissionCompletionDocument,
+) (MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.completeMissionError != nil {
+		return MissionRecord{}, store.completeMissionError
+	}
+	if err := validateMissionAcceptanceInstant(acceptedAt); err != nil {
+		return MissionRecord{}, err
+	}
+	if err := store.requireActiveMissionLocked(expected, acceptedAt); err != nil {
+		return MissionRecord{}, err
+	}
+	key := expected.Agent + "\x00" + expected.S256
+	current := store.missions[key]
+	current.State = MissionTerminated
+	current.TerminationReason = "completed"
+	current.Completion = &MissionCompletionRecord{
+		Document: cloneTestMissionCompletionDocument(document), AcceptedAt: acceptedAt,
+	}
+	store.missions[key] = cloneMissionRecord(current)
+	return cloneMissionRecord(current), nil
+}
+
 func (store *memoryMissionStore) CommitMissionPersonToken(
 	_ context.Context, expected MissionRecord, decidedAt time.Time, token PersonTokenRecord,
 ) error {
@@ -698,7 +913,26 @@ func (store *memoryMissionStore) requireActiveMissionLocked(expected MissionReco
 
 func cloneMissionRecord(record MissionRecord) MissionRecord {
 	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.AcceptedUpdates = append([]MissionUpdateRecord(nil), record.AcceptedUpdates...)
+	for index := range record.AcceptedUpdates {
+		record.AcceptedUpdates[index].Document = cloneTestMissionUpdateDocument(record.AcceptedUpdates[index].Document)
+	}
+	if record.Completion != nil {
+		completion := *record.Completion
+		completion.Document = cloneTestMissionCompletionDocument(completion.Document)
+		record.Completion = &completion
+	}
 	return record
+}
+
+func cloneTestMissionUpdateDocument(document aauth.MissionUpdateDocument) aauth.MissionUpdateDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
+}
+
+func cloneTestMissionCompletionDocument(document aauth.MissionCompletionDocument) aauth.MissionCompletionDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
 }
 
 func assertMissionProblem(t *testing.T, response *httptest.ResponseRecorder, status int, code, missionStatus, reason string) {

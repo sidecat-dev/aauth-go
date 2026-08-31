@@ -92,6 +92,9 @@ func (client *Client) personTokenResponse(
 ) (PersonTokenResult, error) {
 	if response.StatusCode == http.StatusAccepted {
 		if input.MissionS256 != "" {
+			if err := validateUnsupportedMissionContinuation(response); err != nil {
+				return PersonTokenResult{}, err
+			}
 			return PersonTokenResult{}, &MissionContinuationUnsupportedError{
 				Phase: "person-token issuance", Operation: "PersonToken",
 			}

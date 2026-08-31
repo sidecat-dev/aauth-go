@@ -63,7 +63,6 @@ func TestClientProposesAndVerifiesMission(t *testing.T) {
 				S256: mission.S256, Mission: mission.Encoded, Capabilities: []string{"interaction"},
 				PersonTokens: map[string]string{protocol.resourceID: personToken},
 			})
-			response.Header.Set("Cache-Control", "no-store")
 			return response, nil
 		default:
 			return nil, errors.New("unexpected request: " + request.URL.String())
@@ -310,7 +309,7 @@ func TestMissionSpecificContinuationsReturnTypedErrors(t *testing.T) {
 					"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": protocol.personServerID + "/mission",
 				}), nil
 			}
-			return jsonResponse(request, http.StatusAccepted, map[string]string{"status": "pending"}), nil
+			return missionPendingResponse(request), nil
 		})})
 
 		_, err := client.ProposeMission(context.Background(), agent.MissionRequest{
@@ -329,7 +328,7 @@ func TestMissionSpecificContinuationsReturnTypedErrors(t *testing.T) {
 					"auth_token_endpoint": protocol.authTokenEndpoint,
 				}), nil
 			}
-			return jsonResponse(request, http.StatusAccepted, map[string]string{"status": "pending"}), nil
+			return missionPendingResponse(request), nil
 		})})
 
 		_, err := client.PersonToken(context.Background(), agent.PersonTokenRequest{
@@ -362,7 +361,7 @@ func TestMissionSpecificContinuationsReturnTypedErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			harness.initial = func(request *http.Request) (*http.Response, error) {
-				return jsonResponse(request, http.StatusAccepted, map[string]string{"status": "pending"}), nil
+				return missionPendingResponse(request), nil
 			}
 			err = operation.call(harness.client(t), agent.ExchangeRequest{
 				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
@@ -383,6 +382,14 @@ func assertMissionContinuationError(t *testing.T, err error, phase, operation st
 	}
 }
 
+func missionPendingResponse(request *http.Request) *http.Response {
+	response := jsonResponse(request, http.StatusAccepted, map[string]string{"status": "pending"})
+	response.Header.Set("Location", "/pending/mission")
+	response.Header.Set("Retry-After", "0")
+	response.Header.Set("Cache-Control", "no-store")
+	return response
+}
+
 func missionHTTPClient(t *testing.T, protocol *testProtocol, approval aauth.MissionApproval) *http.Client {
 	t.Helper()
 	return &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
@@ -392,9 +399,7 @@ func missionHTTPClient(t *testing.T, protocol *testProtocol, approval aauth.Miss
 				"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": protocol.personServerID + "/mission",
 			}), nil
 		}
-		response := jsonResponse(request, http.StatusOK, approval)
-		response.Header.Set("Cache-Control", "no-store")
-		return response, nil
+		return jsonResponse(request, http.StatusOK, approval), nil
 	})}
 }
 

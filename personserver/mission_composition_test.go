@@ -214,9 +214,15 @@ func TestMissionCompositionRejectsDeferredAuthorizationBeforeAuthorizationOrRete
 }
 
 func unusedCompositionMissionConfig() *MissionConfig {
-	return &MissionConfig{Approve: func(context.Context, MissionApprovalRequest) (MissionDecision, error) {
-		return MissionDecision{Description: "unreachable approval"}, nil
-	}}
+	return &MissionConfig{
+		Approve: func(context.Context, MissionApprovalRequest) (MissionDecision, error) {
+			return MissionDecision{Description: "unreachable approval"}, nil
+		},
+		AcceptUpdate: func(context.Context, MissionUpdatePolicyRequest) error { return nil },
+		ConfirmPersonAcceptedCompletion: func(context.Context, MissionCompletionPolicyRequest) error {
+			return nil
+		},
+	}
 }
 
 func commitCompositionMission(

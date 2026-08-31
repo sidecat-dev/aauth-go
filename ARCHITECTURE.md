@@ -42,11 +42,11 @@ packages. Their implemented behavior is the subset listed in
 [CONFORMANCE.md](CONFORMANCE.md).
 
 The current mission slice is one immediate three-party composition. The root
-package owns proposal, blob, digest, and approval values; `agent` verifies one
-approval and its returned Person tokens; `personserver` owns exact-byte mission
-state and supplies verified mission content to policy; `resource` propagates
-only the signed digest. Mission text never crosses into the Resource, and no
-generic lifecycle or evidence object joins these boundaries.
+package owns proposal, blob, update, completion, digest, and response values;
+`agent` performs each exchange once; `personserver` owns exact-byte mission
+state, ordered accepted updates, and person-accepted completion; `resource`
+propagates only the signed digest. Mission text and updates never cross into the
+Resource, and no generic lifecycle or evidence object joins these boundaries.
 
 The target model expands those packages and adds `r3`, `budgets`, and `events`.
 Sections below define the target ownership contract. Planned packages use a

@@ -169,3 +169,146 @@ func TestMissionApprovalWireShape(t *testing.T) {
 		t.Fatalf("approval JSON = %s, want %s", wire, want)
 	}
 }
+
+func TestMissionUpdatePreservesExactDocument(t *testing.T) {
+	t.Parallel()
+
+	exact := []byte("{\n  \"action\": \"update\",\n  \"description\": \"Use the reviewed source\",\n  \"extension\": {\"retained\": true}\n}")
+	wantExact := append([]byte(nil), exact...)
+	s256 := aauth.MissionS256(exact)
+	document, err := aauth.DecodeMissionUpdate(s256, exact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact[0] = '['
+	if document.S256 != s256 || string(document.ExactJSON) != string(wantExact) ||
+		document.Update.Action != "update" || document.Update.Description != "Use the reviewed source" {
+		t.Fatalf("decoded update = %#v", document)
+	}
+
+	encoded, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{
+		Action: "update", Description: "Use the reviewed source",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWire := `{"action":"update","description":"Use the reviewed source"}`
+	if string(encoded.ExactJSON) != wantWire || encoded.S256 != aauth.MissionS256(encoded.ExactJSON) {
+		t.Fatalf("encoded update = %#v", encoded)
+	}
+}
+
+func TestMissionUpdateRejectsInvalidDocuments(t *testing.T) {
+	t.Parallel()
+
+	valid := []byte(`{"action":"update","description":"Changed work"}`)
+	for _, test := range []struct {
+		name string
+		s256 string
+		body []byte
+	}{
+		{name: "substituted digest", s256: aauth.MissionS256([]byte("other")), body: valid},
+		{name: "wrong action", body: []byte(`{"action":"completion","description":"Changed work"}`)},
+		{name: "missing action", body: []byte(`{"description":"Changed work"}`)},
+		{name: "missing description", body: []byte(`{"action":"update"}`)},
+		{name: "empty description", body: []byte(`{"action":"update","description":""}`)},
+		{name: "case variant", body: []byte(`{"Action":"update","description":"Changed work"}`)},
+		{name: "duplicate member", body: []byte(`{"action":"update","action":"update","description":"Changed work"}`)},
+		{name: "trailing JSON", body: []byte(`{"action":"update","description":"Changed work"}{}`)},
+		{name: "malformed JSON", body: []byte(`{"action":"update"`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s256 := test.s256
+			if s256 == "" {
+				s256 = aauth.MissionS256(test.body)
+			}
+			if _, err := aauth.DecodeMissionUpdate(s256, test.body); err == nil {
+				t.Fatal("invalid mission update was accepted")
+			}
+		})
+	}
+
+	for _, update := range []aauth.MissionUpdate{
+		{},
+		{Action: "completion", Description: "Changed work"},
+		{Action: "update"},
+	} {
+		if _, err := aauth.EncodeMissionUpdate(update); err == nil {
+			t.Fatalf("invalid update was encoded: %#v", update)
+		}
+	}
+}
+
+func TestMissionCompletionPreservesExactDocument(t *testing.T) {
+	t.Parallel()
+
+	exact := []byte("{\n  \"action\": \"completion\",\n  \"summary\": \"Published the reviewed report\",\n  \"extension\": [1, 2, 3]\n}")
+	wantExact := append([]byte(nil), exact...)
+	document, err := aauth.DecodeMissionCompletion(exact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact[0] = '['
+	if string(document.ExactJSON) != string(wantExact) ||
+		document.Completion.Action != "completion" || document.Completion.Summary != "Published the reviewed report" {
+		t.Fatalf("decoded completion = %#v", document)
+	}
+
+	encoded, err := aauth.EncodeMissionCompletion(aauth.MissionCompletion{
+		Action: "completion", Summary: "Published the reviewed report",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWire := `{"action":"completion","summary":"Published the reviewed report"}`
+	if string(encoded.ExactJSON) != wantWire {
+		t.Fatalf("encoded completion = %#v", encoded)
+	}
+}
+
+func TestMissionCompletionRejectsInvalidDocuments(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "wrong action", body: []byte(`{"action":"update","summary":"Work complete"}`)},
+		{name: "missing action", body: []byte(`{"summary":"Work complete"}`)},
+		{name: "missing summary", body: []byte(`{"action":"completion"}`)},
+		{name: "empty summary", body: []byte(`{"action":"completion","summary":""}`)},
+		{name: "case variant", body: []byte(`{"action":"completion","Summary":"Work complete"}`)},
+		{name: "duplicate member", body: []byte(`{"action":"completion","summary":"one","summary":"two"}`)},
+		{name: "trailing JSON", body: []byte(`{"action":"completion","summary":"Work complete"}[]`)},
+		{name: "malformed JSON", body: []byte(`{"action":"completion"`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := aauth.DecodeMissionCompletion(test.body); err == nil {
+				t.Fatal("invalid mission completion was accepted")
+			}
+		})
+	}
+
+	for _, completion := range []aauth.MissionCompletion{
+		{},
+		{Action: "update", Summary: "Work complete"},
+		{Action: "completion"},
+	} {
+		if _, err := aauth.EncodeMissionCompletion(completion); err == nil {
+			t.Fatalf("invalid completion was encoded: %#v", completion)
+		}
+	}
+}
+
+func TestMissionUpdateResponseWireShape(t *testing.T) {
+	t.Parallel()
+
+	wire, err := json.Marshal(aauth.MissionUpdateResponse{S256: strings.Repeat("A", 43)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"s256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`
+	if string(wire) != want {
+		t.Fatalf("mission update response JSON = %s, want %s", wire, want)
+	}
+}

@@ -44,7 +44,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
 | [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
-| [Mission-bound three-party authorization](example/mission) | Exact mission approval, mission-scoped tokens, and one protected call | `go run ./example/mission` |
+| [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Deferred Person Server consent](example/psconsent) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
 | [Immediate four-party authorization](example/fourparty) | Person Server to Access Server federation before Resource access | `go run ./example/fourparty` |
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
@@ -66,7 +66,7 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `signaturekey` | HTTP request proofs, credentials, discovery, and error negotiation |
 | `agentprovider` | Agent-token issuance plus Agent Provider metadata and JWKS |
 | `agent` | Explicit protocol calls; no hidden polling, browser use, or consequence retry |
-| `personserver` | Person-token issuance, mission approval, direct authorization, interaction, revocation, call-chain policy, and Access Server federation |
+| `personserver` | Person-token issuance, immediate mission lifecycle, direct authorization, interaction, revocation, call-chain policy, and Access Server federation |
 | `resource` | Identity, session, authorization, protected-call, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated policy and auth-token issuance |
 
@@ -102,9 +102,10 @@ application implementations.
 
 The repository does not yet implement all of AAuth Core. Remote Agent
 enrollment and credential renewal, the general deferred and clarification
-paths, mission update/completion/control, and several delegation and revocation
-variants remain open. Mission support is currently one immediate three-party
-approval and protected-call path.
+paths, complete mission logs and control, and several delegation and revocation
+variants remain open. Mission support currently covers one immediate
+three-party approval, ordered accepted updates, protected call, and
+person-accepted completion path.
 
 The R3, Events, Bootstrap, and Budgets companion specifications are pinned as
 design inputs but do not yet have complete executing paths. HTTP Signature

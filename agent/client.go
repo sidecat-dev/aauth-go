@@ -358,6 +358,9 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusAccepted && resourceClaims.MissionS256 != "" {
+		if err := validateUnsupportedMissionContinuation(response); err != nil {
+			return "", fail(operation, err)
+		}
 		return "", fail(operation, &MissionContinuationUnsupportedError{
 			Phase: "auth-token exchange", Operation: "Exchange",
 		})

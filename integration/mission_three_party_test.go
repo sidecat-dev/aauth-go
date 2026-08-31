@@ -65,7 +65,14 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newMemoryPersonTokenStore()
-	ids := []string{"mission-person-token", "mission-auth-token"}
+	ids := []string{
+		"mission-person-token", "mission-pre-update-auth-token",
+		"mission-updated-person-token", "mission-post-update-auth-token",
+	}
+	var acceptedUpdates []personserver.MissionUpdatePolicyRequest
+	var acceptedCompletions []personserver.MissionCompletionPolicyRequest
+	var personPolicyUpdateCounts []int
+	var authorizationPolicyUpdateCounts []int
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, Tokens: store, NewID: func() string {
@@ -73,21 +80,32 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 			ids = ids[1:]
 			return id
 		},
-		Missions: &personserver.MissionConfig{Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
-			if request.Agent != agentID || request.Proposal.Description != "# Read report inputs" ||
-				!slices.Equal(request.Proposal.Resources, []string{resourceID}) {
-				return personserver.MissionDecision{}, errors.New("unexpected mission proposal")
-			}
-			return personserver.MissionDecision{
-				Description: request.Proposal.Description, ApprovedResources: request.Proposal.Resources,
-				ExpiresAt: &missionExpiry, Capabilities: []string{"interaction"},
-			}, nil
-		}},
+		Missions: &personserver.MissionConfig{
+			Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+				if request.Agent != agentID || request.Proposal.Description != "# Read report inputs" ||
+					!slices.Equal(request.Proposal.Resources, []string{resourceID}) {
+					return personserver.MissionDecision{}, errors.New("unexpected mission proposal")
+				}
+				return personserver.MissionDecision{
+					Description: request.Proposal.Description, ApprovedResources: request.Proposal.Resources,
+					ExpiresAt: &missionExpiry, Capabilities: []string{"interaction"},
+				}, nil
+			},
+			AcceptUpdate: func(_ context.Context, request personserver.MissionUpdatePolicyRequest) error {
+				acceptedUpdates = append(acceptedUpdates, request)
+				return nil
+			},
+			ConfirmPersonAcceptedCompletion: func(_ context.Context, request personserver.MissionCompletionPolicyRequest) error {
+				acceptedCompletions = append(acceptedCompletions, request)
+				return nil
+			},
+		},
 		BindPerson: func(_ context.Context, request personserver.PersonTokenRequest) (personserver.Person, error) {
 			if request.Agent != agentID || request.Resource != resourceID || request.Mission == nil ||
 				request.Mission.Blob.Description != "# Read report inputs" || string(request.Mission.ExactJSON) == "" {
 				return personserver.Person{}, errors.New("unexpected mission person context")
 			}
+			personPolicyUpdateCounts = append(personPolicyUpdateCounts, len(request.Mission.AcceptedUpdates))
 			return personserver.Person{Subject: "person-123", Tenant: "tenant-1", Lifetime: time.Hour}, nil
 		},
 		Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
@@ -96,6 +114,11 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 				!slices.Equal(request.Scopes, []string{scope}) {
 				return personserver.AuthorizationDecision{}, errors.New("unexpected mission authorization context")
 			}
+			updates := len(request.Mission.AcceptedUpdates)
+			if updates != 0 && updates != 2 {
+				return personserver.AuthorizationDecision{}, errors.New("unexpected accepted-update count")
+			}
+			authorizationPolicyUpdateCounts = append(authorizationPolicyUpdateCounts, updates)
 			return personserver.AuthorizationDecision{Scopes: request.Scopes, Lifetime: time.Hour}, nil
 		},
 	})
@@ -104,9 +127,14 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 	}
 	var resolvedMission string
 	var protectedMission string
+	resourceIDs := []string{"mission-pre-update-resource-token", "mission-post-update-resource-token"}
 	protectedResource, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{
 		Issuer: resourceID, SigningKey: resourceKey, KeyResolver: resolver, Clock: clock,
-		NewID:             func() string { return "mission-resource-token" },
+		NewID: func() string {
+			id := resourceIDs[0]
+			resourceIDs = resourceIDs[1:]
+			return id
+		},
 		ScopeDescriptions: map[string]string{scope: "Read records"},
 		RequiredScopes:    func(*http.Request) []string { return []string{scope} },
 		ResolvePerson: func(_ context.Context, identity resource.PersonIdentity, personContext resource.PersonContext) error {
@@ -148,28 +176,83 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	mission := missionResult.Mission()
-	personToken, ok := missionResult.PersonToken(resourceID)
+	initialPersonToken, ok := missionResult.PersonToken(resourceID)
 	if !ok {
 		t.Fatal("mission approval omitted the approved Resource person token")
+	}
+	initialPersonClaims, err := aauth.VerifyPersonToken(ctx, initialPersonToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preUpdateResourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: resourceID, PersonToken: initialPersonToken, Scopes: []string{scope},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preUpdateResourceClaims, err := aauth.VerifyResourceToken(ctx, preUpdateResourceToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preUpdateAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: preUpdateResourceToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preUpdateAuthClaims, err := aauth.VerifyAuthToken(ctx, preUpdateAuthToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
+		PersonServer: personServerID, MissionS256: mission.S256, Description: "Read the source report first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
+		PersonServer: personServerID, MissionS256: mission.S256, Description: "Include the retained correction",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(acceptedUpdates) != 2 || len(acceptedUpdates[0].Mission.AcceptedUpdates) != 0 ||
+		len(acceptedUpdates[1].Mission.AcceptedUpdates) != 1 ||
+		acceptedUpdates[1].Mission.AcceptedUpdates[0].Document.Update.Description != "Read the source report first" {
+		t.Fatalf("mission update contexts = %#v", acceptedUpdates)
+	}
+	personResult, err := reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+		PersonServer: personServerID, Resource: resourceID, MissionS256: mission.S256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	personToken, ok := personResult.Token()
+	if !ok {
+		t.Fatal("updated mission person-token request did not complete immediately")
+	}
+	if !slices.Equal(personPolicyUpdateCounts, []int{0, 2}) {
+		t.Fatalf("person policy update counts = %v, want [0 2]", personPolicyUpdateCounts)
+	}
+	if initialPersonToken == personToken {
+		t.Fatal("updated mission person-token request reused the approval-time token")
 	}
 	personClaims, err := aauth.VerifyPersonToken(ctx, personToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
-		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope},
+	postUpdateResourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: resourceID, PersonToken: initialPersonToken, Scopes: []string{scope},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceClaims, err := aauth.VerifyResourceToken(ctx, resourceToken, resolver, clock)
+	postUpdateResourceClaims, err := aauth.VerifyResourceToken(ctx, postUpdateResourceToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, changedMission := range map[string]string{
 		"omitted": "", "substituted": aauth.MissionS256([]byte("another mission")),
 	} {
-		tampered := resourceClaims
+		tampered := postUpdateResourceClaims
 		tampered.JTI = "mission-" + name + "-resource-token"
 		tampered.MissionS256 = changedMission
 		compact, err := aauth.MintResourceToken(resourceKey, tampered)
@@ -184,46 +267,61 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 			t.Fatalf("%s mission binding error = %#v, %v", name, problem, err)
 		}
 	}
-	authToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+	postUpdateAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: preUpdateResourceToken,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	authClaims, err := aauth.VerifyAuthToken(ctx, authToken, resolver, clock)
+	postUpdateAuthClaims, err := aauth.VerifyAuthToken(ctx, postUpdateAuthToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !slices.Equal(authorizationPolicyUpdateCounts, []int{0, 2}) {
+		t.Fatalf("authorization policy update counts = %v, want [0 2]", authorizationPolicyUpdateCounts)
+	}
 	store.mu.Lock()
 	authCount := len(store.auth)
-	if authCount != 1 {
+	if authCount != 2 {
 		store.mu.Unlock()
-		t.Fatalf("retained mission auth-token records = %d, want 1", authCount)
+		t.Fatalf("retained mission auth-token records = %d, want 2", authCount)
 	}
-	var retainedAuth personserver.IssuedAuthTokenRecord
+	var retainedPostUpdateAuth personserver.IssuedAuthTokenRecord
 	for _, record := range store.auth {
-		retainedAuth = record
+		if record.Reference.JTI == postUpdateAuthClaims.JTI {
+			retainedPostUpdateAuth = record
+		}
 	}
 	store.mu.Unlock()
-	if retainedAuth.MissionS256 != mission.S256 || retainedAuth.Reference.JTI != authClaims.JTI {
-		t.Fatalf("retained mission auth-token record = %#v", retainedAuth)
+	if retainedPostUpdateAuth.MissionS256 != mission.S256 || retainedPostUpdateAuth.Reference.JTI != postUpdateAuthClaims.JTI {
+		t.Fatalf("retained post-update auth-token record = %#v", retainedPostUpdateAuth)
 	}
 	for name, digest := range map[string]string{
-		"person": personClaims.MissionS256, "resource": resourceClaims.MissionS256, "auth": authClaims.MissionS256,
+		"initial person":       initialPersonClaims.MissionS256,
+		"pre-update resource":  preUpdateResourceClaims.MissionS256,
+		"pre-update auth":      preUpdateAuthClaims.MissionS256,
+		"updated person":       personClaims.MissionS256,
+		"post-update resource": postUpdateResourceClaims.MissionS256,
+		"post-update auth":     postUpdateAuthClaims.MissionS256,
 	} {
 		if digest != mission.S256 {
 			t.Fatalf("%s mission_s256 = %q, want %q", name, digest, mission.S256)
 		}
 	}
 	for name, expiry := range map[string]int64{
-		"person": personClaims.ExpiresAt, "resource": resourceClaims.ExpiresAt, "auth": authClaims.ExpiresAt,
+		"initial person":       initialPersonClaims.ExpiresAt,
+		"pre-update resource":  preUpdateResourceClaims.ExpiresAt,
+		"pre-update auth":      preUpdateAuthClaims.ExpiresAt,
+		"updated person":       personClaims.ExpiresAt,
+		"post-update resource": postUpdateResourceClaims.ExpiresAt,
+		"post-update auth":     postUpdateAuthClaims.ExpiresAt,
 	} {
 		if expiry > missionExpiry.Unix() {
 			t.Fatalf("%s token expires at %d after mission %d", name, expiry, missionExpiry.Unix())
 		}
 	}
 	request, _ := http.NewRequest(http.MethodGet, resourceID+"/records", nil)
-	response, err := reader.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken})
+	response, err := reader.Do(ctx, clientagent.Call{Request: request, AuthToken: preUpdateAuthToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,15 +332,42 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 		t.Fatalf("protected result = %d %q, resolved=%q, principal=%q", response.StatusCode, body, resolvedMission, protectedMission)
 	}
 
-	if err := store.terminateMission(agentID, mission.S256, "revoked"); err != nil {
+	if err := reader.CompleteMission(ctx, clientagent.MissionCompletionRequest{
+		PersonServer: personServerID, MissionS256: mission.S256, Summary: "Read completed",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+	if len(acceptedCompletions) != 1 ||
+		len(acceptedCompletions[0].Mission.AcceptedUpdates) != 2 ||
+		acceptedCompletions[0].Document.Completion.Summary != "Read completed" {
+		t.Fatalf("completion policy=%#v", acceptedCompletions)
+	}
+	// Characterization only: a conforming Agent must stop using a completed
+	// mission. The Resource has no termination signal, so an outstanding Auth
+	// token remains usable until its own expiry.
+	request, _ = http.NewRequest(http.MethodGet, resourceID+"/records", nil)
+	response, err = reader.Do(ctx, clientagent.Call{Request: request, AuthToken: preUpdateAuthToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(body) != "mission accepted" {
+		t.Fatalf("outstanding completed-mission credential = %d %q", response.StatusCode, body)
+	}
+	_, err = reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
+		PersonServer: personServerID, MissionS256: mission.S256, Description: "Too late",
 	})
 	var problem *aauth.ProblemError
 	if !errors.As(err, &problem) || problem.Code != "mission_terminated" ||
-		problem.MissionStatus != "terminated" || problem.TerminationReason != "revoked" {
+		problem.MissionStatus != "terminated" || problem.TerminationReason != "completed" {
+		t.Fatalf("post-completion update error = %#v, %v", problem, err)
+	}
+	_, err = reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: preUpdateResourceToken,
+	})
+	if !errors.As(err, &problem) || problem.Code != "mission_terminated" ||
+		problem.MissionStatus != "terminated" || problem.TerminationReason != "completed" {
 		t.Fatalf("terminated mission error = %#v, %v", problem, err)
 	}
 }

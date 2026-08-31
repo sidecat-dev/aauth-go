@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aauth "aauth-go"
+	"aauth-go/internal/httpapi"
 )
 
 // ErrMissionNotFound reports that an owner-scoped MissionStore lookup cannot
@@ -20,6 +21,12 @@ var ErrMissionNotFound = errors.New("personserver: mission not found")
 // ErrMissionConflict reports that a mission changed after policy read it and
 // before the resulting token could be retained.
 var ErrMissionConflict = errors.New("personserver: mission conflicts with retained state")
+
+// ErrMissionDenied distinguishes a host policy or person refusal from an
+// operational callback failure. Mission callbacks wrap this error when a
+// syntactically valid mission action is intentionally refused; other errors
+// produce a server failure instead of being mislabeled as a refusal.
+var ErrMissionDenied = errors.New("personserver: mission denied")
 
 // MissionState is the durable state of an approved mission.
 type MissionState string
@@ -39,51 +46,96 @@ type MissionRecord struct {
 	ExpiresAt         time.Time
 	State             MissionState
 	TerminationReason string
+	AcceptedUpdates   []MissionUpdateRecord
+	Completion        *MissionCompletionRecord
+}
+
+// MissionUpdateRecord is one exact update accepted under the Person Server's
+// update policy. Slice order is acceptance order.
+type MissionUpdateRecord struct {
+	Document   aauth.MissionUpdateDocument
+	AcceptedAt time.Time
+}
+
+// MissionCompletionRecord is the exact completion statement accepted by the
+// person responsible for a mission.
+type MissionCompletionRecord struct {
+	Document   aauth.MissionCompletionDocument
+	AcceptedAt time.Time
 }
 
 // Equal reports whether two records describe the same retained mission and
 // lifecycle state.
 func (record MissionRecord) Equal(other MissionRecord) bool {
-	return record.S256 == other.S256 && record.Agent == other.Agent &&
-		bytes.Equal(record.ExactJSON, other.ExactJSON) &&
-		record.ApprovedAt.Equal(other.ApprovedAt) && record.ExpiresAt.Equal(other.ExpiresAt) &&
-		record.State == other.State && record.TerminationReason == other.TerminationReason
+	if record.S256 != other.S256 || record.Agent != other.Agent ||
+		!bytes.Equal(record.ExactJSON, other.ExactJSON) ||
+		!record.ApprovedAt.Equal(other.ApprovedAt) || !record.ExpiresAt.Equal(other.ExpiresAt) ||
+		record.State != other.State || record.TerminationReason != other.TerminationReason ||
+		len(record.AcceptedUpdates) != len(other.AcceptedUpdates) ||
+		(record.Completion == nil) != (other.Completion == nil) {
+		return false
+	}
+	for index := range record.AcceptedUpdates {
+		if !equalMissionUpdateRecord(record.AcceptedUpdates[index], other.AcceptedUpdates[index]) {
+			return false
+		}
+	}
+	return record.Completion == nil || equalMissionCompletionRecord(*record.Completion, *other.Completion)
 }
 
 // MissionContext is the verified, active mission content passed to Person
 // Server policy. ExactJSON is an independent copy of the blob named by S256.
 type MissionContext struct {
-	S256      string
-	ExactJSON []byte
-	Blob      aauth.MissionBlob
+	S256            string
+	ExactJSON       []byte
+	Blob            aauth.MissionBlob
+	AcceptedUpdates []MissionUpdateRecord
 }
 
 // MissionStore owns mission lifecycle and mission-bound token retention.
 // CommitMission retains an approval and all Person tokens returned with it in
 // one atomic operation, rejecting duplicate token identities within the
-// batch. LoadMissionForAgent uses an owner-scoped lookup, returns
-// ErrMissionNotFound for both an absent mission and a different owner, and
-// atomically turns an expired active mission into terminated/expired.
+// batch. LoadMissionForAgent uses a combined owner-and-mission lookup (or an
+// observably equivalent design), returns ErrMissionNotFound with equivalent
+// timing for both an absent mission and a different owner, and atomically
+// turns an expired active mission into terminated/expired. It must not look up
+// by digest and check ownership afterward.
 //
 // The two issuance commits compare every field of expected with the current
 // mission, materialize expiry at the supplied commit time, require it to
 // remain active, and retain the token record in the same atomic operation.
 // Each token record must name expected.S256. They return
 // *MissionTerminatedError for a terminal mission and ErrMissionConflict for
-// any other changed state. Implementations copy mutable values and never
-// return a terminated mission to active.
+// any other changed state. AppendMissionUpdate and CompleteMission apply the
+// same complete-record comparison: the former appends one exact accepted
+// update in order; the latter retains one exact person-accepted completion and
+// atomically terminates the mission with reason completed. Both require a
+// nonzero acceptedAt and return an independent copy of the exact post-state.
+// Implementations copy mutable values and never return a terminated mission to
+// active.
 type MissionStore interface {
 	TokenStore
-	CommitMission(context.Context, MissionRecord, []PersonTokenRecord) error
-	LoadMissionForAgent(context.Context, string, string, time.Time) (MissionRecord, error)
-	CommitMissionPersonToken(context.Context, MissionRecord, time.Time, PersonTokenRecord) error
-	CommitMissionAuthToken(context.Context, MissionRecord, time.Time, IssuedAuthTokenRecord) error
+	CommitMission(ctx context.Context, mission MissionRecord, tokens []PersonTokenRecord) error
+	LoadMissionForAgent(ctx context.Context, agent, s256 string, at time.Time) (MissionRecord, error)
+	AppendMissionUpdate(ctx context.Context, expected MissionRecord, acceptedAt time.Time, document aauth.MissionUpdateDocument) (MissionRecord, error)
+	CompleteMission(ctx context.Context, expected MissionRecord, acceptedAt time.Time, document aauth.MissionCompletionDocument) (MissionRecord, error)
+	CommitMissionPersonToken(ctx context.Context, expected MissionRecord, decidedAt time.Time, token PersonTokenRecord) error
+	CommitMissionAuthToken(ctx context.Context, expected MissionRecord, decidedAt time.Time, token IssuedAuthTokenRecord) error
 }
 
 // MissionConfig enables the Agent-facing mission endpoint. Approve applies
 // the deployment's person-facing approval policy to a verified proposal.
+// AcceptUpdate applies the deployment's rule for immediate update acceptance;
+// Core permits the Person Server to accept an update on its own. In contrast,
+// ConfirmPersonAcceptedCompletion must return nil only after the host has
+// obtained the responsible person's actual acceptance of the completion
+// statement; it is not an autonomous reasonableness policy. Each callback wraps
+// ErrMissionDenied for an intentional refusal and returns other errors only
+// for operational failure.
 type MissionConfig struct {
-	Approve func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	Approve                         func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	AcceptUpdate                    func(context.Context, MissionUpdatePolicyRequest) error
+	ConfirmPersonAcceptedCompletion func(context.Context, MissionCompletionPolicyRequest) error
 }
 
 // MissionApprovalRequest is the verified Agent context presented to mission
@@ -91,6 +143,25 @@ type MissionConfig struct {
 type MissionApprovalRequest struct {
 	Agent                 string
 	Proposal              aauth.MissionProposal
+	AgentAdditionalClaims map[string]json.RawMessage
+}
+
+// MissionUpdatePolicyRequest is the verified Agent request and the complete
+// accepted mission state presented to the host's update policy.
+type MissionUpdatePolicyRequest struct {
+	Agent                 string
+	Mission               MissionContext
+	Document              aauth.MissionUpdateDocument
+	AgentAdditionalClaims map[string]json.RawMessage
+}
+
+// MissionCompletionPolicyRequest is the verified Agent request presented to
+// the host callback that obtains actual acceptance from the responsible
+// person.
+type MissionCompletionPolicyRequest struct {
+	Agent                 string
+	Mission               MissionContext
+	Document              aauth.MissionCompletionDocument
 	AgentAdditionalClaims map[string]json.RawMessage
 }
 
@@ -142,7 +213,7 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 	}
 	decision, err := server.missionApprove(request.Context(), policyRequest)
 	if err != nil {
-		writeProblem(response, http.StatusForbidden, "mission_denied", err)
+		writeMissionPolicyProblem(response, "mission_denied", err)
 		return
 	}
 	approvedAt := server.clock.Now().UTC()
@@ -217,6 +288,127 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 	})
 }
 
+func (server *Server) handleMissionAction(response http.ResponseWriter, request *http.Request) {
+	_, agent, _, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
+	if err != nil {
+		writeAgentTokenProblem(response, err)
+		return
+	}
+	if err := server.validateDirectAgentTopology(agent); err != nil {
+		writeAgentTokenProblem(response, err)
+		return
+	}
+	s256 := request.PathValue("s256")
+	if err := aauth.ValidateMissionS256(s256); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission identifier is invalid"))
+		return
+	}
+	var action struct {
+		Action string `json:"action"`
+	}
+	exactJSON, err := httpapi.DecodeExactJSON(request.Body, maxRequestBytes, &action)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	var updateDocument aauth.MissionUpdateDocument
+	var completionDocument aauth.MissionCompletionDocument
+	switch action.Action {
+	case "update":
+		updateDocument, err = aauth.DecodeMissionUpdate(aauth.MissionS256(exactJSON), exactJSON)
+	case "completion":
+		completionDocument, err = aauth.DecodeMissionCompletion(exactJSON)
+	default:
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission action must be update or completion"))
+		return
+	}
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	expected, err := server.loadActiveMission(request.Context(), s256, agent.Subject, server.clock.Now().UTC())
+	if err != nil {
+		writeMissionActionProblem(response, err)
+		return
+	}
+	expected = cloneMissionRecordForTransition(expected)
+	mission, err := missionContextFromRecord(expected)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+
+	switch action.Action {
+	case "update":
+		policyRequest := MissionUpdatePolicyRequest{
+			Agent: agent.Subject, Mission: *cloneMissionContext(mission),
+			Document:              cloneMissionUpdateDocument(updateDocument),
+			AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+		}
+		if err := server.missionAcceptUpdate(request.Context(), policyRequest); err != nil {
+			writeMissionPolicyProblem(response, "mission_update_denied", err)
+			return
+		}
+		acceptedAt := server.clock.Now().UTC()
+		if err := validateMissionAcceptanceInstant(acceptedAt); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		retained, err := server.missions.AppendMissionUpdate(
+			request.Context(), cloneMissionRecordForTransition(expected), acceptedAt,
+			cloneMissionUpdateDocument(updateDocument),
+		)
+		if err != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
+		want := cloneMissionRecordForTransition(expected)
+		want.AcceptedUpdates = append(cloneMissionUpdateRecords(expected.AcceptedUpdates), MissionUpdateRecord{
+			Document: cloneMissionUpdateDocument(updateDocument), AcceptedAt: acceptedAt,
+		})
+		if _, err := validateMissionRecord(retained); err != nil || !retained.Equal(want) {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission store returned an invalid update transition"))
+			return
+		}
+		writePrivateJSON(response, http.StatusOK, aauth.MissionUpdateResponse{S256: updateDocument.S256})
+	case "completion":
+		policyRequest := MissionCompletionPolicyRequest{
+			Agent: agent.Subject, Mission: *cloneMissionContext(mission),
+			Document:              cloneMissionCompletionDocument(completionDocument),
+			AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+		}
+		if err := server.missionConfirmPersonCompletion(request.Context(), policyRequest); err != nil {
+			writeMissionPolicyProblem(response, "mission_completion_denied", err)
+			return
+		}
+		acceptedAt := server.clock.Now().UTC()
+		if err := validateMissionAcceptanceInstant(acceptedAt); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		retained, err := server.missions.CompleteMission(
+			request.Context(), cloneMissionRecordForTransition(expected), acceptedAt,
+			cloneMissionCompletionDocument(completionDocument),
+		)
+		if err != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
+		want := cloneMissionRecordForTransition(expected)
+		want.State = MissionTerminated
+		want.TerminationReason = "completed"
+		want.Completion = &MissionCompletionRecord{
+			Document: cloneMissionCompletionDocument(completionDocument), AcceptedAt: acceptedAt,
+		}
+		if _, err := validateMissionRecord(retained); err != nil || !retained.Equal(want) {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission store returned an invalid completion transition"))
+			return
+		}
+		response.Header().Set("Cache-Control", "no-store")
+		response.WriteHeader(http.StatusOK)
+	}
+}
+
 func (server *Server) loadActiveMission(
 	ctx context.Context,
 	s256 string,
@@ -229,6 +421,9 @@ func (server *Server) loadActiveMission(
 	record, err := server.missions.LoadMissionForAgent(ctx, agent, s256, now)
 	if err != nil {
 		return MissionRecord{}, err
+	}
+	if record.Agent != agent || record.S256 != s256 {
+		return MissionRecord{}, ErrMissionNotFound
 	}
 	mission, err := validateMissionRecord(record)
 	if err != nil {
@@ -345,6 +540,35 @@ func validateMissionRecord(record MissionRecord) (aauth.ApprovedMission, error) 
 	if record.State == MissionTerminated && record.TerminationReason == "" {
 		return aauth.ApprovedMission{}, errors.New("personserver: terminated mission requires a termination reason")
 	}
+	for index, update := range record.AcceptedUpdates {
+		decoded, err := aauth.DecodeMissionUpdate(update.Document.S256, update.Document.ExactJSON)
+		if err != nil || !equalMissionUpdateDocument(update.Document, decoded) {
+			return aauth.ApprovedMission{}, fmt.Errorf("personserver: retained mission update %d is invalid", index)
+		}
+		if update.AcceptedAt.IsZero() {
+			return aauth.ApprovedMission{}, fmt.Errorf("personserver: retained mission update %d acceptance time is invalid", index)
+		}
+		if !record.ExpiresAt.IsZero() && !update.AcceptedAt.Before(record.ExpiresAt) {
+			return aauth.ApprovedMission{}, fmt.Errorf("personserver: retained mission update %d was accepted after expiry", index)
+		}
+	}
+	if record.Completion != nil {
+		decoded, err := aauth.DecodeMissionCompletion(record.Completion.Document.ExactJSON)
+		if err != nil || !equalMissionCompletionDocument(record.Completion.Document, decoded) {
+			return aauth.ApprovedMission{}, errors.New("personserver: retained mission completion is invalid")
+		}
+		if record.Completion.AcceptedAt.IsZero() {
+			return aauth.ApprovedMission{}, errors.New("personserver: retained mission completion acceptance time is invalid")
+		}
+		if !record.ExpiresAt.IsZero() && !record.Completion.AcceptedAt.Before(record.ExpiresAt) {
+			return aauth.ApprovedMission{}, errors.New("personserver: retained mission completion was accepted after expiry")
+		}
+		if record.State != MissionTerminated || record.TerminationReason != "completed" {
+			return aauth.ApprovedMission{}, errors.New("personserver: retained mission completion does not match lifecycle state")
+		}
+	} else if record.TerminationReason == "completed" {
+		return aauth.ApprovedMission{}, errors.New("personserver: completed mission requires retained completion evidence")
+	}
 	return mission, nil
 }
 
@@ -394,7 +618,9 @@ func missionContextFromRecord(record MissionRecord) (*MissionContext, error) {
 	if err != nil {
 		return nil, err
 	}
-	return missionPolicyContext(mission), nil
+	context := missionPolicyContext(mission)
+	context.AcceptedUpdates = cloneMissionUpdateRecords(record.AcceptedUpdates)
+	return context, nil
 }
 
 func cloneMissionContext(mission *MissionContext) *MissionContext {
@@ -403,7 +629,65 @@ func cloneMissionContext(mission *MissionContext) *MissionContext {
 	}
 	return &MissionContext{
 		S256: mission.S256, ExactJSON: append([]byte(nil), mission.ExactJSON...), Blob: cloneMissionBlob(mission.Blob),
+		AcceptedUpdates: cloneMissionUpdateRecords(mission.AcceptedUpdates),
 	}
+}
+
+func cloneMissionUpdateDocument(document aauth.MissionUpdateDocument) aauth.MissionUpdateDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
+}
+
+func validateMissionAcceptanceInstant(acceptedAt time.Time) error {
+	if acceptedAt.IsZero() {
+		return errors.New("personserver: mission acceptance time is required")
+	}
+	return nil
+}
+
+func cloneMissionCompletionDocument(document aauth.MissionCompletionDocument) aauth.MissionCompletionDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
+}
+
+func cloneMissionUpdateRecords(records []MissionUpdateRecord) []MissionUpdateRecord {
+	if records == nil {
+		return nil
+	}
+	cloned := make([]MissionUpdateRecord, len(records))
+	for index, record := range records {
+		cloned[index] = MissionUpdateRecord{
+			Document: cloneMissionUpdateDocument(record.Document), AcceptedAt: record.AcceptedAt,
+		}
+	}
+	return cloned
+}
+
+func cloneMissionRecordForTransition(record MissionRecord) MissionRecord {
+	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.AcceptedUpdates = cloneMissionUpdateRecords(record.AcceptedUpdates)
+	if record.Completion != nil {
+		completion := *record.Completion
+		completion.Document = cloneMissionCompletionDocument(completion.Document)
+		record.Completion = &completion
+	}
+	return record
+}
+
+func equalMissionUpdateDocument(left, right aauth.MissionUpdateDocument) bool {
+	return left.S256 == right.S256 && bytes.Equal(left.ExactJSON, right.ExactJSON) && left.Update == right.Update
+}
+
+func equalMissionCompletionDocument(left, right aauth.MissionCompletionDocument) bool {
+	return bytes.Equal(left.ExactJSON, right.ExactJSON) && left.Completion == right.Completion
+}
+
+func equalMissionUpdateRecord(left, right MissionUpdateRecord) bool {
+	return left.AcceptedAt.Equal(right.AcceptedAt) && equalMissionUpdateDocument(left.Document, right.Document)
+}
+
+func equalMissionCompletionRecord(left, right MissionCompletionRecord) bool {
+	return left.AcceptedAt.Equal(right.AcceptedAt) && equalMissionCompletionDocument(left.Document, right.Document)
 }
 
 func cloneMissionBlob(blob aauth.MissionBlob) aauth.MissionBlob {
@@ -424,6 +708,27 @@ func writeMissionReferenceProblem(response http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, ErrMissionNotFound) {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", ErrMissionNotFound)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", err)
+}
+
+func writeMissionPolicyProblem(response http.ResponseWriter, denialCode string, err error) {
+	if errors.Is(err, ErrMissionDenied) {
+		writeProblem(response, http.StatusForbidden, denialCode, err)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", err)
+}
+
+func writeMissionActionProblem(response http.ResponseWriter, err error) {
+	var terminated *MissionTerminatedError
+	if errors.As(err, &terminated) {
+		writeMissionTerminatedProblem(response, terminated.TerminationReason)
+		return
+	}
+	if errors.Is(err, ErrMissionNotFound) {
+		writeProblem(response, http.StatusNotFound, "mission_not_found", ErrMissionNotFound)
 		return
 	}
 	writeProblem(response, http.StatusInternalServerError, "server_error", err)

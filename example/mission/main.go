@@ -55,6 +55,7 @@ func main() {
 		PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	}))
 	missionExpiry := now.Add(15 * time.Minute)
+	personAcceptedCompletion := false
 	ids := []string{"person-token-1", "auth-token-1"}
 	people := must(personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey,
@@ -64,13 +65,27 @@ func main() {
 			ids = ids[1:]
 			return id
 		},
-		Missions: &personserver.MissionConfig{Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
-			return personserver.MissionDecision{
-				Description:       request.Proposal.Description,
-				ApprovedResources: request.Proposal.Resources,
-				ExpiresAt:         &missionExpiry,
-			}, nil
-		}},
+		Missions: &personserver.MissionConfig{
+			Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+				return personserver.MissionDecision{
+					Description:       request.Proposal.Description,
+					ApprovedResources: request.Proposal.Resources,
+					ExpiresAt:         &missionExpiry,
+				}, nil
+			},
+			AcceptUpdate: func(_ context.Context, request personserver.MissionUpdatePolicyRequest) error {
+				if request.Document.Update.Description == "" {
+					return errors.New("mission update description is required")
+				}
+				return nil
+			},
+			ConfirmPersonAcceptedCompletion: func(_ context.Context, request personserver.MissionCompletionPolicyRequest) error {
+				if !personAcceptedCompletion {
+					return fmt.Errorf("%w: the responsible person has not accepted completion", personserver.ErrMissionDenied)
+				}
+				return nil
+			},
+		},
 		BindPerson: func(_ context.Context, request personserver.PersonTokenRequest) (personserver.Person, error) {
 			if request.Mission == nil || request.Mission.Blob.Description == "" {
 				return personserver.Person{}, errors.New("mission context is required")
@@ -78,8 +93,9 @@ func main() {
 			return personserver.Person{Subject: "person-123", Lifetime: time.Hour}, nil
 		},
 		Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
-			if request.Mission == nil {
-				return personserver.AuthorizationDecision{}, errors.New("mission context is required")
+			if request.Mission == nil || len(request.Mission.AcceptedUpdates) != 1 ||
+				request.Mission.AcceptedUpdates[0].Document.Update.Description != "Report inputs selected" {
+				return personserver.AuthorizationDecision{}, errors.New("accepted mission update is required")
 			}
 			return personserver.AuthorizationDecision{Scopes: request.Scopes, Lifetime: time.Hour}, nil
 		},
@@ -116,6 +132,13 @@ func main() {
 			Description: "# Read the report inputs", Resources: []string{resourceID},
 		},
 	}))
+	update := must(reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
+		PersonServer: personServerID, MissionS256: mission.Mission().S256,
+		Description: "Report inputs selected",
+	}))
+	if update.S256() == "" {
+		log.Fatal("mission update returned no exact document digest")
+	}
 	personToken, ok := mission.PersonToken(resourceID)
 	if !ok {
 		log.Fatal("mission approval omitted the approved Resource person token")
@@ -133,6 +156,16 @@ func main() {
 		log.Fatalf("protected call returned %s", response.Status)
 	}
 	_, _ = io.Copy(os.Stdout, response.Body)
+	// A real host sets this only after authenticating the responsible person's
+	// response. This example makes that application-owned decision explicit.
+	personAcceptedCompletion = true
+	if err := reader.CompleteMission(ctx, clientagent.MissionCompletionRequest{
+		PersonServer: personServerID, MissionS256: mission.Mission().S256,
+		Summary: "Protected report read completed",
+	}); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("mission completed with person acceptance")
 }
 
 func newSigningKey(id string) jose.SigningKey {
@@ -204,8 +237,7 @@ func (store *memoryMissionStore) CommitMission(_ context.Context, mission person
 		}
 		batch[key] = struct{}{}
 	}
-	mission.ExactJSON = append([]byte(nil), mission.ExactJSON...)
-	store.missions[missionKey] = mission
+	store.missions[missionKey] = cloneExampleMissionRecord(mission)
 	for _, token := range tokens {
 		store.tokens[token.PersonServer+"\x00"+token.JTI] = token
 	}
@@ -225,10 +257,57 @@ func (store *memoryMissionStore) LoadMissionForAgent(
 	if record.State == personserver.MissionActive && !record.ExpiresAt.IsZero() && !at.Before(record.ExpiresAt) {
 		record.State = personserver.MissionTerminated
 		record.TerminationReason = "expired"
-		store.missions[key] = record
+		store.missions[key] = cloneExampleMissionRecord(record)
 	}
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	return record, nil
+	return cloneExampleMissionRecord(record), nil
+}
+
+func (store *memoryMissionStore) AppendMissionUpdate(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	acceptedAt time.Time,
+	document aauth.MissionUpdateDocument,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if acceptedAt.IsZero() {
+		return personserver.MissionRecord{}, errors.New("mission acceptance time is required")
+	}
+	if err := store.requireActiveMission(expected, acceptedAt); err != nil {
+		return personserver.MissionRecord{}, err
+	}
+	key := expected.Agent + "\x00" + expected.S256
+	current := store.missions[key]
+	current.AcceptedUpdates = append(current.AcceptedUpdates, personserver.MissionUpdateRecord{
+		Document: cloneExampleMissionUpdateDocument(document), AcceptedAt: acceptedAt,
+	})
+	store.missions[key] = cloneExampleMissionRecord(current)
+	return cloneExampleMissionRecord(current), nil
+}
+
+func (store *memoryMissionStore) CompleteMission(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	acceptedAt time.Time,
+	document aauth.MissionCompletionDocument,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if acceptedAt.IsZero() {
+		return personserver.MissionRecord{}, errors.New("mission acceptance time is required")
+	}
+	if err := store.requireActiveMission(expected, acceptedAt); err != nil {
+		return personserver.MissionRecord{}, err
+	}
+	key := expected.Agent + "\x00" + expected.S256
+	current := store.missions[key]
+	current.State = personserver.MissionTerminated
+	current.TerminationReason = "completed"
+	current.Completion = &personserver.MissionCompletionRecord{
+		Document: cloneExampleMissionCompletionDocument(document), AcceptedAt: acceptedAt,
+	}
+	store.missions[key] = cloneExampleMissionRecord(current)
+	return cloneExampleMissionRecord(current), nil
 }
 
 func (store *memoryMissionStore) CommitMissionPersonToken(
@@ -278,7 +357,7 @@ func (store *memoryMissionStore) requireActiveMission(expected personserver.Miss
 	if current.State == personserver.MissionActive && !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
 		current.State = personserver.MissionTerminated
 		current.TerminationReason = "expired"
-		store.missions[key] = current
+		store.missions[key] = cloneExampleMissionRecord(current)
 	}
 	if current.State == personserver.MissionTerminated {
 		return &personserver.MissionTerminatedError{TerminationReason: current.TerminationReason}
@@ -287,6 +366,30 @@ func (store *memoryMissionStore) requireActiveMission(expected personserver.Miss
 		return personserver.ErrMissionConflict
 	}
 	return nil
+}
+
+func cloneExampleMissionRecord(record personserver.MissionRecord) personserver.MissionRecord {
+	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.AcceptedUpdates = append([]personserver.MissionUpdateRecord(nil), record.AcceptedUpdates...)
+	for index := range record.AcceptedUpdates {
+		record.AcceptedUpdates[index].Document = cloneExampleMissionUpdateDocument(record.AcceptedUpdates[index].Document)
+	}
+	if record.Completion != nil {
+		completion := *record.Completion
+		completion.Document = cloneExampleMissionCompletionDocument(completion.Document)
+		record.Completion = &completion
+	}
+	return record
+}
+
+func cloneExampleMissionUpdateDocument(document aauth.MissionUpdateDocument) aauth.MissionUpdateDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
+}
+
+func cloneExampleMissionCompletionDocument(document aauth.MissionCompletionDocument) aauth.MissionCompletionDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
 }
 
 type logicalTransport struct {

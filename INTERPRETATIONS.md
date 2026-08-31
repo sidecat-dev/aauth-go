@@ -106,6 +106,60 @@ Mission proposal policy denial is likewise unregistered. The immediate
 approval endpoint provisionally returns `403 mission_denied`; the gap is
 recorded in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
+## An accepted mission update identifies the authenticated request body
+
+**Source:** AAuth Core, `Mission Log` and `Mission Update`.
+
+Core defines an update digest over the update bytes “as the PS persists them”
+but does not say whether the PS may rewrite the submitted document. This
+implementation persists and hashes the exact authenticated JSON request body.
+Its parsed fields drive policy; unknown additive members remain in the retained
+bytes. This gives the Agent's returned digest one stable object without adding
+a private canonicalization format.
+
+## Immediate mission completion requires actual person acceptance
+
+**Source:** AAuth Core, `Mission Completion` and `Mission Management`.
+
+The immediate composition exposes ordinary PS update policy and a distinctly
+named person-confirmation callback for completion. This follows the
+update-specific rule that the PS may accept an update on its own, despite the
+mission overview's conflicting person-decides statement. A successful
+completion callback means the host obtained acceptance from the responsible
+person; it is not an autonomous policy judgment that the summary looks
+reasonable. The callback and exact completion record are followed by one
+atomic transition to `terminated/completed`. Deployments that need interaction,
+clarification, or deferred review cannot use this immediate path for those
+outcomes.
+
+Update and completion policy denial use provisional `403
+mission_update_denied` and `403 mission_completion_denied`. Core registers no
+denial result for either valid request—or clearly say immediate refusal is an
+allowed outcome. Mission actions are sent once and have no lost-success
+recovery identity. These gaps are recorded in
+[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+
+## Mission termination closes PS decisions, not outstanding tokens
+
+**Source:** AAuth Core, `Mission Management`, `Mission Status Errors`, and `Why
+Missions Are Not a Policy Language`.
+
+After completion, the implementation rejects later mission actions, Person
+token issuance, and Auth-token exchange at the PS. It does not revoke already
+issued credentials: the Resource receives only `mission_s256`, has no mission
+state channel, and continues to apply the credential's own expiry. The Agent
+must stop using a terminated mission. Core does not define a stronger
+termination-propagation mechanism.
+
+## Missing deferred `Retry-After` uses the stated five-second fallback
+
+**Source:** AAuth Core, `Pending Response` and `Polling with GET`.
+
+Core both marks `Retry-After` required and defines a five-second default when
+it is absent. The receiver implements the explicit fallback. A present header
+must still contain one valid nonnegative delay. The contradiction remains in
+[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+
 ## Parent-mediated credentials use the child key and the earlier expiry
 
 **Source:** AAuth Core, `Person Token Endpoint`, `Resource Token

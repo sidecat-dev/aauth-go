@@ -1,7 +1,10 @@
 package httpapi_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +13,74 @@ import (
 	"aauth-go/internal/httpapi"
 	"aauth-go/signaturekey"
 )
+
+func TestDecodeExactJSONReturnsIndependentExactInputBytes(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(" \n{\"name\":\"one\",\"extension\":{\"future\":true}}\t")
+	var value struct {
+		Name string `json:"name"`
+	}
+	exact, err := httpapi.DecodeExactJSON(bytes.NewReader(input), 0, &value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(exact, input) || value.Name != "one" {
+		t.Fatalf("exact = %q, name = %q", exact, value.Name)
+	}
+	exact[0] = '!'
+	if input[0] != ' ' {
+		t.Fatal("returned exact bytes alias the reader input")
+	}
+}
+
+func TestDecodeExactJSONDoesNotAliasDecodedRawMessage(t *testing.T) {
+	t.Parallel()
+
+	var value struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	exact, err := httpapi.DecodeExactJSON(strings.NewReader(`{"payload":{"value":1}}`), 0, &value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPayload := append([]byte(nil), value.Payload...)
+	exact[len(exact)-2] = '2'
+	if !bytes.Equal(value.Payload, wantPayload) {
+		t.Fatal("mutating exact bytes changed the decoded value")
+	}
+	wantExact := append([]byte(nil), exact...)
+	value.Payload[0] = '['
+	if !bytes.Equal(exact, wantExact) {
+		t.Fatal("mutating the decoded value changed the exact bytes")
+	}
+}
+
+func TestDecodeExactJSONPreservesDecodeJSONFailureClasses(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		reader io.Reader
+		max    int64
+	}{
+		{name: "nil reader"},
+		{name: "duplicate", reader: strings.NewReader(`{"name":"one","name":"two"}`)},
+		{name: "case ambiguous", reader: strings.NewReader(`{"name":"one","Name":"two"}`)},
+		{name: "lone case variant", reader: strings.NewReader(`{"Name":"one"}`)},
+		{name: "trailing", reader: strings.NewReader(`{"name":"one"} {"name":"two"}`)},
+		{name: "oversize", reader: strings.NewReader(`{"name":"one"}`), max: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var value struct {
+				Name string `json:"name"`
+			}
+			if _, err := httpapi.DecodeExactJSON(test.reader, test.max, &value); err == nil {
+				t.Fatal("DecodeExactJSON succeeded")
+			}
+		})
+	}
+}
 
 func TestDecodeJSONRejectsAmbiguityCaseVariantsTrailingValuesAndOversize(t *testing.T) {
 	t.Parallel()

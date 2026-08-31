@@ -195,6 +195,12 @@ The profile's five demonstrations form one coherent progression:
 Mission approval is the first surface, not an optional decoration on an
 otherwise complete profile.
 
+The current Go mission example extends its three-party profile path with two
+Core lifecycle steps that are not separate interop-profile surfaces: the PS
+appends one exact accepted update before later policy, and only a host callback
+representing the person's acceptance completes the mission after the protected
+call.
+
 ### R3 per-call authorization
 
 The Agent requests typed operations. The Resource validates them against its

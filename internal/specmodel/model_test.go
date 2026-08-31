@@ -73,7 +73,7 @@ func TestEmbeddedModelIsStructurallyComplete(t *testing.T) {
 	if got, want := len(model.Headings), 612; got != want {
 		t.Fatalf("heading count = %d, want %d", got, want)
 	}
-	if got, want := len(model.SourceTensions), 12; got != want {
+	if got, want := len(model.SourceTensions), 18; got != want {
 		t.Fatalf("source-tension count = %d, want %d", got, want)
 	}
 	if got, want := len(model.Requirements), 1200; got != want {

@@ -625,8 +625,7 @@ func (store *memoryPersonTokenStore) CommitMission(
 		}
 		batch[key] = struct{}{}
 	}
-	mission.ExactJSON = append([]byte(nil), mission.ExactJSON...)
-	store.missions[missionKey] = mission
+	store.missions[missionKey] = cloneIntegrationMissionRecord(mission)
 	for _, token := range tokens {
 		store.records[token.PersonServer+"\x00"+token.JTI] = token
 		store.last = token
@@ -648,10 +647,57 @@ func (store *memoryPersonTokenStore) LoadMissionForAgent(
 	if record.State == personserver.MissionActive && !record.ExpiresAt.IsZero() && !at.Before(record.ExpiresAt) {
 		record.State = personserver.MissionTerminated
 		record.TerminationReason = "expired"
-		store.missions[key] = record
+		store.missions[key] = cloneIntegrationMissionRecord(record)
 	}
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	return record, nil
+	return cloneIntegrationMissionRecord(record), nil
+}
+
+func (store *memoryPersonTokenStore) AppendMissionUpdate(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	acceptedAt time.Time,
+	document aauth.MissionUpdateDocument,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if acceptedAt.IsZero() {
+		return personserver.MissionRecord{}, errors.New("mission acceptance time is required")
+	}
+	if err := store.requireActiveMissionLocked(expected, acceptedAt); err != nil {
+		return personserver.MissionRecord{}, err
+	}
+	key := expected.Agent + "\x00" + expected.S256
+	current := store.missions[key]
+	current.AcceptedUpdates = append(current.AcceptedUpdates, personserver.MissionUpdateRecord{
+		Document: cloneIntegrationMissionUpdateDocument(document), AcceptedAt: acceptedAt,
+	})
+	store.missions[key] = cloneIntegrationMissionRecord(current)
+	return cloneIntegrationMissionRecord(current), nil
+}
+
+func (store *memoryPersonTokenStore) CompleteMission(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	acceptedAt time.Time,
+	document aauth.MissionCompletionDocument,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if acceptedAt.IsZero() {
+		return personserver.MissionRecord{}, errors.New("mission acceptance time is required")
+	}
+	if err := store.requireActiveMissionLocked(expected, acceptedAt); err != nil {
+		return personserver.MissionRecord{}, err
+	}
+	key := expected.Agent + "\x00" + expected.S256
+	current := store.missions[key]
+	current.State = personserver.MissionTerminated
+	current.TerminationReason = "completed"
+	current.Completion = &personserver.MissionCompletionRecord{
+		Document: cloneIntegrationMissionCompletionDocument(document), AcceptedAt: acceptedAt,
+	}
+	store.missions[key] = cloneIntegrationMissionRecord(current)
+	return cloneIntegrationMissionRecord(current), nil
 }
 
 func (store *memoryPersonTokenStore) CommitMissionPersonToken(
@@ -704,7 +750,7 @@ func (store *memoryPersonTokenStore) terminateMission(agent, s256, reason string
 	}
 	record.State = personserver.MissionTerminated
 	record.TerminationReason = reason
-	store.missions[key] = record
+	store.missions[key] = cloneIntegrationMissionRecord(record)
 	return nil
 }
 
@@ -717,7 +763,7 @@ func (store *memoryPersonTokenStore) requireActiveMissionLocked(expected persons
 	if current.State == personserver.MissionActive && !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
 		current.State = personserver.MissionTerminated
 		current.TerminationReason = "expired"
-		store.missions[key] = current
+		store.missions[key] = cloneIntegrationMissionRecord(current)
 	}
 	if current.State == personserver.MissionTerminated {
 		return &personserver.MissionTerminatedError{TerminationReason: current.TerminationReason}
@@ -726,6 +772,30 @@ func (store *memoryPersonTokenStore) requireActiveMissionLocked(expected persons
 		return personserver.ErrMissionConflict
 	}
 	return nil
+}
+
+func cloneIntegrationMissionRecord(record personserver.MissionRecord) personserver.MissionRecord {
+	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.AcceptedUpdates = append([]personserver.MissionUpdateRecord(nil), record.AcceptedUpdates...)
+	for index := range record.AcceptedUpdates {
+		record.AcceptedUpdates[index].Document = cloneIntegrationMissionUpdateDocument(record.AcceptedUpdates[index].Document)
+	}
+	if record.Completion != nil {
+		completion := *record.Completion
+		completion.Document = cloneIntegrationMissionCompletionDocument(completion.Document)
+		record.Completion = &completion
+	}
+	return record
+}
+
+func cloneIntegrationMissionUpdateDocument(document aauth.MissionUpdateDocument) aauth.MissionUpdateDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
+}
+
+func cloneIntegrationMissionCompletionDocument(document aauth.MissionCompletionDocument) aauth.MissionCompletionDocument {
+	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
+	return document
 }
 
 type memoryPendingPersonToken struct {

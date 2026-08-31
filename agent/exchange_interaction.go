@@ -186,6 +186,9 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 	case http.StatusAccepted:
 		defer response.Body.Close()
 		if resourceClaims.MissionS256 != "" {
+			if err := validateUnsupportedMissionContinuation(response); err != nil {
+				return ExchangeResult{}, fail(operation, err)
+			}
 			return ExchangeResult{}, fail(operation, &MissionContinuationUnsupportedError{
 				Phase: "auth-token exchange", Operation: "BeginExchange",
 			})

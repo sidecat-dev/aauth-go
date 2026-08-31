@@ -96,6 +96,12 @@ below where evidence is ready.
 | AAG-F060 | Unknown mission references at the Person Token Endpoint have no assigned error | ready below with ownership-safe refusal evidence |
 | AAG-F061 | A Resource cannot directly enforce mission expiry without receiving mission content | implementation bridge recorded; ready below |
 | AAG-F062 | `approved_at` alone does not make a mission digest globally unique | ready below with immediate mission evidence |
+| AAG-F063 | The exact byte object identified by a mission-update digest is underspecified | ready below with exact-body implementation evidence |
+| AAG-F064 | Immediate mission-action refusal is undefined, including its error if allowed | ready below with typed provisional refusal evidence |
+| AAG-F065 | Mission update and completion uncertain success have no recovery identity | ready below with one-shot transport evidence; no recovery claim |
+| AAG-F066 | Core contradicts itself on who may accept a mission update | ready below; implementation follows the update-specific rule |
+| AAG-F067 | Mission termination does not define the fate of outstanding credentials | ready below with explicit implementation boundary |
+| AAG-F068 | Deferred `Retry-After` is both required and assigned an absent-header default | ready below; implementation honors the receiver fallback |
 
 ## Current unsubmitted questions
 
@@ -381,6 +387,129 @@ mission?
 
 **Placement:** Open a focused Core mission-identity clarification after
 checking the current issue tracker for an existing uniqueness discussion.
+
+### AAG-F063 — Mission update does not define the exact hashed artifact
+
+**Source:** AAuth Core, `Mission Log` and `Mission Update`.
+
+An accepted update returns the digest of the update bytes “as the PS persists
+them,” but Core does not say whether those bytes are the authenticated request,
+a canonical re-encoding, or a person-edited result. It also requires auditors
+to read accepted updates without defining the retrieval representation that
+supplies those bytes.
+
+The implementation persists and hashes the exact authenticated request body.
+This keeps unknown additive members and gives the returned digest one
+unambiguous object without inventing a canonicalization format.
+
+**Question:** Which exact bytes does an accepted update digest identify, and
+should mission inspection return those bytes plus their acceptance order?
+
+**Placement:** Open a focused Core mission-update exactness issue after checking
+for a current mission-log retrieval discussion.
+
+### AAG-F064 — Mission update and completion denial errors are absent
+
+**Source:** AAuth Core, `Mission Update`, `Mission Completion`, and `Mission
+Endpoint Errors`.
+
+Core defines acceptance or deferred review for an update, and acceptance or
+clarification follow-up for completion. It does not say whether either action
+may instead receive an immediate terminal refusal. If that outcome is allowed,
+the error registry has no result for it. `invalid_request` would misdescribe
+valid input, and `mission_terminated` would misdescribe a mission that remains
+active.
+
+The immediate implementation provisionally returns `403
+mission_update_denied` and `403 mission_completion_denied` and leaves the
+mission unchanged.
+
+**Question:** May an update or completion request end in immediate refusal? If
+so, should Core register one mission-action denial result or distinct update
+and completion results, and which statuses should they use?
+
+**Placement:** Combine with AAG-F059 if Core adopts one policy-denial family for
+mission actions; otherwise open one focused endpoint-error issue.
+
+### AAG-F065 — Mission action uncertain success has no recovery identity
+
+**Source:** AAuth Core, `Mission Update`, `Mission Completion`, and `Deferred
+Response State Machine`.
+
+An update request has no request identifier and the endpoint defines no lookup
+or replay rule. If its `200` response is lost, resending the same body may
+append the same update twice. Completion has the same uncertainty after the
+person has accepted: storage or response delivery can fail, while a retry may
+ask the person again or encounter the already terminated mission.
+
+The implementation performs one mission-action POST and never retries it
+automatically. Its store serializes concurrent transitions, but it makes no
+claim that a lost update or completion success can be recovered or safely
+repeated.
+
+**Question:** How may an Agent recover an accepted update or person-accepted
+completion after an uncertain response without repeating either consequence?
+
+**Placement:** Open a focused Core mission-action recovery issue after checking
+for an existing deferred/replay discussion.
+
+### AAG-F066 — Core contradicts itself on update acceptance authority
+
+**Source:** AAuth Core, `Mission` and `Mission Update`.
+
+The mission overview says all three Agent operations have one shape: the Agent
+proposes and the person decides. The update section later says the PS may
+accept an update on its own or defer while the person reviews it. These assign
+different decision-makers to the same operation.
+
+The implementation follows the update-specific rule: `AcceptUpdate` may apply
+Person Server policy autonomously. Completion remains separate and requires a
+host callback that confirms actual person acceptance.
+
+**Question:** May the PS autonomously accept an update, or must every accepted
+update represent a person decision?
+
+**Placement:** Open a focused editorial issue for the conflicting mission
+overview and update-specific rule.
+
+### AAG-F067 — Termination does not define outstanding credential behavior
+
+**Source:** AAuth Core, `Mission Update`, `Mission Management`, `Mission Status
+Errors`, and `Why Missions Are Not a Policy Language`.
+
+Core says updates leave all existing mission-bound tokens valid and that a
+terminated mission rejects later PS requests. It does not say whether
+termination revokes already-issued Person, Resource, or Auth tokens, nor define
+a signal by which a Resource could learn the new state. Resources intentionally
+receive only the digest and do not evaluate mission content.
+
+This implementation closes later Person Server decisions after termination.
+It does not revoke or remotely invalidate outstanding credentials; they remain
+cryptographically usable until their own expiry, and a conforming Agent must
+stop using them.
+
+**Question:** Is mission termination intended only to close future PS
+decisions, or must it invalidate outstanding credentials? If invalidation is
+required, how does a Resource learn it without receiving private mission state?
+
+**Placement:** Open a focused Core mission-termination propagation issue.
+
+### AAG-F068 — `Retry-After` is required but also has an absence default
+
+**Source:** AAuth Core, `Pending Response` and `Polling with GET`.
+
+The pending-response header list marks `Retry-After` REQUIRED. The following
+polling rule says that when it is absent the default interval is five seconds.
+Both cannot describe the same receiver requirement.
+
+The implementation accepts an absent header and applies the explicit
+five-second receiver fallback. Present values still require one valid
+nonnegative delay.
+
+**Question:** Should `Retry-After` be optional with a five-second default, or
+required with absence treated as a malformed deferred response?
+
+**Placement:** Add to the deferred-response clarification discussion.
 
 ### AAG-F010 — Four-party person identity uses the access-server namespace in one step
 

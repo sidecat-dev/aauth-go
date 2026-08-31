@@ -1,8 +1,9 @@
 // Package personserver implements explicit immediate three-party and
 // federated four-party Person Server compositions. It supports top-level and
 // parent-mediated issuance. Three-party composition also supports bounded
-// mission approval, interaction, issued-token revocation, and one
-// same-Person-Server Resource call chain.
+// mission approval, ordered accepted updates, person-accepted completion,
+// interaction, issued-token revocation, and one same-Person-Server Resource
+// call chain.
 package personserver
 
 import (
@@ -203,6 +204,8 @@ type Server struct {
 	requirePersonTokenInteraction   func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	missions                        MissionStore
 	missionApprove                  func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	missionAcceptUpdate             func(context.Context, MissionUpdatePolicyRequest) error
+	missionConfirmPersonCompletion  func(context.Context, MissionCompletionPolicyRequest) error
 	consent                         func(context.Context, AuthorizationRequest) error
 	authorizationMode               authorizationMode
 	authorize                       func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
@@ -330,9 +333,17 @@ func newServer(config serverConfig) (*Server, error) {
 	}
 	var missions MissionStore
 	var missionApprove func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	var missionAcceptUpdate func(context.Context, MissionUpdatePolicyRequest) error
+	var missionConfirmPersonCompletion func(context.Context, MissionCompletionPolicyRequest) error
 	if config.missions != nil {
 		if config.missions.Approve == nil {
 			return nil, errors.New("personserver: mission approval policy is required")
+		}
+		if config.missions.AcceptUpdate == nil {
+			return nil, errors.New("personserver: mission update acceptance is required")
+		}
+		if config.missions.ConfirmPersonAcceptedCompletion == nil {
+			return nil, errors.New("personserver: mission completion acceptance is required")
 		}
 		var ok bool
 		missions, ok = config.tokens.(MissionStore)
@@ -340,6 +351,8 @@ func newServer(config serverConfig) (*Server, error) {
 			return nil, errors.New("personserver: missions require a mission store")
 		}
 		missionApprove = config.missions.Approve
+		missionAcceptUpdate = config.missions.AcceptUpdate
+		missionConfirmPersonCompletion = config.missions.ConfirmPersonAcceptedCompletion
 	}
 	var deferredTokens DeferredTokenStore
 	if config.requirePersonTokenInteraction != nil {
@@ -363,11 +376,12 @@ func newServer(config serverConfig) (*Server, error) {
 		tokens:                       config.tokens, deferredTokens: deferredTokens, bindPerson: config.bindPerson,
 		requirePersonTokenInteraction: config.requirePersonTokenInteraction,
 		missions:                      missions, missionApprove: missionApprove,
+		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
 	}, nil
 }
 
-// Handler serves immediate and interactive person-token issuance plus the
-// Person Server auth-token exchange.
+// Handler serves immediate and interactive person-token issuance, the Person
+// Server auth-token exchange, and the configured immediate mission lifecycle.
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /person", server.handlePerson)
@@ -378,6 +392,7 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
 	if server.missions != nil {
 		mux.HandleFunc("POST /mission", server.handleMission)
+		mux.HandleFunc("POST /mission/{s256}", server.handleMissionAction)
 	}
 	return mux
 }
