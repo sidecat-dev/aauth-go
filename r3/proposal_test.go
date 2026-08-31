@@ -10,16 +10,16 @@ import (
 
 func TestMCPProposalJSONRoundTripAndCopySafety(t *testing.T) {
 	operation := mustOperation(t, "send_email")
-	to, err := r3.NewMCPInlineParameter([]byte(`"mom@example.com"`))
+	to, err := r3.NewInlineParameter([]byte(`"mom@example.com"`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	bodyBytes := []byte("Hi Mom, are you free for dinner?")
-	body, err := r3.NewMCPDigestParameter(r3.Digest(bodyBytes), "Hi Mom, are you free…", "text/plain")
+	body, err := r3.NewDigestParameter(r3.Digest(bodyBytes), "Hi Mom, are you free…", "text/plain")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"to": to, "body": body})
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{"to": to, "body": body})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestMCPProposalJSONRoundTripAndCopySafety(t *testing.T) {
 		t.Fatal(err)
 	}
 	account := "personal"
-	proposal, err := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{
+	proposal, err := r3.NewProposal(operation, parameters, r3.ProposalOptions{
 		Account: &account,
 		Display: &proposalDisplay,
 	})
@@ -46,12 +46,12 @@ func TestMCPProposalJSONRoundTripAndCopySafety(t *testing.T) {
 		t.Fatalf("proposal JSON = %s, want %s", exact, want)
 	}
 
-	parsed, err := r3.ParseMCPProposal(exact)
+	parsed, err := mcpRegistry.ParseProposal(exact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Operation().Tool() != "send_email" {
-		t.Fatalf("operation = %q", parsed.Operation().Tool())
+	if mcpTool(t, parsed.Operation()) != "send_email" {
+		t.Fatalf("operation = %q", mcpTool(t, parsed.Operation()))
 	}
 	if got, ok := parsed.Account(); !ok || got != account {
 		t.Fatalf("account = %q, %t", got, ok)
@@ -84,7 +84,7 @@ func TestMCPProposalJSONRoundTripAndCopySafety(t *testing.T) {
 }
 
 func TestMCPProposalParameterMatchingUsesStructuralJSONAndExactDigestBytes(t *testing.T) {
-	inline, err := r3.NewMCPInlineParameter([]byte(`{"count":1,"nested":{"a":true,"b":[1,2]}}`))
+	inline, err := r3.NewInlineParameter([]byte(`{"count":1,"nested":{"a":true,"b":[1,2]}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,12 +92,12 @@ func TestMCPProposalParameterMatchingUsesStructuralJSONAndExactDigestBytes(t *te
 		[]byte(` { "nested" : { "b" : [1.0, 2e0], "a" : true }, "count" : 1.00 } `),
 		[]byte(`{"nested":{"a":true,"b":[1,2]},"count":1}`),
 	} {
-		presented, err := r3.NewPresentedMCPInlineParameter(equivalent)
+		presented, err := r3.NewPresentedInlineParameter(equivalent)
 		if err != nil {
 			t.Fatal(err)
 		}
-		one, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{"value": inline})
-		matches, err := one.Matches(map[string]r3.PresentedMCPParameter{"value": presented})
+		one, _ := r3.NewParameters(map[string]r3.Parameter{"value": inline})
+		matches, err := one.Matches(map[string]r3.PresentedParameter{"value": presented})
 		if err != nil || !matches {
 			t.Fatalf("structural match = %t, %v for %s", matches, err, equivalent)
 		}
@@ -106,63 +106,63 @@ func TestMCPProposalParameterMatchingUsesStructuralJSONAndExactDigestBytes(t *te
 		[]byte(`{"count":2,"nested":{"a":true,"b":[1,2]}}`),
 		[]byte(`{"count":1,"nested":{"a":true,"b":[2,1]}}`),
 	} {
-		presented, err := r3.NewPresentedMCPInlineParameter(different)
+		presented, err := r3.NewPresentedInlineParameter(different)
 		if err != nil {
 			t.Fatal(err)
 		}
-		one, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{"value": inline})
-		matches, err := one.Matches(map[string]r3.PresentedMCPParameter{"value": presented})
+		one, _ := r3.NewParameters(map[string]r3.Parameter{"value": inline})
+		matches, err := one.Matches(map[string]r3.PresentedParameter{"value": presented})
 		if matches {
 			t.Fatalf("different JSON matched: %s", different)
 		}
 	}
-	if _, err := r3.NewPresentedMCPInlineParameter([]byte(`{"count":1,"count":1}`)); err == nil {
+	if _, err := r3.NewPresentedInlineParameter([]byte(`{"count":1,"count":1}`)); err == nil {
 		t.Fatal("matching accepted duplicate JSON object members")
 	}
 
 	exact := []byte{0, 1, 2, 3, 255}
-	digested, err := r3.NewMCPDigestParameterFromBytes(exact, "", "application/octet-stream")
+	digested, err := r3.NewDigestParameterFromBytes(exact, "", "application/octet-stream")
 	if err != nil {
 		t.Fatal(err)
 	}
-	digestSet, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{"value": digested})
-	if matches, err := digestSet.Matches(map[string]r3.PresentedMCPParameter{"value": r3.NewPresentedMCPDigestBytes(exact)}); err != nil || !matches {
+	digestSet, _ := r3.NewParameters(map[string]r3.Parameter{"value": digested})
+	if matches, err := digestSet.Matches(map[string]r3.PresentedParameter{"value": r3.NewPresentedDigestBytes(exact)}); err != nil || !matches {
 		t.Fatalf("exact digest match = %t, %v", matches, err)
 	}
-	if matches, err := digestSet.Matches(map[string]r3.PresentedMCPParameter{"value": r3.NewPresentedMCPDigestBytes([]byte{0, 1, 2, 3})}); err != nil || matches {
+	if matches, err := digestSet.Matches(map[string]r3.PresentedParameter{"value": r3.NewPresentedDigestBytes([]byte{0, 1, 2, 3})}); err != nil || matches {
 		t.Fatalf("changed digest match = %t, %v", matches, err)
 	}
 
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"inline": inline, "binary": digested})
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{"inline": inline, "binary": digested})
 	if err != nil {
 		t.Fatal(err)
 	}
-	presentedInline, _ := r3.NewPresentedMCPInlineParameter([]byte(`{"nested":{"b":[1,2],"a":true},"count":1}`))
-	presented := map[string]r3.PresentedMCPParameter{
+	presentedInline, _ := r3.NewPresentedInlineParameter([]byte(`{"nested":{"b":[1,2],"a":true},"count":1}`))
+	presented := map[string]r3.PresentedParameter{
 		"inline": presentedInline,
-		"binary": r3.NewPresentedMCPDigestBytes(exact),
+		"binary": r3.NewPresentedDigestBytes(exact),
 	}
 	if matches, err := parameters.Matches(presented); err != nil || !matches {
 		t.Fatalf("parameter-set match = %t, %v", matches, err)
 	}
-	changedInline, _ := r3.NewPresentedMCPInlineParameter([]byte(`{"count":2,"nested":{"a":true,"b":[1,2]}}`))
-	extraInline, _ := r3.NewPresentedMCPInlineParameter([]byte(`true`))
-	for name, changed := range map[string]map[string]r3.PresentedMCPParameter{
+	changedInline, _ := r3.NewPresentedInlineParameter([]byte(`{"count":2,"nested":{"a":true,"b":[1,2]}}`))
+	extraInline, _ := r3.NewPresentedInlineParameter([]byte(`true`))
+	for name, changed := range map[string]map[string]r3.PresentedParameter{
 		"missing":           {"inline": presented["inline"]},
 		"extra":             {"inline": presented["inline"], "binary": presented["binary"], "other": extraInline},
 		"case-substitution": {"Inline": presented["inline"], "binary": presented["binary"]},
 		"changed":           {"inline": changedInline, "binary": presented["binary"]},
-		"wrong-kind":        {"inline": r3.NewPresentedMCPDigestBytes([]byte(`{"nested":{"b":[1,2],"a":true},"count":1}`)), "binary": presented["binary"]},
+		"wrong-kind":        {"inline": r3.NewPresentedDigestBytes([]byte(`{"nested":{"b":[1,2],"a":true},"count":1}`)), "binary": presented["binary"]},
 	} {
 		if matches, err := parameters.Matches(changed); err != nil || matches {
 			t.Fatalf("%s parameter-set match = %t, %v", name, matches, err)
 		}
 	}
-	empty, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{})
-	if matches, err := empty.Matches(map[string]r3.PresentedMCPParameter{}); err != nil || !matches {
+	empty, _ := r3.NewParameters(map[string]r3.Parameter{})
+	if matches, err := empty.Matches(map[string]r3.PresentedParameter{}); err != nil || !matches {
 		t.Fatalf("empty parameter-set match = %t, %v", matches, err)
 	}
-	if matches, err := empty.Matches(map[string]r3.PresentedMCPParameter{"extra": extraInline}); err != nil || matches {
+	if matches, err := empty.Matches(map[string]r3.PresentedParameter{"extra": extraInline}); err != nil || matches {
 		t.Fatalf("nonempty presentation matched empty proposal = %t, %v", matches, err)
 	}
 }
@@ -193,32 +193,32 @@ func TestMCPProposalRejectsAmbiguousOrInvalidShapes(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if test.name == "document parser refuses proposal" {
-				if _, err := r3.ParseDocument([]byte(test.json)); err == nil {
+				if _, err := mcpRegistry.ParseDocument([]byte(test.json)); err == nil {
 					t.Fatalf("document parser accepted proposal: %s", test.json)
 				}
 				return
 			}
-			if _, err := r3.ParseMCPProposal([]byte(test.json)); err == nil {
+			if _, err := mcpRegistry.ParseProposal([]byte(test.json)); err == nil {
 				t.Fatalf("accepted invalid proposal: %s", test.json)
 			}
 		})
 	}
 
 	operation := mustOperation(t, "a")
-	var parameters r3.MCPParameters
-	if _, err := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{}); err == nil {
+	var parameters r3.Parameters
+	if _, err := r3.NewProposal(operation, parameters, r3.ProposalOptions{}); err == nil {
 		t.Fatal("accepted zero parameters value")
 	}
-	if _, err := r3.NewMCPInlineParameter([]byte(`{"x":1,"x":2}`)); err == nil {
+	if _, err := r3.NewInlineParameter([]byte(`{"x":1,"x":2}`)); err == nil {
 		t.Fatal("accepted duplicate inline object members")
 	}
-	bounded, err := r3.NewMCPInlineParameter([]byte(`1e1000000`))
+	bounded, err := r3.NewInlineParameter([]byte(`1e1000000`))
 	if err != nil {
 		t.Fatalf("rejected large valid number: %v", err)
 	}
-	presentedBounded, _ := r3.NewPresentedMCPInlineParameter([]byte(`10e999999`))
-	boundedSet, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{"value": bounded})
-	if matches, err := boundedSet.Matches(map[string]r3.PresentedMCPParameter{"value": presentedBounded}); err != nil || !matches {
+	presentedBounded, _ := r3.NewPresentedInlineParameter([]byte(`10e999999`))
+	boundedSet, _ := r3.NewParameters(map[string]r3.Parameter{"value": bounded})
+	if matches, err := boundedSet.Matches(map[string]r3.PresentedParameter{"value": presentedBounded}); err != nil || !matches {
 		t.Fatalf("large number reflexivity = %t, %v", matches, err)
 	}
 	for _, numeric := range []struct {
@@ -232,24 +232,24 @@ func TestMCPProposalRejectsAmbiguousOrInvalidShapes(t *testing.T) {
 		{"-0", "0e999999999999999999", true},
 		{`"a"`, `"\u0061"`, true},
 	} {
-		approved, err := r3.NewMCPInlineParameter([]byte(numeric.approved))
+		approved, err := r3.NewInlineParameter([]byte(numeric.approved))
 		if err != nil {
 			t.Fatal(err)
 		}
-		actual, err := r3.NewPresentedMCPInlineParameter([]byte(numeric.presented))
+		actual, err := r3.NewPresentedInlineParameter([]byte(numeric.presented))
 		if err != nil {
 			t.Fatal(err)
 		}
-		set, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{"value": approved})
-		matches, err := set.Matches(map[string]r3.PresentedMCPParameter{"value": actual})
+		set, _ := r3.NewParameters(map[string]r3.Parameter{"value": approved})
+		matches, err := set.Matches(map[string]r3.PresentedParameter{"value": actual})
 		if err != nil || matches != numeric.matches {
 			t.Fatalf("numeric/string equality %s vs %s = %t, %v, want %t", numeric.approved, numeric.presented, matches, err, numeric.matches)
 		}
 	}
-	if _, err := r3.NewMCPDigestParameter(validDigest, strings.Repeat("x", 4097), "text/plain"); err != nil {
+	if _, err := r3.NewDigestParameter(validDigest, strings.Repeat("x", 4097), "text/plain"); err != nil {
 		t.Fatalf("source-valid long excerpt rejected: %v", err)
 	}
-	excerptOnly, err := r3.ParseMCPProposal([]byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"a"}],"parameters":{"x":{"excerpt":"ordinary application value"}}}`))
+	excerptOnly, err := mcpRegistry.ParseProposal([]byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"a"}],"parameters":{"x":{"excerpt":"ordinary application value"}}}`))
 	if err != nil {
 		t.Fatalf("ordinary inline object using excerpt was treated as a digest descriptor: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestMCPProposalRejectsAmbiguousOrInvalidShapes(t *testing.T) {
 		`{"S256":"ordinary"}`,
 		`{"nested":{"s256":"ordinary"}}`,
 	} {
-		inline, err := r3.NewMCPInlineParameter([]byte(ordinary))
+		inline, err := r3.NewInlineParameter([]byte(ordinary))
 		if err != nil {
 			t.Fatalf("ordinary object %s rejected: %v", ordinary, err)
 		}
@@ -270,11 +270,11 @@ func TestMCPProposalRejectsAmbiguousOrInvalidShapes(t *testing.T) {
 			t.Fatalf("ordinary object %s did not remain inline", ordinary)
 		}
 	}
-	if _, err := r3.NewMCPInlineParameter([]byte(`{"s256":"ordinary","mode":"application"}`)); err == nil {
+	if _, err := r3.NewInlineParameter([]byte(`{"s256":"ordinary","mode":"application"}`)); err == nil {
 		t.Fatal("inline constructor accepted the reserved top-level s256 shape")
 	}
 	for _, name := range []string{"", " x "} {
-		proposal, err := r3.ParseMCPProposal([]byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"a"}],"parameters":{` + string(mustJSON(t, name)) + `:1}}`))
+		proposal, err := mcpRegistry.ParseProposal([]byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"a"}],"parameters":{` + string(mustJSON(t, name)) + `:1}}`))
 		if err != nil {
 			t.Fatalf("source-valid parameter name %q rejected: %v", name, err)
 		}

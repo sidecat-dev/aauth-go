@@ -29,12 +29,22 @@ import (
 
 const r3PerCallScope = "records.write"
 
-// TestMCPR3PerCallFourPartyJourney exercises AAuth R3 a99d353, "R3
+// TestR3PerCallFourPartyJourney exercises AAuth R3 a99d353, "R3
 // Processing", "Per-Call Proposals", and "Resource Enforcement" through real
 // AP, Agent, PS, Resource, and AS handlers. It covers both the baseline 401
 // retry and preferred Resource-held 202 delivery without giving the Agent
 // proposal contents or a hidden retry/poll loop.
-func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
+func TestR3PerCallFourPartyJourney(t *testing.T) {
+	registry := newIntegrationR3Registry(t)
+	for _, vocabulary := range integrationR3Vocabularies() {
+		vocabulary := vocabulary
+		t.Run(vocabulary.name, func(t *testing.T) {
+			testR3PerCallFourPartyJourney(t, registry, vocabulary)
+		})
+	}
+}
+
+func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabulary integrationR3Vocabulary) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 31, 15, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
@@ -55,19 +65,16 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	personKey := newSigningKey(t, "r3-per-call-ps-key")
 	accessKey := newSigningKey(t, "r3-per-call-as-key")
 	resourceKey := newSigningKey(t, "r3-per-call-resource-key")
-	deleteRecord, err := r3.NewMCPOperation("records.delete")
+	deleteRecord := vocabulary.newOperation(t, "records.delete")
+	requestedOperations, err := r3.NewOperationSet(deleteRecord)
 	if err != nil {
 		t.Fatal(err)
 	}
-	requestedOperations, err := r3.NewMCPOperationSet(deleteRecord)
+	emptyOperations, err := r3.NewGrantedOperations(vocabulary.registration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	emptyOperations, err := r3.NewGrantedOperations()
-	if err != nil {
-		t.Fatal(err)
-	}
-	perCallOperations, err := r3.NewGrantedOperations(deleteRecord)
+	perCallOperations, err := r3.NewGrantedOperations(vocabulary.registration, deleteRecord)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +125,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	}
 
 	documents := newIntegrationR3DocumentStore()
-	proposals := newR3PerCallProposalStore()
+	proposals := newR3PerCallProposalStore(registry)
 	retries := newR3PerCallRetryStore()
 	held := newR3PerCallHeldStore()
 	issuances := newR3PerCallIssuanceStore()
@@ -208,25 +215,21 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 				return nil
 			},
 			Protected: protected,
-			MCPR3: &resource.MCPR3Config{
-				DiscoveryEndpoint: resourceID + "/mcp",
-				KnownTools:        []string{deleteRecord.Tool()},
-				Documents:         documents,
-				DisplayForOperations: func(_ context.Context, operations r3.MCPOperationSet, gotAccount *string) (*r3.Display, error) {
-					if !operations.Equal(requestedOperations) || gotAccount == nil || *gotAccount != account {
-						return nil, errors.New("unexpected class R3 display input")
-					}
-					return &classDisplay, nil
-				},
-				OperationForRequest: func(request *http.Request) (string, bool, error) {
-					if request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/records/") {
-						return deleteRecord.Tool(), true, nil
-					}
-					return "", false, nil
-				},
-				PerCall: &resource.MCPR3PerCallConfig{
-					PresentCall: func(_ context.Context, request *http.Request, operation r3.MCPOperation, gotAccount *string) (map[string]r3.PresentedMCPParameter, error) {
-						record, presented, err := presentedR3PerCallParameters(request, operation, gotAccount, deleteRecord, account)
+			R3: &resource.R3Config{
+				Registry: registry,
+				Vocabularies: integrationR3ResourceVocabularies(
+					t, resourceID, []string{"records.delete"}, account, &classDisplay,
+				),
+				Documents: documents,
+				HTTP: resource.R3HTTPAdapter{
+					OperationForRequest: func(request *http.Request) (r3.Operation, bool, error) {
+						if request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/records/") {
+							return deleteRecord, true, nil
+						}
+						return r3.Operation{}, false, nil
+					},
+					PresentParameters: func(request *http.Request, operation r3.Operation) (map[string]r3.PresentedParameter, error) {
+						record, presented, err := presentedR3PerCallParameters(t, vocabulary, request, operation, deleteRecord)
 						if err != nil {
 							return nil, err
 						}
@@ -235,16 +238,18 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 						adapterMu.Unlock()
 						return presented, nil
 					},
-					DescribeCall: func(_ context.Context, request *http.Request, operation r3.MCPOperation, gotAccount *string) (resource.MCPR3CallDescription, error) {
-						record, description, err := describeR3PerCall(request, operation, gotAccount, deleteRecord, account)
+				},
+				PerCall: &resource.R3PerCallConfig{
+					DescribeCall: func(_ context.Context, invocation r3.Invocation, gotAccount *string) (resource.R3CallDescription, error) {
+						record, description, err := describeR3PerCall(t, vocabulary, invocation, gotAccount, deleteRecord, account)
 						if err != nil {
-							return resource.MCPR3CallDescription{}, err
+							return resource.R3CallDescription{}, err
 						}
 						adapterMu.Lock()
 						defer adapterMu.Unlock()
 						descriptionCalls[record]++
 						if !descriptionsEnabled {
-							return resource.MCPR3CallDescription{}, errors.New("proposal description source is no longer available")
+							return resource.R3CallDescription{}, errors.New("proposal description source is no longer available")
 						}
 						return description, nil
 					},
@@ -279,24 +284,11 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 			}
 			return nil
 		},
-		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
-			if err := validateR3PerCallAccessContext(request, personServerID, resourceID, personSubject, tenant, account, agentID); err != nil {
-				return accessserver.Decision{}, err
-			}
-			if request.MCPR3 == nil || !request.MCPR3.Document.OperationSet().Equal(requestedOperations) {
-				return accessserver.Decision{}, errors.New("class policy did not receive the exact R3 document")
-			}
-			authorization, err := r3.NewAuthorization(emptyOperations, perCallOperations, request.MCPR3.Document)
-			if err != nil {
-				return accessserver.Decision{}, err
-			}
-			observations.observeClassAS()
-			return accessserver.Decision{
-				Scopes: append([]string(nil), request.Scopes...), Lifetime: 30 * time.Minute,
-				MCPR3Authorization: &authorization,
-			}, nil
+		Authorize: func(_ context.Context, _ accessserver.AuthorizationRequest) (accessserver.Decision, error) {
+			return accessserver.Decision{}, errors.New("Core policy must not receive an R3 request")
 		},
-		MCPR3: &accessserver.MCPR3Config{
+		R3: &accessserver.R3Config{
+			Registry:   registry,
 			HTTPClient: httpClient,
 			Admit: func(_ context.Context, endpoint string) error {
 				if !strings.HasPrefix(endpoint, resourceID+"/r3/") {
@@ -304,17 +296,34 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 				}
 				return nil
 			},
-			AuthorizeProposal: func(_ context.Context, request accessserver.AuthorizationRequest, reference r3.Reference, proposal r3.MCPProposal) (accessserver.MCPR3ProposalDecision, error) {
+			AuthorizeDocument: func(_ context.Context, request accessserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (accessserver.R3DocumentDecision, error) {
 				if err := validateR3PerCallAccessContext(request, personServerID, resourceID, personSubject, tenant, account, agentID); err != nil {
-					return accessserver.MCPR3ProposalDecision{}, err
+					return accessserver.R3DocumentDecision{}, err
 				}
-				if request.MCPR3 != nil || proposal.Operation() != deleteRecord {
-					return accessserver.MCPR3ProposalDecision{}, errors.New("proposal policy received class or substituted R3 input")
+				if !vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) {
+					return accessserver.R3DocumentDecision{}, errors.New("class policy did not receive the exact R3 document")
+				}
+				authorization, err := r3.NewAuthorization(emptyOperations, perCallOperations, document)
+				if err != nil {
+					return accessserver.R3DocumentDecision{}, err
+				}
+				observations.observeClassAS()
+				return accessserver.R3DocumentDecision{
+					Scopes: append([]string(nil), request.Scopes...), Lifetime: 30 * time.Minute,
+					Authorization: &authorization,
+				}, nil
+			},
+			AuthorizeProposal: func(_ context.Context, request accessserver.AuthorizationRequest, reference r3.Reference, proposal r3.Proposal) (accessserver.R3ProposalDecision, error) {
+				if err := validateR3PerCallAccessContext(request, personServerID, resourceID, personSubject, tenant, account, agentID); err != nil {
+					return accessserver.R3ProposalDecision{}, err
+				}
+				if !vocabulary.operationsEqual(t, proposal.Operation(), deleteRecord) {
+					return accessserver.R3ProposalDecision{}, errors.New("proposal policy received a substituted R3 operation")
 				}
 				if err := observations.observeProposal("as", reference, proposal); err != nil {
-					return accessserver.MCPR3ProposalDecision{}, err
+					return accessserver.R3ProposalDecision{}, err
 				}
-				return accessserver.MCPR3ProposalDecision{
+				return accessserver.R3ProposalDecision{
 					Scopes: append([]string(nil), request.Scopes...), Lifetime: 5 * time.Minute,
 				}, nil
 			},
@@ -344,28 +353,29 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 		Consent: func(context.Context, personserver.AuthorizationRequest) error {
 			return errors.New("Core consent must not receive an R3 request")
 		},
-		MCPR3: &personserver.MCPR3Config{
+		R3: &personserver.R3Config{
+			Registry: registry,
 			Admit: func(_ context.Context, endpoint string) error {
 				if !strings.HasPrefix(endpoint, resourceID+"/r3/") {
 					return errors.New("unexpected R3 endpoint")
 				}
 				return nil
 			},
-			Consent: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
+			ConsentDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
 				if err := validateR3PerCallPersonContext(request, agentID, resourceID, personSubject, tenant, account); err != nil {
 					return err
 				}
-				if !document.OperationSet().Equal(requestedOperations) {
+				if !vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) {
 					return errors.New("class consent did not receive the exact R3 document")
 				}
 				observations.observeClassPS()
 				return nil
 			},
-			ConsentProposal: func(_ context.Context, request personserver.AuthorizationRequest, reference r3.Reference, proposal r3.MCPProposal) error {
+			ConsentProposal: func(_ context.Context, request personserver.AuthorizationRequest, reference r3.Reference, proposal r3.Proposal) error {
 				if err := validateR3PerCallPersonContext(request, agentID, resourceID, personSubject, tenant, account); err != nil {
 					return err
 				}
-				if proposal.Operation() != deleteRecord {
+				if !vocabulary.operationsEqual(t, proposal.Operation(), deleteRecord) {
 					return errors.New("proposal consent received a substituted operation")
 				}
 				return observations.observeProposal("ps", reference, proposal)
@@ -379,14 +389,17 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	network.Handle(agentProviderID, traffic.wrap(agentProviderID, provider.Handler()))
 	network.Handle(personServerID, traffic.wrap(personServerID, people.Handler()))
 	network.Handle(accessServerID, traffic.wrap(accessServerID, r3PerCallAuditBeforeReleaseHandler(access.Handler(), issuances)))
+	initialResource := newResource()
+	requireIntegrationR3ResourceMetadata(t, initialResource.Handler(), resourceID)
+	network.Handle(resourceID, traffic.wrap(resourceID, initialResource.Handler()))
 	installResource := func() {
 		network.Handle(resourceID, traffic.wrap(resourceID, newResource().Handler()))
 	}
-	installResource()
 
 	agent, err := clientagent.New(ctx, clientagent.Config{
 		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+		R3: &clientagent.R3Config{Registry: registry},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +420,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	accountValue := account
 	classResourceToken, err := agent.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Scopes: []string{r3PerCallScope}, Account: &accountValue, MCPR3Operations: &requestedOperations,
+		Scopes: []string{r3PerCallScope}, Account: &accountValue, R3Operations: &requestedOperations,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -422,14 +435,14 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 			err, psCalls, asCalls, documents.loadCount(), issuances.count(),
 		)
 	}
-	classClaims, classReference, classAuthorization, err := r3.VerifyMCPAuthTokenClaims(ctx, classAuthToken, resolver, clock)
+	classClaims, classReference, classAuthorization, err := r3.VerifyAuthTokenClaims(ctx, registry, classAuthToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if classClaims.Account == nil || *classClaims.Account != account || classClaims.Tenant != tenant ||
 		classClaims.Scope != r3PerCallScope ||
 		len(classAuthorization.GrantedOperations().Operations()) != 0 ||
-		!slices.Equal(classAuthorization.PerCallOperations().Operations(), []r3.MCPOperation{deleteRecord}) {
+		!vocabulary.grantedEqual(t, classAuthorization.PerCallOperations(), perCallOperations) {
 		t.Fatalf("class Auth token = claims %#v, operations %#v", classClaims, classAuthorization)
 	}
 	if ps, as := observations.classCounts(); ps != 1 || as != 1 {
@@ -443,7 +456,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	// cannot be paired with the second handle or the second call parameters.
 	baselineA := newR3PerCallRequest(t, resourceID, "baseline-a")
 	before := traffic.count()
-	baselineAResult, err := agent.BeginMCPR3Call(ctx, clientagent.MCPR3Call{
+	baselineAResult, err := agent.BeginR3Call(ctx, clientagent.R3Call{
 		Request: baselineA, ClassAuthToken: classAuthToken, Operation: deleteRecord,
 		AdditionalSignatureComponents: []string{"content-type", "content-digest"},
 	})
@@ -458,7 +471,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 
 	baselineB := newR3PerCallRequest(t, resourceID, "baseline-b")
 	before = traffic.count()
-	baselineBResult, err := agent.BeginMCPR3Call(ctx, clientagent.MCPR3Call{
+	baselineBResult, err := agent.BeginR3Call(ctx, clientagent.R3Call{
 		Request: baselineB, ClassAuthToken: classAuthToken, Operation: deleteRecord,
 		AdditionalSignatureComponents: []string{"content-type", "content-digest"},
 	})
@@ -484,14 +497,14 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireR3PerCallProposalExchange(
-		t, proposals, observations, traffic, issuances,
+		t, vocabulary, registry, proposals, observations, traffic, issuances,
 		baselineAuthorizationA.Reference(), baselineAuthToken,
 		deleteRecord, account, personTokenJTI, agentID,
 	)
-	requireR3PerCallCompletionToken(t, ctx, resolver, clock, baselineAuthToken, baselineAuthorizationA.Reference(), deleteRecord, account, tenant)
+	requireR3PerCallCompletionToken(t, vocabulary, ctx, registry, resolver, clock, baselineAuthToken, baselineAuthorizationA.Reference(), deleteRecord, account, tenant)
 
 	before = traffic.count()
-	if _, err := agent.RetryMCPR3Call(ctx, clientagent.MCPR3Retry{
+	if _, err := agent.RetryR3Call(ctx, clientagent.R3Retry{
 		Authorization: baselineAuthorizationB, AuthToken: baselineAuthToken,
 	}); err == nil {
 		t.Fatal("Agent paired a proposal Auth token with another 401 continuation")
@@ -519,7 +532,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 		return io.NopCloser(strings.NewReader("caller-mutated")), nil
 	}
 	before = traffic.count()
-	baselineResponse, err := agent.RetryMCPR3Call(ctx, clientagent.MCPR3Retry{
+	baselineResponse, err := agent.RetryR3Call(ctx, clientagent.R3Retry{
 		Authorization: baselineAuthorizationA, AuthToken: baselineAuthToken,
 	})
 	if err != nil {
@@ -535,7 +548,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	}
 
 	before = traffic.count()
-	baselineReplay, err := agent.RetryMCPR3Call(ctx, clientagent.MCPR3Retry{
+	baselineReplay, err := agent.RetryR3Call(ctx, clientagent.R3Retry{
 		Authorization: baselineAuthorizationA, AuthToken: baselineAuthToken,
 	})
 	if err != nil {
@@ -553,7 +566,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	setDescriptionsEnabled(true)
 	heldA := newR3PerCallRequest(t, resourceID, "held-a")
 	before = traffic.count()
-	heldAResult, err := agent.BeginMCPR3Call(ctx, clientagent.MCPR3Call{
+	heldAResult, err := agent.BeginR3Call(ctx, clientagent.R3Call{
 		Request: heldA, ClassAuthToken: classAuthToken, Operation: deleteRecord,
 		AdditionalSignatureComponents: []string{"content-type", "content-digest"},
 	})
@@ -568,7 +581,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 
 	heldB := newR3PerCallRequest(t, resourceID, "held-b")
 	before = traffic.count()
-	heldBResult, err := agent.BeginMCPR3Call(ctx, clientagent.MCPR3Call{
+	heldBResult, err := agent.BeginR3Call(ctx, clientagent.R3Call{
 		Request: heldB, ClassAuthToken: classAuthToken, Operation: deleteRecord,
 		AdditionalSignatureComponents: []string{"content-type", "content-digest"},
 	})
@@ -592,14 +605,14 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireR3PerCallProposalExchange(
-		t, proposals, observations, traffic, issuances,
+		t, vocabulary, registry, proposals, observations, traffic, issuances,
 		pendingA.Reference(), heldAuthToken,
 		deleteRecord, account, personTokenJTI, agentID,
 	)
-	requireR3PerCallCompletionToken(t, ctx, resolver, clock, heldAuthToken, pendingA.Reference(), deleteRecord, account, tenant)
+	requireR3PerCallCompletionToken(t, vocabulary, ctx, registry, resolver, clock, heldAuthToken, pendingA.Reference(), deleteRecord, account, tenant)
 
 	before = traffic.count()
-	if _, err := agent.PollMCPR3Call(ctx, clientagent.MCPR3Poll{Pending: pendingB, AuthToken: heldAuthToken}); err == nil {
+	if _, err := agent.PollR3Call(ctx, clientagent.R3Poll{Pending: pendingB, AuthToken: heldAuthToken}); err == nil {
 		t.Fatal("Agent paired a proposal Auth token with another pending invocation")
 	}
 	if got := len(traffic.since(before)); got != 0 {
@@ -620,7 +633,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 	descriptionsBeforePoll, presentationsBeforePoll := adapterCounts("held-a")
 	installResource()
 	before = traffic.count()
-	heldResponse, err := agent.PollMCPR3Call(ctx, clientagent.MCPR3Poll{Pending: pendingA, AuthToken: heldAuthToken})
+	heldResponse, err := agent.PollR3Call(ctx, clientagent.R3Poll{Pending: pendingA, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +651,7 @@ func TestMCPR3PerCallFourPartyJourney(t *testing.T) {
 
 	installResource()
 	before = traffic.count()
-	heldReplay, err := agent.PollMCPR3Call(ctx, clientagent.MCPR3Poll{Pending: pendingA, AuthToken: heldAuthToken})
+	heldReplay, err := agent.PollR3Call(ctx, clientagent.R3Poll{Pending: pendingA, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,30 +706,51 @@ func validateR3PerCallPersonContext(
 }
 
 func describeR3PerCall(
-	request *http.Request,
-	operation r3.MCPOperation,
+	t *testing.T,
+	vocabulary integrationR3Vocabulary,
+	invocation r3.Invocation,
 	gotAccount *string,
-	wantOperation r3.MCPOperation,
+	wantOperation r3.Operation,
 	wantAccount string,
-) (string, resource.MCPR3CallDescription, error) {
-	record, body, err := validateR3PerCallAdapterInput(request, operation, gotAccount, wantOperation, wantAccount)
-	if err != nil {
-		return "", resource.MCPR3CallDescription{}, err
+) (string, resource.R3CallDescription, error) {
+	if gotAccount == nil || *gotAccount != wantAccount ||
+		!vocabulary.operationsEqual(t, invocation.Operation(), wantOperation) {
+		return "", resource.R3CallDescription{}, errors.New("unexpected concrete R3 invocation context")
 	}
-	recordJSON, _ := json.Marshal(record)
-	recordParameter, err := r3.NewMCPInlineParameter(recordJSON)
-	if err != nil {
-		return "", resource.MCPR3CallDescription{}, err
+	presented := invocation.PresentedParameters()
+	recordValue, ok := presented["record"]
+	if !ok {
+		return "", resource.R3CallDescription{}, errors.New("R3 invocation is missing record")
 	}
-	payloadParameter, err := r3.NewMCPDigestParameterFromBytes(body, string(body), "application/json")
-	if err != nil {
-		return "", resource.MCPR3CallDescription{}, err
+	recordJSON, ok := recordValue.InlineJSON()
+	if !ok {
+		return "", resource.R3CallDescription{}, errors.New("R3 invocation record is not inline JSON")
 	}
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{
+	var record string
+	if err := json.Unmarshal(recordJSON, &record); err != nil || record == "" {
+		return "", resource.R3CallDescription{}, errors.New("R3 invocation record is invalid")
+	}
+	payloadValue, ok := presented["payload"]
+	if !ok {
+		return "", resource.R3CallDescription{}, errors.New("R3 invocation is missing payload")
+	}
+	body, ok := payloadValue.ExactBytes()
+	if !ok {
+		return "", resource.R3CallDescription{}, errors.New("R3 invocation payload is not digest-backed bytes")
+	}
+	recordParameter, err := r3.NewInlineParameter(recordJSON)
+	if err != nil {
+		return "", resource.R3CallDescription{}, err
+	}
+	payloadParameter, err := r3.NewDigestParameterFromBytes(body, string(body), "application/json")
+	if err != nil {
+		return "", resource.R3CallDescription{}, err
+	}
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{
 		"record": recordParameter, "payload": payloadParameter,
 	})
 	if err != nil {
-		return "", resource.MCPR3CallDescription{}, err
+		return "", resource.R3CallDescription{}, err
 	}
 	display, err := r3.NewDisplay(
 		"Delete record "+record,
@@ -725,51 +759,54 @@ func describeR3PerCall(
 		"Deletion cannot be undone",
 	)
 	if err != nil {
-		return "", resource.MCPR3CallDescription{}, err
+		return "", resource.R3CallDescription{}, err
 	}
 	proposalDisplay, err := r3.NewProposalDisplay(
 		display,
 		"## Action\nDelete record "+record+"\n\n## Irreversible\nThis deletion cannot be undone.",
 	)
 	if err != nil {
-		return "", resource.MCPR3CallDescription{}, err
+		return "", resource.R3CallDescription{}, err
 	}
-	return record, resource.MCPR3CallDescription{Parameters: parameters, Display: &proposalDisplay}, nil
+	return record, resource.R3CallDescription{Parameters: parameters, Display: &proposalDisplay}, nil
 }
 
 func presentedR3PerCallParameters(
+	t *testing.T,
+	vocabulary integrationR3Vocabulary,
 	request *http.Request,
-	operation r3.MCPOperation,
-	gotAccount *string,
-	wantOperation r3.MCPOperation,
-	wantAccount string,
-) (string, map[string]r3.PresentedMCPParameter, error) {
-	record, body, err := validateR3PerCallAdapterInput(request, operation, gotAccount, wantOperation, wantAccount)
+	operation r3.Operation,
+	wantOperation r3.Operation,
+) (string, map[string]r3.PresentedParameter, error) {
+	record, body, err := validateR3PerCallAdapterInput(t, vocabulary, request, operation, wantOperation)
 	if err != nil {
 		return "", nil, err
 	}
 	recordJSON, _ := json.Marshal(record)
-	presentedRecord, err := r3.NewPresentedMCPInlineParameter(recordJSON)
+	presentedRecord, err := r3.NewPresentedInlineParameter(recordJSON)
 	if err != nil {
 		return "", nil, err
 	}
-	return record, map[string]r3.PresentedMCPParameter{
+	return record, map[string]r3.PresentedParameter{
 		"record":  presentedRecord,
-		"payload": r3.NewPresentedMCPDigestBytes(body),
+		"payload": r3.NewPresentedDigestBytes(body),
 	}, nil
 }
 
 func validateR3PerCallAdapterInput(
+	t *testing.T,
+	vocabulary integrationR3Vocabulary,
 	request *http.Request,
-	operation r3.MCPOperation,
-	gotAccount *string,
-	wantOperation r3.MCPOperation,
-	wantAccount string,
+	operation r3.Operation,
+	wantOperation r3.Operation,
 ) (string, []byte, error) {
 	if request == nil || request.URL == nil || request.Method != http.MethodPost ||
 		request.URL.RawQuery != "mode=purge" || request.Header.Get("X-Request-ID") == "" ||
-		operation != wantOperation || gotAccount == nil || *gotAccount != wantAccount {
-		return "", nil, errors.New("unexpected concrete MCP call context")
+		request.Header.Get("X-Caller-Context") == "" {
+		return "", nil, errors.New("unexpected concrete R3 call context")
+	}
+	if !vocabulary.operationsEqual(t, operation, wantOperation) {
+		return "", nil, errors.New("unexpected concrete R3 operation")
 	}
 	record := strings.TrimPrefix(request.URL.Path, "/records/")
 	if record == "" || record == request.URL.Path || strings.Contains(record, "/") {
@@ -870,21 +907,23 @@ func readAndCloseR3PerCallResponse(t *testing.T, response *http.Response) string
 
 func requireR3PerCallCompletionToken(
 	t *testing.T,
+	vocabulary integrationR3Vocabulary,
 	ctx context.Context,
+	registry r3.Registry,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
 	compact string,
 	wantReference r3.Reference,
-	wantOperation r3.MCPOperation,
+	wantOperation r3.Operation,
 	wantAccount, wantTenant string,
 ) {
 	t.Helper()
-	claims, reference, operations, err := r3.VerifyMCPAuthTokenClaims(ctx, compact, resolver, clock)
+	claims, reference, operations, err := r3.VerifyAuthTokenClaims(ctx, registry, compact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	granted := operations.GrantedOperations().Operations()
-	if reference != wantReference || !slices.Equal(granted, []r3.MCPOperation{wantOperation}) ||
+	if reference != wantReference || len(granted) != 1 || !vocabulary.operationsEqual(t, granted[0], wantOperation) ||
 		len(operations.PerCallOperations().Operations()) != 0 || claims.Account == nil ||
 		*claims.Account != wantAccount || claims.Tenant != wantTenant ||
 		!slices.Equal(strings.Fields(claims.Scope), []string{r3PerCallScope}) {
@@ -894,13 +933,15 @@ func requireR3PerCallCompletionToken(
 
 func requireR3PerCallProposalExchange(
 	t *testing.T,
+	vocabulary integrationR3Vocabulary,
+	registry r3.Registry,
 	proposals *r3PerCallProposalStore,
 	observations *r3PerCallPolicyObservations,
 	traffic *r3PerCallTraffic,
 	issuances *r3PerCallIssuanceStore,
 	reference r3.Reference,
 	compact string,
-	wantOperation r3.MCPOperation,
+	wantOperation r3.Operation,
 	wantAccount, wantPresentedJTI, wantAgent string,
 ) {
 	t.Helper()
@@ -908,13 +949,13 @@ func requireR3PerCallProposalExchange(
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := r3.ParseReferencedProposal(reference, record.ExactJSON)
+	proposal, err := registry.ParseReferencedProposal(reference, record.ExactJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
 	proposalAccount, hasAccount := proposal.Account()
 	display, hasDisplay := proposal.Display()
-	if proposal.Operation() != wantOperation || !hasAccount || proposalAccount != wantAccount ||
+	if !vocabulary.operationsEqual(t, proposal.Operation(), wantOperation) || !hasAccount || proposalAccount != wantAccount ||
 		!hasDisplay || display.Summary() == "" || display.Detail() == "" ||
 		!slices.Equal(proposal.Parameters().Names(), []string{"payload", "record"}) {
 		t.Fatalf("retained proposal = %#v", proposal)
@@ -1065,7 +1106,7 @@ func (observations *r3PerCallPolicyObservations) classCounts() (ps, as int) {
 	return observations.classPS, observations.classAS
 }
 
-func (observations *r3PerCallPolicyObservations) observeProposal(role string, reference r3.Reference, proposal r3.MCPProposal) error {
+func (observations *r3PerCallPolicyObservations) observeProposal(role string, reference r3.Reference, proposal r3.Proposal) error {
 	exact, err := json.Marshal(proposal)
 	if err != nil {
 		return err
@@ -1171,22 +1212,20 @@ func (store *r3PerCallIssuanceStore) releaseViolationCount() int {
 var _ accessserver.R3IssuanceStore = (*r3PerCallIssuanceStore)(nil)
 
 type r3PerCallProposalStore struct {
-	mu      sync.Mutex
-	records map[string]resource.R3ProposalRecord
+	mu       sync.Mutex
+	records  map[string]resource.R3ProposalRecord
+	registry r3.Registry
 }
 
-func newR3PerCallProposalStore() *r3PerCallProposalStore {
-	return &r3PerCallProposalStore{records: make(map[string]resource.R3ProposalRecord)}
+func newR3PerCallProposalStore(registry r3.Registry) *r3PerCallProposalStore {
+	return &r3PerCallProposalStore{records: make(map[string]resource.R3ProposalRecord), registry: registry}
 }
 
 func (store *r3PerCallProposalStore) Commit(_ context.Context, record resource.R3ProposalRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if _, err := r3.ParseReferencedProposal(record.Reference, record.ExactJSON); err != nil {
+	if _, err := store.registry.ParseReferencedProposal(record.Reference, record.ExactJSON); err != nil {
 		return err
-	}
-	if record.RetainUntil.IsZero() {
-		return errors.New("proposal retention deadline is required")
 	}
 	record = cloneR3PerCallProposalRecord(record)
 	if _, ok := store.records[record.Reference.URI()]; ok {

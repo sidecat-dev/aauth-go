@@ -1,6 +1,6 @@
 // Package personserver implements explicit immediate three-party and federated
 // four-party Person Server compositions. Federated authorization can add
-// independently fetched MCP R3 consent. Both compositions support top-level
+// independently fetched R3 consent. Both compositions support top-level
 // and parent-mediated issuance and can compose the immediate mission lifecycle:
 // approval, ordered accepted updates, person-accepted completion, and
 // mission-bound credential issuance. Three-party composition additionally
@@ -23,6 +23,7 @@ import (
 	aauth "aauth-go"
 	"aauth-go/internal/httpapi"
 	"aauth-go/jose"
+	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
@@ -67,9 +68,8 @@ type FederatedAuthorizationConfig struct {
 	// extension implemented by Tokens.
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	Consent                       func(context.Context, AuthorizationRequest) error
-	// MCPR3 optionally enables signed class-document and per-call proposal
-	// consent for the immediate MCP profile.
-	MCPR3 *MCPR3Config
+	// R3 optionally enables signed class-document and per-call proposal consent.
+	R3 *R3Config
 	// Missions optionally enables the immediate mission lifecycle and
 	// mission-bound Person and federated Auth-token issuance. When nonnil,
 	// Tokens must implement MissionStore.
@@ -222,7 +222,7 @@ type Server struct {
 	missionAcceptUpdate             func(context.Context, MissionUpdatePolicyRequest) error
 	missionConfirmPersonCompletion  func(context.Context, MissionCompletionPolicyRequest) error
 	consent                         func(context.Context, AuthorizationRequest) error
-	mcpR3                           *mcpR3Config
+	r3                              *r3Config
 	authorizationMode               authorizationMode
 	authorize                       func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	bindChainedPerson               func(context.Context, PersonTokenRequest) (Person, error)
@@ -283,11 +283,11 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	server.httpClient = &httpClient
 	server.accessServerEndpoint = config.AccessServerEndpoint
 	server.consent = config.Consent
-	mcpR3, err := newMCPR3Config(config.MCPR3, config.HTTPClient, config.SigningKey, config.Issuer, config.Clock)
+	r3Config, err := newR3Config(config.R3, config.HTTPClient, config.SigningKey, config.Issuer, config.Clock)
 	if err != nil {
 		return nil, err
 	}
-	server.mcpR3 = mcpR3
+	server.r3 = r3Config
 	server.authorizationMode = authorizationModeFederated
 	return server, nil
 }
@@ -669,7 +669,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	resourceToken, mcpR3, err := server.verifyResourceTokenForAuthorization(
+	resourceToken, r3Context, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err != nil {
@@ -694,7 +694,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated or call-chain authorization is not implemented"))
 		return
 	}
-	if resourceToken.Account != nil && mcpR3 == nil {
+	if resourceToken.Account != nil && r3Context == nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
 		return
 	}
@@ -720,7 +720,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 			return
 		}
-	} else if mcpR3 == nil {
+	} else if r3Context == nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token has no authorization claim"))
 		return
 	}
@@ -750,7 +750,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	issuedAfterPersonToken := resourceToken.IssuedAt >= record.ExpiresAt.Unix()
-	if issuedAfterPersonToken && mcpR3 == nil {
+	if issuedAfterPersonToken && r3Context == nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token was issued after the retained person token expired"))
 		return
 	}
@@ -758,16 +758,16 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
 		return
 	}
-	if mcpR3 != nil {
-		if err := server.fetchMCPR3Artifact(request.Context(), mcpR3, resourceToken.Account); err != nil {
-			if isInvalidMCPR3Document(err) {
+	if r3Context != nil {
+		if err := server.fetchR3Artifact(request.Context(), r3Context, resourceToken.Account); err != nil {
+			if isInvalidR3Artifact(err) {
 				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 			} else {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
 			return
 		}
-		if issuedAfterPersonToken && mcpR3.kind != mcpR3ArtifactProposal {
+		if issuedAfterPersonToken && r3Context.kind != r3.ArtifactProposal {
 			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("only a per-call proposal may reuse retained person identity after the person token expires"))
 			return
 		}
@@ -851,9 +851,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	var consentErr error
-	if mcpR3 != nil {
-		consentErr = server.consentMCPR3(
-			request.Context(), cloneAuthorizationRequest(authorizationRequest), mcpR3,
+	if r3Context != nil {
+		consentErr = server.consentR3(
+			request.Context(), cloneAuthorizationRequest(authorizationRequest), r3Context,
 		)
 	} else {
 		consentErr = server.consent(request.Context(), cloneAuthorizationRequest(authorizationRequest))
@@ -924,8 +924,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	var authToken aauth.AuthTokenClaims
-	if mcpR3 != nil {
-		authToken, err = server.verifyMCPR3AccessResult(request.Context(), accessOutput.AuthToken, mcpR3)
+	if r3Context != nil {
+		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
 	} else {
 		authToken, err = aauth.VerifyAuthToken(
 			request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
@@ -958,7 +958,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	var grantedScopes []string
 	if authToken.Scope != "" {
 		grantedScopes, err = parseScopes(authToken.Scope)
-	} else if mcpR3 == nil {
+	} else if r3Context == nil {
 		err = errors.New("Access Server auth token has no authorization claim")
 	}
 	validScopeGrant := len(scopes) == 0 && len(grantedScopes) == 0 ||

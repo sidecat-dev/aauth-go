@@ -19,6 +19,7 @@ import (
 	"aauth-go/internal/exampleutil"
 	"aauth-go/personserver"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/resource"
 	"aauth-go/signaturekey"
 )
@@ -27,6 +28,7 @@ func runR3Direct(output io.Writer) {
 	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	ctx := context.Background()
+	registry := must(r3.NewRegistry(mcp.Vocabulary()))
 
 	providerKey := newSigningKey("r3-agent-provider-key")
 	agentKey := newSigningKey("r3-agent-key")
@@ -50,9 +52,11 @@ func runR3Direct(output io.Writer) {
 		PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
 	}))
 
-	read := must(r3.NewMCPOperation("records.read"))
-	export := must(r3.NewMCPOperation("records.export"))
-	requested := must(r3.NewMCPOperationSet(read, export))
+	readMCP := must(mcp.NewOperation("records.read"))
+	read := must(readMCP.ToR3())
+	exportMCP := must(mcp.NewOperation("records.export"))
+	export := must(exportMCP.ToR3())
+	requested := must(mcp.NewOperationSet(readMCP, exportMCP))
 	display := must(r3.NewDisplay(
 		"Read and export records",
 		"Exported records may leave the system",
@@ -80,26 +84,30 @@ func runR3Direct(output io.Writer) {
 			}
 			return nil
 		},
-		MCPR3: &resource.MCPR3Config{
-			DiscoveryEndpoint: resourceID + "/mcp",
-			KnownTools:        []string{"records.read", "records.export"},
-			Documents:         documents,
-			DisplayForOperations: func(_ context.Context, operations r3.MCPOperationSet, gotAccount *string) (*r3.Display, error) {
-				if !operations.Equal(requested) || gotAccount == nil || *gotAccount != account {
-					return nil, errors.New("unexpected R3 display input")
-				}
-				return &display, nil
-			},
-			OperationForRequest: func(request *http.Request) (string, bool, error) {
+		R3: &resource.R3Config{
+			Registry: registry,
+			Vocabularies: []resource.R3VocabularyConfig{{
+				DiscoveryEndpoint:       resourceID + "/mcp",
+				AuthoritativeOperations: requested,
+				DisplayForOperations: func(_ context.Context, operations r3.OperationSet, gotAccount *string) (*r3.Display, error) {
+					equal, err := operations.Equal(requested)
+					if err != nil || !equal || gotAccount == nil || *gotAccount != account {
+						return nil, errors.New("unexpected R3 display input")
+					}
+					return &display, nil
+				},
+			}},
+			Documents: documents,
+			HTTP: resource.R3HTTPAdapter{OperationForRequest: func(request *http.Request) (r3.Operation, bool, error) {
 				switch request.URL.Path {
 				case "/records/read":
-					return "records.read", true, nil
+					return read, true, nil
 				case "/records/export":
-					return "records.export", true, nil
+					return export, true, nil
 				default:
-					return "", false, nil
+					return r3.Operation{}, false, nil
 				}
-			},
+			}},
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			principal, ok := resource.AuthPrincipalFromContext(request.Context())
@@ -122,19 +130,24 @@ func runR3Direct(output io.Writer) {
 			}
 			return nil
 		},
-		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
-			if request.MCPR3 == nil || !request.MCPR3.Document.OperationSet().Equal(requested) {
-				return accessserver.Decision{}, errors.Join(accessserver.ErrAccessDenied, errors.New("unexpected R3 document"))
-			}
-			granted := must(r3.NewGrantedOperations(read))
-			emptyPerCall := must(r3.NewGrantedOperations())
-			authorization := must(r3.NewAuthorization(granted, emptyPerCall, request.MCPR3.Document))
-			return accessserver.Decision{Lifetime: 30 * time.Minute, MCPR3Authorization: &authorization}, nil
+		Authorize: func(_ context.Context, _ accessserver.AuthorizationRequest) (accessserver.Decision, error) {
+			return accessserver.Decision{}, errors.New("Core policy must not receive an R3 request")
 		},
-		MCPR3: &accessserver.MCPR3Config{
+		R3: &accessserver.R3Config{
+			Registry:   registry,
 			HTTPClient: httpClient,
 			Admit:      network.Admit,
-			Issuances:  issuances,
+			AuthorizeDocument: func(_ context.Context, _ accessserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (accessserver.R3DocumentDecision, error) {
+				equal, err := document.OperationSet().Equal(requested)
+				if err != nil || !equal {
+					return accessserver.R3DocumentDecision{}, errors.Join(accessserver.ErrAccessDenied, errors.New("unexpected R3 document"))
+				}
+				granted := must(r3.NewGrantedOperations(mcp.Vocabulary(), read))
+				emptyPerCall := must(r3.NewGrantedOperations(mcp.Vocabulary()))
+				authorization := must(r3.NewAuthorization(granted, emptyPerCall, document))
+				return accessserver.R3DocumentDecision{Lifetime: 30 * time.Minute, Authorization: &authorization}, nil
+			},
+			Issuances: issuances,
 		},
 	}))
 
@@ -158,11 +171,13 @@ func runR3Direct(output io.Writer) {
 		Consent: func(context.Context, personserver.AuthorizationRequest) error {
 			return errors.New("Core consent must not receive an R3 request")
 		},
-		MCPR3: &personserver.MCPR3Config{
-			Admit: network.Admit,
-			Consent: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
+		R3: &personserver.R3Config{
+			Registry: registry,
+			Admit:    network.Admit,
+			ConsentDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
 				gotDisplay, ok := document.Display()
-				if request.Account == nil || *request.Account != account || !document.OperationSet().Equal(requested) ||
+				equal, err := document.OperationSet().Equal(requested)
+				if err != nil || request.Account == nil || *request.Account != account || !equal ||
 					!ok || gotDisplay.Summary() != display.Summary() {
 					return errors.Join(personserver.ErrAccessDenied, errors.New("unexpected R3 consent input"))
 				}
@@ -179,6 +194,7 @@ func runR3Direct(output io.Writer) {
 	reader := must(clientagent.New(ctx, clientagent.Config{
 		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+		R3: &clientagent.R3Config{Registry: registry},
 	}))
 	personResult := must(reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID,
@@ -189,7 +205,7 @@ func runR3Direct(output io.Writer) {
 	}
 	resourceToken := must(reader.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Account: &account, MCPR3Operations: &requested,
+		Account: &account, R3Operations: &requested,
 	}))
 	authToken := must(reader.Exchange(ctx, clientagent.ExchangeRequest{
 		PersonServer: personServerID, ResourceToken: resourceToken,

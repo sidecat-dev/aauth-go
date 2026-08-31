@@ -15,10 +15,13 @@ import (
 	"aauth-go/signaturekey"
 )
 
-// MCPR3Config enables MCP class-document and per-call proposal authorization.
+// R3Config enables class-document and per-call proposal authorization.
 // Each artifact is fetched once, classified from its exact contents, and sent
 // only to the policy callback for that artifact kind.
-type MCPR3Config struct {
+type R3Config struct {
+	// Registry is the explicit immutable allowlist used to parse fetched R3
+	// artifacts and operation-bearing Auth-token claims.
+	Registry r3.Registry
 	// HTTPClient is required. The fetcher clones it, disables cookies, refuses
 	// redirects, and leaves the caller's client unchanged.
 	HTTPClient *http.Client
@@ -28,84 +31,97 @@ type MCPR3Config struct {
 	FetchTimeout time.Duration
 	// MaximumDocumentBytes defaults to 1 MiB when zero.
 	MaximumDocumentBytes int64
+	// AuthorizeDocument receives verified Core context plus the exact class
+	// document and returns scope, lifetime, and operation authorization.
+	AuthorizeDocument func(
+		context.Context,
+		AuthorizationRequest,
+		r3.Reference,
+		r3.Document,
+	) (R3DocumentDecision, error)
 	// AuthorizeProposal receives verified Core context plus one exact per-call
-	// proposal. A proposal is refused when this callback is nil; class-document
-	// authorization continues to use Config.Authorize.
+	// proposal. A proposal is refused when this callback is nil; class documents
+	// are authorized only through AuthorizeDocument.
 	AuthorizeProposal func(
 		context.Context,
 		AuthorizationRequest,
 		r3.Reference,
-		r3.MCPProposal,
-	) (MCPR3ProposalDecision, error)
+		r3.Proposal,
+	) (R3ProposalDecision, error)
 	// Issuances is required and atomically retains the token and audit record.
 	Issuances R3IssuanceStore
 }
 
-// MCPR3Authorization is the exact verified class document presented to the
-// existing host authorization policy.
-type MCPR3Authorization struct {
-	Reference r3.Reference
-	Document  r3.Document
+// R3DocumentDecision is the Core scope, lifetime, and operation decision for
+// one exact class document. Authorization must be proven against that document.
+type R3DocumentDecision struct {
+	Scopes        []string
+	Lifetime      time.Duration
+	Authorization *r3.Authorization
 }
 
-// MCPR3ProposalDecision is the Core scope and lifetime decision for one exact
+// R3ProposalDecision is the Core scope and lifetime decision for one exact
 // per-call proposal. The proposal itself determines the sole R3 operation;
 // policy cannot substitute another operation or carry r3_per_call forward.
-type MCPR3ProposalDecision struct {
+type R3ProposalDecision struct {
 	Scopes   []string
 	Lifetime time.Duration
 }
 
-type mcpR3Config struct {
-	documents         *r3fetch.Client
+type r3Config struct {
+	registry          r3.Registry
+	artifacts         *r3fetch.Client
+	authorizeDocument func(
+		context.Context,
+		AuthorizationRequest,
+		r3.Reference,
+		r3.Document,
+	) (R3DocumentDecision, error)
 	authorizeProposal func(
 		context.Context,
 		AuthorizationRequest,
 		r3.Reference,
-		r3.MCPProposal,
-	) (MCPR3ProposalDecision, error)
+		r3.Proposal,
+	) (R3ProposalDecision, error)
 	issuances R3IssuanceStore
 }
 
-type verifiedMCPR3 struct {
-	reference r3.Reference
-	document  r3.Document
-	proposal  r3.MCPProposal
-	exact     []byte
-	kind      mcpR3ArtifactKind
+type verifiedR3 struct {
+	reference  r3.Reference
+	document   r3.Document
+	proposal   r3.Proposal
+	exact      []byte
+	kind       r3.ArtifactKind
+	vocabulary r3.VocabularyURI
 }
 
-type mcpR3ArtifactKind uint8
+type invalidR3ArtifactError struct{ cause error }
 
-const (
-	mcpR3ArtifactInvalid mcpR3ArtifactKind = iota
-	mcpR3ArtifactDocument
-	mcpR3ArtifactProposal
-)
+func (failure *invalidR3ArtifactError) Error() string { return failure.cause.Error() }
+func (failure *invalidR3ArtifactError) Unwrap() error { return failure.cause }
 
-type invalidMCPR3DocumentError struct{ cause error }
-
-func (failure *invalidMCPR3DocumentError) Error() string { return failure.cause.Error() }
-func (failure *invalidMCPR3DocumentError) Unwrap() error { return failure.cause }
-
-func isInvalidMCPR3Document(err error) bool {
-	var failure *invalidMCPR3DocumentError
+func isInvalidR3Artifact(err error) bool {
+	var failure *invalidR3ArtifactError
 	return errors.As(err, &failure)
 }
 
-func newMCPR3Config(
-	config *MCPR3Config,
+func newR3Config(
+	config *R3Config,
 	signingKey jose.SigningKey,
 	issuer string,
 	clock aauth.Clock,
-) (*mcpR3Config, error) {
+) (*r3Config, error) {
 	if config == nil {
 		return nil, nil
 	}
 	if config.Issuances == nil {
-		return nil, errors.New("accessserver: MCP R3 issuance store is required")
+		return nil, errors.New("accessserver: R3 issuance store is required")
 	}
-	documents, err := r3fetch.New(r3fetch.Config{
+	if config.AuthorizeDocument == nil {
+		return nil, errors.New("accessserver: R3 document authorization policy is required")
+	}
+	artifacts, err := r3fetch.New(r3fetch.Config{
+		Registry:   config.Registry,
 		HTTPClient: config.HTTPClient, SigningKey: signingKey,
 		Issuer: issuer, DiscoveryDocument: aauth.AccessDiscoveryDocument,
 		Clock: clock, Admit: config.Admit,
@@ -113,10 +129,11 @@ func newMCPR3Config(
 		Timeout:              config.FetchTimeout,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("accessserver: MCP R3: %w", err)
+		return nil, fmt.Errorf("accessserver: R3: %w", err)
 	}
-	return &mcpR3Config{
-		documents: documents, authorizeProposal: config.AuthorizeProposal,
+	return &r3Config{
+		registry: config.Registry, artifacts: artifacts,
+		authorizeDocument: config.AuthorizeDocument, authorizeProposal: config.AuthorizeProposal,
 		issuances: config.Issuances,
 	}, nil
 }
@@ -125,7 +142,7 @@ func (server *Server) verifyResourceTokenForAuthorization(
 	ctx context.Context,
 	compact string,
 	clock aauth.Clock,
-) (aauth.ResourceTokenClaims, *verifiedMCPR3, error) {
+) (aauth.ResourceTokenClaims, *verifiedR3, error) {
 	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, nil, err
@@ -134,70 +151,73 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		claims, err := aauth.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
 		return claims, nil, err
 	}
-	if server.mcpR3 == nil {
-		return aauth.ResourceTokenClaims{}, nil, errors.New("accessserver: MCP R3 resource token is not supported")
+	if server.r3 == nil {
+		return aauth.ResourceTokenClaims{}, nil, errors.New("accessserver: R3 resource token is not supported")
 	}
-	claims, reference, err := r3.VerifyMCPResourceToken(ctx, compact, server.keyResolver, clock)
+	claims, reference, err := r3.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, nil, err
 	}
-	return claims, &verifiedMCPR3{reference: reference}, nil
+	return claims, &verifiedR3{reference: reference}, nil
 }
 
-func (server *Server) fetchMCPR3Artifact(
+func (server *Server) fetchR3Artifact(
 	ctx context.Context,
-	verified *verifiedMCPR3,
+	verified *verifiedR3,
 	account *string,
 ) error {
-	if verified == nil || server.mcpR3 == nil {
-		return errors.New("accessserver: MCP R3 context is incomplete")
+	if verified == nil || server.r3 == nil {
+		return errors.New("accessserver: R3 context is incomplete")
 	}
-	artifact, err := server.mcpR3.documents.FetchArtifact(ctx, verified.reference)
+	artifact, err := server.r3.artifacts.FetchArtifact(ctx, verified.reference)
 	if err != nil {
 		if r3fetch.IsDocumentError(err) {
-			return &invalidMCPR3DocumentError{cause: err}
+			return &invalidR3ArtifactError{cause: err}
 		}
 		return err
 	}
 	if document, ok := artifact.Document(); ok {
 		if err := r3.ValidateDocumentAccount(document, account); err != nil {
-			return &invalidMCPR3DocumentError{cause: fmt.Errorf("accessserver: MCP R3 account: %w", err)}
+			return &invalidR3ArtifactError{cause: fmt.Errorf("accessserver: R3 account: %w", err)}
 		}
 		verified.document = document
 		verified.exact = artifact.ExactBytes()
-		verified.kind = mcpR3ArtifactDocument
+		verified.kind = r3.ArtifactDocument
+		verified.vocabulary = document.OperationSet().Vocabulary()
 		return nil
 	}
 	if proposal, ok := artifact.Proposal(); ok {
 		if err := r3.ValidateProposalAccount(proposal, account); err != nil {
-			return &invalidMCPR3DocumentError{cause: fmt.Errorf("accessserver: MCP R3 proposal account: %w", err)}
+			return &invalidR3ArtifactError{cause: fmt.Errorf("accessserver: R3 proposal account: %w", err)}
 		}
 		verified.proposal = proposal
 		verified.exact = artifact.ExactBytes()
-		verified.kind = mcpR3ArtifactProposal
+		verified.kind = r3.ArtifactProposal
+		verified.vocabulary = proposal.Operation().Vocabulary()
 		return nil
 	}
-	return &invalidMCPR3DocumentError{cause: errors.New("accessserver: MCP R3 artifact is unclassified")}
+	return &invalidR3ArtifactError{cause: errors.New("accessserver: R3 artifact is unclassified")}
 }
 
-func (server *Server) commitMCPR3Issuance(
+func (server *Server) commitR3Issuance(
 	ctx context.Context,
 	compact string,
 	claims aauth.AuthTokenClaims,
 	resource aauth.ResourceTokenClaims,
-	verified *verifiedMCPR3,
+	verified *verifiedR3,
 	agent, parentAgent string,
 ) error {
-	if verified == nil || server.mcpR3 == nil {
-		return errors.New("accessserver: MCP R3 issuance context is incomplete")
+	if verified == nil || server.r3 == nil {
+		return errors.New("accessserver: R3 issuance context is incomplete")
 	}
 	record := R3IssuanceRecord{
 		AuthTokenReference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		ExactAuthToken:     compact, Resource: claims.Audience, R3Reference: verified.reference,
-		IssuedAt: time.Unix(claims.IssuedAt, 0).UTC(), PersonServer: claims.PersonServer,
+		Vocabulary: verified.vocabulary,
+		IssuedAt:   time.Unix(claims.IssuedAt, 0).UTC(), PersonServer: claims.PersonServer,
 		Subject: claims.Subject, Account: cloneStringPointer(claims.Account),
 		PresentedJTI: resource.PresentedJTI, AgentJKT: resource.AgentJKT,
 		Agent: agent, ParentAgent: parentAgent,
 	}
-	return server.mcpR3.issuances.Commit(ctx, record)
+	return server.r3.issuances.Commit(ctx, record)
 }

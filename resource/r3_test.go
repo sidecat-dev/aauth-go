@@ -17,55 +17,181 @@ import (
 	aauth "aauth-go"
 	"aauth-go/jose"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
+	"aauth-go/r3/vocab/openapi"
 	"aauth-go/signaturekey"
 )
 
-func TestMCPDirectResourceMetadataAdvertisesVocabularyAndValidatesConfiguration(t *testing.T) {
+func newResourceR3Registry(t *testing.T) r3.Registry {
+	t.Helper()
+	registry, err := resourceMCPRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func resourceMCPRegistry() (r3.Registry, error) {
+	return r3.NewRegistry(mcp.Vocabulary())
+}
+
+func newResourceMCPOperation(t *testing.T, tool string) r3.Operation {
+	t.Helper()
+	typed, err := mcp.NewOperation(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := typed.ToR3()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return operation
+}
+
+func newResourceMCPOperationSet(t *testing.T, tools ...string) r3.OperationSet {
+	t.Helper()
+	typed := make([]mcp.Operation, len(tools))
+	for index, tool := range tools {
+		operation, err := mcp.NewOperation(tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		typed[index] = operation
+	}
+	set, err := mcp.NewOperationSet(typed...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
+
+type resourceMCPRequestMapper func(*http.Request) (string, bool, error)
+
+func newResourceMCPConfig(
+	t *testing.T,
+	documents R3DocumentStore,
+	knownTools []string,
+	mapper resourceMCPRequestMapper,
+) *R3Config {
+	t.Helper()
+	config := &R3Config{
+		Registry: newResourceR3Registry(t),
+		Vocabularies: []R3VocabularyConfig{{
+			DiscoveryEndpoint:       "https://resource.example/mcp",
+			AuthoritativeOperations: newResourceMCPOperationSet(t, knownTools...),
+		}},
+		Documents: documents,
+	}
+	if mapper != nil {
+		config.HTTP.OperationForRequest = func(request *http.Request) (r3.Operation, bool, error) {
+			tool, ok, err := mapper(request)
+			if err != nil || !ok {
+				return r3.Operation{}, ok, err
+			}
+			typed, err := mcp.NewOperation(tool)
+			if err != nil {
+				return r3.Operation{}, false, err
+			}
+			operation, err := typed.ToR3()
+			return operation, err == nil, err
+		}
+	}
+	return config
+}
+
+func resourceMCPTool(t *testing.T, operation r3.Operation) string {
+	t.Helper()
+	typed, err := mcp.FromR3(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return typed.Tool()
+}
+
+func equalResourceR3Operations(t *testing.T, first, second r3.Operation) bool {
+	t.Helper()
+	equal, err := first.Equal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return equal
+}
+
+func TestR3ResourceMetadataAdvertisesVocabularyAndValidatesConfiguration(t *testing.T) {
 	t.Parallel()
 
-	validR3 := func() *MCPR3Config {
-		return &MCPR3Config{
-			DiscoveryEndpoint: "https://resource.example/mcp",
-			KnownTools:        []string{"records.read", "records.export"},
-			Documents:         &r3TestDocumentStore{},
-			OperationForRequest: func(*http.Request) (string, bool, error) {
+	validR3 := func(t *testing.T) *R3Config {
+		t.Helper()
+		return newResourceMCPConfig(
+			t,
+			&r3TestDocumentStore{},
+			[]string{"records.read", "records.export"},
+			func(*http.Request) (string, bool, error) {
 				return "records.read", true, nil
 			},
-		}
+		)
+	}
+	foreignOperation, err := openapi.NewOperation("records.read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignOperations, err := openapi.NewOperationSet(foreignOperation)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	for _, test := range []struct {
 		name   string
-		change func(*MCPR3Config)
+		change func(*R3Config)
 	}{
-		{name: "missing endpoint", change: func(config *MCPR3Config) { config.DiscoveryEndpoint = "" }},
-		{name: "non-HTTPS endpoint", change: func(config *MCPR3Config) { config.DiscoveryEndpoint = "http://resource.example/mcp" }},
-		{name: "missing known tools", change: func(config *MCPR3Config) { config.KnownTools = nil }},
-		{name: "invalid known tool", change: func(config *MCPR3Config) { config.KnownTools = []string{" records.read"} }},
-		{name: "duplicate known tool", change: func(config *MCPR3Config) { config.KnownTools = []string{"records.read", "records.read"} }},
-		{name: "missing document store", change: func(config *MCPR3Config) { config.Documents = nil }},
-		{name: "missing operation mapper", change: func(config *MCPR3Config) { config.OperationForRequest = nil }},
+		{name: "missing registry", change: func(config *R3Config) { config.Registry = r3.Registry{} }},
+		{name: "missing vocabularies", change: func(config *R3Config) { config.Vocabularies = nil }},
+		{name: "missing endpoint", change: func(config *R3Config) { config.Vocabularies[0].DiscoveryEndpoint = "" }},
+		{name: "non-HTTPS endpoint", change: func(config *R3Config) {
+			config.Vocabularies[0].DiscoveryEndpoint = "http://resource.example/mcp"
+		}},
+		{name: "missing known operations", change: func(config *R3Config) {
+			config.Vocabularies[0].AuthoritativeOperations = r3.OperationSet{}
+		}},
+		{name: "unregistered vocabulary", change: func(config *R3Config) {
+			config.Vocabularies[0].AuthoritativeOperations = foreignOperations
+		}},
+		{name: "duplicate vocabulary", change: func(config *R3Config) {
+			config.Vocabularies = append(config.Vocabularies, config.Vocabularies[0])
+		}},
+		{name: "missing document store", change: func(config *R3Config) { config.Documents = nil }},
+		{name: "missing invocation adapter", change: func(config *R3Config) { config.HTTP = R3HTTPAdapter{} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config := validConfig(t, http.NotFoundHandler())
-			config.MCPR3 = validR3()
-			test.change(config.MCPR3)
+			config.R3 = validR3(t)
+			test.change(config.R3)
 			if _, err := NewFederatedAuthorization(config); err == nil {
-				t.Fatal("NewFederatedAuthorization accepted incomplete MCP R3 configuration")
+				t.Fatal("NewFederatedAuthorization accepted incomplete R3 configuration")
 			}
 		})
 	}
+	if _, err := mcp.NewOperation(" records.read"); err == nil {
+		t.Fatal("MCP operation constructor accepted an untrimmed tool")
+	}
+	duplicate := newResourceMCPOperation(t, "records.read")
+	if _, err := r3.NewOperationSet(duplicate, duplicate); err == nil {
+		t.Fatal("MCP operation set accepted a duplicate tool")
+	}
 
 	config := validConfig(t, http.NotFoundHandler())
-	config.MCPR3 = validR3()
+	config.R3 = validR3(t)
 	server, err := NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.MCPR3.DiscoveryEndpoint = "https://changed.example/mcp"
-	config.MCPR3.KnownTools[0] = "records.delete"
-	if got := server.mcpR3.knownTools; len(got) != 2 || got[0] != "records.read" || got[1] != "records.export" {
-		t.Fatalf("retained authoritative tools = %q", got)
+	originalOperations := newResourceMCPOperationSet(t, "records.read", "records.export")
+	config.R3.Vocabularies[0].DiscoveryEndpoint = "https://changed.example/mcp"
+	config.R3.Vocabularies[0].AuthoritativeOperations = newResourceMCPOperationSet(t, "records.delete")
+	got := server.r3.vocabularies[mcp.URI].authoritativeOperations
+	equal, equalErr := got.Equal(originalOperations)
+	if equalErr != nil || !equal {
+		t.Fatalf("retained authoritative operations = %#v, error = %v", got.Operations(), equalErr)
 	}
 
 	response := httptest.NewRecorder()
@@ -79,7 +205,7 @@ func TestMCPDirectResourceMetadataAdvertisesVocabularyAndValidatesConfiguration(
 	if err := json.Unmarshal(response.Body.Bytes(), &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if len(metadata.R3Vocabularies) != 1 || metadata.R3Vocabularies[r3.MCPVocabulary] != "https://resource.example/mcp" {
+	if len(metadata.R3Vocabularies) != 1 || metadata.R3Vocabularies[string(mcp.URI)] != "https://resource.example/mcp" {
 		t.Fatalf("r3_vocabularies = %#v", metadata.R3Vocabularies)
 	}
 }
@@ -130,23 +256,23 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 				}
 				return nil
 			}
-			config.MCPR3 = &MCPR3Config{
-				DiscoveryEndpoint: "https://resource.example/mcp",
-				KnownTools:        []string{"records.read", "records.export", "records.delete"},
-				Documents:         store,
-				DisplayForOperations: func(_ context.Context, operations r3.MCPOperationSet, account *string) (*r3.Display, error) {
-					displayCalls++
-					wantRead, _ := r3.NewMCPOperation("records.read")
-					wantExport, _ := r3.NewMCPOperation("records.export")
-					wantOperations, _ := r3.NewMCPOperationSet(wantRead, wantExport)
-					if !operations.Equal(wantOperations) || !equalR3TestStringPointers(account, test.account) {
-						t.Fatalf("display input = %#v, %v", operations.Operations(), account)
-					}
-					return &display, nil
-				},
-				OperationForRequest: func(*http.Request) (string, bool, error) {
+			config.R3 = newResourceMCPConfig(
+				t,
+				store,
+				[]string{"records.read", "records.export", "records.delete"},
+				func(*http.Request) (string, bool, error) {
 					return "records.read", true, nil
 				},
+			)
+			registry := config.R3.Registry
+			config.R3.Vocabularies[0].DisplayForOperations = func(_ context.Context, operations r3.OperationSet, account *string) (*r3.Display, error) {
+				displayCalls++
+				wantOperations := newResourceMCPOperationSet(t, "records.read", "records.export")
+				equal, equalErr := operations.Equal(wantOperations)
+				if equalErr != nil || !equal || !equalR3TestStringPointers(account, test.account) {
+					t.Fatalf("display input = %#v, %v", operations.Operations(), account)
+				}
+				return &display, nil
 			}
 			server, err := NewFederatedAuthorization(config)
 			if err != nil {
@@ -155,7 +281,7 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 
 			input := map[string]any{
 				"r3_operations": map[string]any{
-					"vocabulary": r3.MCPVocabulary,
+					"vocabulary": string(mcp.URI),
 					"operations": []any{
 						map[string]any{"tool": "records.read"},
 						map[string]any{"tool": "records.export"},
@@ -184,7 +310,7 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 			if err := json.Unmarshal(response.Body.Bytes(), &output); err != nil || output.ResourceToken == "" {
 				t.Fatalf("authorization output = %#v, error = %v", output, err)
 			}
-			claims, reference, err := r3.VerifyMCPResourceToken(context.Background(), output.ResourceToken, resolver, clock)
+			claims, reference, err := r3.VerifyResourceToken(context.Background(), output.ResourceToken, resolver, clock)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -208,14 +334,13 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 				r3.Digest(record.ExactJSON) != reference.Digest() {
 				t.Fatalf("retained R3 record = %#v", record)
 			}
-			document, err := r3.ParseReferencedDocument(reference, record.ExactJSON)
+			document, err := registry.ParseReferencedDocument(reference, record.ExactJSON)
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantRead, _ := r3.NewMCPOperation("records.read")
-			wantExport, _ := r3.NewMCPOperation("records.export")
-			wantOperations, _ := r3.NewMCPOperationSet(wantRead, wantExport)
-			if !document.OperationSet().Equal(wantOperations) {
+			wantOperations := newResourceMCPOperationSet(t, "records.read", "records.export")
+			equal, equalErr := document.OperationSet().Equal(wantOperations)
+			if equalErr != nil || !equal {
 				t.Fatalf("document operations = %#v", document.OperationSet().Operations())
 			}
 			if err := r3.ValidateDocumentAccount(document, test.account); err != nil {
@@ -251,14 +376,9 @@ func TestMCPClassReferencesSeparateIdenticalDocumentsByPersonTokenLineage(t *tes
 		ids = ids[1:]
 		return id
 	}
-	config.MCPR3 = &MCPR3Config{
-		DiscoveryEndpoint: "https://resource.example/mcp",
-		KnownTools:        []string{"records.read"},
-		Documents:         store,
-		OperationForRequest: func(*http.Request) (string, bool, error) {
-			return "records.read", true, nil
-		},
-	}
+	config.R3 = newResourceMCPConfig(t, store, []string{"records.read"}, func(*http.Request) (string, bool, error) {
+		return "records.read", true, nil
+	})
 	server, err := NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +404,7 @@ func TestMCPClassReferencesSeparateIdenticalDocumentsByPersonTokenLineage(t *tes
 		if err := json.Unmarshal(response.Body.Bytes(), &output); err != nil {
 			t.Fatal(err)
 		}
-		claims, reference, err := r3.VerifyMCPResourceToken(context.Background(), output.ResourceToken, resolver, clock)
+		claims, reference, err := r3.VerifyResourceToken(context.Background(), output.ResourceToken, resolver, clock)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -349,14 +469,9 @@ func TestMCPDirectAuthorizationRejectsInvalidOperationsBeforePublishing(t *testi
 				idCalls++
 				return "resource-token-1"
 			}
-			config.MCPR3 = &MCPR3Config{
-				DiscoveryEndpoint: "https://resource.example/mcp",
-				KnownTools:        []string{"records.read"},
-				Documents:         store,
-				OperationForRequest: func(*http.Request) (string, bool, error) {
-					return "records.read", true, nil
-				},
-			}
+			config.R3 = newResourceMCPConfig(t, store, []string{"records.read"}, func(*http.Request) (string, bool, error) {
+				return "records.read", true, nil
+			})
 			server, err := NewFederatedAuthorization(config)
 			if err != nil {
 				t.Fatal(err)
@@ -398,14 +513,9 @@ func TestMCPDirectAuthorizationWithholdsTokenAndRecoversUncertainDocumentCommit(
 		config.Clock = clock
 		config.KeyResolver = resolver
 		config.NewID = newID
-		config.MCPR3 = &MCPR3Config{
-			DiscoveryEndpoint: "https://resource.example/mcp",
-			KnownTools:        []string{"records.read"},
-			Documents:         store,
-			OperationForRequest: func(*http.Request) (string, bool, error) {
-				return "records.read", true, nil
-			},
-		}
+		config.R3 = newResourceMCPConfig(t, store, []string{"records.read"}, func(*http.Request) (string, bool, error) {
+			return "records.read", true, nil
+		})
 		server, err := NewFederatedAuthorization(config)
 		if err != nil {
 			t.Fatal(err)
@@ -451,7 +561,7 @@ func TestMCPDirectAuthorizationWithholdsTokenAndRecoversUncertainDocumentCommit(
 		if err := json.Unmarshal(second.Body.Bytes(), &output); err != nil || output.ResourceToken == "" {
 			t.Fatalf("retry output = %#v, error=%v", output, err)
 		}
-		if claims, _, err := r3.VerifyMCPResourceToken(context.Background(), output.ResourceToken, resolver, clock); err != nil || claims.JTI != "resource-token-2" {
+		if claims, _, err := r3.VerifyResourceToken(context.Background(), output.ResourceToken, resolver, clock); err != nil || claims.JTI != "resource-token-2" {
 			t.Fatalf("retry token claims = %#v, error=%v", claims, err)
 		}
 	})
@@ -490,14 +600,9 @@ func TestMCPDirectDocumentFetchAllowsOnlyEntitledSignedPersonAndAccessServers(t 
 	config := validConfigWithKey(resourceKey, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { protectedCalls++ }))
 	config.Clock = clock
 	config.KeyResolver = resolver
-	config.MCPR3 = &MCPR3Config{
-		DiscoveryEndpoint: "https://resource.example/mcp",
-		KnownTools:        []string{"records.read"},
-		Documents:         store,
-		OperationForRequest: func(*http.Request) (string, bool, error) {
-			return "records.read", true, nil
-		},
-	}
+	config.R3 = newResourceMCPConfig(t, store, []string{"records.read"}, func(*http.Request) (string, bool, error) {
+		return "records.read", true, nil
+	})
 	server, err := NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -515,7 +620,7 @@ func TestMCPDirectDocumentFetchAllowsOnlyEntitledSignedPersonAndAccessServers(t 
 	if err := json.Unmarshal(authorizeResponse.Body.Bytes(), &authorization); err != nil {
 		t.Fatal(err)
 	}
-	_, reference, err := r3.VerifyMCPResourceToken(context.Background(), authorization.ResourceToken, resolver, clock)
+	_, reference, err := r3.VerifyResourceToken(context.Background(), authorization.ResourceToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,12 +776,11 @@ func TestMCPDirectDocumentFetchDistinguishesCollocatedServerRoles(t *testing.T) 
 		{Issuer: collocatedIssuer, DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: collocatedKey.ID()}: collocatedKey.PublicJWK(),
 		{Issuer: collocatedIssuer, DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: collocatedKey.ID()}: collocatedKey.PublicJWK(),
 	}
-	read, _ := r3.NewMCPOperation("records.read")
-	operations, _ := r3.NewMCPOperationSet(read)
+	operations := newResourceMCPOperationSet(t, "records.read")
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, collocatedIssuer, collocatedIssuer, "collocated-resource-token"),
+		r3DocumentURI(resourceIssuer, exactDocument, collocatedIssuer, collocatedIssuer, "collocated-resource-token"),
 		r3.Digest(exactDocument),
 	)
 	store := &r3TestDocumentStore{}
@@ -691,14 +795,9 @@ func TestMCPDirectDocumentFetchDistinguishesCollocatedServerRoles(t *testing.T) 
 	config.Clock = clock
 	config.KeyResolver = resolver
 	config.AccessServer = collocatedIssuer
-	config.MCPR3 = &MCPR3Config{
-		DiscoveryEndpoint: "https://resource.example/mcp",
-		KnownTools:        []string{"records.read"},
-		Documents:         store,
-		OperationForRequest: func(*http.Request) (string, bool, error) {
-			return "records.read", true, nil
-		},
-	}
+	config.R3 = newResourceMCPConfig(t, store, []string{"records.read"}, func(*http.Request) (string, bool, error) {
+		return "records.read", true, nil
+	})
 	server, err := NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -729,19 +828,20 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 	resolver := signaturekey.StaticKeyResolver{
 		{Issuer: accessIssuer, DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}: accessKey.PublicJWK(),
 	}
-	read, _ := r3.NewMCPOperation("records.read")
-	export, _ := r3.NewMCPOperation("records.export")
-	documentOperations, _ := r3.NewMCPOperationSet(read, export)
+	registry := newResourceR3Registry(t)
+	read := newResourceMCPOperation(t, "records.read")
+	export := newResourceMCPOperation(t, "records.export")
+	documentOperations := newResourceMCPOperationSet(t, "records.read", "records.export")
 	document, _ := r3.NewDocument(documentOperations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
+		r3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
 
-	mintR3 := func(t *testing.T, scope string, operations ...r3.MCPOperation) string {
+	mintR3 := func(t *testing.T, scope string, operations ...r3.Operation) string {
 		t.Helper()
-		granted, err := r3.NewGrantedOperations(operations...)
+		granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), operations...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -749,7 +849,7 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		compact, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+		compact, err := r3.MintDirectAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 			Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 			Audience: resourceIssuer, JTI: "auth-token-1",
 			PersonServer: personIssuer, Subject: "person-1", Scope: scope,
@@ -775,12 +875,12 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 	accountDocument, _ := r3.NewDocument(documentOperations, r3.DocumentOptions{Account: &account})
 	accountDocumentBytes, _ := json.Marshal(accountDocument)
 	accountReference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, accountDocumentBytes, personIssuer, accessIssuer, "account-resource-token"),
+		r3DocumentURI(resourceIssuer, accountDocumentBytes, personIssuer, accessIssuer, "account-resource-token"),
 		r3.Digest(accountDocumentBytes),
 	)
-	accountGranted, _ := r3.NewGrantedOperations(read)
+	accountGranted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
 	accountGrant, _ := r3.NewGrant(accountGranted, accountDocument)
-	accountToken, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	accountToken, err := r3.MintDirectAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "account-auth-token",
 		PersonServer: personIssuer, Subject: "person-1", Scope: "records.read", Account: &account,
@@ -791,11 +891,11 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 		t.Fatal(err)
 	}
 	wrongEntitlementReference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, "https://other-access.example", "other-access-resource-token"),
+		r3DocumentURI(resourceIssuer, exactDocument, personIssuer, "https://other-access.example", "other-access-resource-token"),
 		r3.Digest(exactDocument),
 	)
-	readGranted, _ := r3.NewGrantedOperations(read)
-	wrongEntitlementToken := mintRawMCPR3AuthToken(t, accessKey, agentKey, now, wrongEntitlementReference, readGranted, nil)
+	readGranted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
+	wrongEntitlementToken := mintRawR3AuthToken(t, accessKey, agentKey, now, wrongEntitlementReference, readGranted, nil)
 
 	for _, test := range []struct {
 		name        string
@@ -838,14 +938,9 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 			if test.account != nil {
 				config.ValidateAccount = func(context.Context, PersonIdentity, string) error { return nil }
 			}
-			config.MCPR3 = &MCPR3Config{
-				DiscoveryEndpoint: "https://resource.example/mcp",
-				KnownTools:        []string{"records.read", "records.export"},
-				Documents:         store,
-				OperationForRequest: func(*http.Request) (string, bool, error) {
-					return "records.read", true, nil
-				},
-			}
+			config.R3 = newResourceMCPConfig(t, store, []string{"records.read", "records.export"}, func(*http.Request) (string, bool, error) {
+				return "records.read", true, nil
+			})
 			server, err := NewFederatedAuthorization(config)
 			if err != nil {
 				t.Fatal(err)
@@ -875,17 +970,18 @@ func TestMCPDirectConfigurationPreservesCoreOnlyRoutes(t *testing.T) {
 	resolver := signaturekey.StaticKeyResolver{
 		{Issuer: accessIssuer, DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}: accessKey.PublicJWK(),
 	}
-	read, _ := r3.NewMCPOperation("records.read")
-	operations, _ := r3.NewMCPOperationSet(read)
+	registry := newResourceR3Registry(t)
+	read := newResourceMCPOperation(t, "records.read")
+	operations := newResourceMCPOperationSet(t, "records.read")
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
+		r3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
-	granted, _ := r3.NewGrantedOperations(read)
+	granted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
 	grant, _ := r3.NewGrant(granted, document)
-	r3Token, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	r3Token, err := r3.MintDirectAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "r3-auth-token",
 		PersonServer: personIssuer, Subject: "person-1", Scope: "records.read",
@@ -927,17 +1023,12 @@ func TestMCPDirectConfigurationPreservesCoreOnlyRoutes(t *testing.T) {
 	config.KeyResolver = resolver
 	config.AdditionalSignatureComponents = nil
 	config.ValidateAccount = func(context.Context, PersonIdentity, string) error { return nil }
-	config.MCPR3 = &MCPR3Config{
-		DiscoveryEndpoint: "https://resource.example/mcp",
-		KnownTools:        []string{"records.read"},
-		Documents:         store,
-		OperationForRequest: func(request *http.Request) (string, bool, error) {
-			if request.URL.Path == "/records" {
-				return "records.read", true, nil
-			}
-			return "", false, nil
-		},
-	}
+	config.R3 = newResourceMCPConfig(t, store, []string{"records.read"}, func(request *http.Request) (string, bool, error) {
+		if request.URL.Path == "/records" {
+			return "records.read", true, nil
+		}
+		return "", false, nil
+	})
 	server, err := NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -984,17 +1075,18 @@ func TestMCPDirectRoutePoliciesPreserveTheApplicationBody(t *testing.T) {
 	resolver := signaturekey.StaticKeyResolver{
 		{Issuer: accessIssuer, DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}: accessKey.PublicJWK(),
 	}
-	read, _ := r3.NewMCPOperation("records.read")
-	operations, _ := r3.NewMCPOperationSet(read)
+	registry := newResourceR3Registry(t)
+	read := newResourceMCPOperation(t, "records.read")
+	operations := newResourceMCPOperationSet(t, "records.read")
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
+		r3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
-	granted, _ := r3.NewGrantedOperations(read)
+	granted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
 	grant, _ := r3.NewGrant(granted, document)
-	compact, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	compact, err := r3.MintDirectAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "auth-token-1",
 		PersonServer: personIssuer, Subject: "person-1", Scope: "records.read",
@@ -1023,16 +1115,11 @@ func TestMCPDirectRoutePoliciesPreserveTheApplicationBody(t *testing.T) {
 		return []string{"records.read"}
 	}
 	store := &r3TestDocumentStore{}
-	config.MCPR3 = &MCPR3Config{
-		DiscoveryEndpoint: "https://resource.example/mcp",
-		KnownTools:        []string{"records.read"},
-		Documents:         store,
-		OperationForRequest: func(request *http.Request) (string, bool, error) {
-			body, err := io.ReadAll(request.Body)
-			operationBody = string(body)
-			return "records.read", true, err
-		},
-	}
+	config.R3 = newResourceMCPConfig(t, store, []string{"records.read"}, func(request *http.Request) (string, bool, error) {
+		body, err := io.ReadAll(request.Body)
+		operationBody = string(body)
+		return "records.read", true, err
+	})
 	server, err := NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -1054,12 +1141,11 @@ func TestMCPDirectRoutePoliciesPreserveTheApplicationBody(t *testing.T) {
 func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *testing.T) {
 	t.Parallel()
 
-	read, _ := r3.NewMCPOperation("records.read")
-	operations, _ := r3.NewMCPOperationSet(read)
+	operations := newResourceMCPOperationSet(t, "records.read")
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
+		r3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
 	record := R3DocumentRecord{
@@ -1161,7 +1247,7 @@ func equalR3TestStringPointers(first, second *string) bool {
 	return *first == *second
 }
 
-func mintRawMCPR3AuthToken(
+func mintRawR3AuthToken(
 	t *testing.T,
 	issuerKey, requestKey jose.SigningKey,
 	now time.Time,
@@ -1257,7 +1343,11 @@ func (store *r3TestDocumentStore) Commit(_ context.Context, record R3DocumentRec
 		}
 		return nil
 	}
-	if _, err := r3.ParseReferencedDocument(record.Reference, record.ExactJSON); err != nil {
+	registry, err := resourceMCPRegistry()
+	if err != nil {
+		return err
+	}
+	if _, err := registry.ParseReferencedDocument(record.Reference, record.ExactJSON); err != nil {
 		return err
 	}
 	store.records[record.Reference.URI()] = cloneR3TestRecord(record)

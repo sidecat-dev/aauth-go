@@ -15,6 +15,7 @@ import (
 
 	aauth "aauth-go"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/signaturekey"
 )
 
@@ -86,59 +87,66 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		}
 		return nil
 	}
-	config.MCPR3 = &MCPR3Config{
-		DiscoveryEndpoint: "https://resource.example/mcp",
-		KnownTools:        []string{"records.delete"},
-		Documents:         documents,
-		OperationForRequest: func(*http.Request) (string, bool, error) {
-			return "records.delete", true, nil
-		},
-		PerCall: &MCPR3PerCallConfig{
-			Proposals: proposals,
-			Retries:   retries,
-			PresentCall: func(_ context.Context, request *http.Request, operation r3.MCPOperation, account *string) (map[string]r3.PresentedMCPParameter, error) {
-				presentCalls.Add(1)
-				identifier := strings.TrimPrefix(request.URL.Path, "/records/")
-				if identifier == request.URL.Path || identifier == "" || operation.Tool() != "records.delete" ||
-					account == nil || *account != "work-account" {
-					return nil, errors.New("unexpected MCP R3 presented-call input")
-				}
-				encodedIdentifier, _ := json.Marshal("record-" + identifier)
-				presented, err := r3.NewPresentedMCPInlineParameter(encodedIdentifier)
-				if err != nil {
-					return nil, err
-				}
-				return map[string]r3.PresentedMCPParameter{"id": presented}, nil
-			},
-			DescribeCall: func(_ context.Context, request *http.Request, operation r3.MCPOperation, account *string) (MCPR3CallDescription, error) {
-				describeCalls.Add(1)
-				identifier := strings.TrimPrefix(request.URL.Path, "/records/")
-				if identifier == request.URL.Path || identifier == "" || operation.Tool() != "records.delete" ||
-					account == nil || *account != "work-account" {
-					t.Fatalf("proposal input = %s, %s, %#v", request.URL.Path, operation.Tool(), account)
-				}
-				encodedIdentifier, _ := json.Marshal("record-" + identifier)
-				inline, err := r3.NewMCPInlineParameter(encodedIdentifier)
-				if err != nil {
-					return MCPR3CallDescription{}, err
-				}
-				parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"id": inline})
-				if err != nil {
-					return MCPR3CallDescription{}, err
-				}
-				display, err := r3.NewDisplay("Delete record "+identifier, "", "Record "+identifier, "Deletion cannot be undone")
-				if err != nil {
-					return MCPR3CallDescription{}, err
-				}
-				proposalDisplay, err := r3.NewProposalDisplay(display, "## Action\nDelete record "+identifier)
-				if err != nil {
-					return MCPR3CallDescription{}, err
-				}
-				return MCPR3CallDescription{
-					Parameters: parameters,
-					Display:    &proposalDisplay,
-				}, nil
-			},
+	config.R3 = newResourceMCPConfig(t, documents, []string{"records.delete"}, func(*http.Request) (string, bool, error) {
+		return "records.delete", true, nil
+	})
+	config.R3.HTTP.PresentParameters = func(request *http.Request, operation r3.Operation) (map[string]r3.PresentedParameter, error) {
+		presentCalls.Add(1)
+		identifier := strings.TrimPrefix(request.URL.Path, "/records/")
+		if identifier == request.URL.Path || identifier == "" || resourceMCPTool(t, operation) != "records.delete" {
+			return nil, errors.New("unexpected MCP R3 presented-call input")
+		}
+		encodedIdentifier, _ := json.Marshal("record-" + identifier)
+		presented, err := r3.NewPresentedInlineParameter(encodedIdentifier)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]r3.PresentedParameter{"id": presented}, nil
+	}
+	registry := config.R3.Registry
+	config.R3.PerCall = &R3PerCallConfig{
+		Proposals: proposals,
+		Retries:   retries,
+		DescribeCall: func(_ context.Context, invocation r3.Invocation, account *string) (R3CallDescription, error) {
+			describeCalls.Add(1)
+			tool := resourceMCPTool(t, invocation.Operation())
+			presented, ok := invocation.PresentedParameters()["id"]
+			if !ok {
+				return R3CallDescription{}, errors.New("missing invocation id")
+			}
+			encodedIdentifier, ok := presented.InlineJSON()
+			if !ok {
+				return R3CallDescription{}, errors.New("invocation id is not inline JSON")
+			}
+			var recordID string
+			if err := json.Unmarshal(encodedIdentifier, &recordID); err != nil {
+				return R3CallDescription{}, err
+			}
+			identifier := strings.TrimPrefix(recordID, "record-")
+			if identifier == recordID || identifier == "" || tool != "records.delete" ||
+				account == nil || *account != "work-account" {
+				t.Fatalf("proposal input = %s, %s, %#v", recordID, tool, account)
+			}
+			inline, err := r3.NewInlineParameter(encodedIdentifier)
+			if err != nil {
+				return R3CallDescription{}, err
+			}
+			parameters, err := r3.NewParameters(map[string]r3.Parameter{"id": inline})
+			if err != nil {
+				return R3CallDescription{}, err
+			}
+			display, err := r3.NewDisplay("Delete record "+identifier, "", "Record "+identifier, "Deletion cannot be undone")
+			if err != nil {
+				return R3CallDescription{}, err
+			}
+			proposalDisplay, err := r3.NewProposalDisplay(display, "## Action\nDelete record "+identifier)
+			if err != nil {
+				return R3CallDescription{}, err
+			}
+			return R3CallDescription{
+				Parameters: parameters,
+				Display:    &proposalDisplay,
+			}, nil
 		},
 	}
 	server, err := NewFederatedAuthorization(config)
@@ -168,7 +176,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err := json.Unmarshal(authorizeResponse.Body.Bytes(), &authorizationOutput); err != nil {
 		t.Fatal(err)
 	}
-	classResourceClaims, classReference, err := r3.VerifyMCPResourceToken(context.Background(), authorizationOutput.ResourceToken, resolver, clock)
+	classResourceClaims, classReference, err := r3.VerifyResourceToken(context.Background(), authorizationOutput.ResourceToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,18 +187,18 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if classRecord.ClassContext.ExactResourceToken != authorizationOutput.ResourceToken {
 		t.Fatal("class context did not retain the exact Resource token")
 	}
-	classDocument, err := r3.ParseReferencedDocument(classReference, classRecord.ExactJSON)
+	classDocument, err := registry.ParseReferencedDocument(classReference, classRecord.ExactJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
-	empty, _ := r3.NewGrantedOperations()
-	deleteOperation, _ := r3.NewMCPOperation("records.delete")
-	perCall, _ := r3.NewGrantedOperations(deleteOperation)
+	empty, _ := r3.NewGrantedOperations(mcp.Vocabulary())
+	deleteOperation := newResourceMCPOperation(t, "records.delete")
+	perCall, _ := r3.NewGrantedOperations(mcp.Vocabulary(), deleteOperation)
 	classAuthorization, err := r3.NewAuthorization(empty, perCall, classDocument)
 	if err != nil {
 		t.Fatal(err)
 	}
-	classAuthToken, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+	classAuthToken, err := r3.MintAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "class-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -220,7 +228,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	presentCalls.Store(0)
 	describeCalls.Store(0)
 	for _, issuedAt := range []int64{classResourceClaims.IssuedAt - 1, classResourceClaims.ExpiresAt} {
-		outsideLineage, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+		outsideLineage, err := r3.MintAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 			Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 			Audience: resourceIssuer, JTI: "outside-class-lineage",
 			PersonServer: personIssuer, Subject: "person-1",
@@ -259,7 +267,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	documents.mutate(classReference.URI(), func(record *R3DocumentRecord) { *record = cloneR3TestRecord(classRecord) })
 
 	commitFailureProposals := &r3ProposalTestStore{commitErr: errors.New("proposal commit failed")}
-	config.MCPR3.PerCall.Proposals = commitFailureProposals
+	config.R3.PerCall.Proposals = commitFailureProposals
 	server, err = NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -278,8 +286,8 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	}
 
 	prepareFailureRetries := &r3RetryTestStore{prepareErr: errors.New("retry prepare failed")}
-	config.MCPR3.PerCall.Proposals = proposals
-	config.MCPR3.PerCall.Retries = prepareFailureRetries
+	config.R3.PerCall.Proposals = proposals
+	config.R3.PerCall.Retries = prepareFailureRetries
 	server, err = NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -296,17 +304,16 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 			prepareFailureResponse.Code, prepareFailureResponse.Header(), proposals.count(), prepareFailureRetries.count(), applicationCalls.Load(),
 		)
 	}
-	for uri := range proposals.records {
-		proposals.remove(uri)
-	}
-	config.MCPR3.PerCall.Retries = retries
+	proposals = &r3ProposalTestStore{}
+	config.R3.PerCall.Proposals = proposals
+	config.R3.PerCall.Retries = retries
 	server, err = NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	presentCalls.Store(0)
 	describeCalls.Store(0)
-	expandedClassAuthToken, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+	expandedClassAuthToken, err := r3.MintAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "expanded-class-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -343,7 +350,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposalClaims, proposalReference, err := r3.VerifyMCPResourceToken(context.Background(), requirement.ResourceToken, resolver, clock)
+	proposalClaims, proposalReference, err := r3.VerifyResourceToken(context.Background(), requirement.ResourceToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,12 +361,11 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := r3.ParseReferencedProposal(proposalReference, proposalRecord.ExactJSON)
+	proposal, err := registry.ParseReferencedProposal(proposalReference, proposalRecord.ExactJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proposal.Operation() != deleteOperation || proposalRecord.ClassReference != classReference ||
-		!proposalRecord.RetainUntil.Equal(time.Unix(proposalClaims.ExpiresAt, 0)) {
+	if !equalResourceR3Operations(t, proposal.Operation(), deleteOperation) || proposalRecord.ClassReference != classReference {
 		t.Fatalf("proposal record = %#v, proposal = %#v", proposalRecord, proposal)
 	}
 	retryRecord, err := retries.Load(context.Background(), proposalReference)
@@ -367,7 +373,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		t.Fatal(err)
 	}
 	if retryRecord.Reference != proposalReference || retryRecord.ClassReference != classReference ||
-		retryRecord.Operation != deleteOperation || retryRecord.ResourceToken != requirement.ResourceToken ||
+		retryRecord.ResourceToken != requirement.ResourceToken ||
 		!reflect.DeepEqual(retryRecord.ExactProposal, proposalRecord.ExactJSON) ||
 		!retryRecord.CompletionUntil.Equal(retryRecord.ExpiresAt.Add(aauth.MaximumAuthTokenLifetime)) {
 		t.Fatalf("retry record = %#v", retryRecord)
@@ -394,7 +400,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondClaims, secondReference, err := r3.VerifyMCPResourceToken(context.Background(), secondRequirement.ResourceToken, resolver, clock)
+	secondClaims, secondReference, err := r3.VerifyResourceToken(context.Background(), secondRequirement.ResourceToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +420,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		t.Fatal(err)
 	}
 
-	perCallAuthToken, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	perCallAuthToken, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "per-call-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -434,9 +440,9 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	}
 	proposalURIJSON, _ := json.Marshal(proposalReference.URI())
 	proposalDigestJSON, _ := json.Marshal(proposalReference.Digest())
-	proposalGrant, _ := r3.NewGrantedOperations(deleteOperation)
+	proposalGrant, _ := r3.NewGrantedOperations(mcp.Vocabulary(), deleteOperation)
 	proposalGrantJSON, _ := json.Marshal(proposalGrant)
-	emptyPerCall, _ := r3.NewGrantedOperations()
+	emptyPerCall, _ := r3.NewGrantedOperations(mcp.Vocabulary())
 	emptyPerCallJSON, _ := json.Marshal(emptyPerCall)
 	explicitEmptyPerCallToken, err := aauth.MintAuthTokenCore(accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
@@ -477,8 +483,8 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	} {
 		changedClaims := proposalClaims
 		scenario.change(&changedClaims)
-		changedResourceToken, changedReference, err := r3.MintMCPProposalResourceToken(
-			resourceKey, changedClaims, proposalReference.URI(), proposalRecord.ExactJSON,
+		changedResourceToken, changedReference, err := r3.MintProposalResourceToken(
+			registry, resourceKey, changedClaims, proposalReference.URI(), proposalRecord.ExactJSON,
 		)
 		if err != nil {
 			t.Fatalf("mint changed %s proposal token: %v", scenario.name, err)
@@ -511,7 +517,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 			changedProposal.Code, changedProposal.Body.String(), applicationCalls.Load(),
 		)
 	}
-	expandedScopeToken, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	expandedScopeToken, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "expanded-scope-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -549,6 +555,17 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		t.Fatalf("changed parameters = %d %s, application calls=%d", changedResponse.Code, changedResponse.Body.String(), applicationCalls.Load())
 	}
 	now = time.Unix(proposalClaims.ExpiresAt+1, 0)
+	auditFetch := httptest.NewRequest(http.MethodGet, proposalReference.URI(), nil)
+	if err := signaturekey.SignJWKSURIRequest(
+		auditFetch, accessKey, accessIssuer, aauth.AccessDiscoveryDocument, clock,
+	); err != nil {
+		t.Fatal(err)
+	}
+	auditResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(auditResponse, auditFetch)
+	if auditResponse.Code != http.StatusOK || !reflect.DeepEqual(auditResponse.Body.Bytes(), proposalRecord.ExactJSON) {
+		t.Fatalf("expired proposal audit fetch = %d %s", auditResponse.Code, auditResponse.Body.String())
+	}
 	firstRequest := signedRequest(t, clock, agentKey, perCallAuthToken, http.MethodDelete, resourceIssuer+"/records/7", "")
 	firstContext, cancelFirstTransport := context.WithCancel(firstRequest.Context())
 	firstRequest = firstRequest.WithContext(firstContext)
@@ -561,15 +578,11 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if first.Code != http.StatusOK || first.Body.String() != "{\"sequence\":1}\n" {
 		t.Fatalf("first retry = %d %s", first.Code, first.Body.String())
 	}
-	proposals.remove(proposalReference.URI())
 	second := retryCall(perCallAuthToken)
 	if second.Code != first.Code || second.Body.String() != first.Body.String() {
 		t.Fatalf("exact replay = %d %s, want %d %s", second.Code, second.Body.String(), first.Code, first.Body.String())
 	}
-	if err := proposals.Commit(context.Background(), proposalRecord); err != nil {
-		t.Fatal(err)
-	}
-	competingToken, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	competingToken, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "competing-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -588,7 +601,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if applicationCalls.Load() != 1 {
 		t.Fatalf("application calls after replay and competition = %d", applicationCalls.Load())
 	}
-	secondToken, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	secondToken, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "per-call-auth-token-2",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -666,7 +679,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	heldClaims, heldReference, err := r3.VerifyMCPResourceToken(context.Background(), heldRequirement.ResourceToken, resolver, clock)
+	heldClaims, heldReference, err := r3.VerifyResourceToken(context.Background(), heldRequirement.ResourceToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,10 +687,14 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	parsedHeldProposal, err := registry.ParseReferencedProposal(heldReference, heldProposal.ExactJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
 	retainedHeld := held.loaded(t)
 	if retainedHeld.R3PerCall == nil || retainedHeld.R3PerCall.Reference != heldReference ||
 		retainedHeld.R3PerCall.ClassReference != classReference ||
-		retainedHeld.R3PerCall.Operation != deleteOperation ||
+		!equalResourceR3Operations(t, parsedHeldProposal.Operation(), deleteOperation) ||
 		!reflect.DeepEqual(retainedHeld.R3PerCall.ExactProposal, heldProposal.ExactJSON) {
 		t.Fatalf("retained held MCP R3 context = %#v", retainedHeld.R3PerCall)
 	}
@@ -700,8 +717,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposals.remove(heldReference.URI())
-	heldToken, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	heldToken, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "held-per-call-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -713,7 +729,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingRequiredScopeToken, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	missingRequiredScopeToken, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: resourceIssuer, JTI: "held-missing-required-scope-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -736,7 +752,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 			missingRequiredScopeResult.Code, missingRequiredScopeResult.Body.String(), applicationCalls.Load(),
 		)
 	}
-	wrongAudienceToken, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	wrongAudienceToken, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://other-resource.example", JTI: "held-wrong-audience-auth-token",
 		PersonServer: personIssuer, Subject: "person-1",
@@ -820,8 +836,8 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		server.Handler().ServeHTTP(result, request)
 		return result
 	}
-	perCallConfig := config.MCPR3.PerCall
-	config.MCPR3.PerCall = nil
+	perCallConfig := config.R3.PerCall
+	config.R3.PerCall = nil
 	server, err = NewFederatedAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
@@ -848,7 +864,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		t.Fatalf("held present calls = %d, want one published and one duplicate challenge extraction", presentCalls.Load()-presentedBeforeHeld)
 	}
 
-	config.MCPR3.PerCall = perCallConfig
+	config.R3.PerCall = perCallConfig
 	config.HeldInvocations = nil
 	config.HoldAuthTokenRequest = nil
 	expectedPrincipalScopes = []string{"records.write"}
@@ -868,7 +884,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, reference, err := r3.VerifyMCPResourceToken(context.Background(), requirement.ResourceToken, resolver, clock)
+		_, reference, err := r3.VerifyResourceToken(context.Background(), requirement.ResourceToken, resolver, clock)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -876,7 +892,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		compact, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+		compact, err := r3.MintPerCallAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 			Issuer: accessIssuer, DWK: aauth.AccessDiscoveryDocument,
 			Audience: resourceIssuer, JTI: authTokenID,
 			PersonServer: personIssuer, Subject: "person-1",
@@ -946,11 +962,12 @@ func (store *r3ProposalTestStore) Commit(_ context.Context, record R3ProposalRec
 	if _, ok := store.records[record.Reference.URI()]; ok {
 		return ErrR3ProposalConflict
 	}
-	if _, err := r3.ParseReferencedProposal(record.Reference, record.ExactJSON); err != nil {
+	registry, err := resourceMCPRegistry()
+	if err != nil {
 		return err
 	}
-	if record.RetainUntil.IsZero() {
-		return errors.New("proposal retention deadline is required")
+	if _, err := registry.ParseReferencedProposal(record.Reference, record.ExactJSON); err != nil {
+		return err
 	}
 	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
 	store.records[record.Reference.URI()] = record
@@ -972,12 +989,6 @@ func (store *r3ProposalTestStore) count() int {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	return len(store.records)
-}
-
-func (store *r3ProposalTestStore) remove(uri string) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	delete(store.records, uri)
 }
 
 type r3RetryTestStore struct {

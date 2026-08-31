@@ -23,12 +23,22 @@ import (
 	"aauth-go/signaturekey"
 )
 
-func TestMCPR3DirectFourPartyJourney(t *testing.T) {
+func TestR3DirectFourPartyJourney(t *testing.T) {
 	t.Parallel()
+	for _, vocabulary := range integrationR3Vocabularies() {
+		vocabulary := vocabulary
+		t.Run(vocabulary.name, func(t *testing.T) {
+			t.Parallel()
+			testR3DirectFourPartyJourney(t, vocabulary)
+		})
+	}
+}
 
+func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabulary) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
+	registry := newIntegrationR3Registry(t)
 	const (
 		agentProviderID = "https://ap.example"
 		agentID         = "aauth:planner@ap.example"
@@ -79,9 +89,9 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 	var requiredScopes []string
 	var expectedPrincipalScopes []string
 	resourceTokenIDs := 0
-	read, _ := r3.NewMCPOperation("records.read")
-	export, _ := r3.NewMCPOperation("records.export")
-	requestedOperations, _ := r3.NewMCPOperationSet(read, export)
+	read := vocabulary.newOperation(t, "records.read")
+	export := vocabulary.newOperation(t, "records.export")
+	requestedOperations, _ := r3.NewOperationSet(read, export)
 	display, _ := r3.NewDisplay(
 		"Read and export records",
 		"Exported records may leave the system",
@@ -113,26 +123,22 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 			}
 			return nil
 		},
-		MCPR3: &resource.MCPR3Config{
-			DiscoveryEndpoint: resourceID + "/mcp",
-			KnownTools:        []string{"records.read", "records.export"},
-			Documents:         documents,
-			DisplayForOperations: func(_ context.Context, operations r3.MCPOperationSet, gotAccount *string) (*r3.Display, error) {
-				if !operations.Equal(requestedOperations) || gotAccount == nil || *gotAccount != account {
-					return nil, errors.New("unexpected display input")
-				}
-				return &display, nil
-			},
-			OperationForRequest: func(request *http.Request) (string, bool, error) {
+		R3: &resource.R3Config{
+			Registry: registry,
+			Vocabularies: integrationR3ResourceVocabularies(
+				t, resourceID, []string{"records.read", "records.export"}, account, &display,
+			),
+			Documents: documents,
+			HTTP: resource.R3HTTPAdapter{OperationForRequest: func(request *http.Request) (r3.Operation, bool, error) {
 				switch request.URL.Path {
 				case "/records/read":
-					return "records.read", true, nil
+					return read, true, nil
 				case "/records/export":
-					return "records.export", true, nil
+					return export, true, nil
 				default:
-					return "", false, nil
+					return r3.Operation{}, false, nil
 				}
-			},
+			}},
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			protectedCalls++
@@ -147,6 +153,7 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requireIntegrationR3ResourceMetadata(t, protectedResource.Handler(), resourceID)
 
 	issuances := &integrationR3IssuanceStore{}
 	authTokenIDs := 0
@@ -163,31 +170,39 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 			return nil
 		},
 		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
-			if request.MCPR3 == nil || !request.MCPR3.Document.OperationSet().Equal(requestedOperations) ||
-				!slices.Equal(request.Scopes, requiredScopes) {
-				return accessserver.Decision{}, errors.New("unexpected R3 policy input")
-			}
-			granted, err := r3.NewGrantedOperations(read)
-			if err != nil {
-				return accessserver.Decision{}, err
-			}
-			emptyPerCall, err := r3.NewGrantedOperations()
-			if err != nil {
-				return accessserver.Decision{}, err
-			}
-			authorization, err := r3.NewAuthorization(granted, emptyPerCall, request.MCPR3.Document)
-			if err != nil {
-				return accessserver.Decision{}, err
-			}
-			return accessserver.Decision{Scopes: append([]string(nil), request.Scopes...), Lifetime: 30 * time.Minute, MCPR3Authorization: &authorization}, nil
+			return accessserver.Decision{}, errors.New("Core policy must not receive an R3 request")
 		},
-		MCPR3: &accessserver.MCPR3Config{
+		R3: &accessserver.R3Config{
+			Registry:   registry,
 			HTTPClient: httpClient,
 			Admit: func(_ context.Context, endpoint string) error {
 				if !strings.HasPrefix(endpoint, resourceID+"/r3/") {
 					return errors.New("unexpected R3 document endpoint")
 				}
 				return nil
+			},
+			AuthorizeDocument: func(_ context.Context, request accessserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (accessserver.R3DocumentDecision, error) {
+				if !vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) ||
+					!slices.Equal(request.Scopes, requiredScopes) {
+					return accessserver.R3DocumentDecision{}, errors.New("unexpected R3 policy input")
+				}
+				granted, err := r3.NewGrantedOperations(vocabulary.registration, read)
+				if err != nil {
+					return accessserver.R3DocumentDecision{}, err
+				}
+				emptyPerCall, err := r3.NewGrantedOperations(vocabulary.registration)
+				if err != nil {
+					return accessserver.R3DocumentDecision{}, err
+				}
+				authorization, err := r3.NewAuthorization(granted, emptyPerCall, document)
+				if err != nil {
+					return accessserver.R3DocumentDecision{}, err
+				}
+				return accessserver.R3DocumentDecision{
+					Scopes:        append([]string(nil), request.Scopes...),
+					Lifetime:      30 * time.Minute,
+					Authorization: &authorization,
+				}, nil
 			},
 			Issuances: issuances,
 		},
@@ -216,18 +231,19 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 		Consent: func(context.Context, personserver.AuthorizationRequest) error {
 			return errors.New("Core consent must not receive an R3 request")
 		},
-		MCPR3: &personserver.MCPR3Config{
+		R3: &personserver.R3Config{
+			Registry: registry,
 			Admit: func(_ context.Context, endpoint string) error {
 				if !strings.HasPrefix(endpoint, resourceID+"/r3/") {
 					return errors.New("unexpected R3 document endpoint")
 				}
 				return nil
 			},
-			Consent: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
+			ConsentDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
 				consentCalls++
 				gotDisplay, hasDisplay := document.Display()
 				if request.Account == nil || *request.Account != account || !slices.Equal(request.Scopes, requiredScopes) ||
-					!document.OperationSet().Equal(requestedOperations) || !hasDisplay || gotDisplay.Summary() != display.Summary() {
+					!vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) || !hasDisplay || gotDisplay.Summary() != display.Summary() {
 					return errors.New("unexpected R3 consent input")
 				}
 				return nil
@@ -257,6 +273,7 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 	agent, err := clientagent.New(ctx, clientagent.Config{
 		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+		R3: &clientagent.R3Config{Registry: registry},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +290,7 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 	}
 	resourceToken, err := agent.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Account: &account, MCPR3Operations: &requestedOperations,
+		Account: &account, R3Operations: &requestedOperations,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -295,14 +312,14 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 	}
 	request, _ = http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/export", nil)
 	if _, err := agent.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken}); err == nil {
-		t.Fatal("ungranted MCP tool reached the application")
+		t.Fatal("ungranted R3 operation reached the application")
 	}
 
 	requiredScopes = []string{"records.read"}
 	expectedPrincipalScopes = []string{"records.read"}
 	mixedResourceToken, err := agent.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
-		Account: &account, MCPR3Operations: &requestedOperations,
+		Account: &account, R3Operations: &requestedOperations,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +330,7 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mixedClaims, _, _, err := r3.VerifyMCPDirectAuthToken(ctx, mixedAuthToken, resolver, clock)
+	mixedClaims, _, _, err := r3.VerifyDirectAuthToken(ctx, registry, mixedAuthToken, resolver, clock)
 	if err != nil || mixedClaims.Scope != "records.read" {
 		t.Fatalf("mixed R3 Auth token = %#v, %v", mixedClaims, err)
 	}
@@ -329,7 +346,7 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 	requiredScopes = []string{"records.write"}
 	request, _ = http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/read", nil)
 	if _, err := agent.Do(ctx, clientagent.Call{Request: request, AuthToken: mixedAuthToken}); err == nil {
-		t.Fatal("MCP grant bypassed the independently required Core scope")
+		t.Fatal("R3 grant bypassed the independently required Core scope")
 	}
 	if protectedCalls != 2 || consentCalls != 2 || personFetches != 2 || accessFetches != 2 || documents.loadCount() != 4 {
 		t.Fatalf("calls protected/consent/PS-fetch/AS-fetch/document-load = %d/%d/%d/%d/%d", protectedCalls, consentCalls, personFetches, accessFetches, documents.loadCount())

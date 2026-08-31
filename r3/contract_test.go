@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 )
 
 func TestMCPOperationSetJSONRoundTrip(t *testing.T) {
@@ -20,14 +21,14 @@ func TestMCPOperationSetJSONRoundTrip(t *testing.T) {
 		t.Fatalf("encoded operation set = %s, want %s", encoded, want)
 	}
 
-	var decoded r3.MCPOperationSet
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
+	decoded, err := mcpRegistry.ParseOperationSet(encoded)
+	if err != nil {
 		t.Fatalf("unmarshal operation set: %v", err)
 	}
-	if !decoded.Equal(set) {
+	if !operationSetsEqual(t, decoded, set) {
 		t.Fatal("round-tripped operation set is not semantically equal")
 	}
-	if got := decoded.Operations()[0].Tool(); got != "create_calendar_event" {
+	if got := mcpTool(t, decoded.Operations()[0]); got != "create_calendar_event" {
 		t.Fatalf("first tool = %q", got)
 	}
 }
@@ -52,17 +53,16 @@ func TestMCPOperationAndSetRejectInvalidJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var set r3.MCPOperationSet
-			if err := json.Unmarshal([]byte(tt.json), &set); err == nil {
+			if _, err := mcpRegistry.ParseOperationSet([]byte(tt.json)); err == nil {
 				t.Fatalf("accepted invalid JSON: %s", tt.json)
 			}
 		})
 	}
 
-	if _, err := r3.NewMCPOperation(""); err == nil {
+	if _, err := mcp.NewOperation(""); err == nil {
 		t.Fatal("accepted an empty tool through the constructor")
 	}
-	if _, err := r3.NewMCPOperation(" x "); err == nil {
+	if _, err := mcp.NewOperation(" x "); err == nil {
 		t.Fatal("accepted an untrimmed tool through the constructor")
 	}
 }
@@ -73,42 +73,48 @@ func TestMCPOperationSetSemanticComparisonIsOrderInsensitive(t *testing.T) {
 	a := mustSet(t, "a")
 	c := mustSet(t, "c")
 
-	if !ab.Equal(ba) {
+	if !operationSetsEqual(t, ab, ba) {
 		t.Fatal("sets with the same tools in a different order are not equal")
 	}
-	if !a.IsSubsetOf(ab) {
+	if !operationSetSubset(t, a, ab) {
 		t.Fatal("single known operation is not a subset")
 	}
-	if c.IsSubsetOf(ab) {
+	if operationSetSubset(t, c, ab) {
 		t.Fatal("unknown operation reported as a subset")
 	}
-	if got := ab.Operations()[0].Tool(); got != "a" {
+	if got := mcpTool(t, ab.Operations()[0]); got != "a" {
 		t.Fatalf("semantic comparison reordered retained operations; first = %q", got)
 	}
 }
 
 func TestMCPOperationSetComparisonsFailClosedForInvalidOperands(t *testing.T) {
 	valid := mustSet(t, "a")
-	var empty r3.MCPOperationSet
+	var empty r3.OperationSet
 
-	if empty.Equal(empty) {
+	if _, err := empty.Equal(empty); err == nil {
 		t.Fatal("invalid empty sets compared equal")
 	}
-	if empty.Equal(valid) || valid.Equal(empty) {
+	if _, err := empty.Equal(valid); err == nil {
+		t.Fatal("equality accepted an invalid left operand")
+	}
+	if _, err := valid.Equal(empty); err == nil {
 		t.Fatal("equality accepted an invalid operand")
 	}
-	if empty.IsSubsetOf(valid) || valid.IsSubsetOf(empty) {
+	if _, err := empty.IsSubsetOf(valid); err == nil {
+		t.Fatal("subset comparison accepted an invalid left operand")
+	}
+	if _, err := valid.IsSubsetOf(empty); err == nil {
 		t.Fatal("subset comparison accepted an invalid operand")
 	}
 }
 
-func TestKnownToolsValidationIsAuthoritative(t *testing.T) {
+func TestAuthoritativeOperationSetValidation(t *testing.T) {
 	set := mustSet(t, "known", "unknown")
-	if err := set.ValidateKnownTools([]string{"known"}); err == nil {
+	if operationSetSubset(t, set, mustSet(t, "known")) {
 		t.Fatal("validation silently accepted an operation absent from the authoritative tool set")
 	}
-	if err := mustSet(t, "known").ValidateKnownTools([]string{"known", "other"}); err != nil {
-		t.Fatalf("known operation rejected: %v", err)
+	if !operationSetSubset(t, mustSet(t, "known"), mustSet(t, "known", "other")) {
+		t.Fatal("known operation rejected")
 	}
 }
 
@@ -128,11 +134,11 @@ func TestDocumentValidationAndStrictJSON(t *testing.T) {
 		t.Fatalf("encoded document = %s, want %s", encoded, want)
 	}
 
-	parsed, err := r3.ParseDocument(encoded)
+	parsed, err := mcpRegistry.ParseDocument(encoded)
 	if err != nil {
 		t.Fatalf("parse document: %v", err)
 	}
-	if !parsed.OperationSet().Equal(doc.OperationSet()) {
+	if !operationSetsEqual(t, parsed.OperationSet(), doc.OperationSet()) {
 		t.Fatal("parsed document operation set differs")
 	}
 	if got, ok := parsed.Account(); !ok || got != account {
@@ -155,7 +161,7 @@ func TestDocumentValidationAndStrictJSON(t *testing.T) {
 		`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"x"}],"account":null}`,
 	}
 	for _, source := range invalid {
-		if _, err := r3.ParseDocument([]byte(source)); err == nil {
+		if _, err := mcpRegistry.ParseDocument([]byte(source)); err == nil {
 			t.Errorf("accepted invalid document: %s", source)
 		}
 	}
@@ -164,22 +170,22 @@ func TestDocumentValidationAndStrictJSON(t *testing.T) {
 func TestDigestUsesExactCallerOwnedBytes(t *testing.T) {
 	compact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"x"}]}`)
 	spaced := []byte(`{ "vocabulary":"urn:aauth:vocabulary:mcp", "operations":[{"tool":"x"}] }`)
-	if _, err := r3.ParseDocument(compact); err != nil {
+	if _, err := mcpRegistry.ParseDocument(compact); err != nil {
 		t.Fatalf("parse compact document: %v", err)
 	}
-	if _, err := r3.ParseDocument(spaced); err != nil {
+	if _, err := mcpRegistry.ParseDocument(spaced); err != nil {
 		t.Fatalf("parse spaced document: %v", err)
 	}
 	if r3.Digest(compact) == r3.Digest(spaced) {
 		t.Fatal("digest canonicalized semantically identical JSON")
 	}
 
-	parsed, err := r3.ParseDocument(compact)
+	parsed, err := mcpRegistry.ParseDocument(compact)
 	if err != nil {
 		t.Fatal(err)
 	}
 	compact[0] = '['
-	if got := parsed.OperationSet().Operations()[0].Tool(); got != "x" {
+	if got := mcpTool(t, parsed.OperationSet().Operations()[0]); got != "x" {
 		t.Fatalf("mutating source bytes changed parsed value: %q", got)
 	}
 }
@@ -233,7 +239,7 @@ func TestGrantMustBeDocumentSubset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new subset grant: %v", err)
 	}
-	if !grant.GrantedOperations().Equal(mustGranted(t, "write")) {
+	if !grantedEqual(t, grant.GrantedOperations(), mustGranted(t, "write")) {
 		t.Fatal("grant does not retain its operations")
 	}
 	if _, err := r3.NewGrant(mustGranted(t, "delete"), doc); err == nil {
@@ -251,7 +257,7 @@ func TestReturnedOperationSlicesAreCopies(t *testing.T) {
 	operations = append(operations, mustOperation(t, "added"))
 
 	retained := set.Operations()
-	if len(retained) != 2 || retained[0].Tool() != "a" {
+	if len(retained) != 2 || mcpTool(t, retained[0]) != "a" {
 		t.Fatalf("caller mutated retained set through accessor: %#v", retained)
 	}
 
@@ -261,7 +267,7 @@ func TestReturnedOperationSlicesAreCopies(t *testing.T) {
 	}
 	docOperations := doc.OperationSet().Operations()
 	docOperations[0] = mustOperation(t, "changed-again")
-	if got := doc.OperationSet().Operations()[0].Tool(); got != "a" {
+	if got := mcpTool(t, doc.OperationSet().Operations()[0]); got != "a" {
 		t.Fatalf("caller mutated document operations through accessor: %q", got)
 	}
 
@@ -271,44 +277,9 @@ func TestReturnedOperationSlicesAreCopies(t *testing.T) {
 	}
 	grantOperations := grant.GrantedOperations().Operations()
 	grantOperations[0] = mustOperation(t, "changed-grant")
-	if got := grant.GrantedOperations().Operations()[0].Tool(); got != "a" {
+	if got := mcpTool(t, grant.GrantedOperations().Operations()[0]); got != "a" {
 		t.Fatalf("caller mutated grant operations through accessor: %q", got)
 	}
-}
-
-func mustOperation(t *testing.T, tool string) r3.MCPOperation {
-	t.Helper()
-	op, err := r3.NewMCPOperation(tool)
-	if err != nil {
-		t.Fatalf("new MCP operation %q: %v", tool, err)
-	}
-	return op
-}
-
-func mustSet(t *testing.T, tools ...string) r3.MCPOperationSet {
-	t.Helper()
-	operations := make([]r3.MCPOperation, 0, len(tools))
-	for _, tool := range tools {
-		operations = append(operations, mustOperation(t, tool))
-	}
-	set, err := r3.NewMCPOperationSet(operations...)
-	if err != nil {
-		t.Fatalf("new MCP operation set: %v", err)
-	}
-	return set
-}
-
-func mustGranted(t *testing.T, tools ...string) r3.GrantedOperations {
-	t.Helper()
-	operations := make([]r3.MCPOperation, 0, len(tools))
-	for _, tool := range tools {
-		operations = append(operations, mustOperation(t, tool))
-	}
-	granted, err := r3.NewGrantedOperations(operations...)
-	if err != nil {
-		t.Fatalf("new granted operations: %v", err)
-	}
-	return granted
 }
 
 func mustDisplay(t *testing.T, summary, implications, dataAccessed, irreversible string) r3.Display {

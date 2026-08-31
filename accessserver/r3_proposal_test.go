@@ -15,14 +15,16 @@ import (
 	aauth "aauth-go"
 	"aauth-go/jose"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/signaturekey"
 )
 
-func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testing.T) {
+func TestR3MCPProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 31, 16, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
+	registry := newAccessServerR3Registry(t)
 	providerKey := accessServerTestKey(t, "provider-key")
 	personKey := accessServerTestKey(t, "person-key")
 	resourceKey := accessServerTestKey(t, "resource-key")
@@ -50,19 +52,23 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 		t.Fatal(err)
 	}
 	account := "work-account"
-	operation, err := r3.NewMCPOperation("records.export")
+	typedOperation, err := mcp.NewOperation("records.export")
 	if err != nil {
 		t.Fatal(err)
 	}
-	filter, err := r3.NewMCPInlineParameter([]byte(`{"status":"open"}`))
+	operation, err := typedOperation.ToR3()
 	if err != nil {
 		t.Fatal(err)
 	}
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"filter": filter})
+	filter, err := r3.NewInlineParameter([]byte(`{"status":"open"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{Account: &account})
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{"filter": filter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := r3.NewProposal(operation, parameters, r3.ProposalOptions{Account: &account})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +84,8 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 		PersonServer: "https://person.example", Subject: "person-123", PresentedJTI: "person-token-1",
 		Account: &account, Tenant: "tenant-1", MissionS256: missionS256,
 	}
-	resourceToken, reference, err := r3.MintMCPProposalResourceToken(
-		resourceKey, resourceClaims,
+	resourceToken, reference, err := r3.MintProposalResourceToken(
+		registry, resourceKey, resourceClaims,
 		"https://resource.example/r3/class-looking-artifact", exactProposal,
 	)
 	if err != nil {
@@ -116,6 +122,7 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 		}, nil
 	})}
 	issuances := &r3TestIssuanceStore{onCommit: func() { sequence = append(sequence, "audit-commit") }}
+	corePolicyCalls := 0
 	classPolicyCalls := 0
 	proposalPolicyCalls := 0
 	var proposalPolicyErr error
@@ -125,10 +132,11 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 		Clock: clock, NewID: func() string { return "proposal-auth-token-1" },
 		TrustPersonServer: func(context.Context, string) error { return nil },
 		Authorize: func(context.Context, AuthorizationRequest) (Decision, error) {
-			classPolicyCalls++
-			return Decision{}, nil
+			corePolicyCalls++
+			return Decision{}, errors.New("Core policy received an R3 request")
 		},
-		MCPR3: &MCPR3Config{
+		R3: &R3Config{
+			Registry:   registry,
 			HTTPClient: httpClient,
 			Admit: func(_ context.Context, endpoint string) error {
 				sequence = append(sequence, "admit")
@@ -137,20 +145,24 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 				}
 				return nil
 			},
+			AuthorizeDocument: func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) (R3DocumentDecision, error) {
+				classPolicyCalls++
+				return R3DocumentDecision{}, nil
+			},
 			AuthorizeProposal: func(
 				_ context.Context,
 				request AuthorizationRequest,
 				gotReference r3.Reference,
-				gotProposal r3.MCPProposal,
-			) (MCPR3ProposalDecision, error) {
+				gotProposal r3.Proposal,
+			) (R3ProposalDecision, error) {
 				proposalPolicyCalls++
 				sequence = append(sequence, "proposal-policy")
 				evaluated = request
-				if gotReference != reference || gotProposal.Operation() != operation ||
+				if gotReference != reference || !accessServerOperationsEqual(t, gotProposal.Operation(), operation) ||
 					!reflect.DeepEqual(gotProposal.Parameters().Names(), []string{"filter"}) {
 					t.Fatalf("proposal policy artifact = %#v %#v", gotReference, gotProposal)
 				}
-				return MCPR3ProposalDecision{
+				return R3ProposalDecision{
 					Scopes: []string{"records.read"}, Lifetime: 30 * time.Minute,
 				}, proposalPolicyErr
 			},
@@ -183,6 +195,7 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 	reset := func() {
 		sequence = nil
 		fetchCalls = 0
+		corePolicyCalls = 0
 		classPolicyCalls = 0
 		proposalPolicyCalls = 0
 		proposalPolicyErr = nil
@@ -200,13 +213,13 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 	if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
 		t.Fatal(err)
 	}
-	claims, gotReference, gotOperation, err := r3.VerifyMCPPerCallAuthToken(
-		context.Background(), output.AuthToken, resolver, clock, reference, exactProposal,
+	claims, gotReference, gotOperation, err := r3.VerifyPerCallAuthToken(
+		context.Background(), registry, output.AuthToken, resolver, clock, reference, exactProposal,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotReference != reference || gotOperation != operation {
+	if gotReference != reference || !accessServerOperationsEqual(t, gotOperation, operation) {
 		t.Fatalf("proposal token reference/operation = %#v/%#v", gotReference, gotOperation)
 	}
 	if claims.Issuer != "https://access.example" || claims.DWK != aauth.AccessDiscoveryDocument ||
@@ -228,11 +241,11 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 	if _, present := tokenMembers["r3_per_call"]; present {
 		t.Fatal("per-call Auth token contains r3_per_call")
 	}
-	if classPolicyCalls != 0 || proposalPolicyCalls != 1 || fetchCalls != 1 ||
+	if corePolicyCalls != 0 || classPolicyCalls != 0 || proposalPolicyCalls != 1 || fetchCalls != 1 ||
 		!reflect.DeepEqual(sequence, []string{"admit", "proposal-fetch", "proposal-policy", "audit-commit"}) {
-		t.Fatalf("class/proposal/fetch/sequence = %d/%d/%d/%#v", classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
+		t.Fatalf("core/class/proposal/fetch/sequence = %d/%d/%d/%d/%#v", corePolicyCalls, classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
 	}
-	if evaluated.MCPR3 != nil || evaluated.PersonServer != "https://person.example" ||
+	if evaluated.PersonServer != "https://person.example" ||
 		evaluated.Resource != "https://resource.example" || evaluated.Subject != "person-123" ||
 		evaluated.Tenant != "tenant-1" || evaluated.MissionS256 != missionS256 ||
 		evaluated.Account == nil || *evaluated.Account != account ||
@@ -245,6 +258,7 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 	if len(records) != 1 || records[0].ExactAuthToken != output.AuthToken ||
 		records[0].AuthTokenReference != (aauth.TokenReference{Issuer: "https://access.example", JTI: "proposal-auth-token-1"}) ||
 		records[0].Resource != "https://resource.example" || records[0].R3Reference != reference ||
+		records[0].Vocabulary != mcp.URI ||
 		records[0].PersonServer != "https://person.example" || records[0].Subject != "person-123" ||
 		records[0].PresentedJTI != "person-token-1" || records[0].AgentJKT != agentJKT ||
 		records[0].Agent != "aauth:planner@provider.example" || records[0].ParentAgent != "" ||
@@ -261,19 +275,23 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 			bytes.Contains(response.Body.Bytes(), []byte("auth_token")) || len(issuances.recordsCopy()) != 0 {
 			t.Fatalf("proposal refusal = %d %s, audit %#v", response.Code, response.Body.String(), issuances.recordsCopy())
 		}
-		if classPolicyCalls != 0 || proposalPolicyCalls != 1 || fetchCalls != 1 ||
+		if corePolicyCalls != 0 || classPolicyCalls != 0 || proposalPolicyCalls != 1 || fetchCalls != 1 ||
 			!reflect.DeepEqual(sequence, []string{"admit", "proposal-fetch", "proposal-policy"}) {
-			t.Fatalf("refusal class/proposal/fetch/sequence = %d/%d/%d/%#v", classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
+			t.Fatalf("refusal core/class/proposal/fetch/sequence = %d/%d/%d/%d/%#v", corePolicyCalls, classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
 		}
 	})
 
 	t.Run("substituted proposal bytes fail before either policy", func(t *testing.T) {
 		reset()
-		otherOperation, err := r3.NewMCPOperation("records.delete")
+		otherTypedOperation, err := mcp.NewOperation("records.delete")
 		if err != nil {
 			t.Fatal(err)
 		}
-		otherProposal, err := r3.NewMCPProposal(otherOperation, parameters, r3.ProposalOptions{Account: &account})
+		otherOperation, err := otherTypedOperation.ToR3()
+		if err != nil {
+			t.Fatal(err)
+		}
+		otherProposal, err := r3.NewProposal(otherOperation, parameters, r3.ProposalOptions{Account: &account})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -287,26 +305,26 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 			bytes.Contains(response.Body.Bytes(), []byte("auth_token")) || len(issuances.recordsCopy()) != 0 {
 			t.Fatalf("proposal substitution = %d %s, audit %#v", response.Code, response.Body.String(), issuances.recordsCopy())
 		}
-		if classPolicyCalls != 0 || proposalPolicyCalls != 0 || fetchCalls != 1 ||
+		if corePolicyCalls != 0 || classPolicyCalls != 0 || proposalPolicyCalls != 0 || fetchCalls != 1 ||
 			!reflect.DeepEqual(sequence, []string{"admit", "proposal-fetch"}) {
-			t.Fatalf("substitution class/proposal/fetch/sequence = %d/%d/%d/%#v", classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
+			t.Fatalf("substitution core/class/proposal/fetch/sequence = %d/%d/%d/%d/%#v", corePolicyCalls, classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
 		}
 	})
 
 	t.Run("missing proposal policy fails closed after content classification", func(t *testing.T) {
 		reset()
-		authorizeProposal := server.mcpR3.authorizeProposal
-		server.mcpR3.authorizeProposal = nil
+		authorizeProposal := server.r3.authorizeProposal
+		server.r3.authorizeProposal = nil
 		response := call()
-		server.mcpR3.authorizeProposal = authorizeProposal
+		server.r3.authorizeProposal = authorizeProposal
 		if response.Code != http.StatusInternalServerError ||
 			!bytes.Contains(response.Body.Bytes(), []byte(`"error":"server_error"`)) ||
 			bytes.Contains(response.Body.Bytes(), []byte("auth_token")) || len(issuances.recordsCopy()) != 0 {
 			t.Fatalf("missing proposal policy = %d %s, audit %#v", response.Code, response.Body.String(), issuances.recordsCopy())
 		}
-		if classPolicyCalls != 0 || proposalPolicyCalls != 0 || fetchCalls != 1 ||
+		if corePolicyCalls != 0 || classPolicyCalls != 0 || proposalPolicyCalls != 0 || fetchCalls != 1 ||
 			!reflect.DeepEqual(sequence, []string{"admit", "proposal-fetch"}) {
-			t.Fatalf("missing policy class/proposal/fetch/sequence = %d/%d/%d/%#v", classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
+			t.Fatalf("missing policy core/class/proposal/fetch/sequence = %d/%d/%d/%d/%#v", corePolicyCalls, classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
 		}
 	})
 
@@ -331,9 +349,9 @@ func TestMCPR3ProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 			if got := len(issuances.recordsCopy()); got != failure.wantRecords {
 				t.Fatalf("proposal audit records = %d, want %d", got, failure.wantRecords)
 			}
-			if classPolicyCalls != 0 || proposalPolicyCalls != 1 || fetchCalls != 1 ||
+			if corePolicyCalls != 0 || classPolicyCalls != 0 || proposalPolicyCalls != 1 || fetchCalls != 1 ||
 				!reflect.DeepEqual(sequence, []string{"admit", "proposal-fetch", "proposal-policy", "audit-commit"}) {
-				t.Fatalf("audit failure class/proposal/fetch/sequence = %d/%d/%d/%#v", classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
+				t.Fatalf("audit failure core/class/proposal/fetch/sequence = %d/%d/%d/%d/%#v", corePolicyCalls, classPolicyCalls, proposalPolicyCalls, fetchCalls, sequence)
 			}
 		})
 	}

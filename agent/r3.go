@@ -10,14 +10,17 @@ import (
 	"aauth-go/r3"
 )
 
-func (client *Client) verifyMCPR3ResourceTokenContext(
+func (client *Client) verifyR3ResourceTokenContext(
 	ctx context.Context,
 	compact, resource string,
 	person aauth.PersonTokenClaims,
 	requestedScopes []string,
 	expectedAccount *string,
 ) (aauth.ResourceTokenClaims, r3.Reference, error) {
-	claims, reference, err := r3.VerifyMCPResourceToken(ctx, compact, client.keyResolver, client.clock)
+	if client.r3 == nil {
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, errors.New("R3 is not configured")
+	}
+	claims, reference, err := r3.VerifyResourceToken(ctx, compact, client.keyResolver, client.clock)
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, r3.Reference{}, err
 	}
@@ -55,19 +58,22 @@ func (client *Client) verifyMCPR3ResourceTokenContext(
 	return claims, reference, nil
 }
 
-func (client *Client) verifyMCPR3AuthTokenForResourceBinding(
+func (client *Client) verifyR3AuthTokenForResourceBinding(
 	ctx context.Context,
 	compact string,
 	resource aauth.ResourceTokenClaims,
 	reference r3.Reference,
 	credential personServerCredential,
 ) (aauth.AuthTokenClaims, error) {
-	claims, authReference, _, err := r3.VerifyMCPAuthTokenClaims(ctx, compact, client.keyResolver, client.clock)
+	if client.r3 == nil {
+		return aauth.AuthTokenClaims{}, errors.New("R3 is not configured")
+	}
+	claims, authReference, _, err := r3.VerifyAuthTokenClaims(ctx, client.r3.Registry, compact, client.keyResolver, client.clock)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
 	if authReference != reference {
-		return aauth.AuthTokenClaims{}, errors.New("auth token changed the MCP R3 document reference")
+		return aauth.AuthTokenClaims{}, errors.New("auth token changed the R3 document reference")
 	}
 	if err := aauth.ValidateCurrentAuthTokenContext(claims, aauth.AuthTokenContext{
 		Issuer: resource.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
@@ -93,11 +99,14 @@ func (client *Client) verifyMCPR3AuthTokenForResourceBinding(
 	return claims, nil
 }
 
-func (client *Client) verifyMCPR3AuthTokenForCall(
+func (client *Client) verifyR3AuthTokenForCall(
 	ctx context.Context,
 	compact, resource string,
 ) (aauth.AuthTokenClaims, error) {
-	claims, _, _, err := r3.VerifyMCPDirectAuthToken(ctx, compact, client.keyResolver, client.clock)
+	if client.r3 == nil {
+		return aauth.AuthTokenClaims{}, errors.New("R3 is not configured")
+	}
+	claims, _, _, err := r3.VerifyDirectAuthToken(ctx, client.r3.Registry, compact, client.keyResolver, client.clock)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}

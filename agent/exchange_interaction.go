@@ -193,7 +193,7 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 	case http.StatusAccepted:
 		defer response.Body.Close()
 		if verifiedResource.r3Reference != nil {
-			return ExchangeResult{}, fail(operation, errors.New("MCP R3 exchange interaction is not implemented"))
+			return ExchangeResult{}, fail(operation, errors.New("R3 exchange interaction is not implemented"))
 		}
 		resourceClaims := verifiedResource.claims
 		if resourceClaims.MissionS256 != "" {
@@ -366,7 +366,10 @@ func (client *Client) exchangeRequest(
 	}
 	verifiedResource := verifiedExchangeResource{}
 	if carriesR3 {
-		claims, reference, err := r3.VerifyMCPResourceToken(ctx, input.ResourceToken, client.keyResolver, client.clock)
+		if client.r3 == nil {
+			return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("R3 is not configured")
+		}
+		claims, reference, err := r3.VerifyResourceToken(ctx, input.ResourceToken, client.keyResolver, client.clock)
 		if err != nil {
 			return nil, verifiedExchangeResource{}, personServerCredential{}, err
 		}
@@ -448,7 +451,7 @@ func (client *Client) verifiedExchangeResponse(
 	}
 	var err error
 	if resource.r3Reference != nil {
-		_, err = client.verifyMCPR3AuthTokenForResourceBinding(
+		_, err = client.verifyR3AuthTokenForResourceBinding(
 			ctx, output.AuthToken, resource.claims, *resource.r3Reference, credential,
 		)
 	} else {

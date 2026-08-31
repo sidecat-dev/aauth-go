@@ -605,6 +605,67 @@ while the URI is the invocation identity.
 **Executable example:**
 `resource/r3_per_call_test.go:TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge`.
 
+## R3 operation algebra belongs to the registered vocabulary
+
+**Source:** R3, `Standard Vocabularies`, `Operations Spanning Multiple
+Definitions`, `Auth Token Extensions`, and `Resource Enforcement`.
+
+R3 uses one common `vocabulary` plus `operations` envelope, but the entries do
+not share one identifier or containment rule. The implementation therefore
+does not reduce operations to strings or compare their JSON generically. Each
+explicitly registered codec owns strict parsing, stable union, equality,
+subset, and disjointness. The root R3 model owns request, document, grant, and
+single-operation proposal cardinality. Documents, grants, proposals, and all
+four roles use that same algebra. Values from different
+vocabularies—or from independently registered implementations of the same
+URI—cannot be compared.
+
+For underspecified optional members, the current interpretations are:
+
+- AsyncAPI preserves `action` presence and value; omitted and explicit values
+  are distinct.
+- WSDL treats an omitted `service` as overlapping every same-named qualified
+  operation and refuses such an ambiguous set. Different explicit services
+  remain distinct.
+- OData preserves `methods` presence, treats methods as an order-insensitive
+  set, permits method-level narrowing and union, and refuses a same-named
+  mixture of absent and present `methods`.
+
+The standard annotation-location mechanisms use named constants. A
+third-party codec identifies its own mechanism with an absolute URI so two
+independent extensions cannot silently reuse one local label. This is only a
+capability declaration; it does not parse or enforce the annotation.
+
+These rules make authorization algebra deterministic; they do not claim that
+the draft's GraphQL, WSDL, or OData discovery identifiers are sufficient to
+build an authoritative catalog. Those source questions remain in
+`SPEC-FEEDBACK.md`.
+
+**Executable examples:**
+`r3/vocabtest/standard_contract_test.go`, the tests under `r3/vocab/`, and
+`r3/vocabulary_test.go`.
+
+## Standard R3 discovery endpoints use a bounded HTTPS URL profile
+
+**Source:** R3, `Vocabularies` and `Standard Vocabularies`.
+
+R3 makes discovery endpoints vocabulary-specific but defines no common URI
+grammar. Each registered codec therefore validates its own endpoint. The seven
+standard codecs currently require a trimmed absolute HTTPS URI with an
+authority and no userinfo or fragment; query strings are allowed. Third-party
+codecs may define another syntax.
+
+This is an implementation restriction, not complete discovery support. In
+particular, the gRPC codec accepts hosted HTTPS reflection or `.proto` URLs;
+the draft permits a reflection endpoint but does not define a portable target
+grammar. Endpoint validation does not fetch or validate an authoritative
+definition or its annotations.
+
+**Executable examples:**
+`r3/vocabulary_test.go:TestVocabularyDelegatesDiscoveryEndpointValidationToCodec`,
+`r3/vocab/standard/registry_test.go:TestEveryStandardVocabularyUsesTheHTTPSDiscoveryEndpointProfile`,
+and `r3/vocab/grpc/codec_test.go:TestDiscoveryEndpointUsesTheCurrentHTTPSURLProfile`.
+
 ## Resource-token expiry closes Auth issuance, not an issued Auth token
 
 **Source:** AAuth Core, `Auth Token Delivery`, `Deferred Delivery`, and R3

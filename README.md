@@ -47,14 +47,14 @@ stores. The programs are executable documentation, not deployment templates.
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
 | [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Deferred Person Server consent](example/psconsent) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
-| [Four-party authorization variants](example/fourparty) | Missionless Core, mission lifecycle, and immediate MCP R3 with independent consent/policy fetches, a narrowed grant, and atomic issuance audit | `go run ./example/fourparty` |
+| [Four-party authorization variants](example/fourparty) | Missionless Core, mission lifecycle, and one runnable MCP R3 path with independent consent/policy fetches, a narrowed grant, and atomic issuance audit | `go run ./example/fourparty` |
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
 | [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
 | [One chained Resource call](example/callchaining) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
 
 The integration suite also exercises
 [mission-bound four-party authorization](integration/mission_four_party_test.go),
-[immediate MCP R3 four-party authorization](integration/r3_direct_four_party_test.go),
+[immediate MCP, OpenAPI, and private-codec R3 four-party authorization](integration/r3_direct_four_party_test.go),
 [direct Person identity](integration/direct_identity_access_test.go),
 [Person-token interaction](integration/person_token_interaction_test.go), and
 both [baseline `401` and Resource-held `202` auth-token delivery](integration/core_four_party_test.go).
@@ -67,10 +67,14 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `aauth` | Core identifiers, token claims, minting, verification, and context checks |
 | `jose` | The focused Ed25519 JWK and compact-JWS profile used here |
 | `signaturekey` | HTTP request proofs, credentials, discovery, and error negotiation |
+| `r3` | Vocabulary-neutral R3 documents, proposals, grants, token claims, exact-byte references, and registered operation algebra |
+| `r3/vocab/<name>` | Strict operation-object grammar and set algebra for one standard R3 vocabulary |
+| `r3/vocab/standard` | An explicit registry containing all seven standard vocabulary codecs |
+| `r3/vocabtest` | Reusable grammar, algebra, copy-safety, and discovery contract checks for third-party codecs |
 | `agentprovider` | Agent-token issuance plus Agent Provider metadata and JWKS |
-| `agent` | Explicit Core and immediate MCP R3 calls; no hidden polling, browser use, or consequence retry |
+| `agent` | Explicit Core and R3 calls; no hidden polling, browser use, or consequence retry |
 | `personserver` | Person-token issuance, mission lifecycle, direct and R3 consent, interaction, revocation, call-chain policy, and Access Server federation |
-| `resource` | Identity, session, authorization, MCP R3 documents/enforcement, protected-call, held-invocation, and revocation behavior |
+| `resource` | Identity, session, authorization, registered R3 documents/enforcement, protected-call, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
 The root protocol package and focused JOSE and Signature-Key packages do not
@@ -115,14 +119,19 @@ person-accepted completion through both three-party and four-party
 authorization. Deferred mission actions and mission combinations with
 delegation, call chaining, held delivery, or revocation remain open.
 
-R3 now has bounded immediate four-party MCP paths for both direct grants and
-per-call proposals. The per-call path supports baseline `401` retry and
-Resource-held `202`, independent PS/AS proposal fetch, one-operation Auth
-tokens, single execution, and exact-token result replay. The other R3
-vocabularies, access annotations, durable store adapters, and independent
-implementation interoperability remain open. Bootstrap has one explicit
-executing profile; Events and Budgets remain design inputs. HTTP Signature
-Keys is implemented only to the extent required by current role paths.
+R3 has strict operation-object grammars and set algebra for all seven standard
+vocabularies. MCP and OpenAPI have bounded immediate four-party HTTP paths for
+both direct grants and per-call proposals. The per-call path supports baseline
+`401` retry and Resource-held `202`, independent PS/AS proposal fetch,
+one-operation Auth tokens, single execution, and exact-token result replay.
+The same unchanged HTTP role journeys also run against a private third-party
+codec, proving the registry extension boundary rather than only its type shape.
+Authoritative-definition parsers, annotation parsers, non-HTTP invocation
+bindings, complete discovery resolution for every vocabulary, durable store
+adapters, and independent-implementation interoperability remain open.
+Bootstrap has one explicit executing profile; Events and Budgets remain design
+inputs. HTTP Signature Keys is implemented only to the extent required by
+current role paths.
 
 The repository does not provide durable stores, key custody, TLS listeners,
 deployment infrastructure, or automatic retry policy. Applications must

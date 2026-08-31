@@ -29,7 +29,7 @@ were read; it is not an implementation or conformance claim.
 | --- | --- | --- |
 | AAuth Core | implementation-reviewed for current paths | Submitted history and executable current questions appear below; unimplemented Core areas remain evidence-pending |
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
-| R3 | implementation-reviewed for immediate four-party MCP direct-grant and per-call paths | Executing Agent, Resource, PS, and AS evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, and `AAG-F076`; example vectors, annotations, other vocabularies, and independent interop remain evidence-pending |
+| R3 | implementation-reviewed for the shared seven-vocabulary operation model and current four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, and `AAG-F076`; the seven operation codecs expose `AAG-F077` through `AAG-F081`; full discovery, annotation parsing, invocation binding, and independent interop remain evidence-pending |
 | Events | source-synchronized and architecture-mapped | No implementation-backed question yet |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
 | Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
@@ -110,6 +110,11 @@ below where evidence is ready.
 | AAG-F074 | Stable Agent `sub` does not distinguish the two key rotations | ready below |
 | AAG-F075 | Bootstrap examples use AP-internal endpoints after removing discovery | ready below |
 | AAG-F076 | R3 rationale says AS-only while the normative fetch rule requires both PS and AS | ready below with dual-role fetch evidence |
+| AAG-F077 | GraphQL introspection cannot discover client operation names | ready below with seven-vocabulary model evidence |
+| AAG-F078 | WSDL `service` plus `operation` does not identify one bound operation | ready below with vocabulary-model evidence |
+| AAG-F079 | OData method narrowing and overload identity are undefined | ready below with explicit algebra evidence |
+| AAG-F080 | AsyncAPI optional `action` has no matching rule | ready below with explicit-presence evidence |
+| AAG-F081 | Per-call parameter projection is not defined by vocabulary | ready below; execution evidence currently covers JSON-shaped HTTP calls |
 
 ## Current unsubmitted questions
 
@@ -1309,6 +1314,106 @@ entitled PS and AS, and that the Agent remains unable to fetch them?
 
 **Placement:** Add to an R3 editorial-consistency issue after checking the
 current tracker for the same stale “AS-only” sentence.
+
+### AAG-F077 — GraphQL introspection cannot discover client operation names
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `GraphQL Vocabulary`; GraphQL, `Operation Name
+Uniqueness` and `Schema Introspection`.
+
+R3 identifies a GraphQL operation by a client-authored operation name and
+type, then says an Agent discovers available operation names through schema
+introspection. GraphQL operation names belong to executable request documents;
+introspection exposes the server schema, not a registry of client documents or
+their operation names. The Go codec can validate the stated wire object, but a
+Resource cannot validate it against ordinary schema introspection as R3
+requires.
+
+**Question:** Should the identifier name a schema root field, require a
+persisted-operation registry, or define another server-owned operation
+catalog?
+
+**Placement:** Open a focused R3 vocabulary issue with an executable
+authoritative-catalog counterexample.
+
+### AAG-F078 — WSDL `service` plus `operation` does not identify one bound operation
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `WSDL Vocabulary`; WSDL 1.1, `Services, Ports, and
+Bindings` and `Port Types`.
+
+WSDL separates a service into ports, each port selects a binding, and each
+binding selects a port type. Operation names are scoped below those
+definitions. R3 supplies only `operation` and optional `service`; that pair
+cannot distinguish multiple ports or bindings under one service and does not
+name the port type used by WSDL's own element identifiers.
+
+**Question:** Should the R3 operation include the binding, port, or port type
+needed to identify the actual operation selected by the advertised WSDL?
+
+**Placement:** Open a focused R3 vocabulary issue.
+
+### AAG-F079 — OData operation narrowing and overload identity are undefined
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `OData Vocabulary`, `Operations Spanning Multiple
+Definitions`, and `Auth Token Extensions`; OData CSDL, function overloads.
+
+R3 places an HTTP `methods` array inside one OData operation, permits
+vocabulary-semantic union when composing documents, and permits an AS to
+narrow operations. It does not state whether method order matters, whether a
+grant may narrow `GET,POST` to `GET`, or how absent and present `methods`
+relate. Separately, OData functions can be overloaded by binding type and
+parameters, while R3 names only `EntitySet/FunctionName`.
+
+**Question:** Should R3 define `methods` as a set with subset/union semantics,
+and extend bound function/action identifiers enough to name one overload?
+
+**Placement:** Open a focused R3 vocabulary issue, separating method algebra
+from overload identity if the editor prefers.
+
+### AAG-F080 — AsyncAPI `action` omission has no matching rule
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `AsyncAPI Vocabulary`; AsyncAPI 3, `Operation Object`.
+
+R3 makes `action` optional, while the authoritative AsyncAPI Operation Object
+requires `send` or `receive`. R3 does not say whether an omitted action is
+filled from the discovered operation, authorizes either action, or remains a
+distinct operation value. Those interpretations produce different grant and
+proposal matching behavior.
+
+**Question:** Should omission mean “resolve the required action from the
+operationId,” or should R3 require `action` whenever the vocabulary entry is
+used for authorization?
+
+**Placement:** Add to the R3 vocabulary issue set.
+
+### AAG-F081 — Per-call parameter projection is not defined by vocabulary
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth R3, `Per-Call Proposals` and all seven standard vocabulary
+definitions.
+
+The proposal defines a JSON `parameters` object and exact digest descriptors,
+but only the MCP example maps naturally to one argument object. OpenAPI can
+have same-named path, query, header, and cookie parameters plus a body; gRPC
+and AsyncAPI may stream messages; GraphQL has document, operation selection,
+variables, and fragments; WSDL has XML/SOAP bindings and attachments. Without
+a vocabulary-specific projection, two conforming Resources can describe and
+verify the same call differently.
+
+**Question:** Should each vocabulary define a canonical parameter projection
+and retry comparison boundary, and explicitly state which streaming calls
+cannot use baseline `401` replay?
+
+**Placement:** Open a focused R3 per-call interoperability issue after the
+operation-identity questions are dispositioned.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

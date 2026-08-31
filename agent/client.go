@@ -1,5 +1,5 @@
 // Package agent implements explicit calls for the bounded AAuth Core paths and
-// the immediate and per-call MCP R3 paths. It also composes two-key Agent
+// the immediate and per-call R3 paths. It also composes two-key Agent
 // enrollment and refresh, direct identity access, Resource-managed sessions,
 // one immediate mission journey, parent-mediated sub-agents, one Resource call
 // chain, and one-shot polling of supported interactions and held invocations.
@@ -37,6 +37,14 @@ type Config struct {
 	HTTPClient         *http.Client
 	Clock              aauth.Clock
 	MaxSignedBodyBytes int64
+	// R3 explicitly enables vocabulary-neutral R3 authorization and call
+	// continuations through an immutable vocabulary allowlist.
+	R3 *R3Config
+}
+
+// R3Config supplies the operation vocabularies this Agent may interpret.
+type R3Config struct {
+	Registry r3.Registry
 }
 
 // Client performs explicit protocol calls. It does not cache, sleep, retry,
@@ -50,6 +58,7 @@ type Client struct {
 	httpClient         *http.Client
 	clock              aauth.Clock
 	maxSignedBodyBytes int64
+	r3                 *R3Config
 }
 
 type personServerCredential struct {
@@ -122,17 +131,17 @@ type PersonTokenRequest struct {
 }
 
 // AuthorizeRequest asks a Resource to issue one token for the exact directed
-// person token and either Core scopes, MCP R3 operations, or both. Account is
-// supported only with MCP R3 operations. UpstreamToken is local call-chain
+// person token and either Core scopes, R3 operations, or both. Account is
+// supported only with R3 operations. UpstreamToken is local call-chain
 // context; it is verified but is not sent to the Resource.
 type AuthorizeRequest struct {
-	Resource        string
-	PersonToken     string
-	UpstreamToken   string
-	Scopes          []string
-	Account         *string
-	MCPR3Operations *r3.MCPOperationSet
-	Header          http.Header
+	Resource      string
+	PersonToken   string
+	UpstreamToken string
+	Scopes        []string
+	Account       *string
+	R3Operations  *r3.OperationSet
+	Header        http.Header
 }
 
 // ExchangeRequest carries one exact resource token and optional request-body
@@ -182,6 +191,9 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	if config.MaxSignedBodyBytes < 0 {
 		return nil, fail(operation, errors.New("maximum signed body size must not be negative"))
 	}
+	if config.R3 != nil && config.R3.Registry.Len() == 0 {
+		return nil, fail(operation, errors.New("R3 vocabulary registry is required"))
+	}
 	httpClient := *config.HTTPClient
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return errors.New("aauth agent: HTTP redirects are not permitted")
@@ -196,12 +208,16 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	if !claims.Confirmation.JWK.Equal(config.SigningKey.PublicJWK()) {
 		return nil, fail(operation, errors.New("agent token confirmation key does not match signing key"))
 	}
-	return &Client{
+	client := &Client{
 		identifier: config.Identifier, signingKey: config.SigningKey,
 		agentToken: config.AgentToken, agentClaims: claims,
 		keyResolver: config.KeyResolver, httpClient: &httpClient, clock: config.Clock,
 		maxSignedBodyBytes: config.MaxSignedBodyBytes,
-	}, nil
+	}
+	if config.R3 != nil {
+		client.r3 = &R3Config{Registry: config.R3.Registry}
+	}
+	return client, nil
 }
 
 // PersonToken requests one resource-directed person token. It returns either a
@@ -277,8 +293,16 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if input.PersonToken == "" {
 		return "", fail(operation, errors.New("person token is required"))
 	}
-	if input.Account != nil && input.MCPR3Operations == nil {
-		return "", fail(operation, errors.New("account requires MCP R3 operations in the immediate client profile"))
+	if input.R3Operations != nil {
+		if client.r3 == nil {
+			return "", fail(operation, errors.New("R3 is not configured"))
+		}
+		if err := client.r3.Registry.ValidateOperationSet(*input.R3Operations); err != nil {
+			return "", fail(operation, fmt.Errorf("R3 operations: %w", err))
+		}
+	}
+	if input.Account != nil && input.R3Operations == nil {
+		return "", fail(operation, errors.New("account requires R3 operations in the immediate client profile"))
 	}
 	var scopes []string
 	if len(input.Scopes) > 0 {
@@ -287,7 +311,7 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 			return "", fail(operation, err)
 		}
 		scopes = validated
-	} else if input.MCPR3Operations == nil {
+	} else if input.R3Operations == nil {
 		_, err := validateScopes(input.Scopes)
 		return "", fail(operation, err)
 	}
@@ -313,17 +337,25 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if metadata.AuthorizationEndpoint == "" {
 		return "", fail(operation, errors.New("resource metadata authorization_endpoint is required"))
 	}
-	if input.MCPR3Operations != nil {
-		endpoint := metadata.R3Vocabularies[r3.MCPVocabulary]
-		if err := aauth.ValidateEndpoint(endpoint); err != nil {
-			return "", fail(operation, errors.New("resource metadata does not advertise a valid MCP R3 vocabulary endpoint"))
+	if input.R3Operations != nil {
+		uri := input.R3Operations.Vocabulary()
+		vocabulary, ok := client.r3.Registry.Vocabulary(uri)
+		if !ok {
+			return "", fail(operation, fmt.Errorf("R3 vocabulary %q is not registered", uri))
+		}
+		endpoint, advertised := metadata.R3Vocabularies[string(uri)]
+		if !advertised {
+			return "", fail(operation, fmt.Errorf("resource metadata does not advertise R3 vocabulary %q", uri))
+		}
+		if err := vocabulary.ValidateDiscoveryEndpoint(endpoint); err != nil {
+			return "", fail(operation, fmt.Errorf("resource metadata R3 discovery endpoint: %w", err))
 		}
 	}
 	body, err := json.Marshal(struct {
-		Scope        string              `json:"scope,omitempty"`
-		Account      *string             `json:"account,omitempty"`
-		R3Operations *r3.MCPOperationSet `json:"r3_operations,omitempty"`
-	}{Scope: strings.Join(scopes, " "), Account: input.Account, R3Operations: input.MCPR3Operations})
+		Scope        string           `json:"scope,omitempty"`
+		Account      *string          `json:"account,omitempty"`
+		R3Operations *r3.OperationSet `json:"r3_operations,omitempty"`
+	}{Scope: strings.Join(scopes, " "), Account: input.Account, R3Operations: input.R3Operations})
 	if err != nil {
 		return "", fail(operation, err)
 	}
@@ -361,8 +393,8 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if output.ResourceToken == "" {
 		return "", fail(operation, errors.New("response did not contain a resource token"))
 	}
-	if input.MCPR3Operations != nil {
-		if _, _, err := client.verifyMCPR3ResourceTokenContext(
+	if input.R3Operations != nil {
+		if _, _, err := client.verifyR3ResourceTokenContext(
 			ctx, output.ResourceToken, input.Resource, person, scopes, input.Account,
 		); err != nil {
 			return "", fail(operation, err)
@@ -387,7 +419,7 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	defer response.Body.Close()
 	resourceClaims := verifiedResource.claims
 	if response.StatusCode == http.StatusAccepted && verifiedResource.r3Reference != nil {
-		return "", fail(operation, errors.New("MCP R3 exchange interaction is not implemented"))
+		return "", fail(operation, errors.New("R3 exchange interaction is not implemented"))
 	}
 	if response.StatusCode == http.StatusAccepted && resourceClaims.MissionS256 != "" {
 		if err := validateUnsupportedMissionContinuation(response); err != nil {

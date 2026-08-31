@@ -47,9 +47,9 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 			return
 		}
 	}
-	var operations *r3.MCPOperationSet
+	var operations *r3.OperationSet
 	if input.R3Operations != nil {
-		validated, err := server.parseMCPR3Operations(input.R3Operations)
+		validated, err := server.parseR3Operations(input.R3Operations)
 		if err != nil {
 			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 			return
@@ -127,7 +127,7 @@ func (server *Server) issueAuthorizationResourceToken(
 	person aauth.PersonTokenClaims,
 	scopes []string,
 	account *string,
-	operations *r3.MCPOperationSet,
+	operations *r3.OperationSet,
 ) (string, error) {
 	claims, err := server.resourceTokenClaims(verifiedAt, requestKey, person, scopes, account)
 	if err != nil {
@@ -136,7 +136,7 @@ func (server *Server) issueAuthorizationResourceToken(
 	if operations == nil {
 		return aauth.MintResourceToken(server.signingKey, claims)
 	}
-	return server.issueMCPR3ResourceToken(request.Context(), claims, person, *operations)
+	return server.issueR3ResourceToken(request.Context(), claims, person, *operations)
 }
 
 func (server *Server) issueResourceToken(

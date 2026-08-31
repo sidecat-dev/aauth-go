@@ -654,9 +654,9 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	var claims aauth.AuthTokenClaims
 	if carriesR3 {
 		if call.UpstreamToken != "" {
-			return nil, fail(operation, errors.New("MCP R3 call chaining is not implemented"))
+			return nil, fail(operation, errors.New("R3 call chaining is not implemented"))
 		}
-		claims, err = client.verifyMCPR3AuthTokenForCall(ctx, call.AuthToken, resource)
+		claims, err = client.verifyR3AuthTokenForCall(ctx, call.AuthToken, resource)
 	} else {
 		claims, err = aauth.VerifyAuthToken(ctx, call.AuthToken, client.keyResolver, client.clock)
 		if err == nil && claims.Account != nil {

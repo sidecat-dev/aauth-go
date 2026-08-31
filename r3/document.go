@@ -126,20 +126,20 @@ type DocumentOptions struct {
 	Display *Display
 }
 
-// Document is a validated MCP R3 document value. It does not retain the source
-// JSON bytes used to parse it.
+// Document is a validated vocabulary-neutral R3 document value. It does not
+// retain the source JSON bytes used to parse it.
 type Document struct {
-	operationSet MCPOperationSet
+	operationSet OperationSet
 	account      *string
 	display      *Display
 }
 
-// NewDocument constructs a validated MCP R3 document.
-func NewDocument(operationSet MCPOperationSet, options DocumentOptions) (Document, error) {
-	if err := operationSet.validate(); err != nil {
+// NewDocument constructs a validated R3 document.
+func NewDocument(operationSet OperationSet, options DocumentOptions) (Document, error) {
+	if err := operationSet.value.validate(); err != nil {
 		return Document{}, fmt.Errorf("r3: invalid document operation set: %w", err)
 	}
-	document := Document{operationSet: operationSet.clone()}
+	document := Document{operationSet: OperationSet{value: operationSet.value.clone()}}
 	if options.Account != nil {
 		if !utf8.ValidString(*options.Account) {
 			return Document{}, fmt.Errorf("r3: document account must be valid UTF-8")
@@ -157,13 +157,9 @@ func NewDocument(operationSet MCPOperationSet, options DocumentOptions) (Documen
 	return document, nil
 }
 
-func (s MCPOperationSet) clone() MCPOperationSet {
-	return MCPOperationSet{operations: s.Operations()}
-}
-
 // OperationSet returns a copy of the document's exact operation set.
-func (d Document) OperationSet() MCPOperationSet {
-	return d.operationSet.clone()
+func (d Document) OperationSet() OperationSet {
+	return OperationSet{value: d.operationSet.value.clone()}
 }
 
 // Account returns the account and whether the optional member was present.
@@ -185,7 +181,7 @@ func (d Document) Display() (Display, bool) {
 
 // MarshalJSON serializes operation-set fields at the document's top level.
 func (d Document) MarshalJSON() ([]byte, error) {
-	if err := d.operationSet.validate(); err != nil {
+	if err := d.operationSet.value.validate(); err != nil {
 		return nil, fmt.Errorf("r3: invalid document operation set: %w", err)
 	}
 	if d.display != nil {
@@ -194,37 +190,33 @@ func (d Document) MarshalJSON() ([]byte, error) {
 		}
 	}
 	return json.Marshal(struct {
-		Vocabulary string         `json:"vocabulary"`
-		Operations []MCPOperation `json:"operations"`
-		Account    *string        `json:"account,omitempty"`
-		Display    *Display       `json:"display,omitempty"`
+		Vocabulary VocabularyURI     `json:"vocabulary"`
+		Operations []json.RawMessage `json:"operations"`
+		Account    *string           `json:"account,omitempty"`
+		Display    *Display          `json:"display,omitempty"`
 	}{
-		Vocabulary: MCPVocabulary,
-		Operations: d.operationSet.Operations(),
+		Vocabulary: d.operationSet.Vocabulary(),
+		Operations: cloneRawMessages(d.operationSet.value.raw),
 		Account:    d.account,
 		Display:    d.display,
 	})
 }
 
-// UnmarshalJSON accepts only the exact MCP R3 document shape.
-func (d *Document) UnmarshalJSON(data []byte) error {
-	document, err := ParseDocument(data)
-	if err != nil {
-		return err
-	}
-	*d = document
-	return nil
+// UnmarshalJSON rejects context-free parsing because the vocabulary must be
+// selected from an explicit allowlisted Registry.
+func (*Document) UnmarshalJSON([]byte) error {
+	return fmt.Errorf("r3: Document requires a vocabulary registry; use Registry.ParseDocument")
 }
 
-// ParseDocument parses a validated plain value without retaining source.
-func ParseDocument(source []byte) (Document, error) {
-	var vocabularyRaw, operationsRaw json.RawMessage
+// ParseDocument parses a validated document without retaining source bytes.
+func (registry Registry) ParseDocument(source []byte) (Document, error) {
+	var vocabulary string
+	var operationsRaw json.RawMessage
 	var account string
 	var display Display
 	seen, err := decodeStrictObject(source, map[string]func(json.RawMessage) error{
 		"vocabulary": func(raw json.RawMessage) error {
-			vocabularyRaw = append(vocabularyRaw[:0], raw...)
-			return nil
+			return decodeJSONString(raw, &vocabulary)
 		},
 		"operations": func(raw json.RawMessage) error {
 			operationsRaw = append(operationsRaw[:0], raw...)
@@ -251,7 +243,16 @@ func ParseDocument(source []byte) (Document, error) {
 	if _, ok := seen["operations"]; !ok {
 		return Document{}, fmt.Errorf("r3: document is missing operations")
 	}
-	operationSet, err := parseMCPOperationSetParts(vocabularyRaw, operationsRaw)
+	uri := VocabularyURI(vocabulary)
+	registered, ok := registry.vocabularies[uri]
+	if !ok {
+		return Document{}, fmt.Errorf("r3: vocabulary %q is not registered", uri)
+	}
+	operations, err := decodeJSONArray(operationsRaw)
+	if err != nil {
+		return Document{}, err
+	}
+	operationSet, err := newParsedOperationSet(registered, operations, setUseDocument)
 	if err != nil {
 		return Document{}, err
 	}
@@ -263,6 +264,17 @@ func ParseDocument(source []byte) (Document, error) {
 		options.Display = &display
 	}
 	return NewDocument(operationSet, options)
+}
+
+// ParseReferencedDocument binds exact bytes to reference before parsing.
+func (registry Registry) ParseReferencedDocument(reference Reference, exactBytes []byte) (Document, error) {
+	if err := reference.validate(); err != nil {
+		return Document{}, fmt.Errorf("r3: invalid reference: %w", err)
+	}
+	if Digest(exactBytes) != reference.digest {
+		return Document{}, fmt.Errorf("r3: referenced document digest mismatch")
+	}
+	return registry.ParseDocument(exactBytes)
 }
 
 // Digest returns unpadded base64url SHA-256 over the exact caller-supplied

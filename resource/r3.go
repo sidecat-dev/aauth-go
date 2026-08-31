@@ -18,66 +18,101 @@ import (
 	"aauth-go/signaturekey"
 )
 
-// MCPR3Config enables the direct-grant MCP profile on a federated Resource.
+// R3Config enables registered R3 authorization on a federated HTTP Resource.
+// Operation, document, token, and proposal semantics remain vocabulary
+// neutral; HTTP is the explicit protected-invocation binding used by Server.
 // Core-only authorization remains available when r3_operations is absent.
-type MCPR3Config struct {
-	// DiscoveryEndpoint is the Resource's one advertised MCP server URL.
-	DiscoveryEndpoint string
-	// KnownTools is an authoritative snapshot of that MCP server's tool names.
-	KnownTools []string
+type R3Config struct {
+	// Registry is the immutable allowlist used for every operation-bearing R3
+	// artifact and token claim.
+	Registry r3.Registry
+	// Vocabularies are the Resource's simultaneously advertised definitions.
+	Vocabularies []R3VocabularyConfig
 	// Documents retains exact bytes and their PS/AS fetch entitlement.
 	Documents R3DocumentStore
-	// DisplayForOperations optionally supplies the human-readable consequences
-	// that the Person Server presents during consent.
-	DisplayForOperations func(context.Context, r3.MCPOperationSet, *string) (*r3.Display, error)
-	// OperationForRequest maps a protected request to an MCP tool. A false ok
-	// identifies a Core-only route. The supplied request is an independent
-	// policy view whose body may be read without consuming the application body.
-	OperationForRequest func(*http.Request) (tool string, ok bool, err error)
+	// HTTP maps one protected HTTP request into the transport-neutral R3
+	// invocation used by authorization and proposal matching.
+	HTTP R3HTTPAdapter
 	// PerCall enables proposal-specific authorization for operations carried in
 	// r3_per_call.
-	PerCall *MCPR3PerCallConfig
+	PerCall *R3PerCallConfig
 }
 
-// MCPR3PerCallConfig supplies separate Resource-owned parameter extraction
-// and proposal-description adapters plus the focused proposal and retry
-// stores. PresentCall must depend only on the concrete request; it is reused
-// after approval and on retained-result replay. DescribeCall may consult
-// current Resource state because it runs only when creating a new proposal.
-type MCPR3PerCallConfig struct {
-	PresentCall  func(context.Context, *http.Request, r3.MCPOperation, *string) (map[string]r3.PresentedMCPParameter, error)
-	DescribeCall func(context.Context, *http.Request, r3.MCPOperation, *string) (MCPR3CallDescription, error)
+// R3HTTPAdapter is the protected-call binding used by Server. It owns only
+// HTTP request interpretation; R3 operation and parameter semantics remain in
+// the registered vocabulary and r3.Invocation.
+type R3HTTPAdapter struct {
+	// OperationForRequest maps a protected request to one registered operation.
+	// A false ok identifies a Core-only route.
+	OperationForRequest func(*http.Request) (operation r3.Operation, ok bool, err error)
+	// PresentParameters extracts concrete parameter values for one
+	// already-matched per-call operation. It runs only after class lineage has
+	// been verified and may run again for a baseline 401 retry. It must be a
+	// deterministic function of only the supplied request and operation. Both
+	// callbacks receive independent request views.
+	PresentParameters func(*http.Request, r3.Operation) (map[string]r3.PresentedParameter, error)
+}
+
+// R3VocabularyConfig binds one registered operation grammar to the
+// Resource's advertised endpoint, authoritative operation snapshot, and
+// optional consent description policy.
+type R3VocabularyConfig struct {
+	// DiscoveryEndpoint is the one endpoint advertised for this vocabulary.
+	DiscoveryEndpoint string
+	// AuthoritativeOperations is the host's validated snapshot of that
+	// endpoint's definition. Every requested and mapped operation must be a
+	// semantic subset of this value before token issuance or protected use.
+	AuthoritativeOperations r3.OperationSet
+	// DisplayForOperations optionally describes the consequences of one
+	// validated request for Person Server consent.
+	DisplayForOperations func(
+		context.Context,
+		r3.OperationSet,
+		*string,
+	) (*r3.Display, error)
+}
+
+// R3PerCallConfig supplies Resource-owned proposal description plus the
+// focused proposal and retry stores. DescribeCall may consult current
+// Resource state because it runs only when creating a new proposal, but it
+// receives the same immutable invocation later used for parameter matching.
+type R3PerCallConfig struct {
+	DescribeCall func(context.Context, r3.Invocation, *string) (R3CallDescription, error)
 	Proposals    R3ProposalStore
 	Retries      R3RetryStore
 }
 
-// MCPR3CallDescription is the Resource's proposed representation and display
-// for one concrete call. The separate PresentCall adapter supplies the exact
-// call-time values used to verify Parameters before publication.
-type MCPR3CallDescription struct {
-	Parameters r3.MCPParameters
+// R3CallDescription is the Resource's proposed representation and display
+// for one concrete call. Parameters must match the exact presented values in
+// the invocation before the proposal can be published.
+type R3CallDescription struct {
+	Parameters r3.Parameters
 	Display    *r3.ProposalDisplay
 }
 
-type mcpR3ProtectedAuthorization struct {
+type r3ProtectedAuthorization struct {
 	reference  r3.Reference
 	operations r3.AuthTokenOperations
 }
 
-func (server *Server) issueMCPR3ResourceToken(
+func (server *Server) issueR3ResourceToken(
 	ctx context.Context,
 	claims aauth.ResourceTokenClaims,
 	person aauth.PersonTokenClaims,
-	operations r3.MCPOperationSet,
+	operations r3.OperationSet,
 ) (string, error) {
+	vocabulary, ok := server.r3.vocabularies[operations.Vocabulary()]
+	if !ok {
+		return "", fmt.Errorf("aauth: R3 vocabulary %q is not configured", operations.Vocabulary())
+	}
 	var display *r3.Display
 	var err error
-	if server.mcpR3.displayForOperations != nil {
-		display, err = server.mcpR3.displayForOperations(
+	if vocabulary.displayForOperations != nil {
+		display, err = vocabulary.displayForOperations(
 			ctx, operations, cloneAuthorizationAccount(claims.Account),
 		)
 		if err != nil {
-			return "", fmt.Errorf("aauth: describe MCP R3 operations: %w", err)
+			return "", fmt.Errorf("aauth: describe R3 operations: %w", err)
 		}
 	}
 	document, err := r3.NewDocument(operations, r3.DocumentOptions{
@@ -88,10 +123,10 @@ func (server *Server) issueMCPR3ResourceToken(
 	}
 	exactJSON, err := json.Marshal(document)
 	if err != nil {
-		return "", fmt.Errorf("aauth: serialize MCP R3 document: %w", err)
+		return "", fmt.Errorf("aauth: serialize R3 document: %w", err)
 	}
-	documentURI := mcpR3DocumentURI(server.issuer, exactJSON, claims.PersonServer, claims.Audience, claims.JTI)
-	compact, reference, err := r3.MintMCPResourceToken(server.signingKey, claims, documentURI, exactJSON)
+	documentURI := r3DocumentURI(server.issuer, exactJSON, claims.PersonServer, claims.Audience, claims.JTI)
+	compact, reference, err := r3.MintResourceToken(server.r3.registry, server.signingKey, claims, documentURI, exactJSON)
 	if err != nil {
 		return "", err
 	}
@@ -106,31 +141,39 @@ func (server *Server) issueMCPR3ResourceToken(
 			PersonTokenExpiresAt: person.ExpiresAt,
 		},
 	}
-	if err := server.mcpR3.documents.Commit(ctx, record); err != nil {
-		return "", fmt.Errorf("aauth: retain MCP R3 document: %w", err)
+	if err := server.r3.documents.Commit(ctx, record); err != nil {
+		return "", fmt.Errorf("aauth: retain R3 document: %w", err)
 	}
 	return compact, nil
 }
 
-func (server *Server) parseMCPR3Operations(raw json.RawMessage) (r3.MCPOperationSet, error) {
-	if server.mcpR3 == nil {
-		return r3.MCPOperationSet{}, errors.New("aauth: request member \"r3_operations\" is not supported by this Resource")
+func (server *Server) parseR3Operations(raw json.RawMessage) (r3.OperationSet, error) {
+	if server.r3 == nil {
+		return r3.OperationSet{}, errors.New("aauth: request member \"r3_operations\" is not supported by this Resource")
 	}
-	var operations r3.MCPOperationSet
-	if err := json.Unmarshal(raw, &operations); err != nil {
-		return r3.MCPOperationSet{}, fmt.Errorf("aauth: invalid MCP r3_operations: %w", err)
+	operations, err := server.r3.registry.ParseOperationSet(raw)
+	if err != nil {
+		return r3.OperationSet{}, fmt.Errorf("aauth: invalid r3_operations: %w", err)
 	}
-	if err := operations.ValidateKnownTools(server.mcpR3.knownTools); err != nil {
-		return r3.MCPOperationSet{}, fmt.Errorf("aauth: invalid MCP r3_operations: %w", err)
+	vocabulary, ok := server.r3.vocabularies[operations.Vocabulary()]
+	if !ok {
+		return r3.OperationSet{}, fmt.Errorf("aauth: R3 vocabulary %q is not configured", operations.Vocabulary())
+	}
+	known, err := operations.IsSubsetOf(vocabulary.authoritativeOperations)
+	if err != nil {
+		return r3.OperationSet{}, fmt.Errorf("aauth: validate r3_operations: %w", err)
+	}
+	if !known {
+		return r3.OperationSet{}, errors.New("aauth: r3_operations contains an operation outside the authoritative definition")
 	}
 	return operations, nil
 }
 
-func mcpR3DocumentURI(issuer string, exactJSON []byte, personServer, accessServer, resourceTokenJTI string) string {
-	return mcpR3DocumentURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer, resourceTokenJTI)
+func r3DocumentURI(issuer string, exactJSON []byte, personServer, accessServer, resourceTokenJTI string) string {
+	return r3DocumentURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer, resourceTokenJTI)
 }
 
-func mcpR3DocumentURIFromDigest(issuer, documentDigest, personServer, accessServer, resourceTokenJTI string) string {
+func r3DocumentURIFromDigest(issuer, documentDigest, personServer, accessServer, resourceTokenJTI string) string {
 	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, accessServer})
 	entitlementDigest := sha256.Sum256(entitlementJSON)
 	lineageDigest := sha256.Sum256([]byte("aauth-r3-lineage-v1\x00" + resourceTokenJTI))
@@ -139,11 +182,11 @@ func mcpR3DocumentURIFromDigest(issuer, documentDigest, personServer, accessServ
 		base64.RawURLEncoding.EncodeToString(lineageDigest[:])
 }
 
-func mcpR3ProposalURI(issuer string, exactJSON []byte, personServer, accessServer, resourceTokenJTI string) string {
-	return mcpR3ProposalURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer, resourceTokenJTI)
+func r3ProposalURI(issuer string, exactJSON []byte, personServer, accessServer, resourceTokenJTI string) string {
+	return r3ProposalURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer, resourceTokenJTI)
 }
 
-func mcpR3ProposalURIFromDigest(issuer, proposalDigest, personServer, accessServer, resourceTokenJTI string) string {
+func r3ProposalURIFromDigest(issuer, proposalDigest, personServer, accessServer, resourceTokenJTI string) string {
 	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, accessServer})
 	entitlementDigest := sha256.Sum256(entitlementJSON)
 	lineageDigest := sha256.Sum256([]byte("aauth-r3-proposal-v1\x00" + resourceTokenJTI))
@@ -152,7 +195,7 @@ func mcpR3ProposalURIFromDigest(issuer, proposalDigest, personServer, accessServ
 		base64.RawURLEncoding.EncodeToString(lineageDigest[:])
 }
 
-func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *http.Request) {
+func (server *Server) serveR3Document(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Cache-Control", "private, no-store, no-transform")
 	response.Header().Set("Vary", "Signature-Key, Signature-Input, Signature")
 	if request.Method != http.MethodGet || request.URL.RawQuery != "" || request.URL.ForceQuery {
@@ -186,7 +229,7 @@ func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *
 	var validateArtifact func() error
 	switch {
 	case strings.HasPrefix(documentID, "c."):
-		record, err := server.mcpR3.documents.Load(request.Context(), exactURI)
+		record, err := server.r3.documents.Load(request.Context(), exactURI)
 		if err != nil {
 			if errors.Is(err, ErrR3DocumentNotFound) {
 				response.WriteHeader(http.StatusNotFound)
@@ -199,13 +242,13 @@ func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *
 		validateArtifact = func() error {
 			if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AccessServer == "" ||
 				!validR3ClassContext(record) ||
-				mcpR3DocumentURIFromDigest(
+				r3DocumentURIFromDigest(
 					server.issuer, record.Reference.Digest(), record.PersonServer, record.AccessServer,
 					record.ClassContext.ResourceToken.JTI,
 				) != exactURI {
 				return errors.New("aauth: retained R3 class context is invalid")
 			}
-			document, err := r3.ParseReferencedDocument(record.Reference, record.ExactJSON)
+			document, err := server.r3.registry.ParseReferencedDocument(record.Reference, record.ExactJSON)
 			if err != nil {
 				return fmt.Errorf("aauth: retained R3 class document: %w", err)
 			}
@@ -215,11 +258,11 @@ func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *
 			return nil
 		}
 	case strings.HasPrefix(documentID, "p."):
-		if server.mcpR3.perCall == nil {
+		if server.r3.perCall == nil {
 			response.WriteHeader(http.StatusNotFound)
 			return
 		}
-		record, err := server.mcpR3.perCall.proposals.Load(request.Context(), exactURI)
+		record, err := server.r3.perCall.proposals.Load(request.Context(), exactURI)
 		if err != nil {
 			if errors.Is(err, ErrR3ProposalNotFound) {
 				response.WriteHeader(http.StatusNotFound)
@@ -232,12 +275,12 @@ func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *
 		validateArtifact = func() error {
 			if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AccessServer == "" ||
 				record.ResourceTokenJTI == "" ||
-				mcpR3ProposalURIFromDigest(
+				r3ProposalURIFromDigest(
 					server.issuer, record.Reference.Digest(), record.PersonServer, record.AccessServer, record.ResourceTokenJTI,
 				) != exactURI {
 				return errors.New("aauth: retained R3 proposal context is invalid")
 			}
-			if _, err := r3.ParseReferencedProposal(record.Reference, record.ExactJSON); err != nil {
+			if _, err := server.r3.registry.ParseReferencedProposal(record.Reference, record.ExactJSON); err != nil {
 				return fmt.Errorf("aauth: retained R3 proposal: %w", err)
 			}
 			return nil
@@ -246,7 +289,7 @@ func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *
 		response.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if !mcpR3FetchEntitled(personServer, accessServer, issuer, discoveryDocument) {
+	if !r3FetchEntitled(personServer, accessServer, issuer, discoveryDocument) {
 		response.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -285,19 +328,19 @@ func validR3ClassContext(record R3DocumentRecord) bool {
 	return strings.HasPrefix(record.Reference.URI(), claims.Issuer+"/r3/")
 }
 
-func mcpR3FetchEntitled(personServer, accessServer, issuer, discoveryDocument string) bool {
+func r3FetchEntitled(personServer, accessServer, issuer, discoveryDocument string) bool {
 	return issuer == personServer && discoveryDocument == aauth.PersonDiscoveryDocument ||
 		issuer == accessServer && discoveryDocument == aauth.AccessDiscoveryDocument
 }
 
-func (server *Server) verifyPreparedMCPR3AuthRequest(
+func (server *Server) verifyPreparedR3AuthRequest(
 	request *http.Request,
 	prepared signaturekey.PreparedRequest,
 	compact string,
 ) (signaturekey.VerifiedRequest, aauth.AuthTokenClaims, r3.Reference, r3.AuthTokenOperations, error) {
 	verificationClock := aauth.ClockFunc(func() time.Time { return prepared.VerifiedAt() })
-	claims, reference, operations, err := r3.VerifyMCPAuthTokenClaims(
-		request.Context(), compact, server.keyResolver, verificationClock,
+	claims, reference, operations, err := r3.VerifyAuthTokenClaims(
+		request.Context(), server.r3.registry, compact, server.keyResolver, verificationClock,
 	)
 	if err != nil {
 		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, r3.Reference{}, r3.AuthTokenOperations{}, &requestTokenError{cause: err}
@@ -306,67 +349,34 @@ func (server *Server) verifyPreparedMCPR3AuthRequest(
 	return proof, claims, reference, operations, err
 }
 
-func (server *Server) mcpR3OperationForRequest(request *http.Request) (r3.MCPOperation, bool, error) {
-	if server.mcpR3 == nil {
-		return r3.MCPOperation{}, false, nil
-	}
-	policyRequest, finish, err := cloneScopePolicyRequest(request)
-	if err != nil {
-		return r3.MCPOperation{}, false, fmt.Errorf("aauth: prepare MCP route policy request: %w", err)
-	}
-	tool, mapped, policyErr := server.mcpR3.operationForRequest(policyRequest)
-	finishErr := finish()
-	if err := errors.Join(policyErr, finishErr); err != nil {
-		return r3.MCPOperation{}, false, fmt.Errorf("aauth: MCP route policy: %w", err)
-	}
-	if !mapped {
-		if tool != "" {
-			return r3.MCPOperation{}, false, errors.New("aauth: unmapped MCP route returned a tool")
-		}
-		return r3.MCPOperation{}, false, nil
-	}
-	operation, err := r3.NewMCPOperation(tool)
-	if err != nil {
-		return r3.MCPOperation{}, false, fmt.Errorf("aauth: MCP route operation: %w", err)
-	}
-	operationSet, err := r3.NewMCPOperationSet(operation)
-	if err != nil {
-		return r3.MCPOperation{}, false, err
-	}
-	if err := operationSet.ValidateKnownTools(server.mcpR3.knownTools); err != nil {
-		return r3.MCPOperation{}, false, fmt.Errorf("aauth: MCP route operation: %w", err)
-	}
-	return operation, true, nil
-}
-
-type mcpR3ReferenceKind uint8
+type r3ReferenceKind uint8
 
 const (
-	mcpR3ClassReference mcpR3ReferenceKind = iota + 1
-	mcpR3ProposalReference
+	r3ClassReference r3ReferenceKind = iota + 1
+	r3ProposalReference
 )
 
-func (server *Server) validateMCPR3ProtectedReference(
-	authorization mcpR3ProtectedAuthorization,
+func (server *Server) validateR3ProtectedReference(
+	authorization r3ProtectedAuthorization,
 	claims aauth.AuthTokenClaims,
-) (mcpR3ReferenceKind, error) {
+) (r3ReferenceKind, error) {
 	for _, candidate := range []struct {
-		kind   mcpR3ReferenceKind
+		kind   r3ReferenceKind
 		prefix string
 	}{
-		{mcpR3ClassReference, "c."},
-		{mcpR3ProposalReference, "p."},
+		{r3ClassReference, "c."},
+		{r3ProposalReference, "p."},
 	} {
-		if mcpR3ReferenceMatchesResource(
+		if r3ReferenceMatchesResource(
 			server.issuer, authorization.reference, claims.PersonServer, claims.Issuer, candidate.prefix,
 		) {
 			return candidate.kind, nil
 		}
 	}
-	return 0, errors.New("aauth: MCP R3 reference does not match this Resource and token entitlement")
+	return 0, errors.New("aauth: R3 reference does not match this Resource and token entitlement")
 }
 
-func mcpR3ReferenceMatchesResource(issuer string, reference r3.Reference, personServer, accessServer, kindPrefix string) bool {
+func r3ReferenceMatchesResource(issuer string, reference r3.Reference, personServer, accessServer, kindPrefix string) bool {
 	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, accessServer})
 	entitlementDigest := sha256.Sum256(entitlementJSON)
 	prefix := issuer + "/r3/" + kindPrefix + reference.Digest() + "." + base64.RawURLEncoding.EncodeToString(entitlementDigest[:]) + "."
@@ -378,73 +388,151 @@ func mcpR3ReferenceMatchesResource(issuer string, reference r3.Reference, person
 	return err == nil && len(decoded) == sha256.Size && base64.RawURLEncoding.EncodeToString(decoded) == lineage
 }
 
-type mcpR3Config struct {
-	discoveryEndpoint    string
-	knownTools           []string
-	documents            R3DocumentStore
-	displayForOperations func(context.Context, r3.MCPOperationSet, *string) (*r3.Display, error)
-	operationForRequest  func(*http.Request) (string, bool, error)
-	perCall              *mcpR3PerCallConfig
+type r3Config struct {
+	registry        r3.Registry
+	vocabularies    map[r3.VocabularyURI]r3VocabularyConfig
+	vocabularyOrder []r3.VocabularyURI
+	documents       R3DocumentStore
+	http            R3HTTPAdapter
+	perCall         *r3PerCallConfig
 }
 
-type mcpR3PerCallConfig struct {
-	presentCall  func(context.Context, *http.Request, r3.MCPOperation, *string) (map[string]r3.PresentedMCPParameter, error)
-	describeCall func(context.Context, *http.Request, r3.MCPOperation, *string) (MCPR3CallDescription, error)
+func (server *Server) r3OperationForRequest(request *http.Request) (r3.Operation, bool, error) {
+	if server.r3 == nil {
+		return r3.Operation{}, false, nil
+	}
+	policyRequest, finish, err := cloneScopePolicyRequest(request)
+	if err != nil {
+		return r3.Operation{}, false, fmt.Errorf("aauth: prepare R3 route policy request: %w", err)
+	}
+	operation, mapped, policyErr := server.r3.http.OperationForRequest(policyRequest)
+	if err := errors.Join(policyErr, finish()); err != nil {
+		return r3.Operation{}, false, fmt.Errorf("aauth: R3 route policy: %w", err)
+	}
+	if !mapped {
+		if operation.JSON() != nil {
+			return r3.Operation{}, false, errors.New("aauth: unmapped R3 route returned an operation")
+		}
+		return r3.Operation{}, false, nil
+	}
+	if operation.JSON() == nil {
+		return r3.Operation{}, false, errors.New("aauth: mapped R3 route returned an invalid operation")
+	}
+	operationSet, err := r3.NewOperationSet(operation)
+	if err != nil {
+		return r3.Operation{}, false, err
+	}
+	vocabulary, ok := server.r3.vocabularies[operation.Vocabulary()]
+	if !ok {
+		return r3.Operation{}, false, fmt.Errorf("aauth: mapped R3 vocabulary %q is not configured", operation.Vocabulary())
+	}
+	known, err := operationSet.IsSubsetOf(vocabulary.authoritativeOperations)
+	if err != nil {
+		return r3.Operation{}, false, fmt.Errorf("aauth: validate mapped R3 operation: %w", err)
+	}
+	if !known {
+		return r3.Operation{}, false, errors.New("aauth: mapped R3 operation is outside the authoritative definition")
+	}
+	return operation, true, nil
+}
+
+func (server *Server) r3InvocationForRequest(request *http.Request, operation r3.Operation) (r3.Invocation, error) {
+	policyRequest, finish, err := cloneScopePolicyRequest(request)
+	if err != nil {
+		return r3.Invocation{}, fmt.Errorf("aauth: prepare R3 invocation request: %w", err)
+	}
+	parameters, presentErr := server.r3.http.PresentParameters(policyRequest, operation)
+	if err := errors.Join(presentErr, finish()); err != nil {
+		return r3.Invocation{}, fmt.Errorf("aauth: R3 invocation adapter: %w", err)
+	}
+	invocation, err := r3.NewInvocation(operation, parameters)
+	if err != nil {
+		return r3.Invocation{}, fmt.Errorf("aauth: R3 invocation adapter: %w", err)
+	}
+	return invocation, nil
+}
+
+type r3VocabularyConfig struct {
+	discoveryEndpoint       string
+	authoritativeOperations r3.OperationSet
+	displayForOperations    func(context.Context, r3.OperationSet, *string) (*r3.Display, error)
+}
+
+type r3PerCallConfig struct {
+	describeCall func(context.Context, r3.Invocation, *string) (R3CallDescription, error)
 	proposals    R3ProposalStore
 	retries      R3RetryStore
 }
 
-func validateMCPR3Config(config *MCPR3Config) (*mcpR3Config, error) {
+func validateR3Config(config *R3Config) (*r3Config, error) {
 	if config == nil {
 		return nil, nil
 	}
-	if err := aauth.ValidateEndpoint(config.DiscoveryEndpoint); err != nil {
-		return nil, fmt.Errorf("aauth: Resource MCP R3 discovery endpoint: %w", err)
+	if config.Registry.Len() == 0 {
+		return nil, errors.New("aauth: Resource R3 vocabulary registry is required")
+	}
+	if len(config.Vocabularies) == 0 {
+		return nil, errors.New("aauth: Resource requires at least one R3 vocabulary")
 	}
 	if config.Documents == nil {
-		return nil, errors.New("aauth: Resource MCP R3 document store is required")
+		return nil, errors.New("aauth: Resource R3 document store is required")
 	}
-	if config.OperationForRequest == nil {
-		return nil, errors.New("aauth: Resource MCP R3 operation mapper is required")
+	if config.HTTP.OperationForRequest == nil {
+		return nil, errors.New("aauth: Resource R3 HTTP operation adapter is required")
 	}
-	operations := make([]r3.MCPOperation, len(config.KnownTools))
-	for index, tool := range config.KnownTools {
-		operation, err := r3.NewMCPOperation(tool)
-		if err != nil {
-			return nil, fmt.Errorf("aauth: Resource authoritative MCP tool %d: %w", index, err)
+	vocabularies := make(map[r3.VocabularyURI]r3VocabularyConfig, len(config.Vocabularies))
+	order := make([]r3.VocabularyURI, len(config.Vocabularies))
+	for index, candidate := range config.Vocabularies {
+		if err := config.Registry.ValidateOperationSet(candidate.AuthoritativeOperations); err != nil {
+			return nil, fmt.Errorf("aauth: Resource R3 authoritative operations: %w", err)
 		}
-		operations[index] = operation
+		uri := candidate.AuthoritativeOperations.Vocabulary()
+		registered, _ := config.Registry.Vocabulary(uri)
+		if _, duplicate := vocabularies[uri]; duplicate {
+			return nil, fmt.Errorf("aauth: duplicate Resource R3 vocabulary %q", uri)
+		}
+		known := candidate.AuthoritativeOperations.Operations()
+		if len(known) == 0 {
+			return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q requires authoritative operations", uri)
+		}
+		for operationIndex, operation := range known {
+			if operation.JSON() == nil {
+				return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q operation %d is invalid", uri, operationIndex)
+			}
+		}
+		if err := registered.ValidateDiscoveryEndpoint(candidate.DiscoveryEndpoint); err != nil {
+			return nil, fmt.Errorf("aauth: Resource R3 vocabulary %q discovery endpoint: %w", uri, err)
+		}
+		vocabularies[uri] = r3VocabularyConfig{
+			discoveryEndpoint:       candidate.DiscoveryEndpoint,
+			authoritativeOperations: candidate.AuthoritativeOperations,
+			displayForOperations:    candidate.DisplayForOperations,
+		}
+		order[index] = uri
 	}
-	if _, err := r3.NewMCPOperationSet(operations...); err != nil {
-		return nil, fmt.Errorf("aauth: Resource authoritative MCP tools: %w", err)
-	}
-	var perCall *mcpR3PerCallConfig
+	var perCall *r3PerCallConfig
 	if config.PerCall != nil {
-		if config.PerCall.PresentCall == nil {
-			return nil, errors.New("aauth: Resource MCP R3 per-call parameter adapter is required")
+		if config.HTTP.PresentParameters == nil {
+			return nil, errors.New("aauth: Resource R3 HTTP parameter adapter is required for per-call authorization")
 		}
 		if config.PerCall.DescribeCall == nil {
-			return nil, errors.New("aauth: Resource MCP R3 per-call description adapter is required")
+			return nil, errors.New("aauth: Resource R3 per-call description adapter is required")
 		}
 		if config.PerCall.Proposals == nil {
-			return nil, errors.New("aauth: Resource MCP R3 proposal store is required")
+			return nil, errors.New("aauth: Resource R3 proposal store is required")
 		}
 		if config.PerCall.Retries == nil {
-			return nil, errors.New("aauth: Resource MCP R3 retry store is required")
+			return nil, errors.New("aauth: Resource R3 retry store is required")
 		}
-		perCall = &mcpR3PerCallConfig{
-			presentCall:  config.PerCall.PresentCall,
+		perCall = &r3PerCallConfig{
 			describeCall: config.PerCall.DescribeCall,
 			proposals:    config.PerCall.Proposals,
 			retries:      config.PerCall.Retries,
 		}
 	}
-	return &mcpR3Config{
-		discoveryEndpoint:    config.DiscoveryEndpoint,
-		knownTools:           append([]string(nil), config.KnownTools...),
-		documents:            config.Documents,
-		displayForOperations: config.DisplayForOperations,
-		operationForRequest:  config.OperationForRequest,
-		perCall:              perCall,
+	return &r3Config{
+		registry: config.Registry, vocabularies: vocabularies,
+		vocabularyOrder: order, documents: config.Documents,
+		http: config.HTTP, perCall: perCall,
 	}, nil
 }

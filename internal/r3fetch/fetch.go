@@ -1,4 +1,4 @@
-// Package r3fetch performs one bounded, role-authenticated R3 document fetch.
+// Package r3fetch performs one bounded, role-authenticated R3 artifact fetch.
 package r3fetch
 
 import (
@@ -24,6 +24,7 @@ const (
 
 // Config supplies one Person Server or Access Server document-fetch identity.
 type Config struct {
+	Registry             r3.Registry
 	HTTPClient           *http.Client
 	SigningKey           jose.SigningKey
 	Issuer               string
@@ -36,6 +37,7 @@ type Config struct {
 
 // Client fetches exact documents as one configured server role.
 type Client struct {
+	registry             r3.Registry
 	httpClient           *http.Client
 	signingKey           jose.SigningKey
 	issuer               string
@@ -44,49 +46,6 @@ type Client struct {
 	admit                signaturekey.EgressAdmitter
 	maximumDocumentBytes int64
 	timeout              time.Duration
-}
-
-type artifactKind uint8
-
-const (
-	artifactInvalid artifactKind = iota
-	artifactDocument
-	artifactProposal
-)
-
-// Artifact is one exact fetched R3 class document or per-call proposal. Its
-// accessors are mutually exclusive; callers cannot construct or retag it.
-type Artifact struct {
-	kind     artifactKind
-	document r3.Document
-	proposal r3.MCPProposal
-	exact    []byte
-}
-
-// Document returns the strict class document when this artifact contains one.
-func (artifact Artifact) Document() (r3.Document, bool) {
-	if artifact.kind != artifactDocument {
-		return r3.Document{}, false
-	}
-	return artifact.document, true
-}
-
-// Proposal returns the strict per-call proposal when this artifact contains
-// one.
-func (artifact Artifact) Proposal() (r3.MCPProposal, bool) {
-	if artifact.kind != artifactProposal {
-		return r3.MCPProposal{}, false
-	}
-	return artifact.proposal, true
-}
-
-// ExactBytes returns an owned copy of the bytes bound to the artifact's
-// reference digest.
-func (artifact Artifact) ExactBytes() []byte {
-	if artifact.kind != artifactDocument && artifact.kind != artifactProposal {
-		return nil
-	}
-	return append([]byte(nil), artifact.exact...)
 }
 
 type documentError struct{ cause error }
@@ -106,6 +65,9 @@ func invalidDocument(cause error) error { return &documentError{cause: cause} }
 
 // New constructs a bounded client and disables HTTP redirects.
 func New(config Config) (*Client, error) {
+	if config.Registry.Len() == 0 {
+		return nil, errors.New("r3fetch: vocabulary registry is required")
+	}
 	if config.HTTPClient == nil {
 		return nil, errors.New("r3fetch: HTTP client is required")
 	}
@@ -145,17 +107,11 @@ func New(config Config) (*Client, error) {
 		return http.ErrUseLastResponse
 	}
 	return &Client{
-		httpClient: &httpClient, signingKey: config.SigningKey,
+		registry: config.Registry, httpClient: &httpClient, signingKey: config.SigningKey,
 		issuer: config.Issuer, discoveryDocument: config.DiscoveryDocument,
 		clock: config.Clock, admit: config.Admit,
 		maximumDocumentBytes: maximumDocumentBytes, timeout: timeout,
 	}, nil
-}
-
-// Fetch retrieves and strictly parses an exact referenced class document.
-// It is the concise spelling retained for existing class-document callers.
-func (client *Client) Fetch(ctx context.Context, reference r3.Reference) (r3.Document, []byte, error) {
-	return client.FetchDocument(ctx, reference)
 }
 
 // FetchDocument retrieves and strictly parses an exact referenced class
@@ -165,7 +121,7 @@ func (client *Client) FetchDocument(ctx context.Context, reference r3.Reference)
 	if err != nil {
 		return r3.Document{}, nil, err
 	}
-	document, err := r3.ParseReferencedDocument(reference, exact)
+	document, err := client.registry.ParseReferencedDocument(reference, exact)
 	if err != nil {
 		return r3.Document{}, nil, invalidDocument(fmt.Errorf("r3fetch: verify document: %w", err))
 	}
@@ -174,14 +130,14 @@ func (client *Client) FetchDocument(ctx context.Context, reference r3.Reference)
 
 // FetchProposal retrieves and strictly parses an exact referenced per-call
 // proposal.
-func (client *Client) FetchProposal(ctx context.Context, reference r3.Reference) (r3.MCPProposal, []byte, error) {
+func (client *Client) FetchProposal(ctx context.Context, reference r3.Reference) (r3.Proposal, []byte, error) {
 	exact, err := client.fetchExact(ctx, reference)
 	if err != nil {
-		return r3.MCPProposal{}, nil, err
+		return r3.Proposal{}, nil, err
 	}
-	proposal, err := r3.ParseReferencedProposal(reference, exact)
+	proposal, err := client.registry.ParseReferencedProposal(reference, exact)
 	if err != nil {
-		return r3.MCPProposal{}, nil, invalidDocument(fmt.Errorf("r3fetch: verify proposal: %w", err))
+		return r3.Proposal{}, nil, invalidDocument(fmt.Errorf("r3fetch: verify proposal: %w", err))
 	}
 	return proposal, exact, nil
 }
@@ -189,26 +145,16 @@ func (client *Client) FetchProposal(ctx context.Context, reference r3.Reference)
 // FetchArtifact retrieves the reference once and classifies the exact bytes as
 // one strict class document or one strict per-call proposal. Classification is
 // based only on the artifact shape, never on its URI.
-func (client *Client) FetchArtifact(ctx context.Context, reference r3.Reference) (Artifact, error) {
+func (client *Client) FetchArtifact(ctx context.Context, reference r3.Reference) (r3.ReferencedArtifact, error) {
 	exact, err := client.fetchExact(ctx, reference)
 	if err != nil {
-		return Artifact{}, err
+		return r3.ReferencedArtifact{}, err
 	}
-	document, documentErr := r3.ParseReferencedDocument(reference, exact)
-	proposal, proposalErr := r3.ParseReferencedProposal(reference, exact)
-	switch {
-	case documentErr == nil && proposalErr != nil:
-		return Artifact{kind: artifactDocument, document: document, exact: append([]byte(nil), exact...)}, nil
-	case proposalErr == nil && documentErr != nil:
-		return Artifact{kind: artifactProposal, proposal: proposal, exact: append([]byte(nil), exact...)}, nil
-	case documentErr == nil && proposalErr == nil:
-		return Artifact{}, invalidDocument(errors.New("r3fetch: fetched artifact matches both a class document and a per-call proposal"))
-	default:
-		return Artifact{}, invalidDocument(fmt.Errorf(
-			"r3fetch: fetched artifact is neither a class document nor a per-call proposal: document: %v; proposal: %v",
-			documentErr, proposalErr,
-		))
+	artifact, err := client.registry.ParseReferencedArtifact(reference, exact)
+	if err != nil {
+		return r3.ReferencedArtifact{}, invalidDocument(fmt.Errorf("r3fetch: verify artifact: %w", err))
 	}
+	return artifact, nil
 }
 
 // fetchExact performs the one common signed, bounded transport operation. The

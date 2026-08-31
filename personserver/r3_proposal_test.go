@@ -15,14 +15,16 @@ import (
 	aauth "aauth-go"
 	"aauth-go/jose"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/signaturekey"
 )
 
-func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *testing.T) {
+func TestFederatedR3MCPProposalUsesDistinctConsentAndVerifiesExactResult(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 31, 16, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
+	registry := newPersonServerR3Registry(t)
 	personTokenExpiresAt := now.Add(time.Minute)
 	personRetainUntil := personTokenExpiresAt.Add(
 		DefaultMaximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime,
@@ -54,15 +56,19 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 		t.Fatal(err)
 	}
 	account := "work-account"
-	operation, err := r3.NewMCPOperation("records.export")
+	typedOperation, err := mcp.NewOperation("records.export")
 	if err != nil {
 		t.Fatal(err)
 	}
-	filter, err := r3.NewMCPInlineParameter([]byte(`{"status":"open"}`))
+	operation, err := typedOperation.ToR3()
 	if err != nil {
 		t.Fatal(err)
 	}
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"filter": filter})
+	filter, err := r3.NewInlineParameter([]byte(`{"status":"open"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{"filter": filter})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +82,7 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{
+	proposal, err := r3.NewProposal(operation, parameters, r3.ProposalOptions{
 		Account: &account, Display: &proposalDisplay,
 	})
 	if err != nil {
@@ -93,8 +99,8 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 		PersonServer: "https://person.example", Subject: "person-123", PresentedJTI: "person-token-1",
 		Account: &account, Tenant: "tenant-1",
 	}
-	resourceToken, reference, err := r3.MintMCPProposalResourceToken(
-		resourceKey, resourceClaims, "https://resource.example/r3/proposal-1", exactProposal,
+	resourceToken, reference, err := r3.MintProposalResourceToken(
+		registry, resourceKey, resourceClaims, "https://resource.example/r3/proposal-1", exactProposal,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +112,7 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 		Account: &account, Tenant: "tenant-1", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix(),
 	}
-	authToken, err := r3.MintMCPPerCallAuthToken(accessKey, authClaims, reference, exactProposal)
+	authToken, err := r3.MintPerCallAuthToken(registry, accessKey, authClaims, reference, exactProposal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,16 +194,17 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 			coreConsentCalls++
 			return nil
 		},
-		MCPR3: &MCPR3Config{
-			Admit: func(context.Context, string) error { return nil },
-			Consent: func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) error {
+		R3: &R3Config{
+			Registry: registry,
+			Admit:    func(context.Context, string) error { return nil },
+			ConsentDocument: func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) error {
 				classConsentCalls++
 				return nil
 			},
-			ConsentProposal: func(_ context.Context, request AuthorizationRequest, gotReference r3.Reference, gotProposal r3.MCPProposal) error {
+			ConsentProposal: func(_ context.Context, request AuthorizationRequest, gotReference r3.Reference, gotProposal r3.Proposal) error {
 				sequence = append(sequence, "proposal-consent")
 				consentRequest = request
-				if gotReference != reference || gotProposal.Operation() != operation ||
+				if gotReference != reference || !personServerOperationsEqual(t, gotProposal.Operation(), operation) ||
 					!reflect.DeepEqual(gotProposal.Parameters().Names(), []string{"filter"}) {
 					t.Fatalf("proposal consent = %#v %#v", gotReference, gotProposal)
 				}
@@ -256,7 +263,11 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 	}
 	proposalConsentErr = nil
 
-	otherOperation, err := r3.NewMCPOperation("records.delete")
+	otherTypedOperation, err := mcp.NewOperation("records.delete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherOperation, err := otherTypedOperation.ToR3()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,21 +275,21 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedReferenceToken, err := r3.MintMCPPerCallAuthToken(accessKey, authClaims, wrongReference, exactProposal)
+	changedReferenceToken, err := r3.MintPerCallAuthToken(registry, accessKey, authClaims, wrongReference, exactProposal)
 	if err != nil {
 		t.Fatal(err)
 	}
 	changedSubjectClaims := authClaims
 	changedSubjectClaims.JTI = "changed-subject"
 	changedSubjectClaims.Subject = "person-other"
-	changedSubjectToken, err := r3.MintMCPPerCallAuthToken(accessKey, changedSubjectClaims, reference, exactProposal)
+	changedSubjectToken, err := r3.MintPerCallAuthToken(registry, accessKey, changedSubjectClaims, reference, exactProposal)
 	if err != nil {
 		t.Fatal(err)
 	}
 	changedTenantClaims := authClaims
 	changedTenantClaims.JTI = "changed-tenant"
 	changedTenantClaims.Tenant = "tenant-other"
-	changedTenantToken, err := r3.MintMCPPerCallAuthToken(accessKey, changedTenantClaims, reference, exactProposal)
+	changedTenantToken, err := r3.MintPerCallAuthToken(registry, accessKey, changedTenantClaims, reference, exactProposal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +297,7 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 	changedKeyClaims := authClaims
 	changedKeyClaims.JTI = "changed-key"
 	changedKeyClaims.Confirmation = aauth.Confirmation{JWK: otherAgentKey.PublicJWK()}
-	changedKeyToken, err := r3.MintMCPPerCallAuthToken(accessKey, changedKeyClaims, reference, exactProposal)
+	changedKeyToken, err := r3.MintPerCallAuthToken(registry, accessKey, changedKeyClaims, reference, exactProposal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,18 +305,18 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 	changedAccountClaims := authClaims
 	changedAccountClaims.JTI = "changed-account"
 	changedAccountClaims.Account = &otherAccount
-	changedAccountToken := mintRawMCPAuthTokenForTest(
-		t, accessKey, changedAccountClaims, reference, []r3.MCPOperation{operation}, nil,
+	changedAccountToken := mintRawR3AuthTokenForTest(
+		t, accessKey, changedAccountClaims, reference, []r3.Operation{operation}, nil,
 	)
 	changedOperationClaims := authClaims
 	changedOperationClaims.JTI = "changed-operation"
-	changedOperationToken := mintRawMCPAuthTokenForTest(
-		t, accessKey, changedOperationClaims, reference, []r3.MCPOperation{otherOperation}, nil,
+	changedOperationToken := mintRawR3AuthTokenForTest(
+		t, accessKey, changedOperationClaims, reference, []r3.Operation{otherOperation}, nil,
 	)
 	perCallClaims := authClaims
 	perCallClaims.JTI = "continued-per-call"
-	continuedPerCallToken := mintRawMCPAuthTokenForTest(
-		t, accessKey, perCallClaims, reference, []r3.MCPOperation{operation}, []r3.MCPOperation{},
+	continuedPerCallToken := mintRawR3AuthTokenForTest(
+		t, accessKey, perCallClaims, reference, []r3.Operation{operation}, []r3.Operation{},
 	)
 	for _, invalid := range []struct {
 		name  string
@@ -338,8 +349,8 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 	missingLineageClaims := resourceClaims
 	missingLineageClaims.JTI = "proposal-resource-token-missing-lineage"
 	missingLineageClaims.PresentedJTI = "person-token-missing"
-	resourceToken, _, err = r3.MintMCPProposalResourceToken(
-		resourceKey, missingLineageClaims, reference.URI(), exactProposal,
+	resourceToken, _, err = r3.MintProposalResourceToken(
+		registry, resourceKey, missingLineageClaims, reference.URI(), exactProposal,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -351,23 +362,27 @@ func TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult(t *test
 	}
 }
 
-func TestMCPR3ProposalFailsClosedWithoutProposalConsentPolicy(t *testing.T) {
+func TestR3ProposalFailsClosedWithoutProposalConsentPolicy(t *testing.T) {
 	classConsentCalls := 0
-	server := &Server{mcpR3: &mcpR3Config{
-		consent: func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) error {
+	server := &Server{r3: &r3Config{
+		consentDocument: func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) error {
 			classConsentCalls++
 			return nil
 		},
 	}}
-	operation, err := r3.NewMCPOperation("records.export")
+	typedOperation, err := mcp.NewOperation("records.export")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{})
+	operation, err := typedOperation.ToR3()
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{})
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := r3.NewProposal(operation, parameters, r3.ProposalOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,24 +390,24 @@ func TestMCPR3ProposalFailsClosedWithoutProposalConsentPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = server.consentMCPR3(context.Background(), AuthorizationRequest{}, &verifiedMCPR3{
-		reference: reference, proposal: proposal, kind: mcpR3ArtifactProposal,
+	err = server.consentR3(context.Background(), AuthorizationRequest{}, &verifiedR3{
+		reference: reference, proposal: proposal, kind: r3.ArtifactProposal,
 	})
 	if err == nil || classConsentCalls != 0 {
 		t.Fatalf("proposal consent error/class calls = %v/%d", err, classConsentCalls)
 	}
 }
 
-func mintRawMCPAuthTokenForTest(
+func mintRawR3AuthTokenForTest(
 	t *testing.T,
 	key jose.SigningKey,
 	claims aauth.AuthTokenClaims,
 	reference r3.Reference,
-	granted []r3.MCPOperation,
-	perCall []r3.MCPOperation,
+	granted []r3.Operation,
+	perCall []r3.Operation,
 ) string {
 	t.Helper()
-	grantedOperations, err := r3.NewGrantedOperations(granted...)
+	grantedOperations, err := r3.NewGrantedOperations(mcp.Vocabulary(), granted...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +429,7 @@ func mintRawMCPAuthTokenForTest(
 		"r3_granted": grantedJSON,
 	}
 	if perCall != nil {
-		operations, err := r3.NewGrantedOperations(perCall...)
+		operations, err := r3.NewGrantedOperations(mcp.Vocabulary(), perCall...)
 		if err != nil {
 			t.Fatal(err)
 		}

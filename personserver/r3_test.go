@@ -14,14 +14,16 @@ import (
 
 	aauth "aauth-go"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/signaturekey"
 )
 
-func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *testing.T) {
+func TestFederatedR3MCPClassFetchesBeforeConsentAndVerifiesAccessServerResult(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 31, 9, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
+	registry := newPersonServerR3Registry(t)
 	providerKey := personServerTestKey(t, "provider-key")
 	personKey := personServerTestKey(t, "person-key")
 	resourceKey := personServerTestKey(t, "resource-key")
@@ -48,9 +50,11 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 		t.Fatal(err)
 	}
 	account := "work-account"
-	read, _ := r3.NewMCPOperation("records.read")
-	export, _ := r3.NewMCPOperation("records.export")
-	operationSet, _ := r3.NewMCPOperationSet(read, export)
+	readMCP, _ := mcp.NewOperation("records.read")
+	exportMCP, _ := mcp.NewOperation("records.export")
+	read, _ := readMCP.ToR3()
+	export, _ := exportMCP.ToR3()
+	operationSet, _ := mcp.NewOperationSet(readMCP, exportMCP)
 	display, _ := r3.NewDisplay("Read and export records", "Exports may leave the system", "Record contents", "Exported copies cannot be recalled")
 	document, _ := r3.NewDocument(operationSet, r3.DocumentOptions{Account: &account, Display: &display})
 	exactDocument, _ := json.Marshal(document)
@@ -62,15 +66,15 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 		PersonServer: "https://person.example", Subject: "person-123", PresentedJTI: "person-token-1",
 		Account: &account, Tenant: "tenant-1",
 	}
-	resourceToken, _, err := r3.MintMCPResourceToken(resourceKey, resourceClaims, reference.URI(), exactDocument)
+	resourceToken, _, err := r3.MintResourceToken(registry, resourceKey, resourceClaims, reference.URI(), exactDocument)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantedOperations, _ := r3.NewGrantedOperations(read)
+	grantedOperations, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
 	grant, _ := r3.NewGrant(grantedOperations, document)
-	perCallOperations, _ := r3.NewGrantedOperations(export)
+	perCallOperations, _ := r3.NewGrantedOperations(mcp.Vocabulary(), export)
 	classAuthorization, _ := r3.NewAuthorization(grantedOperations, perCallOperations, document)
-	authToken, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+	authToken, err := r3.MintAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-token-1",
 		PersonServer: "https://person.example", Subject: "person-123", Scope: "records.read",
@@ -158,17 +162,18 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 			coreConsentCalls++
 			return nil
 		},
-		MCPR3: &MCPR3Config{
+		R3: &R3Config{
+			Registry: registry,
 			Admit: func(_ context.Context, endpoint string) error {
 				if endpoint != reference.URI() {
 					t.Fatalf("admitted endpoint = %q", endpoint)
 				}
 				return nil
 			},
-			Consent: func(_ context.Context, request AuthorizationRequest, gotReference r3.Reference, gotDocument r3.Document) error {
+			ConsentDocument: func(_ context.Context, request AuthorizationRequest, gotReference r3.Reference, gotDocument r3.Document) error {
 				sequence = append(sequence, "consent")
 				consentRequest = request
-				if gotReference != reference || !gotDocument.OperationSet().Equal(operationSet) {
+				if gotReference != reference || !personServerOperationSetsEqual(t, gotDocument.OperationSet(), operationSet) {
 					t.Fatalf("R3 consent = %#v %#v", gotReference, gotDocument)
 				}
 				gotDisplay, ok := gotDocument.Display()
@@ -214,7 +219,7 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 		t.Fatalf("consent request = %#v", consentRequest)
 	}
 
-	resourceToken, _, err = r3.MintMCPResourceToken(resourceKey, aauth.ResourceTokenClaims{
+	resourceToken, _, err = r3.MintResourceToken(registry, resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
 		Audience: "https://access.example", JTI: "scopeless-resource-token", AgentJKT: agentJKT,
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
@@ -224,7 +229,7 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	authToken, err = r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	authToken, err = r3.MintDirectAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "scopeless-auth-token",
 		PersonServer: "https://person.example", Subject: "person-123",
@@ -259,7 +264,7 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 		t.Fatal(err)
 	}
 	wrongReference, _ := r3.NewReference("https://resource.example/r3/other", reference.Digest())
-	wrongReferenceToken, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	wrongReferenceToken, err := r3.MintDirectAuthToken(registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "wrong-reference-auth-token",
 		PersonServer: "https://person.example", Subject: "person-123",
@@ -317,4 +322,31 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 	if response.Code != http.StatusInternalServerError || !reflect.DeepEqual(sequence, []string{"resource-fetch"}) {
 		t.Fatalf("fetch failure = %d %s, sequence %#v", response.Code, response.Body.String(), sequence)
 	}
+}
+
+func newPersonServerR3Registry(t *testing.T) r3.Registry {
+	t.Helper()
+	registry, err := r3.NewRegistry(mcp.Vocabulary())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func personServerOperationSetsEqual(t *testing.T, left, right r3.OperationSet) bool {
+	t.Helper()
+	equal, err := left.Equal(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return equal
+}
+
+func personServerOperationsEqual(t *testing.T, left, right r3.Operation) bool {
+	t.Helper()
+	equal, err := left.Equal(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return equal
 }

@@ -43,15 +43,14 @@ type R3ProposalRecord struct {
 	AccessServer     string
 	ResourceTokenJTI string
 	ClassReference   r3.Reference
-	RetainUntil      time.Time
 }
 
 // R3ProposalStore durably and confidentially retains exact proposal bytes
 // before their Resource token becomes observable. Commit atomically creates a
 // new record and returns ErrR3ProposalConflict whenever the URI already exists,
-// including an exact repeat. Load returns an independent copy and must remain
-// available through RetainUntil; the fetch-only record may be pruned after
-// that instant because derivative retry or held custody owns later replay.
+// including an exact repeat. Load returns an independent copy. Exact proposal
+// bytes remain fetchable indefinitely: Auth-token audit provenance retains
+// only their URI and digest, and both PS and AS rely on later re-fetch.
 type R3ProposalStore interface {
 	Commit(context.Context, R3ProposalRecord) error
 	Load(context.Context, string) (R3ProposalRecord, error)
@@ -61,11 +60,12 @@ type R3ProposalStore interface {
 // 401 retry. ExpiresAt is the proposal Resource-token expiry; CompletionUntil
 // is the bounded latest first use of an Auth token issued before ExpiresAt.
 // The mutable state keyed by Reference is distinct from immutable proposal
-// bytes that may share a content digest with another invocation.
+// bytes that may share a content digest with another invocation. ExactProposal
+// is the sole durable operation representation and is parsed through the
+// Resource's current registry after Load.
 type R3RetryInvocation struct {
 	Reference       r3.Reference
 	ClassReference  r3.Reference
-	Operation       r3.MCPOperation
 	ResourceToken   string
 	ExactProposal   []byte
 	RequiredScopes  []string

@@ -61,10 +61,10 @@ authenticated client. The endpoint paths, JSON envelopes, replay rule, and
 policy errors are documented implementation choices because Bootstrap does
 not standardize them.
 
-The target model expands those packages and adds `r3`, `budgets`, and `events`.
-Sections below define the target ownership contract. Planned packages use a
-dashed border in the graph; present-tense support must never be inferred from
-this target map.
+The target model expands those packages and adds `budgets` and `events` around
+the current `r3` package. Sections below define the target ownership contract.
+Planned packages use a dashed border in the graph; present-tense support must
+never be inferred from this target map.
 
 ## Package graph
 
@@ -124,7 +124,7 @@ flowchart TD
     examples --> as
 
     classDef planned stroke-dasharray: 6 4
-    class r3,budgets,events planned
+    class budgets,events planned
 ```
 
 Private packages may provide strict JSON, bounded HTTP, and test helpers.
@@ -207,17 +207,23 @@ turns a valid signature into authorization.
 
 ### `r3`
 
-The current `r3` package owns the implemented pure MCP direct-grant semantics:
+The current `r3` package is the vocabulary-neutral R3 value layer:
 
-- MCP vocabulary operations and exact-set validation.
-- R3 document, display, reference, and direct-grant values.
-- Exact-byte document identity and parameter digest comparison.
-- Operation membership and direct-grant matching.
+- An explicit immutable registry with no global registration side effects.
+- Strict document, proposal, display, parameter, reference, grant, and
+  authorization values.
+- Exact-byte artifact identity and structural-or-digest parameter matching.
+- Adapter-owned operation union, equality, subset, and disjointness.
+- A small copy-safe invocation value containing only one registered operation
+  and its presented parameters.
 - Strict Resource- and Auth-token R3 claim extensions.
 
-The target adds the other standard and third-party vocabularies, access
-annotations, and per-call proposal/result values without changing that
-ownership boundary.
+The seven standard operation grammars live under `r3/vocab/`; third-party
+vocabularies implement the same typed codec contract. Each codec also declares
+its annotation-encoding capability, including an absolute-URI identifier for a
+third-party mechanism. Full authoritative-definition parsing, annotation
+parsing, and non-HTTP invocation binding remain separate work; an exported
+grammar is not a claim that those paths execute.
 
 It does not fetch documents, decide policy, retain proposals, execute calls,
 or write AS audit records. Those consequences belong to the participating
@@ -305,11 +311,12 @@ where another exchange is required. The caller decides whether and when to
 continue. A higher-level helper may drive a complete journey, but it is built
 from the same explicit steps and exposes its progress.
 
-The current immediate MCP R3 path is explicit at the Agent boundary. The
-caller supplies a typed operation set and optional account, receives and
-verifies the Resource token, presents its exact compact form to the Person
-Server, verifies the returned direct-grant Auth token, and signs the protected
-call. R3 documents remain opaque to the Agent.
+The current R3 path is explicit at the Agent boundary. The caller supplies a
+registered operation set and optional account, receives and verifies the
+Resource token, presents its exact compact form to the Person Server, verifies
+the returned Auth token, and chooses whether to begin, retry, or poll one HTTP
+call. Each method performs one network consequence. R3 documents remain opaque
+to the Agent.
 
 ### `personserver`
 
@@ -319,12 +326,12 @@ authorization, and PS-to-AS federation. Its policy inputs receive verified
 Core and companion values in source terminology. Mission approval stores the
 exact approved bytes before returning their digest.
 
-For immediate MCP R3, the Person Server independently fetches the exact
-Resource document after local token and person-lineage checks. A dedicated
-consent callback receives the ordinary Core context plus the typed reference
-and document. The Person Server forwards the original compact tokens to the
-Access Server and verifies the returned reference, account, and grant against
-the document it fetched.
+For R3, the Person Server independently fetches the exact Resource artifact
+after local token and person-lineage checks. Separate document and proposal
+consent callbacks receive ordinary Core context plus vocabulary-neutral typed
+values. The Person Server forwards the original compact tokens to the Access
+Server and verifies the returned reference, account, and authorization against
+the same registered vocabulary and exact artifact.
 
 ### `resource`
 
@@ -337,8 +344,13 @@ Access mode is selected by the matched endpoint or R3 operation, not fixed for
 the entire server. Core scope, R3 operations, and Budget constraints are
 evaluated independently; none is projected into another.
 
-The current immediate MCP R3 paths supply an authoritative tool snapshot, a
-request-to-tool mapper, and focused document, proposal, retry, and held stores.
+The current R3 paths let one Resource advertise several registered
+vocabularies at once. Each registration supplies an authoritative operation
+snapshot and a vocabulary-validated discovery endpoint. The HTTP Resource
+binding maps a protected request to one registered operation and, only after
+class lineage succeeds, extracts presented parameters for a per-call
+invocation. Proposal policy receives that transport-independent invocation.
+Document, proposal, retry, and held stores remain shared across vocabularies.
 Authorization commits the exact class document before exposing its Resource
 token. Direct protected use verifies the AS-signed class grant without an
 enforcement-time fetch. For a per-call operation, the Resource constructs and
@@ -348,8 +360,10 @@ one-operation Auth token can claim one execution; later presentation of the
 same exact compact token returns the retained result. Proposal fetch custody
 expires separately from execution custody. An Auth token must be issued while
 the proposal Resource token is valid, but may first complete later within the
-bounded Core Auth-token lifetime. Annotations and the other R3 vocabularies
-remain later work.
+bounded Core Auth-token lifetime. The host remains responsible for deriving
+the authoritative operation snapshot from the advertised definition.
+Discovery-definition parsing, annotation parsing, and non-HTTP credential and
+execution bindings remain later work.
 
 ### `accessserver`
 
@@ -358,13 +372,14 @@ policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuance
 boundary commits the token and its URI/hash audit facts together or publishes
 neither.
 
-The current immediate MCP R3 path independently fetches and verifies the exact
-Resource document before policy. The existing policy call receives ordinary
-Core context plus the typed R3 document and returns a grant already proven to
-be a document subset. The Access Server commits the exact compact Auth token
-and every mandatory audit fact through `R3IssuanceStore` before responding. A
-store error withholds the token; the handler performs no hidden retry because
-the source defines no stable request replay key.
+The current R3 path independently fetches and verifies the exact Resource
+artifact before policy. Separate class-document and per-call-proposal callbacks
+receive ordinary Core context plus vocabulary-neutral typed values. Class
+policy returns an authorization already proven through the registered codec.
+The Access Server commits the exact compact Auth token, vocabulary URI, and
+mandatory audit facts through `R3IssuanceStore` before responding. A store
+error withholds the token; the handler performs no hidden retry because the
+source defines no stable request replay key.
 
 ## State interfaces
 
@@ -390,7 +405,8 @@ server recomposition, and exposes them only through the signed Resource
 handler. It is not a general authorization or evidence store.
 
 `R3ProposalStore` is create-only by full per-invocation URI and retains exact
-bytes only through the PS/AS fetch horizon. `R3RetryStore` and
+bytes indefinitely so the PS and AS can later re-fetch the proposal named by
+permanent audit provenance. `R3RetryStore` and
 `HeldInvocationStore` separately own single-use execution, fencing, uncertain
 retention, and exact-token replay. None is a universal lifecycle store.
 

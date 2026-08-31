@@ -10,6 +10,7 @@ import (
 	"aauth-go"
 	"aauth-go/jose"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/signaturekey"
 )
 
@@ -26,11 +27,11 @@ func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {
 	}
 	clock := aauth.ClockFunc(func() time.Time { return now })
 
-	operation, err := r3.NewMCPOperation("records.read")
+	operation, err := newMCPR3Operation("records.read")
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations, err := r3.NewMCPOperationSet(operation)
+	operations, err := r3.NewOperationSet(operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +43,7 @@ func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	granted, err := r3.NewGrantedOperations(operation)
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resourceCompact, reference, err := r3.MintMCPResourceToken(resourceKey, aauth.ResourceTokenClaims{
+	resourceCompact, reference, err := r3.MintResourceToken(tokenMCPRegistry, resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
 		Audience: "https://access.example", JTI: "resource-token-1",
 		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
@@ -69,7 +70,7 @@ func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {
 			t.Fatalf("Core VerifyResourceToken error = %v, want typed fail-closed R3 refusal", err)
 		}
 	}
-	resourceClaims, resourceReference, err := r3.VerifyMCPResourceToken(context.Background(), resourceCompact, resolver, clock)
+	resourceClaims, resourceReference, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {
 		t.Fatalf("verified resource token = (%#v, %#v)", resourceClaims, resourceReference)
 	}
 
-	authCompact, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	authCompact, err := r3.MintDirectAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-token-1",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -96,11 +97,11 @@ func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {
 			t.Fatalf("Core VerifyAuthToken error = %v, want typed fail-closed R3 refusal", err)
 		}
 	}
-	authClaims, authReference, grantedOperations, err := r3.VerifyMCPDirectAuthToken(context.Background(), authCompact, resolver, clock)
+	authClaims, authReference, grantedOperations, err := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authClaims.JTI != "auth-token-1" || authReference != reference || !grantedOperations.Equal(grant.GrantedOperations()) {
+	if authClaims.JTI != "auth-token-1" || authReference != reference || !tokenGrantedEqual(t, grantedOperations, grant.GrantedOperations()) {
 		t.Fatalf("verified auth token = (%#v, %#v, %#v)", authClaims, authReference, grantedOperations)
 	}
 	if string(authClaims.AdditionalClaims["email"]) != `"person@example.com"` {
@@ -127,7 +128,7 @@ func TestR3TokenVerificationRejectsPartialOrMixedCompanionClaims(t *testing.T) {
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	digest := r3.Digest([]byte("exact document bytes"))
 	grant := map[string]any{
-		"vocabulary": r3.MCPVocabulary,
+		"vocabulary": mcp.URI,
 		"operations": []any{map[string]any{"tool": "records.read"}},
 	}
 	resourceBase := map[string]any{
@@ -167,7 +168,7 @@ func TestR3TokenVerificationRejectsPartialOrMixedCompanionClaims(t *testing.T) {
 				members[name] = value
 			}
 			compact := signCoreTokenPayload(t, resourceKey, aauth.ResourceTokenType, members)
-			if _, _, err := r3.VerifyMCPResourceToken(context.Background(), compact, resolver, clock); err == nil {
+			if _, _, err := r3.VerifyResourceToken(context.Background(), compact, resolver, clock); err == nil {
 				t.Fatalf("accepted invalid R3 resource claims %#v", test.claims)
 			}
 		})
@@ -193,7 +194,7 @@ func TestR3TokenVerificationRejectsPartialOrMixedCompanionClaims(t *testing.T) {
 				members[name] = value
 			}
 			compact := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, members)
-			if _, _, _, err := r3.VerifyMCPDirectAuthToken(context.Background(), compact, resolver, clock); err == nil {
+			if _, _, _, err := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, compact, resolver, clock); err == nil {
 				t.Fatalf("accepted invalid R3 auth claims %#v", test.claims)
 			}
 		})
@@ -223,7 +224,7 @@ func TestR3TokenVerificationAcceptsScopelessEmptyGrantAndUnknownExtensions(t *te
 		"r3_future": map[string]any{"retained": true},
 	}
 	resourceCompact := signCoreTokenPayload(t, resourceKey, aauth.ResourceTokenType, resourceMembers)
-	resourceClaims, _, err := r3.VerifyMCPResourceToken(context.Background(), resourceCompact, resolver, clock)
+	resourceClaims, _, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,11 +238,11 @@ func TestR3TokenVerificationAcceptsScopelessEmptyGrantAndUnknownExtensions(t *te
 		"ps": "https://person.example", "sub": "person-1",
 		"cnf": map[string]any{"jwk": requestKey.PublicJWK()}, "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
 		"r3_uri": "https://resource.example/r3/one", "r3_s256": digest,
-		"r3_granted": map[string]any{"vocabulary": r3.MCPVocabulary, "operations": []any{}},
+		"r3_granted": map[string]any{"vocabulary": mcp.URI, "operations": []any{}},
 		"r3_future":  map[string]any{"retained": true},
 	}
 	authCompact := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, authMembers)
-	authClaims, _, granted, err := r3.VerifyMCPDirectAuthToken(context.Background(), authCompact, resolver, clock)
+	authClaims, _, granted, err := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,11 +257,11 @@ func TestR3TokenMintersRejectUnprovenOrCollidingClaims(t *testing.T) {
 	now := time.Date(2026, 8, 30, 18, 0, 0, 0, time.UTC)
 	key := coreTokenKey(t, "issuer-key")
 	requestKey := coreTokenKey(t, "request-key")
-	operation, err := r3.NewMCPOperation("records.read")
+	operation, err := newMCPR3Operation("records.read")
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations, err := r3.NewMCPOperationSet(operation)
+	operations, err := r3.NewOperationSet(operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +273,7 @@ func TestR3TokenMintersRejectUnprovenOrCollidingClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	granted, err := r3.NewGrantedOperations(operation)
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,19 +294,19 @@ func TestR3TokenMintersRejectUnprovenOrCollidingClaims(t *testing.T) {
 	}
 	scopelessAuth := base
 	scopelessAuth.Scope = ""
-	scopelessAuthCompact, err := r3.MintMCPDirectAuthToken(key, scopelessAuth, reference, documentBytes, grant)
+	scopelessAuthCompact, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, scopelessAuth, reference, documentBytes, grant)
 	if err != nil {
 		t.Fatalf("MintR3AuthToken rejected a source-valid scopeless token: %v", err)
 	}
 	assertCompactOmitsClaim(t, scopelessAuthCompact, "scope")
 
-	if _, err := r3.MintMCPDirectAuthToken(key, base, r3.Reference{}, documentBytes, grant); err == nil {
+	if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, base, r3.Reference{}, documentBytes, grant); err == nil {
 		t.Fatal("MintR3AuthToken accepted an empty reference")
 	}
-	if _, err := r3.MintMCPDirectAuthToken(key, base, reference, documentBytes, r3.Grant{}); err == nil {
+	if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, base, reference, documentBytes, r3.Grant{}); err == nil {
 		t.Fatal("MintR3AuthToken accepted an unproven empty grant")
 	}
-	if _, err := r3.MintMCPDirectAuthToken(key, base, reference, []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"other"}]}`), grant); err == nil {
+	if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, base, reference, []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"other"}]}`), grant); err == nil {
 		t.Fatal("MintR3AuthToken accepted document bytes that do not match the reference")
 	}
 	otherDocumentBytes := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"other"}]}`)
@@ -313,13 +314,13 @@ func TestR3TokenMintersRejectUnprovenOrCollidingClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r3.MintMCPDirectAuthToken(key, base, otherReference, otherDocumentBytes, grant); err == nil {
+	if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, base, otherReference, otherDocumentBytes, grant); err == nil {
 		t.Fatal("MintR3AuthToken accepted a grant that was not a subset of the referenced document")
 	}
 	for _, name := range []string{"r3_uri", "R3_S256", "r3_granted", "r3_per_call", "budget"} {
 		claims := base
 		claims.AdditionalClaims = map[string]json.RawMessage{name: json.RawMessage(`true`)}
-		if _, err := r3.MintMCPDirectAuthToken(key, claims, reference, documentBytes, grant); err == nil {
+		if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, claims, reference, documentBytes, grant); err == nil {
 			t.Fatalf("MintR3AuthToken accepted colliding additional claim %q", name)
 		}
 	}
@@ -330,21 +331,21 @@ func TestR3TokenMintersRejectUnprovenOrCollidingClaims(t *testing.T) {
 		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
 		AgentJKT: coreTokenS256("agent-key"), IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 	}
-	scopelessResourceCompact, _, err := r3.MintMCPResourceToken(key, resourceBase, "https://resource.example/r3/one", documentBytes)
+	scopelessResourceCompact, _, err := r3.MintResourceToken(tokenMCPRegistry, key, resourceBase, "https://resource.example/r3/one", documentBytes)
 	if err != nil {
 		t.Fatalf("MintR3ResourceToken rejected a source-valid scopeless token: %v", err)
 	}
 	assertCompactOmitsClaim(t, scopelessResourceCompact, "scope")
-	if _, _, err := r3.MintMCPResourceToken(key, resourceBase, "", documentBytes); err == nil {
+	if _, _, err := r3.MintResourceToken(tokenMCPRegistry, key, resourceBase, "", documentBytes); err == nil {
 		t.Fatal("MintR3ResourceToken accepted an empty document URI")
 	}
-	if _, _, err := r3.MintMCPResourceToken(key, resourceBase, "https://resource.example/r3/one", []byte(`{}`)); err == nil {
+	if _, _, err := r3.MintResourceToken(tokenMCPRegistry, key, resourceBase, "https://resource.example/r3/one", []byte(`{}`)); err == nil {
 		t.Fatal("MintR3ResourceToken accepted invalid document bytes")
 	}
 	for _, name := range []string{"r3_uri", "R3_S256", "r3_granted", "r3_per_call", "budget"} {
 		claims := resourceBase
 		claims.AdditionalClaims = map[string]json.RawMessage{name: json.RawMessage(`true`)}
-		if _, _, err := r3.MintMCPResourceToken(key, claims, "https://resource.example/r3/one", documentBytes); err == nil {
+		if _, _, err := r3.MintResourceToken(tokenMCPRegistry, key, claims, "https://resource.example/r3/one", documentBytes); err == nil {
 			t.Fatalf("MintR3ResourceToken accepted colliding additional claim %q", name)
 		}
 	}
@@ -356,15 +357,15 @@ func TestMCPR3TokenMintersBindDocumentAccountExactly(t *testing.T) {
 	now := time.Date(2026, 8, 30, 18, 0, 0, 0, time.UTC)
 	key := coreTokenKey(t, "issuer-key")
 	requestKey := coreTokenKey(t, "request-key")
-	operation, err := r3.NewMCPOperation("records.read")
+	operation, err := newMCPR3Operation("records.read")
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations, err := r3.NewMCPOperationSet(operation)
+	operations, err := r3.NewOperationSet(operation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	granted, err := r3.NewGrantedOperations(operation)
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,12 +404,12 @@ func TestMCPR3TokenMintersBindDocumentAccountExactly(t *testing.T) {
 
 	matchingResource := resourceClaims
 	matchingResource.Account = &account
-	if _, _, err := r3.MintMCPResourceToken(key, matchingResource, withAccountReference.URI(), withAccountBytes); err != nil {
+	if _, _, err := r3.MintResourceToken(tokenMCPRegistry, key, matchingResource, withAccountReference.URI(), withAccountBytes); err != nil {
 		t.Fatalf("matching Resource account rejected: %v", err)
 	}
 	matchingAuth := authClaims
 	matchingAuth.Account = &account
-	if _, err := r3.MintMCPDirectAuthToken(key, matchingAuth, withAccountReference, withAccountBytes, withAccountGrant); err != nil {
+	if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, matchingAuth, withAccountReference, withAccountBytes, withAccountGrant); err != nil {
 		t.Fatalf("matching Auth account rejected: %v", err)
 	}
 
@@ -417,12 +418,12 @@ func TestMCPR3TokenMintersBindDocumentAccountExactly(t *testing.T) {
 	for _, tokenAccount := range []*string{nil, &emptyAccount, &otherAccount} {
 		claims := resourceClaims
 		claims.Account = tokenAccount
-		if _, _, err := r3.MintMCPResourceToken(key, claims, withAccountReference.URI(), withAccountBytes); err == nil {
+		if _, _, err := r3.MintResourceToken(tokenMCPRegistry, key, claims, withAccountReference.URI(), withAccountBytes); err == nil {
 			t.Fatalf("Resource token account %#v accepted document account %q", tokenAccount, account)
 		}
 		auth := authClaims
 		auth.Account = tokenAccount
-		if _, err := r3.MintMCPDirectAuthToken(key, auth, withAccountReference, withAccountBytes, withAccountGrant); err == nil {
+		if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, auth, withAccountReference, withAccountBytes, withAccountGrant); err == nil {
 			t.Fatalf("Auth token account %#v accepted document account %q", tokenAccount, account)
 		}
 	}
@@ -443,10 +444,10 @@ func TestMCPR3TokenMintersBindDocumentAccountExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := r3.MintMCPResourceToken(key, matchingResource, withoutAccountReference.URI(), withoutAccountBytes); err == nil {
+	if _, _, err := r3.MintResourceToken(tokenMCPRegistry, key, matchingResource, withoutAccountReference.URI(), withoutAccountBytes); err == nil {
 		t.Fatal("Resource token account accepted a document without account")
 	}
-	if _, err := r3.MintMCPDirectAuthToken(key, matchingAuth, withoutAccountReference, withoutAccountBytes, withoutAccountGrant); err == nil {
+	if _, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, matchingAuth, withoutAccountReference, withoutAccountBytes, withoutAccountGrant); err == nil {
 		t.Fatal("Auth token account accepted a document without account")
 	}
 
@@ -468,13 +469,13 @@ func TestMCPR3TokenMintersBindDocumentAccountExactly(t *testing.T) {
 	}
 	emptyResource := resourceClaims
 	emptyResource.Account = &emptyAccount
-	emptyResourceCompact, _, err := r3.MintMCPResourceToken(key, emptyResource, emptyAccountReference.URI(), emptyAccountDocumentBytes)
+	emptyResourceCompact, _, err := r3.MintResourceToken(tokenMCPRegistry, key, emptyResource, emptyAccountReference.URI(), emptyAccountDocumentBytes)
 	if err != nil {
 		t.Fatalf("matching present-empty Resource account rejected: %v", err)
 	}
 	emptyAuth := authClaims
 	emptyAuth.Account = &emptyAccount
-	emptyAuthCompact, err := r3.MintMCPDirectAuthToken(key, emptyAuth, emptyAccountReference, emptyAccountDocumentBytes, emptyAccountGrant)
+	emptyAuthCompact, err := r3.MintDirectAuthToken(tokenMCPRegistry, key, emptyAuth, emptyAccountReference, emptyAccountDocumentBytes, emptyAccountGrant)
 	if err != nil {
 		t.Fatalf("matching present-empty Auth account rejected: %v", err)
 	}
@@ -510,16 +511,16 @@ func TestMCPR3TokenVerificationPreservesAccountPresence(t *testing.T) {
 		"cnf": map[string]any{"jwk": requestKey.PublicJWK()}, "scope": "records.read",
 		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
 		"r3_uri": "https://resource.example/r3/one", "r3_s256": digest,
-		"r3_granted": map[string]any{"vocabulary": r3.MCPVocabulary, "operations": []any{}},
+		"r3_granted": map[string]any{"vocabulary": mcp.URI, "operations": []any{}},
 	}
 
 	empty := ""
 	named := "work-account"
-	operation, err := r3.NewMCPOperation("records.read")
+	operation, err := newMCPR3Operation("records.read")
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations, err := r3.NewMCPOperationSet(operation)
+	operations, err := r3.NewOperationSet(operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,9 +558,9 @@ func TestMCPR3TokenVerificationPreservesAccountPresence(t *testing.T) {
 				authMembers["account"] = test.tokenValue
 			}
 			resourceCompact := signCoreTokenPayload(t, resourceKey, aauth.ResourceTokenType, resourceMembers)
-			resourceClaims, _, resourceErr := r3.VerifyMCPResourceToken(context.Background(), resourceCompact, resolver, clock)
+			resourceClaims, _, resourceErr := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock)
 			authCompact := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, authMembers)
-			authClaims, _, _, authErr := r3.VerifyMCPDirectAuthToken(context.Background(), authCompact, resolver, clock)
+			authClaims, _, _, authErr := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock)
 			if test.wantInvalid {
 				if resourceErr == nil || authErr == nil {
 					t.Fatalf("null account verification errors = Resource %v, Auth %v", resourceErr, authErr)
@@ -585,11 +586,11 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 	resourceKey := coreTokenKey(t, "resource-key")
 	accessKey := coreTokenKey(t, "access-key")
 	requestKey := coreTokenKey(t, "request-key")
-	operation, err := r3.NewMCPOperation("records.read")
+	operation, err := newMCPR3Operation("records.read")
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations, err := r3.NewMCPOperationSet(operation)
+	operations, err := r3.NewOperationSet(operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +602,7 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	granted, err := r3.NewGrantedOperations(operation)
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -612,7 +613,7 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 
 	resourceRaw := json.RawMessage(`{"value":"resource-original"}`)
 	resourceAdditional := map[string]json.RawMessage{"r3_future": resourceRaw}
-	resourceCompact, reference, err := r3.MintMCPResourceToken(resourceKey, aauth.ResourceTokenClaims{
+	resourceCompact, reference, err := r3.MintResourceToken(tokenMCPRegistry, resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
 		Audience: "https://access.example", JTI: "resource-token-1",
 		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
@@ -628,7 +629,7 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 
 	authRaw := json.RawMessage(`{"value":"auth-original"}`)
 	authAdditional := map[string]json.RawMessage{"r3_future": authRaw}
-	authCompact, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	authCompact, err := r3.MintDirectAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-token-1",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -647,7 +648,7 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}:       accessKey.PublicJWK(),
 	}
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	firstResource, _, err := r3.VerifyMCPResourceToken(context.Background(), resourceCompact, resolver, clock)
+	firstResource, _, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +657,7 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 	}
 	firstResource.AdditionalClaims["r3_future"][0] = '['
 	firstResource.AdditionalClaims["r3_future"] = json.RawMessage(`null`)
-	secondResource, _, err := r3.VerifyMCPResourceToken(context.Background(), resourceCompact, resolver, clock)
+	secondResource, _, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +665,7 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 		t.Fatalf("second Resource additional claim = %s", got)
 	}
 
-	firstAuth, _, _, err := r3.VerifyMCPDirectAuthToken(context.Background(), authCompact, resolver, clock)
+	firstAuth, _, _, err := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +674,7 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 	}
 	firstAuth.AdditionalClaims["r3_future"][0] = '['
 	firstAuth.AdditionalClaims["r3_future"] = json.RawMessage(`null`)
-	secondAuth, _, _, err := r3.VerifyMCPDirectAuthToken(context.Background(), authCompact, resolver, clock)
+	secondAuth, _, _, err := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,20 +693,20 @@ func TestMCPR3ClassAuthorizationSplitsDirectAndPerCallOperations(t *testing.T) {
 		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}: accessKey.PublicJWK(),
 	}
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	read, _ := r3.NewMCPOperation("records.read")
-	deleteRecord, _ := r3.NewMCPOperation("records.delete")
-	operations, _ := r3.NewMCPOperationSet(read, deleteRecord)
+	read, _ := newMCPR3Operation("records.read")
+	deleteRecord, _ := newMCPR3Operation("records.delete")
+	operations, _ := r3.NewOperationSet(read, deleteRecord)
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference("https://resource.example/r3/class-one", r3.Digest(exactDocument))
-	granted, _ := r3.NewGrantedOperations(read)
-	perCall, _ := r3.NewGrantedOperations(deleteRecord)
+	granted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
+	perCall, _ := r3.NewGrantedOperations(mcp.Vocabulary(), deleteRecord)
 	authorization, err := r3.NewAuthorization(granted, perCall, document)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	compact, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+	compact, err := r3.MintAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "class-auth-token",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -722,17 +723,18 @@ func TestMCPR3ClassAuthorizationSplitsDirectAndPerCallOperations(t *testing.T) {
 	if _, ok := classMembers["r3_per_call"]; !ok {
 		t.Fatal("class Auth token omitted nonempty r3_per_call")
 	}
-	claims, gotReference, operationClaims, err := r3.VerifyMCPAuthTokenClaims(
-		context.Background(), compact, resolver, clock,
+	claims, gotReference, operationClaims, err := r3.VerifyAuthTokenClaims(
+		context.Background(), tokenMCPRegistry, compact, resolver, clock,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if claims.JTI != "class-auth-token" || gotReference != reference ||
-		!operationClaims.GrantedOperations().Equal(granted) || !operationClaims.PerCallOperations().Equal(perCall) {
+		!tokenGrantedEqual(t, operationClaims.GrantedOperations(), granted) ||
+		!tokenGrantedEqual(t, operationClaims.PerCallOperations(), perCall) {
 		t.Fatalf("verified class token = %#v, %#v, %#v", claims, gotReference, operationClaims)
 	}
-	if _, _, _, err := r3.VerifyMCPDirectAuthToken(context.Background(), compact, resolver, clock); err == nil {
+	if _, _, _, err := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, compact, resolver, clock); err == nil {
 		t.Fatal("direct-only verifier accepted a class token with r3_per_call")
 	}
 	if _, err := aauth.VerifyAuthToken(context.Background(), compact, resolver, clock); err == nil {
@@ -742,15 +744,15 @@ func TestMCPR3ClassAuthorizationSplitsDirectAndPerCallOperations(t *testing.T) {
 	if _, err := r3.NewAuthorization(granted, granted, document); err == nil {
 		t.Fatal("accepted an operation in both r3_granted and r3_per_call")
 	}
-	outside, _ := r3.NewMCPOperation("records.export")
-	outsideSet, _ := r3.NewGrantedOperations(outside)
+	outside, _ := newMCPR3Operation("records.export")
+	outsideSet, _ := r3.NewGrantedOperations(mcp.Vocabulary(), outside)
 	if _, err := r3.NewAuthorization(outsideSet, perCall, document); err == nil {
 		t.Fatal("accepted a direct operation outside the class document")
 	}
 	if _, err := r3.NewAuthorization(granted, outsideSet, document); err == nil {
 		t.Fatal("accepted a per-call operation outside the class document")
 	}
-	if _, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+	if _, err := r3.MintAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "zero-authorization",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -759,9 +761,9 @@ func TestMCPR3ClassAuthorizationSplitsDirectAndPerCallOperations(t *testing.T) {
 	}, reference, exactDocument, r3.Authorization{}); err == nil {
 		t.Fatal("class mint accepted an unproven zero Authorization")
 	}
-	empty, _ := r3.NewGrantedOperations()
+	empty, _ := r3.NewGrantedOperations(mcp.Vocabulary())
 	directOnly, _ := r3.NewAuthorization(granted, empty, document)
-	directOnlyCompact, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+	directOnlyCompact, err := r3.MintAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "direct-only",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -786,14 +788,14 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}:       accessKey.PublicJWK(),
 	}
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	operation, _ := r3.NewMCPOperation("records.delete")
-	identifier, _ := r3.NewMCPInlineParameter([]byte(`"record-7"`))
-	parameters, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{"id": identifier})
+	operation, _ := newMCPR3Operation("records.delete")
+	identifier, _ := r3.NewInlineParameter([]byte(`"record-7"`))
+	parameters, _ := r3.NewParameters(map[string]r3.Parameter{"id": identifier})
 	account := "work"
-	proposal, _ := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{Account: &account})
+	proposal, _ := r3.NewProposal(operation, parameters, r3.ProposalOptions{Account: &account})
 	exactProposal, _ := json.Marshal(proposal)
 
-	resourceCompact, reference, err := r3.MintMCPProposalResourceToken(resourceKey, aauth.ResourceTokenClaims{
+	resourceCompact, reference, err := r3.MintProposalResourceToken(tokenMCPRegistry, resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
 		Audience: "https://access.example", JTI: "proposal-resource-token",
 		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
@@ -803,7 +805,7 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceClaims, gotReference, err := r3.VerifyMCPResourceToken(context.Background(), resourceCompact, resolver, clock)
+	resourceClaims, gotReference, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock)
 	if err != nil || resourceClaims.JTI != "proposal-resource-token" || gotReference != reference {
 		t.Fatalf("proposal Resource token = %#v, %#v, %v", resourceClaims, gotReference, err)
 	}
@@ -813,12 +815,12 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 			t.Fatalf("proposal Resource token contains %q", forbidden)
 		}
 	}
-	parsed, err := r3.ParseReferencedProposal(reference, exactProposal)
-	if err != nil || parsed.Operation().Tool() != operation.Tool() {
+	parsed, err := tokenMCPRegistry.ParseReferencedProposal(reference, exactProposal)
+	if err != nil || mcpR3Tool(t, parsed.Operation()) != mcpR3Tool(t, operation) {
 		t.Fatalf("referenced proposal = %#v, %v", parsed, err)
 	}
 
-	authCompact, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	authCompact, err := r3.MintPerCallAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "per-call-auth-token",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -837,17 +839,18 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 			t.Fatalf("per-call Auth token contains %q", forbidden)
 		}
 	}
-	authClaims, authReference, grantedOperation, err := r3.VerifyMCPPerCallAuthToken(
-		context.Background(), authCompact, resolver, clock, reference, exactProposal,
+	authClaims, authReference, grantedOperation, err := r3.VerifyPerCallAuthToken(
+		context.Background(), tokenMCPRegistry, authCompact, resolver, clock, reference, exactProposal,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authClaims.JTI != "per-call-auth-token" || authReference != reference || grantedOperation.Tool() != operation.Tool() {
+	if authClaims.JTI != "per-call-auth-token" || authReference != reference ||
+		mcpR3Tool(t, grantedOperation) != mcpR3Tool(t, operation) {
 		t.Fatalf("per-call Auth token = %#v, %#v, %#v", authClaims, authReference, grantedOperation)
 	}
-	wrongOperation, _ := r3.NewMCPOperation("records.export")
-	wrongGranted, _ := r3.NewGrantedOperations(wrongOperation)
+	wrongOperation, _ := newMCPR3Operation("records.export")
+	wrongGranted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), wrongOperation)
 	wrongGrantedJSON, _ := json.Marshal(wrongGranted)
 	uriJSON, _ := json.Marshal(reference.URI())
 	digestJSON, _ := json.Marshal(reference.Digest())
@@ -861,16 +864,16 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 		"r3_granted": json.RawMessage(wrongGrantedJSON),
 	}
 	wrongOperationToken := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, baseMembers)
-	if _, _, _, err := r3.VerifyMCPPerCallAuthToken(context.Background(), wrongOperationToken, resolver, clock, reference, exactProposal); err == nil {
+	if _, _, _, err := r3.VerifyPerCallAuthToken(context.Background(), tokenMCPRegistry, wrongOperationToken, resolver, clock, reference, exactProposal); err == nil {
 		t.Fatal("per-call verifier accepted a different granted operation")
 	}
 	wrongAccountMembers := cloneCoreTokenMembers(baseMembers)
-	correctGranted, _ := r3.NewGrantedOperations(operation)
+	correctGranted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), operation)
 	correctGrantedJSON, _ := json.Marshal(correctGranted)
 	wrongAccountMembers["r3_granted"] = json.RawMessage(correctGrantedJSON)
 	wrongAccountMembers["account"] = "other"
 	wrongAccountToken := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, wrongAccountMembers)
-	if _, _, _, err := r3.VerifyMCPPerCallAuthToken(context.Background(), wrongAccountToken, resolver, clock, reference, exactProposal); err == nil {
+	if _, _, _, err := r3.VerifyPerCallAuthToken(context.Background(), tokenMCPRegistry, wrongAccountToken, resolver, clock, reference, exactProposal); err == nil {
 		t.Fatal("per-call verifier accepted a different account")
 	}
 	otherReference, _ := r3.NewReference("https://resource.example/r3/proposal-other", reference.Digest())
@@ -879,22 +882,22 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 	wrongReferenceMembers["r3_uri"] = json.RawMessage(otherURIJSON)
 	wrongReferenceMembers["r3_granted"] = json.RawMessage(correctGrantedJSON)
 	wrongReferenceToken := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, wrongReferenceMembers)
-	if _, _, _, err := r3.VerifyMCPPerCallAuthToken(context.Background(), wrongReferenceToken, resolver, clock, reference, exactProposal); err == nil {
+	if _, _, _, err := r3.VerifyPerCallAuthToken(context.Background(), tokenMCPRegistry, wrongReferenceToken, resolver, clock, reference, exactProposal); err == nil {
 		t.Fatal("per-call verifier accepted a different proposal reference")
 	}
-	_, _, operationClaims, err := r3.VerifyMCPAuthTokenClaims(context.Background(), authCompact, resolver, clock)
-	if err != nil || !operationClaims.GrantedOperations().Contains(operation) || len(operationClaims.PerCallOperations().Operations()) != 0 {
+	_, _, operationClaims, err := r3.VerifyAuthTokenClaims(context.Background(), tokenMCPRegistry, authCompact, resolver, clock)
+	if err != nil || !tokenGrantedContains(t, operationClaims.GrantedOperations(), operation) || len(operationClaims.PerCallOperations().Operations()) != 0 {
 		t.Fatalf("general per-call verification = %#v, %v", operationClaims, err)
 	}
 
 	changed := append(append([]byte(nil), exactProposal...), '\n')
-	if _, err := r3.ParseMCPProposal(changed); err != nil {
+	if _, err := tokenMCPRegistry.ParseProposal(changed); err != nil {
 		t.Fatalf("valid reserialization fixture is invalid: %v", err)
 	}
-	if _, err := r3.ParseReferencedProposal(reference, changed); err == nil {
+	if _, err := tokenMCPRegistry.ParseReferencedProposal(reference, changed); err == nil {
 		t.Fatal("reference accepted a valid proposal reserialization with different exact bytes")
 	}
-	if _, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	if _, err := r3.MintPerCallAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "changed",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -904,7 +907,7 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 		t.Fatal("per-call mint accepted proposal bytes that changed after hashing")
 	}
 	otherAccount := "other"
-	if _, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+	if _, err := r3.MintPerCallAuthToken(tokenMCPRegistry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "wrong-account",
 		PersonServer: "https://person.example", Subject: "person-1",
@@ -951,7 +954,7 @@ func TestMCPR3AuthClaimVerificationRejectsMalformedPerCallShapes(t *testing.T) {
 			members := cloneCoreTokenMembers(base)
 			members[test.claim] = test.value
 			compact := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, members)
-			if _, _, _, err := r3.VerifyMCPAuthTokenClaims(context.Background(), compact, resolver, clock); err == nil {
+			if _, _, _, err := r3.VerifyAuthTokenClaims(context.Background(), tokenMCPRegistry, compact, resolver, clock); err == nil {
 				t.Fatal("accepted malformed r3_per_call claim")
 			}
 		})

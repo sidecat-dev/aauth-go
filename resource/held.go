@@ -103,13 +103,13 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		request.Context(), invocation,
 	)
 	if err != nil {
-		writeMCPR3ValidationFailure(response, err)
+		writeR3ValidationFailure(response, err)
 		return
 	}
 	if resourceCarriesR3 != (invocation.R3PerCall != nil) {
 		writeProblem(
 			response, http.StatusInternalServerError, "server_error",
-			retainedMCPR3State(errors.New("held invocation authorization kind does not match its Resource token")),
+			retainedR3State(errors.New("held invocation authorization kind does not match its Resource token")),
 		)
 		return
 	}
@@ -133,19 +133,19 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 	} else {
 		var reference r3.Reference
 		var operations r3.AuthTokenOperations
-		proof, authToken, reference, operations, err = server.verifyPreparedMCPR3AuthRequest(request, prepared, compact)
+		proof, authToken, reference, operations, err = server.verifyPreparedR3AuthRequest(request, prepared, compact)
 		if err != nil {
 			writeCredentialProblem(response, "invalid_token", err)
 			return
 		}
-		executionScopes, err = server.verifyHeldMCPR3Completion(
+		executionScopes, err = server.verifyHeldR3Completion(
 			request.Context(), proof, authToken,
-			mcpR3ProtectedAuthorization{reference: reference, operations: operations},
+			r3ProtectedAuthorization{reference: reference, operations: operations},
 			resourceReference, invocation,
 		)
 	}
 	if err != nil {
-		writeMCPR3ValidationFailure(response, err)
+		writeR3ValidationFailure(response, err)
 		return
 	}
 	credential := HeldAuthToken{
@@ -203,7 +203,7 @@ func (server *Server) verifyHeldCompletion(
 	invocation HeldInvocation,
 ) error {
 	if resourceToken.Account != nil || resourceToken.MissionS256 != "" || resourceToken.Interaction != nil {
-		return retainedMCPR3State(errors.New("held resource token uses an unsupported authorization branch"))
+		return retainedR3State(errors.New("held resource token uses an unsupported authorization branch"))
 	}
 	if resourceToken.Tenant != authToken.Tenant {
 		return errors.New("held Auth token changed the retained tenant")
@@ -220,7 +220,7 @@ func (server *Server) verifyHeldCompletion(
 	}
 	resourceScopes, err := server.validateScopes(resourceToken.Scope)
 	if err != nil || !slices.Equal(resourceScopes, invocation.RequiredScopes) {
-		return retainedMCPR3State(errors.New("held resource-token scopes do not match retained route scopes"))
+		return retainedR3State(errors.New("held resource-token scopes do not match retained route scopes"))
 	}
 	if authToken.Account != nil || authToken.MissionS256 != "" {
 		return errors.New("held auth token uses an unsupported authorization branch")
@@ -243,43 +243,47 @@ func (server *Server) verifyHeldCompletion(
 	return nil
 }
 
-func (server *Server) verifyHeldMCPR3Completion(
+func (server *Server) verifyHeldR3Completion(
 	ctx context.Context,
 	proof signaturekey.VerifiedRequest,
 	authToken aauth.AuthTokenClaims,
-	authorization mcpR3ProtectedAuthorization,
+	authorization r3ProtectedAuthorization,
 	resourceReference r3.Reference,
 	invocation HeldInvocation,
 ) ([]string, error) {
-	if server.mcpR3 == nil || invocation.R3PerCall == nil {
-		return nil, errors.New("held MCP R3 per-call authorization is not configured")
+	if server.r3 == nil || invocation.R3PerCall == nil {
+		return nil, errors.New("held R3 per-call authorization is not configured")
 	}
 	if authToken.Issuer != server.accessServer || authToken.DWK != aauth.AccessDiscoveryDocument ||
 		authToken.Audience != server.issuer {
-		return nil, errors.New("held MCP R3 Auth token does not match the Access Server and Resource")
+		return nil, errors.New("held R3 Auth token does not match the Access Server and Resource")
 	}
 	held := invocation.R3PerCall
 	if held.Reference != resourceReference {
-		return nil, retainedMCPR3State(errors.New("held MCP R3 proposal reference does not match its Resource token"))
+		return nil, retainedR3State(errors.New("held R3 proposal reference does not match its Resource token"))
 	}
 	if held.Reference != authorization.reference {
-		return nil, errors.New("held MCP R3 Auth token changed the proposal reference")
+		return nil, errors.New("held R3 Auth token changed the proposal reference")
 	}
-	kind, err := server.validateMCPR3ProtectedReference(authorization, authToken)
-	if err != nil || kind != mcpR3ProposalReference {
-		return nil, errors.New("held MCP R3 Auth token does not reference a proposal")
+	kind, err := server.validateR3ProtectedReference(authorization, authToken)
+	if err != nil || kind != r3ProposalReference {
+		return nil, errors.New("held R3 Auth token does not reference a proposal")
 	}
-	authScopes, err := server.validateMCPR3Scopes(authToken.Scope)
+	authScopes, err := server.validateR3Scopes(authToken.Scope)
 	if err != nil {
-		return nil, errors.New("held MCP R3 Auth-token scopes are invalid")
+		return nil, errors.New("held R3 Auth-token scopes are invalid")
 	}
-	if _, _, err := server.validateMCPR3Retry(ctx, R3RetryInvocation{
-		Reference: held.Reference, ClassReference: held.ClassReference, Operation: held.Operation,
+	proposal, err := server.r3.registry.ParseReferencedProposal(held.Reference, held.ExactProposal)
+	if err != nil {
+		return nil, retainedR3State(fmt.Errorf("parse held R3 proposal: %w", err))
+	}
+	if _, _, err := server.validateR3Retry(ctx, R3RetryInvocation{
+		Reference: held.Reference, ClassReference: held.ClassReference,
 		ResourceToken: invocation.ResourceToken, ExactProposal: append([]byte(nil), held.ExactProposal...),
 		RequiredScopes: append([]string(nil), invocation.RequiredScopes...),
 		PreparedAt:     invocation.ResourceTokenIssuedAt, ExpiresAt: invocation.ExpiresAt,
 		CompletionUntil: invocation.CompletionUntil,
-	}, proof, authToken, authorization, held.Operation, authScopes); err != nil {
+	}, proof, authToken, authorization, proposal.Operation(), authScopes); err != nil {
 		return nil, err
 	}
 	return authScopes, nil
@@ -292,7 +296,7 @@ func (server *Server) verifyHeldRetainedResourceToken(
 	verificationClock := aauth.ClockFunc(func() time.Time { return invocation.ResourceTokenIssuedAt })
 	carriesR3, err := r3dispatch.TokenCarriesClaims(invocation.ResourceToken)
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
 			fmt.Errorf("inspect held Resource token: %w", err),
 		)
 	}
@@ -301,12 +305,12 @@ func (server *Server) verifyHeldRetainedResourceToken(
 		reference r3.Reference
 	)
 	if carriesR3 {
-		if server.mcpR3 == nil {
-			return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
-				errors.New("held MCP R3 Resource token is not configured"),
+		if server.r3 == nil {
+			return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
+				errors.New("held R3 Resource token is not configured"),
 			)
 		}
-		claims, reference, err = r3.VerifyMCPResourceToken(
+		claims, reference, err = r3.VerifyResourceToken(
 			ctx, invocation.ResourceToken, server.keyResolver, verificationClock,
 		)
 	} else {
@@ -315,7 +319,7 @@ func (server *Server) verifyHeldRetainedResourceToken(
 		)
 	}
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
 			fmt.Errorf("verify held Resource token: %w", err),
 		)
 	}
@@ -324,14 +328,14 @@ func (server *Server) verifyHeldRetainedResourceToken(
 		claims.IssuedAt != invocation.ResourceTokenIssuedAt.Unix() ||
 		claims.ExpiresAt != invocation.ExpiresAt.Unix() ||
 		!invocation.CompletionUntil.Equal(invocation.ExpiresAt.Add(maximumDerivativeAuthTokenLifetime)) {
-		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
 			errors.New("held Resource token does not match its retained invocation"),
 		)
 	}
 	return claims, reference, carriesR3, nil
 }
 
-func (server *Server) validateMCPR3Scopes(scope string) ([]string, error) {
+func (server *Server) validateR3Scopes(scope string) ([]string, error) {
 	if scope == "" {
 		return nil, nil
 	}

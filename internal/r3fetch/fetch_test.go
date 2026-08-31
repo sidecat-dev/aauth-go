@@ -13,6 +13,7 @@ import (
 	aauth "aauth-go"
 	"aauth-go/jose"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/signaturekey"
 )
 
@@ -22,8 +23,9 @@ func TestClientFetchesOneExactSignedAndBoundedDocument(t *testing.T) {
 	now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "ps-key", 1)
-	read, _ := r3.NewMCPOperation("records.read")
-	operations, _ := r3.NewMCPOperationSet(read)
+	registry := r3FetchRegistry(t)
+	read, _ := mcp.NewOperation("records.read")
+	operations, _ := mcp.NewOperationSet(read)
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exact, _ := document.MarshalJSON()
 	reference, _ := r3.NewReference("https://resource.example/r3/document", r3.Digest(exact))
@@ -54,6 +56,7 @@ func TestClientFetchesOneExactSignedAndBoundedDocument(t *testing.T) {
 		return r3FetchResponse(http.StatusOK, exact, nil), nil
 	})
 	client, err := New(Config{
+		Registry:   registry,
 		HTTPClient: &http.Client{Transport: transport},
 		SigningKey: key, Issuer: "https://ps.example",
 		DiscoveryDocument: aauth.PersonDiscoveryDocument, Clock: clock,
@@ -69,11 +72,12 @@ func TestClientFetchesOneExactSignedAndBoundedDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotDocument, gotExact, err := client.Fetch(context.Background(), reference)
+	gotDocument, gotExact, err := client.FetchDocument(context.Background(), reference)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(gotExact, exact) || !gotDocument.OperationSet().Equal(operations) || admitCalls != 1 || requestCalls != 1 {
+	if !bytes.Equal(gotExact, exact) || !r3FetchOperationSetsEqual(t, gotDocument.OperationSet(), operations) ||
+		admitCalls != 1 || requestCalls != 1 {
 		t.Fatalf("fetch = %q %#v, calls admit/request=%d/%d", gotExact, gotDocument, admitCalls, requestCalls)
 	}
 }
@@ -84,19 +88,24 @@ func TestClientFetchesOneExactSignedAndBoundedProposal(t *testing.T) {
 	now := time.Date(2026, 8, 31, 8, 5, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "ps-key", 4)
-	operation, err := r3.NewMCPOperation("records.read")
+	registry := r3FetchRegistry(t)
+	typedOperation, err := mcp.NewOperation("records.read")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parameter, err := r3.NewMCPInlineParameter([]byte(`{"record_id":"record-1"}`))
+	operation, err := typedOperation.ToR3()
 	if err != nil {
 		t.Fatal(err)
 	}
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"input": parameter})
+	parameter, err := r3.NewInlineParameter([]byte(`{"record_id":"record-1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{})
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{"input": parameter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := r3.NewProposal(operation, parameters, r3.ProposalOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +119,7 @@ func TestClientFetchesOneExactSignedAndBoundedProposal(t *testing.T) {
 	}
 	admitCalls, requestCalls := 0, 0
 	client, err := New(Config{
+		Registry: registry,
 		HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 			requestCalls++
 			return r3FetchResponse(http.StatusOK, exact, nil), nil
@@ -132,7 +142,7 @@ func TestClientFetchesOneExactSignedAndBoundedProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(gotExact, exact) || gotProposal.Operation().Tool() != operation.Tool() ||
+	if !bytes.Equal(gotExact, exact) || !r3FetchOperationsEqual(t, gotProposal.Operation(), operation) ||
 		admitCalls != 1 || requestCalls != 1 {
 		t.Fatalf("fetch = %q %#v, calls admit/request=%d/%d", gotExact, gotProposal, admitCalls, requestCalls)
 	}
@@ -144,11 +154,13 @@ func TestClientKeepsClassDocumentAndProposalParsersSeparate(t *testing.T) {
 	now := time.Date(2026, 8, 31, 8, 10, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "as-key", 5)
+	registry := r3FetchRegistry(t)
 	documentExact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}`)
 	proposalExact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}],"parameters":{}}`)
 	documentReference, _ := r3.NewReference("https://resource.example/r3/document", r3.Digest(documentExact))
 	proposalReference, _ := r3.NewReference("https://resource.example/r3/proposals/invocation-2", r3.Digest(proposalExact))
 	client, err := New(Config{
+		Registry: registry,
 		HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 			switch request.URL.String() {
 			case documentReference.URI():
@@ -181,12 +193,14 @@ func TestClientFetchArtifactClassifiesOneFetchWithoutURIConventions(t *testing.T
 	now := time.Date(2026, 8, 31, 8, 11, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "ps-key", 7)
-	operation, _ := r3.NewMCPOperation("records.read")
-	operations, _ := r3.NewMCPOperationSet(operation)
+	registry := r3FetchRegistry(t)
+	typedOperation, _ := mcp.NewOperation("records.read")
+	operation, _ := typedOperation.ToR3()
+	operations, _ := mcp.NewOperationSet(typedOperation)
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	documentExact, _ := document.MarshalJSON()
-	parameters, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{})
-	proposal, _ := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{})
+	parameters, _ := r3.NewParameters(map[string]r3.Parameter{})
+	proposal, _ := r3.NewProposal(operation, parameters, r3.ProposalOptions{})
 	proposalExact, _ := proposal.MarshalJSON()
 
 	for _, test := range []struct {
@@ -201,6 +215,7 @@ func TestClientFetchArtifactClassifiesOneFetchWithoutURIConventions(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
 			client, err := New(Config{
+				Registry: registry,
 				HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 					calls++
 					return r3FetchResponse(http.StatusOK, test.exact, nil), nil
@@ -222,11 +237,11 @@ func TestClientFetchArtifactClassifiesOneFetchWithoutURIConventions(t *testing.T
 			if documentOK != test.wantDocument || proposalOK != test.wantProposal || documentOK == proposalOK {
 				t.Fatalf("artifact kinds document/proposal = %t/%t", documentOK, proposalOK)
 			}
-			if documentOK && !gotDocument.OperationSet().Equal(operations) {
+			if documentOK && !r3FetchOperationSetsEqual(t, gotDocument.OperationSet(), operations) {
 				t.Fatalf("document operation set = %#v", gotDocument.OperationSet())
 			}
-			if proposalOK && gotProposal.Operation().Tool() != operation.Tool() {
-				t.Fatalf("proposal operation = %q", gotProposal.Operation().Tool())
+			if proposalOK && !r3FetchOperationsEqual(t, gotProposal.Operation(), operation) {
+				t.Fatalf("proposal operation = %s", gotProposal.Operation().JSON())
 			}
 			gotExact := artifact.ExactBytes()
 			if !bytes.Equal(gotExact, test.exact) || calls != 1 {
@@ -246,9 +261,11 @@ func TestClientFetchArtifactRefusesBytesThatAreNeitherStrictArtifact(t *testing.
 	now := time.Date(2026, 8, 31, 8, 11, 30, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "as-key", 8)
+	registry := r3FetchRegistry(t)
 	malformed := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[],"parameters":{}}`)
 	calls := 0
 	client, err := New(Config{
+		Registry: registry,
 		HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 			calls++
 			return r3FetchResponse(http.StatusOK, malformed, nil), nil
@@ -275,6 +292,7 @@ func TestClientFetchProposalBindsDigestBeforeStrictParsing(t *testing.T) {
 	now := time.Date(2026, 8, 31, 8, 12, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "as-key", 6)
+	registry := r3FetchRegistry(t)
 	valid := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}],"parameters":{}}`)
 	malformed := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}],"parameters":[]}`)
 
@@ -288,6 +306,7 @@ func TestClientFetchProposalBindsDigestBeforeStrictParsing(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client, err := New(Config{
+				Registry: registry,
 				HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 					return r3FetchResponse(http.StatusOK, test.body, nil), nil
 				})},
@@ -311,6 +330,7 @@ func TestClientSharesUnsafeOrInexactResponseProtectionsAcrossFetchKinds(t *testi
 	now := time.Date(2026, 8, 31, 8, 15, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "as-key", 2)
+	registry := r3FetchRegistry(t)
 	exact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}`)
 	reference, _ := r3.NewReference("https://resource.example/r3/document", r3.Digest(exact))
 
@@ -350,6 +370,7 @@ func TestClientSharesUnsafeOrInexactResponseProtectionsAcrossFetchKinds(t *testi
 					return r3FetchResponse(test.status, test.body, test.header), nil
 				})
 				client, err := New(Config{
+					Registry:   registry,
 					HTTPClient: &http.Client{Transport: transport},
 					SigningKey: key, Issuer: "https://as.example",
 					DiscoveryDocument: aauth.AccessDiscoveryDocument, Clock: clock,
@@ -385,9 +406,11 @@ func TestClientFetchTimeoutBoundsEgressAdmission(t *testing.T) {
 	now := time.Date(2026, 8, 31, 8, 30, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	key := r3FetchTestKey(t, "ps-key", 3)
+	registry := r3FetchRegistry(t)
 	exact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}`)
 	reference, _ := r3.NewReference("https://resource.example/r3/document", r3.Digest(exact))
 	client, err := New(Config{
+		Registry: registry,
 		HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 			t.Fatal("timed-out admission reached transport")
 			return nil, nil
@@ -405,7 +428,7 @@ func TestClientFetchTimeoutBoundsEgressAdmission(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := client.Fetch(context.Background(), reference)
+		_, _, err := client.FetchDocument(context.Background(), reference)
 		done <- err
 	}()
 	select {
@@ -449,6 +472,33 @@ func mustR3FetchReference(t *testing.T, uri string, exact []byte) r3.Reference {
 		t.Fatal(err)
 	}
 	return reference
+}
+
+func r3FetchRegistry(t *testing.T) r3.Registry {
+	t.Helper()
+	registry, err := r3.NewRegistry(mcp.Vocabulary())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func r3FetchOperationSetsEqual(t *testing.T, left, right r3.OperationSet) bool {
+	t.Helper()
+	equal, err := left.Equal(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return equal
+}
+
+func r3FetchOperationsEqual(t *testing.T, left, right r3.Operation) bool {
+	t.Helper()
+	equal, err := left.Equal(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return equal
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

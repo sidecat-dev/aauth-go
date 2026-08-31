@@ -151,18 +151,18 @@ func (server *Server) serveAuthTokenProtected(
 	var (
 		proof         signaturekey.VerifiedRequest
 		claims        aauth.AuthTokenClaims
-		authorization *mcpR3ProtectedAuthorization
+		authorization *r3ProtectedAuthorization
 	)
 	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
 	if err != nil {
 		writeCredentialProblem(response, "invalid_token", &requestTokenError{cause: err})
 		return
 	}
-	if server.mcpR3 != nil && carriesR3 {
+	if server.r3 != nil && carriesR3 {
 		var reference r3.Reference
 		var operations r3.AuthTokenOperations
-		proof, claims, reference, operations, err = server.verifyPreparedMCPR3AuthRequest(request, prepared, compact)
-		authorization = &mcpR3ProtectedAuthorization{reference: reference, operations: operations}
+		proof, claims, reference, operations, err = server.verifyPreparedR3AuthRequest(request, prepared, compact)
+		authorization = &r3ProtectedAuthorization{reference: reference, operations: operations}
 	} else {
 		proof, claims, err = server.verifyPreparedAuthRequest(request, prepared, compact)
 	}
@@ -223,41 +223,46 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
 		return
 	}
-	operation, mapped, err := server.mcpR3OperationForRequest(request)
+	operation, mapped, err := server.r3OperationForRequest(request)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
 	if authorization == nil {
 		if mapped {
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP R3 authorization is required for this route"))
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("R3 authorization is required for this route"))
 			return
 		}
 	} else {
 		if !mapped {
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP operation is not granted"))
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("R3 operation is not granted"))
 			return
 		}
-		referenceKind, err := server.validateMCPR3ProtectedReference(*authorization, claims)
+		referenceKind, err := server.validateR3ProtectedReference(*authorization, claims)
 		if err != nil {
 			writeProblem(response, http.StatusForbidden, "access_denied", err)
 			return
 		}
-		if referenceKind == mcpR3ClassReference && authorization.operations.GrantedOperations().Contains(operation) {
+		access, err := authorization.operations.AccessFor(operation)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if referenceKind == r3ClassReference && access == r3.OperationAccessGranted {
 			// The AS-signed class grant is directly enforceable without a
 			// document lookup.
-		} else if referenceKind == mcpR3ClassReference && authorization.operations.PerCallOperations().Contains(operation) {
-			server.serveMCPR3PerCallChallenge(
+		} else if referenceKind == r3ClassReference && access == r3.OperationAccessPerCall {
+			server.serveR3PerCallChallenge(
 				response, request, proof, claims, *authorization, operation, requiredScopes,
 			)
 			return
-		} else if referenceKind == mcpR3ProposalReference {
-			server.serveMCPR3RetryCompletion(
+		} else if referenceKind == r3ProposalReference && access == r3.OperationAccessGranted {
+			server.serveR3RetryCompletion(
 				response, request, proof, claims, *authorization, operation, scopes, compact,
 			)
 			return
 		} else {
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP operation is not granted"))
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("R3 operation is not granted"))
 			return
 		}
 	}

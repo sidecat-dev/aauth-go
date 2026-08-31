@@ -20,14 +20,17 @@ type R3IssuanceRecord struct {
 	ExactAuthToken     string
 	Resource           string
 	R3Reference        r3.Reference
-	IssuedAt           time.Time
-	PersonServer       string
-	Subject            string
-	Account            *string
-	PresentedJTI       string
-	AgentJKT           string
-	Agent              string
-	ParentAgent        string
+	// Vocabulary is the exact URI selected while parsing the referenced
+	// document or proposal, retained so audit consumers need not re-fetch it.
+	Vocabulary   r3.VocabularyURI
+	IssuedAt     time.Time
+	PersonServer string
+	Subject      string
+	Account      *string
+	PresentedJTI string
+	AgentJKT     string
+	Agent        string
+	ParentAgent  string
 }
 
 // R3IssuanceStore durably and confidentially retains one complete issuance as

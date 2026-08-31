@@ -19,16 +19,17 @@ const (
 	r3PerCallClaim = "r3_per_call"
 )
 
-// MintMCPResourceToken validates one exact MCP document, binds its account to
+// MintResourceToken validates one exact registered-vocabulary document, binds its account to
 // the Core claims, derives the document reference, and mints an R3 Resource
 // token. Scope is optional at this wire boundary.
-func MintMCPResourceToken(
+func MintResourceToken(
+	registry Registry,
 	key jose.SigningKey,
 	claims aauth.ResourceTokenClaims,
 	documentURI string,
 	exactDocument []byte,
 ) (string, Reference, error) {
-	document, err := ParseDocument(exactDocument)
+	document, err := registry.ParseDocument(exactDocument)
 	if err != nil {
 		return "", Reference{}, fmt.Errorf("r3: resource-token document: %w", err)
 	}
@@ -39,7 +40,7 @@ func MintMCPResourceToken(
 	if err != nil {
 		return "", Reference{}, fmt.Errorf("r3: resource-token reference: %w", err)
 	}
-	additional, err := prepareMCPResourceClaims(claims.AdditionalClaims, reference)
+	additional, err := prepareResourceClaims(claims.AdditionalClaims, reference)
 	if err != nil {
 		return "", Reference{}, err
 	}
@@ -51,16 +52,17 @@ func MintMCPResourceToken(
 	return compact, reference, nil
 }
 
-// MintMCPProposalResourceToken validates one exact per-call proposal, binds
+// MintProposalResourceToken validates one exact per-call proposal, binds
 // its account to the Core claims, and mints the Resource token that carries
 // the proposal reference to the Person and Access Servers.
-func MintMCPProposalResourceToken(
+func MintProposalResourceToken(
+	registry Registry,
 	key jose.SigningKey,
 	claims aauth.ResourceTokenClaims,
 	proposalURI string,
 	exactProposal []byte,
 ) (string, Reference, error) {
-	proposal, err := ParseMCPProposal(exactProposal)
+	proposal, err := registry.ParseProposal(exactProposal)
 	if err != nil {
 		return "", Reference{}, fmt.Errorf("r3: proposal resource-token document: %w", err)
 	}
@@ -71,7 +73,7 @@ func MintMCPProposalResourceToken(
 	if err != nil {
 		return "", Reference{}, fmt.Errorf("r3: proposal resource-token reference: %w", err)
 	}
-	additional, err := prepareMCPResourceClaims(claims.AdditionalClaims, reference)
+	additional, err := prepareResourceClaims(claims.AdditionalClaims, reference)
 	if err != nil {
 		return "", Reference{}, err
 	}
@@ -83,11 +85,11 @@ func MintMCPProposalResourceToken(
 	return compact, reference, nil
 }
 
-// VerifyMCPResourceToken verifies Core token trust and a complete MCP R3
+// VerifyResourceToken verifies Core token trust and a complete R3
 // reference. It validates only the signed reference syntax; it does not fetch
 // or hash document bytes. Call ParseReferencedDocument after an entitled
 // fetch, then ValidateDocumentAccount before policy.
-func VerifyMCPResourceToken(
+func VerifyResourceToken(
 	ctx context.Context,
 	compact string,
 	resolver signaturekey.KeyResolver,
@@ -97,7 +99,7 @@ func VerifyMCPResourceToken(
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, Reference{}, err
 	}
-	if err := validateMCPResourceClaims(claims.AdditionalClaims); err != nil {
+	if err := validateResourceClaims(claims.AdditionalClaims); err != nil {
 		return aauth.ResourceTokenClaims{}, Reference{}, err
 	}
 	reference, err := referenceFromClaims(claims.AdditionalClaims)
@@ -108,17 +110,18 @@ func VerifyMCPResourceToken(
 	return claims, reference, nil
 }
 
-// MintMCPDirectAuthToken mints the direct-only MCP profile after re-proving
+// MintDirectAuthToken mints a direct-only R3 token after re-proving
 // the supplied grant against the exact document bytes named by reference.
 // It does not implement r3_per_call or Budgets composition.
-func MintMCPDirectAuthToken(
+func MintDirectAuthToken(
+	registry Registry,
 	key jose.SigningKey,
 	claims aauth.AuthTokenClaims,
 	reference Reference,
 	exactDocument []byte,
 	grant Grant,
 ) (string, error) {
-	document, err := ParseReferencedDocument(reference, exactDocument)
+	document, err := registry.ParseReferencedDocument(reference, exactDocument)
 	if err != nil {
 		return "", fmt.Errorf("r3: direct auth-token document: %w", err)
 	}
@@ -129,10 +132,10 @@ func MintMCPDirectAuthToken(
 	if err != nil {
 		return "", fmt.Errorf("r3: direct auth-token grant: %w", err)
 	}
-	if _, err := ParseGrant(grantJSON, document); err != nil {
+	if _, err := registry.ParseGrant(grantJSON, document); err != nil {
 		return "", fmt.Errorf("r3: direct auth-token grant does not match referenced document: %w", err)
 	}
-	emptyPerCall, err := NewGrantedOperations()
+	emptyPerCall, err := NewGrantedOperations(document.operationSet.value.vocabulary)
 	if err != nil {
 		return "", err
 	}
@@ -140,19 +143,20 @@ func MintMCPDirectAuthToken(
 	if err != nil {
 		return "", err
 	}
-	return MintMCPAuthToken(key, claims, reference, exactDocument, authorization)
+	return MintAuthToken(registry, key, claims, reference, exactDocument, authorization)
 }
 
-// MintMCPAuthToken mints an MCP class Auth token after re-proving disjoint
+// MintAuthToken mints an R3 class Auth token after re-proving disjoint
 // direct and per-call operation sets against the exact class document.
-func MintMCPAuthToken(
+func MintAuthToken(
+	registry Registry,
 	key jose.SigningKey,
 	claims aauth.AuthTokenClaims,
 	reference Reference,
 	exactDocument []byte,
 	authorization Authorization,
 ) (string, error) {
-	document, err := ParseReferencedDocument(reference, exactDocument)
+	document, err := registry.ParseReferencedDocument(reference, exactDocument)
 	if err != nil {
 		return "", fmt.Errorf("r3: class auth-token document: %w", err)
 	}
@@ -179,7 +183,7 @@ func MintMCPAuthToken(
 			return "", fmt.Errorf("r3: class auth-token per-call operations: %w", err)
 		}
 	}
-	additional, err := prepareMCPAuthClaims(claims.AdditionalClaims, reference, grantedJSON, perCallJSON)
+	additional, err := prepareAuthClaims(claims.AdditionalClaims, reference, grantedJSON, perCallJSON)
 	if err != nil {
 		return "", err
 	}
@@ -187,22 +191,23 @@ func MintMCPAuthToken(
 	return aauth.MintAuthTokenCore(key, claims)
 }
 
-// MintMCPPerCallAuthToken mints the one-operation Auth token for an approved
+// MintPerCallAuthToken mints the one-operation Auth token for an approved
 // exact proposal. It never carries r3_per_call forward.
-func MintMCPPerCallAuthToken(
+func MintPerCallAuthToken(
+	registry Registry,
 	key jose.SigningKey,
 	claims aauth.AuthTokenClaims,
 	reference Reference,
 	exactProposal []byte,
 ) (string, error) {
-	proposal, err := ParseReferencedProposal(reference, exactProposal)
+	proposal, err := registry.ParseReferencedProposal(reference, exactProposal)
 	if err != nil {
 		return "", fmt.Errorf("r3: per-call auth-token proposal: %w", err)
 	}
 	if err := ValidateProposalAccount(proposal, claims.Account); err != nil {
 		return "", fmt.Errorf("r3: per-call auth-token account: %w", err)
 	}
-	granted, err := NewGrantedOperations(proposal.Operation())
+	granted, err := NewGrantedOperations(proposal.operation.value.vocabulary, proposal.Operation())
 	if err != nil {
 		return "", err
 	}
@@ -210,7 +215,7 @@ func MintMCPPerCallAuthToken(
 	if err != nil {
 		return "", fmt.Errorf("r3: per-call auth-token operation: %w", err)
 	}
-	additional, err := prepareMCPAuthClaims(claims.AdditionalClaims, reference, grantedJSON, nil)
+	additional, err := prepareAuthClaims(claims.AdditionalClaims, reference, grantedJSON, nil)
 	if err != nil {
 		return "", err
 	}
@@ -218,37 +223,39 @@ func MintMCPPerCallAuthToken(
 	return aauth.MintAuthTokenCore(key, claims)
 }
 
-// VerifyMCPDirectAuthToken verifies Core trust, one complete R3 reference,
+// VerifyDirectAuthToken verifies Core trust, one complete R3 reference,
 // and a strict r3_granted claim while refusing per-call and Budget claims.
 // A Resource may enforce the trusted AS-signed grant directly without fetching
-// the document. An issuer constructing a token without MintMCPDirectAuthToken
+// the document. An issuer constructing a token without MintDirectAuthToken
 // must first call ParseReferencedDocument, ValidateDocumentAccount, and NewGrant.
-func VerifyMCPDirectAuthToken(
+func VerifyDirectAuthToken(
 	ctx context.Context,
+	registry Registry,
 	compact string,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
 ) (aauth.AuthTokenClaims, Reference, GrantedOperations, error) {
-	claims, reference, granted, perCall, perCallPresent, err := verifyMCPAuthToken(ctx, compact, resolver, clock)
+	claims, reference, granted, perCall, perCallPresent, err := verifyAuthToken(ctx, registry, compact, resolver, clock)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, err
 	}
 	if perCallPresent || len(perCall.Operations()) != 0 {
-		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, errors.New("r3: MCP direct Auth token must not contain r3_per_call")
+		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, errors.New("r3: direct Auth token must not contain r3_per_call")
 	}
 	return claims, reference, granted, nil
 }
 
-// VerifyMCPAuthTokenClaims verifies the signed R3 claim shape without
+// VerifyAuthTokenClaims verifies the signed R3 claim shape without
 // classifying the referenced artifact. A Resource must establish class versus
 // proposal custody before selecting direct or single-use enforcement.
-func VerifyMCPAuthTokenClaims(
+func VerifyAuthTokenClaims(
 	ctx context.Context,
+	registry Registry,
 	compact string,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
 ) (aauth.AuthTokenClaims, Reference, AuthTokenOperations, error) {
-	claims, reference, granted, perCall, perCallPresent, err := verifyMCPAuthToken(ctx, compact, resolver, clock)
+	claims, reference, granted, perCall, perCallPresent, err := verifyAuthToken(ctx, registry, compact, resolver, clock)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, AuthTokenOperations{}, err
 	}
@@ -257,45 +264,51 @@ func VerifyMCPAuthTokenClaims(
 	}, nil
 }
 
-// VerifyMCPPerCallAuthToken verifies a granted-only token containing exactly
+// VerifyPerCallAuthToken verifies a granted-only token containing exactly
 // one operation and no r3_per_call claim.
-func VerifyMCPPerCallAuthToken(
+func VerifyPerCallAuthToken(
 	ctx context.Context,
+	registry Registry,
 	compact string,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
 	expectedReference Reference,
 	exactProposal []byte,
-) (aauth.AuthTokenClaims, Reference, MCPOperation, error) {
-	proposal, err := ParseReferencedProposal(expectedReference, exactProposal)
+) (aauth.AuthTokenClaims, Reference, Operation, error) {
+	proposal, err := registry.ParseReferencedProposal(expectedReference, exactProposal)
 	if err != nil {
-		return aauth.AuthTokenClaims{}, Reference{}, MCPOperation{}, fmt.Errorf("r3: verify per-call proposal: %w", err)
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, fmt.Errorf("r3: verify per-call proposal: %w", err)
 	}
-	claims, reference, granted, perCall, perCallPresent, err := verifyMCPAuthToken(ctx, compact, resolver, clock)
+	claims, reference, granted, perCall, perCallPresent, err := verifyAuthToken(ctx, registry, compact, resolver, clock)
 	if err != nil {
-		return aauth.AuthTokenClaims{}, Reference{}, MCPOperation{}, err
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, err
 	}
 	if perCallPresent || len(perCall.Operations()) != 0 {
-		return aauth.AuthTokenClaims{}, Reference{}, MCPOperation{}, errors.New("r3: per-call Auth token must not contain r3_per_call")
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token must not contain r3_per_call")
 	}
 	if reference != expectedReference {
-		return aauth.AuthTokenClaims{}, Reference{}, MCPOperation{}, errors.New("r3: per-call Auth token changed the proposal reference")
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token changed the proposal reference")
 	}
 	if err := ValidateProposalAccount(proposal, claims.Account); err != nil {
-		return aauth.AuthTokenClaims{}, Reference{}, MCPOperation{}, fmt.Errorf("r3: per-call Auth token account: %w", err)
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, fmt.Errorf("r3: per-call Auth token account: %w", err)
 	}
 	operations := granted.Operations()
 	if len(operations) != 1 {
-		return aauth.AuthTokenClaims{}, Reference{}, MCPOperation{}, errors.New("r3: per-call Auth token must grant exactly one operation")
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token must grant exactly one operation")
 	}
-	if operations[0] != proposal.Operation() {
-		return aauth.AuthTokenClaims{}, Reference{}, MCPOperation{}, errors.New("r3: per-call Auth token granted an operation other than the proposal")
+	equal, err := operations[0].Equal(proposal.Operation())
+	if err != nil {
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, err
+	}
+	if !equal {
+		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token granted an operation other than the proposal")
 	}
 	return claims, reference, operations[0], nil
 }
 
-func verifyMCPAuthToken(
+func verifyAuthToken(
 	ctx context.Context,
+	registry Registry,
 	compact string,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
@@ -304,31 +317,34 @@ func verifyMCPAuthToken(
 	if err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, err
 	}
-	if err := validateMCPAuthClaims(claims.AdditionalClaims); err != nil {
+	if err := validateAuthClaims(claims.AdditionalClaims); err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, err
 	}
 	reference, err := referenceFromClaims(claims.AdditionalClaims)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, err
 	}
-	var granted GrantedOperations
-	if err := json.Unmarshal(claims.AdditionalClaims[r3GrantedClaim], &granted); err != nil {
+	granted, err := registry.ParseGrantedOperations(claims.AdditionalClaims[r3GrantedClaim])
+	if err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, fmt.Errorf("r3: invalid r3_granted: %w", err)
 	}
-	perCall, err := NewGrantedOperations()
+	perCall, err := NewGrantedOperations(granted.value.vocabulary)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, err
 	}
 	perCallRaw, perCallPresent := claims.AdditionalClaims[r3PerCallClaim]
 	if perCallPresent {
-		if err := json.Unmarshal(perCallRaw, &perCall); err != nil {
+		perCall, err = registry.ParseGrantedOperations(perCallRaw)
+		if err != nil {
 			return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, fmt.Errorf("r3: invalid r3_per_call: %w", err)
 		}
 	}
-	for _, operation := range granted.operations {
-		if perCall.Contains(operation) {
-			return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, fmt.Errorf("r3: MCP tool %q occurs in both r3_granted and r3_per_call", operation.tool)
-		}
+	disjoint, err := granted.Disjoint(perCall)
+	if err != nil {
+		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, err
+	}
+	if !disjoint {
+		return aauth.AuthTokenClaims{}, Reference{}, GrantedOperations{}, GrantedOperations{}, false, errors.New("r3: r3_granted and r3_per_call overlap")
 	}
 	removeClaims(&claims.AdditionalClaims, r3URIClaim, r3S256Claim, r3GrantedClaim, r3PerCallClaim)
 	return claims, reference, granted, perCall, perCallPresent, nil
@@ -353,12 +369,12 @@ func ValidateDocumentAccount(document Document, tokenAccount *string) error {
 	return nil
 }
 
-func prepareMCPResourceClaims(additional map[string]json.RawMessage, reference Reference) (map[string]json.RawMessage, error) {
+func prepareResourceClaims(additional map[string]json.RawMessage, reference Reference) (map[string]json.RawMessage, error) {
 	prepared := cloneClaims(additional)
 	if err := rejectClaimCollisions(aauth.ResourceTokenType, prepared, r3URIClaim, r3S256Claim); err != nil {
 		return nil, err
 	}
-	if err := rejectUnsupportedMCPResourceClaims(aauth.ResourceTokenType, prepared); err != nil {
+	if err := rejectUnsupportedResourceClaims(aauth.ResourceTokenType, prepared); err != nil {
 		return nil, err
 	}
 	if err := setStringClaim(prepared, r3URIClaim, reference.URI()); err != nil {
@@ -370,7 +386,7 @@ func prepareMCPResourceClaims(additional map[string]json.RawMessage, reference R
 	return prepared, nil
 }
 
-func prepareMCPAuthClaims(
+func prepareAuthClaims(
 	additional map[string]json.RawMessage,
 	reference Reference,
 	grantJSON, perCallJSON []byte,
@@ -397,17 +413,17 @@ func prepareMCPAuthClaims(
 	return prepared, nil
 }
 
-func validateMCPResourceClaims(additional map[string]json.RawMessage) error {
+func validateResourceClaims(additional map[string]json.RawMessage) error {
 	if err := requireExactClaims(aauth.ResourceTokenType, additional, r3URIClaim, r3S256Claim); err != nil {
 		return err
 	}
 	if err := rejectCaseVariants(aauth.ResourceTokenType, additional, r3URIClaim, r3S256Claim); err != nil {
 		return err
 	}
-	return rejectUnsupportedMCPResourceClaims(aauth.ResourceTokenType, additional)
+	return rejectUnsupportedResourceClaims(aauth.ResourceTokenType, additional)
 }
 
-func validateMCPAuthClaims(additional map[string]json.RawMessage) error {
+func validateAuthClaims(additional map[string]json.RawMessage) error {
 	if err := requireExactClaims(
 		aauth.AuthTokenType, additional, r3URIClaim, r3S256Claim, r3GrantedClaim,
 	); err != nil {
@@ -421,14 +437,14 @@ func validateMCPAuthClaims(additional map[string]json.RawMessage) error {
 	return rejectBudgetClaims(aauth.AuthTokenType, additional)
 }
 
-func rejectUnsupportedMCPResourceClaims(tokenType string, additional map[string]json.RawMessage) error {
+func rejectUnsupportedResourceClaims(tokenType string, additional map[string]json.RawMessage) error {
 	if err := rejectFoldedClaims(
 		tokenType, additional, "the claim belongs only in an Auth token", r3GrantedClaim,
 	); err != nil {
 		return err
 	}
 	if err := rejectFoldedClaims(
-		tokenType, additional, "this MCP Resource-token API does not implement per-call authorization", r3PerCallClaim,
+		tokenType, additional, "this R3 Resource-token API does not implement per-call authorization", r3PerCallClaim,
 	); err != nil {
 		return err
 	}
@@ -498,7 +514,7 @@ func rejectFoldedClaims(tokenType string, additional map[string]json.RawMessage,
 
 func rejectBudgetClaims(tokenType string, additional map[string]json.RawMessage) error {
 	return rejectFoldedClaims(
-		tokenType, additional, "this MCP R3 API does not validate the Budgets companion",
+		tokenType, additional, "this R3 API does not validate the Budgets companion",
 		"budget", "budget_consumed",
 	)
 }

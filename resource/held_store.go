@@ -72,12 +72,12 @@ type HeldInvocation struct {
 
 // HeldR3PerCall binds a pending invocation to the exact per-call proposal
 // created before the Resource exposed its 202 response. The proposal and
-// class references identify immutable retained records; Operation is the
-// single operation the eventual Auth token must grant.
+// class references identify immutable retained records. ExactProposal carries
+// the complete operation, parameter, account, and display artifact and is
+// parsed through the Resource's current registry after Load.
 type HeldR3PerCall struct {
 	Reference      r3.Reference
 	ClassReference r3.Reference
-	Operation      r3.MCPOperation
 	ExactProposal  []byte
 }
 

@@ -1,6 +1,6 @@
 // Package resource implements direct Agent and Person identity access,
 // Resource-managed opaque sessions, and explicit PS-authorized or federated
-// auth-token access. It also implements immediate direct-grant MCP R3
+// auth-token access. It also implements immediate R3 class and per-call
 // documents and enforcement, exposes a verified auth token to a call-chain
 // intermediary, retains observed three-party revocation state, and supports
 // Resource-held delivery in the federated composition.
@@ -16,7 +16,6 @@ import (
 
 	aauth "aauth-go"
 	"aauth-go/jose"
-	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
@@ -30,7 +29,7 @@ type FederatedAuthorizationConfig struct {
 	AccessServer string
 	SigningKey   jose.SigningKey
 	// KeyResolver must retain the Resource's own historical verification keys
-	// for the lifetime of every MCP R3 class authorization.
+	// for the lifetime of every R3 class authorization.
 	KeyResolver signaturekey.KeyResolver
 	Clock       aauth.Clock
 	// NewID must be concurrency-safe and return a nonempty identifier that is
@@ -45,8 +44,8 @@ type FederatedAuthorizationConfig struct {
 	// the verified person before the account enters a Resource token.
 	ValidateAccount func(context.Context, PersonIdentity, string) error
 	Protected       http.Handler
-	// MCPR3 optionally enables the direct-grant MCP companion profile.
-	MCPR3 *MCPR3Config
+	// R3 optionally enables registered R3 authorization on this HTTP Resource.
+	R3 *R3Config
 	// HeldInvocations enables Resource-held auth-token delivery. The host store
 	// is a trusted persistence and authorization boundary; see
 	// HeldInvocationStore.
@@ -61,7 +60,7 @@ type FederatedAuthorizationConfig struct {
 	MaxRetainedResponseBodyBytes int64
 	// MaxRetainedHeaderBytes bounds retained request headers and response headers
 	// plus trailers. All three retained-application limits must be positive when
-	// held delivery or MCP R3 per-call retry is configured, and zero otherwise.
+	// held delivery or R3 per-call retry is configured, and zero otherwise.
 	MaxRetainedHeaderBytes int64
 }
 
@@ -248,7 +247,7 @@ type Server struct {
 	maxRetainedRequestBodyBytes   int64
 	maxRetainedResponseBodyBytes  int64
 	maxRetainedHeaderBytes        int64
-	mcpR3                         *mcpR3Config
+	r3                            *r3Config
 	handler                       http.Handler
 }
 
@@ -390,14 +389,14 @@ func newAuthorizationServer(
 	if config.HoldAuthTokenRequest != nil && config.HeldInvocations == nil {
 		return nil, errors.New("aauth: resource held-request selector requires held invocations")
 	}
-	mcpR3, err := validateMCPR3Config(config.MCPR3)
+	validatedR3, err := validateR3Config(config.R3)
 	if err != nil {
 		return nil, err
 	}
-	if mcpR3 != nil && topology != authorizationTopologyFederated {
-		return nil, errors.New("aauth: MCP R3 requires federated authorization")
+	if validatedR3 != nil && topology != authorizationTopologyFederated {
+		return nil, errors.New("aauth: R3 requires federated authorization")
 	}
-	retainsApplication := config.HeldInvocations != nil || mcpR3 != nil && mcpR3.perCall != nil
+	retainsApplication := config.HeldInvocations != nil || validatedR3 != nil && validatedR3.perCall != nil
 	for _, bound := range []struct {
 		name  string
 		limit int64
@@ -456,7 +455,7 @@ func newAuthorizationServer(
 		maxRetainedRequestBodyBytes:   config.MaxRetainedRequestBodyBytes,
 		maxRetainedResponseBodyBytes:  config.MaxRetainedResponseBodyBytes,
 		maxRetainedHeaderBytes:        config.MaxRetainedHeaderBytes,
-		mcpR3:                         mcpR3,
+		r3:                            validatedR3,
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -499,8 +498,8 @@ func (server *Server) newHandler() http.Handler {
 	if server.authTokenStatuses != nil {
 		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
-	if server.mcpR3 != nil {
-		mux.HandleFunc("/r3/{document}", server.serveMCPR3Document)
+	if server.r3 != nil {
+		mux.HandleFunc("/r3/{document}", server.serveR3Document)
 	}
 	if server.heldInvocations != nil {
 		mux.HandleFunc("GET /pending/{id}", server.serveHeldPoll)
@@ -536,10 +535,14 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 }
 
 func resourceR3Vocabularies(server *Server) map[string]string {
-	if server == nil || server.mcpR3 == nil {
+	if server == nil || server.r3 == nil {
 		return nil
 	}
-	return map[string]string{r3.MCPVocabulary: server.mcpR3.discoveryEndpoint}
+	vocabularies := make(map[string]string, len(server.r3.vocabularyOrder))
+	for _, uri := range server.r3.vocabularyOrder {
+		vocabularies[string(uri)] = server.r3.vocabularies[uri].discoveryEndpoint
+	}
+	return vocabularies
 }
 
 func resourceJWKSURI(server *Server) string {

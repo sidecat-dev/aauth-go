@@ -147,48 +147,48 @@ const (
 	parameterDigest
 )
 
-// MCPParameter is either an owned inline JSON value or an exact-byte digest
+// Parameter is either an owned inline JSON value or an exact-byte digest
 // descriptor. Objects using a digest-descriptor member name are reserved for
 // the descriptor shape so they cannot change interpretation after approval.
-type MCPParameter struct {
+type Parameter struct {
 	kind   parameterKind
 	inline json.RawMessage
 	digest ParameterDigest
 }
 
-// NewMCPInlineParameter constructs an owned, strictly parsed inline JSON
+// NewInlineParameter constructs an owned, strictly parsed inline JSON
 // parameter value.
-func NewMCPInlineParameter(value []byte) (MCPParameter, error) {
+func NewInlineParameter(value []byte) (Parameter, error) {
 	parsed, err := decodeStrictJSONValue(value)
 	if err != nil {
-		return MCPParameter{}, fmt.Errorf("r3: invalid inline parameter: %w", err)
+		return Parameter{}, fmt.Errorf("r3: invalid inline parameter: %w", err)
 	}
 	if object, ok := parsed.(map[string]any); ok && containsDigestMember(object) {
-		return MCPParameter{}, errors.New("r3: inline parameter uses a reserved digest descriptor member")
+		return Parameter{}, errors.New("r3: inline parameter uses a reserved digest descriptor member")
 	}
 	encoded, err := json.Marshal(parsed)
 	if err != nil {
-		return MCPParameter{}, fmt.Errorf("r3: encode inline parameter: %w", err)
+		return Parameter{}, fmt.Errorf("r3: encode inline parameter: %w", err)
 	}
-	return MCPParameter{kind: parameterInline, inline: append(json.RawMessage(nil), encoded...)}, nil
+	return Parameter{kind: parameterInline, inline: append(json.RawMessage(nil), encoded...)}, nil
 }
 
-// NewMCPDigestParameter constructs an exact-byte digest parameter.
-func NewMCPDigestParameter(s256, excerpt, mediaType string) (MCPParameter, error) {
+// NewDigestParameter constructs an exact-byte digest parameter.
+func NewDigestParameter(s256, excerpt, mediaType string) (Parameter, error) {
 	digest, err := newParameterDigest(s256, excerpt, mediaType)
 	if err != nil {
-		return MCPParameter{}, err
+		return Parameter{}, err
 	}
-	return MCPParameter{kind: parameterDigest, digest: digest}, nil
+	return Parameter{kind: parameterDigest, digest: digest}, nil
 }
 
-// NewMCPDigestParameterFromBytes constructs a digest descriptor from the
+// NewDigestParameterFromBytes constructs a digest descriptor from the
 // exact bytes the Resource received for the call.
-func NewMCPDigestParameterFromBytes(exact []byte, excerpt, mediaType string) (MCPParameter, error) {
-	return NewMCPDigestParameter(Digest(exact), excerpt, mediaType)
+func NewDigestParameterFromBytes(exact []byte, excerpt, mediaType string) (Parameter, error) {
+	return NewDigestParameter(Digest(exact), excerpt, mediaType)
 }
 
-func (p MCPParameter) validate() error {
+func (p Parameter) validate() error {
 	switch p.kind {
 	case parameterInline:
 		if len(p.inline) == 0 {
@@ -204,14 +204,14 @@ func (p MCPParameter) validate() error {
 	}
 }
 
-func (p MCPParameter) clone() MCPParameter {
+func (p Parameter) clone() Parameter {
 	cloned := p
 	cloned.inline = append(json.RawMessage(nil), p.inline...)
 	return cloned
 }
 
 // InlineJSON returns an owned copy of the inline JSON value, when present.
-func (p MCPParameter) InlineJSON() ([]byte, bool) {
+func (p Parameter) InlineJSON() ([]byte, bool) {
 	if p.kind != parameterInline || p.validate() != nil {
 		return nil, false
 	}
@@ -219,14 +219,14 @@ func (p MCPParameter) InlineJSON() ([]byte, bool) {
 }
 
 // Digest returns the digest descriptor, when present.
-func (p MCPParameter) Digest() (ParameterDigest, bool) {
+func (p Parameter) Digest() (ParameterDigest, bool) {
 	if p.kind != parameterDigest || p.validate() != nil {
 		return ParameterDigest{}, false
 	}
 	return p.digest, true
 }
 
-func (p MCPParameter) matches(presented PresentedMCPParameter) (bool, error) {
+func (p Parameter) matches(presented PresentedParameter) (bool, error) {
 	if err := p.validate(); err != nil {
 		return false, err
 	}
@@ -247,28 +247,50 @@ func (p MCPParameter) matches(presented PresentedMCPParameter) (bool, error) {
 	return equalJSONValues(want, got), nil
 }
 
-// PresentedMCPParameter explicitly distinguishes JSON values, which compare
+// PresentedParameter explicitly distinguishes JSON values, which compare
 // structurally, from exact bytes used by an approved digest descriptor.
-type PresentedMCPParameter struct {
+type PresentedParameter struct {
 	kind  parameterKind
 	value []byte
 }
 
-// NewPresentedMCPInlineParameter constructs one strictly parsed call-time JSON
-// value for structural comparison.
-func NewPresentedMCPInlineParameter(value []byte) (PresentedMCPParameter, error) {
-	if _, err := decodeStrictJSONValue(value); err != nil {
-		return PresentedMCPParameter{}, fmt.Errorf("r3: invalid presented inline parameter: %w", err)
+func (p PresentedParameter) clone() PresentedParameter {
+	return PresentedParameter{kind: p.kind, value: append([]byte(nil), p.value...)}
+}
+
+// InlineJSON returns an owned call-time JSON value when this parameter is
+// compared structurally.
+func (p PresentedParameter) InlineJSON() ([]byte, bool) {
+	if p.kind != parameterInline || p.validate() != nil {
+		return nil, false
 	}
-	return PresentedMCPParameter{kind: parameterInline, value: append([]byte(nil), value...)}, nil
+	return append([]byte(nil), p.value...), true
 }
 
-// NewPresentedMCPDigestBytes constructs one owned exact-byte call-time value.
-func NewPresentedMCPDigestBytes(value []byte) PresentedMCPParameter {
-	return PresentedMCPParameter{kind: parameterDigest, value: append([]byte(nil), value...)}
+// ExactBytes returns an owned call-time byte sequence when this parameter is
+// bound by a digest descriptor.
+func (p PresentedParameter) ExactBytes() ([]byte, bool) {
+	if p.kind != parameterDigest || p.validate() != nil {
+		return nil, false
+	}
+	return append([]byte(nil), p.value...), true
 }
 
-func (p PresentedMCPParameter) validate() error {
+// NewPresentedInlineParameter constructs one strictly parsed call-time JSON
+// value for structural comparison.
+func NewPresentedInlineParameter(value []byte) (PresentedParameter, error) {
+	if _, err := decodeStrictJSONValue(value); err != nil {
+		return PresentedParameter{}, fmt.Errorf("r3: invalid presented inline parameter: %w", err)
+	}
+	return PresentedParameter{kind: parameterInline, value: append([]byte(nil), value...)}, nil
+}
+
+// NewPresentedDigestBytes constructs one owned exact-byte call-time value.
+func NewPresentedDigestBytes(value []byte) PresentedParameter {
+	return PresentedParameter{kind: parameterDigest, value: append([]byte(nil), value...)}
+}
+
+func (p PresentedParameter) validate() error {
 	switch p.kind {
 	case parameterInline:
 		_, err := decodeStrictJSONValue(p.value)
@@ -281,7 +303,7 @@ func (p PresentedMCPParameter) validate() error {
 }
 
 // MarshalJSON emits the inline value or exact digest descriptor.
-func (p MCPParameter) MarshalJSON() ([]byte, error) {
+func (p Parameter) MarshalJSON() ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
@@ -297,8 +319,8 @@ func (p MCPParameter) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON accepts either an inline JSON value or the reserved digest
 // descriptor shape.
-func (p *MCPParameter) UnmarshalJSON(data []byte) error {
-	parsed, err := parseMCPParameter(data)
+func (p *Parameter) UnmarshalJSON(data []byte) error {
+	parsed, err := parseParameter(data)
 	if err != nil {
 		return err
 	}
@@ -306,37 +328,37 @@ func (p *MCPParameter) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func parseMCPParameter(data []byte) (MCPParameter, error) {
+func parseParameter(data []byte) (Parameter, error) {
 	value, err := decodeStrictJSONValue(data)
 	if err != nil {
-		return MCPParameter{}, err
+		return Parameter{}, err
 	}
 	object, isObject := value.(map[string]any)
 	if !isObject || !containsDigestMember(object) {
-		return NewMCPInlineParameter(data)
+		return NewInlineParameter(data)
 	}
 	for name := range object {
 		if name != "s256" && name != "excerpt" && name != "media_type" {
-			return MCPParameter{}, fmt.Errorf("r3: digest parameter has unknown member %q", name)
+			return Parameter{}, fmt.Errorf("r3: digest parameter has unknown member %q", name)
 		}
 	}
 	s256Value, ok := object["s256"]
 	if !ok {
-		return MCPParameter{}, errors.New("r3: digest parameter is missing s256")
+		return Parameter{}, errors.New("r3: digest parameter is missing s256")
 	}
 	s256, ok := s256Value.(string)
 	if !ok {
-		return MCPParameter{}, errors.New("r3: digest parameter s256 must be a string")
+		return Parameter{}, errors.New("r3: digest parameter s256 must be a string")
 	}
 	excerpt, err := optionalStringMember(object, "excerpt")
 	if err != nil {
-		return MCPParameter{}, err
+		return Parameter{}, err
 	}
 	mediaType, err := optionalStringMember(object, "media_type")
 	if err != nil {
-		return MCPParameter{}, err
+		return Parameter{}, err
 	}
-	return NewMCPDigestParameter(s256, excerpt, mediaType)
+	return NewDigestParameter(s256, excerpt, mediaType)
 }
 
 func containsDigestMember(object map[string]any) bool {
@@ -356,29 +378,29 @@ func optionalStringMember(object map[string]any, name string) (string, error) {
 	return text, nil
 }
 
-// MCPParameters is an initialized, copy-safe set of concrete MCP call
+// Parameters is an initialized, copy-safe set of concrete call
 // parameters. An initialized empty set is valid for a parameterless tool.
-type MCPParameters struct {
+type Parameters struct {
 	initialized bool
-	values      map[string]MCPParameter
+	values      map[string]Parameter
 }
 
-// NewMCPParameters constructs a parameter set and copies every value.
-func NewMCPParameters(values map[string]MCPParameter) (MCPParameters, error) {
-	parameters := MCPParameters{initialized: true, values: make(map[string]MCPParameter, len(values))}
+// NewParameters constructs a parameter set and copies every value.
+func NewParameters(values map[string]Parameter) (Parameters, error) {
+	parameters := Parameters{initialized: true, values: make(map[string]Parameter, len(values))}
 	for name, value := range values {
 		if err := validateParameterName(name); err != nil {
-			return MCPParameters{}, err
+			return Parameters{}, err
 		}
 		if err := value.validate(); err != nil {
-			return MCPParameters{}, fmt.Errorf("r3: parameter %q: %w", name, err)
+			return Parameters{}, fmt.Errorf("r3: parameter %q: %w", name, err)
 		}
 		parameters.values[name] = value.clone()
 	}
 	return parameters, nil
 }
 
-func (p MCPParameters) validate() error {
+func (p Parameters) validate() error {
 	if !p.initialized || p.values == nil {
 		return errors.New("r3: parameters are uninitialized")
 	}
@@ -400,8 +422,8 @@ func validateParameterName(name string) error {
 	return nil
 }
 
-func (p MCPParameters) clone() MCPParameters {
-	cloned := MCPParameters{initialized: p.initialized, values: make(map[string]MCPParameter, len(p.values))}
+func (p Parameters) clone() Parameters {
+	cloned := Parameters{initialized: p.initialized, values: make(map[string]Parameter, len(p.values))}
 	for name, value := range p.values {
 		cloned.values[name] = value.clone()
 	}
@@ -409,13 +431,13 @@ func (p MCPParameters) clone() MCPParameters {
 }
 
 // Get returns an owned copy of one parameter.
-func (p MCPParameters) Get(name string) (MCPParameter, bool) {
+func (p Parameters) Get(name string) (Parameter, bool) {
 	value, ok := p.values[name]
 	return value.clone(), ok
 }
 
 // Names returns parameter names in lexical order.
-func (p MCPParameters) Names() []string {
+func (p Parameters) Names() []string {
 	names := make([]string, 0, len(p.values))
 	for name := range p.values {
 		names = append(names, name)
@@ -426,7 +448,7 @@ func (p MCPParameters) Names() []string {
 
 // Matches verifies that the presented parameter names are exact and that
 // every value matches its inline or digest-backed proposal value.
-func (p MCPParameters) Matches(presented map[string]PresentedMCPParameter) (bool, error) {
+func (p Parameters) Matches(presented map[string]PresentedParameter) (bool, error) {
 	if err := p.validate(); err != nil {
 		return false, err
 	}
@@ -457,7 +479,7 @@ func (p MCPParameters) Matches(presented map[string]PresentedMCPParameter) (bool
 }
 
 // MarshalJSON emits one JSON object of concrete parameter values.
-func (p MCPParameters) MarshalJSON() ([]byte, error) {
+func (p Parameters) MarshalJSON() ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
@@ -465,7 +487,7 @@ func (p MCPParameters) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON accepts a strict parameter object with no duplicate names.
-func (p *MCPParameters) UnmarshalJSON(data []byte) error {
+func (p *Parameters) UnmarshalJSON(data []byte) error {
 	value, err := decodeStrictJSONValue(data)
 	if err != nil {
 		return fmt.Errorf("r3: invalid parameters: %w", err)
@@ -474,19 +496,19 @@ func (p *MCPParameters) UnmarshalJSON(data []byte) error {
 	if !ok {
 		return errors.New("r3: parameters must be a JSON object")
 	}
-	values := make(map[string]MCPParameter, len(object))
+	values := make(map[string]Parameter, len(object))
 	for name, semantic := range object {
 		encoded, err := json.Marshal(semantic)
 		if err != nil {
 			return err
 		}
-		parameter, err := parseMCPParameter(encoded)
+		parameter, err := parseParameter(encoded)
 		if err != nil {
 			return fmt.Errorf("r3: parameter %q: %w", name, err)
 		}
 		values[name] = parameter
 	}
-	parsed, err := NewMCPParameters(values)
+	parsed, err := NewParameters(values)
 	if err != nil {
 		return err
 	}
@@ -500,33 +522,33 @@ type ProposalOptions struct {
 	Display *ProposalDisplay
 }
 
-// MCPProposal is a validated per-call proposal for exactly one MCP operation.
-type MCPProposal struct {
-	operation  MCPOperation
-	parameters MCPParameters
+// Proposal is a validated per-call proposal for exactly one operation.
+type Proposal struct {
+	operation  Operation
+	parameters Parameters
 	account    *string
 	display    *ProposalDisplay
 }
 
-// NewMCPProposal constructs a validated per-call proposal.
-func NewMCPProposal(operation MCPOperation, parameters MCPParameters, options ProposalOptions) (MCPProposal, error) {
-	if err := operation.validate(); err != nil {
-		return MCPProposal{}, err
+// NewProposal constructs a validated per-call proposal.
+func NewProposal(operation Operation, parameters Parameters, options ProposalOptions) (Proposal, error) {
+	if err := operation.value.validate(); err != nil {
+		return Proposal{}, err
 	}
 	if err := parameters.validate(); err != nil {
-		return MCPProposal{}, err
+		return Proposal{}, err
 	}
-	proposal := MCPProposal{operation: operation, parameters: parameters.clone()}
+	proposal := Proposal{operation: Operation{value: operation.value.clone()}, parameters: parameters.clone()}
 	if options.Account != nil {
 		if !utf8.ValidString(*options.Account) {
-			return MCPProposal{}, errors.New("r3: proposal account must be valid UTF-8")
+			return Proposal{}, errors.New("r3: proposal account must be valid UTF-8")
 		}
 		account := *options.Account
 		proposal.account = &account
 	}
 	if options.Display != nil {
 		if err := options.Display.validate(); err != nil {
-			return MCPProposal{}, err
+			return Proposal{}, err
 		}
 		display := *options.Display
 		proposal.display = &display
@@ -535,13 +557,13 @@ func NewMCPProposal(operation MCPOperation, parameters MCPParameters, options Pr
 }
 
 // Operation returns the proposal's single operation.
-func (p MCPProposal) Operation() MCPOperation { return p.operation }
+func (p Proposal) Operation() Operation { return Operation{value: p.operation.value.clone()} }
 
 // Parameters returns a copy of the concrete parameter set.
-func (p MCPProposal) Parameters() MCPParameters { return p.parameters.clone() }
+func (p Proposal) Parameters() Parameters { return p.parameters.clone() }
 
 // Account returns the account and whether the optional member was present.
-func (p MCPProposal) Account() (string, bool) {
+func (p Proposal) Account() (string, bool) {
 	if p.account == nil {
 		return "", false
 	}
@@ -549,71 +571,79 @@ func (p MCPProposal) Account() (string, bool) {
 }
 
 // Display returns the per-call display and whether it was present.
-func (p MCPProposal) Display() (ProposalDisplay, bool) {
+func (p Proposal) Display() (ProposalDisplay, bool) {
 	if p.display == nil {
 		return ProposalDisplay{}, false
 	}
 	return *p.display, true
 }
 
-// MarshalJSON emits the exact MCP proposal shape.
-func (p MCPProposal) MarshalJSON() ([]byte, error) {
-	if err := p.operation.validate(); err != nil {
+// MarshalJSON emits the common proposal envelope and the registered
+// vocabulary's exact operation shape.
+func (p Proposal) MarshalJSON() ([]byte, error) {
+	if err := p.operation.value.validate(); err != nil {
 		return nil, err
 	}
 	if err := p.parameters.validate(); err != nil {
 		return nil, err
 	}
 	return json.Marshal(struct {
-		Vocabulary string           `json:"vocabulary"`
-		Operations []MCPOperation   `json:"operations"`
-		Parameters MCPParameters    `json:"parameters"`
-		Account    *string          `json:"account,omitempty"`
-		Display    *ProposalDisplay `json:"display,omitempty"`
+		Vocabulary VocabularyURI     `json:"vocabulary"`
+		Operations []json.RawMessage `json:"operations"`
+		Parameters Parameters        `json:"parameters"`
+		Account    *string           `json:"account,omitempty"`
+		Display    *ProposalDisplay  `json:"display,omitempty"`
 	}{
-		Vocabulary: MCPVocabulary, Operations: []MCPOperation{p.operation},
+		Vocabulary: p.operation.Vocabulary(), Operations: []json.RawMessage{p.operation.JSON()},
 		Parameters: p.parameters, Account: p.account, Display: p.display,
 	})
 }
 
-// UnmarshalJSON accepts only the exact MCP per-call proposal shape.
-func (p *MCPProposal) UnmarshalJSON(data []byte) error {
-	parsed, err := ParseMCPProposal(data)
-	if err != nil {
-		return err
-	}
-	*p = parsed
-	return nil
+// UnmarshalJSON rejects context-free parsing because the vocabulary must be
+// selected from an explicit allowlisted Registry.
+func (*Proposal) UnmarshalJSON([]byte) error {
+	return errors.New("r3: Proposal requires a vocabulary registry; use Registry.ParseProposal")
 }
 
-// ParseMCPProposal parses a validated proposal without retaining source bytes.
-func ParseMCPProposal(source []byte) (MCPProposal, error) {
-	var vocabularyRaw, operationsRaw json.RawMessage
-	var parameters MCPParameters
+// ParseProposal parses a validated proposal without retaining source bytes.
+func (registry Registry) ParseProposal(source []byte) (Proposal, error) {
+	var vocabulary string
+	var operationsRaw json.RawMessage
+	var parameters Parameters
 	var account string
 	var display ProposalDisplay
 	seen, err := decodeStrictObject(source, map[string]func(json.RawMessage) error{
-		"vocabulary": func(raw json.RawMessage) error { vocabularyRaw = append(vocabularyRaw[:0], raw...); return nil },
+		"vocabulary": func(raw json.RawMessage) error { return decodeJSONString(raw, &vocabulary) },
 		"operations": func(raw json.RawMessage) error { operationsRaw = append(operationsRaw[:0], raw...); return nil },
 		"parameters": func(raw json.RawMessage) error { return json.Unmarshal(raw, &parameters) },
 		"account":    func(raw json.RawMessage) error { return decodeJSONString(raw, &account) },
 		"display":    func(raw json.RawMessage) error { return json.Unmarshal(raw, &display) },
 	})
 	if err != nil {
-		return MCPProposal{}, fmt.Errorf("r3: invalid proposal: %w", err)
+		return Proposal{}, fmt.Errorf("r3: invalid proposal: %w", err)
 	}
 	for _, required := range []string{"vocabulary", "operations", "parameters"} {
 		if _, ok := seen[required]; !ok {
-			return MCPProposal{}, fmt.Errorf("r3: proposal is missing %s", required)
+			return Proposal{}, fmt.Errorf("r3: proposal is missing %s", required)
 		}
 	}
-	operations, err := parseMCPOperationsParts(vocabularyRaw, operationsRaw)
+	uri := VocabularyURI(vocabulary)
+	registered, ok := registry.vocabularies[uri]
+	if !ok {
+		return Proposal{}, fmt.Errorf("r3: vocabulary %q is not registered", uri)
+	}
+	operations, err := decodeJSONArray(operationsRaw)
 	if err != nil {
-		return MCPProposal{}, err
+		return Proposal{}, err
 	}
-	if len(operations) != 1 {
-		return MCPProposal{}, errors.New("r3: proposal must contain exactly one operation")
+	value, err := newOperationValue(registered, operations, setUseProposal)
+	if err != nil {
+		return Proposal{}, err
 	}
+	if len(value.raw) != 1 {
+		return Proposal{}, errors.New("r3: proposal must contain exactly one operation")
+	}
+	operation := Operation{value: value}
 	options := ProposalOptions{}
 	if _, ok := seen["account"]; ok {
 		options.Account = &account
@@ -621,24 +651,24 @@ func ParseMCPProposal(source []byte) (MCPProposal, error) {
 	if _, ok := seen["display"]; ok {
 		options.Display = &display
 	}
-	return NewMCPProposal(operations[0], parameters, options)
+	return NewProposal(operation, parameters, options)
 }
 
 // ParseReferencedProposal validates a reference against exact bytes before
-// parsing the bytes as an MCP per-call proposal.
-func ParseReferencedProposal(reference Reference, exactBytes []byte) (MCPProposal, error) {
+// parsing the bytes as a per-call proposal.
+func (registry Registry) ParseReferencedProposal(reference Reference, exactBytes []byte) (Proposal, error) {
 	if err := reference.validate(); err != nil {
-		return MCPProposal{}, fmt.Errorf("r3: invalid proposal reference: %w", err)
+		return Proposal{}, fmt.Errorf("r3: invalid proposal reference: %w", err)
 	}
 	if Digest(exactBytes) != reference.digest {
-		return MCPProposal{}, errors.New("r3: referenced proposal digest mismatch")
+		return Proposal{}, errors.New("r3: referenced proposal digest mismatch")
 	}
-	return ParseMCPProposal(exactBytes)
+	return registry.ParseProposal(exactBytes)
 }
 
 // ValidateProposalAccount requires exact presence and value parity between a
 // Core token account claim and a proposal account.
-func ValidateProposalAccount(proposal MCPProposal, tokenAccount *string) error {
+func ValidateProposalAccount(proposal Proposal, tokenAccount *string) error {
 	proposalAccount, present := proposal.Account()
 	if tokenAccount == nil {
 		if present {
@@ -814,5 +844,5 @@ func normalizeJSONNumber(source string) (normalizedJSONNumber, bool) {
 	return normalizedJSONNumber{negative: negative, digits: coefficient, exponent: exponent}, true
 }
 
-var _ json.Marshaler = MCPProposal{}
-var _ json.Unmarshaler = (*MCPProposal)(nil)
+var _ json.Marshaler = Proposal{}
+var _ json.Unmarshaler = (*Proposal)(nil)

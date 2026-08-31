@@ -13,10 +13,11 @@ import (
 	aauth "aauth-go"
 	"aauth-go/agent"
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 	"aauth-go/signaturekey"
 )
 
-func TestBeginMCPR3CallRefusesMalformedClassClaimsBeforeNetwork(t *testing.T) {
+func TestBeginR3CallRefusesMalformedClassClaimsBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
 	for _, scenario := range []struct {
@@ -40,18 +41,18 @@ func TestBeginMCPR3CallRefusesMalformedClassClaimsBeforeNetwork(t *testing.T) {
 			scenario.change(claims)
 			compact := fixture.mintRawClassAuthToken(t, claims)
 			networkCalls := 0
-			client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 				networkCalls++
 				return nil, errors.New("unexpected network request: " + request.URL.String())
 			})})
 			request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
 
-			result, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+			result, err := client.BeginR3Call(context.Background(), agent.R3Call{
 				Request: request, ClassAuthToken: compact,
 				Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 			})
 			if err == nil {
-				t.Fatal("BeginMCPR3Call accepted malformed class R3 claims")
+				t.Fatal("BeginR3Call accepted malformed class R3 claims")
 			}
 			if networkCalls != 0 {
 				t.Fatalf("network calls = %d, want 0", networkCalls)
@@ -69,7 +70,7 @@ func TestBeginMCPR3CallRefusesMalformedClassClaimsBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestBeginMCPR3CallRefusesClassContextSubstitutionBeforeNetwork(t *testing.T) {
+func TestBeginR3CallRefusesClassContextSubstitutionBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
 	for _, scenario := range []struct {
@@ -95,16 +96,16 @@ func TestBeginMCPR3CallRefusesClassContextSubstitutionBeforeNetwork(t *testing.T
 				func(claims *aauth.AuthTokenClaims) { scenario.change(claims, fixture) },
 			)
 			networkCalls := 0
-			client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 				networkCalls++
 				return nil, errors.New("unexpected network request: " + request.URL.String())
 			})})
 			request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
-			if _, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+			if _, err := client.BeginR3Call(context.Background(), agent.R3Call{
 				Request: request, ClassAuthToken: compact,
 				Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 			}); err == nil {
-				t.Fatal("BeginMCPR3Call accepted substituted class context")
+				t.Fatal("BeginR3Call accepted substituted class context")
 			}
 			if networkCalls != 0 {
 				t.Fatalf("network calls = %d, want 0", networkCalls)
@@ -113,7 +114,7 @@ func TestBeginMCPR3CallRefusesClassContextSubstitutionBeforeNetwork(t *testing.T
 	}
 }
 
-func TestBeginMCPR3CallRefusesPersonServerRoleClassTokenBeforeNetwork(t *testing.T) {
+func TestBeginR3CallRefusesPersonServerRoleClassTokenBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAgentR3StepUpFixture(t)
@@ -129,7 +130,7 @@ func TestBeginMCPR3CallRefusesPersonServerRoleClassTokenBeforeNetwork(t *testing
 		t.Fatal(err)
 	}
 	networkCalls := 0
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		return &http.Response{
 			StatusCode: http.StatusOK, Status: "200 OK", Request: request,
@@ -137,18 +138,18 @@ func TestBeginMCPR3CallRefusesPersonServerRoleClassTokenBeforeNetwork(t *testing
 		}, nil
 	})})
 	request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
-	if _, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+	if _, err := client.BeginR3Call(context.Background(), agent.R3Call{
 		Request: request, ClassAuthToken: compact,
 		Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 	}); err == nil {
-		t.Fatal("BeginMCPR3Call accepted a Person-Server-role class Auth token")
+		t.Fatal("BeginR3Call accepted a Person-Server-role class Auth token")
 	}
 	if networkCalls != 0 {
 		t.Fatalf("network calls = %d, want 0", networkCalls)
 	}
 }
 
-func TestRetryMCPR3CallRefusesPersonServerRoleCompletionAtCollocatedIssuerBeforeNetwork(t *testing.T) {
+func TestRetryR3CallRefusesPersonServerRoleCompletionAtCollocatedIssuerBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAgentR3StepUpFixture(t)
@@ -169,7 +170,7 @@ func TestRetryMCPR3CallRefusesPersonServerRoleCompletionAtCollocatedIssuerBefore
 			claims.Scope = "records.read"
 		},
 	)
-	personRoleCompletion, err := r3.MintMCPPerCallAuthToken(fixture.protocol.personServerKey, aauth.AuthTokenClaims{
+	personRoleCompletion, err := r3.MintPerCallAuthToken(fixture.registry, fixture.protocol.personServerKey, aauth.AuthTokenClaims{
 		Issuer: fixture.protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
 		Audience: fixture.protocol.resourceID, JTI: "person-role-completion-token",
 		PersonServer: fixture.protocol.personServerID, Subject: "person-123",
@@ -182,7 +183,7 @@ func TestRetryMCPR3CallRefusesPersonServerRoleCompletionAtCollocatedIssuerBefore
 	}
 	requirement := formatAgentR3Requirement(t, proposalToken)
 	networkCalls := 0
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		if networkCalls != 1 {
 			return nil, errors.New("Person-Server-role completion reached the protected Resource")
@@ -196,7 +197,7 @@ func TestRetryMCPR3CallRefusesPersonServerRoleCompletionAtCollocatedIssuerBefore
 		}, nil
 	})})
 	request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
-	result, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+	result, err := client.BeginR3Call(context.Background(), agent.R3Call{
 		Request: request, ClassAuthToken: classToken,
 		Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 	})
@@ -207,17 +208,17 @@ func TestRetryMCPR3CallRefusesPersonServerRoleCompletionAtCollocatedIssuerBefore
 	if !ok {
 		t.Fatal("collocated Access-role class token did not return a retry handle")
 	}
-	if _, err := client.RetryMCPR3Call(context.Background(), agent.MCPR3Retry{
+	if _, err := client.RetryR3Call(context.Background(), agent.R3Retry{
 		Authorization: retry, AuthToken: personRoleCompletion,
 	}); err == nil {
-		t.Fatal("RetryMCPR3Call accepted a Person-Server-role completion token")
+		t.Fatal("RetryR3Call accepted a Person-Server-role completion token")
 	}
 	if networkCalls != 1 {
 		t.Fatalf("network calls = %d, want 1", networkCalls)
 	}
 }
 
-func TestBeginMCPR3CallRefusesProposalReferenceAndContextSubstitution(t *testing.T) {
+func TestBeginR3CallRefusesProposalReferenceAndContextSubstitution(t *testing.T) {
 	t.Parallel()
 
 	for _, scenario := range []struct {
@@ -256,7 +257,7 @@ func TestBeginMCPR3CallRefusesProposalReferenceAndContextSubstitution(t *testing
 			requirement := formatAgentR3Requirement(t, scenario.token(t, fixture))
 			networkCalls := 0
 			responseBody := &trackedBody{Reader: strings.NewReader("not authoritative")}
-			client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 				networkCalls++
 				header := make(http.Header)
 				header.Set("AAuth-Requirement", requirement)
@@ -268,12 +269,12 @@ func TestBeginMCPR3CallRefusesProposalReferenceAndContextSubstitution(t *testing
 			})})
 			request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
 
-			result, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+			result, err := client.BeginR3Call(context.Background(), agent.R3Call{
 				Request: request, ClassAuthToken: fixture.classAuthToken,
 				Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 			})
 			if err == nil {
-				t.Fatal("BeginMCPR3Call accepted a substituted proposal requirement")
+				t.Fatal("BeginR3Call accepted a substituted proposal requirement")
 			}
 			if networkCalls != 1 {
 				t.Fatalf("network calls = %d, want 1", networkCalls)
@@ -288,38 +289,35 @@ func TestBeginMCPR3CallRefusesProposalReferenceAndContextSubstitution(t *testing
 	}
 }
 
-func TestBeginMCPR3CallRefusesOperationOutsideClassPerCallSetBeforeNetwork(t *testing.T) {
+func TestBeginR3CallRefusesOperationOutsideClassPerCallSetBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAgentR3StepUpFixture(t)
-	other, err := r3.NewMCPOperation("records.delete")
-	if err != nil {
-		t.Fatal(err)
-	}
+	other := newAgentMCPOperation(t, "records.delete")
 	networkCalls := 0
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		return nil, errors.New("unexpected network request: " + request.URL.String())
 	})})
 	request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
-	if _, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+	if _, err := client.BeginR3Call(context.Background(), agent.R3Call{
 		Request: request, ClassAuthToken: fixture.classAuthToken,
 		Operation: other, AdditionalSignatureComponents: fixture.components,
 	}); err == nil {
-		t.Fatal("BeginMCPR3Call accepted an operation outside r3_per_call")
+		t.Fatal("BeginR3Call accepted an operation outside r3_per_call")
 	}
 	if networkCalls != 0 {
 		t.Fatalf("network calls = %d, want 0", networkCalls)
 	}
 }
 
-func TestBeginMCPR3CallRefusesResponseOriginSubstitution(t *testing.T) {
+func TestBeginR3CallRefusesResponseOriginSubstitution(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAgentR3StepUpFixture(t)
 	networkCalls := 0
 	responseBody := &trackedBody{Reader: strings.NewReader("not authoritative")}
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		other, err := http.NewRequest(http.MethodPost, "https://other.example/records", nil)
 		if err != nil {
@@ -331,11 +329,11 @@ func TestBeginMCPR3CallRefusesResponseOriginSubstitution(t *testing.T) {
 		}, nil
 	})})
 	request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
-	if _, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+	if _, err := client.BeginR3Call(context.Background(), agent.R3Call{
 		Request: request, ClassAuthToken: fixture.classAuthToken,
 		Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 	}); err == nil {
-		t.Fatal("BeginMCPR3Call accepted a response attributed to another origin")
+		t.Fatal("BeginR3Call accepted a response attributed to another origin")
 	}
 	if networkCalls != 1 {
 		t.Fatalf("network calls = %d, want 1", networkCalls)
@@ -345,7 +343,7 @@ func TestBeginMCPR3CallRefusesResponseOriginSubstitution(t *testing.T) {
 	}
 }
 
-func TestRetryMCPR3CallRefusesCompletionReferenceAndContextSubstitutionBeforeNetwork(t *testing.T) {
+func TestRetryR3CallRefusesCompletionReferenceAndContextSubstitutionBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
 	for _, scenario := range []struct {
@@ -400,7 +398,7 @@ func TestRetryMCPR3CallRefusesCompletionReferenceAndContextSubstitutionBeforeNet
 			proposalToken, proposalReference, exactProposal := fixture.proposalResourceToken(t, "proposal-for-substitution")
 			requirement := formatAgentR3Requirement(t, proposalToken)
 			networkCalls := 0
-			client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 				networkCalls++
 				if networkCalls != 1 {
 					t.Fatalf("substituted completion token caused network call %d", networkCalls)
@@ -414,7 +412,7 @@ func TestRetryMCPR3CallRefusesCompletionReferenceAndContextSubstitutionBeforeNet
 				}, nil
 			})})
 			request := fixture.newRequest(t, `{"record":"alpha","enabled":true}`)
-			result, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+			result, err := client.BeginR3Call(context.Background(), agent.R3Call{
 				Request: request, ClassAuthToken: fixture.classAuthToken,
 				Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 			})
@@ -426,10 +424,10 @@ func TestRetryMCPR3CallRefusesCompletionReferenceAndContextSubstitutionBeforeNet
 				t.Fatal("valid proposal did not return retry handle")
 			}
 			compact := scenario.token(t, fixture, proposalReference, exactProposal)
-			if _, err := client.RetryMCPR3Call(context.Background(), agent.MCPR3Retry{
+			if _, err := client.RetryR3Call(context.Background(), agent.R3Retry{
 				Authorization: retry, AuthToken: compact,
 			}); err == nil {
-				t.Fatal("RetryMCPR3Call accepted substituted completion token")
+				t.Fatal("RetryR3Call accepted substituted completion token")
 			}
 			if networkCalls != 1 {
 				t.Fatalf("network calls = %d, want 1", networkCalls)
@@ -438,10 +436,10 @@ func TestRetryMCPR3CallRefusesCompletionReferenceAndContextSubstitutionBeforeNet
 	}
 }
 
-func TestMCPR3CallResultsAndHandlesAreZeroSafe(t *testing.T) {
+func TestR3CallResultsAndHandlesAreZeroSafe(t *testing.T) {
 	t.Parallel()
 
-	var result agent.MCPR3CallResult
+	var result agent.R3CallResult
 	if response, ok := result.Response(); response != nil || ok {
 		t.Fatalf("zero Response = %#v, %t", response, ok)
 	}
@@ -455,29 +453,29 @@ func TestMCPR3CallResultsAndHandlesAreZeroSafe(t *testing.T) {
 	}
 	fixture := newAgentR3StepUpFixture(t)
 	networkCalls := 0
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		return nil, errors.New("unexpected network request: " + request.URL.String())
 	})})
-	if _, err := client.RetryMCPR3Call(context.Background(), agent.MCPR3Retry{AuthToken: fixture.classAuthToken}); err == nil {
-		t.Fatal("RetryMCPR3Call accepted a zero authorization")
+	if _, err := client.RetryR3Call(context.Background(), agent.R3Retry{AuthToken: fixture.classAuthToken}); err == nil {
+		t.Fatal("RetryR3Call accepted a zero authorization")
 	}
-	if _, err := client.PollMCPR3Call(context.Background(), agent.MCPR3Poll{AuthToken: fixture.classAuthToken}); err == nil {
-		t.Fatal("PollMCPR3Call accepted a zero pending call")
+	if _, err := client.PollR3Call(context.Background(), agent.R3Poll{AuthToken: fixture.classAuthToken}); err == nil {
+		t.Fatal("PollR3Call accepted a zero pending call")
 	}
 	if networkCalls != 0 {
 		t.Fatalf("zero handles caused %d network calls", networkCalls)
 	}
 }
 
-func TestBeginMCPR3CallReturnsOrdinaryResponseAfterExactlyOneNetworkCall(t *testing.T) {
+func TestBeginR3CallReturnsOrdinaryResponseAfterExactlyOneNetworkCall(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAgentR3StepUpFixture(t)
 	const body = `{"record":"alpha","enabled":true}`
 	networkCalls := 0
 	responseBody := &trackedBody{Reader: strings.NewReader("application result")}
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		fixture.verifyClassCall(t, request, body)
 		return &http.Response{
@@ -487,7 +485,7 @@ func TestBeginMCPR3CallReturnsOrdinaryResponseAfterExactlyOneNetworkCall(t *test
 	})})
 	original := fixture.newRequest(t, body)
 
-	result, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+	result, err := client.BeginR3Call(context.Background(), agent.R3Call{
 		Request: original, ClassAuthToken: fixture.classAuthToken,
 		Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 	})
@@ -511,7 +509,7 @@ func TestBeginMCPR3CallReturnsOrdinaryResponseAfterExactlyOneNetworkCall(t *test
 	response.Body.Close()
 }
 
-func TestBeginMCPR3CallReturnsRetryThatPreservesExactOriginalRequest(t *testing.T) {
+func TestBeginR3CallReturnsRetryThatPreservesExactOriginalRequest(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAgentR3StepUpFixture(t)
@@ -535,7 +533,7 @@ func TestBeginMCPR3CallReturnsRetryThatPreservesExactOriginalRequest(t *testing.
 	)
 	requirement := formatAgentR3Requirement(t, proposalToken)
 	networkCalls := 0
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		switch networkCalls {
 		case 1:
@@ -560,7 +558,7 @@ func TestBeginMCPR3CallReturnsRetryThatPreservesExactOriginalRequest(t *testing.
 	})})
 	original := fixture.newRequest(t, body)
 
-	result, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+	result, err := client.BeginR3Call(context.Background(), agent.R3Call{
 		Request: original, ClassAuthToken: classAuthToken,
 		Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 	})
@@ -586,7 +584,7 @@ func TestBeginMCPR3CallReturnsRetryThatPreservesExactOriginalRequest(t *testing.
 		return io.NopCloser(strings.NewReader("caller-mutated")), nil
 	}
 
-	response, err := client.RetryMCPR3Call(context.Background(), agent.MCPR3Retry{
+	response, err := client.RetryR3Call(context.Background(), agent.R3Retry{
 		Authorization: retry, AuthToken: completionToken,
 	})
 	if err != nil {
@@ -601,7 +599,7 @@ func TestBeginMCPR3CallReturnsRetryThatPreservesExactOriginalRequest(t *testing.
 	}
 }
 
-func TestBeginMCPR3CallReturnsPendingThatPollsWithoutResendingBody(t *testing.T) {
+func TestBeginR3CallReturnsPendingThatPollsWithoutResendingBody(t *testing.T) {
 	t.Parallel()
 
 	fixture := newAgentR3StepUpFixture(t)
@@ -610,7 +608,7 @@ func TestBeginMCPR3CallReturnsPendingThatPollsWithoutResendingBody(t *testing.T)
 	completionToken := fixture.perCallAuthToken(t, "auth-token-202", proposalReference, exactProposal)
 	requirement := formatAgentR3Requirement(t, proposalToken)
 	networkCalls := 0
-	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	client := fixture.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		networkCalls++
 		switch networkCalls {
 		case 1:
@@ -650,7 +648,7 @@ func TestBeginMCPR3CallReturnsPendingThatPollsWithoutResendingBody(t *testing.T)
 	})})
 	original := fixture.newRequest(t, body)
 
-	result, err := client.BeginMCPR3Call(context.Background(), agent.MCPR3Call{
+	result, err := client.BeginR3Call(context.Background(), agent.R3Call{
 		Request: original, ClassAuthToken: fixture.classAuthToken,
 		Operation: fixture.operation, AdditionalSignatureComponents: fixture.components,
 	})
@@ -667,7 +665,7 @@ func TestBeginMCPR3CallReturnsPendingThatPollsWithoutResendingBody(t *testing.T)
 	}
 	assertAgentR3OriginalUnchanged(t, original, body)
 
-	response, err := client.PollMCPR3Call(context.Background(), agent.MCPR3Poll{
+	response, err := client.PollR3Call(context.Background(), agent.R3Poll{
 		Pending: pending, AuthToken: completionToken,
 	})
 	if err != nil {
@@ -684,7 +682,8 @@ func TestBeginMCPR3CallReturnsPendingThatPollsWithoutResendingBody(t *testing.T)
 
 type agentR3StepUpFixture struct {
 	protocol       *testProtocol
-	operation      r3.MCPOperation
+	registry       r3.Registry
+	operation      r3.Operation
 	classReference r3.Reference
 	classAuthToken string
 	components     []string
@@ -693,14 +692,9 @@ type agentR3StepUpFixture struct {
 func newAgentR3StepUpFixture(t *testing.T) agentR3StepUpFixture {
 	t.Helper()
 	protocol := newTestProtocol(t)
-	operation, err := r3.NewMCPOperation("records.update")
-	if err != nil {
-		t.Fatal(err)
-	}
-	operations, err := r3.NewMCPOperationSet(operation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	registry := newAgentR3Registry(t)
+	operation := newAgentMCPOperation(t, "records.update")
+	operations := newAgentMCPOperationSet(t, operation)
 	document, err := r3.NewDocument(operations, r3.DocumentOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -713,11 +707,11 @@ func newAgentR3StepUpFixture(t *testing.T) agentR3StepUpFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct, err := r3.NewGrantedOperations()
+	direct, err := r3.NewGrantedOperations(mcp.Vocabulary())
 	if err != nil {
 		t.Fatal(err)
 	}
-	perCall, err := r3.NewGrantedOperations(operation)
+	perCall, err := r3.NewGrantedOperations(mcp.Vocabulary(), operation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +719,7 @@ func newAgentR3StepUpFixture(t *testing.T) agentR3StepUpFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	classAuthToken, err := r3.MintMCPAuthToken(protocol.accessServerKey, aauth.AuthTokenClaims{
+	classAuthToken, err := r3.MintAuthToken(registry, protocol.accessServerKey, aauth.AuthTokenClaims{
 		Issuer: protocol.accessServerID, DWK: aauth.AccessDiscoveryDocument,
 		Audience: protocol.resourceID, JTI: "class-auth-token-1",
 		PersonServer: protocol.personServerID, Subject: "person-123",
@@ -737,10 +731,24 @@ func newAgentR3StepUpFixture(t *testing.T) agentR3StepUpFixture {
 		t.Fatal(err)
 	}
 	return agentR3StepUpFixture{
-		protocol: protocol, operation: operation, classReference: classReference,
+		protocol: protocol, registry: registry, operation: operation, classReference: classReference,
 		classAuthToken: classAuthToken,
 		components:     []string{"content-type", "content-digest", "x-request-id"},
 	}
+}
+
+func (fixture agentR3StepUpFixture) newClientWithHTTPClient(t *testing.T, httpClient *http.Client) *agent.Client {
+	t.Helper()
+	client, err := agent.New(context.Background(), agent.Config{
+		Identifier: fixture.protocol.agentID, SigningKey: fixture.protocol.agentKey,
+		AgentToken: fixture.protocol.agentToken, KeyResolver: fixture.protocol.resolver,
+		HTTPClient: httpClient, Clock: fixture.protocol.clock,
+		R3: &agent.R3Config{Registry: fixture.registry},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }
 
 func (fixture agentR3StepUpFixture) newRequest(t *testing.T, body string) *http.Request {
@@ -766,15 +774,15 @@ func (fixture agentR3StepUpFixture) proposalResourceTokenWith(
 	change func(*aauth.ResourceTokenClaims),
 ) (string, r3.Reference, []byte) {
 	t.Helper()
-	parameter, err := r3.NewMCPInlineParameter([]byte(`{"record":"alpha","enabled":true}`))
+	parameter, err := r3.NewInlineParameter([]byte(`{"record":"alpha","enabled":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"input": parameter})
+	parameters, err := r3.NewParameters(map[string]r3.Parameter{"input": parameter})
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := r3.NewMCPProposal(fixture.operation, parameters, r3.ProposalOptions{})
+	proposal, err := r3.NewProposal(fixture.operation, parameters, r3.ProposalOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,8 +807,8 @@ func (fixture agentR3StepUpFixture) proposalResourceTokenWith(
 	if uri == "" {
 		uri = fixture.protocol.resourceID + "/r3/proposal/" + jti
 	}
-	compact, reference, err := r3.MintMCPProposalResourceToken(
-		fixture.protocol.resourceKey, claims, uri, exactProposal,
+	compact, reference, err := r3.MintProposalResourceToken(
+		fixture.registry, fixture.protocol.resourceKey, claims, uri, exactProposal,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -831,8 +839,8 @@ func (fixture agentR3StepUpFixture) perCallAuthTokenWith(
 	if change != nil {
 		change(&claims)
 	}
-	compact, err := r3.MintMCPPerCallAuthToken(
-		fixture.protocol.accessServerKey, claims, reference, exactProposal,
+	compact, err := r3.MintPerCallAuthToken(
+		fixture.registry, fixture.protocol.accessServerKey, claims, reference, exactProposal,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -846,15 +854,15 @@ func (fixture agentR3StepUpFixture) perCallAuthTokenWithEmptyPerCallClaim(
 	exactProposal []byte,
 ) string {
 	t.Helper()
-	proposal, err := r3.ParseReferencedProposal(reference, exactProposal)
+	proposal, err := fixture.registry.ParseReferencedProposal(reference, exactProposal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	granted, err := r3.NewGrantedOperations(proposal.Operation())
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), proposal.Operation())
 	if err != nil {
 		t.Fatal(err)
 	}
-	empty, err := r3.NewGrantedOperations()
+	empty, err := r3.NewGrantedOperations(mcp.Vocabulary())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,11 +886,11 @@ func (fixture agentR3StepUpFixture) perCallAuthTokenWithEmptyPerCallClaim(
 
 func (fixture agentR3StepUpFixture) rawClassAdditionalClaims(t *testing.T) map[string]json.RawMessage {
 	t.Helper()
-	empty, err := r3.NewGrantedOperations()
+	empty, err := r3.NewGrantedOperations(mcp.Vocabulary())
 	if err != nil {
 		t.Fatal(err)
 	}
-	perCall, err := r3.NewGrantedOperations(fixture.operation)
+	perCall, err := r3.NewGrantedOperations(mcp.Vocabulary(), fixture.operation)
 	if err != nil {
 		t.Fatal(err)
 	}

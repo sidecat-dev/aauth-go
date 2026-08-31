@@ -3,19 +3,20 @@ package r3
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"unicode/utf8"
 )
 
-// Reference identifies exact R3 document bytes at an HTTPS URI.
+// Reference identifies exact R3 artifact bytes at an HTTPS URI.
 type Reference struct {
 	uri    string
 	digest string
 }
 
-// NewReference constructs a validated R3 document reference.
+// NewReference constructs a validated R3 artifact reference.
 func NewReference(uri, digest string) (Reference, error) {
 	reference := Reference{uri: uri, digest: digest}
 	if err := reference.validate(); err != nil {
@@ -24,221 +25,174 @@ func NewReference(uri, digest string) (Reference, error) {
 	return reference, nil
 }
 
-func (r Reference) validate() error {
-	if !utf8.ValidString(r.uri) {
-		return fmt.Errorf("r3: reference URI must be valid UTF-8")
+func (reference Reference) validate() error {
+	if !utf8.ValidString(reference.uri) {
+		return errors.New("r3: reference URI must be valid UTF-8")
 	}
-	parsed, err := url.Parse(r.uri)
+	parsed, err := url.Parse(reference.uri)
 	if err != nil {
 		return fmt.Errorf("r3: invalid reference URI: %w", err)
 	}
-	if r.uri == "" || !parsed.IsAbs() || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" || parsed.Hostname() == "" || parsed.Opaque != "" {
-		return fmt.Errorf("r3: reference URI must be an absolute HTTPS URI")
+	if reference.uri == "" || !parsed.IsAbs() || !strings.EqualFold(parsed.Scheme, "https") ||
+		parsed.Host == "" || parsed.Hostname() == "" || parsed.Opaque != "" {
+		return errors.New("r3: reference URI must be an absolute HTTPS URI")
 	}
 	if parsed.User != nil {
-		return fmt.Errorf("r3: reference URI must not contain userinfo")
+		return errors.New("r3: reference URI must not contain userinfo")
 	}
-	if strings.Contains(r.uri, "#") || parsed.Fragment != "" || parsed.RawFragment != "" {
-		return fmt.Errorf("r3: reference URI must not contain a fragment")
+	if strings.Contains(reference.uri, "#") || parsed.Fragment != "" || parsed.RawFragment != "" {
+		return errors.New("r3: reference URI must not contain a fragment")
 	}
 
-	digestBytes, err := base64.RawURLEncoding.DecodeString(r.digest)
+	digestBytes, err := base64.RawURLEncoding.DecodeString(reference.digest)
 	if err != nil {
 		return fmt.Errorf("r3: invalid reference digest: %w", err)
 	}
 	if len(digestBytes) != 32 {
-		return fmt.Errorf("r3: reference digest must encode 32 bytes")
+		return errors.New("r3: reference digest must encode 32 bytes")
 	}
-	if base64.RawURLEncoding.EncodeToString(digestBytes) != r.digest {
-		return fmt.Errorf("r3: reference digest is not canonical unpadded base64url")
+	if base64.RawURLEncoding.EncodeToString(digestBytes) != reference.digest {
+		return errors.New("r3: reference digest is not canonical unpadded base64url")
 	}
 	return nil
 }
 
-// URI returns the absolute HTTPS R3 document URI.
-func (r Reference) URI() string { return r.uri }
+// URI returns the absolute HTTPS artifact URI.
+func (reference Reference) URI() string { return reference.uri }
 
 // Digest returns the canonical unpadded base64url SHA-256 digest.
-func (r Reference) Digest() string { return r.digest }
-
-// ParseReferencedDocument validates reference, binds it to exactBytes by its
-// digest, and only then parses the bytes as an R3 document. It performs no
-// fetching.
-func ParseReferencedDocument(reference Reference, exactBytes []byte) (Document, error) {
-	if err := reference.validate(); err != nil {
-		return Document{}, fmt.Errorf("r3: invalid reference: %w", err)
-	}
-	if Digest(exactBytes) != reference.digest {
-		return Document{}, fmt.Errorf("r3: referenced document digest mismatch")
-	}
-	return ParseDocument(exactBytes)
-}
+func (reference Reference) Digest() string { return reference.digest }
 
 // MarshalJSON rejects a context-free nested representation. R3 carries a
-// Reference as the sibling claims r3_uri and r3_s256.
-func (r Reference) MarshalJSON() ([]byte, error) {
-	return nil, fmt.Errorf("r3: Reference has no context-free JSON form; encode r3_uri and r3_s256 as sibling claims")
+// reference as sibling r3_uri and r3_s256 claims.
+func (Reference) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("r3: Reference has no context-free JSON form; encode r3_uri and r3_s256 as sibling claims")
 }
 
-// UnmarshalJSON rejects a context-free nested representation. Construct a
-// Reference from its sibling claims with NewReference.
-func (r *Reference) UnmarshalJSON(data []byte) error {
-	return fmt.Errorf("r3: Reference has no context-free JSON form; use NewReference with r3_uri and r3_s256")
+// UnmarshalJSON rejects a context-free nested representation.
+func (*Reference) UnmarshalJSON([]byte) error {
+	return errors.New("r3: Reference has no context-free JSON form; use NewReference with r3_uri and r3_s256")
 }
 
-// GrantedOperations is the zero-or-more MCP operation-set shape carried by an
-// r3_granted claim. Unlike request and document operation sets, an empty claim
-// is valid and means that no operation was granted.
-type GrantedOperations struct {
-	operations []MCPOperation
-}
+// GrantedOperations is the vocabulary-tagged zero-or-more operation shape
+// carried by r3_granted and r3_per_call claims.
+type GrantedOperations struct{ value operationValue }
 
-// NewGrantedOperations constructs a validated granted-operation claim value.
-func NewGrantedOperations(operations ...MCPOperation) (GrantedOperations, error) {
-	granted := GrantedOperations{operations: append([]MCPOperation(nil), operations...)}
-	if err := granted.validate(); err != nil {
+// NewGrantedOperations constructs a claim set. The explicit vocabulary keeps
+// an empty grant from becoming interchangeable with another vocabulary.
+func NewGrantedOperations(vocabulary Vocabulary, operations ...Operation) (GrantedOperations, error) {
+	if err := vocabulary.validate(); err != nil {
 		return GrantedOperations{}, err
 	}
-	return granted, nil
-}
-
-func (g GrantedOperations) validate() error {
-	seen := make(map[string]struct{}, len(g.operations))
-	for i, operation := range g.operations {
-		if err := operation.validate(); err != nil {
-			return fmt.Errorf("r3: granted operation %d: %w", i, err)
+	raw := make([]json.RawMessage, len(operations))
+	for index, operation := range operations {
+		if operation.value.vocabulary.identity != vocabulary.identity || operation.value.vocabulary.uri != vocabulary.uri {
+			return GrantedOperations{}, fmt.Errorf("r3: granted operation %d uses a different vocabulary registration", index)
 		}
-		if _, duplicate := seen[operation.tool]; duplicate {
-			return fmt.Errorf("r3: duplicate granted MCP tool %q", operation.tool)
+		if len(operation.value.raw) != 1 {
+			return GrantedOperations{}, fmt.Errorf("r3: granted operation %d is not singular", index)
 		}
-		seen[operation.tool] = struct{}{}
+		raw[index] = operation.value.raw[0]
 	}
-	return nil
+	value, err := newOperationValue(vocabulary, raw, setUseGrant)
+	if err != nil {
+		return GrantedOperations{}, err
+	}
+	return GrantedOperations{value: value}, nil
 }
 
-func (g GrantedOperations) clone() GrantedOperations {
-	return GrantedOperations{operations: g.Operations()}
+func newParsedGrantedOperations(vocabulary Vocabulary, raw []json.RawMessage) (GrantedOperations, error) {
+	value, err := newOperationValue(vocabulary, raw, setUseGrant)
+	if err != nil {
+		return GrantedOperations{}, err
+	}
+	return GrantedOperations{value: value}, nil
 }
 
-// Operations returns a copy of the retained granted-operation sequence.
-func (g GrantedOperations) Operations() []MCPOperation {
-	return append([]MCPOperation(nil), g.operations...)
+func (granted GrantedOperations) clone() GrantedOperations {
+	return GrantedOperations{value: granted.value.clone()}
 }
 
-// Equal reports order-insensitive semantic equality.
-func (g GrantedOperations) Equal(other GrantedOperations) bool {
-	if g.validate() != nil || other.validate() != nil || len(g.operations) != len(other.operations) {
-		return false
-	}
-	return g.IsSubsetOf(other)
-}
+// Vocabulary returns the exact vocabulary URI even for an empty grant.
+func (granted GrantedOperations) Vocabulary() VocabularyURI { return granted.value.vocabulary.uri }
 
-// IsSubsetOf reports whether every operation in g occurs in other.
-func (g GrantedOperations) IsSubsetOf(other GrantedOperations) bool {
-	if g.validate() != nil || other.validate() != nil {
-		return false
+// Operations returns validated individual operations in retained wire order.
+func (granted GrantedOperations) Operations() []Operation {
+	if granted.value.validate() != nil {
+		return nil
 	}
-	available := make(map[string]struct{}, len(other.operations))
-	for _, operation := range other.operations {
-		available[operation.tool] = struct{}{}
-	}
-	for _, operation := range g.operations {
-		if _, ok := available[operation.tool]; !ok {
-			return false
+	operations := make([]Operation, len(granted.value.raw))
+	for index, raw := range granted.value.raw {
+		operation, err := NewOperation(granted.value.vocabulary, raw)
+		if err != nil {
+			return nil
 		}
+		operations[index] = operation
 	}
-	return true
+	return operations
 }
 
-// Contains reports whether operation is one of the granted MCP operations.
-func (g GrantedOperations) Contains(operation MCPOperation) bool {
-	if g.validate() != nil || operation.validate() != nil {
-		return false
+// Equal reports vocabulary-semantic equality.
+func (granted GrantedOperations) Equal(other GrantedOperations) (bool, error) {
+	if err := compatibleOperations(granted.value, other.value); err != nil {
+		return false, err
 	}
-	for _, candidate := range g.operations {
-		if candidate.tool == operation.tool {
-			return true
-		}
-	}
-	return false
+	return granted.value.vocabulary.equal(granted.value, other.value)
 }
 
-func (g GrantedOperations) isSubsetOf(operationSet MCPOperationSet) bool {
-	if g.validate() != nil || operationSet.validate() != nil {
-		return false
+// IsSubsetOf reports whether the claim is contained by a document set.
+func (granted GrantedOperations) IsSubsetOf(operationSet OperationSet) (bool, error) {
+	if err := compatibleOperations(granted.value, operationSet.value); err != nil {
+		return false, err
 	}
-	available := make(map[string]struct{}, len(operationSet.operations))
-	for _, operation := range operationSet.operations {
-		available[operation.tool] = struct{}{}
-	}
-	for _, operation := range g.operations {
-		if _, ok := available[operation.tool]; !ok {
-			return false
-		}
-	}
-	return true
+	return granted.value.vocabulary.subset(granted.value, operationSet.value)
 }
 
-// MarshalJSON emits the shared MCP operation-set shape, including an explicit
-// empty array for an empty grant.
-func (g GrantedOperations) MarshalJSON() ([]byte, error) {
-	if err := g.validate(); err != nil {
+// Disjoint reports whether two claim sets authorize no overlapping access.
+func (granted GrantedOperations) Disjoint(other GrantedOperations) (bool, error) {
+	if err := compatibleOperations(granted.value, other.value); err != nil {
+		return false, err
+	}
+	return granted.value.vocabulary.disjoint(granted.value, other.value)
+}
+
+// Contains reports whether the claim covers one operation.
+func (granted GrantedOperations) Contains(operation Operation) (bool, error) {
+	if err := compatibleOperations(granted.value, operation.value); err != nil {
+		return false, err
+	}
+	return granted.value.vocabulary.subset(operation.value, granted.value)
+}
+
+// MarshalJSON emits the shared vocabulary/operations claim shape, including
+// an explicit empty array.
+func (granted GrantedOperations) MarshalJSON() ([]byte, error) {
+	if err := granted.value.validate(); err != nil {
 		return nil, err
 	}
-	operations := g.Operations()
-	if operations == nil {
-		operations = []MCPOperation{}
-	}
-	return json.Marshal(struct {
-		Vocabulary string         `json:"vocabulary"`
-		Operations []MCPOperation `json:"operations"`
-	}{
-		Vocabulary: MCPVocabulary,
-		Operations: operations,
-	})
+	return marshalOperationEnvelope(granted.value)
 }
 
-// UnmarshalJSON strictly parses the shared MCP operation-set shape while
-// permitting an empty operations array.
-func (g *GrantedOperations) UnmarshalJSON(data []byte) error {
-	granted, err := parseGrantedOperations(data)
-	if err != nil {
-		return err
-	}
-	*g = granted
-	return nil
+// UnmarshalJSON refuses parsing without an explicit vocabulary registry.
+func (*GrantedOperations) UnmarshalJSON([]byte) error {
+	return errors.New("r3: GrantedOperations requires a registry; use Registry.ParseGrantedOperations")
 }
 
-func parseGrantedOperations(data []byte) (GrantedOperations, error) {
-	var vocabularyRaw, operationsRaw json.RawMessage
-	seen, err := decodeStrictObject(data, map[string]func(json.RawMessage) error{
-		"vocabulary": func(raw json.RawMessage) error {
-			vocabularyRaw = append(vocabularyRaw[:0], raw...)
-			return nil
-		},
-		"operations": func(raw json.RawMessage) error {
-			operationsRaw = append(operationsRaw[:0], raw...)
-			return nil
-		},
-	})
-	if err != nil {
-		return GrantedOperations{}, fmt.Errorf("r3: invalid granted operations: %w", err)
-	}
-	if _, ok := seen["vocabulary"]; !ok {
-		return GrantedOperations{}, fmt.Errorf("r3: granted operations are missing vocabulary")
-	}
-	if _, ok := seen["operations"]; !ok {
-		return GrantedOperations{}, fmt.Errorf("r3: granted operations are missing operations")
-	}
-	operations, err := parseMCPOperationsParts(vocabularyRaw, operationsRaw)
+// ParseGrantedOperations parses a claim through the registry named by its
+// own vocabulary URI.
+func (registry Registry) ParseGrantedOperations(source []byte) (GrantedOperations, error) {
+	uri, raw, err := parseOperationEnvelope(source)
 	if err != nil {
 		return GrantedOperations{}, err
 	}
-	return NewGrantedOperations(operations...)
+	vocabulary, ok := registry.vocabularies[uri]
+	if !ok {
+		return GrantedOperations{}, fmt.Errorf("r3: vocabulary %q is not registered", uri)
+	}
+	return newParsedGrantedOperations(vocabulary, raw)
 }
 
-// Grant is a zero-or-more direct grant proven to be a subset of one R3
-// document.
+// Grant is a direct grant proven not to exceed one R3 document.
 type Grant struct {
 	granted GrantedOperations
 	proven  bool
@@ -252,99 +206,136 @@ type Authorization struct {
 	proven  bool
 }
 
-// AuthTokenOperations is the validated operation-claim shape from a signed R3
-// Auth token. It does not classify the referenced artifact as a class document
-// or a per-call proposal; callers must establish that from retained context.
+// AuthTokenOperations is the validated operation-claim shape from a signed
+// R3 Auth token. Artifact classification remains a separate custody fact.
 type AuthTokenOperations struct {
 	granted        GrantedOperations
 	perCall        GrantedOperations
 	perCallPresent bool
 }
 
-// GrantedOperations returns the signed r3_granted claim.
-func (o AuthTokenOperations) GrantedOperations() GrantedOperations { return o.granted.clone() }
+// OperationAccess is the authorization an R3 Auth token gives one operation.
+type OperationAccess uint8
 
-// PerCallOperations returns the signed r3_per_call claim, or an empty set when
-// that optional claim was absent.
-func (o AuthTokenOperations) PerCallOperations() GrantedOperations { return o.perCall.clone() }
+const (
+	// OperationAccessDenied means the operation appears in neither claim set.
+	OperationAccessDenied OperationAccess = iota
+	// OperationAccessGranted means the operation may execute directly.
+	OperationAccessGranted
+	// OperationAccessPerCall means the operation requires an exact proposal.
+	OperationAccessPerCall
+)
 
-// PerCallClaimPresent reports whether the signed token contained the optional
-// r3_per_call claim, including an explicitly empty operation set.
-func (o AuthTokenOperations) PerCallClaimPresent() bool { return o.perCallPresent }
+// AccessFor classifies one registered operation against the token's disjoint
+// direct and per-call claim sets.
+func (operations AuthTokenOperations) AccessFor(operation Operation) (OperationAccess, error) {
+	granted, err := operations.granted.Contains(operation)
+	if err != nil {
+		return OperationAccessDenied, err
+	}
+	perCall, err := operations.perCall.Contains(operation)
+	if err != nil {
+		return OperationAccessDenied, err
+	}
+	if granted && perCall {
+		return OperationAccessDenied, errors.New("r3: operation appears in both direct and per-call authorization")
+	}
+	if granted {
+		return OperationAccessGranted, nil
+	}
+	if perCall {
+		return OperationAccessPerCall, nil
+	}
+	return OperationAccessDenied, nil
+}
+
+func (operations AuthTokenOperations) GrantedOperations() GrantedOperations {
+	return operations.granted.clone()
+}
+
+func (operations AuthTokenOperations) PerCallOperations() GrantedOperations {
+	return operations.perCall.clone()
+}
+
+func (operations AuthTokenOperations) PerCallClaimPresent() bool {
+	return operations.perCallPresent
+}
 
 // NewAuthorization proves the direct and per-call sets against one class
-// document. An operation cannot occur in both sets because direct enforcement
-// would otherwise silently bypass the requested per-call decision.
+// document and against one another.
 func NewAuthorization(granted, perCall GrantedOperations, document Document) (Authorization, error) {
-	if err := granted.validate(); err != nil {
-		return Authorization{}, fmt.Errorf("r3: invalid direct authorization: %w", err)
+	if err := compatibleOperations(granted.value, document.operationSet.value); err != nil {
+		return Authorization{}, fmt.Errorf("r3: direct authorization: %w", err)
 	}
-	if err := perCall.validate(); err != nil {
-		return Authorization{}, fmt.Errorf("r3: invalid per-call authorization: %w", err)
+	if err := compatibleOperations(perCall.value, document.operationSet.value); err != nil {
+		return Authorization{}, fmt.Errorf("r3: per-call authorization: %w", err)
 	}
-	if err := document.operationSet.validate(); err != nil {
-		return Authorization{}, fmt.Errorf("r3: invalid authorization document: %w", err)
+	directSubset, err := granted.IsSubsetOf(document.operationSet)
+	if err != nil {
+		return Authorization{}, err
 	}
-	if !granted.isSubsetOf(document.operationSet) {
-		return Authorization{}, fmt.Errorf("r3: direct authorization exceeds document operation set")
+	if !directSubset {
+		return Authorization{}, errors.New("r3: direct authorization exceeds document operation set")
 	}
-	if !perCall.isSubsetOf(document.operationSet) {
-		return Authorization{}, fmt.Errorf("r3: per-call authorization exceeds document operation set")
+	perCallSubset, err := perCall.IsSubsetOf(document.operationSet)
+	if err != nil {
+		return Authorization{}, err
 	}
-	for _, operation := range granted.operations {
-		if perCall.Contains(operation) {
-			return Authorization{}, fmt.Errorf("r3: MCP tool %q occurs in both direct and per-call authorization", operation.tool)
-		}
+	if !perCallSubset {
+		return Authorization{}, errors.New("r3: per-call authorization exceeds document operation set")
+	}
+	disjoint, err := granted.Disjoint(perCall)
+	if err != nil {
+		return Authorization{}, err
+	}
+	if !disjoint {
+		return Authorization{}, errors.New("r3: direct and per-call authorization overlap")
 	}
 	return Authorization{granted: granted.clone(), perCall: perCall.clone(), proven: true}, nil
 }
 
-// GrantedOperations returns the proven direct-operation claim.
-func (a Authorization) GrantedOperations() GrantedOperations { return a.granted.clone() }
+func (authorization Authorization) GrantedOperations() GrantedOperations {
+	return authorization.granted.clone()
+}
 
-// PerCallOperations returns the proven per-call-operation claim.
-func (a Authorization) PerCallOperations() GrantedOperations { return a.perCall.clone() }
+func (authorization Authorization) PerCallOperations() GrantedOperations {
+	return authorization.perCall.clone()
+}
 
-// NewGrant constructs a direct grant after proving it does not exceed the
-// document's exact operation set.
+// NewGrant proves a direct grant against a document.
 func NewGrant(granted GrantedOperations, document Document) (Grant, error) {
-	if err := granted.validate(); err != nil {
-		return Grant{}, fmt.Errorf("r3: invalid grant: %w", err)
+	if err := compatibleOperations(granted.value, document.operationSet.value); err != nil {
+		return Grant{}, err
 	}
-	if err := document.operationSet.validate(); err != nil {
-		return Grant{}, fmt.Errorf("r3: invalid grant document: %w", err)
+	subset, err := granted.IsSubsetOf(document.operationSet)
+	if err != nil {
+		return Grant{}, err
 	}
-	if !granted.isSubsetOf(document.operationSet) {
-		return Grant{}, fmt.Errorf("r3: grant exceeds document operation set")
+	if !subset {
+		return Grant{}, errors.New("r3: grant exceeds document operation set")
 	}
 	return Grant{granted: granted.clone(), proven: true}, nil
 }
 
-// ParseGrant strictly parses granted operations and proves them against
-// document.
-func ParseGrant(source []byte, document Document) (Grant, error) {
-	var granted GrantedOperations
-	if err := json.Unmarshal(source, &granted); err != nil {
+// ParseGrant parses granted operations through registry and proves them
+// against document.
+func (registry Registry) ParseGrant(source []byte, document Document) (Grant, error) {
+	granted, err := registry.ParseGrantedOperations(source)
+	if err != nil {
 		return Grant{}, err
 	}
 	return NewGrant(granted, document)
 }
 
-// GrantedOperations returns a copy of the proven claim value.
-func (g Grant) GrantedOperations() GrantedOperations {
-	return g.granted.clone()
-}
+func (grant Grant) GrantedOperations() GrantedOperations { return grant.granted.clone() }
 
-// MarshalJSON emits the grant using the shared MCP operation-set shape.
-func (g Grant) MarshalJSON() ([]byte, error) {
-	if !g.proven {
-		return nil, fmt.Errorf("r3: cannot marshal an unproven Grant; use NewGrant or ParseGrant")
+func (grant Grant) MarshalJSON() ([]byte, error) {
+	if !grant.proven {
+		return nil, errors.New("r3: cannot marshal an unproven Grant; use NewGrant or Registry.ParseGrant")
 	}
-	return json.Marshal(g.granted)
+	return json.Marshal(grant.granted)
 }
 
-// UnmarshalJSON always rejects because a Grant cannot be validated without its
-// referenced document.
-func (g *Grant) UnmarshalJSON(data []byte) error {
-	return fmt.Errorf("r3: Grant requires document context; use ParseGrant")
+func (*Grant) UnmarshalJSON([]byte) error {
+	return errors.New("r3: Grant requires registry and document context; use Registry.ParseGrant")
 }

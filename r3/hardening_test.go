@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"aauth-go/r3"
+	"aauth-go/r3/vocab/mcp"
 )
 
 func TestGrantedOperationsExactJSONRoundTripIncludingEmpty(t *testing.T) {
@@ -39,19 +40,19 @@ func TestGrantedOperationsExactJSONRoundTripIncludingEmpty(t *testing.T) {
 				t.Fatalf("encoded granted operations = %s, want %s", encoded, tt.wantJSON)
 			}
 
-			var parsed r3.GrantedOperations
-			if err := json.Unmarshal(encoded, &parsed); err != nil {
+			parsed, err := mcpRegistry.ParseGrantedOperations(encoded)
+			if err != nil {
 				t.Fatalf("unmarshal granted operations: %v", err)
 			}
-			if !parsed.Equal(tt.granted) || len(parsed.Operations()) != tt.wantLength {
+			if !grantedEqual(t, parsed, tt.granted) || len(parsed.Operations()) != tt.wantLength {
 				t.Fatalf("round trip changed granted operations: %#v", parsed.Operations())
 			}
 		})
 	}
 
 	var zero r3.GrantedOperations
-	if !zero.Equal(mustGranted(t)) {
-		t.Fatal("zero GrantedOperations is not the valid empty claim value")
+	if _, err := json.Marshal(zero); err == nil {
+		t.Fatal("zero GrantedOperations marshaled without an explicit vocabulary")
 	}
 }
 
@@ -71,18 +72,17 @@ func TestGrantedOperationsStrictParsingAndConstruction(t *testing.T) {
 		invalidUTF8JSON(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"`, `"}]}`),
 	}
 	for _, source := range invalidJSON {
-		var granted r3.GrantedOperations
-		if err := json.Unmarshal(source, &granted); err == nil {
+		if _, err := mcpRegistry.ParseGrantedOperations(source); err == nil {
 			t.Errorf("accepted invalid granted operations JSON: %q", source)
 		}
 	}
 
 	duplicate := mustOperation(t, "same")
-	if _, err := r3.NewGrantedOperations(duplicate, duplicate); err == nil {
+	if _, err := r3.NewGrantedOperations(mcp.Vocabulary(), duplicate, duplicate); err == nil {
 		t.Fatal("accepted duplicate constructed granted operations")
 	}
-	var invalidOperation r3.MCPOperation
-	if _, err := r3.NewGrantedOperations(invalidOperation); err == nil {
+	var invalidOperation r3.Operation
+	if _, err := r3.NewGrantedOperations(mcp.Vocabulary(), invalidOperation); err == nil {
 		t.Fatal("accepted an invalid constructed granted operation")
 	}
 }
@@ -93,25 +93,25 @@ func TestGrantedOperationsSemanticHelpersAndCopySafety(t *testing.T) {
 	a := mustGranted(t, "a")
 	empty := mustGranted(t)
 
-	if !ab.Equal(ba) {
+	if !grantedEqual(t, ab, ba) {
 		t.Fatal("order changed granted-operation equality")
 	}
-	if !a.IsSubsetOf(ab) || !empty.IsSubsetOf(ab) || !empty.IsSubsetOf(empty) {
+	if !grantedSubset(t, a, ab) || !grantedSubset(t, empty, ab) || !grantedSubset(t, empty, empty) {
 		t.Fatal("valid granted-operation subset relation failed")
 	}
-	if ab.IsSubsetOf(a) || a.IsSubsetOf(empty) {
+	if grantedSubset(t, ab, a) || grantedSubset(t, a, empty) {
 		t.Fatal("over-broad granted operations reported as a subset")
 	}
 
-	operations := []r3.MCPOperation{mustOperation(t, "retained")}
-	granted, err := r3.NewGrantedOperations(operations...)
+	operations := []r3.Operation{mustOperation(t, "retained")}
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), operations...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	operations[0] = mustOperation(t, "changed-input")
 	returned := granted.Operations()
 	returned[0] = mustOperation(t, "changed-output")
-	if got := granted.Operations()[0].Tool(); got != "retained" {
+	if got := mcpTool(t, granted.Operations()[0]); got != "retained" {
 		t.Fatalf("caller mutated granted operations: %q", got)
 	}
 }
@@ -140,7 +140,7 @@ func TestParseGrantAcceptsEmptyAndSubsetAndRejectsAdversarialInput(t *testing.T)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			grant, err := r3.ParseGrant([]byte(tt.source), document)
+			grant, err := mcpRegistry.ParseGrant([]byte(tt.source), document)
 			if err != nil {
 				t.Fatalf("parse grant: %v", err)
 			}
@@ -164,13 +164,13 @@ func TestParseGrantAcceptsEmptyAndSubsetAndRejectsAdversarialInput(t *testing.T)
 		invalidUTF8JSON(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"`, `"}]}`),
 	}
 	for _, source := range invalid {
-		if _, err := r3.ParseGrant(source, document); err == nil {
+		if _, err := mcpRegistry.ParseGrant(source, document); err == nil {
 			t.Errorf("accepted invalid grant: %q", source)
 		}
 	}
 
 	var invalidDocument r3.Document
-	if _, err := r3.ParseGrant([]byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[]}`), invalidDocument); err == nil {
+	if _, err := mcpRegistry.ParseGrant([]byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[]}`), invalidDocument); err == nil {
 		t.Fatal("accepted grant against invalid document")
 	}
 }
@@ -197,7 +197,7 @@ func TestGrantUnmarshalAlwaysRequiresDocumentContext(t *testing.T) {
 	if err := json.Unmarshal(source, &valid); err == nil || !strings.Contains(err.Error(), "ParseGrant") {
 		t.Fatalf("valid Grant unmarshal error = %v, want ParseGrant direction", err)
 	}
-	if !valid.GrantedOperations().Equal(before) {
+	if !grantedEqual(t, valid.GrantedOperations(), before) {
 		t.Fatal("failed Grant unmarshal mutated a valid receiver")
 	}
 }
@@ -240,20 +240,20 @@ func TestParseReferencedDocumentBindsExactBytesBeforeParsing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	document, err := r3.ParseReferencedDocument(reference, exactBytes)
+	document, err := mcpRegistry.ParseReferencedDocument(reference, exactBytes)
 	if err != nil {
 		t.Fatalf("parse referenced document: %v", err)
 	}
-	if got := document.OperationSet().Operations()[0].Tool(); got != "read" {
+	if got := mcpTool(t, document.OperationSet().Operations()[0]); got != "read" {
 		t.Fatalf("parsed referenced tool = %q, want read", got)
 	}
 
-	if _, err := r3.ParseReferencedDocument(reference, append(exactBytes, ' ')); err == nil {
+	if _, err := mcpRegistry.ParseReferencedDocument(reference, append(exactBytes, ' ')); err == nil {
 		t.Fatal("accepted referenced document bytes with a mismatched digest")
 	}
 
 	var invalidReference r3.Reference
-	if _, err := r3.ParseReferencedDocument(invalidReference, exactBytes); err == nil || !strings.Contains(err.Error(), "reference") {
+	if _, err := mcpRegistry.ParseReferencedDocument(invalidReference, exactBytes); err == nil || !strings.Contains(err.Error(), "reference") {
 		t.Fatalf("invalid Reference error = %v, want reference validation failure", err)
 	}
 
@@ -265,14 +265,14 @@ func TestParseReferencedDocumentBindsExactBytesBeforeParsing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r3.ParseReferencedDocument(invalidDocumentReference, invalidDocumentBytes); err == nil {
+	if _, err := mcpRegistry.ParseReferencedDocument(invalidDocumentReference, invalidDocumentBytes); err == nil {
 		t.Fatal("accepted digest-matching bytes that are not a valid R3 document")
 	}
 }
 
 func TestConstructorsRejectInvalidUTF8(t *testing.T) {
 	invalid := string([]byte{'x', 0xff})
-	if _, err := r3.NewMCPOperation(invalid); err == nil {
+	if _, err := mcp.NewOperation(invalid); err == nil {
 		t.Fatal("MCP operation accepted invalid UTF-8")
 	}
 
@@ -300,7 +300,7 @@ func TestConstructorsRejectInvalidUTF8(t *testing.T) {
 }
 
 func TestJSONDecodersRejectRawInvalidUTF8InStringValues(t *testing.T) {
-	var operation r3.MCPOperation
+	var operation mcp.Operation
 	if err := json.Unmarshal(invalidUTF8JSON(`{"tool":"`, `"}`), &operation); err == nil {
 		t.Fatal("MCP operation JSON accepted raw invalid UTF-8")
 	}
@@ -313,14 +313,13 @@ func TestJSONDecodersRejectRawInvalidUTF8InStringValues(t *testing.T) {
 		invalidUTF8JSON(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"read"}],"display":{"summary":"summary","irreversible":"`, `"}}`),
 	}
 	for _, source := range documents {
-		if _, err := r3.ParseDocument(source); err == nil {
+		if _, err := mcpRegistry.ParseDocument(source); err == nil {
 			t.Errorf("document accepted raw invalid UTF-8: %q", source)
 		}
 	}
 }
 
 func TestKnownToolsValidationRejectsMalformedAuthority(t *testing.T) {
-	requested := mustSet(t, "known")
 	invalidUTF8 := string([]byte{'x', 0xff})
 	invalidAuthorities := [][]string{
 		{"known", ""},
@@ -330,12 +329,31 @@ func TestKnownToolsValidationRejectsMalformedAuthority(t *testing.T) {
 		{"known", invalidUTF8},
 	}
 	for _, knownTools := range invalidAuthorities {
-		if err := requested.ValidateKnownTools(knownTools); err == nil {
+		operations := make([]mcp.Operation, len(knownTools))
+		var err error
+		for index, tool := range knownTools {
+			operations[index], err = mcp.NewOperation(tool)
+			if err != nil {
+				break
+			}
+		}
+		if err == nil {
+			_, err = mcp.NewOperationSet(operations...)
+		}
+		if err == nil {
 			t.Errorf("accepted malformed authoritative tool list: %q", knownTools)
 		}
 	}
 
-	if err := requested.ValidateKnownTools([]string{"known", "other"}); err != nil {
+	known, err := mcp.NewOperation("known")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := mcp.NewOperation("other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mcp.NewOperationSet(known, other); err != nil {
 		t.Fatalf("rejected valid authoritative tool list: %v", err)
 	}
 }
