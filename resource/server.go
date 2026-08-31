@@ -19,9 +19,11 @@ import (
 	"aauth-go/signaturekey"
 )
 
-// FederatedAuthorizationConfig supplies a federated auth-token Resource's identity, policy,
-// storage, and application dependencies. Its resource tokens name the
-// configured Access Server.
+// FederatedAuthorizationConfig supplies a federated auth-token Resource's
+// identity, policy, storage, and application dependencies. Its resource tokens
+// name the configured Access Server. A mission-bound Person token requires no
+// extra Resource configuration: only its signed digest is copied into the
+// Resource token and later principal context.
 type FederatedAuthorizationConfig struct {
 	Issuer                        string
 	AccessServer                  string

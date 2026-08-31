@@ -46,12 +46,13 @@ stores. The programs are executable documentation, not deployment templates.
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
 | [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Deferred Person Server consent](example/psconsent) | A verified request parked for host-authenticated consent and explicit polling | `go run ./example/psconsent` |
-| [Immediate four-party authorization](example/fourparty) | Person Server to Access Server federation before Resource access | `go run ./example/fourparty` |
+| [Four-party authorization variants](example/fourparty) | Missionless federation, then mission approval and update, Access Server issuance, protected use, and person-accepted completion | `go run ./example/fourparty` |
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
 | [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
 | [One chained Resource call](example/callchaining) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
 
 The integration suite also exercises
+[mission-bound four-party authorization](integration/mission_four_party_test.go),
 [direct Person identity](integration/direct_identity_access_test.go),
 [Person-token interaction](integration/person_token_interaction_test.go), and
 both [baseline `401` and Resource-held `202` auth-token delivery](integration/core_four_party_test.go).
@@ -101,11 +102,13 @@ application implementations.
 ## Current limits
 
 The repository does not yet implement all of AAuth Core. Remote Agent
-enrollment and credential renewal, the general deferred and clarification
-paths, complete mission logs and control, and several delegation and revocation
-variants remain open. Mission support currently covers one immediate
-three-party approval, ordered accepted updates, protected call, and
-person-accepted completion path.
+enrollment and credential renewal, general deferred and clarification paths,
+the remaining mission log and control surfaces, and several delegation and
+revocation variants remain open. Mission support currently covers immediate
+top-level approval, ordered accepted updates, protected use, and
+person-accepted completion through both three-party and four-party
+authorization. Deferred mission actions and mission combinations with
+delegation, call chaining, held delivery, or revocation remain open.
 
 The R3, Events, Bootstrap, and Budgets companion specifications are pinned as
 design inputs but do not yet have complete executing paths. HTTP Signature

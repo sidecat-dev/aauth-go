@@ -289,12 +289,13 @@ func TestAuthorizationEndpointIssuesCurrentResourceToken(t *testing.T) {
 		})
 	}
 
-	t.Run("mission-bound person token requires mission flow", func(t *testing.T) {
+	t.Run("mission-bound person token preserves the mission digest", func(t *testing.T) {
+		missionS256 := aauth.MissionS256([]byte("approved mission content"))
 		missionToken, err := aauth.MintPersonToken(psKey, aauth.PersonTokenClaims{
 			Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument, Audience: resourceIssuer,
 			Subject: "person-1", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
-			JTI: "mission-person-token", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
-			MissionS256: strings.Repeat("A", 43),
+			JTI: "mission-person-token", IssuedAt: now.Unix(), ExpiresAt: now.Add(3 * time.Minute).Unix(),
+			MissionS256: missionS256,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -302,8 +303,21 @@ func TestAuthorizationEndpointIssuesCurrentResourceToken(t *testing.T) {
 		request := signedRequest(t, clock, agentKey, missionToken, http.MethodPost, resourceIssuer+"/authorize", `{"scope":"records.read"}`)
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
-		if response.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+		}
+		var output struct {
+			ResourceToken string `json:"resource_token"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &output); err != nil {
+			t.Fatal(err)
+		}
+		claims, err := aauth.VerifyResourceToken(context.Background(), output.ResourceToken, resolver, clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claims.MissionS256 != missionS256 || claims.ExpiresAt != now.Add(3*time.Minute).Unix() {
+			t.Fatalf("mission resource-token claims = %#v", claims)
 		}
 	})
 
@@ -602,6 +616,24 @@ func TestProtectedHandlerReceivesCurrentPrincipal(t *testing.T) {
 		t.Fatalf("second principal = %#v", secondPrincipal)
 	}
 
+	missionS256 := aauth.MissionS256([]byte("approved mission content"))
+	missionClaims := authClaims()
+	missionClaims.MissionS256 = missionS256
+	missionToken := mintAuthToken(t, accessKey, agentKey.PublicJWK(), now, missionClaims)
+	request = signedRequest(t, clock, agentKey, missionToken, http.MethodGet, resourceIssuer+"/records", "")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("mission-bound status = %d, body = %s", response.Code, response.Body.String())
+	}
+	mu.Lock()
+	missionPrincipal := principals[len(principals)-1]
+	missionContext := personContexts[len(personContexts)-1]
+	mu.Unlock()
+	if missionPrincipal.MissionS256 != missionS256 || missionContext.MissionS256 != missionS256 {
+		t.Fatalf("mission-bound principal = %#v, context = %#v", missionPrincipal, missionContext)
+	}
+
 	// Repeated concurrent presentations preserve the same principal and must
 	// not race.
 	var wait sync.WaitGroup
@@ -650,16 +682,6 @@ func TestProtectedHandlerReceivesCurrentPrincipal(t *testing.T) {
 			claims: func() aauth.AuthTokenClaims {
 				claims := authClaims()
 				claims.Account = "primary"
-				return claims
-			}(),
-			issuerKey: accessKey,
-			proofKey:  agentKey,
-		},
-		{
-			name: "mission outside immediate slice",
-			claims: func() aauth.AuthTokenClaims {
-				claims := authClaims()
-				claims.MissionS256 = strings.Repeat("A", 43)
 				return claims
 			}(),
 			issuerKey: accessKey,

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -419,6 +418,42 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		}
 	})
 
+	t.Run("mission digest is preserved without disclosing mission content", func(t *testing.T) {
+		missionS256 := aauth.MissionS256([]byte("approved mission content"))
+		missionResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "https://as.example", JTI: "mission-resource-token", AgentJKT: agentJKT,
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(), Scope: "records.read",
+			PersonServer: "https://ps.example", Subject: "directed-person-1", PresentedJTI: "person-token-1",
+			MissionS256: missionS256,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := callTokenEndpoint(agentToken, missionResourceToken)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var output struct {
+			AuthToken string `json:"auth_token"`
+			ExpiresIn int64  `json:"expires_in"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
+			t.Fatal(err)
+		}
+		claims, err := aauth.VerifyAuthToken(context.Background(), output.AuthToken, resolver, clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claims.MissionS256 != missionS256 || claims.ExpiresAt != now.Add(5*time.Minute).Unix() ||
+			output.ExpiresIn != int64((5*time.Minute)/time.Second) {
+			t.Fatalf("mission auth token = %#v; expires_in = %d", claims, output.ExpiresIn)
+		}
+		if evaluated.MissionS256 != missionS256 {
+			t.Fatalf("authorization policy mission_s256 = %q, want %q", evaluated.MissionS256, missionS256)
+		}
+	})
+
 	t.Run("same-ID Person Server key rotation refreshes once", func(t *testing.T) {
 		rotated := accessServerTestKey(t, psKey.ID())
 		resolver.StageRefresh(signaturekey.StaticKeyReference{
@@ -436,7 +471,7 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 	})
 
 	t.Run("person server trust denial", func(t *testing.T) {
-		trustErr = errors.New("person server is not trusted")
+		trustErr = errors.Join(ErrAccessDenied, errors.New("person server is not trusted"))
 		beforeAuthorize := authorizeCalls
 		assertAccessProblemStatus(t, callTokenEndpoint(agentToken, resourceToken), http.StatusForbidden, "access_denied")
 		trustErr = nil
@@ -445,9 +480,25 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		}
 	})
 
+	t.Run("person server trust failure", func(t *testing.T) {
+		trustErr = errors.New("person server trust data is unavailable")
+		beforeAuthorize := authorizeCalls
+		assertAccessProblemStatus(t, callTokenEndpoint(agentToken, resourceToken), http.StatusInternalServerError, "server_error")
+		trustErr = nil
+		if authorizeCalls != beforeAuthorize {
+			t.Fatal("trust failure reached authorization policy")
+		}
+	})
+
 	t.Run("authorization denial", func(t *testing.T) {
-		authorizeErr = errors.New("resource policy denied access")
+		authorizeErr = errors.Join(ErrAccessDenied, errors.New("resource policy denied access"))
 		assertAccessProblemStatus(t, callTokenEndpoint(agentToken, resourceToken), http.StatusForbidden, "access_denied")
+		authorizeErr = nil
+	})
+
+	t.Run("authorization failure", func(t *testing.T) {
+		authorizeErr = errors.New("resource policy data is unavailable")
+		assertAccessProblemStatus(t, callTokenEndpoint(agentToken, resourceToken), http.StatusInternalServerError, "server_error")
 		authorizeErr = nil
 	})
 
@@ -494,7 +545,6 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		{name: "interaction", change: func(claims *aauth.ResourceTokenClaims) {
 			claims.Interaction = &aauth.ResourceInteraction{URL: "https://resource.example/interaction", Code: "ABCD-EFGH"}
 		}},
-		{name: "mission", change: func(claims *aauth.ResourceTokenClaims) { claims.MissionS256 = strings.Repeat("A", 43) }},
 	} {
 		test := test
 		t.Run("resource context "+test.name, func(t *testing.T) {

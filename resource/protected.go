@@ -169,10 +169,6 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}
-	if claims.MissionS256 != "" && server.authorizationTopology != authorizationTopologyPersonServer {
-		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("mission-bound auth tokens require mission verification"))
-		return
-	}
 	if !claims.Confirmation.JWK.Equal(proof.PublicKey()) {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request key does not match auth token"))
 		return

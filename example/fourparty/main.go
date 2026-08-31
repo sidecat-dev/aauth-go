@@ -1,6 +1,7 @@
-// The fourparty example runs the immediate AAuth Core flow entirely in
-// process. Each role still communicates through ordinary HTTP handlers and a
-// client, so the protocol messages are the same as a network deployment.
+// The fourparty example runs immediate missionless and mission-bound AAuth
+// Core flows entirely in process. Each role still communicates through
+// ordinary HTTP handlers and a client, so the messages match a network
+// deployment.
 package main
 
 import (
@@ -21,6 +22,7 @@ import (
 	"aauth-go/accessserver"
 	clientagent "aauth-go/agent"
 	"aauth-go/agentprovider"
+	"aauth-go/internal/exampleutil"
 	"aauth-go/jose"
 	"aauth-go/personserver"
 	"aauth-go/resource"
@@ -37,6 +39,15 @@ const (
 )
 
 func main() {
+	run(os.Stdout)
+}
+
+func run(output io.Writer) {
+	runFourParty(output, false)
+	runFourParty(output, true)
+}
+
+func runFourParty(output io.Writer, missionBound bool) {
 	now := time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 
@@ -69,11 +80,14 @@ func main() {
 		NewID: func() string { return "auth-token-1" },
 		TrustPersonServer: func(_ context.Context, issuer string) error {
 			if issuer != personServerID {
-				return errors.New("untrusted person server")
+				return errors.Join(accessserver.ErrAccessDenied, errors.New("untrusted person server"))
 			}
 			return nil
 		},
 		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
+			if (request.MissionS256 != "") != missionBound {
+				return accessserver.Decision{}, errors.Join(accessserver.ErrAccessDenied, errors.New("unexpected mission context"))
+			}
 			return accessserver.Decision{Scopes: request.Scopes, Lifetime: 30 * time.Minute}, nil
 		},
 	}))
@@ -84,7 +98,15 @@ func main() {
 			http.Error(response, "missing AAuth principal", http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(response, "AAuth four-party flow complete: %s has %s\n", principal.Subject, principal.Scope[0])
+		if (principal.MissionS256 != "") != missionBound {
+			http.Error(response, "unexpected mission context", http.StatusInternalServerError)
+			return
+		}
+		variant := "missionless"
+		if missionBound {
+			variant = "mission-bound"
+		}
+		fmt.Fprintf(response, "AAuth %s four-party flow complete: %s has %s\n", variant, principal.Subject, principal.Scope[0])
 	})
 	protectedResource := must(resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
 		Issuer: resourceID, AccessServer: accessServerID,
@@ -101,11 +123,37 @@ func main() {
 		Protected: protected,
 	}))
 
+	missionExpiry := now.Add(15 * time.Minute)
+	personAcceptedCompletion := false
+	var missions *personserver.MissionConfig
+	if missionBound {
+		missions = &personserver.MissionConfig{
+			Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+				return personserver.MissionDecision{
+					Description: request.Proposal.Description, ApprovedResources: request.Proposal.Resources,
+					ExpiresAt: &missionExpiry,
+				}, nil
+			},
+			AcceptUpdate: func(_ context.Context, request personserver.MissionUpdatePolicyRequest) error {
+				if request.Document.Update.Description == "" {
+					return errors.New("mission update description is required")
+				}
+				return nil
+			},
+			ConfirmPersonAcceptedCompletion: func(_ context.Context, request personserver.MissionCompletionPolicyRequest) error {
+				if !personAcceptedCompletion {
+					return fmt.Errorf("%w: person has not accepted completion", personserver.ErrMissionDenied)
+				}
+				return nil
+			},
+		}
+	}
 	people := must(personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey,
 		KeyResolver: resolver, Clock: clock,
 		NewID:      func() string { return "person-token-1" },
-		HTTPClient: httpClient, Tokens: newMemoryTokenStore(),
+		HTTPClient: httpClient, Tokens: exampleutil.NewMissionStore(),
+		Missions: missions,
 		AccessServerEndpoint: func(_ context.Context, issuer string) (string, error) {
 			if issuer != accessServerID {
 				return "", errors.New("unknown access server")
@@ -113,12 +161,22 @@ func main() {
 			return accessServerID + "/token", nil
 		},
 		BindPerson: func(_ context.Context, request personserver.PersonTokenRequest) (personserver.Person, error) {
-			if request.Agent != agentID || request.Resource != resourceID {
+			if request.Agent != agentID || request.Resource != resourceID ||
+				(request.Mission != nil) != missionBound {
 				return personserver.Person{}, errors.New("unexpected person-token request")
 			}
 			return personserver.Person{Subject: "person-123", Lifetime: time.Hour}, nil
 		},
-		Consent: func(context.Context, personserver.AuthorizationRequest) error { return nil },
+		Consent: func(_ context.Context, request personserver.AuthorizationRequest) error {
+			if missionBound && (request.Mission == nil || len(request.Mission.AcceptedUpdates) != 1 ||
+				request.Mission.AcceptedUpdates[0].Document.Update.Description != "Report inputs selected") {
+				return errors.Join(personserver.ErrAccessDenied, errors.New("accepted mission update is required"))
+			}
+			if !missionBound && request.Mission != nil {
+				return errors.New("mission context is unexpected")
+			}
+			return nil
+		},
 	}))
 
 	network.Handle(agentProviderID, provider.Handler())
@@ -131,12 +189,37 @@ func main() {
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
 	}))
 	ctx := context.Background()
-	personTokenResult := must(reader.PersonToken(ctx, clientagent.PersonTokenRequest{
-		PersonServer: personServerID, Resource: resourceID,
-	}))
-	personToken, ok := personTokenResult.Token()
-	if !ok {
-		log.Fatal("example Person Server unexpectedly required interaction")
+	var personToken string
+	var missionS256 string
+	if missionBound {
+		mission := must(reader.ProposeMission(ctx, clientagent.MissionRequest{
+			PersonServer: personServerID,
+			Proposal: aauth.MissionProposal{
+				Description: "# Read the report inputs", Resources: []string{resourceID},
+			},
+		}))
+		missionS256 = mission.Mission().S256
+		update := must(reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
+			PersonServer: personServerID, MissionS256: missionS256,
+			Description: "Report inputs selected",
+		}))
+		if update.S256() == "" {
+			log.Fatal("mission update returned no digest")
+		}
+		var ok bool
+		personToken, ok = mission.PersonToken(resourceID)
+		if !ok {
+			log.Fatal("mission approval omitted the Resource person token")
+		}
+	} else {
+		result := must(reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+			PersonServer: personServerID, Resource: resourceID,
+		}))
+		var ok bool
+		personToken, ok = result.Token()
+		if !ok {
+			log.Fatal("Person Server unexpectedly required interaction")
+		}
 	}
 	resourceToken := must(reader.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope},
@@ -150,7 +233,17 @@ func main() {
 	if response.StatusCode != http.StatusOK {
 		log.Fatalf("protected call returned %s", response.Status)
 	}
-	_, _ = io.Copy(os.Stdout, response.Body)
+	_, _ = io.Copy(output, response.Body)
+	if missionBound {
+		personAcceptedCompletion = true
+		if err := reader.CompleteMission(ctx, clientagent.MissionCompletionRequest{
+			PersonServer: personServerID, MissionS256: missionS256,
+			Summary: "Protected report read completed",
+		}); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Fprintln(output, "mission completed with person acceptance")
+	}
 }
 
 func newSigningKey(id string) jose.SigningKey {
@@ -166,36 +259,6 @@ func must[T any](value T, err error) T {
 		log.Fatal(err)
 	}
 	return value
-}
-
-type memoryTokenStore struct {
-	mu      sync.Mutex
-	records map[string]personserver.PersonTokenRecord
-}
-
-func newMemoryTokenStore() *memoryTokenStore {
-	return &memoryTokenStore{records: make(map[string]personserver.PersonTokenRecord)}
-}
-
-func (store *memoryTokenStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := record.PersonServer + "\x00" + record.JTI
-	if _, exists := store.records[key]; exists {
-		return errors.New("person-token record already exists")
-	}
-	store.records[key] = record
-	return nil
-}
-
-func (store *memoryTokenStore) Load(_ context.Context, issuer, tokenID string) (personserver.PersonTokenRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	record, ok := store.records[issuer+"\x00"+tokenID]
-	if !ok {
-		return personserver.PersonTokenRecord{}, personserver.ErrPersonTokenNotFound
-	}
-	return record, nil
 }
 
 type logicalTransport struct {

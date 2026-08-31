@@ -486,6 +486,38 @@ func TestMissionConfigurationIsOptionalAndCoherent(t *testing.T) {
 	if _, err := NewPSAuthorization(base); err == nil {
 		t.Fatal("mission configuration without completion acceptance was accepted")
 	}
+
+	missionConfig := &MissionConfig{
+		Approve:      protocol.server.missionApprove,
+		AcceptUpdate: func(context.Context, MissionUpdatePolicyRequest) error { return nil },
+		ConfirmPersonAcceptedCompletion: func(context.Context, MissionCompletionPolicyRequest) error {
+			return nil
+		},
+	}
+	federated, err := NewFederatedAuthorization(FederatedAuthorizationConfig{
+		Issuer: protocol.personServerID, SigningKey: protocol.personKey, KeyResolver: protocol.resolver,
+		Clock: protocol.clock, NewID: func() string { return "id" }, HTTPClient: &http.Client{},
+		AccessServerEndpoint: func(context.Context, string) (string, error) {
+			return "https://as.example/token", nil
+		},
+		Tokens: protocol.store, Missions: missionConfig,
+		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) {
+			return Person{Subject: "person", Lifetime: time.Minute}, nil
+		},
+		Consent: func(context.Context, AuthorizationRequest) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	federated.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, base.Issuer+"/.well-known/aauth-person.json", nil))
+	metadata = nil
+	if err := json.Unmarshal(response.Body.Bytes(), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["mission_endpoint"] != protocol.personServerID+"/mission" {
+		t.Fatalf("federated mission endpoint = %q", metadata["mission_endpoint"])
+	}
 }
 
 func TestMissionDecisionCannotApproveAnExpiredMission(t *testing.T) {

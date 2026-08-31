@@ -195,11 +195,13 @@ The profile's five demonstrations form one coherent progression:
 Mission approval is the first surface, not an optional decoration on an
 otherwise complete profile.
 
-The current Go mission example extends its three-party profile path with two
-Core lifecycle steps that are not separate interop-profile surfaces: the PS
-appends one exact accepted update before later policy, and only a host callback
-representing the person's acceptance completes the mission after the protected
-call.
+The current Go mission example uses the three-party profile variant and adds
+two Core lifecycle steps that are not separate interop-profile surfaces: one
+exact accepted update before later policy and person-accepted completion after
+protected use. The four-party example and integration path apply the same lifecycle
+while keeping the exact mission and ordered accepted updates at the PS,
+sending only `mission_s256` to the AS, and retaining an exact digest and claims
+record for the verified AS-issued token before release.
 
 ### R3 per-call authorization
 

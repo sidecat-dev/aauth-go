@@ -29,7 +29,8 @@ var ErrIssuedAuthTokenConflict = errors.New("personserver: issued auth token con
 var ErrRevocationNotRecognized = errors.New("personserver: resource did not recognize the auth token")
 
 // IssuedAuthTokenRecord retains the exact compact-token digest, routing, and
-// lifetime of one three-party auth token before it is returned to the Agent.
+// lifetime of one auth token before it is returned to the Agent. MissionStore
+// uses it for both Person-Server-issued and federated mission-bound tokens.
 type IssuedAuthTokenRecord struct {
 	Reference     aauth.TokenReference
 	Resource      string

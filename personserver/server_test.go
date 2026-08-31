@@ -372,6 +372,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	var consented AuthorizationRequest
+	var consentErr error
 	server, err := NewFederatedAuthorization(FederatedAuthorizationConfig{
 		Issuer:      "https://person.example",
 		SigningKey:  personServerKey,
@@ -391,7 +392,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 		},
 		Consent: func(_ context.Context, request AuthorizationRequest) error {
 			consented = request
-			return nil
+			return consentErr
 		},
 	})
 	if err != nil {
@@ -496,23 +497,45 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 		t.Fatalf("expired resource token reached Access Server; calls = %d", accessCalls)
 	}
 
+	callTokenEndpoint := func() *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	assertPolicyProblem := func(response *httptest.ResponseRecorder, status int, code string) {
+		t.Helper()
+		var problem struct {
+			Code string `json:"error"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&problem); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != status || problem.Code != code {
+			t.Fatalf("policy response = %d %s, want %d %s", response.Code, response.Body.String(), status, code)
+		}
+	}
+
+	consentErr = errors.Join(ErrAccessDenied, errors.New("person declined access"))
+	assertPolicyProblem(callTokenEndpoint(), http.StatusForbidden, "access_denied")
+	if accessCalls != 1 {
+		t.Fatalf("consent denial reached Access Server; calls = %d", accessCalls)
+	}
+
+	consentErr = errors.New("consent policy data is unavailable")
+	assertPolicyProblem(callTokenEndpoint(), http.StatusInternalServerError, "server_error")
+	if accessCalls != 1 {
+		t.Fatalf("consent failure reached Access Server; calls = %d", accessCalls)
+	}
+	consentErr = nil
+
 	deny = true
-	request = httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
-		t.Fatal(err)
-	}
-	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	var denial struct {
-		Code string `json:"error"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&denial); err != nil {
-		t.Fatal(err)
-	}
-	if response.Code != http.StatusForbidden || denial.Code != "access_denied" {
-		t.Fatalf("denial status = %d, body = %s", response.Code, response.Body.String())
-	}
+	assertPolicyProblem(callTokenEndpoint(), http.StatusForbidden, "access_denied")
 }
 
 func TestServerRefusesResourceTokenThatChangesRetainedPerson(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	aauth "aauth-go"
 	clientagent "aauth-go/agent"
 	"aauth-go/agentprovider"
+	"aauth-go/internal/exampleutil"
 	"aauth-go/jose"
 	"aauth-go/personserver"
 	"aauth-go/resource"
@@ -59,7 +60,7 @@ func main() {
 	ids := []string{"person-token-1", "auth-token-1"}
 	people := must(personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey,
-		KeyResolver: resolver, Clock: clock, Tokens: newMemoryMissionStore(),
+		KeyResolver: resolver, Clock: clock, Tokens: exampleutil.NewMissionStore(),
 		NewID: func() string {
 			id := ids[0]
 			ids = ids[1:]
@@ -95,7 +96,7 @@ func main() {
 		Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 			if request.Mission == nil || len(request.Mission.AcceptedUpdates) != 1 ||
 				request.Mission.AcceptedUpdates[0].Document.Update.Description != "Report inputs selected" {
-				return personserver.AuthorizationDecision{}, errors.New("accepted mission update is required")
+				return personserver.AuthorizationDecision{}, errors.Join(personserver.ErrAccessDenied, errors.New("accepted mission update is required"))
 			}
 			return personserver.AuthorizationDecision{Scopes: request.Scopes, Lifetime: time.Hour}, nil
 		},
@@ -181,215 +182,6 @@ func must[T any](value T, err error) T {
 		log.Fatal(err)
 	}
 	return value
-}
-
-type memoryMissionStore struct {
-	mu       sync.Mutex
-	missions map[string]personserver.MissionRecord
-	tokens   map[string]personserver.PersonTokenRecord
-	auth     map[string]personserver.IssuedAuthTokenRecord
-}
-
-func newMemoryMissionStore() *memoryMissionStore {
-	return &memoryMissionStore{
-		missions: make(map[string]personserver.MissionRecord),
-		tokens:   make(map[string]personserver.PersonTokenRecord),
-		auth:     make(map[string]personserver.IssuedAuthTokenRecord),
-	}
-}
-
-func (store *memoryMissionStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := record.PersonServer + "\x00" + record.JTI
-	if _, exists := store.tokens[key]; exists {
-		return errors.New("person-token record already exists")
-	}
-	store.tokens[key] = record
-	return nil
-}
-
-func (store *memoryMissionStore) Load(_ context.Context, issuer, jti string) (personserver.PersonTokenRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	record, ok := store.tokens[issuer+"\x00"+jti]
-	if !ok {
-		return personserver.PersonTokenRecord{}, personserver.ErrPersonTokenNotFound
-	}
-	return record, nil
-}
-
-func (store *memoryMissionStore) CommitMission(_ context.Context, mission personserver.MissionRecord, tokens []personserver.PersonTokenRecord) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	missionKey := mission.Agent + "\x00" + mission.S256
-	if _, exists := store.missions[missionKey]; exists {
-		return errors.New("mission record already exists")
-	}
-	batch := make(map[string]struct{}, len(tokens))
-	for _, token := range tokens {
-		key := token.PersonServer + "\x00" + token.JTI
-		if _, exists := store.tokens[key]; exists {
-			return errors.New("person-token record already exists")
-		}
-		if _, duplicate := batch[key]; duplicate {
-			return errors.New("person-token identity is duplicated within mission approval")
-		}
-		batch[key] = struct{}{}
-	}
-	store.missions[missionKey] = cloneExampleMissionRecord(mission)
-	for _, token := range tokens {
-		store.tokens[token.PersonServer+"\x00"+token.JTI] = token
-	}
-	return nil
-}
-
-func (store *memoryMissionStore) LoadMissionForAgent(
-	_ context.Context, agent, s256 string, at time.Time,
-) (personserver.MissionRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := agent + "\x00" + s256
-	record, ok := store.missions[key]
-	if !ok {
-		return personserver.MissionRecord{}, personserver.ErrMissionNotFound
-	}
-	if record.State == personserver.MissionActive && !record.ExpiresAt.IsZero() && !at.Before(record.ExpiresAt) {
-		record.State = personserver.MissionTerminated
-		record.TerminationReason = "expired"
-		store.missions[key] = cloneExampleMissionRecord(record)
-	}
-	return cloneExampleMissionRecord(record), nil
-}
-
-func (store *memoryMissionStore) AppendMissionUpdate(
-	_ context.Context,
-	expected personserver.MissionRecord,
-	acceptedAt time.Time,
-	document aauth.MissionUpdateDocument,
-) (personserver.MissionRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if acceptedAt.IsZero() {
-		return personserver.MissionRecord{}, errors.New("mission acceptance time is required")
-	}
-	if err := store.requireActiveMission(expected, acceptedAt); err != nil {
-		return personserver.MissionRecord{}, err
-	}
-	key := expected.Agent + "\x00" + expected.S256
-	current := store.missions[key]
-	current.AcceptedUpdates = append(current.AcceptedUpdates, personserver.MissionUpdateRecord{
-		Document: cloneExampleMissionUpdateDocument(document), AcceptedAt: acceptedAt,
-	})
-	store.missions[key] = cloneExampleMissionRecord(current)
-	return cloneExampleMissionRecord(current), nil
-}
-
-func (store *memoryMissionStore) CompleteMission(
-	_ context.Context,
-	expected personserver.MissionRecord,
-	acceptedAt time.Time,
-	document aauth.MissionCompletionDocument,
-) (personserver.MissionRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if acceptedAt.IsZero() {
-		return personserver.MissionRecord{}, errors.New("mission acceptance time is required")
-	}
-	if err := store.requireActiveMission(expected, acceptedAt); err != nil {
-		return personserver.MissionRecord{}, err
-	}
-	key := expected.Agent + "\x00" + expected.S256
-	current := store.missions[key]
-	current.State = personserver.MissionTerminated
-	current.TerminationReason = "completed"
-	current.Completion = &personserver.MissionCompletionRecord{
-		Document: cloneExampleMissionCompletionDocument(document), AcceptedAt: acceptedAt,
-	}
-	store.missions[key] = cloneExampleMissionRecord(current)
-	return cloneExampleMissionRecord(current), nil
-}
-
-func (store *memoryMissionStore) CommitMissionPersonToken(
-	_ context.Context, expected personserver.MissionRecord, at time.Time, token personserver.PersonTokenRecord,
-) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if err := store.requireActiveMission(expected, at); err != nil {
-		return err
-	}
-	if token.MissionS256 != expected.S256 || token.Agent != expected.Agent {
-		return personserver.ErrMissionConflict
-	}
-	key := token.PersonServer + "\x00" + token.JTI
-	if _, exists := store.tokens[key]; exists {
-		return errors.New("person-token record already exists")
-	}
-	store.tokens[key] = token
-	return nil
-}
-
-func (store *memoryMissionStore) CommitMissionAuthToken(
-	_ context.Context, expected personserver.MissionRecord, at time.Time, token personserver.IssuedAuthTokenRecord,
-) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if err := store.requireActiveMission(expected, at); err != nil {
-		return err
-	}
-	if token.MissionS256 != expected.S256 {
-		return personserver.ErrMissionConflict
-	}
-	key := token.Reference.Issuer + "\x00" + token.Reference.JTI
-	if _, exists := store.auth[key]; exists {
-		return errors.New("auth-token record already exists")
-	}
-	store.auth[key] = token
-	return nil
-}
-
-func (store *memoryMissionStore) requireActiveMission(expected personserver.MissionRecord, at time.Time) error {
-	key := expected.Agent + "\x00" + expected.S256
-	current, ok := store.missions[key]
-	if !ok {
-		return personserver.ErrMissionNotFound
-	}
-	if current.State == personserver.MissionActive && !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
-		current.State = personserver.MissionTerminated
-		current.TerminationReason = "expired"
-		store.missions[key] = cloneExampleMissionRecord(current)
-	}
-	if current.State == personserver.MissionTerminated {
-		return &personserver.MissionTerminatedError{TerminationReason: current.TerminationReason}
-	}
-	if !current.Equal(expected) {
-		return personserver.ErrMissionConflict
-	}
-	return nil
-}
-
-func cloneExampleMissionRecord(record personserver.MissionRecord) personserver.MissionRecord {
-	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
-	record.AcceptedUpdates = append([]personserver.MissionUpdateRecord(nil), record.AcceptedUpdates...)
-	for index := range record.AcceptedUpdates {
-		record.AcceptedUpdates[index].Document = cloneExampleMissionUpdateDocument(record.AcceptedUpdates[index].Document)
-	}
-	if record.Completion != nil {
-		completion := *record.Completion
-		completion.Document = cloneExampleMissionCompletionDocument(completion.Document)
-		record.Completion = &completion
-	}
-	return record
-}
-
-func cloneExampleMissionUpdateDocument(document aauth.MissionUpdateDocument) aauth.MissionUpdateDocument {
-	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
-	return document
-}
-
-func cloneExampleMissionCompletionDocument(document aauth.MissionCompletionDocument) aauth.MissionCompletionDocument {
-	document.ExactJSON = append([]byte(nil), document.ExactJSON...)
-	return document
 }
 
 type logicalTransport struct {

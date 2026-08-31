@@ -1,9 +1,10 @@
-// Package personserver implements explicit immediate three-party and
-// federated four-party Person Server compositions. It supports top-level and
-// parent-mediated issuance. Three-party composition also supports bounded
-// mission approval, ordered accepted updates, person-accepted completion,
-// interaction, issued-token revocation, and one same-Person-Server Resource
-// call chain.
+// Package personserver implements explicit immediate three-party and federated
+// four-party Person Server compositions. Both support top-level and
+// parent-mediated issuance. Both can compose the top-level immediate mission
+// lifecycle: approval, ordered accepted updates, person-accepted completion,
+// and mission-bound credential issuance. Three-party composition additionally
+// supports deferred authorization, issued-token revocation, and one
+// same-Person-Server Resource call chain.
 package personserver
 
 import (
@@ -37,6 +38,11 @@ const DefaultMaximumResourceTokenLifetime = 5 * time.Minute
 // an issuer and token identifier.
 var ErrPersonTokenNotFound = errors.New("personserver: person token not found")
 
+// ErrAccessDenied distinguishes an intentional consent or authorization
+// policy refusal from an operational callback failure. Policy callbacks wrap
+// this error only when they mean to refuse an otherwise valid request.
+var ErrAccessDenied = errors.New("personserver: access denied")
+
 var errSubagentTokenSyntax = errors.New("personserver: subagent_token must be a non-empty compact token string")
 
 // FederatedAuthorizationConfig supplies a four-party Person Server. It issues
@@ -60,6 +66,10 @@ type FederatedAuthorizationConfig struct {
 	// extension implemented by Tokens.
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	Consent                       func(context.Context, AuthorizationRequest) error
+	// Missions optionally enables the immediate mission lifecycle and
+	// mission-bound Person and federated Auth-token issuance. When nonnil,
+	// Tokens must implement MissionStore.
+	Missions *MissionConfig
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -255,6 +265,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		maximumResourceTokenLifetime: config.MaximumResourceTokenLifetime,
 		tokens:                       config.Tokens, bindPerson: config.BindPerson,
 		requirePersonTokenInteraction: config.RequirePersonTokenInteraction,
+		missions:                      config.Missions,
 	})
 	if err != nil {
 		return nil, err
@@ -804,7 +815,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if err := server.consent(request.Context(), authorizationRequest); err != nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		writeAccessPolicyProblem(response, err)
 		return
 	}
 	endpoint, err := server.accessServerEndpoint(request.Context(), resourceToken.Audience)
@@ -900,6 +911,31 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server auth token grants an unrequested scope"))
 		return
 	}
+	if missionRecord != nil {
+		if authorizationRequest.Mission == nil || authorizationRequest.Mission.S256 != missionRecord.S256 {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission record does not match federated authorization context"))
+			return
+		}
+		if !missionRecord.ExpiresAt.IsZero() && authToken.ExpiresAt > missionRecord.ExpiresAt.Unix() {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server auth token outlives the mission-bound authorization"))
+			return
+		}
+		issuedRecord, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		commitAt := server.clock.Now().UTC()
+		if err := server.missions.CommitMissionAuthToken(
+			request.Context(), *missionRecord, commitAt, issuedRecord,
+		); err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+	} else if authorizationRequest.Mission != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: federated mission authorization has no retained mission"))
+		return
+	}
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
@@ -940,7 +976,7 @@ func (server *Server) issuePSAuthorizationToken(
 	policyRequest := cloneAuthorizationRequest(authorizationRequest)
 	decision, err := authorize(request.Context(), policyRequest)
 	if err != nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		writeAccessPolicyProblem(response, err)
 		return
 	}
 	grantedScopes, err := validateAuthorizationDecision(decision, authorizationRequest.Scopes)
@@ -1317,6 +1353,14 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 func writePrivateJSON(response http.ResponseWriter, status int, value any) {
 	response.Header().Set("Cache-Control", "no-store")
 	httpapi.WriteJSON(response, status, value)
+}
+
+func writeAccessPolicyProblem(response http.ResponseWriter, err error) {
+	if errors.Is(err, ErrAccessDenied) {
+		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
 func writeProblem(response http.ResponseWriter, status int, code string, cause error) {

@@ -94,7 +94,7 @@ below where evidence is ready.
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | exact-delivery interpretation recorded; evidence pending until Events implementation |
 | AAG-F059 | Mission proposal policy denial has no registered error | ready below with immediate mission evidence |
 | AAG-F060 | Unknown mission references at the Person Token Endpoint have no assigned error | ready below with ownership-safe refusal evidence |
-| AAG-F061 | A Resource cannot directly enforce mission expiry without receiving mission content | implementation bridge recorded; ready below |
+| AAG-F061 | A Resource and Access Server cannot directly enforce mission expiry without receiving mission content | implementation bridges recorded; ready below |
 | AAG-F062 | `approved_at` alone does not make a mission digest globally unique | ready below with immediate mission evidence |
 | AAG-F063 | The exact byte object identified by a mission-update digest is underspecified | ready below with exact-body implementation evidence |
 | AAG-F064 | Immediate mission-action refusal is undefined, including its error if allowed | ready below with typed provisional refusal evidence |
@@ -102,6 +102,8 @@ below where evidence is ready.
 | AAG-F066 | Core contradicts itself on who may accept a mission update | ready below; implementation follows the update-specific rule |
 | AAG-F067 | Mission termination does not define the fate of outstanding credentials | ready below with explicit implementation boundary |
 | AAG-F068 | Deferred `Retry-After` is both required and assigned an absent-header default | ready below; implementation honors the receiver fallback |
+| AAG-F069 | Immediate Auth-token issuance has no exact-result recovery identity | ready below with retained-but-unreplayable issuance evidence |
+| AAG-F070 | Immediate PS and AS policy denial has no registered token-endpoint error | ready below with denial-versus-failure evidence |
 
 ## Current unsubmitted questions
 
@@ -352,18 +354,22 @@ should the token error registry add an ownership-safe mission-reference error?
 
 **Placement:** Add to the mission endpoint/error registry discussion.
 
-### AAG-F061 — A Resource cannot read the mission expiry it must enforce
+### AAG-F061 — A Resource and Access Server cannot read the mission expiry they must enforce
 
 **Source:** AAuth Core, `Mission Approval`, `Resource Token Structure`, and
 `Why Mission Content Stays at the PS`.
 
-Core requires a mission-bound Resource token to expire no later than the
-mission, but deliberately sends the Resource only `mission_s256`, not the blob
-or `expires_at`. The implementation caps the Resource token at the verified
-Person token's `exp`, which the PS already capped at the mission expiry.
+Core requires both a mission-bound Resource token and a mission-bound Auth
+token to expire no later than the mission, but deliberately sends the Resource
+and AS only `mission_s256`, not the blob or `expires_at`. The implementation
+caps the Resource token at the verified Person token's `exp`. Its Access Server
+caps the Auth token at the verified Resource token's `exp`. The PS, which owns
+the mission, separately verifies a returned AS token against the retained
+mission expiry before release.
 
-**Question:** Should Core state that a Resource inherits this ceiling from the
-mission-bound Person token, or expose another authenticated expiry value?
+**Question:** Should Core state explicitly that non-PS issuers inherit the
+preceding mission-bound token's authenticated expiry ceiling, or expose another
+authenticated mission-expiry value?
 
 **Placement:** Open a focused Core mission-lifetime clarification.
 
@@ -510,6 +516,47 @@ nonnegative delay.
 required with absence treated as a malformed deferred response?
 
 **Placement:** Add to the deferred-response clarification discussion.
+
+### AAG-F069 — Immediate Auth-token issuance has no exact-result recovery identity
+
+**Source:** AAuth Core, `Resource Token Structure`, `PS Token Endpoint`, and
+`Auth Token Delivery`.
+
+The Resource token has a unique `jti`, but Core does not say that an immediate
+PS exchange is idempotent for that token or define a lookup for its result. A
+PS can retain an issuance and still lose the store result or client response.
+Retaining only audit claims and a compact-token digest cannot reproduce the
+credential, while repeating the exchange may cause the AS to issue another
+valid token.
+
+The implementation commits the mission-bound issuance record before release,
+never retries internally, and exposes this recovery limit. It does not invent
+an exact-result store or silently treat the Resource-token `jti` as a replay
+key.
+
+**Question:** Should an immediate Auth-token request be idempotent for one
+Resource-token identity, with bounded exact-result replay after uncertain
+success, or is issuing another token on explicit retry intended?
+
+**Placement:** Open a focused Core token-issuance recovery issue.
+
+### AAG-F070 — Immediate policy denial has no token-endpoint error
+
+**Source:** AAuth Core, `Token Endpoint Error Codes` and `AS Token Endpoint`.
+
+The registry defines `server_error` for internal failure but no immediate
+result for a PS consent or AS authorization policy that intentionally refuses
+an otherwise valid request. `access_denied` appears in an interaction callback,
+not as a registered result for these token endpoints.
+
+The implementation provisionally returns `403 access_denied` only when a host
+callback wraps an explicit denial sentinel. Other callback errors return `500
+server_error`, so a policy-service outage is not mislabeled as a refusal.
+
+**Question:** May immediate PS and AS policy refuse a valid token request, and
+if so which registered error and status should represent that decision?
+
+**Placement:** Add to the Core token-endpoint error registry discussion.
 
 ### AAG-F010 — Four-party person identity uses the access-server namespace in one step
 

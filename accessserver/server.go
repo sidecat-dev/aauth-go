@@ -21,6 +21,11 @@ import (
 
 const maxRequestBytes = 1 << 20
 
+// ErrAccessDenied distinguishes an intentional trust or authorization policy
+// refusal from an operational callback failure. Policy callbacks wrap this
+// error only when they mean to refuse an otherwise valid request.
+var ErrAccessDenied = errors.New("accessserver: access denied")
+
 // Config supplies the protocol and deployment choices owned by an Access
 // Server. The immediate Core server has no deferred or companion behavior.
 type Config struct {
@@ -41,15 +46,17 @@ type Agent struct {
 	AdditionalClaims map[string]json.RawMessage
 }
 
-// AuthorizationRequest is the verified Core context presented to resource
-// authorization policy. It contains ordinary values, not transport or
-// verification objects.
+// AuthorizationRequest is the verified Core context presented to Access
+// Server policy. It contains ordinary values, not transport or verification
+// objects. MissionS256 is opaque correlation context from the verified
+// Resource token; mission content and Person Server history are not exposed.
 type AuthorizationRequest struct {
 	PersonServer string
 	Resource     string
 	Subject      string
 	Tenant       string
 	Account      string
+	MissionS256  string
 	Scopes       []string
 	Agent        Agent
 	// Subagent is present only for a parent-mediated request. Agent remains
@@ -134,7 +141,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if err := server.trustPersonServer(request.Context(), personServer); err != nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		writeAccessPolicyProblem(response, err)
 		return
 	}
 
@@ -208,10 +215,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
 		return
 	}
-	if resourceClaims.MissionS256 != "" {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("mission-bound resource tokens require mission verification"))
-		return
-	}
 	agentJKT, err := confirmation.Thumbprint()
 	if err != nil || agentJKT != resourceClaims.AgentJKT {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the authorized agent key"))
@@ -228,6 +231,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		Subject:      resourceClaims.Subject,
 		Tenant:       resourceClaims.Tenant,
 		Account:      resourceClaims.Account,
+		MissionS256:  resourceClaims.MissionS256,
 		Scopes:       append([]string(nil), requestedScopes...),
 		Agent: Agent{
 			Identifier: agentClaims.Subject, Confirmation: agentClaims.Confirmation.JWK,
@@ -244,7 +248,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	decision, err := server.authorize(request.Context(), policyRequest)
 	if err != nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		writeAccessPolicyProblem(response, err)
 		return
 	}
 	if err := validateDecision(decision, requestedScopes); err != nil {
@@ -254,6 +258,16 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
 	if credentialExpiresAt.Before(expiresAt) {
 		expiresAt = credentialExpiresAt
+	}
+	// The Person Server owns mission validation and does not disclose mission
+	// content or its accepted-update history to the Access Server. Core requires
+	// the Resource token to fit within the mission lifetime, so its expiry is the
+	// AS's verifiable ceiling for a mission-bound Auth token.
+	if resourceClaims.MissionS256 != "" {
+		resourceExpiresAt := time.Unix(resourceClaims.ExpiresAt, 0).UTC()
+		if resourceExpiresAt.Before(expiresAt) {
+			expiresAt = resourceExpiresAt
+		}
 	}
 	claims := aauth.AuthTokenClaims{
 		Issuer: server.issuer, DWK: aauth.AccessDiscoveryDocument,
@@ -273,6 +287,14 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
 	}{AuthToken: authToken, ExpiresIn: claims.ExpiresAt - claims.IssuedAt})
+}
+
+func writeAccessPolicyProblem(response http.ResponseWriter, err error) {
+	if errors.Is(err, ErrAccessDenied) {
+		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
 func cloneClaims(claims map[string]json.RawMessage) map[string]json.RawMessage {

@@ -2,7 +2,6 @@ package resource
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,10 +22,6 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 	}
 	if err := aauth.ValidatePersonTokenContext(claims, server.issuer, proof.PublicKey()); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_person_token", err)
-		return
-	}
-	if claims.MissionS256 != "" && server.authorizationTopology != authorizationTopologyPersonServer {
-		writeProblem(response, http.StatusBadRequest, "invalid_person_token", errors.New("mission-bound person tokens require mission verification"))
 		return
 	}
 	var input struct {

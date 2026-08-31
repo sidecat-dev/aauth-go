@@ -41,12 +41,16 @@ The current repository already has the `aauth`, `jose`, `signaturekey`,
 packages. Their implemented behavior is the subset listed in
 [CONFORMANCE.md](CONFORMANCE.md).
 
-The current mission slice is one immediate three-party composition. The root
+The current mission slice is one immediate top-level lifecycle composed with
+both three-party PS issuance and four-party PS-to-AS federation. The root
 package owns proposal, blob, update, completion, digest, and response values;
-`agent` performs each exchange once; `personserver` owns exact-byte mission
-state, ordered accepted updates, and person-accepted completion; `resource`
-propagates only the signed digest. Mission text and updates never cross into the
-Resource, and no generic lifecycle or evidence object joins these boundaries.
+`agent` performs each exchange once; and `personserver` owns exact-byte mission
+state, ordered accepted updates, policy evaluation, person-accepted
+completion, and Auth-token retention before release. `resource` copies only
+the signed digest into the Resource token. `accessserver` treats that digest as
+opaque PS-validated context and copies it into the Auth token. Mission text and
+updates never cross the Person Server boundary, and no generic lifecycle or
+evidence object joins these boundaries.
 
 The target model expands those packages and adds `r3`, `budgets`, and `events`.
 Sections below define the target ownership contract. Planned packages use a

@@ -227,13 +227,15 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 		decision AuthorizationDecision
 		policy   error
 		status   int
+		code     string
 	}{
-		{name: "empty scope", decision: AuthorizationDecision{Lifetime: time.Minute}, status: http.StatusInternalServerError},
-		{name: "duplicate scope", decision: AuthorizationDecision{Scopes: []string{"records.read", "records.read"}, Lifetime: time.Minute}, status: http.StatusInternalServerError},
-		{name: "broader scope", decision: AuthorizationDecision{Scopes: []string{"records.write"}, Lifetime: time.Minute}, status: http.StatusInternalServerError},
-		{name: "zero lifetime", decision: AuthorizationDecision{Scopes: []string{"records.read"}}, status: http.StatusInternalServerError},
-		{name: "excess lifetime", decision: AuthorizationDecision{Scopes: []string{"records.read"}, Lifetime: time.Hour + time.Second}, status: http.StatusInternalServerError},
-		{name: "policy denial", policy: errors.New("person refused"), status: http.StatusForbidden},
+		{name: "empty scope", decision: AuthorizationDecision{Lifetime: time.Minute}, status: http.StatusInternalServerError, code: "server_error"},
+		{name: "duplicate scope", decision: AuthorizationDecision{Scopes: []string{"records.read", "records.read"}, Lifetime: time.Minute}, status: http.StatusInternalServerError, code: "server_error"},
+		{name: "broader scope", decision: AuthorizationDecision{Scopes: []string{"records.write"}, Lifetime: time.Minute}, status: http.StatusInternalServerError, code: "server_error"},
+		{name: "zero lifetime", decision: AuthorizationDecision{Scopes: []string{"records.read"}}, status: http.StatusInternalServerError, code: "server_error"},
+		{name: "excess lifetime", decision: AuthorizationDecision{Scopes: []string{"records.read"}, Lifetime: time.Hour + time.Second}, status: http.StatusInternalServerError, code: "server_error"},
+		{name: "policy denial", policy: errors.Join(ErrAccessDenied, errors.New("person refused")), status: http.StatusForbidden, code: "access_denied"},
+		{name: "policy failure", policy: errors.New("authorization policy data is unavailable"), status: http.StatusInternalServerError, code: "server_error"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			decision = test.decision
@@ -248,6 +250,13 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 			}
 			if output["auth_token"] != nil {
 				t.Fatalf("failure released auth token: %s", response.Body.String())
+			}
+			var code string
+			if err := json.Unmarshal(output["error"], &code); err != nil {
+				t.Fatal(err)
+			}
+			if code != test.code {
+				t.Fatalf("error = %q, want %q", code, test.code)
 			}
 		})
 	}
