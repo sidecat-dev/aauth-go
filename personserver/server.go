@@ -5,9 +5,10 @@
 // and parent-mediated issuance and can compose the immediate mission lifecycle:
 // approval, ordered accepted updates, person-accepted completion, and
 // mission-bound credential issuance. Both compositions can add missionless
-// local-action permission and mission-bound post-action audit. Three-party
-// composition additionally supports deferred authorization, issued-token
-// revocation, and one same-Person-Server Resource call chain.
+// local-action permission, mission-bound post-action audit, and one immediate
+// missionless Interaction question. Three-party composition additionally
+// supports deferred authorization, issued-token revocation, and one
+// same-Person-Server Resource call chain.
 package personserver
 
 import (
@@ -82,6 +83,8 @@ type FederatedAuthorizationConfig struct {
 	// Audit optionally enables mission-bound audit retention. Missions must be
 	// configured and Tokens must implement MissionAuditStore.
 	Audit *AuditConfig
+	// InteractionQuestion optionally enables immediate top-level questions.
+	InteractionQuestion *InteractionQuestionConfig
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -127,6 +130,8 @@ type PSAuthorizationConfig struct {
 	// Audit optionally enables mission-bound audit retention. Missions must be
 	// configured and Tokens must implement MissionAuditStore.
 	Audit *AuditConfig
+	// InteractionQuestion optionally enables immediate top-level questions.
+	InteractionQuestion *InteractionQuestionConfig
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -269,6 +274,7 @@ type Server struct {
 	permissionPolicy                func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
 	permissions                     PermissionStore
 	missionAudits                   MissionAuditStore
+	interactionQuestionPolicy       func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionDecision, error)
 }
 
 type authorizationMode uint8
@@ -291,6 +297,7 @@ type serverConfig struct {
 	missions                      *MissionConfig
 	permission                    *PermissionConfig
 	audit                         *AuditConfig
+	interactionQuestion           *InteractionQuestionConfig
 }
 
 // NewFederatedAuthorization constructs a four-party Person Server.
@@ -313,6 +320,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		missions:                      config.Missions,
 		permission:                    config.Permission,
 		audit:                         config.Audit,
+		interactionQuestion:           config.InteractionQuestion,
 	})
 	if err != nil {
 		return nil, err
@@ -369,6 +377,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		missions:                      config.Missions,
 		permission:                    config.Permission,
 		audit:                         config.Audit,
+		interactionQuestion:           config.InteractionQuestion,
 	})
 	if err != nil {
 		return nil, err
@@ -403,6 +412,9 @@ func newServer(config serverConfig) (*Server, error) {
 	}
 	if config.audit != nil && config.missions == nil {
 		return nil, errors.New("personserver: audit requires missions")
+	}
+	if config.interactionQuestion != nil && config.interactionQuestion.Answer == nil {
+		return nil, errors.New("personserver: interaction question answer policy is required")
 	}
 	if err := aauth.ValidateServerIdentifier(config.issuer); err != nil {
 		return nil, fmt.Errorf("personserver: issuer: %w", err)
@@ -478,7 +490,8 @@ func newServer(config serverConfig) (*Server, error) {
 		requirePersonTokenInteraction: config.requirePersonTokenInteraction,
 		missions:                      missions, missionApprove: missionApprove,
 		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
-		missionAudits: missionAudits,
+		missionAudits:             missionAudits,
+		interactionQuestionPolicy: interactionQuestionPolicy(config.interactionQuestion),
 	}, nil
 }
 
@@ -502,6 +515,9 @@ func (server *Server) Handler() http.Handler {
 	}
 	if server.missionAudits != nil {
 		mux.HandleFunc("POST /audit", server.handleAudit)
+	}
+	if server.interactionQuestionPolicy != nil {
+		mux.HandleFunc("POST /interaction", server.handleInteractionQuestion)
 	}
 	return mux
 }
@@ -1439,6 +1455,9 @@ func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Reque
 	}
 	if server.missionAudits != nil {
 		metadata["audit_endpoint"] = server.issuer + "/audit"
+	}
+	if server.interactionQuestionPolicy != nil {
+		metadata["interaction_endpoint"] = server.issuer + "/interaction"
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }

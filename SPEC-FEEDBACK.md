@@ -133,7 +133,7 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F004 | General deferred endpoints do not define recovery of a lost terminal response | ready below with Resource-session and PS-consent evidence |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | immutable Resource store, conflict evidence, and complete direct-grant journey implemented |
 | AAG-F006 | R3 example hashes are not executable SHA-256 vectors | evidence pending until a source-example vector test is added |
-| AAG-F007 | Mission completion still appears in the introductory interaction list after moving endpoints | evidence pending |
+| AAG-F007 | Mission completion still appears in the introductory interaction list after moving endpoints | withdrawn: current Interaction Endpoint explicitly excludes mission completion |
 | AAG-F008 | Clarification requires an `agent` claim removed from resource tokens | ready below |
 | AAG-F009 | Person-token policy denial has no registered error | ready below |
 | AAG-F010 | Four-party person and tenant context use the wrong issuer namespace | ready below |
@@ -152,6 +152,8 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F098 | An uncertain initial Permission POST has no recovery identity | ready below with one-shot transport evidence |
 | AAG-F099 | The Audit Endpoint has no endpoint-specific error contract | ready below with authenticated request, mission, and append evidence |
 | AAG-F100 | Audit says both `201 Created` and “fire-and-forget” without defining non-blocking behavior | ready below with one-shot Agent evidence |
+| AAG-F101 | An uncertain Interaction question submission has no recovery identity | ready below with exact one-shot Agent evidence |
+| AAG-F102 | Resource-hosted relay resolution has no terminal success response shape | evidence pending until the deferred relay journey executes |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -1951,6 +1953,31 @@ audit completion because audit happens afterward, that the application should
 dispatch asynchronously, or that the Agent may ignore the response entirely?
 
 **Placement:** Combine with `AAG-F003` in a focused Core Audit Endpoint issue.
+
+### AAG-F101 — An uncertain Interaction question submission cannot be recovered
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Interaction Request`, `Interaction Response`, and
+`Deferred Responses`.
+
+The initial signed question POST carries no request identifier, idempotency
+key, or lookup reference. If the Person Server delivers the question or obtains
+an answer but the response is lost or malformed, the Agent cannot discover the
+result. Repeating the request may show the person the same question twice and
+produce two unrelated answers.
+
+The immediate Agent implementation submits exactly once. It returns a typed
+uncertain outcome after a transport failure, malformed `200`, unsupported
+deferred result, other `2xx`, or `5xx`; a definite `4xx` remains typed. It does
+not retry or claim recovery.
+
+**Question:** Should Interaction requests carry a stable caller-selected
+identity, or should the Person Server define exact-request replay and lookup
+semantics after uncertain submission?
+
+**Placement:** Cross-link the general initial-request recovery discussion and
+the corresponding Permission and Audit delivery gaps.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

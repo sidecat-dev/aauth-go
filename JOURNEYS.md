@@ -176,12 +176,25 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     stable recovery after an uncertain acknowledgment; and Agent-facing log
     retrieval.
 
+- [x] **Missionless Interaction question — Implemented**
+  - Flow: Agent → PS with one exact signed raw-Markdown question → host policy
+    reaches the person → PS returns one immediate exact answer.
+  - Start with: `aauth.InteractionQuestion`,
+    `agent.Client.AskPersonQuestion`, and
+    `personserver.InteractionQuestionConfig`.
+  - Evidence: [`integration/interaction_question_test.go`](integration/interaction_question_test.go)
+    and `go run ./example/interactionquestion`.
+  - Missing from the wider Interaction Endpoint: deferred questions, mission
+    association and mission-log recording, missionless request/answer
+    retention, `interaction` and `payment` relay, `max_wait`, and stable
+    uncertain-submission recovery.
+
 ### Not implemented
 
-- [ ] **Interaction endpoint — Not implemented.** Existing interaction codes
-  support the specific Person-token, session, and consent paths above, but
-  there is no general Agent-to-PS interaction relay for work the Agent cannot
-  perform itself.
+- [ ] **Interaction and payment relay — Not implemented.** Existing
+  interaction codes support the specific Person-token, session, and consent
+  paths above, but there is no general Agent-to-PS deferred relay for a
+  Resource-hosted interaction or payment.
 - [ ] **Complete PS governance and mission log — Not implemented.** The
   bounded mission store retains approval, accepted updates, and completion,
   but there is no complete Agent-facing mission-log or governance control-plane

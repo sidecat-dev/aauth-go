@@ -1099,3 +1099,34 @@ exist (`AAG-F003`). The source's simultaneous `201` contract and
 “fire-and-forget” guidance leave the meaning of “SHOULD NOT block” unclear;
 `AAG-F100` asks whether it describes application control flow or the HTTP
 exchange itself.
+
+## The first Interaction Endpoint path is one immediate missionless question
+
+**Sources:** AAuth Core, `Interaction Endpoint`, `Interaction Request`,
+`Interaction Response`, and `Deferred Responses`.
+
+The root question document fixes `type` to `question`, preserves the exact
+signed JSON and additive members, and rejects relay-only `url`, `code`, and
+`max_wait` members. Description and question are untrusted raw Markdown. The
+Person Server host must sanitize them before display and chooses how to reach
+the person; the protocol library performs neither action.
+
+The first role journey is top-level and missionless. It returns one immediate
+answer and maps an explicit host inability to reach the person to
+`user_unreachable`. Mission association would require cross-event mission-log
+composition, while `interaction` and `payment` require a separate deferred
+relay store and completion contract. Those valid source branches fail before
+policy rather than being silently treated as questions.
+
+Core recommends recording every Interaction request and response. This first
+path gives the host the exact request and lets host policy retain its own
+communication result, but it does not add a library store contract. Missionless
+request/answer retention and the cross-event mission log remain explicit
+conformance gaps.
+
+`AskPersonQuestion` makes one request and never retries. A valid immediate
+answer returns its exact bytes. A transport failure, malformed `200`, other
+`2xx`, or `5xx` after handoff is uncertain because the question may already
+have reached the person. Core's generic deferred path is valid but not
+implemented by this immediate-only method. `AAG-F101` records the missing
+uncertain-submission identity.

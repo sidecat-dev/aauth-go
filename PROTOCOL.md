@@ -254,6 +254,30 @@ request before acknowledging it. Host code can read the ordered Audit-entry
 sublog through `MissionAuditStore`. The complete cross-event mission log and
 an Agent-facing retrieval route are not implemented here.
 
+### Missionless Interaction question
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant PS as Person Server
+    participant Host as Host policy
+    participant P as Person
+    A->>PS: One signed question POST with exact JSON
+    PS->>PS: Verify top-level Agent and request shape
+    PS->>Host: Exact untrusted Markdown question
+    Host->>P: Reach person through host-selected channel
+    P-->>Host: Answer
+    Host-->>PS: Immediate answer
+    PS-->>A: 200 with exact answer document
+```
+
+The library carries raw Markdown but does not render it or choose a person
+communication channel. The Agent submits once and does not retry an uncertain
+post-handoff result. This first path is top-level and missionless. Deferred
+question handling, library-owned request/answer retention, mission-log
+composition, and the separate interaction and payment relay state machines
+remain outside this increment.
+
 ### Clarification during three-party consent
 
 ```mermaid

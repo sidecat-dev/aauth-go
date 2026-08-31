@@ -85,6 +85,13 @@ audit store extends the mission lifecycle boundary because an append must race
 atomically with expiry or completion. Audit does not execute the action, and
 it does not create a general evidence container.
 
+The current Interaction Endpoint slice is one top-level missionless question.
+The root package owns exact question and answer documents, `agent` performs one
+signed request, and `personserver` hands untrusted Markdown to one immediate
+host policy in either composition. No generic interaction engine or shared
+pending object is introduced. Deferred question handling and the interaction
+and payment relay state machines remain distinct later work.
+
 The current model includes focused `r3`, `events`, and `budgets` protocol
 packages. Sections below distinguish their implemented profiles from target
 ownership. Present-tense support must never be inferred from the target import

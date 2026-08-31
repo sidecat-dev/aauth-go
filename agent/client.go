@@ -3,8 +3,9 @@
 // enrollment and refresh, direct identity access, Resource-managed sessions,
 // one immediate mission journey, parent-mediated sub-agents, one Resource call
 // chain, missionless local-action permission, mission-bound post-action audit,
-// public Events registration and correlation, and one-shot polling of
-// supported interactions and held invocations.
+// one missionless Interaction question, public Events registration and
+// correlation, and one-shot polling of supported interactions and held
+// invocations.
 package agent
 
 import (
@@ -725,6 +726,7 @@ type personServerMetadata struct {
 	MissionEndpoint     string `json:"mission_endpoint"`
 	PermissionEndpoint  string `json:"permission_endpoint"`
 	AuditEndpoint       string `json:"audit_endpoint"`
+	InteractionEndpoint string `json:"interaction_endpoint"`
 	JWKSURI             string `json:"jwks_uri"`
 }
 
