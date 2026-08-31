@@ -37,8 +37,8 @@ R3 requires one URI to serve identical bytes but also permits later replacement
 at that URI, while treating URI plus hash as a permanently refetchable record.
 Those statements cannot all hold after an old body is evicted. The target
 implementation never replaces bytes at a published R3 URI. Changed bytes
-receive a new URI, and the Resource retains referenced bytes for the token and
-audit window its host declares.
+receive a new URI. The Resource document-store interface exposes no pruning
+operation: once a URI becomes observable, its exact bytes remain loadable.
 
 The general request mapping also allows a document that merely covers the
 requested operations. Because the AS receives no separate authenticated copy
@@ -50,6 +50,28 @@ that exact set.
 
 These choices use the existing wire format. They do not add a request-set claim
 or change the R3 hash algorithm.
+
+## R3 document URIs bind bytes and fetch entitlement
+
+**Source:** R3, `Content Addressing`, `Resource Enforcement`, and `R3 Document
+Access Restriction`.
+
+The source makes the document hash its identity, restricts fetches to the PS
+and AS named by the Resource token, and says protected enforcement uses the
+trusted issuer's `r3_granted` claim without fetching the document. It does not
+define how a Resource recovers the entitled pair from a bare document URI.
+
+This implementation derives an immutable URI from the Resource issuer, exact
+document hash, and the PS/AS entitlement pair. The signed fetch handler checks
+that derivation before serving exact bytes. At protected use, the Resource
+recomputes the same URI from the verified Auth token and enforces the AS-signed
+grant directly; it does not turn every protected call into a document-store
+read. The Auth-token minting API separately proves the grant and account
+against the fetched exact document before the AS can sign them.
+
+The entitlement digest is a local URI construction, not a wire claim or a new
+trusting party. Other conforming Resources may use a different immutable URI
+scheme if they can recover and enforce the same PS/AS-only fetch boundary.
 
 ## Event replay identity is distinct from subscription identity
 

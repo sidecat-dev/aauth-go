@@ -150,6 +150,19 @@ func (g GrantedOperations) IsSubsetOf(other GrantedOperations) bool {
 	return true
 }
 
+// Contains reports whether operation is one of the granted MCP operations.
+func (g GrantedOperations) Contains(operation MCPOperation) bool {
+	if g.validate() != nil || operation.validate() != nil {
+		return false
+	}
+	for _, candidate := range g.operations {
+		if candidate.tool == operation.tool {
+			return true
+		}
+	}
+	return false
+}
+
 func (g GrantedOperations) isSubsetOf(operationSet MCPOperationSet) bool {
 	if g.validate() != nil || operationSet.validate() != nil {
 		return false

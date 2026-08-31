@@ -322,6 +322,17 @@ Access mode is selected by the matched endpoint or R3 operation, not fixed for
 the entire server. Core scope, R3 operations, and Budget constraints are
 evaluated independently; none is projected into another.
 
+The current first R3 increment implements the Resource side of the direct MCP
+path. A host supplies an authoritative tool snapshot, a request-to-tool mapper,
+and an `R3DocumentStore`. Authorization serializes one exact-request document,
+derives an immutable URI bound to its bytes and entitled PS/AS pair, and commits
+the record before exposing the Resource token. The signed fetch endpoint serves
+those exact bytes only to the two entitled roles. Protected use verifies the
+configured AS signature, ordinary scope, URI entitlement, and direct MCP grant;
+as the R3 enforcement algorithm specifies, it does not fetch the document.
+Person Server consent, Access Server policy and atomic audit, per-call proposals,
+and the complete multi-role journey remain later increments.
+
 ### `accessserver`
 
 The target owns four-party PS authentication, Resource-token verification,
@@ -345,6 +356,12 @@ Examples include:
 An interface states only the atomicity, idempotency, lookup, and retention
 properties required by that state machine. It does not prescribe a database,
 file format, encryption system, process model, or universal record envelope.
+
+The current `R3DocumentStore` is deliberately one small immutable-record
+boundary. It copies values across the interface, converges concurrent exact
+commits, refuses same-URI replacement, keeps committed records loadable across
+server recomposition, and exposes them only through the signed Resource
+handler. It is not a general authorization or evidence store.
 
 Every complete journey ships with concurrency-safe in-memory implementations
 for examples and tests. Applications may replace them with durable stores.

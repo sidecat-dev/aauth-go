@@ -110,8 +110,9 @@ func MintMCPDirectAuthToken(
 
 // VerifyMCPDirectAuthToken verifies Core trust, one complete R3 reference,
 // and a strict r3_granted claim while refusing per-call and Budget claims.
-// Returned operations remain claim data. After fetching exact bytes, call
-// ParseReferencedDocument, ValidateDocumentAccount, then NewGrant before use.
+// A Resource may enforce the trusted AS-signed grant directly without fetching
+// the document. An issuer constructing a token without MintMCPDirectAuthToken
+// must first call ParseReferencedDocument, ValidateDocumentAccount, and NewGrant.
 func VerifyMCPDirectAuthToken(
 	ctx context.Context,
 	compact string,

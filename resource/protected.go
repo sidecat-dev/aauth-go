@@ -12,6 +12,7 @@ import (
 
 	aauth "aauth-go"
 	"aauth-go/jose"
+	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
@@ -146,7 +147,24 @@ func (server *Server) serveAuthTokenProtected(
 	prepared signaturekey.PreparedRequest,
 	compact string,
 ) {
-	proof, claims, err := server.verifyPreparedAuthRequest(request, prepared, compact)
+	var (
+		proof         signaturekey.VerifiedRequest
+		claims        aauth.AuthTokenClaims
+		authorization *mcpR3ProtectedAuthorization
+	)
+	carriesR3, err := tokenCarriesMCPR3Authorization(compact)
+	if err != nil {
+		writeCredentialProblem(response, "invalid_token", &requestTokenError{cause: err})
+		return
+	}
+	if server.mcpR3 != nil && carriesR3 {
+		var reference r3.Reference
+		var granted r3.GrantedOperations
+		proof, claims, reference, granted, err = server.verifyPreparedMCPR3AuthRequest(request, prepared, compact)
+		authorization = &mcpR3ProtectedAuthorization{reference: reference, granted: granted}
+	} else {
+		proof, claims, err = server.verifyPreparedAuthRequest(request, prepared, compact)
+	}
 	if err != nil {
 		writeCredentialProblem(response, "invalid_token", err)
 		return
@@ -165,7 +183,7 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token context does not match resource"))
 		return
 	}
-	if claims.Account != nil {
+	if claims.Account != nil && (authorization == nil || server.validateAccount == nil) {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}
@@ -173,9 +191,16 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request key does not match auth token"))
 		return
 	}
-	scopes, err := server.validateScopes(claims.Scope)
-	if err != nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", err)
+	var scopes []string
+	if claims.Scope != "" {
+		validated, err := server.validateScopes(claims.Scope)
+		if err != nil {
+			writeProblem(response, http.StatusForbidden, "access_denied", err)
+			return
+		}
+		scopes = validated
+	} else if authorization == nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token has no authorization claim"))
 		return
 	}
 	if err := server.observeAuthToken(request.Context(), compact, claims); err != nil {
@@ -187,7 +212,7 @@ func (server *Server) serveAuthTokenProtected(
 		}
 		return
 	}
-	if err := server.authorizeScopes(request, scopes); err != nil {
+	if err := server.authorizeScopes(request, scopes, authorization != nil); err != nil {
 		var policyFailure *scopePolicyError
 		if errors.As(err, &policyFailure) {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -195,6 +220,30 @@ func (server *Server) serveAuthTokenProtected(
 		}
 		writeProblem(response, http.StatusForbidden, "access_denied", err)
 		return
+	}
+	operation, mapped, err := server.mcpR3OperationForRequest(request)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if authorization == nil {
+		if mapped {
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP R3 authorization is required for this route"))
+			return
+		}
+	} else {
+		if !mapped {
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP operation is not granted"))
+			return
+		}
+		if err := server.validateMCPR3ProtectedReference(*authorization, claims); err != nil {
+			writeProblem(response, http.StatusForbidden, "access_denied", err)
+			return
+		}
+		if !authorization.granted.Contains(operation) {
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP operation is not granted"))
+			return
+		}
 	}
 	if err := server.resolvePerson(
 		request.Context(),
@@ -209,6 +258,7 @@ func (server *Server) serveAuthTokenProtected(
 		Subject:          claims.Subject,
 		MissionS256:      claims.MissionS256,
 		Tenant:           claims.Tenant,
+		Account:          cloneAuthorizationAccount(claims.Account),
 		Scope:            append([]string(nil), scopes...),
 		Confirmation:     claims.Confirmation.JWK,
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
@@ -237,7 +287,7 @@ func (server *Server) servePersonTokenChallenge(
 		writeProblem(response, http.StatusUnauthorized, "invalid_token", errors.New("mission-bound person tokens require mission verification"))
 		return
 	}
-	scopes, err := server.requiredRouteScopes(request)
+	scopes, err := server.requiredRouteScopes(request, false)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -356,7 +406,7 @@ func cloneAdditionalClaims(claims map[string]json.RawMessage) map[string]json.Ra
 	return cloned
 }
 
-func (server *Server) requiredRouteScopes(request *http.Request) ([]string, error) {
+func (server *Server) requiredRouteScopes(request *http.Request, allowEmpty bool) ([]string, error) {
 	policyRequest, finish, err := cloneScopePolicyRequest(request)
 	if err != nil {
 		return nil, &scopePolicyError{cause: fmt.Errorf("aauth: prepare protected route scope policy request: %w", err)}
@@ -366,6 +416,9 @@ func (server *Server) requiredRouteScopes(request *http.Request) ([]string, erro
 		return nil, &scopePolicyError{cause: fmt.Errorf("aauth: finish protected route scope policy request: %w", err)}
 	}
 	if len(required) == 0 {
+		if allowEmpty {
+			return nil, nil
+		}
 		return nil, &scopePolicyError{cause: errors.New("aauth: protected route has no required scope")}
 	}
 	validated := make([]string, len(required))
@@ -494,8 +547,8 @@ func (body *recoveredApplicationBody) Close() error {
 	return body.original.Close()
 }
 
-func (server *Server) authorizeScopes(request *http.Request, granted []string) error {
-	required, err := server.requiredRouteScopes(request)
+func (server *Server) authorizeScopes(request *http.Request, granted []string, allowEmpty bool) error {
+	required, err := server.requiredRouteScopes(request, allowEmpty)
 	if err != nil {
 		return err
 	}

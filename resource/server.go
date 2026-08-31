@@ -16,6 +16,7 @@ import (
 
 	aauth "aauth-go"
 	"aauth-go/jose"
+	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
@@ -36,7 +37,12 @@ type FederatedAuthorizationConfig struct {
 	MaxSignedBodyBytes            int64
 	RequiredScopes                func(*http.Request) []string
 	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
-	Protected                     http.Handler
+	// ValidateAccount confirms an optional Resource-owned account belongs to
+	// the verified person before the account enters a Resource token.
+	ValidateAccount func(context.Context, PersonIdentity, string) error
+	Protected       http.Handler
+	// MCPR3 optionally enables the direct-grant MCP companion profile.
+	MCPR3 *MCPR3Config
 	// HeldInvocations enables Resource-held auth-token delivery. The host store
 	// is a trusted persistence and authorization boundary; see
 	// HeldInvocationStore.
@@ -125,6 +131,7 @@ type AuthPrincipal struct {
 	Subject          string
 	MissionS256      string
 	Tenant           string
+	Account          *string
 	Scope            []string
 	Confirmation     jose.JWK
 	AdditionalClaims map[string]json.RawMessage
@@ -171,6 +178,7 @@ func AuthPrincipalFromContext(ctx context.Context) (AuthPrincipal, bool) {
 		principal.Scope = append(make([]string, 0, len(principal.Scope)), principal.Scope...)
 	}
 	principal.AdditionalClaims = cloneAdditionalClaims(principal.AdditionalClaims)
+	principal.Account = cloneAuthorizationAccount(principal.Account)
 	return principal, true
 }
 
@@ -228,6 +236,7 @@ type Server struct {
 	maxSignedBodyBytes            int64
 	requiredScopes                func(*http.Request) []string
 	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
+	validateAccount               func(context.Context, PersonIdentity, string) error
 	protected                     http.Handler
 	authTokenStatuses             AuthTokenStatusStore
 	heldInvocations               HeldInvocationStore
@@ -235,6 +244,7 @@ type Server struct {
 	maxHeldRequestBodyBytes       int64
 	maxHeldResponseBodyBytes      int64
 	maxHeldHeaderBytes            int64
+	mcpR3                         *mcpR3Config
 	handler                       http.Handler
 }
 
@@ -412,6 +422,13 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
+	mcpR3, err := validateMCPR3Config(config.MCPR3)
+	if err != nil {
+		return nil, err
+	}
+	if mcpR3 != nil && topology != authorizationTopologyFederated {
+		return nil, errors.New("aauth: MCP R3 requires federated authorization")
+	}
 
 	server := &Server{
 		issuer:                        config.Issuer,
@@ -427,6 +444,7 @@ func newAuthorizationServer(
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		requiredScopes:                config.RequiredScopes,
 		resolvePerson:                 config.ResolvePerson,
+		validateAccount:               config.ValidateAccount,
 		protected:                     config.Protected,
 		authTokenStatuses:             authTokenStatuses,
 		heldInvocations:               config.HeldInvocations,
@@ -434,6 +452,7 @@ func newAuthorizationServer(
 		maxHeldRequestBodyBytes:       config.MaxHeldRequestBodyBytes,
 		maxHeldResponseBodyBytes:      config.MaxHeldResponseBodyBytes,
 		maxHeldHeaderBytes:            config.MaxHeldHeaderBytes,
+		mcpR3:                         mcpR3,
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -476,6 +495,9 @@ func (server *Server) newHandler() http.Handler {
 	if server.authTokenStatuses != nil {
 		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
+	if server.mcpR3 != nil {
+		mux.HandleFunc("/r3/{document}", server.serveMCPR3Document)
+	}
 	if server.heldInvocations != nil {
 		mux.HandleFunc("GET /pending/{id}", server.serveHeldPoll)
 		mux.HandleFunc("/pending/", server.serveHeldNamespace)
@@ -496,6 +518,7 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		RevocationEndpoint            string            `json:"revocation_endpoint,omitempty"`
 		ScopeDescriptions             map[string]string `json:"scope_descriptions,omitempty"`
 		AdditionalSignatureComponents []string          `json:"additional_signature_components,omitempty"`
+		R3Vocabularies                map[string]string `json:"r3_vocabularies,omitempty"`
 	}{
 		Issuer:                        server.issuer,
 		JWKSURI:                       resourceJWKSURI(server),
@@ -504,7 +527,15 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		RevocationEndpoint:            resourceRevocationEndpoint(server),
 		ScopeDescriptions:             cloneScopeDescriptions(server.scopeDescriptions),
 		AdditionalSignatureComponents: append([]string(nil), server.additionalSignatureComponents...),
+		R3Vocabularies:                resourceR3Vocabularies(server),
 	})
+}
+
+func resourceR3Vocabularies(server *Server) map[string]string {
+	if server == nil || server.mcpR3 == nil {
+		return nil
+	}
+	return map[string]string{r3.MCPVocabulary: server.mcpR3.discoveryEndpoint}
 }
 
 func resourceJWKSURI(server *Server) string {
