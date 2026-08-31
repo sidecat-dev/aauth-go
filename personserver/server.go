@@ -1,8 +1,8 @@
 // Package personserver implements explicit immediate three-party and
 // federated four-party Person Server compositions. It supports top-level and
 // parent-mediated issuance. Three-party composition also supports bounded
-// interaction, issued-token revocation, and one same-Person-Server Resource
-// call chain.
+// mission approval, interaction, issued-token revocation, and one
+// same-Person-Server Resource call chain.
 package personserver
 
 import (
@@ -74,7 +74,11 @@ type PSAuthorizationConfig struct {
 	Tokens                        TokenStore
 	BindPerson                    func(context.Context, PersonTokenRequest) (Person, error)
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
-	Authorize                     func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	// Missions optionally enables immediate Agent-facing mission approval and
+	// mission-bound token issuance. When nonnil, Tokens must implement
+	// MissionStore.
+	Missions  *MissionConfig
+	Authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	// CallChaining explicitly enables one immediate PS-authorized downstream
 	// hop. Existing policies never receive an upstream authorization unless this
 	// separate policy pair is configured.
@@ -114,6 +118,9 @@ type PersonTokenRequest struct {
 	Resource                 string
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
+	// Mission is nonnil when the request names an active mission owned by the
+	// verified Agent. It includes the exact approved content policy evaluates.
+	Mission *MissionContext
 	// Upstream is nonnil only for explicit call chaining. It is an independent
 	// copy of the verified PS-issued auth-token claims.
 	Upstream *aauth.AuthTokenClaims
@@ -141,6 +148,9 @@ type AuthorizationRequest struct {
 	Capabilities             []string
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
+	// Mission is nonnil when the retained person-token lineage names an active
+	// mission owned by the verified Agent.
+	Mission *MissionContext
 	// Upstream is nonnil only for explicit call chaining. It is an independent
 	// copy of the same verified authorization bound at person-token issuance.
 	Upstream *aauth.AuthTokenClaims
@@ -191,6 +201,8 @@ type Server struct {
 	deferredTokens                  DeferredTokenStore
 	bindPerson                      func(context.Context, PersonTokenRequest) (Person, error)
 	requirePersonTokenInteraction   func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
+	missions                        MissionStore
+	missionApprove                  func(context.Context, MissionApprovalRequest) (MissionDecision, error)
 	consent                         func(context.Context, AuthorizationRequest) error
 	authorizationMode               authorizationMode
 	authorize                       func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
@@ -220,6 +232,7 @@ type serverConfig struct {
 	tokens                        TokenStore
 	bindPerson                    func(context.Context, PersonTokenRequest) (Person, error)
 	requirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
+	missions                      *MissionConfig
 }
 
 // NewFederatedAuthorization constructs a four-party Person Server.
@@ -274,6 +287,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		maximumResourceTokenLifetime: config.MaximumResourceTokenLifetime,
 		tokens:                       config.Tokens, bindPerson: config.BindPerson,
 		requirePersonTokenInteraction: config.RequirePersonTokenInteraction,
+		missions:                      config.Missions,
 	})
 	if err != nil {
 		return nil, err
@@ -314,6 +328,19 @@ func newServer(config serverConfig) (*Server, error) {
 	if config.bindPerson == nil {
 		return nil, errors.New("personserver: person-binding policy is required")
 	}
+	var missions MissionStore
+	var missionApprove func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	if config.missions != nil {
+		if config.missions.Approve == nil {
+			return nil, errors.New("personserver: mission approval policy is required")
+		}
+		var ok bool
+		missions, ok = config.tokens.(MissionStore)
+		if !ok {
+			return nil, errors.New("personserver: missions require a mission store")
+		}
+		missionApprove = config.missions.Approve
+	}
 	var deferredTokens DeferredTokenStore
 	if config.requirePersonTokenInteraction != nil {
 		var ok bool
@@ -335,6 +362,7 @@ func newServer(config serverConfig) (*Server, error) {
 		maximumResourceTokenLifetime: maximumResourceTokenLifetime,
 		tokens:                       config.tokens, deferredTokens: deferredTokens, bindPerson: config.bindPerson,
 		requirePersonTokenInteraction: config.requirePersonTokenInteraction,
+		missions:                      missions, missionApprove: missionApprove,
 	}, nil
 }
 
@@ -348,6 +376,9 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /token/pending/{id}", server.handlePendingAuthorization)
 	mux.HandleFunc("GET /.well-known/aauth-person.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
+	if server.missions != nil {
+		mux.HandleFunc("POST /mission", server.handleMission)
+	}
 	return mux
 }
 
@@ -383,7 +414,6 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		}
 	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"mission_s256":  input.MissionS256,
 		"justification": input.Justification, "login_hint": input.LoginHint,
 		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
 		"platform": input.Platform, "device": input.Device, "capabilities": input.Capabilities,
@@ -394,6 +424,30 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	if err := aauth.ValidateServerIdentifier(input.Resource); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
+	}
+	var missionRecord *MissionRecord
+	var missionContext *MissionContext
+	if input.MissionS256 != nil {
+		if input.SubagentToken != nil || input.UpstreamToken != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated or call-chain person-token issuance is not implemented"))
+			return
+		}
+		var s256 string
+		if err := json.Unmarshal(input.MissionS256, &s256); err != nil || aauth.ValidateMissionS256(s256) != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission_s256 is invalid"))
+			return
+		}
+		loaded, err := server.loadActiveMission(request.Context(), s256, agent.Subject, server.clock.Now().UTC())
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		missionRecord = &loaded
+		missionContext, err = missionContextFromRecord(loaded)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
 	}
 	upstream, err := server.verifyOptionalUpstreamToken(
 		request.Context(), input.UpstreamToken, agent, proof.VerifiedAt(),
@@ -422,6 +476,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	personRequest := PersonTokenRequest{
 		Agent: agent.Subject, Resource: input.Resource,
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+		Mission:               missionContext,
 	}
 	if delegated {
 		personRequest.Subagent = credentialAgent.Subject
@@ -438,6 +493,10 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 		if required {
+			if personRequest.Mission != nil {
+				writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission-bound person-token interaction is not implemented"))
+				return
+			}
 			if delegated {
 				writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated person-token interaction is not implemented"))
 				return
@@ -457,50 +516,45 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		writeProblem(response, http.StatusForbidden, "person_token_denied", err)
 		return
 	}
-	if person.Subject == "" || person.Lifetime <= 0 || person.Lifetime > maximumPersonLifetime {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("person binding returned an invalid person"))
-		return
-	}
 	if upstream != nil && person.Subject == upstream.claims.Subject {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: downstream directed subject must differ from upstream subject"))
 		return
 	}
-	expiresAt := proof.VerifiedAt().Add(person.Lifetime)
-	if agentExpiry := time.Unix(agent.ExpiresAt, 0); agentExpiry.Before(expiresAt) {
-		expiresAt = agentExpiry
+	issuedAt := proof.VerifiedAt()
+	if missionRecord != nil {
+		issuedAt = server.clock.Now().UTC()
+		current, err := server.recheckActiveMission(request.Context(), *missionRecord, issuedAt)
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		missionRecord = &current
 	}
-	if credentialExpiry := time.Unix(credentialAgent.ExpiresAt, 0); credentialExpiry.Before(expiresAt) {
-		expiresAt = credentialExpiry
-	}
-	claims := aauth.PersonTokenClaims{
-		Issuer: server.issuer, DWK: aauth.PersonDiscoveryDocument,
-		Audience: input.Resource, Subject: person.Subject,
-		Confirmation: aauth.Confirmation{JWK: credentialAgent.Confirmation.JWK},
-		JTI:          server.newID(), IssuedAt: proof.VerifiedAt().Unix(), ExpiresAt: expiresAt.Unix(),
-		Tenant: person.Tenant,
-	}
-	compact, err := aauth.MintPersonToken(server.signingKey, claims)
+	compact, record, err := server.preparePersonToken(
+		issuedAt, agent, credentialAgent, personRequest, person, missionRecord, upstream,
+	)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	canonicalExpiry := time.Unix(claims.ExpiresAt, 0).UTC()
-	record := PersonTokenRecord{
-		JTI: claims.JTI, PersonServer: claims.Issuer, Resource: claims.Audience,
-		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
-		AgentProvider: credentialAgent.Issuer, Agent: credentialAgent.Subject,
-		ParentAgent: credentialAgent.ParentAgent, Confirmation: credentialAgent.Confirmation.JWK,
-		ExpiresAt: canonicalExpiry, RetainUntil: canonicalExpiry.Add(server.maximumResourceTokenLifetime),
-	}
-	upstream.bindRecord(&record)
-	if err := server.tokens.Commit(request.Context(), record); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
+	if missionRecord != nil {
+		commitAt := server.clock.Now().UTC()
+		if err := server.missions.CommitMissionPersonToken(
+			request.Context(), *missionRecord, commitAt, record,
+		); err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+	} else {
+		if err := server.tokens.Commit(request.Context(), record); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
 	}
 	writePrivateJSON(response, http.StatusOK, struct {
 		PersonToken string `json:"person_token"`
 		ExpiresIn   int64  `json:"expires_in"`
-	}{PersonToken: compact, ExpiresIn: claims.ExpiresAt - proof.VerifiedAt().Unix()})
+	}{PersonToken: compact, ExpiresIn: record.ExpiresAt.Unix() - issuedAt.Unix()})
 }
 
 func (server *Server) handleToken(response http.ResponseWriter, request *http.Request) {
@@ -599,8 +653,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token interaction requires the deferred flow"))
 		return
 	}
-	if resourceToken.MissionS256 != "" {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("mission-bound resource tokens require mission verification"))
+	if resourceToken.MissionS256 != "" && (input.SubagentToken != nil || input.UpstreamToken != nil) {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated or call-chain authorization is not implemented"))
 		return
 	}
 	if resourceToken.Account != "" {
@@ -657,12 +711,34 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
 		return
 	}
+	var missionRecord *MissionRecord
+	var missionContext *MissionContext
+	if resourceToken.MissionS256 != "" {
+		loadedMission, err := server.loadActiveMission(
+			request.Context(), resourceToken.MissionS256, agent.Subject, server.clock.Now().UTC(),
+		)
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		if !loadedMission.ExpiresAt.IsZero() && resourceTokenExpiresAt.After(loadedMission.ExpiresAt) {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token outlives the mission"))
+			return
+		}
+		missionContext, err = missionContextFromRecord(loadedMission)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		missionRecord = &loadedMission
+	}
 	authorizationRequest := AuthorizationRequest{
 		Agent: agent.Subject, Resource: resourceToken.Issuer,
 		Subject: resourceToken.Subject, Tenant: resourceToken.Tenant,
 		Scopes:                append([]string(nil), scopes...),
 		Capabilities:          append([]string(nil), capabilities...),
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+		Mission:               missionContext,
 	}
 	if delegated {
 		authorizationRequest.Subagent = credentialAgent.Subject
@@ -680,6 +756,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 				return
 			}
 			if required {
+				if authorizationRequest.Mission != nil {
+					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission-bound authorization interaction is not implemented"))
+					return
+				}
 				if delegated {
 					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated authorization interaction is not implemented"))
 					return
@@ -703,8 +783,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 		server.issuePSAuthorizationToken(
-			response, request, proof, agent, credentialAgent, resourceToken,
-			authorizationRequest, authorize,
+			response, request, agent, credentialAgent, resourceToken,
+			authorizationRequest, missionRecord, authorize,
 		)
 		return
 	}
@@ -835,11 +915,11 @@ func (server *Server) validateResourceTokenTopology(resourceToken aauth.Resource
 func (server *Server) issuePSAuthorizationToken(
 	response http.ResponseWriter,
 	request *http.Request,
-	proof signaturekey.VerifiedRequest,
 	requestingAgent aauth.AgentTokenClaims,
 	credentialAgent aauth.AgentTokenClaims,
 	resourceToken aauth.ResourceTokenClaims,
 	authorizationRequest AuthorizationRequest,
+	missionRecord *MissionRecord,
 	authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error),
 ) {
 	policyRequest := cloneAuthorizationRequest(authorizationRequest)
@@ -853,7 +933,16 @@ func (server *Server) issuePSAuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
+	issuedAt := server.clock.Now().UTC()
+	if missionRecord != nil {
+		current, err := server.recheckActiveMission(request.Context(), *missionRecord, issuedAt)
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		missionRecord = &current
+	}
+	expiresAt := issuedAt.Add(decision.Lifetime)
 	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0)
 	if requestingAgentExpiresAt.Before(expiresAt) {
 		expiresAt = requestingAgentExpiresAt
@@ -862,7 +951,11 @@ func (server *Server) issuePSAuthorizationToken(
 	if credentialAgentExpiresAt.Before(expiresAt) {
 		expiresAt = credentialAgentExpiresAt
 	}
-	if !expiresAt.After(proof.VerifiedAt()) {
+	if authorizationRequest.Mission != nil && authorizationRequest.Mission.Blob.ExpiresAt != nil &&
+		authorizationRequest.Mission.Blob.ExpiresAt.Before(expiresAt) {
+		expiresAt = *authorizationRequest.Mission.Blob.ExpiresAt
+	}
+	if !expiresAt.After(issuedAt) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization decision has no usable lifetime"))
 		return
 	}
@@ -870,15 +963,36 @@ func (server *Server) issuePSAuthorizationToken(
 		Issuer: server.issuer, DWK: aauth.PersonDiscoveryDocument,
 		Audience: resourceToken.Issuer, JTI: server.newID(), PersonServer: server.issuer,
 		Subject: resourceToken.Subject, Confirmation: aauth.Confirmation{JWK: credentialAgent.Confirmation.JWK},
-		IssuedAt: proof.VerifiedAt().Unix(), ExpiresAt: expiresAt.Unix(),
-		Scope: strings.Join(grantedScopes, " "), Tenant: resourceToken.Tenant,
+		IssuedAt: issuedAt.Unix(), ExpiresAt: expiresAt.Unix(),
+		Scope: strings.Join(grantedScopes, " "), MissionS256: resourceToken.MissionS256, Tenant: resourceToken.Tenant,
 	}
 	compact, err := aauth.MintAuthToken(server.signingKey, claims)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if err := server.commitIssuedAuthToken(request.Context(), compact, claims); err != nil {
+	issuedRecord, err := issuedAuthTokenRecord(compact, claims)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if missionRecord != nil {
+		if authorizationRequest.Mission == nil || authorizationRequest.Mission.S256 != missionRecord.S256 {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission record does not match authorization context"))
+			return
+		}
+		commitAt := server.clock.Now().UTC()
+		if err := server.missions.CommitMissionAuthToken(
+			request.Context(), *missionRecord, commitAt, issuedRecord,
+		); err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+	} else if authorizationRequest.Mission != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission authorization has no retained mission"))
+		return
+	}
+	if err := server.commitIssuedAuthToken(request.Context(), issuedRecord); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
@@ -887,7 +1001,7 @@ func (server *Server) issuePSAuthorizationToken(
 		ExpiresIn int64  `json:"expires_in"`
 	}{
 		AuthToken: compact,
-		ExpiresIn: claims.ExpiresAt - proof.VerifiedAt().Unix(),
+		ExpiresIn: claims.ExpiresAt - issuedAt.Unix(),
 	})
 }
 
@@ -1036,12 +1150,16 @@ func writeEndpointTokenProblem(response http.ResponseWriter, err error, invalidC
 }
 
 func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Request) {
-	writeJSON(response, http.StatusOK, map[string]string{
+	metadata := map[string]string{
 		"issuer":                server.issuer,
 		"person_token_endpoint": server.issuer + "/person",
 		"auth_token_endpoint":   server.issuer + "/token",
 		"jwks_uri":              server.issuer + "/.well-known/jwks.json",
-	})
+	}
+	if server.missions != nil {
+		metadata["mission_endpoint"] = server.issuer + "/mission"
+	}
+	writeJSON(response, http.StatusOK, metadata)
 }
 
 func (server *Server) handleJWKS(response http.ResponseWriter, _ *http.Request) {
@@ -1145,6 +1263,7 @@ func parseAuthorizationCapabilities(raw json.RawMessage) ([]string, error) {
 func clonePersonTokenRequest(request PersonTokenRequest) PersonTokenRequest {
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
+	request.Mission = cloneMissionContext(request.Mission)
 	if request.Upstream != nil {
 		upstream := cloneAuthTokenClaims(*request.Upstream)
 		request.Upstream = &upstream
@@ -1157,6 +1276,7 @@ func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationReques
 	request.Capabilities = append([]string(nil), request.Capabilities...)
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
+	request.Mission = cloneMissionContext(request.Mission)
 	if request.Upstream != nil {
 		upstream := cloneAuthTokenClaims(*request.Upstream)
 		request.Upstream = &upstream

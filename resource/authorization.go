@@ -25,7 +25,7 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 		writeProblem(response, http.StatusBadRequest, "invalid_person_token", err)
 		return
 	}
-	if claims.MissionS256 != "" {
+	if claims.MissionS256 != "" && server.authorizationTopology != authorizationTopologyPersonServer {
 		writeProblem(response, http.StatusBadRequest, "invalid_person_token", errors.New("mission-bound person tokens require mission verification"))
 		return
 	}
@@ -102,6 +102,13 @@ func (server *Server) issueResourceToken(
 	if server.authorizationTopology == authorizationTopologyPersonServer {
 		audience = person.Issuer
 	}
+	expiresAt := verifiedAt.Add(5 * time.Minute)
+	if person.MissionS256 != "" {
+		personExpiresAt := time.Unix(person.ExpiresAt, 0)
+		if personExpiresAt.Before(expiresAt) {
+			expiresAt = personExpiresAt
+		}
+	}
 	return aauth.MintResourceToken(server.signingKey, aauth.ResourceTokenClaims{
 		Issuer:       server.issuer,
 		DWK:          aauth.ResourceDiscoveryDocument,
@@ -109,7 +116,7 @@ func (server *Server) issueResourceToken(
 		JTI:          server.newID(),
 		AgentJKT:     agentJKT,
 		IssuedAt:     verifiedAt.Unix(),
-		ExpiresAt:    verifiedAt.Add(5 * time.Minute).Unix(),
+		ExpiresAt:    expiresAt.Unix(),
 		Scope:        strings.Join(scopes, " "),
 		PersonServer: person.Issuer,
 		Subject:      person.Subject,

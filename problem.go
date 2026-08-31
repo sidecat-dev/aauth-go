@@ -19,22 +19,28 @@ type ErrorCode string
 // ProblemError is an AAuth RFC 9457 error response. Code is the required
 // AAuth "error" extension member.
 type ProblemError struct {
-	Type     string
-	Title    string
-	Status   int
-	Code     ErrorCode
-	Detail   string
-	Instance string
+	Type              string
+	Title             string
+	Status            int
+	Code              ErrorCode
+	Detail            string
+	Instance          string
+	MissionStatus     string
+	TerminationReason string
 }
 
 func (problem *ProblemError) Error() string {
 	if problem == nil {
 		return "aauth: unknown problem response"
 	}
-	if problem.Detail != "" {
-		return fmt.Sprintf("aauth: server returned %d %s: %s", problem.Status, problem.Code, problem.Detail)
+	termination := ""
+	if problem.TerminationReason != "" {
+		termination = " termination_reason=" + problem.TerminationReason
 	}
-	return fmt.Sprintf("aauth: server returned %d %s", problem.Status, problem.Code)
+	if problem.Detail != "" {
+		return fmt.Sprintf("aauth: server returned %d %s%s: %s", problem.Status, problem.Code, termination, problem.Detail)
+	}
+	return fmt.Sprintf("aauth: server returned %d %s%s", problem.Status, problem.Code, termination)
 }
 
 // DecodeProblemResponse validates and consumes an AAuth problem-details body.
@@ -57,12 +63,14 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 		return nil, fmt.Errorf("aauth: decode problem response: %w", err)
 	}
 	var wire struct {
-		Type     string    `json:"type"`
-		Title    string    `json:"title"`
-		Status   int       `json:"status"`
-		Code     ErrorCode `json:"error"`
-		Detail   string    `json:"detail"`
-		Instance string    `json:"instance"`
+		Type              string    `json:"type"`
+		Title             string    `json:"title"`
+		Status            int       `json:"status"`
+		Code              ErrorCode `json:"error"`
+		Detail            string    `json:"detail"`
+		Instance          string    `json:"instance"`
+		MissionStatus     string    `json:"mission_status"`
+		TerminationReason string    `json:"termination_reason"`
 	}
 	if err := jsonstrict.RejectCaseVariants(body, &wire); err != nil {
 		return nil, fmt.Errorf("aauth: decode problem response: %w", err)
@@ -82,6 +90,7 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 	return &ProblemError{
 		Type: wire.Type, Title: wire.Title, Status: wire.Status,
 		Code: wire.Code, Detail: wire.Detail, Instance: wire.Instance,
+		MissionStatus: wire.MissionStatus, TerminationReason: wire.TerminationReason,
 	}, nil
 }
 

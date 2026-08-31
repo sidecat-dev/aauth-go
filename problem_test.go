@@ -28,6 +28,28 @@ func TestDecodeProblemResponseReturnsTypedAAuthError(t *testing.T) {
 	}
 }
 
+func TestDecodeProblemResponseRetainsMissionTermination(t *testing.T) {
+	t.Parallel()
+
+	response := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"Content-Type": {"application/problem+json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"status":403,"error":"mission_terminated","mission_status":"terminated","termination_reason":"expired"}`,
+		)),
+	}
+	problem, err := auth.DecodeProblemResponse(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if problem.Code != "mission_terminated" || problem.MissionStatus != "terminated" || problem.TerminationReason != "expired" {
+		t.Fatalf("problem = %#v", problem)
+	}
+	if !strings.Contains(problem.Error(), "termination_reason=expired") {
+		t.Fatalf("problem text = %q", problem.Error())
+	}
+}
+
 func TestDecodeProblemResponseRejectsAmbiguousErrorMembers(t *testing.T) {
 	t.Parallel()
 

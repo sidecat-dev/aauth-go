@@ -520,9 +520,6 @@ func (client *Client) verifyResourceTokenContext(
 	if claims.Account != "" {
 		return aauth.ResourceTokenClaims{}, errors.New("resource-token account is not supported by the immediate flow")
 	}
-	if claims.MissionS256 != "" {
-		return aauth.ResourceTokenClaims{}, errors.New("mission-bound resource tokens require the mission flow")
-	}
 	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, err
@@ -551,6 +548,9 @@ func (client *Client) verifyResourceTokenContext(
 	if claims.IssuedAt < person.IssuedAt || claims.IssuedAt >= person.ExpiresAt ||
 		(person.NotBefore != 0 && claims.IssuedAt < person.NotBefore) {
 		return aauth.ResourceTokenClaims{}, errors.New("resource token was issued outside the person-token validity window")
+	}
+	if person.MissionS256 != "" && claims.ExpiresAt > person.ExpiresAt {
+		return aauth.ResourceTokenClaims{}, errors.New("resource token outlives the mission-bound person token")
 	}
 	return claims, nil
 }
@@ -653,8 +653,8 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	if claims.Account != "" {
 		return nil, fail(operation, errors.New("auth-token account is not supported by the immediate flow"))
 	}
-	if claims.MissionS256 != "" {
-		return nil, fail(operation, errors.New("mission-bound auth tokens require the mission flow"))
+	if claims.MissionS256 != "" && call.UpstreamToken != "" {
+		return nil, fail(operation, errors.New("mission-bound call-chain authorization is not supported"))
 	}
 	if err := client.acceptIssuedPersonServer(
 		ctx, call.UpstreamToken, claims.PersonServer, time.Unix(claims.IssuedAt, 0),

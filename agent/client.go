@@ -1,7 +1,8 @@
 // Package agent implements explicit calls for the bounded AAuth Core client
 // paths, including direct identity access, Resource-managed sessions,
-// immediate authorization, parent-mediated sub-agents, one Resource call
-// chain, and one-shot polling of supported interactions and held invocations.
+// immediate authorization, one immediate mission journey, parent-mediated
+// sub-agents, one Resource call chain, and one-shot polling of supported
+// interactions and held invocations.
 package agent
 
 import (
@@ -114,6 +115,7 @@ func (failure *CallChainingInteractionUnsupportedError) Error() string {
 type PersonTokenRequest struct {
 	PersonServer  string
 	Resource      string
+	MissionS256   string
 	SubagentToken string
 	UpstreamToken string
 }
@@ -218,15 +220,24 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 	if err := aauth.ValidateServerIdentifier(input.Resource); err != nil {
 		return PersonTokenResult{}, fail(operation, fmt.Errorf("resource: %w", err))
 	}
+	if input.MissionS256 != "" {
+		if err := aauth.ValidateMissionS256(input.MissionS256); err != nil {
+			return PersonTokenResult{}, fail(operation, err)
+		}
+		if input.SubagentToken != "" || input.UpstreamToken != "" {
+			return PersonTokenResult{}, fail(operation, errors.New("mission-bound delegated or call-chain person-token issuance is not supported"))
+		}
+	}
 	metadata, err := client.personServerMetadata(ctx, input.PersonServer)
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
 	body, err := json.Marshal(struct {
 		Resource      string `json:"resource"`
+		MissionS256   string `json:"mission_s256,omitempty"`
 		SubagentToken string `json:"subagent_token,omitempty"`
 		UpstreamToken string `json:"upstream_token,omitempty"`
-	}{Resource: input.Resource, SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken})
+	}{Resource: input.Resource, MissionS256: input.MissionS256, SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken})
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
@@ -275,8 +286,8 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	); err != nil {
 		return "", fail(operation, fmt.Errorf("person-token issuer: %w", err))
 	}
-	if person.MissionS256 != "" {
-		return "", fail(operation, errors.New("mission-bound person tokens require the mission flow"))
+	if person.MissionS256 != "" && input.UpstreamToken != "" {
+		return "", fail(operation, errors.New("mission-bound call-chain authorization is not supported"))
 	}
 	if err := aauth.ValidatePersonTokenContext(person, input.Resource, client.signingKey.PublicJWK()); err != nil {
 		return "", fail(operation, err)
@@ -346,6 +357,11 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 		return "", fail(operation, err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusAccepted && resourceClaims.MissionS256 != "" {
+		return "", fail(operation, &MissionContinuationUnsupportedError{
+			Phase: "auth-token exchange", Operation: "Exchange",
+		})
+	}
 	if response.StatusCode == http.StatusAccepted && input.SubagentToken != "" {
 		return "", fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
 	}
@@ -562,6 +578,7 @@ type personServerMetadata struct {
 	Issuer              string `json:"issuer"`
 	PersonTokenEndpoint string `json:"person_token_endpoint"`
 	AuthTokenEndpoint   string `json:"auth_token_endpoint"`
+	MissionEndpoint     string `json:"mission_endpoint"`
 	JWKSURI             string `json:"jwks_uri"`
 }
 

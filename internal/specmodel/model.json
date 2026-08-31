@@ -217,6 +217,87 @@
           ]
         }
       ]
+    },
+    {
+      "id": "MODEL-MISSION-DENIAL-001",
+      "feedback_id": "AAG-F059",
+      "subject": "Mission proposal policy denial error",
+      "status": "implementation_choice",
+      "disposition": "Return provisional 403 mission_denied until Core assigns a registered mission proposal denial.",
+      "grounding": "A valid mission proposal may be denied by policy, but the mission endpoint error table has no policy-denial result.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            1521,
+            1554,
+            1740,
+            1746
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MODEL-MISSION-PERSON-REFERENCE-001",
+      "feedback_id": "AAG-F060",
+      "subject": "Unknown mission reference at the Person Token Endpoint",
+      "status": "implementation_choice",
+      "disposition": "Return one identical 400 invalid_request response for absent and wrong-owner mission references at the Person Token Endpoint.",
+      "grounding": "The endpoint requires rejection but mission_not_found is registered only for a mission own URL.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            660,
+            696,
+            1745,
+            2537,
+            2548
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MODEL-MISSION-RESOURCE-EXPIRY-001",
+      "feedback_id": "AAG-F061",
+      "subject": "Resource enforcement of mission expiry without mission content",
+      "status": "implementation_choice",
+      "disposition": "Cap a mission-bound Resource token at the verified Person token expiry; the Person Server already capped that token at mission expiry and rechecks retained mission state later.",
+      "grounding": "Core requires the Resource-token ceiling but deliberately gives the Resource only mission_s256, not the mission expires_at value.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            721,
+            1024,
+            1030,
+            1623,
+            3792
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MODEL-MISSION-IDENTITY-001",
+      "feedback_id": "AAG-F062",
+      "subject": "Global uniqueness of a mission digest",
+      "status": "unresolved",
+      "disposition": "Do not add a private blob member. Reject a colliding retained identifier and seek a source-defined uniqueness rule.",
+      "grounding": "Two otherwise identical approvals at the same approved_at timestamp have identical bytes and s256 despite the draft's global-uniqueness claim.",
+      "references": [
+        {
+          "source": "core",
+          "lines": [
+            1614,
+            1618,
+            1631,
+            1635
+          ]
+        }
+      ],
+      "blocks": [
+        "claim that approved_at alone guarantees unique mission identity"
+      ]
     }
   ],
   "headings": [

@@ -169,7 +169,7 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}
-	if claims.MissionS256 != "" {
+	if claims.MissionS256 != "" && server.authorizationTopology != authorizationTopologyPersonServer {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("mission-bound auth tokens require mission verification"))
 		return
 	}
@@ -203,7 +203,7 @@ func (server *Server) serveAuthTokenProtected(
 	if err := server.resolvePerson(
 		request.Context(),
 		PersonIdentity{Issuer: claims.PersonServer, Subject: claims.Subject},
-		PersonContext{Tenant: claims.Tenant, AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims)},
+		PersonContext{MissionS256: claims.MissionS256, Tenant: claims.Tenant, AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims)},
 	); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("resolve person: %w", err))
 		return
@@ -211,6 +211,7 @@ func (server *Server) serveAuthTokenProtected(
 	principal := AuthPrincipal{
 		PersonServer:     claims.PersonServer,
 		Subject:          claims.Subject,
+		MissionS256:      claims.MissionS256,
 		Tenant:           claims.Tenant,
 		Scope:            append([]string(nil), scopes...),
 		Confirmation:     claims.Confirmation.JWK,

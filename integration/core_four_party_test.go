@@ -584,20 +584,148 @@ func newSigningKey(t *testing.T, id string) jose.SigningKey {
 }
 
 type memoryPersonTokenStore struct {
-	mu      sync.Mutex
-	records map[string]personserver.PersonTokenRecord
-	pending map[string]*memoryPendingPersonToken
-	byCode  map[[32]byte]string
-	last    personserver.PersonTokenRecord
-	commits int
-	loads   int
+	mu       sync.Mutex
+	records  map[string]personserver.PersonTokenRecord
+	missions map[string]personserver.MissionRecord
+	auth     map[string]personserver.IssuedAuthTokenRecord
+	pending  map[string]*memoryPendingPersonToken
+	byCode   map[[32]byte]string
+	last     personserver.PersonTokenRecord
+	commits  int
+	loads    int
 }
 
 func newMemoryPersonTokenStore() *memoryPersonTokenStore {
 	return &memoryPersonTokenStore{
-		records: make(map[string]personserver.PersonTokenRecord),
+		records: make(map[string]personserver.PersonTokenRecord), missions: make(map[string]personserver.MissionRecord),
+		auth:    make(map[string]personserver.IssuedAuthTokenRecord),
 		pending: make(map[string]*memoryPendingPersonToken), byCode: make(map[[32]byte]string),
 	}
+}
+
+func (store *memoryPersonTokenStore) CommitMission(
+	_ context.Context,
+	mission personserver.MissionRecord,
+	tokens []personserver.PersonTokenRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	missionKey := mission.Agent + "\x00" + mission.S256
+	if _, exists := store.missions[missionKey]; exists {
+		return errors.New("mission record conflicts with retained value")
+	}
+	batch := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		key := token.PersonServer + "\x00" + token.JTI
+		if _, exists := store.records[key]; exists {
+			return errors.New("person-token record conflicts with retained value")
+		}
+		if _, duplicate := batch[key]; duplicate {
+			return errors.New("person-token identity is duplicated within mission approval")
+		}
+		batch[key] = struct{}{}
+	}
+	mission.ExactJSON = append([]byte(nil), mission.ExactJSON...)
+	store.missions[missionKey] = mission
+	for _, token := range tokens {
+		store.records[token.PersonServer+"\x00"+token.JTI] = token
+		store.last = token
+		store.commits++
+	}
+	return nil
+}
+
+func (store *memoryPersonTokenStore) LoadMissionForAgent(
+	_ context.Context, agent, s256 string, at time.Time,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := agent + "\x00" + s256
+	record, exists := store.missions[key]
+	if !exists {
+		return personserver.MissionRecord{}, personserver.ErrMissionNotFound
+	}
+	if record.State == personserver.MissionActive && !record.ExpiresAt.IsZero() && !at.Before(record.ExpiresAt) {
+		record.State = personserver.MissionTerminated
+		record.TerminationReason = "expired"
+		store.missions[key] = record
+	}
+	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	return record, nil
+}
+
+func (store *memoryPersonTokenStore) CommitMissionPersonToken(
+	_ context.Context, expected personserver.MissionRecord, at time.Time, token personserver.PersonTokenRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if token.MissionS256 != expected.S256 || token.Agent != expected.Agent {
+		return personserver.ErrMissionConflict
+	}
+	key := token.PersonServer + "\x00" + token.JTI
+	if _, exists := store.records[key]; exists {
+		return errors.New("person-token record conflicts with retained value")
+	}
+	store.records[key] = token
+	store.last = token
+	store.commits++
+	return nil
+}
+
+func (store *memoryPersonTokenStore) CommitMissionAuthToken(
+	_ context.Context, expected personserver.MissionRecord, at time.Time, token personserver.IssuedAuthTokenRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if token.MissionS256 != expected.S256 {
+		return personserver.ErrMissionConflict
+	}
+	key := token.Reference.Issuer + "\x00" + token.Reference.JTI
+	if _, exists := store.auth[key]; exists {
+		return errors.New("auth-token record conflicts with retained value")
+	}
+	store.auth[key] = token
+	return nil
+}
+
+func (store *memoryPersonTokenStore) terminateMission(agent, s256, reason string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := agent + "\x00" + s256
+	record, exists := store.missions[key]
+	if !exists {
+		return personserver.ErrMissionNotFound
+	}
+	record.State = personserver.MissionTerminated
+	record.TerminationReason = reason
+	store.missions[key] = record
+	return nil
+}
+
+func (store *memoryPersonTokenStore) requireActiveMissionLocked(expected personserver.MissionRecord, at time.Time) error {
+	key := expected.Agent + "\x00" + expected.S256
+	current, exists := store.missions[key]
+	if !exists {
+		return personserver.ErrMissionNotFound
+	}
+	if current.State == personserver.MissionActive && !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
+		current.State = personserver.MissionTerminated
+		current.TerminationReason = "expired"
+		store.missions[key] = current
+	}
+	if current.State == personserver.MissionTerminated {
+		return &personserver.MissionTerminatedError{TerminationReason: current.TerminationReason}
+	}
+	if !current.Equal(expected) {
+		return personserver.ErrMissionConflict
+	}
+	return nil
 }
 
 type memoryPendingPersonToken struct {

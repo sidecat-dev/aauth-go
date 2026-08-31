@@ -91,6 +91,11 @@ func (client *Client) personTokenResponse(
 	credential personServerCredential,
 ) (PersonTokenResult, error) {
 	if response.StatusCode == http.StatusAccepted {
+		if input.MissionS256 != "" {
+			return PersonTokenResult{}, &MissionContinuationUnsupportedError{
+				Phase: "person-token issuance", Operation: "PersonToken",
+			}
+		}
 		if input.SubagentToken != "" {
 			return PersonTokenResult{}, &SubagentInteractionUnsupportedError{Operation: "person-token issuance"}
 		}
@@ -107,7 +112,7 @@ func (client *Client) personTokenResponse(
 		return PersonTokenResult{}, responseFailure(response)
 	}
 	token, err := client.verifiedPersonToken(
-		ctx, response, input.PersonServer, input.Resource, credential,
+		ctx, response, input.PersonServer, input.Resource, input.MissionS256, credential,
 	)
 	if err != nil {
 		return PersonTokenResult{}, err
@@ -176,6 +181,7 @@ func (client *Client) verifiedPersonToken(
 	response *http.Response,
 	personServer string,
 	resource string,
+	missionS256 string,
 	credential personServerCredential,
 ) (string, error) {
 	if len(response.Header.Values("Content-Type")) != 1 {
@@ -197,6 +203,9 @@ func (client *Client) verifiedPersonToken(
 	}
 	if claims.Issuer != personServer {
 		return "", errors.New("person-token issuer does not match person server")
+	}
+	if claims.MissionS256 != missionS256 {
+		return "", errors.New("person-token mission_s256 does not match request")
 	}
 	if err := aauth.ValidatePersonTokenContext(claims, resource, credential.requestKey); err != nil {
 		return "", err
@@ -270,6 +279,7 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 		response,
 		pending.personServer,
 		pending.resource,
+		"",
 		personServerCredential{
 			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
 			expirySource: "agent token",

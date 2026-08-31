@@ -185,6 +185,11 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		return ExchangeResult{kind: exchangeResultToken, token: token}, nil
 	case http.StatusAccepted:
 		defer response.Body.Close()
+		if resourceClaims.MissionS256 != "" {
+			return ExchangeResult{}, fail(operation, &MissionContinuationUnsupportedError{
+				Phase: "auth-token exchange", Operation: "BeginExchange",
+			})
+		}
 		if input.SubagentToken != "" {
 			return ExchangeResult{}, fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
 		}
@@ -345,14 +350,14 @@ func (client *Client) exchangeRequest(
 	if err != nil {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, err
 	}
+	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
+		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")
+	}
 	if resourceClaims.Interaction != nil {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource-token interaction requires the deferred flow")
 	}
 	if resourceClaims.Account != "" {
 		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("resource-token account is not supported by the immediate flow")
-	}
-	if resourceClaims.MissionS256 != "" {
-		return nil, aauth.ResourceTokenClaims{}, personServerCredential{}, errors.New("mission-bound resource tokens require the mission flow")
 	}
 	thumbprint, err := credential.requestKey.Thumbprint()
 	if err != nil {

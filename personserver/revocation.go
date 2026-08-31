@@ -33,6 +33,7 @@ var ErrRevocationNotRecognized = errors.New("personserver: resource did not reco
 type IssuedAuthTokenRecord struct {
 	Reference     aauth.TokenReference
 	Resource      string
+	MissionS256   string
 	CompactSHA256 [32]byte
 	IssuedAt      time.Time
 	ExpiresAt     time.Time
@@ -85,17 +86,22 @@ func (server *Server) configureAuthTokenRevocation(config *AuthTokenRevocationCo
 	return nil
 }
 
-func (server *Server) commitIssuedAuthToken(ctx context.Context, compact string, claims aauth.AuthTokenClaims) error {
-	if server.issuedAuthTokens == nil {
-		return nil
-	}
+func issuedAuthTokenRecord(compact string, claims aauth.AuthTokenClaims) (IssuedAuthTokenRecord, error) {
 	record := IssuedAuthTokenRecord{
 		Reference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
-		Resource:  claims.Audience, CompactSHA256: sha256.Sum256([]byte(compact)),
-		IssuedAt: time.Unix(claims.IssuedAt, 0).UTC(), ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+		Resource:  claims.Audience, MissionS256: claims.MissionS256,
+		CompactSHA256: sha256.Sum256([]byte(compact)),
+		IssuedAt:      time.Unix(claims.IssuedAt, 0).UTC(), ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
 	}
 	if err := validateIssuedAuthTokenRecord(record); err != nil {
-		return err
+		return IssuedAuthTokenRecord{}, err
+	}
+	return record, nil
+}
+
+func (server *Server) commitIssuedAuthToken(ctx context.Context, record IssuedAuthTokenRecord) error {
+	if server.issuedAuthTokens == nil {
+		return nil
 	}
 	return server.issuedAuthTokens.CommitIssuedAuthToken(ctx, record)
 }
@@ -276,6 +282,11 @@ func validateIssuedAuthTokenRecord(record IssuedAuthTokenRecord) error {
 	}
 	if err := aauth.ValidateServerIdentifier(record.Resource); err != nil {
 		return fmt.Errorf("personserver: issued auth-token Resource: %w", err)
+	}
+	if record.MissionS256 != "" {
+		if err := aauth.ValidateMissionS256(record.MissionS256); err != nil {
+			return fmt.Errorf("personserver: issued auth-token mission: %w", err)
+		}
 	}
 	if record.CompactSHA256 == ([32]byte{}) || record.IssuedAt.IsZero() || !record.ExpiresAt.After(record.IssuedAt) {
 		return errors.New("personserver: issued auth-token record is invalid")

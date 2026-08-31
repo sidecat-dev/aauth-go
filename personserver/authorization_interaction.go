@@ -711,7 +711,12 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		if err := server.commitIssuedAuthToken(request.Context(), result.Token, claims); err != nil {
+		issuedRecord, err := issuedAuthTokenRecord(result.Token, claims)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if err := server.commitIssuedAuthToken(request.Context(), issuedRecord); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}

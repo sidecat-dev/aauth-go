@@ -92,6 +92,10 @@ below where evidence is ready.
 | AAG-F016 | The mandatory signature set does not bind the query | ready below |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | exact-delivery interpretation recorded; evidence pending until Events implementation |
+| AAG-F059 | Mission proposal policy denial has no registered error | ready below with immediate mission evidence |
+| AAG-F060 | Unknown mission references at the Person Token Endpoint have no assigned error | ready below with ownership-safe refusal evidence |
+| AAG-F061 | A Resource cannot directly enforce mission expiry without receiving mission content | implementation bridge recorded; ready below |
+| AAG-F062 | `approved_at` alone does not make a mission digest globally unique | ready below with immediate mission evidence |
 
 ## Current unsubmitted questions
 
@@ -310,6 +314,73 @@ this case to an existing error with clarified semantics?
 
 **Placement:** Open a new AAuth issue. No existing issue records this error-code
 gap.
+
+### AAG-F059 — Mission proposal policy denial has no registered error
+
+**Source:** AAuth Core, `Mission Creation`, `Mission Approval`, and `Mission
+Endpoint Errors`.
+
+A valid proposal may be denied by Person Server policy, but the endpoint error
+table names only malformed requests, unknown ownership, and terminated
+missions. The implementation provisionally returns `403 mission_denied` rather
+than describe a valid proposal as malformed.
+
+**Question:** Which registered error and status should carry a terminal mission
+proposal denial?
+
+**Placement:** Combine with AAG-F009 if Core adopts one policy-denial code across
+Person Server endpoints; otherwise open a focused mission-endpoint issue.
+
+### AAG-F060 — The Person Token Endpoint has no error for an unknown mission
+
+**Source:** AAuth Core, `Person Token Endpoint`, `Mission Endpoint Errors`, and
+`Token Endpoint Error Codes`.
+
+The Person Token Endpoint must reject a mission that does not exist or belongs
+to another Agent. `mission_not_found` is defined only for a mission's own URL,
+while the token error registry assigns no equivalent result. The implementation
+uses the same `400 invalid_request` body for absent and wrong-owner references.
+
+**Question:** Should `mission_not_found` apply at the Person Token Endpoint, or
+should the token error registry add an ownership-safe mission-reference error?
+
+**Placement:** Add to the mission endpoint/error registry discussion.
+
+### AAG-F061 — A Resource cannot read the mission expiry it must enforce
+
+**Source:** AAuth Core, `Mission Approval`, `Resource Token Structure`, and
+`Why Mission Content Stays at the PS`.
+
+Core requires a mission-bound Resource token to expire no later than the
+mission, but deliberately sends the Resource only `mission_s256`, not the blob
+or `expires_at`. The implementation caps the Resource token at the verified
+Person token's `exp`, which the PS already capped at the mission expiry.
+
+**Question:** Should Core state that a Resource inherits this ceiling from the
+mission-bound Person token, or expose another authenticated expiry value?
+
+**Placement:** Open a focused Core mission-lifetime clarification.
+
+### AAG-F062 — `approved_at` does not ensure a globally unique mission digest
+
+**Source:** AAuth Core, `Mission Approval`.
+
+Core says that `approved_at` ensures `s256` is globally unique. Two approvals
+with the same approver, Agent, timestamp, description, and optional members
+have identical bytes and therefore the same digest. This can occur with a
+coarse or deterministic clock, and the wire shape has no nonce or distinct
+mission identifier to separate them.
+
+The implementation does not add a private mission member. Its store rejects
+the second exact identifier as a conflict rather than silently treating a new
+approval as the old mission.
+
+**Question:** Should the blob include a required unique value, or should Core
+drop the global-uniqueness claim and define identical approvals as the same
+mission?
+
+**Placement:** Open a focused Core mission-identity clarification after
+checking the current issue tracker for an existing uniqueness discussion.
 
 ### AAG-F010 — Four-party person identity uses the access-server namespace in one step
 

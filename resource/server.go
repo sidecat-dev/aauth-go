@@ -111,6 +111,7 @@ type PersonIdentity struct {
 // PersonContext contains current signed assertions that may inform local
 // policy or profile data. It is not part of the stable person identifier.
 type PersonContext struct {
+	MissionS256      string
 	Tenant           string
 	AdditionalClaims map[string]json.RawMessage
 }
@@ -120,6 +121,7 @@ type PersonContext struct {
 type AuthPrincipal struct {
 	PersonServer     string
 	Subject          string
+	MissionS256      string
 	Tenant           string
 	Scope            []string
 	Confirmation     jose.JWK

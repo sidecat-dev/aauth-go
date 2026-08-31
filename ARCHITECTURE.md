@@ -22,9 +22,11 @@ or package name in this document is not by itself a conformance claim.
 4. **Make consequences explicit.** Client methods perform one protocol
    exchange. They return a result or a typed continuation; they do not hide
    polling, browser interaction, sleep, or consequence retries.
-5. **Preserve exact bytes when identity depends on bytes.** Compact tokens,
-   signed requests, R3 documents, mission blobs, proposals, and retained
-   results are never reconstructed from a parsed approximation.
+5. **Preserve exact bytes when retained identity depends on bytes.** When a
+   compact token, signed request, R3 document, approved mission blob, or result
+   is retained, its original bytes remain available; a parsed value does not
+   replace them. The immediate mission path does not retain proposal request
+   bytes.
 6. **Compose companion behavior explicitly.** Core does not silently accept
    R3, Events, or Budget semantics. The role handling a token invokes the
    companion package that understands each authorization-bearing claim.
@@ -38,6 +40,13 @@ The current repository already has the `aauth`, `jose`, `signaturekey`,
 `agentprovider`, `agent`, `personserver`, `resource`, and `accessserver`
 packages. Their implemented behavior is the subset listed in
 [CONFORMANCE.md](CONFORMANCE.md).
+
+The current mission slice is one immediate three-party composition. The root
+package owns proposal, blob, digest, and approval values; `agent` verifies one
+approval and its returned Person tokens; `personserver` owns exact-byte mission
+state and supplies verified mission content to policy; `resource` propagates
+only the signed digest. Mission text never crosses into the Resource, and no
+generic lifecycle or evidence object joins these boundaries.
 
 The target model expands those packages and adds `r3`, `budgets`, and `events`.
 Sections below define the target ownership contract. Planned packages use a

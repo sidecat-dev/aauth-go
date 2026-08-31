@@ -78,6 +78,34 @@ The target implementation applies `MUST NOT`. It also rejects polymorphic
 `EdDSA` as the normative token rule requires; examples using `EdDSA` are not
 acceptance vectors. Both inconsistencies remain recorded for editor feedback.
 
+## Mission-bound Resource tokens inherit the Person-token expiry ceiling
+
+**Source:** AAuth Core, `Mission Approval`, `Resource Token Structure`, and
+`Why presented_jti Exists`.
+
+Core requires a mission-bound Resource token not to outlive the mission, while
+also keeping mission content private to the Person Server. A Resource therefore
+cannot read `expires_at` directly. This implementation caps a mission-bound
+Resource token at the verified Person token's `exp`; the Person Server already
+capped that token at the mission expiry. The later PS exchange still reloads
+the mission and rejects inactive state or a Resource-token expiry beyond the
+retained mission boundary.
+
+## Unknown mission references at the Person Token Endpoint use `invalid_request`
+
+**Source:** AAuth Core, `Person Token Endpoint`, `Mission Endpoint Errors`, and
+`Token Endpoint Error Codes`.
+
+Core requires the Person Token Endpoint to reject an absent or wrong-owner
+mission but assigns `mission_not_found` only to a mission's own URL. Until the
+registry says otherwise, this implementation returns the same `400
+invalid_request` response for absent and wrong-owner references. It uses
+`mission_terminated` only after the authenticated Agent's ownership is known.
+
+Mission proposal policy denial is likewise unregistered. The immediate
+approval endpoint provisionally returns `403 mission_denied`; the gap is
+recorded in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
+
 ## Parent-mediated credentials use the child key and the earlier expiry
 
 **Source:** AAuth Core, `Person Token Endpoint`, `Resource Token

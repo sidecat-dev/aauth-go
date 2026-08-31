@@ -646,11 +646,11 @@ func TestClientRefusesResourceTokenBranchesOutsideTheImmediateFlow(t *testing.T)
 			errorDetail: "requires the deferred flow",
 		},
 		{
-			name: "mission",
+			name: "mission substitution",
 			configure: func(protocol *testProtocol) {
 				protocol.resourceMissionS256 = strings.Repeat("A", 43)
 			},
-			errorDetail: "mission flow",
+			errorDetail: "context does not match person token",
 		},
 	} {
 		test := test
@@ -671,7 +671,7 @@ func TestClientRefusesResourceTokenBranchesOutsideTheImmediateFlow(t *testing.T)
 	}
 }
 
-func TestClientRefusesMissionBoundProtectedCall(t *testing.T) {
+func TestClientPresentsMissionBoundProtectedCall(t *testing.T) {
 	t.Parallel()
 
 	protocol := newTestProtocol(t)
@@ -691,8 +691,13 @@ func TestClientRefusesMissionBoundProtectedCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Do(context.Background(), agent.Call{Request: request, AuthToken: compact}); err == nil || !strings.Contains(err.Error(), "mission flow") {
-		t.Fatalf("Do error = %v", err)
+	response, err := client.Do(context.Background(), agent.Call{Request: request, AuthToken: compact})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
 	}
 }
 
