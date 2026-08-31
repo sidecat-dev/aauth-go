@@ -17,11 +17,16 @@ import (
 
 	aauth "aauth-go"
 	"aauth-go/internal/jsonstrict"
+	"aauth-go/internal/r3dispatch"
 	"aauth-go/jose"
+	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
-const heldPollRetryAfter = 5 * time.Second
+const (
+	heldPollRetryAfter                 = 5 * time.Second
+	maximumDerivativeAuthTokenLifetime = aauth.MaximumAuthTokenLifetime
+)
 
 func (server *Server) serveHeldChallenge(
 	response http.ResponseWriter,
@@ -30,12 +35,12 @@ func (server *Server) serveHeldChallenge(
 	person aauth.PersonTokenClaims,
 	scopes []string,
 ) {
-	snapshot, err := snapshotHeldRequest(request, server.maxHeldRequestBodyBytes)
+	snapshot, err := snapshotHeldRequest(request, server.maxRetainedRequestBodyBytes)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if err := validateHeldRequestHeaderLimit(snapshot.header, server.maxHeldHeaderBytes); err != nil {
+	if err := validateHeldRequestHeaderLimit(snapshot.header, server.maxRetainedHeaderBytes); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
@@ -89,9 +94,23 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		server.writeHeldStoreFailure(response, pendingID, err)
 		return
 	}
-	snapshot, err := heldRequestSnapshotFromInvocation(invocation, server.maxHeldRequestBodyBytes, server.maxHeldHeaderBytes)
+	snapshot, err := heldRequestSnapshotFromInvocation(invocation, server.maxRetainedRequestBodyBytes, server.maxRetainedHeaderBytes)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	resourceToken, resourceReference, resourceCarriesR3, err := server.verifyHeldRetainedResourceToken(
+		request.Context(), invocation,
+	)
+	if err != nil {
+		writeMCPR3ValidationFailure(response, err)
+		return
+	}
+	if resourceCarriesR3 != (invocation.R3PerCall != nil) {
+		writeProblem(
+			response, http.StatusInternalServerError, "server_error",
+			retainedMCPR3State(errors.New("held invocation authorization kind does not match its Resource token")),
+		)
 		return
 	}
 	prepared, compact, err := server.prepareJWTRequest(request, nil)
@@ -99,13 +118,34 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		writeCredentialProblem(response, "invalid_token", err)
 		return
 	}
-	proof, authToken, err := server.verifyPreparedAuthRequest(request, prepared, compact)
-	if err != nil {
-		writeCredentialProblem(response, "invalid_token", err)
-		return
+	var (
+		proof           signaturekey.VerifiedRequest
+		authToken       aauth.AuthTokenClaims
+		executionScopes = append([]string(nil), invocation.RequiredScopes...)
+	)
+	if !resourceCarriesR3 {
+		proof, authToken, err = server.verifyPreparedAuthRequest(request, prepared, compact)
+		if err != nil {
+			writeCredentialProblem(response, "invalid_token", err)
+			return
+		}
+		err = server.verifyHeldCompletion(proof, authToken, resourceToken, invocation)
+	} else {
+		var reference r3.Reference
+		var operations r3.AuthTokenOperations
+		proof, authToken, reference, operations, err = server.verifyPreparedMCPR3AuthRequest(request, prepared, compact)
+		if err != nil {
+			writeCredentialProblem(response, "invalid_token", err)
+			return
+		}
+		executionScopes, err = server.verifyHeldMCPR3Completion(
+			request.Context(), proof, authToken,
+			mcpR3ProtectedAuthorization{reference: reference, operations: operations},
+			resourceReference, invocation,
+		)
 	}
-	if err := server.verifyHeldCompletion(request.Context(), proof, authToken, invocation); err != nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", err)
+	if err != nil {
+		writeMCPR3ValidationFailure(response, err)
 		return
 	}
 	credential := HeldAuthToken{
@@ -113,7 +153,7 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		PresentedAt: time.Unix(proof.VerifiedAt().Unix(), 0),
 		RetainUntil: time.Unix(authToken.ExpiresAt, 0),
 	}
-	claim, err := server.heldInvocations.Claim(request.Context(), pendingID, credential)
+	claim, err := server.heldInvocations.Claim(context.Background(), pendingID, credential)
 	if err != nil {
 		server.writeHeldStoreFailure(response, pendingID, err)
 		return
@@ -129,7 +169,9 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("held invocation store returned an invalid execution claim"))
 		return
 	}
-	applicationResponse := server.executeHeldInvocation(snapshot, compact, authToken, proof.PublicKey(), proof.VerifiedAt())
+	applicationResponse := server.executeHeldInvocation(
+		snapshot, compact, authToken, proof.PublicKey(), proof.VerifiedAt(), executionScopes,
+	)
 	retained, err := server.heldInvocations.Retain(context.Background(), execution, applicationResponse)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -155,26 +197,19 @@ func (*Server) writeHeldMethodNotAllowed(response http.ResponseWriter) {
 }
 
 func (server *Server) verifyHeldCompletion(
-	ctx context.Context,
 	proof signaturekey.VerifiedRequest,
 	authToken aauth.AuthTokenClaims,
+	resourceToken aauth.ResourceTokenClaims,
 	invocation HeldInvocation,
 ) error {
-	verificationClock := aauth.ClockFunc(func() time.Time { return invocation.ResourceTokenIssuedAt })
-	resourceToken, err := aauth.VerifyResourceToken(ctx, invocation.ResourceToken, server.keyResolver, verificationClock)
-	if err != nil {
-		return err
-	}
-	if resourceToken.Issuer != server.issuer || resourceToken.Audience != server.accessServer ||
-		resourceToken.DWK != aauth.ResourceDiscoveryDocument {
-		return errors.New("held resource token does not match Resource and Access Server")
-	}
 	if resourceToken.Account != nil || resourceToken.MissionS256 != "" || resourceToken.Interaction != nil {
-		return errors.New("held resource token uses an unsupported authorization branch")
+		return retainedMCPR3State(errors.New("held resource token uses an unsupported authorization branch"))
 	}
-	if resourceToken.IssuedAt != invocation.ResourceTokenIssuedAt.Unix() ||
-		resourceToken.ExpiresAt != invocation.ExpiresAt.Unix() || resourceToken.Tenant != authToken.Tenant {
-		return errors.New("held token context does not match retained invocation")
+	if resourceToken.Tenant != authToken.Tenant {
+		return errors.New("held Auth token changed the retained tenant")
+	}
+	if authToken.IssuedAt < resourceToken.IssuedAt || authToken.IssuedAt >= resourceToken.ExpiresAt {
+		return errors.New("held Auth token was issued outside the Resource-token lifetime")
 	}
 	requestJKT, err := proof.PublicKey().Thumbprint()
 	if err != nil {
@@ -185,7 +220,7 @@ func (server *Server) verifyHeldCompletion(
 	}
 	resourceScopes, err := server.validateScopes(resourceToken.Scope)
 	if err != nil || !slices.Equal(resourceScopes, invocation.RequiredScopes) {
-		return errors.New("held resource-token scopes do not match retained route scopes")
+		return retainedMCPR3State(errors.New("held resource-token scopes do not match retained route scopes"))
 	}
 	if authToken.Account != nil || authToken.MissionS256 != "" {
 		return errors.New("held auth token uses an unsupported authorization branch")
@@ -208,12 +243,108 @@ func (server *Server) verifyHeldCompletion(
 	return nil
 }
 
+func (server *Server) verifyHeldMCPR3Completion(
+	ctx context.Context,
+	proof signaturekey.VerifiedRequest,
+	authToken aauth.AuthTokenClaims,
+	authorization mcpR3ProtectedAuthorization,
+	resourceReference r3.Reference,
+	invocation HeldInvocation,
+) ([]string, error) {
+	if server.mcpR3 == nil || invocation.R3PerCall == nil {
+		return nil, errors.New("held MCP R3 per-call authorization is not configured")
+	}
+	if authToken.Issuer != server.accessServer || authToken.DWK != aauth.AccessDiscoveryDocument ||
+		authToken.Audience != server.issuer {
+		return nil, errors.New("held MCP R3 Auth token does not match the Access Server and Resource")
+	}
+	held := invocation.R3PerCall
+	if held.Reference != resourceReference {
+		return nil, retainedMCPR3State(errors.New("held MCP R3 proposal reference does not match its Resource token"))
+	}
+	if held.Reference != authorization.reference {
+		return nil, errors.New("held MCP R3 Auth token changed the proposal reference")
+	}
+	kind, err := server.validateMCPR3ProtectedReference(authorization, authToken)
+	if err != nil || kind != mcpR3ProposalReference {
+		return nil, errors.New("held MCP R3 Auth token does not reference a proposal")
+	}
+	authScopes, err := server.validateMCPR3Scopes(authToken.Scope)
+	if err != nil {
+		return nil, errors.New("held MCP R3 Auth-token scopes are invalid")
+	}
+	if _, _, err := server.validateMCPR3Retry(ctx, R3RetryInvocation{
+		Reference: held.Reference, ClassReference: held.ClassReference, Operation: held.Operation,
+		ResourceToken: invocation.ResourceToken, ExactProposal: append([]byte(nil), held.ExactProposal...),
+		RequiredScopes: append([]string(nil), invocation.RequiredScopes...),
+		PreparedAt:     invocation.ResourceTokenIssuedAt, ExpiresAt: invocation.ExpiresAt,
+		CompletionUntil: invocation.CompletionUntil,
+	}, proof, authToken, authorization, held.Operation, authScopes); err != nil {
+		return nil, err
+	}
+	return authScopes, nil
+}
+
+func (server *Server) verifyHeldRetainedResourceToken(
+	ctx context.Context,
+	invocation HeldInvocation,
+) (aauth.ResourceTokenClaims, r3.Reference, bool, error) {
+	verificationClock := aauth.ClockFunc(func() time.Time { return invocation.ResourceTokenIssuedAt })
+	carriesR3, err := r3dispatch.TokenCarriesClaims(invocation.ResourceToken)
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
+			fmt.Errorf("inspect held Resource token: %w", err),
+		)
+	}
+	var (
+		claims    aauth.ResourceTokenClaims
+		reference r3.Reference
+	)
+	if carriesR3 {
+		if server.mcpR3 == nil {
+			return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
+				errors.New("held MCP R3 Resource token is not configured"),
+			)
+		}
+		claims, reference, err = r3.VerifyMCPResourceToken(
+			ctx, invocation.ResourceToken, server.keyResolver, verificationClock,
+		)
+	} else {
+		claims, err = aauth.VerifyResourceToken(
+			ctx, invocation.ResourceToken, server.keyResolver, verificationClock,
+		)
+	}
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
+			fmt.Errorf("verify held Resource token: %w", err),
+		)
+	}
+	if claims.Issuer != server.issuer || claims.Audience != server.accessServer ||
+		claims.DWK != aauth.ResourceDiscoveryDocument ||
+		claims.IssuedAt != invocation.ResourceTokenIssuedAt.Unix() ||
+		claims.ExpiresAt != invocation.ExpiresAt.Unix() ||
+		!invocation.CompletionUntil.Equal(invocation.ExpiresAt.Add(maximumDerivativeAuthTokenLifetime)) {
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedMCPR3State(
+			errors.New("held Resource token does not match its retained invocation"),
+		)
+	}
+	return claims, reference, carriesR3, nil
+}
+
+func (server *Server) validateMCPR3Scopes(scope string) ([]string, error) {
+	if scope == "" {
+		return nil, nil
+	}
+	return server.validateScopes(scope)
+}
+
 func (server *Server) executeHeldInvocation(
 	snapshot heldRequestSnapshot,
 	compact string,
 	claims aauth.AuthTokenClaims,
 	requestKey jose.JWK,
 	verifiedAt time.Time,
+	scopes []string,
 ) (result HeldResponse) {
 	defer func() {
 		if recover() != nil {
@@ -226,17 +357,15 @@ func (server *Server) executeHeldInvocation(
 	if err := server.resolvePerson(
 		executionContext,
 		PersonIdentity{Issuer: claims.PersonServer, Subject: claims.Subject},
-		PersonContext{Tenant: claims.Tenant, AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims)},
+		PersonContext{MissionS256: claims.MissionS256, Tenant: claims.Tenant, AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims)},
 	); err != nil {
-		return server.heldInternalFailure()
-	}
-	scopes, err := server.validateScopes(claims.Scope)
-	if err != nil {
 		return server.heldInternalFailure()
 	}
 	principal := AuthPrincipal{
 		PersonServer: claims.PersonServer, Subject: claims.Subject, Tenant: claims.Tenant,
-		Scope: scopes, Confirmation: requestKey, AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
+		MissionS256: claims.MissionS256, Account: cloneAuthorizationAccount(claims.Account),
+		Scope: append([]string(nil), scopes...), Confirmation: requestKey,
+		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
 	executionContext = context.WithValue(executionContext, authTokenContextKey{}, compact)
 	applicationRequest, err := snapshot.request(executionContext, principal)
@@ -246,7 +375,7 @@ func (server *Server) executeHeldInvocation(
 	if applicationRequest.Body != nil {
 		defer applicationRequest.Body.Close()
 	}
-	writer, err := newHeldResponseWriter(server.maxHeldResponseBodyBytes, server.maxHeldHeaderBytes)
+	writer, err := newHeldResponseWriter(server.maxRetainedResponseBodyBytes, server.maxRetainedHeaderBytes)
 	if err != nil {
 		return server.heldInternalFailure()
 	}
@@ -383,13 +512,13 @@ func (server *Server) validateRetainedHeldResponse(retained HeldResponse) (HeldR
 	if err := validateHeldResponseStatus(retained.StatusCode); err != nil {
 		return HeldResponse{}, err
 	}
-	if int64(len(retained.Body)) > server.maxHeldResponseBodyBytes {
-		return HeldResponse{}, fmt.Errorf("retained held response exceeds %d bytes", server.maxHeldResponseBodyBytes)
+	if int64(len(retained.Body)) > server.maxRetainedResponseBodyBytes {
+		return HeldResponse{}, fmt.Errorf("retained held response exceeds %d bytes", server.maxRetainedResponseBodyBytes)
 	}
 	if !heldResponseBodyAllowed(retained.StatusCode) && (len(retained.Body) != 0 || len(retained.Trailer) != 0) {
 		return HeldResponse{}, fmt.Errorf("retained held response status %d does not permit content or trailers", retained.StatusCode)
 	}
-	header, declaredTrailer, contentLength, err := captureHeldResponseHeader(retained.Header, server.maxHeldHeaderBytes)
+	header, declaredTrailer, contentLength, err := captureHeldResponseHeader(retained.Header, server.maxRetainedHeaderBytes)
 	if err != nil {
 		return HeldResponse{}, err
 	}
@@ -419,7 +548,7 @@ func (server *Server) validateRetainedHeldResponse(retained HeldResponse) (HeldR
 		}
 		trailer[canonical] = append([]string(nil), values...)
 	}
-	if err := validateHeldResponseHeaderLimit(header, trailer, server.maxHeldHeaderBytes); err != nil {
+	if err := validateHeldResponseHeaderLimit(header, trailer, server.maxRetainedHeaderBytes); err != nil {
 		return HeldResponse{}, err
 	}
 	validated := HeldResponse{
@@ -473,12 +602,16 @@ func (snapshot heldRequestSnapshot) heldInvocation(
 		Proto: snapshot.proto, ProtoMajor: snapshot.protoMajor, ProtoMinor: snapshot.protoMinor,
 		ResourceToken: resourceToken, ResourceTokenIssuedAt: resourceTokenIssuedAt,
 		RequiredScopes: append([]string(nil), scopes...), ExpiresAt: expiresAt,
+		CompletionUntil: expiresAt.Add(maximumDerivativeAuthTokenLifetime),
 	}
 }
 
 func heldRequestSnapshotFromInvocation(invocation HeldInvocation, maxBodyBytes, maxHeaderBytes int64) (heldRequestSnapshot, error) {
 	if invocation.ResourceToken == "" || invocation.ResourceTokenIssuedAt.IsZero() || invocation.ExpiresAt.IsZero() ||
-		!invocation.ResourceTokenIssuedAt.Before(invocation.ExpiresAt) || len(invocation.RequiredScopes) == 0 {
+		invocation.CompletionUntil.IsZero() ||
+		!invocation.ResourceTokenIssuedAt.Before(invocation.ExpiresAt) ||
+		!invocation.CompletionUntil.Equal(invocation.ExpiresAt.Add(maximumDerivativeAuthTokenLifetime)) ||
+		len(invocation.RequiredScopes) == 0 && invocation.R3PerCall == nil {
 		return heldRequestSnapshot{}, errors.New("held invocation authorization context is incomplete")
 	}
 	if int64(len(invocation.Body)) > maxBodyBytes {

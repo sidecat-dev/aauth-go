@@ -160,9 +160,9 @@ func (server *Server) serveAuthTokenProtected(
 	}
 	if server.mcpR3 != nil && carriesR3 {
 		var reference r3.Reference
-		var granted r3.GrantedOperations
-		proof, claims, reference, granted, err = server.verifyPreparedMCPR3AuthRequest(request, prepared, compact)
-		authorization = &mcpR3ProtectedAuthorization{reference: reference, granted: granted}
+		var operations r3.AuthTokenOperations
+		proof, claims, reference, operations, err = server.verifyPreparedMCPR3AuthRequest(request, prepared, compact)
+		authorization = &mcpR3ProtectedAuthorization{reference: reference, operations: operations}
 	} else {
 		proof, claims, err = server.verifyPreparedAuthRequest(request, prepared, compact)
 	}
@@ -213,7 +213,8 @@ func (server *Server) serveAuthTokenProtected(
 		}
 		return
 	}
-	if err := server.authorizeScopes(request, scopes, authorization != nil); err != nil {
+	requiredScopes, err := server.authorizeScopes(request, scopes, authorization != nil)
+	if err != nil {
 		var policyFailure *scopePolicyError
 		if errors.As(err, &policyFailure) {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -237,11 +238,25 @@ func (server *Server) serveAuthTokenProtected(
 			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP operation is not granted"))
 			return
 		}
-		if err := server.validateMCPR3ProtectedReference(*authorization, claims); err != nil {
+		referenceKind, err := server.validateMCPR3ProtectedReference(*authorization, claims)
+		if err != nil {
 			writeProblem(response, http.StatusForbidden, "access_denied", err)
 			return
 		}
-		if !authorization.granted.Contains(operation) {
+		if referenceKind == mcpR3ClassReference && authorization.operations.GrantedOperations().Contains(operation) {
+			// The AS-signed class grant is directly enforceable without a
+			// document lookup.
+		} else if referenceKind == mcpR3ClassReference && authorization.operations.PerCallOperations().Contains(operation) {
+			server.serveMCPR3PerCallChallenge(
+				response, request, proof, claims, *authorization, operation, requiredScopes,
+			)
+			return
+		} else if referenceKind == mcpR3ProposalReference {
+			server.serveMCPR3RetryCompletion(
+				response, request, proof, claims, *authorization, operation, scopes, compact,
+			)
+			return
+		} else {
 			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("MCP operation is not granted"))
 			return
 		}
@@ -548,10 +563,10 @@ func (body *recoveredApplicationBody) Close() error {
 	return body.original.Close()
 }
 
-func (server *Server) authorizeScopes(request *http.Request, granted []string, allowEmpty bool) error {
+func (server *Server) authorizeScopes(request *http.Request, granted []string, allowEmpty bool) ([]string, error) {
 	required, err := server.requiredRouteScopes(request, allowEmpty)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	grants := make(map[string]struct{}, len(granted))
 	for _, scope := range granted {
@@ -559,10 +574,10 @@ func (server *Server) authorizeScopes(request *http.Request, granted []string, a
 	}
 	for _, scope := range required {
 		if _, allowed := grants[scope]; !allowed {
-			return fmt.Errorf("aauth: protected route requires scope %q", scope)
+			return nil, fmt.Errorf("aauth: protected route requires scope %q", scope)
 		}
 	}
-	return nil
+	return required, nil
 }
 
 type scopePolicyError struct{ cause error }

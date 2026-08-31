@@ -34,16 +34,40 @@ type MCPR3Config struct {
 	// identifies a Core-only route. The supplied request is an independent
 	// policy view whose body may be read without consuming the application body.
 	OperationForRequest func(*http.Request) (tool string, ok bool, err error)
+	// PerCall enables proposal-specific authorization for operations carried in
+	// r3_per_call.
+	PerCall *MCPR3PerCallConfig
+}
+
+// MCPR3PerCallConfig supplies separate Resource-owned parameter extraction
+// and proposal-description adapters plus the focused proposal and retry
+// stores. PresentCall must depend only on the concrete request; it is reused
+// after approval and on retained-result replay. DescribeCall may consult
+// current Resource state because it runs only when creating a new proposal.
+type MCPR3PerCallConfig struct {
+	PresentCall  func(context.Context, *http.Request, r3.MCPOperation, *string) (map[string]r3.PresentedMCPParameter, error)
+	DescribeCall func(context.Context, *http.Request, r3.MCPOperation, *string) (MCPR3CallDescription, error)
+	Proposals    R3ProposalStore
+	Retries      R3RetryStore
+}
+
+// MCPR3CallDescription is the Resource's proposed representation and display
+// for one concrete call. The separate PresentCall adapter supplies the exact
+// call-time values used to verify Parameters before publication.
+type MCPR3CallDescription struct {
+	Parameters r3.MCPParameters
+	Display    *r3.ProposalDisplay
 }
 
 type mcpR3ProtectedAuthorization struct {
-	reference r3.Reference
-	granted   r3.GrantedOperations
+	reference  r3.Reference
+	operations r3.AuthTokenOperations
 }
 
 func (server *Server) issueMCPR3ResourceToken(
 	ctx context.Context,
 	claims aauth.ResourceTokenClaims,
+	person aauth.PersonTokenClaims,
 	operations r3.MCPOperationSet,
 ) (string, error) {
 	var display *r3.Display
@@ -66,7 +90,7 @@ func (server *Server) issueMCPR3ResourceToken(
 	if err != nil {
 		return "", fmt.Errorf("aauth: serialize MCP R3 document: %w", err)
 	}
-	documentURI := mcpR3DocumentURI(server.issuer, exactJSON, claims.PersonServer, claims.Audience)
+	documentURI := mcpR3DocumentURI(server.issuer, exactJSON, claims.PersonServer, claims.Audience, claims.JTI)
 	compact, reference, err := r3.MintMCPResourceToken(server.signingKey, claims, documentURI, exactJSON)
 	if err != nil {
 		return "", err
@@ -74,6 +98,13 @@ func (server *Server) issueMCPR3ResourceToken(
 	record := R3DocumentRecord{
 		Reference: reference, ExactJSON: append([]byte(nil), exactJSON...),
 		PersonServer: claims.PersonServer, AccessServer: claims.Audience,
+		ClassContext: R3ClassAuthorizationContext{
+			ExactResourceToken:   compact,
+			ResourceToken:        claims,
+			PersonTokenIssuedAt:  person.IssuedAt,
+			PersonTokenNotBefore: person.NotBefore,
+			PersonTokenExpiresAt: person.ExpiresAt,
+		},
 	}
 	if err := server.mcpR3.documents.Commit(ctx, record); err != nil {
 		return "", fmt.Errorf("aauth: retain MCP R3 document: %w", err)
@@ -95,14 +126,30 @@ func (server *Server) parseMCPR3Operations(raw json.RawMessage) (r3.MCPOperation
 	return operations, nil
 }
 
-func mcpR3DocumentURI(issuer string, exactJSON []byte, personServer, accessServer string) string {
-	return mcpR3DocumentURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer)
+func mcpR3DocumentURI(issuer string, exactJSON []byte, personServer, accessServer, resourceTokenJTI string) string {
+	return mcpR3DocumentURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer, resourceTokenJTI)
 }
 
-func mcpR3DocumentURIFromDigest(issuer, documentDigest, personServer, accessServer string) string {
+func mcpR3DocumentURIFromDigest(issuer, documentDigest, personServer, accessServer, resourceTokenJTI string) string {
 	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, accessServer})
 	entitlementDigest := sha256.Sum256(entitlementJSON)
-	return issuer + "/r3/" + documentDigest + "." + base64.RawURLEncoding.EncodeToString(entitlementDigest[:])
+	lineageDigest := sha256.Sum256([]byte("aauth-r3-lineage-v1\x00" + resourceTokenJTI))
+	return issuer + "/r3/c." + documentDigest + "." +
+		base64.RawURLEncoding.EncodeToString(entitlementDigest[:]) + "." +
+		base64.RawURLEncoding.EncodeToString(lineageDigest[:])
+}
+
+func mcpR3ProposalURI(issuer string, exactJSON []byte, personServer, accessServer, resourceTokenJTI string) string {
+	return mcpR3ProposalURIFromDigest(issuer, r3.Digest(exactJSON), personServer, accessServer, resourceTokenJTI)
+}
+
+func mcpR3ProposalURIFromDigest(issuer, proposalDigest, personServer, accessServer, resourceTokenJTI string) string {
+	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, accessServer})
+	entitlementDigest := sha256.Sum256(entitlementJSON)
+	lineageDigest := sha256.Sum256([]byte("aauth-r3-proposal-v1\x00" + resourceTokenJTI))
+	return issuer + "/r3/p." + proposalDigest + "." +
+		base64.RawURLEncoding.EncodeToString(entitlementDigest[:]) + "." +
+		base64.RawURLEncoding.EncodeToString(lineageDigest[:])
 }
 
 func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *http.Request) {
@@ -134,16 +181,72 @@ func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *
 		response.WriteHeader(http.StatusNotFound)
 		return
 	}
-	record, err := server.mcpR3.documents.Load(request.Context(), exactURI)
-	if err != nil {
-		if errors.Is(err, ErrR3DocumentNotFound) {
+	var exactJSON []byte
+	var personServer, accessServer string
+	var validateArtifact func() error
+	switch {
+	case strings.HasPrefix(documentID, "c."):
+		record, err := server.mcpR3.documents.Load(request.Context(), exactURI)
+		if err != nil {
+			if errors.Is(err, ErrR3DocumentNotFound) {
+				response.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		exactJSON, personServer, accessServer = record.ExactJSON, record.PersonServer, record.AccessServer
+		validateArtifact = func() error {
+			if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AccessServer == "" ||
+				!validR3ClassContext(record) ||
+				mcpR3DocumentURIFromDigest(
+					server.issuer, record.Reference.Digest(), record.PersonServer, record.AccessServer,
+					record.ClassContext.ResourceToken.JTI,
+				) != exactURI {
+				return errors.New("aauth: retained R3 class context is invalid")
+			}
+			document, err := r3.ParseReferencedDocument(record.Reference, record.ExactJSON)
+			if err != nil {
+				return fmt.Errorf("aauth: retained R3 class document: %w", err)
+			}
+			if err := r3.ValidateDocumentAccount(document, record.ClassContext.ResourceToken.Account); err != nil {
+				return fmt.Errorf("aauth: retained R3 class account: %w", err)
+			}
+			return nil
+		}
+	case strings.HasPrefix(documentID, "p."):
+		if server.mcpR3.perCall == nil {
 			response.WriteHeader(http.StatusNotFound)
 			return
 		}
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		record, err := server.mcpR3.perCall.proposals.Load(request.Context(), exactURI)
+		if err != nil {
+			if errors.Is(err, ErrR3ProposalNotFound) {
+				response.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		exactJSON, personServer, accessServer = record.ExactJSON, record.PersonServer, record.AccessServer
+		validateArtifact = func() error {
+			if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AccessServer == "" ||
+				record.ResourceTokenJTI == "" ||
+				mcpR3ProposalURIFromDigest(
+					server.issuer, record.Reference.Digest(), record.PersonServer, record.AccessServer, record.ResourceTokenJTI,
+				) != exactURI {
+				return errors.New("aauth: retained R3 proposal context is invalid")
+			}
+			if _, err := r3.ParseReferencedProposal(record.Reference, record.ExactJSON); err != nil {
+				return fmt.Errorf("aauth: retained R3 proposal: %w", err)
+			}
+			return nil
+		}
+	default:
+		response.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if !mcpR3DocumentEntitled(record, issuer, discoveryDocument) {
+	if !mcpR3FetchEntitled(personServer, accessServer, issuer, discoveryDocument) {
 		response.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -156,41 +259,51 @@ func (server *Server) serveMCPR3Document(response http.ResponseWriter, request *
 		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("aauth: signed R3 document request signer does not match credential issuer"))
 		return
 	}
-	if record.Reference.URI() != exactURI || record.PersonServer == "" || record.AccessServer == "" ||
-		mcpR3DocumentURIFromDigest(server.issuer, record.Reference.Digest(), record.PersonServer, record.AccessServer) != exactURI {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("aauth: retained R3 document context is invalid"))
+	if err := validateArtifact(); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if _, err := r3.ParseReferencedDocument(record.Reference, record.ExactJSON); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("aauth: retained R3 document: %w", err))
-		return
-	}
-
 	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set("Content-Length", strconv.Itoa(len(record.ExactJSON)))
+	response.Header().Set("Content-Length", strconv.Itoa(len(exactJSON)))
 	response.WriteHeader(http.StatusOK)
-	_, _ = response.Write(record.ExactJSON)
+	_, _ = response.Write(exactJSON)
 }
 
-func mcpR3DocumentEntitled(record R3DocumentRecord, issuer, discoveryDocument string) bool {
-	return issuer == record.PersonServer && discoveryDocument == aauth.PersonDiscoveryDocument ||
-		issuer == record.AccessServer && discoveryDocument == aauth.AccessDiscoveryDocument
+func validR3ClassContext(record R3DocumentRecord) bool {
+	claims := record.ClassContext.ResourceToken
+	if claims.Issuer == "" || claims.JTI == "" || claims.PersonServer != record.PersonServer ||
+		claims.Audience != record.AccessServer || claims.PresentedJTI == "" ||
+		claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt ||
+		record.ClassContext.PersonTokenIssuedAt <= 0 ||
+		record.ClassContext.PersonTokenExpiresAt <= record.ClassContext.PersonTokenIssuedAt {
+		return false
+	}
+	if record.ClassContext.PersonTokenNotBefore < 0 ||
+		record.ClassContext.PersonTokenNotBefore >= record.ClassContext.PersonTokenExpiresAt {
+		return false
+	}
+	return strings.HasPrefix(record.Reference.URI(), claims.Issuer+"/r3/")
+}
+
+func mcpR3FetchEntitled(personServer, accessServer, issuer, discoveryDocument string) bool {
+	return issuer == personServer && discoveryDocument == aauth.PersonDiscoveryDocument ||
+		issuer == accessServer && discoveryDocument == aauth.AccessDiscoveryDocument
 }
 
 func (server *Server) verifyPreparedMCPR3AuthRequest(
 	request *http.Request,
 	prepared signaturekey.PreparedRequest,
 	compact string,
-) (signaturekey.VerifiedRequest, aauth.AuthTokenClaims, r3.Reference, r3.GrantedOperations, error) {
+) (signaturekey.VerifiedRequest, aauth.AuthTokenClaims, r3.Reference, r3.AuthTokenOperations, error) {
 	verificationClock := aauth.ClockFunc(func() time.Time { return prepared.VerifiedAt() })
-	claims, reference, granted, err := r3.VerifyMCPDirectAuthToken(
+	claims, reference, operations, err := r3.VerifyMCPAuthTokenClaims(
 		request.Context(), compact, server.keyResolver, verificationClock,
 	)
 	if err != nil {
-		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, r3.Reference{}, r3.GrantedOperations{}, &requestTokenError{cause: err}
+		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, r3.Reference{}, r3.AuthTokenOperations{}, &requestTokenError{cause: err}
 	}
 	proof, err := prepared.Verify(claims.Confirmation.JWK)
-	return proof, claims, reference, granted, err
+	return proof, claims, reference, operations, err
 }
 
 func (server *Server) mcpR3OperationForRequest(request *http.Request) (r3.MCPOperation, bool, error) {
@@ -226,20 +339,43 @@ func (server *Server) mcpR3OperationForRequest(request *http.Request) (r3.MCPOpe
 	return operation, true, nil
 }
 
+type mcpR3ReferenceKind uint8
+
+const (
+	mcpR3ClassReference mcpR3ReferenceKind = iota + 1
+	mcpR3ProposalReference
+)
+
 func (server *Server) validateMCPR3ProtectedReference(
 	authorization mcpR3ProtectedAuthorization,
 	claims aauth.AuthTokenClaims,
-) error {
-	expected := mcpR3DocumentURIFromDigest(
-		server.issuer,
-		authorization.reference.Digest(),
-		claims.PersonServer,
-		claims.Issuer,
-	)
-	if authorization.reference.URI() != expected {
-		return errors.New("aauth: MCP R3 reference does not match this Resource and token entitlement")
+) (mcpR3ReferenceKind, error) {
+	for _, candidate := range []struct {
+		kind   mcpR3ReferenceKind
+		prefix string
+	}{
+		{mcpR3ClassReference, "c."},
+		{mcpR3ProposalReference, "p."},
+	} {
+		if mcpR3ReferenceMatchesResource(
+			server.issuer, authorization.reference, claims.PersonServer, claims.Issuer, candidate.prefix,
+		) {
+			return candidate.kind, nil
+		}
 	}
-	return nil
+	return 0, errors.New("aauth: MCP R3 reference does not match this Resource and token entitlement")
+}
+
+func mcpR3ReferenceMatchesResource(issuer string, reference r3.Reference, personServer, accessServer, kindPrefix string) bool {
+	entitlementJSON, _ := json.Marshal([]string{"aauth-r3-entitlement-v1", personServer, accessServer})
+	entitlementDigest := sha256.Sum256(entitlementJSON)
+	prefix := issuer + "/r3/" + kindPrefix + reference.Digest() + "." + base64.RawURLEncoding.EncodeToString(entitlementDigest[:]) + "."
+	if !strings.HasPrefix(reference.URI(), prefix) {
+		return false
+	}
+	lineage := strings.TrimPrefix(reference.URI(), prefix)
+	decoded, err := base64.RawURLEncoding.DecodeString(lineage)
+	return err == nil && len(decoded) == sha256.Size && base64.RawURLEncoding.EncodeToString(decoded) == lineage
 }
 
 type mcpR3Config struct {
@@ -248,6 +384,14 @@ type mcpR3Config struct {
 	documents            R3DocumentStore
 	displayForOperations func(context.Context, r3.MCPOperationSet, *string) (*r3.Display, error)
 	operationForRequest  func(*http.Request) (string, bool, error)
+	perCall              *mcpR3PerCallConfig
+}
+
+type mcpR3PerCallConfig struct {
+	presentCall  func(context.Context, *http.Request, r3.MCPOperation, *string) (map[string]r3.PresentedMCPParameter, error)
+	describeCall func(context.Context, *http.Request, r3.MCPOperation, *string) (MCPR3CallDescription, error)
+	proposals    R3ProposalStore
+	retries      R3RetryStore
 }
 
 func validateMCPR3Config(config *MCPR3Config) (*mcpR3Config, error) {
@@ -274,11 +418,33 @@ func validateMCPR3Config(config *MCPR3Config) (*mcpR3Config, error) {
 	if _, err := r3.NewMCPOperationSet(operations...); err != nil {
 		return nil, fmt.Errorf("aauth: Resource authoritative MCP tools: %w", err)
 	}
+	var perCall *mcpR3PerCallConfig
+	if config.PerCall != nil {
+		if config.PerCall.PresentCall == nil {
+			return nil, errors.New("aauth: Resource MCP R3 per-call parameter adapter is required")
+		}
+		if config.PerCall.DescribeCall == nil {
+			return nil, errors.New("aauth: Resource MCP R3 per-call description adapter is required")
+		}
+		if config.PerCall.Proposals == nil {
+			return nil, errors.New("aauth: Resource MCP R3 proposal store is required")
+		}
+		if config.PerCall.Retries == nil {
+			return nil, errors.New("aauth: Resource MCP R3 retry store is required")
+		}
+		perCall = &mcpR3PerCallConfig{
+			presentCall:  config.PerCall.PresentCall,
+			describeCall: config.PerCall.DescribeCall,
+			proposals:    config.PerCall.Proposals,
+			retries:      config.PerCall.Retries,
+		}
+	}
 	return &mcpR3Config{
 		discoveryEndpoint:    config.DiscoveryEndpoint,
 		knownTools:           append([]string(nil), config.KnownTools...),
 		documents:            config.Documents,
 		displayForOperations: config.DisplayForOperations,
 		operationForRequest:  config.OperationForRequest,
+		perCall:              perCall,
 	}, nil
 }

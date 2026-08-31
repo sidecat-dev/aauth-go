@@ -507,7 +507,10 @@ func (server *Server) preparePersonToken(
 		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
 		AgentProvider: credentialAgent.Issuer, Agent: credentialAgent.Subject,
 		ParentAgent: credentialAgent.ParentAgent, Confirmation: credentialAgent.Confirmation.JWK,
-		ExpiresAt: canonicalExpiry, RetainUntil: canonicalExpiry.Add(server.maximumResourceTokenLifetime),
+		ExpiresAt: canonicalExpiry,
+		RetainUntil: canonicalExpiry.Add(
+			server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime,
+		),
 	}
 	upstream.bindRecord(&record)
 	return compact, record, nil

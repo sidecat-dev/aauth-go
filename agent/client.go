@@ -1,5 +1,5 @@
 // Package agent implements explicit calls for the bounded AAuth Core paths and
-// the immediate direct-grant MCP R3 path. It also composes two-key Agent
+// the immediate and per-call MCP R3 paths. It also composes two-key Agent
 // enrollment and refresh, direct identity access, Resource-managed sessions,
 // one immediate mission journey, parent-mediated sub-agents, one Resource call
 // chain, and one-shot polling of supported interactions and held invocations.

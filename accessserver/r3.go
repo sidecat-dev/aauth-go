@@ -15,8 +15,9 @@ import (
 	"aauth-go/signaturekey"
 )
 
-// MCPR3Config enables the immediate direct-grant MCP profile. It does not
-// implement r3_per_call.
+// MCPR3Config enables MCP class-document and per-call proposal authorization.
+// Each artifact is fetched once, classified from its exact contents, and sent
+// only to the policy callback for that artifact kind.
 type MCPR3Config struct {
 	// HTTPClient is required. The fetcher clones it, disables cookies, refuses
 	// redirects, and leaves the caller's client unchanged.
@@ -27,27 +28,60 @@ type MCPR3Config struct {
 	FetchTimeout time.Duration
 	// MaximumDocumentBytes defaults to 1 MiB when zero.
 	MaximumDocumentBytes int64
+	// AuthorizeProposal receives verified Core context plus one exact per-call
+	// proposal. A proposal is refused when this callback is nil; class-document
+	// authorization continues to use Config.Authorize.
+	AuthorizeProposal func(
+		context.Context,
+		AuthorizationRequest,
+		r3.Reference,
+		r3.MCPProposal,
+	) (MCPR3ProposalDecision, error)
 	// Issuances is required and atomically retains the token and audit record.
 	Issuances R3IssuanceStore
 }
 
-// MCPR3Authorization is the exact verified Resource definition presented to
-// the existing host authorization policy.
+// MCPR3Authorization is the exact verified class document presented to the
+// existing host authorization policy.
 type MCPR3Authorization struct {
 	Reference r3.Reference
 	Document  r3.Document
 }
 
+// MCPR3ProposalDecision is the Core scope and lifetime decision for one exact
+// per-call proposal. The proposal itself determines the sole R3 operation;
+// policy cannot substitute another operation or carry r3_per_call forward.
+type MCPR3ProposalDecision struct {
+	Scopes   []string
+	Lifetime time.Duration
+}
+
 type mcpR3Config struct {
-	documents *r3fetch.Client
+	documents         *r3fetch.Client
+	authorizeProposal func(
+		context.Context,
+		AuthorizationRequest,
+		r3.Reference,
+		r3.MCPProposal,
+	) (MCPR3ProposalDecision, error)
 	issuances R3IssuanceStore
 }
 
 type verifiedMCPR3 struct {
 	reference r3.Reference
 	document  r3.Document
+	proposal  r3.MCPProposal
 	exact     []byte
+	kind      mcpR3ArtifactKind
 }
+
+type mcpR3ArtifactKind uint8
+
+const (
+	mcpR3ArtifactInvalid mcpR3ArtifactKind = iota
+	mcpR3ArtifactDocument
+	mcpR3ArtifactProposal
+)
 
 type invalidMCPR3DocumentError struct{ cause error }
 
@@ -81,7 +115,10 @@ func newMCPR3Config(
 	if err != nil {
 		return nil, fmt.Errorf("accessserver: MCP R3: %w", err)
 	}
-	return &mcpR3Config{documents: documents, issuances: config.Issuances}, nil
+	return &mcpR3Config{
+		documents: documents, authorizeProposal: config.AuthorizeProposal,
+		issuances: config.Issuances,
+	}, nil
 }
 
 func (server *Server) verifyResourceTokenForAuthorization(
@@ -107,7 +144,7 @@ func (server *Server) verifyResourceTokenForAuthorization(
 	return claims, &verifiedMCPR3{reference: reference}, nil
 }
 
-func (server *Server) fetchMCPR3Document(
+func (server *Server) fetchMCPR3Artifact(
 	ctx context.Context,
 	verified *verifiedMCPR3,
 	account *string,
@@ -115,19 +152,32 @@ func (server *Server) fetchMCPR3Document(
 	if verified == nil || server.mcpR3 == nil {
 		return errors.New("accessserver: MCP R3 context is incomplete")
 	}
-	document, exact, err := server.mcpR3.documents.Fetch(ctx, verified.reference)
+	artifact, err := server.mcpR3.documents.FetchArtifact(ctx, verified.reference)
 	if err != nil {
 		if r3fetch.IsDocumentError(err) {
 			return &invalidMCPR3DocumentError{cause: err}
 		}
 		return err
 	}
-	if err := r3.ValidateDocumentAccount(document, account); err != nil {
-		return &invalidMCPR3DocumentError{cause: fmt.Errorf("accessserver: MCP R3 account: %w", err)}
+	if document, ok := artifact.Document(); ok {
+		if err := r3.ValidateDocumentAccount(document, account); err != nil {
+			return &invalidMCPR3DocumentError{cause: fmt.Errorf("accessserver: MCP R3 account: %w", err)}
+		}
+		verified.document = document
+		verified.exact = artifact.ExactBytes()
+		verified.kind = mcpR3ArtifactDocument
+		return nil
 	}
-	verified.document = document
-	verified.exact = exact
-	return nil
+	if proposal, ok := artifact.Proposal(); ok {
+		if err := r3.ValidateProposalAccount(proposal, account); err != nil {
+			return &invalidMCPR3DocumentError{cause: fmt.Errorf("accessserver: MCP R3 proposal account: %w", err)}
+		}
+		verified.proposal = proposal
+		verified.exact = artifact.ExactBytes()
+		verified.kind = mcpR3ArtifactProposal
+		return nil
+	}
+	return &invalidMCPR3DocumentError{cause: errors.New("accessserver: MCP R3 artifact is unclassified")}
 }
 
 func (server *Server) commitMCPR3Issuance(
@@ -146,7 +196,8 @@ func (server *Server) commitMCPR3Issuance(
 		ExactAuthToken:     compact, Resource: claims.Audience, R3Reference: verified.reference,
 		IssuedAt: time.Unix(claims.IssuedAt, 0).UTC(), PersonServer: claims.PersonServer,
 		Subject: claims.Subject, Account: cloneStringPointer(claims.Account),
-		AgentJKT: resource.AgentJKT, Agent: agent, ParentAgent: parentAgent,
+		PresentedJTI: resource.PresentedJTI, AgentJKT: resource.AgentJKT,
+		Agent: agent, ParentAgent: parentAgent,
 	}
 	return server.mcpR3.issuances.Commit(ctx, record)
 }

@@ -46,13 +46,57 @@ type Client struct {
 	timeout              time.Duration
 }
 
+type artifactKind uint8
+
+const (
+	artifactInvalid artifactKind = iota
+	artifactDocument
+	artifactProposal
+)
+
+// Artifact is one exact fetched R3 class document or per-call proposal. Its
+// accessors are mutually exclusive; callers cannot construct or retag it.
+type Artifact struct {
+	kind     artifactKind
+	document r3.Document
+	proposal r3.MCPProposal
+	exact    []byte
+}
+
+// Document returns the strict class document when this artifact contains one.
+func (artifact Artifact) Document() (r3.Document, bool) {
+	if artifact.kind != artifactDocument {
+		return r3.Document{}, false
+	}
+	return artifact.document, true
+}
+
+// Proposal returns the strict per-call proposal when this artifact contains
+// one.
+func (artifact Artifact) Proposal() (r3.MCPProposal, bool) {
+	if artifact.kind != artifactProposal {
+		return r3.MCPProposal{}, false
+	}
+	return artifact.proposal, true
+}
+
+// ExactBytes returns an owned copy of the bytes bound to the artifact's
+// reference digest.
+func (artifact Artifact) ExactBytes() []byte {
+	if artifact.kind != artifactDocument && artifact.kind != artifactProposal {
+		return nil
+	}
+	return append([]byte(nil), artifact.exact...)
+}
+
 type documentError struct{ cause error }
 
 func (failure *documentError) Error() string { return failure.cause.Error() }
 func (failure *documentError) Unwrap() error { return failure.cause }
 
-// IsDocumentError reports a fetched response that cannot be the exact document
-// named by the verified token, as distinct from local egress/transport failure.
+// IsDocumentError reports a fetched response that cannot be the exact class
+// document or per-call proposal named by the verified token, as distinct from
+// local egress or transport failure.
 func IsDocumentError(err error) bool {
 	var failure *documentError
 	return errors.As(err, &failure)
@@ -108,75 +152,132 @@ func New(config Config) (*Client, error) {
 	}, nil
 }
 
-// Fetch retrieves, hashes, and strictly parses the exact referenced document.
+// Fetch retrieves and strictly parses an exact referenced class document.
+// It is the concise spelling retained for existing class-document callers.
 func (client *Client) Fetch(ctx context.Context, reference r3.Reference) (r3.Document, []byte, error) {
-	if client == nil {
-		return r3.Document{}, nil, errors.New("r3fetch: client is required")
-	}
-	if ctx == nil {
-		return r3.Document{}, nil, errors.New("r3fetch: context is required")
-	}
-	validated, err := r3.NewReference(reference.URI(), reference.Digest())
-	if err != nil || validated != reference {
-		return r3.Document{}, nil, invalidDocument(errors.New("r3fetch: reference is invalid"))
-	}
-	fetchContext, cancel := context.WithTimeout(ctx, client.timeout)
-	defer cancel()
-	if err := client.admit(fetchContext, reference.URI()); err != nil {
-		return r3.Document{}, nil, fmt.Errorf("r3fetch: document egress: %w", err)
-	}
-	request, err := http.NewRequestWithContext(fetchContext, http.MethodGet, reference.URI(), nil)
+	return client.FetchDocument(ctx, reference)
+}
+
+// FetchDocument retrieves and strictly parses an exact referenced class
+// document.
+func (client *Client) FetchDocument(ctx context.Context, reference r3.Reference) (r3.Document, []byte, error) {
+	exact, err := client.fetchExact(ctx, reference)
 	if err != nil {
-		return r3.Document{}, nil, fmt.Errorf("r3fetch: request: %w", err)
-	}
-	request.Header.Set("Accept-Encoding", "identity")
-	request.Header.Set("Accept", "application/json")
-	if err := signaturekey.SignJWKSURIRequest(
-		request, client.signingKey, client.issuer, client.discoveryDocument, client.clock,
-	); err != nil {
-		return r3.Document{}, nil, fmt.Errorf("r3fetch: sign request: %w", err)
-	}
-	response, err := client.httpClient.Do(request)
-	if err != nil {
-		return r3.Document{}, nil, fmt.Errorf("r3fetch: request document: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, client.maximumDocumentBytes))
-		if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusBadRequest ||
-			response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
-			return r3.Document{}, nil, invalidDocument(fmt.Errorf("r3fetch: document response status is %d", response.StatusCode))
-		}
-		return r3.Document{}, nil, fmt.Errorf("r3fetch: Resource document service returned status %d", response.StatusCode)
-	}
-	contentTypes := response.Header.Values("Content-Type")
-	if len(contentTypes) != 1 {
-		return r3.Document{}, nil, invalidDocument(errors.New("r3fetch: document response requires exactly one Content-Type"))
-	}
-	mediaType, _, err := mime.ParseMediaType(contentTypes[0])
-	if err != nil || !strings.EqualFold(mediaType, "application/json") {
-		return r3.Document{}, nil, invalidDocument(errors.New("r3fetch: document response Content-Type is not application/json"))
-	}
-	contentEncodings := response.Header.Values("Content-Encoding")
-	if len(contentEncodings) > 1 {
-		return r3.Document{}, nil, invalidDocument(errors.New("r3fetch: document response has ambiguous Content-Encoding"))
-	}
-	if len(contentEncodings) == 1 {
-		encoding := strings.TrimSpace(contentEncodings[0])
-		if encoding != "" && !strings.EqualFold(encoding, "identity") {
-			return r3.Document{}, nil, invalidDocument(fmt.Errorf("r3fetch: document response content encoding %q is not identity", encoding))
-		}
-	}
-	exact, err := io.ReadAll(io.LimitReader(response.Body, client.maximumDocumentBytes+1))
-	if err != nil {
-		return r3.Document{}, nil, fmt.Errorf("r3fetch: read document: %w", err)
-	}
-	if int64(len(exact)) > client.maximumDocumentBytes {
-		return r3.Document{}, nil, invalidDocument(errors.New("r3fetch: document exceeds the configured byte limit"))
+		return r3.Document{}, nil, err
 	}
 	document, err := r3.ParseReferencedDocument(reference, exact)
 	if err != nil {
 		return r3.Document{}, nil, invalidDocument(fmt.Errorf("r3fetch: verify document: %w", err))
 	}
 	return document, exact, nil
+}
+
+// FetchProposal retrieves and strictly parses an exact referenced per-call
+// proposal.
+func (client *Client) FetchProposal(ctx context.Context, reference r3.Reference) (r3.MCPProposal, []byte, error) {
+	exact, err := client.fetchExact(ctx, reference)
+	if err != nil {
+		return r3.MCPProposal{}, nil, err
+	}
+	proposal, err := r3.ParseReferencedProposal(reference, exact)
+	if err != nil {
+		return r3.MCPProposal{}, nil, invalidDocument(fmt.Errorf("r3fetch: verify proposal: %w", err))
+	}
+	return proposal, exact, nil
+}
+
+// FetchArtifact retrieves the reference once and classifies the exact bytes as
+// one strict class document or one strict per-call proposal. Classification is
+// based only on the artifact shape, never on its URI.
+func (client *Client) FetchArtifact(ctx context.Context, reference r3.Reference) (Artifact, error) {
+	exact, err := client.fetchExact(ctx, reference)
+	if err != nil {
+		return Artifact{}, err
+	}
+	document, documentErr := r3.ParseReferencedDocument(reference, exact)
+	proposal, proposalErr := r3.ParseReferencedProposal(reference, exact)
+	switch {
+	case documentErr == nil && proposalErr != nil:
+		return Artifact{kind: artifactDocument, document: document, exact: append([]byte(nil), exact...)}, nil
+	case proposalErr == nil && documentErr != nil:
+		return Artifact{kind: artifactProposal, proposal: proposal, exact: append([]byte(nil), exact...)}, nil
+	case documentErr == nil && proposalErr == nil:
+		return Artifact{}, invalidDocument(errors.New("r3fetch: fetched artifact matches both a class document and a per-call proposal"))
+	default:
+		return Artifact{}, invalidDocument(fmt.Errorf(
+			"r3fetch: fetched artifact is neither a class document nor a per-call proposal: document: %v; proposal: %v",
+			documentErr, proposalErr,
+		))
+	}
+}
+
+// fetchExact performs the one common signed, bounded transport operation. The
+// caller then binds these exact bytes to the requested class-document or
+// proposal parser.
+func (client *Client) fetchExact(ctx context.Context, reference r3.Reference) ([]byte, error) {
+	if client == nil {
+		return nil, errors.New("r3fetch: client is required")
+	}
+	if ctx == nil {
+		return nil, errors.New("r3fetch: context is required")
+	}
+	validated, err := r3.NewReference(reference.URI(), reference.Digest())
+	if err != nil || validated != reference {
+		return nil, invalidDocument(errors.New("r3fetch: reference is invalid"))
+	}
+	fetchContext, cancel := context.WithTimeout(ctx, client.timeout)
+	defer cancel()
+	if err := client.admit(fetchContext, reference.URI()); err != nil {
+		return nil, fmt.Errorf("r3fetch: document egress: %w", err)
+	}
+	request, err := http.NewRequestWithContext(fetchContext, http.MethodGet, reference.URI(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("r3fetch: request: %w", err)
+	}
+	request.Header.Set("Accept-Encoding", "identity")
+	request.Header.Set("Accept", "application/json")
+	if err := signaturekey.SignJWKSURIRequest(
+		request, client.signingKey, client.issuer, client.discoveryDocument, client.clock,
+	); err != nil {
+		return nil, fmt.Errorf("r3fetch: sign request: %w", err)
+	}
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("r3fetch: request document: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, client.maximumDocumentBytes))
+		if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusBadRequest ||
+			response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
+			return nil, invalidDocument(fmt.Errorf("r3fetch: document response status is %d", response.StatusCode))
+		}
+		return nil, fmt.Errorf("r3fetch: Resource document service returned status %d", response.StatusCode)
+	}
+	contentTypes := response.Header.Values("Content-Type")
+	if len(contentTypes) != 1 {
+		return nil, invalidDocument(errors.New("r3fetch: document response requires exactly one Content-Type"))
+	}
+	mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return nil, invalidDocument(errors.New("r3fetch: document response Content-Type is not application/json"))
+	}
+	contentEncodings := response.Header.Values("Content-Encoding")
+	if len(contentEncodings) > 1 {
+		return nil, invalidDocument(errors.New("r3fetch: document response has ambiguous Content-Encoding"))
+	}
+	if len(contentEncodings) == 1 {
+		encoding := strings.TrimSpace(contentEncodings[0])
+		if encoding != "" && !strings.EqualFold(encoding, "identity") {
+			return nil, invalidDocument(fmt.Errorf("r3fetch: document response content encoding %q is not identity", encoding))
+		}
+	}
+	exact, err := io.ReadAll(io.LimitReader(response.Body, client.maximumDocumentBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("r3fetch: read document: %w", err)
+	}
+	if int64(len(exact)) > client.maximumDocumentBytes {
+		return nil, invalidDocument(errors.New("r3fetch: document exceeds the configured byte limit"))
+	}
+	return exact, nil
 }

@@ -68,13 +68,15 @@ func TestFederatedMCPR3FetchesBeforeConsentAndVerifiesAccessServerResult(t *test
 	}
 	grantedOperations, _ := r3.NewGrantedOperations(read)
 	grant, _ := r3.NewGrant(grantedOperations, document)
-	authToken, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	perCallOperations, _ := r3.NewGrantedOperations(export)
+	classAuthorization, _ := r3.NewAuthorization(grantedOperations, perCallOperations, document)
+	authToken, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-token-1",
 		PersonServer: "https://person.example", Subject: "person-123", Scope: "records.read",
 		Account: &account, Tenant: "tenant-1", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix(),
-	}, reference, exactDocument, grant)
+	}, reference, exactDocument, classAuthorization)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,11 +26,15 @@ import (
 // extra Resource configuration: only its signed digest is copied into the
 // Resource token and later principal context.
 type FederatedAuthorizationConfig struct {
-	Issuer                        string
-	AccessServer                  string
-	SigningKey                    jose.SigningKey
-	KeyResolver                   signaturekey.KeyResolver
-	Clock                         aauth.Clock
+	Issuer       string
+	AccessServer string
+	SigningKey   jose.SigningKey
+	// KeyResolver must retain the Resource's own historical verification keys
+	// for the lifetime of every MCP R3 class authorization.
+	KeyResolver signaturekey.KeyResolver
+	Clock       aauth.Clock
+	// NewID must be concurrency-safe and return a nonempty identifier that is
+	// never reused while any token derived from it can remain valid.
 	NewID                         func() string
 	ScopeDescriptions             map[string]string
 	AdditionalSignatureComponents []string
@@ -51,14 +55,14 @@ type FederatedAuthorizationConfig struct {
 	// request. A nil function selects held delivery for every request when
 	// HeldInvocations is configured.
 	HoldAuthTokenRequest func(*http.Request) bool
-	// MaxHeldRequestBodyBytes bounds the retained application request body.
-	MaxHeldRequestBodyBytes int64
-	// MaxHeldResponseBodyBytes bounds the retained application response body.
-	MaxHeldResponseBodyBytes int64
-	// MaxHeldHeaderBytes bounds retained request headers and response headers
-	// plus trailers. All three held limits must be positive when
-	// HeldInvocations is configured and zero otherwise.
-	MaxHeldHeaderBytes int64
+	// MaxRetainedRequestBodyBytes bounds the retained application request body.
+	MaxRetainedRequestBodyBytes int64
+	// MaxRetainedResponseBodyBytes bounds the retained application response body.
+	MaxRetainedResponseBodyBytes int64
+	// MaxRetainedHeaderBytes bounds retained request headers and response headers
+	// plus trailers. All three retained-application limits must be positive when
+	// held delivery or MCP R3 per-call retry is configured, and zero otherwise.
+	MaxRetainedHeaderBytes int64
 }
 
 // PSAuthorizationConfig supplies a PS-authorization Resource's identity,
@@ -241,9 +245,9 @@ type Server struct {
 	authTokenStatuses             AuthTokenStatusStore
 	heldInvocations               HeldInvocationStore
 	holdAuthTokenRequest          func(*http.Request) bool
-	maxHeldRequestBodyBytes       int64
-	maxHeldResponseBodyBytes      int64
-	maxHeldHeaderBytes            int64
+	maxRetainedRequestBodyBytes   int64
+	maxRetainedResponseBodyBytes  int64
+	maxRetainedHeaderBytes        int64
 	mcpR3                         *mcpR3Config
 	handler                       http.Handler
 }
@@ -386,23 +390,31 @@ func newAuthorizationServer(
 	if config.HoldAuthTokenRequest != nil && config.HeldInvocations == nil {
 		return nil, errors.New("aauth: resource held-request selector requires held invocations")
 	}
+	mcpR3, err := validateMCPR3Config(config.MCPR3)
+	if err != nil {
+		return nil, err
+	}
+	if mcpR3 != nil && topology != authorizationTopologyFederated {
+		return nil, errors.New("aauth: MCP R3 requires federated authorization")
+	}
+	retainsApplication := config.HeldInvocations != nil || mcpR3 != nil && mcpR3.perCall != nil
 	for _, bound := range []struct {
 		name  string
 		limit int64
 	}{
-		{name: "held request body", limit: config.MaxHeldRequestBodyBytes},
-		{name: "held response body", limit: config.MaxHeldResponseBodyBytes},
-		{name: "held header", limit: config.MaxHeldHeaderBytes},
+		{name: "retained request body", limit: config.MaxRetainedRequestBodyBytes},
+		{name: "retained response body", limit: config.MaxRetainedResponseBodyBytes},
+		{name: "retained header", limit: config.MaxRetainedHeaderBytes},
 	} {
 		name, limit := bound.name, bound.limit
 		if limit < 0 {
 			return nil, fmt.Errorf("aauth: resource maximum %s size must not be negative", name)
 		}
-		if config.HeldInvocations != nil && limit == 0 {
-			return nil, fmt.Errorf("aauth: resource maximum %s size is required with held invocations", name)
+		if retainsApplication && limit == 0 {
+			return nil, fmt.Errorf("aauth: resource maximum %s size is required with retained application state", name)
 		}
-		if config.HeldInvocations == nil && limit != 0 {
-			return nil, fmt.Errorf("aauth: resource maximum %s size requires held invocations", name)
+		if !retainsApplication && limit != 0 {
+			return nil, fmt.Errorf("aauth: resource maximum %s size requires retained application state", name)
 		}
 	}
 	scopeDescriptions := make(map[string]string, len(config.ScopeDescriptions))
@@ -422,14 +434,6 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
-	mcpR3, err := validateMCPR3Config(config.MCPR3)
-	if err != nil {
-		return nil, err
-	}
-	if mcpR3 != nil && topology != authorizationTopologyFederated {
-		return nil, errors.New("aauth: MCP R3 requires federated authorization")
-	}
-
 	server := &Server{
 		issuer:                        config.Issuer,
 		accessMode:                    aauth.AccessModeAuthToken,
@@ -449,9 +453,9 @@ func newAuthorizationServer(
 		authTokenStatuses:             authTokenStatuses,
 		heldInvocations:               config.HeldInvocations,
 		holdAuthTokenRequest:          config.HoldAuthTokenRequest,
-		maxHeldRequestBodyBytes:       config.MaxHeldRequestBodyBytes,
-		maxHeldResponseBodyBytes:      config.MaxHeldResponseBodyBytes,
-		maxHeldHeaderBytes:            config.MaxHeldHeaderBytes,
+		maxRetainedRequestBodyBytes:   config.MaxRetainedRequestBodyBytes,
+		maxRetainedResponseBodyBytes:  config.MaxRetainedResponseBodyBytes,
+		maxRetainedHeaderBytes:        config.MaxRetainedHeaderBytes,
 		mcpR3:                         mcpR3,
 	}
 	server.handler = server.newHandler()

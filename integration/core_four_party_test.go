@@ -396,10 +396,10 @@ func TestCurrentCoreFourParty(t *testing.T) {
 				response.WriteHeader(http.StatusCreated)
 				_, _ = io.WriteString(response, `{"held":true}`)
 			}),
-			HeldInvocations:          heldStore,
-			MaxHeldRequestBodyBytes:  64 << 10,
-			MaxHeldResponseBodyBytes: 64 << 10,
-			MaxHeldHeaderBytes:       16 << 10,
+			HeldInvocations:              heldStore,
+			MaxRetainedRequestBodyBytes:  64 << 10,
+			MaxRetainedResponseBodyBytes: 64 << 10,
+			MaxRetainedHeaderBytes:       16 << 10,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -1070,7 +1070,7 @@ func (store *memoryHeldInvocationStore) Claim(_ context.Context, id string, toke
 	store.claims++
 	switch store.state {
 	case "pending":
-		if !token.PresentedAt.Before(store.invocation.ExpiresAt) {
+		if !token.PresentedAt.Before(store.invocation.CompletionUntil) {
 			store.state = "expired"
 			return resource.HeldClaim{}, resource.ErrHeldInvocationExpired
 		}
@@ -1116,6 +1116,11 @@ func cloneHeldInvocation(invocation resource.HeldInvocation) resource.HeldInvoca
 	invocation.Header = invocation.Header.Clone()
 	invocation.Body = append([]byte(nil), invocation.Body...)
 	invocation.RequiredScopes = append([]string(nil), invocation.RequiredScopes...)
+	if invocation.R3PerCall != nil {
+		cloned := *invocation.R3PerCall
+		cloned.ExactProposal = append([]byte(nil), invocation.R3PerCall.ExactProposal...)
+		invocation.R3PerCall = &cloned
+	}
 	return invocation
 }
 

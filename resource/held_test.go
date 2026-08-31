@@ -83,10 +83,10 @@ func TestHeldAuthTokenInvocationCompletesOnceAndReplays(t *testing.T) {
 			response.WriteHeader(http.StatusCreated)
 			_, _ = response.Write([]byte(`{"record":"a/b","created":true}`))
 		}),
-		HeldInvocations:          store,
-		MaxHeldRequestBodyBytes:  64 << 10,
-		MaxHeldResponseBodyBytes: 64 << 10,
-		MaxHeldHeaderBytes:       16 << 10,
+		HeldInvocations:              store,
+		MaxRetainedRequestBodyBytes:  64 << 10,
+		MaxRetainedResponseBodyBytes: 64 << 10,
+		MaxRetainedHeaderBytes:       16 << 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +134,7 @@ func TestHeldAuthTokenInvocationCompletesOnceAndReplays(t *testing.T) {
 	held := store.loaded(t)
 	if held.ResourceToken != requirement.ResourceToken || !reflect.DeepEqual(held.RequiredScopes, []string{"records.read"}) ||
 		!held.ResourceTokenIssuedAt.Equal(now) || !held.ExpiresAt.Equal(now.Add(5*time.Minute)) ||
+		!held.CompletionUntil.Equal(now.Add(5*time.Minute+aauth.MaximumAuthTokenLifetime)) ||
 		held.Header.Get("X-Route-Proof") != "route-42" || held.Header.Get("Signature-Key") != "" {
 		t.Fatalf("held invocation = %#v", held)
 	}
@@ -196,6 +197,56 @@ func TestHeldAuthTokenInvocationCompletesOnceAndReplays(t *testing.T) {
 	}
 }
 
+func TestExecuteHeldInvocationPreservesMissionContext(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 14, 0, 0, 0, time.UTC)
+	mission := strings.Repeat("A", 43)
+	account := "work-account"
+	agentKey := testSigningKey(t, "held-mission-agent", 86)
+	var resolved PersonContext
+	var principal AuthPrincipal
+	config := validConfigWithKey(testSigningKey(t, "held-mission-resource", 87), http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var ok bool
+		principal, ok = AuthPrincipalFromContext(request.Context())
+		if !ok {
+			t.Fatal("held application received no Auth principal")
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	config.ResolvePerson = func(_ context.Context, identity PersonIdentity, context PersonContext) error {
+		if identity != (PersonIdentity{Issuer: personIssuer, Subject: "person-1"}) {
+			return errors.New("unexpected person")
+		}
+		resolved = context
+		return nil
+	}
+	config.HeldInvocations = newHeldMemoryStore()
+	config.MaxRetainedRequestBodyBytes = 1024
+	config.MaxRetainedResponseBodyBytes = 1024
+	config.MaxRetainedHeaderBytes = 1024
+	server, err := NewFederatedAuthorization(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, resourceIssuer+"/records", strings.NewReader(`{"id":7}`))
+	snapshot, err := snapshotHeldRequest(request, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := server.executeHeldInvocation(snapshot, "exact-auth-token", aauth.AuthTokenClaims{
+		PersonServer: personIssuer, Subject: "person-1", MissionS256: mission,
+		Tenant: "tenant-1", Account: &account, ExpiresAt: now.Add(time.Minute).Unix(),
+	}, agentKey.PublicJWK(), now, []string{"records.read"})
+	if result.StatusCode != http.StatusNoContent {
+		t.Fatalf("held mission execution = %#v", result)
+	}
+	if resolved.MissionS256 != mission || principal.MissionS256 != mission ||
+		principal.Account == nil || *principal.Account != account {
+		t.Fatalf("held mission context = resolved %#v principal %#v", resolved, principal)
+	}
+}
+
 func assertHeldApplicationResponse(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
 	if response.Code != http.StatusCreated || response.Header().Get("X-Application-Result") != "created" ||
@@ -231,6 +282,35 @@ func TestHeldAuthTokenCreateFailureWithholdsPendingResponse(t *testing.T) {
 	}
 	if fixture.protected != 0 || fixture.resolved != 0 || store.state != "" {
 		t.Fatalf("failed create consequences: protected=%d resolved=%d state=%q", fixture.protected, fixture.resolved, store.state)
+	}
+}
+
+func TestHeldAuthTokenMalformedPollTokenUsesCredentialRefusal(t *testing.T) {
+	t.Parallel()
+
+	store := newHeldMemoryStore()
+	fixture := newHeldFailureFixture(t, store)
+	pending := fixture.begin(t)
+	poll := signedRequest(
+		t, fixture.clock, fixture.agentKey, "not-a-compact-token",
+		http.MethodGet, pending.Header().Get("Location"), "",
+	)
+	response := httptest.NewRecorder()
+	fixture.server.Handler().ServeHTTP(response, poll)
+	var problem struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode malformed-token problem: %v; body=%s", err, response.Body.String())
+	}
+	if response.Code != http.StatusUnauthorized || problem.Error != "invalid_token" {
+		t.Fatalf("malformed-token refusal = %d error=%q body=%s", response.Code, problem.Error, response.Body.String())
+	}
+	if store.claims != 0 || fixture.resolved != 0 || fixture.protected != 0 {
+		t.Fatalf(
+			"malformed token crossed execution boundary: claims=%d resolved=%d protected=%d",
+			store.claims, fixture.resolved, fixture.protected,
+		)
 	}
 }
 
@@ -347,6 +427,16 @@ func TestHeldAuthTokenRejectsCorruptLoadedInvocationBeforeClaim(t *testing.T) {
 		change func(*HeldInvocation)
 	}{
 		{name: "missing resource token", change: func(invocation *HeldInvocation) { invocation.ResourceToken = "" }},
+		{name: "corrupt resource token signature", change: func(invocation *HeldInvocation) {
+			replacement := "A"
+			if strings.HasSuffix(invocation.ResourceToken, replacement) {
+				replacement = "B"
+			}
+			invocation.ResourceToken = invocation.ResourceToken[:len(invocation.ResourceToken)-1] + replacement
+		}},
+		{name: "invented R3 marker", change: func(invocation *HeldInvocation) {
+			invocation.R3PerCall = &HeldR3PerCall{}
+		}},
 		{name: "stale proof header", change: func(invocation *HeldInvocation) { invocation.Header.Set("Signature", "stale") }},
 		{name: "invalid request target", change: func(invocation *HeldInvocation) { invocation.EscapedPath = "relative" }},
 		{name: "missing route scopes", change: func(invocation *HeldInvocation) { invocation.RequiredScopes = nil }},
@@ -644,7 +734,7 @@ func TestHeldAuthTokenReplayOutlivesResourceToken(t *testing.T) {
 	}
 }
 
-func TestHeldAuthTokenPendingInvocationExpiresBeforeFirstExecution(t *testing.T) {
+func TestHeldAuthTokenIssuedBeforeResourceExpiryCanFirstExecuteLater(t *testing.T) {
 	t.Parallel()
 
 	store := newHeldMemoryStore()
@@ -653,11 +743,31 @@ func TestHeldAuthTokenPendingInvocationExpiresBeforeFirstExecution(t *testing.T)
 	authToken := fixture.authToken(t)
 	fixture.now = fixture.now.Add(6 * time.Minute)
 	response := fixture.poll(t, pending.Header().Get("Location"), authToken)
-	if response.Code != http.StatusRequestTimeout {
-		t.Fatalf("expired pending invocation = %d, want 408; body=%q", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || response.Body.String() != "application result" {
+		t.Fatalf("late first completion = %d, body=%q", response.Code, response.Body.String())
 	}
-	if fixture.protected != 0 || fixture.resolved != 0 || store.retains != 0 {
-		t.Fatalf("expired pending invocation executed: protected=%d resolved=%d retains=%d", fixture.protected, fixture.resolved, store.retains)
+	if fixture.protected != 1 || fixture.resolved != 1 || store.retains != 1 {
+		t.Fatalf("late first completion = protected=%d resolved=%d retains=%d", fixture.protected, fixture.resolved, store.retains)
+	}
+}
+
+func TestHeldAuthTokenIssuedAfterResourceExpiryIsRefusedBeforeClaim(t *testing.T) {
+	t.Parallel()
+
+	store := newHeldMemoryStore()
+	fixture := newHeldFailureFixture(t, store)
+	pending := fixture.begin(t)
+	fixture.now = fixture.now.Add(6 * time.Minute)
+	authToken := fixture.authToken(t)
+	response := fixture.poll(t, pending.Header().Get("Location"), authToken)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("late-issued Auth token = %d, want 403; body=%q", response.Code, response.Body.String())
+	}
+	if store.claims != 0 || fixture.protected != 0 || fixture.resolved != 0 || store.retains != 0 {
+		t.Fatalf(
+			"late-issued Auth token crossed Claim: claims=%d protected=%d resolved=%d retains=%d",
+			store.claims, fixture.protected, fixture.resolved, store.retains,
+		)
 	}
 }
 
@@ -818,7 +928,7 @@ func newHeldFailureFixtureWithSelector(
 			_, _ = response.Write([]byte("application result"))
 		}),
 		HoldAuthTokenRequest: selector,
-		HeldInvocations:      store, MaxHeldRequestBodyBytes: 1024, MaxHeldResponseBodyBytes: 1024, MaxHeldHeaderBytes: 1024,
+		HeldInvocations:      store, MaxRetainedRequestBodyBytes: 1024, MaxRetainedResponseBodyBytes: 1024, MaxRetainedHeaderBytes: 1024,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -862,6 +972,8 @@ type heldMemoryStore struct {
 	claims               int
 	retains              int
 	beforeCreate         func()
+	beforeClaim          func()
+	rejectCanceledClaim  bool
 	beforeRetain         func()
 	pendingID            string
 	createErr            error
@@ -907,9 +1019,17 @@ func (store *heldMemoryStore) Load(_ context.Context, id string) (HeldInvocation
 	return result, nil
 }
 
-func (store *heldMemoryStore) Claim(_ context.Context, id string, token HeldAuthToken) (HeldClaim, error) {
+func (store *heldMemoryStore) Claim(ctx context.Context, id string, token HeldAuthToken) (HeldClaim, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if store.beforeClaim != nil {
+		beforeClaim := store.beforeClaim
+		store.beforeClaim = nil
+		beforeClaim()
+	}
+	if store.rejectCanceledClaim && ctx.Err() != nil {
+		return HeldClaim{}, ctx.Err()
+	}
 	store.claims++
 	if id != store.pendingID || store.state == "" {
 		return HeldClaim{}, ErrHeldInvocationNotFound
@@ -932,7 +1052,7 @@ func (store *heldMemoryStore) Claim(_ context.Context, id string, token HeldAuth
 	if store.state != "pending" {
 		return HeldClaim{}, ErrHeldExecutionUnresolved
 	}
-	if !token.PresentedAt.Before(store.invocation.ExpiresAt) {
+	if !token.PresentedAt.Before(store.invocation.CompletionUntil) {
 		store.state = "expired"
 		return HeldClaim{}, ErrHeldInvocationExpired
 	}
@@ -978,6 +1098,11 @@ func cloneHeldInvocationForTest(invocation HeldInvocation) HeldInvocation {
 	invocation.Header = invocation.Header.Clone()
 	invocation.Body = append([]byte(nil), invocation.Body...)
 	invocation.RequiredScopes = append([]string(nil), invocation.RequiredScopes...)
+	if invocation.R3PerCall != nil {
+		cloned := *invocation.R3PerCall
+		cloned.ExactProposal = append([]byte(nil), invocation.R3PerCall.ExactProposal...)
+		invocation.R3PerCall = &cloned
+	}
 	return invocation
 }
 

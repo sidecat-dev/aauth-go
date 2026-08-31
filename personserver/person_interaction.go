@@ -443,7 +443,10 @@ func (server *Server) ApprovePersonTokenInteraction(ctx context.Context, interac
 		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
 		AgentProvider: interaction.agentProvider, Agent: interaction.agent,
 		ParentAgent: interaction.parentAgent, Confirmation: interaction.confirmation,
-		ExpiresAt: canonicalExpiry, RetainUntil: canonicalExpiry.Add(server.maximumResourceTokenLifetime),
+		ExpiresAt: canonicalExpiry,
+		RetainUntil: canonicalExpiry.Add(
+			server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime,
+		),
 	}
 	return server.deferredTokens.ApprovePendingPersonToken(ctx, interaction.id, PersonTokenApproval{
 		Person: person, Token: compact, Record: record,

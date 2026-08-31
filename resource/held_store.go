@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"aauth-go/r3"
 )
 
 // ErrHeldInvocationNotFound reports that no held invocation has the supplied
@@ -35,10 +37,13 @@ var ErrHeldCompletionStale = errors.New("resource: held completion fence is stal
 // context that a Resource retains while returning a pending response.
 //
 // ResourceTokenIssuedAt anchors signature and claim verification after the
-// short resource token expires. ExpiresAt is the pending execution deadline;
-// a completed response can remain replayable after it. Header, Body, and
-// RequiredScopes are mutable Go values. Store implementations must copy them
-// at the Create and Load boundaries described by HeldInvocationStore.
+// short Resource token expires. ExpiresAt is that token's expiry;
+// CompletionUntil is the latest first-presentation horizon for an Auth token
+// issued before ExpiresAt. A completed response remains replayable afterward.
+// Header, Body, and
+// RequiredScopes and R3PerCall are mutable Go values. Store implementations
+// must copy them at the Create and Load boundaries described by
+// HeldInvocationStore.
 type HeldInvocation struct {
 	Method                string
 	Scheme                string
@@ -61,6 +66,19 @@ type HeldInvocation struct {
 	ResourceTokenIssuedAt time.Time
 	RequiredScopes        []string
 	ExpiresAt             time.Time
+	CompletionUntil       time.Time
+	R3PerCall             *HeldR3PerCall
+}
+
+// HeldR3PerCall binds a pending invocation to the exact per-call proposal
+// created before the Resource exposed its 202 response. The proposal and
+// class references identify immutable retained records; Operation is the
+// single operation the eventual Auth token must grant.
+type HeldR3PerCall struct {
+	Reference      r3.Reference
+	ClassReference r3.Reference
+	Operation      r3.MCPOperation
+	ExactProposal  []byte
 }
 
 // HeldRequestBodyKind preserves the handler-visible representation of an
@@ -182,7 +200,8 @@ type HeldInvocationStore interface {
 	// the exact auth-token digest. That transition returns an execution claim.
 	// PresentedAt is the verified poll-proof time. Claim must return
 	// ErrHeldInvocationExpired instead of an execution claim when PresentedAt
-	// is not before the pending invocation's ExpiresAt. Completed invocations
+	// is not before the pending invocation's CompletionUntil. The Resource has
+	// already verified that the Auth token was issued before ExpiresAt. Completed invocations
 	// remain replayable after that pending deadline.
 	// A missing invocation returns ErrHeldInvocationNotFound, an expired pending
 	// invocation returns ErrHeldInvocationExpired, and an invocation already

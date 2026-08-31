@@ -171,11 +171,15 @@ func TestMCPR3DirectFourPartyJourney(t *testing.T) {
 			if err != nil {
 				return accessserver.Decision{}, err
 			}
-			grant, err := r3.NewGrant(granted, request.MCPR3.Document)
+			emptyPerCall, err := r3.NewGrantedOperations()
 			if err != nil {
 				return accessserver.Decision{}, err
 			}
-			return accessserver.Decision{Scopes: append([]string(nil), request.Scopes...), Lifetime: 30 * time.Minute, MCPR3Grant: &grant}, nil
+			authorization, err := r3.NewAuthorization(granted, emptyPerCall, request.MCPR3.Document)
+			if err != nil {
+				return accessserver.Decision{}, err
+			}
+			return accessserver.Decision{Scopes: append([]string(nil), request.Scopes...), Lifetime: 30 * time.Minute, MCPR3Authorization: &authorization}, nil
 		},
 		MCPR3: &accessserver.MCPR3Config{
 			HTTPClient: httpClient,

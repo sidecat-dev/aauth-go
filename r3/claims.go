@@ -244,6 +244,67 @@ type Grant struct {
 	proven  bool
 }
 
+// Authorization is a class-document authorization split into disjoint direct
+// and per-call operation sets, both proven not to exceed the document.
+type Authorization struct {
+	granted GrantedOperations
+	perCall GrantedOperations
+	proven  bool
+}
+
+// AuthTokenOperations is the validated operation-claim shape from a signed R3
+// Auth token. It does not classify the referenced artifact as a class document
+// or a per-call proposal; callers must establish that from retained context.
+type AuthTokenOperations struct {
+	granted        GrantedOperations
+	perCall        GrantedOperations
+	perCallPresent bool
+}
+
+// GrantedOperations returns the signed r3_granted claim.
+func (o AuthTokenOperations) GrantedOperations() GrantedOperations { return o.granted.clone() }
+
+// PerCallOperations returns the signed r3_per_call claim, or an empty set when
+// that optional claim was absent.
+func (o AuthTokenOperations) PerCallOperations() GrantedOperations { return o.perCall.clone() }
+
+// PerCallClaimPresent reports whether the signed token contained the optional
+// r3_per_call claim, including an explicitly empty operation set.
+func (o AuthTokenOperations) PerCallClaimPresent() bool { return o.perCallPresent }
+
+// NewAuthorization proves the direct and per-call sets against one class
+// document. An operation cannot occur in both sets because direct enforcement
+// would otherwise silently bypass the requested per-call decision.
+func NewAuthorization(granted, perCall GrantedOperations, document Document) (Authorization, error) {
+	if err := granted.validate(); err != nil {
+		return Authorization{}, fmt.Errorf("r3: invalid direct authorization: %w", err)
+	}
+	if err := perCall.validate(); err != nil {
+		return Authorization{}, fmt.Errorf("r3: invalid per-call authorization: %w", err)
+	}
+	if err := document.operationSet.validate(); err != nil {
+		return Authorization{}, fmt.Errorf("r3: invalid authorization document: %w", err)
+	}
+	if !granted.isSubsetOf(document.operationSet) {
+		return Authorization{}, fmt.Errorf("r3: direct authorization exceeds document operation set")
+	}
+	if !perCall.isSubsetOf(document.operationSet) {
+		return Authorization{}, fmt.Errorf("r3: per-call authorization exceeds document operation set")
+	}
+	for _, operation := range granted.operations {
+		if perCall.Contains(operation) {
+			return Authorization{}, fmt.Errorf("r3: MCP tool %q occurs in both direct and per-call authorization", operation.tool)
+		}
+	}
+	return Authorization{granted: granted.clone(), perCall: perCall.clone(), proven: true}, nil
+}
+
+// GrantedOperations returns the proven direct-operation claim.
+func (a Authorization) GrantedOperations() GrantedOperations { return a.granted.clone() }
+
+// PerCallOperations returns the proven per-call-operation claim.
+func (a Authorization) PerCallOperations() GrantedOperations { return a.perCall.clone() }
+
 // NewGrant constructs a direct grant after proving it does not exceed the
 // document's exact operation set.
 func NewGrant(granted GrantedOperations, document Document) (Grant, error) {

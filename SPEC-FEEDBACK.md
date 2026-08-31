@@ -29,7 +29,7 @@ were read; it is not an implementation or conformance claim.
 | --- | --- | --- |
 | AAuth Core | implementation-reviewed for current paths | Submitted history and executable current questions appear below; unimplemented Core areas remain evidence-pending |
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
-| R3 | implementation-reviewed for the immediate four-party MCP direct-grant path | Executing Agent, Resource, PS, and AS evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F069`, and `AAG-F076`; example vectors, per-call behavior, annotations, and other vocabularies remain evidence-pending |
+| R3 | implementation-reviewed for immediate four-party MCP direct-grant and per-call paths | Executing Agent, Resource, PS, and AS evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, and `AAG-F076`; example vectors, annotations, other vocabularies, and independent interop remain evidence-pending |
 | Events | source-synchronized and architecture-mapped | No implementation-backed question yet |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key profile | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh path |
 | Budgets | source-synchronized through the current `a99d353` revision and architecture-mapped | No implementation-backed question yet |
@@ -86,9 +86,9 @@ below where evidence is ready.
 | AAG-F011 | Closed issues 88 and 89 are not reflected in the person-token endpoint text | ready below |
 | AAG-F012 | A lost initial deferred `202` has no stable recovery identity | evidence pending |
 | AAG-F013 | Restored deferred state can lose the verified request authority | held-store boundary implemented; generic deferred rule remains open |
-| AAG-F014 | R3 protected challenges do not define who selects the exact operation | exact-request Resource mapping and direct-grant enforcement implemented; per-call pending |
+| AAG-F014 | R3 protected challenges do not define who selects the exact operation | exact-request Resource mapping covers direct and per-call enforcement |
 | AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | exact-request document construction and independent AS fetch/policy evidence implemented |
-| AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | evidence pending until per-call implementation |
+| AAG-F015 | Per-call auth tokens do not identify the resource-token record that supplies `presented_jti` | implementation bridge evidenced: exact class/proposal token lineage at the Resource plus bounded original Person-token retention at the PS; editor clarification remains useful |
 | AAG-F016 | The mandatory signature set does not bind the query | ready below |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | exact-delivery interpretation recorded; evidence pending until Events implementation |

@@ -115,12 +115,14 @@ person-accepted completion through both three-party and four-party
 authorization. Deferred mission actions and mission combinations with
 delegation, call chaining, held delivery, or revocation remain open.
 
-R3 now has one complete immediate four-party MCP direct-grant path, including
-independent PS/AS document fetches and atomic AS issuance audit. R3 per-call,
-the other vocabularies, and access annotations remain open. Bootstrap has one
-explicit executing profile; Events and Budgets remain design inputs. HTTP
-Signature Keys is implemented only to the extent required by current role
-paths.
+R3 now has bounded immediate four-party MCP paths for both direct grants and
+per-call proposals. The per-call path supports baseline `401` retry and
+Resource-held `202`, independent PS/AS proposal fetch, one-operation Auth
+tokens, single execution, and exact-token result replay. The other R3
+vocabularies, access annotations, durable store adapters, and independent
+implementation interoperability remain open. Bootstrap has one explicit
+executing profile; Events and Budgets remain design inputs. HTTP Signature
+Keys is implemented only to the extent required by current role paths.
 
 The repository does not provide durable stores, key custody, TLS listeners,
 deployment infrastructure, or automatic retry policy. Applications must

@@ -18,7 +18,7 @@ import (
 	"aauth-go/signaturekey"
 )
 
-func TestClientMCPR3AuthorizesAndExchangesScopelessDirectGrant(t *testing.T) {
+func TestClientMCPR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 31, 11, 0, 0, 0, time.UTC)
@@ -56,7 +56,8 @@ func TestClientMCPR3AuthorizesAndExchangesScopelessDirectGrant(t *testing.T) {
 	agentJKT, _ := agentKey.PublicJWK().Thumbprint()
 	account := "work-account"
 	read, _ := r3.NewMCPOperation("records.read")
-	operations, _ := r3.NewMCPOperationSet(read)
+	export, _ := r3.NewMCPOperation("records.export")
+	operations, _ := r3.NewMCPOperationSet(read, export)
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{Account: &account})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference("https://resource.example/r3/document", r3.Digest(exactDocument))
@@ -71,14 +72,15 @@ func TestClientMCPR3AuthorizesAndExchangesScopelessDirectGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	granted, _ := r3.NewGrantedOperations(read)
-	grant, _ := r3.NewGrant(granted, document)
-	authToken, err := r3.MintMCPDirectAuthToken(accessKey, aauth.AuthTokenClaims{
+	perCall, _ := r3.NewGrantedOperations(export)
+	authorization, _ := r3.NewAuthorization(granted, perCall, document)
+	authToken, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-token-1",
 		PersonServer: "https://person.example", Subject: "person-123", Account: &account,
 		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
 		IssuedAt:     now.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix(),
-	}, reference, exactDocument, grant)
+	}, reference, exactDocument, authorization)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,9 +150,11 @@ func TestClientMCPR3AuthorizesAndExchangesScopelessDirectGrant(t *testing.T) {
 	if gotAuthToken != authToken {
 		t.Fatalf("auth token changed")
 	}
-	claims, gotReference, gotGranted, err := r3.VerifyMCPDirectAuthToken(context.Background(), gotAuthToken, resolver, clock)
-	if err != nil || claims.Scope != "" || gotReference != reference || !reflect.DeepEqual(gotGranted.Operations(), granted.Operations()) {
-		t.Fatalf("verified auth = %#v %#v %#v, %v", claims, gotReference, gotGranted, err)
+	claims, gotReference, gotAuthorization, err := r3.VerifyMCPAuthTokenClaims(context.Background(), gotAuthToken, resolver, clock)
+	if err != nil || claims.Scope != "" || gotReference != reference ||
+		!reflect.DeepEqual(gotAuthorization.GrantedOperations().Operations(), granted.Operations()) ||
+		!reflect.DeepEqual(gotAuthorization.PerCallOperations().Operations(), perCall.Operations()) {
+		t.Fatalf("verified auth = %#v %#v %#v, %v", claims, gotReference, gotAuthorization, err)
 	}
 }
 

@@ -1,5 +1,5 @@
 // Package accessserver implements the Access Server role for immediate
-// four-party AAuth Core and direct MCP R3 authorization.
+// four-party AAuth Core and MCP R3 class and per-call authorization.
 package accessserver
 
 import (
@@ -28,8 +28,8 @@ const maxRequestBytes = 1 << 20
 var ErrAccessDenied = errors.New("accessserver: access denied")
 
 // Config supplies the protocol and deployment choices owned by an Access
-// Server. MCPR3 explicitly enables the immediate direct-grant MCP companion;
-// deferred and per-call authorization are not implemented here.
+// Server. MCPR3 explicitly enables MCP class-document and per-call proposal
+// authorization.
 type Config struct {
 	Issuer            string
 	SigningKey        jose.SigningKey
@@ -66,19 +66,21 @@ type AuthorizationRequest struct {
 	// Subagent is present only for a parent-mediated request. Agent remains
 	// the top-level parent whose grant the policy evaluates.
 	Subagent *Agent
-	// MCPR3 is present only after exact document fetch, hash verification, and
-	// account validation for the configured direct MCP profile.
+	// MCPR3 is present only for a class document after exact fetch, hash
+	// verification, and account validation. Proposal policy receives its typed
+	// proposal separately through MCPR3Config.AuthorizeProposal.
 	MCPR3 *MCPR3Authorization
 }
 
-// Decision is the requested Core-scope subset, optional direct MCP grant, and
-// lifetime granted by policy.
+// Decision is the requested Core-scope subset, optional MCP class
+// authorization, and lifetime granted by policy.
 type Decision struct {
 	Scopes   []string
 	Lifetime time.Duration
-	// MCPR3Grant is required exactly when the policy request carries MCPR3.
-	// Construct it with r3.NewGrant against that request's Document.
-	MCPR3Grant *r3.Grant
+	// MCPR3Authorization is required exactly when the policy request carries
+	// MCPR3. Construct it with r3.NewAuthorization against that request's
+	// Document. Its direct and per-call sets must be disjoint.
+	MCPR3Authorization *r3.Authorization
 }
 
 // Server is an immediate AAuth Access Server.
@@ -271,7 +273,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	if mcpR3 != nil {
-		if err := server.fetchMCPR3Document(request.Context(), mcpR3, resourceClaims.Account); err != nil {
+		if err := server.fetchMCPR3Artifact(request.Context(), mcpR3, resourceClaims.Account); err != nil {
 			if isInvalidMCPR3Document(err) {
 				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 			} else {
@@ -279,9 +281,26 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 			return
 		}
-		policyRequest.MCPR3 = &MCPR3Authorization{Reference: mcpR3.reference, Document: mcpR3.document}
+		if mcpR3.kind == mcpR3ArtifactDocument {
+			policyRequest.MCPR3 = &MCPR3Authorization{Reference: mcpR3.reference, Document: mcpR3.document}
+		}
 	}
-	decision, err := server.authorize(request.Context(), policyRequest)
+	var decision Decision
+	if mcpR3 != nil && mcpR3.kind == mcpR3ArtifactProposal {
+		if server.mcpR3.authorizeProposal == nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: MCP R3 proposal authorization policy is required"))
+			return
+		}
+		proposalDecision, proposalErr := server.mcpR3.authorizeProposal(
+			request.Context(), policyRequest, mcpR3.reference, mcpR3.proposal,
+		)
+		decision = Decision{
+			Scopes: append([]string(nil), proposalDecision.Scopes...), Lifetime: proposalDecision.Lifetime,
+		}
+		err = proposalErr
+	} else {
+		decision, err = server.authorize(request.Context(), policyRequest)
+	}
 	if err != nil {
 		writeAccessPolicyProblem(response, err)
 		return
@@ -290,20 +309,24 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	var mcpGrant *r3.Grant
-	if mcpR3 != nil {
-		if decision.MCPR3Grant == nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: MCP R3 policy returned no direct grant"))
+	var mcpAuthorization *r3.Authorization
+	if mcpR3 != nil && mcpR3.kind == mcpR3ArtifactDocument {
+		if decision.MCPR3Authorization == nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: MCP R3 policy returned no class authorization"))
 			return
 		}
-		proven, err := r3.NewGrant(decision.MCPR3Grant.GrantedOperations(), mcpR3.document)
+		proven, err := r3.NewAuthorization(
+			decision.MCPR3Authorization.GrantedOperations(),
+			decision.MCPR3Authorization.PerCallOperations(),
+			mcpR3.document,
+		)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		mcpGrant = &proven
-	} else if decision.MCPR3Grant != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: Core policy returned an MCP R3 grant"))
+		mcpAuthorization = &proven
+	} else if decision.MCPR3Authorization != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: Core policy returned an MCP R3 authorization"))
 		return
 	}
 	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
@@ -331,9 +354,18 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	var authToken string
 	if mcpR3 != nil {
-		authToken, err = r3.MintMCPDirectAuthToken(
-			server.signingKey, claims, mcpR3.reference, mcpR3.exact, *mcpGrant,
-		)
+		switch mcpR3.kind {
+		case mcpR3ArtifactDocument:
+			authToken, err = r3.MintMCPAuthToken(
+				server.signingKey, claims, mcpR3.reference, mcpR3.exact, *mcpAuthorization,
+			)
+		case mcpR3ArtifactProposal:
+			authToken, err = r3.MintMCPPerCallAuthToken(
+				server.signingKey, claims, mcpR3.reference, mcpR3.exact,
+			)
+		default:
+			err = errors.New("accessserver: MCP R3 artifact is unclassified")
+		}
 	} else {
 		authToken, err = aauth.MintAuthToken(server.signingKey, claims)
 	}

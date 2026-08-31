@@ -337,15 +337,19 @@ Access mode is selected by the matched endpoint or R3 operation, not fixed for
 the entire server. Core scope, R3 operations, and Budget constraints are
 evaluated independently; none is projected into another.
 
-The current immediate MCP R3 path supplies an authoritative tool snapshot, a
-request-to-tool mapper, and an `R3DocumentStore`. Authorization serializes one
-exact-request document, derives an immutable URI bound to its bytes and
-entitled PS/AS pair, and commits the record before exposing the Resource token.
-The signed fetch endpoint serves those exact bytes only to the two entitled
-roles. Protected use verifies the configured AS signature, ordinary scope,
-URI entitlement, and direct MCP grant; as the R3 enforcement algorithm
-specifies, it does not fetch the document. Per-call proposals, annotations,
-and the other R3 vocabularies remain later work.
+The current immediate MCP R3 paths supply an authoritative tool snapshot, a
+request-to-tool mapper, and focused document, proposal, retry, and held stores.
+Authorization commits the exact class document before exposing its Resource
+token. Direct protected use verifies the AS-signed class grant without an
+enforcement-time fetch. For a per-call operation, the Resource constructs and
+retains one exact proposal, exposes it to the entitled PS and AS, and returns
+either a baseline `401` retry or Resource-held `202`. The resulting
+one-operation Auth token can claim one execution; later presentation of the
+same exact compact token returns the retained result. Proposal fetch custody
+expires separately from execution custody. An Auth token must be issued while
+the proposal Resource token is valid, but may first complete later within the
+bounded Core Auth-token lifetime. Annotations and the other R3 vocabularies
+remain later work.
 
 ### `accessserver`
 
@@ -384,6 +388,11 @@ boundary. It copies values across the interface, converges concurrent exact
 commits, refuses same-URI replacement, keeps committed records loadable across
 server recomposition, and exposes them only through the signed Resource
 handler. It is not a general authorization or evidence store.
+
+`R3ProposalStore` is create-only by full per-invocation URI and retains exact
+bytes only through the PS/AS fetch horizon. `R3RetryStore` and
+`HeldInvocationStore` separately own single-use execution, fencing, uncertain
+retention, and exact-token replay. None is a universal lifecycle store.
 
 `R3IssuanceStore` is another focused boundary. One commit retains the exact
 compact Auth token and its mandatory audit facts. Exact repeats converge and a

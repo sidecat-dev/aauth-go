@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -201,7 +202,10 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			if record.Reference != reference || record.PersonServer != personIssuer || record.AccessServer != accessIssuer || r3.Digest(record.ExactJSON) != reference.Digest() {
+			if record.Reference != reference || record.PersonServer != personIssuer || record.AccessServer != accessIssuer ||
+				record.ClassContext.ResourceToken.JTI != claims.JTI ||
+				record.ClassContext.ResourceToken.PresentedJTI != claims.PresentedJTI ||
+				r3.Digest(record.ExactJSON) != reference.Digest() {
 				t.Fatalf("retained R3 record = %#v", record)
 			}
 			document, err := r3.ParseReferencedDocument(reference, record.ExactJSON)
@@ -222,6 +226,91 @@ func TestMCPDirectAuthorizationRetainsExactRequestedDocumentBeforeToken(t *testi
 				t.Fatalf("document display = %#v, %t", gotDisplay, ok)
 			}
 		})
+	}
+}
+
+func TestMCPClassReferencesSeparateIdenticalDocumentsByPersonTokenLineage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 1, 15, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	resourceKey := testSigningKey(t, "resource-key", 131)
+	personKey := testSigningKey(t, "person-key", 132)
+	agentKey := testSigningKey(t, "agent-key", 133)
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: personIssuer, DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personKey.ID()}:       personKey.PublicJWK(),
+		{Issuer: resourceIssuer, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+	}
+	store := &r3TestDocumentStore{}
+	ids := []string{"class-resource-token-1", "class-resource-token-2"}
+	config := validConfigWithKey(resourceKey, http.NotFoundHandler())
+	config.Clock = clock
+	config.KeyResolver = resolver
+	config.NewID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	config.MCPR3 = &MCPR3Config{
+		DiscoveryEndpoint: "https://resource.example/mcp",
+		KnownTools:        []string{"records.read"},
+		Documents:         store,
+		OperationForRequest: func(*http.Request) (string, bool, error) {
+			return "records.read", true, nil
+		},
+	}
+	server, err := NewFederatedAuthorization(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"r3_operations":{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}}`
+
+	type issued struct {
+		compact   string
+		claims    aauth.ResourceTokenClaims
+		reference r3.Reference
+	}
+	issue := func(personJTI string) issued {
+		personToken := mintPersonToken(t, personKey, agentKey.PublicJWK(), now, resourceIssuer, personJTI)
+		request := signedRequest(t, clock, agentKey, personToken, http.MethodPost, resourceIssuer+"/authorize", body)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("authorize %s = %d %s", personJTI, response.Code, response.Body.String())
+		}
+		var output struct {
+			ResourceToken string `json:"resource_token"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &output); err != nil {
+			t.Fatal(err)
+		}
+		claims, reference, err := r3.VerifyMCPResourceToken(context.Background(), output.ResourceToken, resolver, clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return issued{compact: output.ResourceToken, claims: claims, reference: reference}
+	}
+
+	first := issue("person-token-1")
+	second := issue("person-token-2")
+	if first.reference.URI() == second.reference.URI() {
+		t.Fatalf("distinct Person-token lineages shared class URI %q", first.reference.URI())
+	}
+	if first.reference.Digest() != second.reference.Digest() {
+		t.Fatalf("identical class bytes have digests %q and %q", first.reference.Digest(), second.reference.Digest())
+	}
+	if store.count() != 2 {
+		t.Fatalf("retained class records = %d", store.count())
+	}
+	for _, want := range []issued{first, second} {
+		record, err := store.Load(context.Background(), want.reference.URI())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.ClassContext.ResourceToken.JTI != want.claims.JTI ||
+			record.ClassContext.ResourceToken.PresentedJTI != want.claims.PresentedJTI {
+			t.Fatalf("record %s retained wrong lineage: %#v", want.reference.URI(), record.ClassContext)
+		}
 	}
 }
 
@@ -339,7 +428,7 @@ func TestMCPDirectAuthorizationWithholdsTokenAndRecoversUncertainDocumentCommit(
 		}
 	})
 
-	t.Run("commit then error recovers on exact retry", func(t *testing.T) {
+	t.Run("commit then error leaves a private orphan and a later request gets new lineage", func(t *testing.T) {
 		inner := &r3TestDocumentStore{}
 		store := &failingR3DocumentStore{inner: inner, failAfterFirstCommit: true}
 		ids := []string{"resource-token-1", "resource-token-2"}
@@ -353,7 +442,7 @@ func TestMCPDirectAuthorizationWithholdsTokenAndRecoversUncertainDocumentCommit(
 			t.Fatalf("first uncertain response = %d %s, records=%d", first.Code, first.Body.String(), inner.count())
 		}
 		second := call(server)
-		if second.Code != http.StatusOK || inner.count() != 1 {
+		if second.Code != http.StatusOK || inner.count() != 2 {
 			t.Fatalf("retry = %d %s, records=%d", second.Code, second.Body.String(), inner.count())
 		}
 		var output struct {
@@ -587,13 +676,14 @@ func TestMCPDirectDocumentFetchDistinguishesCollocatedServerRoles(t *testing.T) 
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, collocatedIssuer, collocatedIssuer),
+		mcpR3DocumentURI(resourceIssuer, exactDocument, collocatedIssuer, collocatedIssuer, "collocated-resource-token"),
 		r3.Digest(exactDocument),
 	)
 	store := &r3TestDocumentStore{}
 	if err := store.Commit(context.Background(), R3DocumentRecord{
 		Reference: reference, ExactJSON: exactDocument,
 		PersonServer: collocatedIssuer, AccessServer: collocatedIssuer,
+		ClassContext: r3TestClassContext(resourceIssuer, collocatedIssuer, collocatedIssuer, "collocated-resource-token", "person-token"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +735,7 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 	document, _ := r3.NewDocument(documentOperations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer),
+		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
 
@@ -685,7 +775,7 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 	accountDocument, _ := r3.NewDocument(documentOperations, r3.DocumentOptions{Account: &account})
 	accountDocumentBytes, _ := json.Marshal(accountDocument)
 	accountReference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, accountDocumentBytes, personIssuer, accessIssuer),
+		mcpR3DocumentURI(resourceIssuer, accountDocumentBytes, personIssuer, accessIssuer, "account-resource-token"),
 		r3.Digest(accountDocumentBytes),
 	)
 	accountGranted, _ := r3.NewGrantedOperations(read)
@@ -701,7 +791,7 @@ func TestMCPDirectProtectedCallRequiresIndependentScopeAndGrantedTool(t *testing
 		t.Fatal(err)
 	}
 	wrongEntitlementReference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, "https://other-access.example"),
+		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, "https://other-access.example", "other-access-resource-token"),
 		r3.Digest(exactDocument),
 	)
 	readGranted, _ := r3.NewGrantedOperations(read)
@@ -790,7 +880,7 @@ func TestMCPDirectConfigurationPreservesCoreOnlyRoutes(t *testing.T) {
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer),
+		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
 	granted, _ := r3.NewGrantedOperations(read)
@@ -899,7 +989,7 @@ func TestMCPDirectRoutePoliciesPreserveTheApplicationBody(t *testing.T) {
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer),
+		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
 	granted, _ := r3.NewGrantedOperations(read)
@@ -969,12 +1059,13 @@ func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *test
 	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
 	exactDocument, _ := json.Marshal(document)
 	reference, _ := r3.NewReference(
-		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer),
+		mcpR3DocumentURI(resourceIssuer, exactDocument, personIssuer, accessIssuer, "class-resource-token"),
 		r3.Digest(exactDocument),
 	)
 	record := R3DocumentRecord{
 		Reference: reference, ExactJSON: exactDocument,
 		PersonServer: personIssuer, AccessServer: accessIssuer,
+		ClassContext: r3TestClassContext(resourceIssuer, personIssuer, accessIssuer, "class-resource-token", "person-token"),
 	}
 	store := &r3TestDocumentStore{}
 	input := cloneR3TestRecord(record)
@@ -1006,11 +1097,17 @@ func TestR3DocumentStoreContractIsExactIdempotentConflictSafeAndCopySafe(t *test
 
 	differentReference, _ := r3.NewReference(reference.URI(), r3.Digest([]byte(`{"vocabulary":"different","operations":[]}`)))
 	conflicts := []R3DocumentRecord{
-		{Reference: reference, ExactJSON: append(append([]byte(nil), exactDocument...), ' '), PersonServer: personIssuer, AccessServer: accessIssuer},
-		{Reference: differentReference, ExactJSON: exactDocument, PersonServer: personIssuer, AccessServer: accessIssuer},
-		{Reference: reference, ExactJSON: exactDocument, PersonServer: "https://other-person.example", AccessServer: accessIssuer},
-		{Reference: reference, ExactJSON: exactDocument, PersonServer: personIssuer, AccessServer: "https://other-access.example"},
+		{Reference: reference, ExactJSON: append(append([]byte(nil), exactDocument...), ' '), PersonServer: personIssuer, AccessServer: accessIssuer, ClassContext: record.ClassContext},
+		{Reference: differentReference, ExactJSON: exactDocument, PersonServer: personIssuer, AccessServer: accessIssuer, ClassContext: record.ClassContext},
+		{Reference: reference, ExactJSON: exactDocument, PersonServer: "https://other-person.example", AccessServer: accessIssuer, ClassContext: record.ClassContext},
+		{Reference: reference, ExactJSON: exactDocument, PersonServer: personIssuer, AccessServer: "https://other-access.example", ClassContext: record.ClassContext},
 	}
+	changedJTI := cloneR3TestRecord(record)
+	changedJTI.ClassContext.ResourceToken.JTI = "different-resource-token"
+	conflicts = append(conflicts, changedJTI)
+	changedPresented := cloneR3TestRecord(record)
+	changedPresented.ClassContext.ResourceToken.PresentedJTI = "different-person-token"
+	conflicts = append(conflicts, changedPresented)
 	for index, conflicting := range conflicts {
 		if err := store.Commit(context.Background(), conflicting); !errors.Is(err, ErrR3DocumentConflict) {
 			t.Fatalf("conflict %d = %v", index, err)
@@ -1200,6 +1297,8 @@ func (store *r3TestDocumentStore) mutate(uri string, change func(*R3DocumentReco
 
 func cloneR3TestRecord(record R3DocumentRecord) R3DocumentRecord {
 	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.ClassContext.ResourceToken.Account = cloneAuthorizationAccount(record.ClassContext.ResourceToken.Account)
+	record.ClassContext.ResourceToken.AdditionalClaims = cloneAdditionalClaims(record.ClassContext.ResourceToken.AdditionalClaims)
 	return record
 }
 
@@ -1207,7 +1306,19 @@ func equalR3TestRecords(first, second R3DocumentRecord) bool {
 	return first.Reference == second.Reference &&
 		first.PersonServer == second.PersonServer &&
 		first.AccessServer == second.AccessServer &&
+		reflect.DeepEqual(first.ClassContext, second.ClassContext) &&
 		bytes.Equal(first.ExactJSON, second.ExactJSON)
+}
+
+func r3TestClassContext(resource, person, access, resourceJTI, presentedJTI string) R3ClassAuthorizationContext {
+	return R3ClassAuthorizationContext{
+		ResourceToken: aauth.ResourceTokenClaims{
+			Issuer: resource, Audience: access, JTI: resourceJTI,
+			PersonServer: person, Subject: "person-1", PresentedJTI: presentedJTI,
+			AgentJKT: "agent-jkt", IssuedAt: 1_777_000_000, ExpiresAt: 1_777_000_300,
+		},
+		PersonTokenIssuedAt: 1_777_000_000, PersonTokenExpiresAt: 1_777_003_600,
+	}
 }
 
 var _ R3DocumentStore = (*r3TestDocumentStore)(nil)

@@ -62,7 +62,7 @@ func (client *Client) verifyMCPR3AuthTokenForResourceBinding(
 	reference r3.Reference,
 	credential personServerCredential,
 ) (aauth.AuthTokenClaims, error) {
-	claims, authReference, _, err := r3.VerifyMCPDirectAuthToken(ctx, compact, client.keyResolver, client.clock)
+	claims, authReference, _, err := r3.VerifyMCPAuthTokenClaims(ctx, compact, client.keyResolver, client.clock)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
@@ -70,7 +70,7 @@ func (client *Client) verifyMCPR3AuthTokenForResourceBinding(
 		return aauth.AuthTokenClaims{}, errors.New("auth token changed the MCP R3 document reference")
 	}
 	if err := aauth.ValidateCurrentAuthTokenContext(claims, aauth.AuthTokenContext{
-		Issuer: resource.Audience, DiscoveryDocument: claims.DWK,
+		Issuer: resource.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
 		Resource: resource.Issuer, PersonServer: resource.PersonServer,
 		Subject: resource.Subject, RequestKey: credential.requestKey,
 	}); err != nil {

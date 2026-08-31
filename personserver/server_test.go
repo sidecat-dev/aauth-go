@@ -125,7 +125,7 @@ func TestServerIssuesAndRetainsDirectedPersonToken(t *testing.T) {
 		record.PersonServer != claims.Issuer || record.Resource != claims.Audience ||
 		record.Subject != claims.Subject || record.Tenant != claims.Tenant ||
 		!record.ExpiresAt.Equal(time.Unix(claims.ExpiresAt, 0)) ||
-		!record.RetainUntil.Equal(record.ExpiresAt.Add(12*time.Minute)) {
+		!record.RetainUntil.Equal(record.ExpiresAt.Add(12*time.Minute+aauth.MaximumAuthTokenLifetime)) {
 		t.Fatalf("retained person token = %#v; commits = %d", record, commits)
 	}
 

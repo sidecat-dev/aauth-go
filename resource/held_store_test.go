@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	aauth "aauth-go"
 )
 
 func TestHeldClaimBranchesAreExclusive(t *testing.T) {
@@ -180,6 +182,7 @@ func TestHeldStoreRecordsAreDirectlyUsable(t *testing.T) {
 		ResourceTokenIssuedAt: expiresAt.Add(-5 * time.Minute),
 		RequiredScopes:        []string{"records.write"},
 		ExpiresAt:             expiresAt,
+		CompletionUntil:       expiresAt.Add(aauth.MaximumAuthTokenLifetime),
 	}
 	if invocation.Method != http.MethodPatch || invocation.URLHost != "resource.example" || invocation.Host != "tenant.resource.example" ||
 		invocation.RawPath != "/records%2Falpha" || invocation.RequestURI != "/records%2Falpha?view=full" ||
@@ -187,7 +190,8 @@ func TestHeldStoreRecordsAreDirectlyUsable(t *testing.T) {
 		t.Fatalf("direct request fields were not retained: %+v", invocation)
 	}
 	if invocation.RequiredScopes[0] != "records.write" ||
-		!invocation.ResourceTokenIssuedAt.Equal(expiresAt.Add(-5*time.Minute)) || !invocation.ExpiresAt.Equal(expiresAt) {
+		!invocation.ResourceTokenIssuedAt.Equal(expiresAt.Add(-5*time.Minute)) || !invocation.ExpiresAt.Equal(expiresAt) ||
+		!invocation.CompletionUntil.Equal(expiresAt.Add(aauth.MaximumAuthTokenLifetime)) {
 		t.Fatalf("direct authorization fields were not retained: %+v", invocation)
 	}
 

@@ -16,6 +16,7 @@ import (
 
 	aauth "aauth-go"
 	"aauth-go/jose"
+	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
 
@@ -517,6 +518,38 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 			assertAccessProblemStatus(t, callTokenEndpoint(agentToken, resourceToken), http.StatusInternalServerError, "server_error")
 		})
 	}
+	coreOperation, err := r3.NewMCPOperation("records.read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	coreOperationSet, err := r3.NewMCPOperationSet(coreOperation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coreDocument, err := r3.NewDocument(coreOperationSet, r3.DocumentOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coreGranted, err := r3.NewGrantedOperations(coreOperation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corePerCall, err := r3.NewGrantedOperations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongBranch, err := r3.NewAuthorization(coreGranted, corePerCall, coreDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision = Decision{
+		Scopes: []string{"records.read"}, Lifetime: time.Minute,
+		MCPR3Authorization: &wrongBranch,
+	}
+	assertAccessProblemStatus(
+		t, callTokenEndpoint(agentToken, resourceToken),
+		http.StatusInternalServerError, "server_error",
+	)
 	decision = Decision{Scopes: []string{"records.read"}, Lifetime: 30 * time.Minute}
 
 	for _, name := range []string{"upstream_token"} {

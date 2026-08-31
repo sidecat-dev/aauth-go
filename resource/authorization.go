@@ -136,7 +136,7 @@ func (server *Server) issueAuthorizationResourceToken(
 	if operations == nil {
 		return aauth.MintResourceToken(server.signingKey, claims)
 	}
-	return server.issueMCPR3ResourceToken(request.Context(), claims, *operations)
+	return server.issueMCPR3ResourceToken(request.Context(), claims, person, *operations)
 }
 
 func (server *Server) issueResourceToken(

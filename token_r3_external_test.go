@@ -682,6 +682,282 @@ func TestMCPR3TokenAdditionalClaimsAreCopied(t *testing.T) {
 	}
 }
 
+func TestMCPR3ClassAuthorizationSplitsDirectAndPerCallOperations(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	accessKey := coreTokenKey(t, "access-key")
+	requestKey := coreTokenKey(t, "request-key")
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}: accessKey.PublicJWK(),
+	}
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	read, _ := r3.NewMCPOperation("records.read")
+	deleteRecord, _ := r3.NewMCPOperation("records.delete")
+	operations, _ := r3.NewMCPOperationSet(read, deleteRecord)
+	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
+	exactDocument, _ := json.Marshal(document)
+	reference, _ := r3.NewReference("https://resource.example/r3/class-one", r3.Digest(exactDocument))
+	granted, _ := r3.NewGrantedOperations(read)
+	perCall, _ := r3.NewGrantedOperations(deleteRecord)
+	authorization, err := r3.NewAuthorization(granted, perCall, document)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compact, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "class-auth-token",
+		PersonServer: "https://person.example", Subject: "person-1",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()},
+		IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}, reference, exactDocument, authorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classMembers := compactClaimMap(t, compact)
+	if _, ok := classMembers["r3_granted"]; !ok {
+		t.Fatal("class Auth token omitted mandatory r3_granted")
+	}
+	if _, ok := classMembers["r3_per_call"]; !ok {
+		t.Fatal("class Auth token omitted nonempty r3_per_call")
+	}
+	claims, gotReference, operationClaims, err := r3.VerifyMCPAuthTokenClaims(
+		context.Background(), compact, resolver, clock,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.JTI != "class-auth-token" || gotReference != reference ||
+		!operationClaims.GrantedOperations().Equal(granted) || !operationClaims.PerCallOperations().Equal(perCall) {
+		t.Fatalf("verified class token = %#v, %#v, %#v", claims, gotReference, operationClaims)
+	}
+	if _, _, _, err := r3.VerifyMCPDirectAuthToken(context.Background(), compact, resolver, clock); err == nil {
+		t.Fatal("direct-only verifier accepted a class token with r3_per_call")
+	}
+	if _, err := aauth.VerifyAuthToken(context.Background(), compact, resolver, clock); err == nil {
+		t.Fatal("Core verifier accepted a class R3 token")
+	}
+
+	if _, err := r3.NewAuthorization(granted, granted, document); err == nil {
+		t.Fatal("accepted an operation in both r3_granted and r3_per_call")
+	}
+	outside, _ := r3.NewMCPOperation("records.export")
+	outsideSet, _ := r3.NewGrantedOperations(outside)
+	if _, err := r3.NewAuthorization(outsideSet, perCall, document); err == nil {
+		t.Fatal("accepted a direct operation outside the class document")
+	}
+	if _, err := r3.NewAuthorization(granted, outsideSet, document); err == nil {
+		t.Fatal("accepted a per-call operation outside the class document")
+	}
+	if _, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "zero-authorization",
+		PersonServer: "https://person.example", Subject: "person-1",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()},
+		IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}, reference, exactDocument, r3.Authorization{}); err == nil {
+		t.Fatal("class mint accepted an unproven zero Authorization")
+	}
+	empty, _ := r3.NewGrantedOperations()
+	directOnly, _ := r3.NewAuthorization(granted, empty, document)
+	directOnlyCompact, err := r3.MintMCPAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "direct-only",
+		PersonServer: "https://person.example", Subject: "person-1",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()},
+		IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}, reference, exactDocument, directOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompactOmitsClaim(t, directOnlyCompact, "r3_per_call")
+}
+
+func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	resourceKey := coreTokenKey(t, "resource-key")
+	accessKey := coreTokenKey(t, "access-key")
+	requestKey := coreTokenKey(t, "request-key")
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}:       accessKey.PublicJWK(),
+	}
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	operation, _ := r3.NewMCPOperation("records.delete")
+	identifier, _ := r3.NewMCPInlineParameter([]byte(`"record-7"`))
+	parameters, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{"id": identifier})
+	account := "work"
+	proposal, _ := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{Account: &account})
+	exactProposal, _ := json.Marshal(proposal)
+
+	resourceCompact, reference, err := r3.MintMCPProposalResourceToken(resourceKey, aauth.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+		Audience: "https://access.example", JTI: "proposal-resource-token",
+		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
+		AgentJKT: coreTokenS256("agent-key"), Account: &account,
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+	}, "https://resource.example/r3/proposal-one", exactProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceClaims, gotReference, err := r3.VerifyMCPResourceToken(context.Background(), resourceCompact, resolver, clock)
+	if err != nil || resourceClaims.JTI != "proposal-resource-token" || gotReference != reference {
+		t.Fatalf("proposal Resource token = %#v, %#v, %v", resourceClaims, gotReference, err)
+	}
+	proposalResourceMembers := compactClaimMap(t, resourceCompact)
+	for _, forbidden := range []string{"r3_granted", "r3_per_call", "parameters"} {
+		if _, ok := proposalResourceMembers[forbidden]; ok {
+			t.Fatalf("proposal Resource token contains %q", forbidden)
+		}
+	}
+	parsed, err := r3.ParseReferencedProposal(reference, exactProposal)
+	if err != nil || parsed.Operation().Tool() != operation.Tool() {
+		t.Fatalf("referenced proposal = %#v, %v", parsed, err)
+	}
+
+	authCompact, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "per-call-auth-token",
+		PersonServer: "https://person.example", Subject: "person-1",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()}, Account: &account,
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}, reference, exactProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perCallMembers := compactClaimMap(t, authCompact)
+	if _, ok := perCallMembers["r3_granted"]; !ok {
+		t.Fatal("per-call Auth token omitted r3_granted")
+	}
+	for _, forbidden := range []string{"r3_per_call", "parameters"} {
+		if _, ok := perCallMembers[forbidden]; ok {
+			t.Fatalf("per-call Auth token contains %q", forbidden)
+		}
+	}
+	authClaims, authReference, grantedOperation, err := r3.VerifyMCPPerCallAuthToken(
+		context.Background(), authCompact, resolver, clock, reference, exactProposal,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authClaims.JTI != "per-call-auth-token" || authReference != reference || grantedOperation.Tool() != operation.Tool() {
+		t.Fatalf("per-call Auth token = %#v, %#v, %#v", authClaims, authReference, grantedOperation)
+	}
+	wrongOperation, _ := r3.NewMCPOperation("records.export")
+	wrongGranted, _ := r3.NewGrantedOperations(wrongOperation)
+	wrongGrantedJSON, _ := json.Marshal(wrongGranted)
+	uriJSON, _ := json.Marshal(reference.URI())
+	digestJSON, _ := json.Marshal(reference.Digest())
+	baseMembers := map[string]any{
+		"iss": "https://access.example", "dwk": aauth.AccessDiscoveryDocument,
+		"aud": "https://resource.example", "jti": "manually-signed",
+		"ps": "https://person.example", "sub": "person-1",
+		"cnf": map[string]any{"jwk": requestKey.PublicJWK()}, "account": account,
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+		"r3_uri": json.RawMessage(uriJSON), "r3_s256": json.RawMessage(digestJSON),
+		"r3_granted": json.RawMessage(wrongGrantedJSON),
+	}
+	wrongOperationToken := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, baseMembers)
+	if _, _, _, err := r3.VerifyMCPPerCallAuthToken(context.Background(), wrongOperationToken, resolver, clock, reference, exactProposal); err == nil {
+		t.Fatal("per-call verifier accepted a different granted operation")
+	}
+	wrongAccountMembers := cloneCoreTokenMembers(baseMembers)
+	correctGranted, _ := r3.NewGrantedOperations(operation)
+	correctGrantedJSON, _ := json.Marshal(correctGranted)
+	wrongAccountMembers["r3_granted"] = json.RawMessage(correctGrantedJSON)
+	wrongAccountMembers["account"] = "other"
+	wrongAccountToken := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, wrongAccountMembers)
+	if _, _, _, err := r3.VerifyMCPPerCallAuthToken(context.Background(), wrongAccountToken, resolver, clock, reference, exactProposal); err == nil {
+		t.Fatal("per-call verifier accepted a different account")
+	}
+	otherReference, _ := r3.NewReference("https://resource.example/r3/proposal-other", reference.Digest())
+	otherURIJSON, _ := json.Marshal(otherReference.URI())
+	wrongReferenceMembers := cloneCoreTokenMembers(baseMembers)
+	wrongReferenceMembers["r3_uri"] = json.RawMessage(otherURIJSON)
+	wrongReferenceMembers["r3_granted"] = json.RawMessage(correctGrantedJSON)
+	wrongReferenceToken := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, wrongReferenceMembers)
+	if _, _, _, err := r3.VerifyMCPPerCallAuthToken(context.Background(), wrongReferenceToken, resolver, clock, reference, exactProposal); err == nil {
+		t.Fatal("per-call verifier accepted a different proposal reference")
+	}
+	_, _, operationClaims, err := r3.VerifyMCPAuthTokenClaims(context.Background(), authCompact, resolver, clock)
+	if err != nil || !operationClaims.GrantedOperations().Contains(operation) || len(operationClaims.PerCallOperations().Operations()) != 0 {
+		t.Fatalf("general per-call verification = %#v, %v", operationClaims, err)
+	}
+
+	changed := append(append([]byte(nil), exactProposal...), '\n')
+	if _, err := r3.ParseMCPProposal(changed); err != nil {
+		t.Fatalf("valid reserialization fixture is invalid: %v", err)
+	}
+	if _, err := r3.ParseReferencedProposal(reference, changed); err == nil {
+		t.Fatal("reference accepted a valid proposal reserialization with different exact bytes")
+	}
+	if _, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "changed",
+		PersonServer: "https://person.example", Subject: "person-1",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()}, Account: &account,
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}, reference, changed); err == nil {
+		t.Fatal("per-call mint accepted proposal bytes that changed after hashing")
+	}
+	otherAccount := "other"
+	if _, err := r3.MintMCPPerCallAuthToken(accessKey, aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "wrong-account",
+		PersonServer: "https://person.example", Subject: "person-1",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()}, Account: &otherAccount,
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}, reference, exactProposal); err == nil {
+		t.Fatal("per-call mint accepted a proposal/account mismatch")
+	}
+}
+
+func TestMCPR3AuthClaimVerificationRejectsMalformedPerCallShapes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 12, 30, 0, 0, time.UTC)
+	accessKey := coreTokenKey(t, "access-key")
+	requestKey := coreTokenKey(t, "request-key")
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}: accessKey.PublicJWK(),
+	}
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	digest := r3.Digest([]byte("document"))
+	base := map[string]any{
+		"iss": "https://access.example", "dwk": aauth.AccessDiscoveryDocument,
+		"aud": "https://resource.example", "jti": "auth-token",
+		"ps": "https://person.example", "sub": "person-1",
+		"cnf": map[string]any{"jwk": requestKey.PublicJWK()},
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+		"r3_uri": "https://resource.example/r3/class", "r3_s256": digest,
+		"r3_granted": json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}`),
+	}
+	for _, test := range []struct {
+		name  string
+		claim string
+		value any
+	}{
+		{"overlap", "r3_per_call", json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}`)},
+		{"wrong vocabulary", "r3_per_call", json.RawMessage(`{"vocabulary":"urn:example:other","operations":[{"tool":"records.delete"}]}`)},
+		{"missing operations", "r3_per_call", json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:mcp"}`)},
+		{"duplicate tool", "r3_per_call", json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.delete"},{"tool":"records.delete"}]}`)},
+		{"non-object", "r3_per_call", true},
+		{"case variant", "R3_Per_Call", json.RawMessage(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.delete"}]}`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			members := cloneCoreTokenMembers(base)
+			members[test.claim] = test.value
+			compact := signCoreTokenPayload(t, accessKey, aauth.AuthTokenType, members)
+			if _, _, _, err := r3.VerifyMCPAuthTokenClaims(context.Background(), compact, resolver, clock); err == nil {
+				t.Fatal("accepted malformed r3_per_call claim")
+			}
+		})
+	}
+}
+
 func assertCompactOmitsClaim(t *testing.T, compact, claim string) {
 	t.Helper()
 	parsed, err := jose.ParseCompact(compact)
@@ -695,6 +971,19 @@ func assertCompactOmitsClaim(t *testing.T, compact, claim string) {
 	if _, present := members[claim]; present {
 		t.Fatalf("compact token unexpectedly contains %q", claim)
 	}
+}
+
+func compactClaimMap(t *testing.T, compact string) map[string]json.RawMessage {
+	t.Helper()
+	parsed, err := jose.ParseCompact(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(parsed.Payload(), &members); err != nil {
+		t.Fatal(err)
+	}
+	return members
 }
 
 func assertCompactStringClaim(t *testing.T, compact, claim, want string) {

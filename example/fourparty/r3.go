@@ -127,8 +127,9 @@ func runR3Direct(output io.Writer) {
 				return accessserver.Decision{}, errors.Join(accessserver.ErrAccessDenied, errors.New("unexpected R3 document"))
 			}
 			granted := must(r3.NewGrantedOperations(read))
-			grant := must(r3.NewGrant(granted, request.MCPR3.Document))
-			return accessserver.Decision{Lifetime: 30 * time.Minute, MCPR3Grant: &grant}, nil
+			emptyPerCall := must(r3.NewGrantedOperations())
+			authorization := must(r3.NewAuthorization(granted, emptyPerCall, request.MCPR3.Document))
+			return accessserver.Decision{Lifetime: 30 * time.Minute, MCPR3Authorization: &authorization}, nil
 		},
 		MCPR3: &accessserver.MCPR3Config{
 			HTTPClient: httpClient,

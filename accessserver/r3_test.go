@@ -14,6 +14,7 @@ import (
 	"time"
 
 	aauth "aauth-go"
+	"aauth-go/jose"
 	"aauth-go/r3"
 	"aauth-go/signaturekey"
 )
@@ -64,7 +65,11 @@ func TestMCPR3IssuesOnlyAfterIndependentFetchPolicyAndAtomicAudit(t *testing.T) 
 		t.Fatal(err)
 	}
 	granted, _ := r3.NewGrantedOperations(read)
-	grant, _ := r3.NewGrant(granted, document)
+	perCall, _ := r3.NewGrantedOperations(export)
+	authorization, err := r3.NewAuthorization(granted, perCall, document)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var sequence []string
 	var resourceFetchErr error
 	resourceFetchStatus := http.StatusOK
@@ -98,7 +103,10 @@ func TestMCPR3IssuesOnlyAfterIndependentFetchPolicyAndAtomicAudit(t *testing.T) 
 	})}
 	issuances := &r3TestIssuanceStore{onCommit: func() { sequence = append(sequence, "audit-commit") }}
 	var evaluated AuthorizationRequest
-	policyDecision := Decision{Scopes: []string{"records.read"}, Lifetime: 30 * time.Minute, MCPR3Grant: &grant}
+	policyDecision := Decision{
+		Scopes: []string{"records.read"}, Lifetime: 30 * time.Minute,
+		MCPR3Authorization: &authorization,
+	}
 	server, err := New(Config{
 		Issuer: "https://access.example", SigningKey: accessKey, KeyResolver: resolver,
 		Clock: clock, NewID: func() string { return "auth-token-1" },
@@ -147,13 +155,17 @@ func TestMCPR3IssuesOnlyAfterIndependentFetchPolicyAndAtomicAudit(t *testing.T) 
 	if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
 		t.Fatal(err)
 	}
-	claims, gotReference, gotGranted, err := r3.VerifyMCPDirectAuthToken(context.Background(), output.AuthToken, resolver, clock)
+	claims, gotReference, gotOperations, err := r3.VerifyMCPAuthTokenClaims(
+		context.Background(), output.AuthToken, resolver, clock,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotReference != reference || !reflect.DeepEqual(gotGranted.Operations(), granted.Operations()) ||
+	if gotReference != reference ||
+		!reflect.DeepEqual(gotOperations.GrantedOperations().Operations(), granted.Operations()) ||
+		!reflect.DeepEqual(gotOperations.PerCallOperations().Operations(), perCall.Operations()) ||
 		claims.Scope != "records.read" || claims.Account == nil || *claims.Account != account {
-		t.Fatalf("R3 Auth token = %#v %#v %#v", claims, gotReference, gotGranted)
+		t.Fatalf("R3 Auth token = %#v %#v %#v", claims, gotReference, gotOperations)
 	}
 	if evaluated.MCPR3 == nil || evaluated.MCPR3.Reference != reference ||
 		!evaluated.MCPR3.Document.OperationSet().Equal(operationSet) {
@@ -196,9 +208,70 @@ func TestMCPR3IssuesOnlyAfterIndependentFetchPolicyAndAtomicAudit(t *testing.T) 
 		})
 	}
 
+	if _, err := r3.NewAuthorization(granted, granted, document); err == nil {
+		t.Fatal("overlapping direct and per-call policy sets were accepted")
+	}
+	deleteOperation, err := r3.NewMCPOperation("records.delete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broaderSet, err := r3.NewMCPOperationSet(read, export, deleteOperation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broaderDocument, err := r3.NewDocument(broaderSet, r3.DocumentOptions{Account: &account})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyOperations, err := r3.NewGrantedOperations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideOperations, err := r3.NewGrantedOperations(deleteOperation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideDirectAuthorization, err := r3.NewAuthorization(outsideOperations, emptyOperations, broaderDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsidePerCallAuthorization, err := r3.NewAuthorization(granted, outsideOperations, broaderDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroAuthorization := r3.Authorization{}
+	for _, invalid := range []struct {
+		name          string
+		authorization *r3.Authorization
+	}{
+		{name: "missing class authorization"},
+		{name: "zero class authorization", authorization: &zeroAuthorization},
+		{name: "direct operation outside fetched document", authorization: &outsideDirectAuthorization},
+		{name: "per-call operation outside fetched document", authorization: &outsidePerCallAuthorization},
+	} {
+		t.Run(invalid.name, func(t *testing.T) {
+			sequence = nil
+			issuances.reset()
+			policyDecision = Decision{Lifetime: 30 * time.Minute, MCPR3Authorization: invalid.authorization}
+			response := call()
+			if response.Code != http.StatusInternalServerError ||
+				bytes.Contains(response.Body.Bytes(), []byte("auth_token")) ||
+				len(issuances.recordsCopy()) != 0 {
+				t.Fatalf("invalid policy result = %d %s, audit %#v", response.Code, response.Body.String(), issuances.recordsCopy())
+			}
+			if !reflect.DeepEqual(sequence, []string{"resource-fetch", "policy"}) {
+				t.Fatalf("invalid policy sequence = %#v", sequence)
+			}
+		})
+	}
+
 	sequence = nil
 	issuances.reset()
-	policyDecision = Decision{Lifetime: 30 * time.Minute, MCPR3Grant: &grant}
+	directOnly, err := r3.NewAuthorization(granted, emptyOperations, document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyDecision = Decision{Lifetime: 30 * time.Minute, MCPR3Authorization: &directOnly}
 	resourceToken, _, err = r3.MintMCPResourceToken(resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
 		Audience: "https://access.example", JTI: "scopeless-resource-token", AgentJKT: agentJKT,
@@ -219,6 +292,17 @@ func TestMCPR3IssuesOnlyAfterIndependentFetchPolicyAndAtomicAudit(t *testing.T) 
 	claims, _, _, err = r3.VerifyMCPDirectAuthToken(context.Background(), output.AuthToken, resolver, clock)
 	if err != nil || claims.Scope != "" {
 		t.Fatalf("scopeless R3 Auth token = %#v, %v", claims, err)
+	}
+	parsed, err := jose.ParseCompact(output.AuthToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tokenMembers map[string]json.RawMessage
+	if err := json.Unmarshal(parsed.Payload(), &tokenMembers); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := tokenMembers["r3_per_call"]; present {
+		t.Fatal("direct-only class Auth token contains an empty r3_per_call claim")
 	}
 	sequence = nil
 	issuances.reset()

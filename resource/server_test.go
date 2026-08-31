@@ -33,9 +33,9 @@ func TestNewFederatedAuthorizationRejectsIncompleteConfiguration(t *testing.T) {
 	valid := validConfig(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	enableHeld := func(config *FederatedAuthorizationConfig) {
 		config.HeldInvocations = newHeldMemoryStore()
-		config.MaxHeldRequestBodyBytes = 1024
-		config.MaxHeldResponseBodyBytes = 1024
-		config.MaxHeldHeaderBytes = 1024
+		config.MaxRetainedRequestBodyBytes = 1024
+		config.MaxRetainedResponseBodyBytes = 1024
+		config.MaxRetainedHeaderBytes = 1024
 	}
 	tests := []struct {
 		name   string
@@ -71,24 +71,24 @@ func TestNewFederatedAuthorizationRejectsIncompleteConfiguration(t *testing.T) {
 			config.AdditionalSignatureComponents = []string{"content-type", "content-type"}
 		}},
 		{name: "negative body limit", change: func(config *FederatedAuthorizationConfig) { config.MaxSignedBodyBytes = -1 }},
-		{name: "negative held request limit", change: func(config *FederatedAuthorizationConfig) { config.MaxHeldRequestBodyBytes = -1 }},
-		{name: "negative held response limit", change: func(config *FederatedAuthorizationConfig) { config.MaxHeldResponseBodyBytes = -1 }},
-		{name: "negative held header limit", change: func(config *FederatedAuthorizationConfig) { config.MaxHeldHeaderBytes = -1 }},
-		{name: "held limit without store", change: func(config *FederatedAuthorizationConfig) { config.MaxHeldRequestBodyBytes = 1 }},
+		{name: "negative held request limit", change: func(config *FederatedAuthorizationConfig) { config.MaxRetainedRequestBodyBytes = -1 }},
+		{name: "negative held response limit", change: func(config *FederatedAuthorizationConfig) { config.MaxRetainedResponseBodyBytes = -1 }},
+		{name: "negative held header limit", change: func(config *FederatedAuthorizationConfig) { config.MaxRetainedHeaderBytes = -1 }},
+		{name: "held limit without store", change: func(config *FederatedAuthorizationConfig) { config.MaxRetainedRequestBodyBytes = 1 }},
 		{name: "held selector without store", change: func(config *FederatedAuthorizationConfig) {
 			config.HoldAuthTokenRequest = func(*http.Request) bool { return true }
 		}},
 		{name: "held store without request limit", change: func(config *FederatedAuthorizationConfig) {
 			enableHeld(config)
-			config.MaxHeldRequestBodyBytes = 0
+			config.MaxRetainedRequestBodyBytes = 0
 		}},
 		{name: "held store without response limit", change: func(config *FederatedAuthorizationConfig) {
 			enableHeld(config)
-			config.MaxHeldResponseBodyBytes = 0
+			config.MaxRetainedResponseBodyBytes = 0
 		}},
 		{name: "held store without header limit", change: func(config *FederatedAuthorizationConfig) {
 			enableHeld(config)
-			config.MaxHeldHeaderBytes = 0
+			config.MaxRetainedHeaderBytes = 0
 		}},
 		{name: "required scopes", change: func(config *FederatedAuthorizationConfig) { config.RequiredScopes = nil }},
 		{name: "person resolver", change: func(config *FederatedAuthorizationConfig) { config.ResolvePerson = nil }},

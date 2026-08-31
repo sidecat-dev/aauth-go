@@ -67,8 +67,8 @@ type FederatedAuthorizationConfig struct {
 	// extension implemented by Tokens.
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	Consent                       func(context.Context, AuthorizationRequest) error
-	// MCPR3 optionally enables signed document consent for the immediate
-	// direct-grant MCP profile.
+	// MCPR3 optionally enables signed class-document and per-call proposal
+	// consent for the immediate MCP profile.
 	MCPR3 *MCPR3Config
 	// Missions optionally enables the immediate mission lifecycle and
 	// mission-bound Person and federated Auth-token issuance. When nonnil,
@@ -744,15 +744,33 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		record.Agent != credentialAgent.Subject ||
 		record.ParentAgent != credentialAgent.ParentAgent ||
 		!record.Confirmation.Equal(credentialAgent.Confirmation.JWK) ||
-		resourceToken.IssuedAt >= record.ExpiresAt.Unix() ||
 		resourceTokenExpiresAt.After(record.RetainUntil) ||
 		!record.RetainUntil.After(proof.VerifiedAt()) {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained person token"))
 		return
 	}
+	issuedAfterPersonToken := resourceToken.IssuedAt >= record.ExpiresAt.Unix()
+	if issuedAfterPersonToken && mcpR3 == nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token was issued after the retained person token expired"))
+		return
+	}
 	if !upstream.matchesRecord(record) {
 		server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
 		return
+	}
+	if mcpR3 != nil {
+		if err := server.fetchMCPR3Artifact(request.Context(), mcpR3, resourceToken.Account); err != nil {
+			if isInvalidMCPR3Document(err) {
+				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+			} else {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			}
+			return
+		}
+		if issuedAfterPersonToken && mcpR3.kind != mcpR3ArtifactProposal {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("only a per-call proposal may reuse retained person identity after the person token expires"))
+			return
+		}
 	}
 	var missionRecord *MissionRecord
 	var missionContext *MissionContext
@@ -790,16 +808,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	if upstream != nil {
 		authorizationRequest.Upstream = upstream.policyClaims()
-	}
-	if mcpR3 != nil {
-		if err := server.fetchMCPR3Document(request.Context(), mcpR3, resourceToken.Account); err != nil {
-			if isInvalidMCPR3Document(err) {
-				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
-			} else {
-				writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			}
-			return
-		}
 	}
 	if server.authorizationMode == authorizationModePersonServer {
 		if upstream == nil && server.requireAuthorizationInteraction != nil {
@@ -844,8 +852,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	var consentErr error
 	if mcpR3 != nil {
-		consentErr = server.mcpR3.consent(
-			request.Context(), cloneAuthorizationRequest(authorizationRequest), mcpR3.reference, mcpR3.document,
+		consentErr = server.consentMCPR3(
+			request.Context(), cloneAuthorizationRequest(authorizationRequest), mcpR3,
 		)
 	} else {
 		consentErr = server.consent(request.Context(), cloneAuthorizationRequest(authorizationRequest))

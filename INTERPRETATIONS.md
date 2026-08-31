@@ -591,7 +591,43 @@ fails, it follows Core and may use the previously cached key until the fixed
 **Executable example:**
 `signaturekey/discovery_external_test.go:TestHTTPKeyResolverUsesStaleCacheOnlyWithinCoreDiscardBound`.
 
-## Held replay binds the exact compact auth token
+## An R3 proposal URI identifies one invocation, not only its content
+
+**Source:** R3, `per-call` authorization.
+
+Two calls with identical proposal JSON have the same `r3_s256`, but approval
+and execution are single-use. The Resource therefore gives each invocation a
+fresh Resource-token `jti` and full proposal URI. `R3ProposalStore.Commit` is
+create-only by that URI; any identifier collision fails before a `401` or
+`202` becomes observable. The content digest remains the exact-byte identity,
+while the URI is the invocation identity.
+
+**Executable example:**
+`resource/r3_per_call_test.go:TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge`.
+
+## Resource-token expiry closes Auth issuance, not an issued Auth token
+
+**Source:** AAuth Core, `Auth Token Delivery`, `Deferred Delivery`, and R3
+`per-call` authorization.
+
+A class or proposal Auth token must have `iat` inside the Resource token's
+issuance window. Its own valid `exp` may be later. A first retry or poll may
+therefore occur after Resource-token expiry. The Resource retains execution
+custody through `CompletionUntil`, exactly one maximum Auth-token lifetime
+after Resource-token expiry; completed results remain exact-token replayable.
+
+For delayed per-call consent, the Person Server retains the original person
+record through the maximum Resource-token plus Auth-token lifetime. Only a
+verified proposal artifact may reuse that retained identity after the original
+Person token expires; a new class authorization may not.
+
+**Executable examples:**
+`resource/held_test.go:TestHeldAuthTokenIssuedBeforeResourceExpiryCanFirstExecuteLater`,
+`resource/r3_per_call_test.go:TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge`,
+and
+`personserver/r3_proposal_test.go:TestFederatedMCPR3ProposalUsesDistinctConsentAndVerifiesExactResult`.
+
+## Held and per-call replay bind the exact compact Auth token
 
 **Source:** AAuth Core, `Deferred Delivery`.
 
@@ -601,16 +637,17 @@ signature, or compact serialization. Its general Pending URL Security section
 also says every poll after a terminal response must return `410 Gone`, which
 contradicts the held-delivery replay requirement.
 
-`HeldInvocationStore.Claim` receives the SHA-256 digest of the exact compact
-token bytes. Only that exact token can replay the retained result. A separately
-signed token with identical claims cannot consume the record. The
-held-delivery replay rule is treated as the specific exception to the general
-`410 Gone` rule, and remains available until the auth token expires.
+`HeldInvocationStore.Claim` and `R3RetryStore.Claim` receive the SHA-256 digest
+of the exact compact token bytes. Only that exact token can replay the retained
+result. A separately signed token with identical claims cannot consume the
+record. The replay rule is treated as the specific exception to the general
+`410 Gone` rule.
 
 **Executable example:**
-`resource/held_test.go:TestHeldAuthTokenInvocationCompletesOnceAndReplays`.
+`resource/held_test.go:TestHeldAuthTokenInvocationCompletesOnceAndReplays` and
+`resource/r3_per_call_test.go:TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge`.
 
-## A lost held execution is never reclaimed automatically
+## A lost held or per-call execution is never reclaimed automatically
 
 **Source:** AAuth Core, `Deferred Delivery`.
 
@@ -620,9 +657,10 @@ before durable result retention. Reclaiming after a timeout could execute an
 application consequence twice.
 
 This implementation has no lease or reclaim transition. After an indeterminate
-claim or retention result, the store exposes either a committed replay or
-`ErrHeldExecutionUnresolved`. A caller can start a new application request, but
-the original pending record never becomes executable again.
+claim or retention result, the held store exposes either a committed replay or
+`ErrHeldExecutionUnresolved`; the baseline R3 retry store does the same with
+`ErrR3RetryUnresolved`. A caller can start a new application request, but the
+original record never becomes executable again.
 
 An unresolved poll returns the registered `500 server_error`. It does not use
 `503`: the implementation has no retry schedule or condition under which that
@@ -632,7 +670,8 @@ The test below injects an uncertain `Retain` result into the store contract.
 This repository has no durable adapter or process-restart proof.
 
 **Executable example:**
-`resource/held_test.go:TestHeldAuthTokenRetainFailureWithholdsResultAndNeverReexecutes`.
+`resource/held_test.go:TestHeldAuthTokenRetainFailureWithholdsResultAndNeverReexecutes` and
+`resource/r3_per_call_test.go:TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge`.
 
 ## An application `202` starts a nested deferred response
 

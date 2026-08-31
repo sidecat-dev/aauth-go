@@ -24,6 +24,7 @@ type R3IssuanceRecord struct {
 	PersonServer       string
 	Subject            string
 	Account            *string
+	PresentedJTI       string
 	AgentJKT           string
 	Agent              string
 	ParentAgent        string

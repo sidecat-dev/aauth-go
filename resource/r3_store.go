@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	aauth "aauth-go"
 	"aauth-go/r3"
 )
 
@@ -17,11 +18,23 @@ var (
 // R3DocumentRecord is one exact Resource-owned document and the two server
 // roles entitled to fetch it. ExactJSON is the byte identity named by
 // Reference; it is not a re-serializable model.
+type R3ClassAuthorizationContext struct {
+	ExactResourceToken   string
+	ResourceToken        aauth.ResourceTokenClaims
+	PersonTokenIssuedAt  int64
+	PersonTokenNotBefore int64
+	PersonTokenExpiresAt int64
+}
+
+// R3DocumentRecord is one exact class document, its fetch entitlement, and
+// the original verified Person-token lineage needed to form a later per-call
+// Resource token.
 type R3DocumentRecord struct {
 	Reference    r3.Reference
 	ExactJSON    []byte
 	PersonServer string
 	AccessServer string
+	ClassContext R3ClassAuthorizationContext
 }
 
 // R3DocumentStore durably and confidentially retains exact R3 bytes before

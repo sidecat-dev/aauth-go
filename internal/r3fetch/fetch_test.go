@@ -78,7 +78,234 @@ func TestClientFetchesOneExactSignedAndBoundedDocument(t *testing.T) {
 	}
 }
 
-func TestClientRefusesUnsafeOrInexactDocumentFetches(t *testing.T) {
+func TestClientFetchesOneExactSignedAndBoundedProposal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 8, 5, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	key := r3FetchTestKey(t, "ps-key", 4)
+	operation, err := r3.NewMCPOperation("records.read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameter, err := r3.NewMCPInlineParameter([]byte(`{"record_id":"record-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters, err := r3.NewMCPParameters(map[string]r3.MCPParameter{"input": parameter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact, err := proposal.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := r3.NewReference("https://resource.example/r3/proposals/invocation-1", r3.Digest(exact))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitCalls, requestCalls := 0, 0
+	client, err := New(Config{
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			requestCalls++
+			return r3FetchResponse(http.StatusOK, exact, nil), nil
+		})},
+		SigningKey: key, Issuer: "https://ps.example",
+		DiscoveryDocument: aauth.PersonDiscoveryDocument, Clock: clock,
+		Admit: func(_ context.Context, endpoint string) error {
+			admitCalls++
+			if endpoint != reference.URI() {
+				t.Fatalf("admitted endpoint = %q", endpoint)
+			}
+			return nil
+		},
+		MaximumDocumentBytes: int64(len(exact)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotProposal, gotExact, err := client.FetchProposal(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotExact, exact) || gotProposal.Operation().Tool() != operation.Tool() ||
+		admitCalls != 1 || requestCalls != 1 {
+		t.Fatalf("fetch = %q %#v, calls admit/request=%d/%d", gotExact, gotProposal, admitCalls, requestCalls)
+	}
+}
+
+func TestClientKeepsClassDocumentAndProposalParsersSeparate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 8, 10, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	key := r3FetchTestKey(t, "as-key", 5)
+	documentExact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}]}`)
+	proposalExact := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}],"parameters":{}}`)
+	documentReference, _ := r3.NewReference("https://resource.example/r3/document", r3.Digest(documentExact))
+	proposalReference, _ := r3.NewReference("https://resource.example/r3/proposals/invocation-2", r3.Digest(proposalExact))
+	client, err := New(Config{
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.String() {
+			case documentReference.URI():
+				return r3FetchResponse(http.StatusOK, documentExact, nil), nil
+			case proposalReference.URI():
+				return r3FetchResponse(http.StatusOK, proposalExact, nil), nil
+			default:
+				t.Fatalf("unexpected request URI %q", request.URL)
+				return nil, nil
+			}
+		})},
+		SigningKey: key, Issuer: "https://as.example",
+		DiscoveryDocument: aauth.AccessDiscoveryDocument, Clock: clock,
+		Admit: func(context.Context, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.FetchDocument(context.Background(), proposalReference); err == nil || !IsDocumentError(err) {
+		t.Fatalf("FetchDocument proposal error = %v", err)
+	}
+	if _, _, err := client.FetchProposal(context.Background(), documentReference); err == nil || !IsDocumentError(err) {
+		t.Fatalf("FetchProposal class document error = %v", err)
+	}
+}
+
+func TestClientFetchArtifactClassifiesOneFetchWithoutURIConventions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 8, 11, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	key := r3FetchTestKey(t, "ps-key", 7)
+	operation, _ := r3.NewMCPOperation("records.read")
+	operations, _ := r3.NewMCPOperationSet(operation)
+	document, _ := r3.NewDocument(operations, r3.DocumentOptions{})
+	documentExact, _ := document.MarshalJSON()
+	parameters, _ := r3.NewMCPParameters(map[string]r3.MCPParameter{})
+	proposal, _ := r3.NewMCPProposal(operation, parameters, r3.ProposalOptions{})
+	proposalExact, _ := proposal.MarshalJSON()
+
+	for _, test := range []struct {
+		name         string
+		exact        []byte
+		wantDocument bool
+		wantProposal bool
+	}{
+		{name: "class document at opaque URI", exact: documentExact, wantDocument: true},
+		{name: "per-call proposal at opaque URI", exact: proposalExact, wantProposal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client, err := New(Config{
+				HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					return r3FetchResponse(http.StatusOK, test.exact, nil), nil
+				})},
+				SigningKey: key, Issuer: "https://ps.example",
+				DiscoveryDocument: aauth.PersonDiscoveryDocument, Clock: clock,
+				Admit: func(context.Context, string) error { return nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reference := mustR3FetchReference(t, "https://resource.example/r3/artifacts/opaque", test.exact)
+			artifact, err := client.FetchArtifact(context.Background(), reference)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotDocument, documentOK := artifact.Document()
+			gotProposal, proposalOK := artifact.Proposal()
+			if documentOK != test.wantDocument || proposalOK != test.wantProposal || documentOK == proposalOK {
+				t.Fatalf("artifact kinds document/proposal = %t/%t", documentOK, proposalOK)
+			}
+			if documentOK && !gotDocument.OperationSet().Equal(operations) {
+				t.Fatalf("document operation set = %#v", gotDocument.OperationSet())
+			}
+			if proposalOK && gotProposal.Operation().Tool() != operation.Tool() {
+				t.Fatalf("proposal operation = %q", gotProposal.Operation().Tool())
+			}
+			gotExact := artifact.ExactBytes()
+			if !bytes.Equal(gotExact, test.exact) || calls != 1 {
+				t.Fatalf("exact = %q, calls = %d", gotExact, calls)
+			}
+			gotExact[0] ^= 0xff
+			if !bytes.Equal(artifact.ExactBytes(), test.exact) {
+				t.Fatal("returned exact bytes mutated retained artifact bytes")
+			}
+		})
+	}
+}
+
+func TestClientFetchArtifactRefusesBytesThatAreNeitherStrictArtifact(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 8, 11, 30, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	key := r3FetchTestKey(t, "as-key", 8)
+	malformed := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[],"parameters":{}}`)
+	calls := 0
+	client, err := New(Config{
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return r3FetchResponse(http.StatusOK, malformed, nil), nil
+		})},
+		SigningKey: key, Issuer: "https://as.example",
+		DiscoveryDocument: aauth.AccessDiscoveryDocument, Clock: clock,
+		Admit: func(context.Context, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := mustR3FetchReference(t, "https://resource.example/r3/artifacts/opaque", malformed)
+	if _, err := client.FetchArtifact(context.Background(), reference); err == nil || !IsDocumentError(err) {
+		t.Fatalf("FetchArtifact error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("HTTP calls = %d", calls)
+	}
+}
+
+func TestClientFetchProposalBindsDigestBeforeStrictParsing(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 8, 12, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	key := r3FetchTestKey(t, "as-key", 6)
+	valid := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}],"parameters":{}}`)
+	malformed := []byte(`{"vocabulary":"urn:aauth:vocabulary:mcp","operations":[{"tool":"records.read"}],"parameters":[]}`)
+
+	for _, test := range []struct {
+		name      string
+		reference r3.Reference
+		body      []byte
+	}{
+		{name: "digest mismatch", reference: mustR3FetchReference(t, "https://resource.example/r3/proposals/digest", valid), body: append(append([]byte(nil), valid...), ' ')},
+		{name: "malformed proposal", reference: mustR3FetchReference(t, "https://resource.example/r3/proposals/malformed", malformed), body: malformed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := New(Config{
+				HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					return r3FetchResponse(http.StatusOK, test.body, nil), nil
+				})},
+				SigningKey: key, Issuer: "https://as.example",
+				DiscoveryDocument: aauth.AccessDiscoveryDocument, Clock: clock,
+				Admit: func(context.Context, string) error { return nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := client.FetchProposal(context.Background(), test.reference); err == nil || !IsDocumentError(err) {
+				t.Fatalf("FetchProposal error = %v", err)
+			}
+		})
+	}
+}
+
+func TestClientSharesUnsafeOrInexactResponseProtectionsAcrossFetchKinds(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 31, 8, 15, 0, 0, time.UTC)
@@ -112,36 +339,43 @@ func TestClientRefusesUnsafeOrInexactDocumentFetches(t *testing.T) {
 		{name: "oversized", status: http.StatusOK, body: exact, maxBytes: int64(len(exact) - 1), wantCalls: 1, wantDocumentError: true},
 		{name: "hash mismatch", status: http.StatusOK, body: append(append([]byte(nil), exact...), ' '), wantCalls: 1, wantDocumentError: true},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			calls := 0
-			transport := roundTripperFunc(func(*http.Request) (*http.Response, error) {
-				calls++
-				if test.transportError != nil {
-					return nil, test.transportError
+		for _, kind := range []string{"document", "proposal"} {
+			t.Run(kind+"/"+test.name, func(t *testing.T) {
+				calls := 0
+				transport := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if test.transportError != nil {
+						return nil, test.transportError
+					}
+					return r3FetchResponse(test.status, test.body, test.header), nil
+				})
+				client, err := New(Config{
+					HTTPClient: &http.Client{Transport: transport},
+					SigningKey: key, Issuer: "https://as.example",
+					DiscoveryDocument: aauth.AccessDiscoveryDocument, Clock: clock,
+					Admit:                func(context.Context, string) error { return test.admitError },
+					MaximumDocumentBytes: test.maxBytes,
+				})
+				if err != nil {
+					t.Fatal(err)
 				}
-				return r3FetchResponse(test.status, test.body, test.header), nil
+				var fetchErr error
+				if kind == "document" {
+					_, _, fetchErr = client.FetchDocument(context.Background(), reference)
+				} else {
+					_, _, fetchErr = client.FetchProposal(context.Background(), reference)
+				}
+				if fetchErr == nil {
+					t.Fatal("Fetch accepted unsafe or inexact response")
+				}
+				if IsDocumentError(fetchErr) != test.wantDocumentError {
+					t.Fatalf("IsDocumentError(%v) = %t", fetchErr, IsDocumentError(fetchErr))
+				}
+				if calls != test.wantCalls {
+					t.Fatalf("HTTP calls = %d", calls)
+				}
 			})
-			client, err := New(Config{
-				HTTPClient: &http.Client{Transport: transport},
-				SigningKey: key, Issuer: "https://as.example",
-				DiscoveryDocument: aauth.AccessDiscoveryDocument, Clock: clock,
-				Admit:                func(context.Context, string) error { return test.admitError },
-				MaximumDocumentBytes: test.maxBytes,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, _, fetchErr := client.Fetch(context.Background(), reference)
-			if fetchErr == nil {
-				t.Fatal("Fetch accepted unsafe or inexact response")
-			}
-			if IsDocumentError(fetchErr) != test.wantDocumentError {
-				t.Fatalf("IsDocumentError(%v) = %t", fetchErr, IsDocumentError(fetchErr))
-			}
-			if calls != test.wantCalls {
-				t.Fatalf("HTTP calls = %d", calls)
-			}
-		})
+		}
 	}
 }
 
@@ -206,6 +440,15 @@ func r3FetchTestKey(t *testing.T, id string, fill byte) jose.SigningKey {
 		t.Fatal(err)
 	}
 	return key
+}
+
+func mustR3FetchReference(t *testing.T, uri string, exact []byte) r3.Reference {
+	t.Helper()
+	reference, err := r3.NewReference(uri, r3.Digest(exact))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reference
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

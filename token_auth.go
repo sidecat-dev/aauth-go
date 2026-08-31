@@ -12,6 +12,9 @@ import (
 	"aauth-go/signaturekey"
 )
 
+// MaximumAuthTokenLifetime is the Core upper bound from iat to exp.
+const MaximumAuthTokenLifetime = time.Hour
+
 // AuthTokenClaims are the current Core claims of an aa-auth+jwt.
 type AuthTokenClaims struct {
 	Issuer           string                     `json:"iss"`
@@ -164,7 +167,7 @@ func validateAuthClaims(claims AuthTokenClaims, now time.Time) error {
 			return fmt.Errorf("aauth: auth-token scope: %w", err)
 		}
 	}
-	if claims.ExpiresAt-claims.IssuedAt > int64(time.Hour.Seconds()) {
+	if claims.ExpiresAt-claims.IssuedAt > int64(MaximumAuthTokenLifetime/time.Second) {
 		return errors.New("aauth: auth-token lifetime exceeds one hour")
 	}
 	if claims.MissionS256 != "" {
