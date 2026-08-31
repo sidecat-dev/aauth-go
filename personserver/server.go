@@ -6,7 +6,7 @@
 // approval, ordered accepted updates, person-accepted completion, and
 // mission-bound credential issuance. Both compositions can add missionless
 // local-action permission, mission-bound post-action audit, and one immediate
-// missionless Interaction question. Three-party composition additionally
+// or deferred missionless Interaction question. Three-party composition also
 // supports deferred authorization, issued-token revocation, and one
 // same-Person-Server Resource call chain.
 package personserver
@@ -274,7 +274,8 @@ type Server struct {
 	permissionPolicy                func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
 	permissions                     PermissionStore
 	missionAudits                   MissionAuditStore
-	interactionQuestionPolicy       func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionDecision, error)
+	interactionQuestionPolicy       func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
+	interactionQuestionStore        InteractionQuestionStore
 }
 
 type authorizationMode uint8
@@ -413,8 +414,8 @@ func newServer(config serverConfig) (*Server, error) {
 	if config.audit != nil && config.missions == nil {
 		return nil, errors.New("personserver: audit requires missions")
 	}
-	if config.interactionQuestion != nil && config.interactionQuestion.Answer == nil {
-		return nil, errors.New("personserver: interaction question answer policy is required")
+	if config.interactionQuestion != nil && config.interactionQuestion.Policy == nil {
+		return nil, errors.New("personserver: interaction question policy is required")
 	}
 	if err := aauth.ValidateServerIdentifier(config.issuer); err != nil {
 		return nil, fmt.Errorf("personserver: issuer: %w", err)
@@ -492,6 +493,7 @@ func newServer(config serverConfig) (*Server, error) {
 		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
 		missionAudits:             missionAudits,
 		interactionQuestionPolicy: interactionQuestionPolicy(config.interactionQuestion),
+		interactionQuestionStore:  interactionQuestionStore(config.interactionQuestion),
 	}, nil
 }
 
@@ -518,6 +520,9 @@ func (server *Server) Handler() http.Handler {
 	}
 	if server.interactionQuestionPolicy != nil {
 		mux.HandleFunc("POST /interaction", server.handleInteractionQuestion)
+	}
+	if server.interactionQuestionStore != nil {
+		mux.HandleFunc("GET /interaction/pending/{id}", server.handlePendingInteractionQuestion)
 	}
 	return mux
 }

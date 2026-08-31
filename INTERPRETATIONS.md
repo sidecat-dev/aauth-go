@@ -1111,22 +1111,24 @@ signed JSON and additive members, and rejects relay-only `url`, `code`, and
 Person Server host must sanitize them before display and chooses how to reach
 the person; the protocol library performs neither action.
 
-The first role journey is top-level and missionless. It returns one immediate
-answer and maps an explicit host inability to reach the person to
-`user_unreachable`. Mission association would require cross-event mission-log
-composition, while `interaction` and `payment` require a separate deferred
-relay store and completion contract. Those valid source branches fail before
-policy rather than being silently treated as questions.
+The first role journey is top-level and missionless. Policy returns one
+immediate answer or a bounded deferred policy. Deferred state is retained
+before `202`; a separately authenticated host reconstructs a non-authoritative
+handle, records one answer or unreachable result, and the Agent makes one
+explicit poll. Mission association would require cross-event mission-log
+composition, while `interaction` and `payment` require a separate relay store
+and completion contract. Those valid source branches fail before policy rather
+than being silently treated as questions.
 
-Core recommends recording every Interaction request and response. This first
-path gives the host the exact request and lets host policy retain its own
-communication result, but it does not add a library store contract. Missionless
-request/answer retention and the cross-event mission log remain explicit
-conformance gaps.
+Core recommends recording every Interaction request and response. The deferred
+path retains the exact request and answer, while the immediate path leaves
+recording to host policy. Complete immediate recording and the cross-event
+mission log remain explicit conformance gaps.
 
 `AskPersonQuestion` makes one request and never retries. A valid immediate
-answer returns its exact bytes. A transport failure, malformed `200`, other
-`2xx`, or `5xx` after handoff is uncertain because the question may already
-have reached the person. Core's generic deferred path is valid but not
-implemented by this immediate-only method. `AAG-F101` records the missing
-uncertain-submission identity.
+answer returns its exact bytes; a valid `202` returns a verified pending handle.
+A transport failure or malformed initial result remains uncertain because the
+question may already have reached the person. `AAG-F101` records the missing
+uncertain-initial-submission identity. Once the pending URL is received, the
+ordinary deferred state machine applies, including its separate lost-terminal
+response gap.

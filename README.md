@@ -52,7 +52,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Direct three-party R3](example/r3threeparty) | MCP operations narrowed and issued by the Person Server with no Access Server | `go run ./example/r3threeparty` |
 | [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Mission-bound action audit](example/audit) | Application performs one local action; Agent submits its exact post-action record; Person Server appends it to the active mission | `go run ./example/audit` |
-| [Missionless question through the Person Server](example/interactionquestion) | Agent sends one raw-Markdown question; host policy reaches the person and returns one immediate answer | `go run ./example/interactionquestion` |
+| [Missionless question through the Person Server](example/interactionquestion) | Agent sends one raw-Markdown question; the PS parks it; a host answers; one explicit poll returns the retained answer | `go run ./example/interactionquestion` |
 | [Clarification during Person Server consent](example/psconsent) | A verified request is parked; the host asks one bounded question; the Agent signs one answer; explicit polling returns the approved token | `go run ./example/psconsent` |
 | [Four-party authorization variants](example/fourparty) | Missionless Core, mission lifecycle, and one runnable MCP R3 path with independent consent/policy fetches, a narrowed grant, and atomic issuance audit | `go run ./example/fourparty` |
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
@@ -81,8 +81,9 @@ The [mission Audit journey](integration/audit_mission_test.go) proves one
 signed post-action record, exact retention against the still-active
 owned mission, host-side read-back, and refusal after mission completion.
 The [Interaction question journey](integration/interaction_question_test.go)
-proves one exact top-level question and immediate answer through host policy,
-plus a typed `user_unreachable` result without Resource or Access Server calls.
+proves immediate and retained deferred answers, Person Server recomposition,
+one explicit poll, terminal consumption, and typed `user_unreachable` without
+Resource or Access Server calls.
 The [fixed-price Budget journey](integration/budget_three_party_test.go) proves
 direct Resource offer selection, Person Server amount narrowing, and
 concurrent hard-cap enforcement.
@@ -202,10 +203,10 @@ active mission. The Person Server appends before acknowledging; the Agent
 never retries an uncertain result. Deferred audit delivery, sub-agent and
 call-chain composition, durable adapters, and the cross-event mission log and
 Agent-facing read remain open.
-Interaction covers one top-level missionless `question` with an immediate host
-answer. Library-owned request/answer retention, deferred questions, mission
-association and logging, and the distinct `interaction` and `payment` relay
-state machines remain open.
+Interaction covers one top-level missionless `question` with either an
+immediate answer or a retained, explicitly polled host answer. Durable store
+adapters, mission association and logging, and the distinct `interaction` and
+`payment` relay state machines remain open.
 Mission support currently covers immediate
 top-level approval, ordered accepted updates, protected use, and
 person-accepted completion through both three-party and four-party

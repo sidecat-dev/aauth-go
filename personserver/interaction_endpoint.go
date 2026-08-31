@@ -4,21 +4,24 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 )
 
 // ErrInteractionUserUnreachable tells the Interaction Endpoint that the host
 // has no channel through which to ask the person this question.
 var ErrInteractionUserUnreachable = errors.New("personserver: interaction user is unreachable")
 
-// InteractionQuestionConfig enables one immediate top-level question path.
-// Answer receives untrusted raw Markdown and is responsible for reaching the
-// person. The library does not render either string or contact a person.
+// InteractionQuestionConfig enables immediate or deferred top-level questions.
 type InteractionQuestionConfig struct {
-	Answer func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionDecision, error)
+	// Policy selects one immediate answer or bounded deferred question.
+	Policy func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
+	// Store is required only when Policy may defer.
+	Store InteractionQuestionStore
 }
 
 // InteractionQuestionPolicyRequest supplies the verified Agent identity,
@@ -38,11 +41,18 @@ type InteractionQuestionDecision struct {
 func interactionQuestionPolicy(config *InteractionQuestionConfig) func(
 	context.Context,
 	InteractionQuestionPolicyRequest,
-) (InteractionQuestionDecision, error) {
+) (InteractionQuestionPolicyResult, error) {
 	if config == nil {
 		return nil
 	}
-	return config.Answer
+	return config.Policy
+}
+
+func interactionQuestionStore(config *InteractionQuestionConfig) InteractionQuestionStore {
+	if config == nil {
+		return nil
+	}
+	return config.Store
 }
 
 func (server *Server) handleInteractionQuestion(response http.ResponseWriter, request *http.Request) {
@@ -80,7 +90,7 @@ func (server *Server) handleInteractionQuestion(response http.ResponseWriter, re
 		return
 	}
 	receivedAt := server.clock.Now().UTC()
-	decision, err := server.interactionQuestionPolicy(request.Context(), InteractionQuestionPolicyRequest{
+	result, err := server.interactionQuestionPolicy(request.Context(), InteractionQuestionPolicyRequest{
 		Agent: agent.Subject, Document: cloneInteractionQuestionDocument(document), ReceivedAt: receivedAt,
 	})
 	if err != nil {
@@ -91,6 +101,63 @@ func (server *Server) handleInteractionQuestion(response http.ResponseWriter, re
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if err := validateInteractionQuestionPolicyResult(result); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if result.Immediate != nil {
+		server.writeInteractionAnswer(response, *result.Immediate)
+		return
+	}
+	if server.interactionQuestionStore == nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("deferred interaction question requires a store"))
+		return
+	}
+	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	if err != nil {
+		writeAgentTokenProblem(response, err)
+		return
+	}
+	createdAt := server.clock.Now().UTC()
+	agentExpiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
+	for attempt := 0; attempt < 3; attempt++ {
+		id, err := interaction.GeneratePendingReference(nil)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		record := InteractionQuestionRecord{
+			ID: id, PersonServer: server.issuer, AgentProvider: agent.Issuer,
+			Agent: agent.Subject, ConfirmationThumbprint: thumbprint,
+			AgentExpiresAt: agentExpiresAt, Document: cloneInteractionQuestionDocument(document),
+			State: InteractionQuestionPending, CreatedAt: createdAt,
+			ExpiresAt: createdAt.Add(result.Deferred.Lifetime), RetryAfter: result.Deferred.RetryAfter,
+		}
+		if agentExpiresAt.Before(record.ExpiresAt) {
+			record.ExpiresAt = agentExpiresAt
+		}
+		if !record.ExpiresAt.After(createdAt) {
+			writeProblem(response, http.StatusRequestTimeout, "expired", ErrInteractionQuestionExpired)
+			return
+		}
+		if err := validateInteractionQuestionRecord(record); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if err := server.interactionQuestionStore.CreateInteractionQuestion(request.Context(), cloneInteractionQuestionRecord(record)); err != nil {
+			if errors.Is(err, ErrInteractionQuestionConflict) {
+				continue
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		server.writePendingInteractionQuestion(response, "/interaction/pending/"+id, record.RetryAfter)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("could not allocate interaction question reference"))
+}
+
+func (server *Server) writeInteractionAnswer(response http.ResponseWriter, decision InteractionQuestionDecision) {
 	answer, err := aauth.EncodeInteractionAnswer(aauth.InteractionAnswer{Answer: decision.Answer})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -100,6 +167,14 @@ func (server *Server) handleInteractionQuestion(response http.ResponseWriter, re
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(answer.ExactJSON)
+}
+
+func (server *Server) writePendingInteractionQuestion(response http.ResponseWriter, location string, retryAfter time.Duration) {
+	response.Header().Set("Location", location)
+	response.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
+	writePrivateJSON(response, http.StatusAccepted, struct {
+		Status string `json:"status"`
+	}{Status: "pending"})
 }
 
 func cloneInteractionQuestionDocument(document aauth.InteractionQuestionDocument) aauth.InteractionQuestionDocument {

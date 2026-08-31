@@ -267,16 +267,25 @@ sequenceDiagram
     PS->>Host: Exact untrusted Markdown question
     Host->>P: Reach person through host-selected channel
     P-->>Host: Answer
-    Host-->>PS: Immediate answer
-    PS-->>A: 200 with exact answer document
+    alt immediate
+        Host-->>PS: Answer
+        PS-->>A: 200 with exact answer document
+    else deferred
+        PS->>PS: Retain question before 202
+        PS-->>A: 202 with same-origin pending URL
+        Host->>PS: Resume and retain answer
+        A->>PS: One signed bodyless GET
+        PS-->>A: Consume and return exact answer
+    end
 ```
 
 The library carries raw Markdown but does not render it or choose a person
 communication channel. The Agent submits once and does not retry an uncertain
-post-handoff result. This first path is top-level and missionless. Deferred
-question handling, library-owned request/answer retention, mission-log
-composition, and the separate interaction and payment relay state machines
-remain outside this increment.
+initial result. Policy may answer immediately or retain a bounded question
+before `202`; a separately authenticated host later answers, and the Agent
+polls explicitly once per call. This path is top-level and missionless.
+Mission-log composition and the separate interaction and payment relay state
+machines remain outside this increment.
 
 ### Clarification during three-party consent
 

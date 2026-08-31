@@ -1967,10 +1967,10 @@ an answer but the response is lost or malformed, the Agent cannot discover the
 result. Repeating the request may show the person the same question twice and
 produce two unrelated answers.
 
-The immediate Agent implementation submits exactly once. It returns a typed
-uncertain outcome after a transport failure, malformed `200`, unsupported
-deferred result, other `2xx`, or `5xx`; a definite `4xx` remains typed. It does
-not retry or claim recovery.
+The Agent implementation submits exactly once. A valid `202` supplies a
+verified continuation, but a transport failure or malformed initial result can
+lose that continuation after the Person Server retained the question. The
+Agent returns a typed uncertain outcome and does not retry or claim recovery.
 
 **Question:** Should Interaction requests carry a stable caller-selected
 identity, or should the Person Server define exact-request replay and lookup

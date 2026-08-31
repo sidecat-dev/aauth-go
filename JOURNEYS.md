@@ -178,16 +178,17 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
 
 - [x] **Missionless Interaction question — Implemented**
   - Flow: Agent → PS with one exact signed raw-Markdown question → host policy
-    reaches the person → PS returns one immediate exact answer.
+    returns an immediate answer or retains a bounded pending question → an
+    independently authenticated host resumes and answers → one explicit Agent
+    poll consumes the exact result.
   - Start with: `aauth.InteractionQuestion`,
     `agent.Client.AskPersonQuestion`, and
     `personserver.InteractionQuestionConfig`.
   - Evidence: [`integration/interaction_question_test.go`](integration/interaction_question_test.go)
     and `go run ./example/interactionquestion`.
-  - Missing from the wider Interaction Endpoint: deferred questions, mission
-    association and mission-log recording, missionless request/answer
-    retention, `interaction` and `payment` relay, `max_wait`, and stable
-    uncertain-submission recovery.
+  - Missing from the wider Interaction Endpoint: durable adapters, mission
+    association and mission-log recording, `interaction` and `payment` relay,
+    `max_wait`, and stable uncertain-initial-submission recovery.
 
 ### Not implemented
 

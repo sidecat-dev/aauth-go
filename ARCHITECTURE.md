@@ -87,10 +87,11 @@ it does not create a general evidence container.
 
 The current Interaction Endpoint slice is one top-level missionless question.
 The root package owns exact question and answer documents, `agent` performs one
-signed request, and `personserver` hands untrusted Markdown to one immediate
-host policy in either composition. No generic interaction engine or shared
-pending object is introduced. Deferred question handling and the interaction
-and payment relay state machines remain distinct later work.
+signed request or poll, and `personserver` hands untrusted Markdown to host
+policy in either composition. `InteractionQuestionStore` owns only a bounded
+pending question, identity binding, host answer, expiry, and single terminal
+consumption. It is not a generic interaction engine. Mission composition and
+the interaction and payment relay state machines remain distinct later work.
 
 The current model includes focused `r3`, `events`, and `budgets` protocol
 packages. Sections below distinguish their implemented profiles from target
@@ -476,7 +477,8 @@ Examples include:
 - `EnrollmentStore` at an AP for a durable-key enrollment and exact refresh
   result keyed by the verified identity and delegation JTI.
 - `PersonTokenStore`, `MissionStore`, `MissionAuditStore`,
-  `PendingAuthorizationStore`, and `PermissionStore` at a PS.
+  `PendingAuthorizationStore`, `PermissionStore`, and
+  `InteractionQuestionStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
   `R3ProposalStore`, `SubscriptionStore`, and `BudgetStore` at a Resource.
 - `r3.IssuanceStore` at whichever PS or AS issues the R3 Auth token.

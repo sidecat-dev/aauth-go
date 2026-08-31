@@ -72,7 +72,10 @@ func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
 			Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 				return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
 			},
-			InteractionQuestion: &personserver.InteractionQuestionConfig{Answer: answer},
+			InteractionQuestion: &personserver.InteractionQuestionConfig{Policy: func(ctx context.Context, request personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionPolicyResult, error) {
+				decision, err := answer(ctx, request)
+				return personserver.InteractionQuestionPolicyResult{Immediate: &decision}, err
+			}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -111,13 +114,17 @@ func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+	result, err := operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
 		PersonServer: personServerID,
 		Description:  "A route decision is required.",
 		Question:     "Which route should I take?",
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	answer, ok := result.Answer()
+	if !ok {
+		t.Fatalf("question result = %#v, want answer", result)
 	}
 	if answer.Answer.Answer != "Take the northern route." {
 		t.Fatalf("answer = %#v", answer.Answer)
@@ -135,7 +142,88 @@ func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
 	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "user_unreachable" {
 		t.Fatalf("unreachable question = %T %v", err, err)
 	}
-	if questionCalls != 2 || questionPosts != 2 || resourceCalls != 0 || accessServerCalls != 0 {
+
+	deferredStore := exampleutil.NewInteractionQuestionStore()
+	newDeferredPeople := func() *personserver.Server {
+		people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+			Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
+			Clock: clock, Tokens: exampleutil.NewMissionStore(), NewID: func() string { return "unused-person-token" },
+			BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
+				return personserver.Person{Subject: "person", Lifetime: time.Minute}, nil
+			},
+			Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
+				return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
+			},
+			InteractionQuestion: &personserver.InteractionQuestionConfig{
+				Store: deferredStore,
+				Policy: func(context.Context, personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionPolicyResult, error) {
+					questionCalls++
+					return personserver.InteractionQuestionPolicyResult{Deferred: &personserver.InteractionQuestionPendingPolicy{
+						Lifetime: 2 * time.Minute, RetryAfter: 0,
+					}}, nil
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return people
+	}
+	people = newDeferredPeople()
+	servePeople(people)
+	result, err = operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+		PersonServer: personServerID, Question: "Should I publish the draft?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok {
+		t.Fatalf("deferred result = %#v", result)
+	}
+	people = newDeferredPeople()
+	servePeople(people)
+	handle, err := people.ResumeInteractionQuestion(ctx, strings.TrimPrefix(pending.Location(), personServerID+"/interaction/pending/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := people.AnswerInteractionQuestion(ctx, handle, "Yes, publish it."); err != nil {
+		t.Fatal(err)
+	}
+	result, err = operator.PollPersonQuestion(ctx, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferredAnswer, ok := result.Answer()
+	if !ok || deferredAnswer.Answer.Answer != "Yes, publish it." {
+		t.Fatalf("deferred answer = %#v", deferredAnswer)
+	}
+	if _, err := operator.PollPersonQuestion(ctx, pending); err == nil {
+		t.Fatal("consumed answer replayed")
+	}
+	result, err = operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+		PersonServer: personServerID, Question: "Can the person be reached?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok = result.Pending()
+	if !ok {
+		t.Fatalf("second deferred result = %#v", result)
+	}
+	handle, err = people.ResumeInteractionQuestion(ctx, strings.TrimPrefix(pending.Location(), personServerID+"/interaction/pending/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := people.FailInteractionQuestionUnreachable(ctx, handle); err != nil {
+		t.Fatal(err)
+	}
+	_, err = operator.PollPersonQuestion(ctx, pending)
+	if !errors.As(err, &problem) || problem.Code != "user_unreachable" {
+		t.Fatalf("deferred unreachable = %T %v", err, err)
+	}
+
+	if questionCalls != 4 || questionPosts != 4 || resourceCalls != 0 || accessServerCalls != 0 {
 		t.Fatalf("effects: policy=%d question=%d Resource=%d AS=%d",
 			questionCalls, questionPosts, resourceCalls, accessServerCalls)
 	}

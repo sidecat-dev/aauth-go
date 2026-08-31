@@ -44,10 +44,11 @@ func TestInteractionQuestionConfigurationAndExactAnswerInBothPersonServerModes(t
 			var policyRequest InteractionQuestionPolicyRequest
 			calls := 0
 			server := protocol.newServer(t, mode, &InteractionQuestionConfig{
-				Answer: func(_ context.Context, request InteractionQuestionPolicyRequest) (InteractionQuestionDecision, error) {
+				Policy: func(_ context.Context, request InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error) {
 					calls++
 					policyRequest = request
-					return InteractionQuestionDecision{Answer: "Take the northern route."}, nil
+					decision := InteractionQuestionDecision{Answer: "Take the northern route."}
+					return InteractionQuestionPolicyResult{Immediate: &decision}, nil
 				},
 			})
 			metadata = interactionQuestionMetadata(t, server)
@@ -78,9 +79,10 @@ func TestInteractionQuestionRejectsUnsupportedShapeMissionAndTopologyBeforePolic
 	protocol := newInteractionQuestionProtocol(t)
 	policyCalls := 0
 	server := protocol.newServer(t, "direct", &InteractionQuestionConfig{
-		Answer: func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionDecision, error) {
+		Policy: func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error) {
 			policyCalls++
-			return InteractionQuestionDecision{Answer: "unexpected"}, nil
+			decision := InteractionQuestionDecision{Answer: "unexpected"}
+			return InteractionQuestionPolicyResult{Immediate: &decision}, nil
 		},
 	})
 	mission := aauth.MissionS256([]byte("question mission"))
@@ -161,8 +163,8 @@ func TestInteractionQuestionMapsUnreachableAndOperationalPolicyFailures(t *testi
 		t.Run(test.name, func(t *testing.T) {
 			protocol := newInteractionQuestionProtocol(t)
 			server := protocol.newServer(t, "direct", &InteractionQuestionConfig{
-				Answer: func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionDecision, error) {
-					return test.answer, test.err
+				Policy: func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error) {
+					return InteractionQuestionPolicyResult{Immediate: &test.answer}, test.err
 				},
 			})
 			response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,

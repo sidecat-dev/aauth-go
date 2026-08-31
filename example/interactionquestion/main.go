@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -78,6 +79,7 @@ func run(output io.Writer) error {
 		return err
 	}
 
+	questionStore := exampleutil.NewInteractionQuestionStore()
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, Tokens: exampleutil.NewMissionStore(), NewID: func() string { return "unused-person-token" },
@@ -88,11 +90,14 @@ func run(output io.Writer) error {
 			return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
 		},
 		InteractionQuestion: &personserver.InteractionQuestionConfig{
-			Answer: func(_ context.Context, request personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionDecision, error) {
+			Store: questionStore,
+			Policy: func(_ context.Context, request personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionPolicyResult, error) {
 				if _, err := fmt.Fprintf(output, "Person Server received question: %s\n", request.Document.Question.Question); err != nil {
-					return personserver.InteractionQuestionDecision{}, err
+					return personserver.InteractionQuestionPolicyResult{}, err
 				}
-				return personserver.InteractionQuestionDecision{Answer: "Take the northern route."}, nil
+				return personserver.InteractionQuestionPolicyResult{Deferred: &personserver.InteractionQuestionPendingPolicy{
+					Lifetime: time.Minute, RetryAfter: 0,
+				}}, nil
 			},
 		},
 	})
@@ -109,13 +114,33 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	answer, err := operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+	result, err := operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
 		PersonServer: personServerID,
 		Description:  "A route decision is required.",
 		Question:     "Which route should I take?",
 	})
 	if err != nil {
 		return err
+	}
+	pending, ok := result.Pending()
+	if !ok {
+		return errors.New("Person Server did not return a pending question")
+	}
+	reference := strings.TrimPrefix(pending.Location(), personServerID+"/interaction/pending/")
+	handle, err := people.ResumeInteractionQuestion(ctx, reference)
+	if err != nil {
+		return err
+	}
+	if err := people.AnswerInteractionQuestion(ctx, handle, "Take the northern route."); err != nil {
+		return err
+	}
+	result, err = operator.PollPersonQuestion(ctx, pending)
+	if err != nil {
+		return err
+	}
+	answer, ok := result.Answer()
+	if !ok {
+		return errors.New("Person Server did not return the retained answer")
 	}
 	_, err = fmt.Fprintf(output, "Agent received answer: %s\n", answer.Answer.Answer)
 	return err

@@ -45,9 +45,13 @@ func TestAskPersonQuestionSendsOneExactSignedRequestAndReturnsExactAnswer(t *tes
 		return response, nil
 	}
 
-	answer, err := fixture.client.AskPersonQuestion(context.Background(), request)
+	result, err := fixture.client.AskPersonQuestion(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	answer, ok := result.Answer()
+	if !ok {
+		t.Fatalf("result = %#v, want answer", result)
 	}
 	if answer.Answer.Answer != "Take the northern route." || string(answer.ExactJSON) != string(wantAnswer) {
 		t.Fatalf("answer = %#v, JSON=%s", answer.Answer, answer.ExactJSON)
@@ -159,9 +163,6 @@ func TestAskPersonQuestionPostHandoffInvalidResultIsUncertain(t *testing.T) {
 		response func(*http.Request) (*http.Response, error)
 	}{
 		{name: "transport failure", response: func(*http.Request) (*http.Response, error) { return nil, transportFailure }},
-		{name: "deferred", response: func(request *http.Request) (*http.Response, error) {
-			return interactionQuestionResponse(request, http.StatusAccepted, []byte(`{"status":"pending"}`)), nil
-		}},
 		{name: "wrong success", response: func(request *http.Request) (*http.Response, error) {
 			return interactionQuestionResponse(request, http.StatusCreated, nil), nil
 		}},
@@ -194,6 +195,46 @@ func TestAskPersonQuestionPostHandoffInvalidResultIsUncertain(t *testing.T) {
 				t.Fatalf("calls = submit %d, other %d", fixture.submitCalls, fixture.otherCalls)
 			}
 		})
+	}
+}
+
+func TestAskPersonQuestionReturnsVerifiedPendingAndPollsOnce(t *testing.T) {
+	fixture := newInteractionQuestionFixture(t)
+	fixture.submit = func(request *http.Request) (*http.Response, error) {
+		response := interactionQuestionResponse(request, http.StatusAccepted, []byte(`{"status":"pending"}`))
+		response.Header.Set("Location", "/interaction/pending/question-1")
+		response.Header.Set("Retry-After", "4")
+		response.Header.Set("Cache-Control", "no-store")
+		return response, nil
+	}
+	fixture.poll = func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.Body != nil && request.Body != http.NoBody {
+			t.Fatalf("poll request = %s body=%T", request.Method, request.Body)
+		}
+		verifyProofWithComponents(t, request, fixture.protocol.resolver, fixture.protocol.clock, aauth.AgentTokenType, nil)
+		return interactionQuestionResponse(request, http.StatusOK, []byte(`{"answer":"Take the northern route."}`)), nil
+	}
+	result, err := fixture.client.AskPersonQuestion(context.Background(), agent.InteractionQuestionRequest{
+		PersonServer: fixture.protocol.personServerID, Question: "Which route?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok || pending.PersonServer() != fixture.protocol.personServerID ||
+		pending.Location() != "https://ps.example/interaction/pending/question-1" || pending.RetryAfter() != 4*time.Second {
+		t.Fatalf("pending = %#v, ok=%t", pending, ok)
+	}
+	result, err = fixture.client.PollPersonQuestion(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, ok := result.Answer()
+	if !ok || answer.Answer.Answer != "Take the northern route." {
+		t.Fatalf("answer = %#v, ok=%t", answer, ok)
+	}
+	if fixture.submitCalls != 1 || fixture.pollCalls != 1 || fixture.otherCalls != 0 {
+		t.Fatalf("calls = submit %d poll %d other %d", fixture.submitCalls, fixture.pollCalls, fixture.otherCalls)
 	}
 }
 
@@ -234,8 +275,10 @@ type interactionQuestionFixture struct {
 	endpoint       string
 	metadataCalls  int
 	submitCalls    int
+	pollCalls      int
 	otherCalls     int
 	submit         func(*http.Request) (*http.Response, error)
+	poll           func(*http.Request) (*http.Response, error)
 }
 
 func newInteractionQuestionFixture(t *testing.T) *interactionQuestionFixture {
@@ -261,6 +304,12 @@ func (fixture *interactionQuestionFixture) roundTrip(request *http.Request) (*ht
 			fixture.t.Fatal("unexpected interaction question submission")
 		}
 		return fixture.submit(request)
+	case "https://ps.example/interaction/pending/question-1":
+		fixture.pollCalls++
+		if fixture.poll == nil {
+			fixture.t.Fatal("unexpected interaction question poll")
+		}
+		return fixture.poll(request)
 	default:
 		fixture.otherCalls++
 		fixture.t.Fatalf("unexpected request: %s %s", request.Method, request.URL)

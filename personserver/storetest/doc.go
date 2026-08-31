@@ -31,6 +31,9 @@
 //		})
 //	}
 //
+// A deferred Interaction-question store uses RunInteractionQuestion with a
+// fresh store from InteractionQuestionContract.New.
+//
 // New must return a fresh, empty store. The contract checks the public state
 // transitions, identity binding, copy isolation, retry rules, concurrency,
 // expiry, cancellation, and error atomicity appropriate to that store.
