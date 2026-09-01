@@ -187,6 +187,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `resource.AgentTokenRevocationStore`.
   - Evidence: [`integration/revocation_reauthorization_test.go`](integration/revocation_reauthorization_test.go),
     [`integration/agent_token_revocation_test.go`](integration/agent_token_revocation_test.go),
+    [`personserver/storetest/issued_auth_token.go`](personserver/storetest/issued_auth_token.go),
+    [`resource/storetest/auth_token_status.go`](resource/storetest/auth_token_status.go),
     and `go run ./example/revocation`.
   - Missing: automatic Agent-token fan-out, Auth-token pre-use and four-party
     propagation, mission cascade, and session revocation.
