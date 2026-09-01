@@ -167,6 +167,12 @@ identifies the parser's exact digest input; it is not the R3 document's
 
 ## Complete protocol journeys
 
+For the narrow repository deployment profile that composes enrollment,
+permission, mission review, direct MCP plus Budget, connector execution, and
+Agent-token revocation on one set of roles, run `go run
+./example/hostedservice`. The sections below explain the protocol journeys
+individually.
+
 ### Immediate four-party authorization
 
 ```mermaid

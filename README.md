@@ -46,6 +46,7 @@ stores. The programs are executable documentation, not deployment templates.
 
 | Path | What it demonstrates | Command |
 | --- | --- | --- |
+| [Hosted-service launch composition](example/hostedservice) | One AP/PS/Resource environment composes enrollment, local permission, host-reviewed mission approval, MCP plus fixed Budget, application-owned OAuth credential use, and immediate Agent-token revocation | `go run ./example/hostedservice` |
 | [Hosted Agent bootstrap profiles](example/bootstrap) | Shared `hwk` enrollment, two refresh-key patterns, Agent identity access, and host revocation followed by a refused refresh | `go run ./example/bootstrap` |
 | [Self-hosted Agent](example/selfhosted) | One user-controlled key publishes AP metadata/JWKS, self-issues an ordinary Agent token, and signs a protected Resource call | `go run ./example/selfhosted` |
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |

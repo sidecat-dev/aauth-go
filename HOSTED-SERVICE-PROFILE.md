@@ -51,21 +51,25 @@ retained state remain distinct even when their handlers share a server.
    enforce a corresponding revocation signal; the protocol defines no Resource
    registry or automatic fan-out.
 
-Run the enrollment-to-revocation portion with:
+Run the complete in-process composition spine with:
+
+```sh
+go run ./example/hostedservice
+```
+
+That example proves the features can share one configured environment. The
+focused examples below provide deeper evidence for individual paths, including
+exact refresh replay and Budget refusal:
 
 ```sh
 go run ./example/bootstrap
-```
-
-The complete protocol compositions are demonstrated by:
-
-```sh
 go run ./example/permission
 go run ./example/threeparty
 go run ./example/fourparty
 go run ./example/r3threeparty
 go run ./example/budget
 go run ./example/mission
+go run ./example/revocation
 ```
 
 ## Required launch capabilities

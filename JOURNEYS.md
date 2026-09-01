@@ -20,6 +20,7 @@ a method on `agent.Client`.
 
 Specifications:
 
+- [Repository deployment profiles](#repository-deployment-profiles)
 - [AAuth Protocol](#aauth-protocol)
 - [HTTP Signature Keys](#http-signature-keys)
 - [AAuth Rich Resource Requests (R3)](#aauth-rich-resource-requests-r3)
@@ -27,6 +28,19 @@ Specifications:
 - [AAuth Bootstrap Guidance](#aauth-bootstrap-guidance)
 - [AAuth Budgets](#aauth-budgets)
 - [AAuth interoperability demo profile](#aauth-interoperability-demo-profile)
+
+## Repository deployment profiles
+
+- [x] **Hosted-service launch composition — Implemented**
+  - Flow: durable-key enrollment → delegated Agent-token refresh → local
+    permission → separately host-reviewed mission approval → MCP operation and
+    fixed Budget → one connector application call → AP revocation at the PS
+    and local direct Resource.
+  - Start with: [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md) and
+    `go run ./example/hostedservice`.
+  - Boundary: this proves exported-library composition with real signed HTTP
+    exchanges. It does not prove production persistence, account login, OAuth,
+    administrative authentication, or deployment.
 
 ## AAuth Protocol
 

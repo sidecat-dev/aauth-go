@@ -122,6 +122,12 @@ packages. Sections below distinguish their implemented profiles from target
 ownership. Present-tense support must never be inferred from the target import
 map alone.
 
+The hosted-service example composes existing role APIs; it does not add a
+hosted-service package. Enrollment, permission, mission review, R3, Budget,
+connector execution, and revocation remain independently configurable role
+capabilities. Their composition is evidence that the package boundaries work
+together, not a new cross-role lifecycle abstraction.
+
 ## Package graph
 
 Arrows mean target imports. Protocol packages do not import role packages, and
