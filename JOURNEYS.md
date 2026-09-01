@@ -86,7 +86,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Start with: `personserver.NewFederatedAuthorization`, `accessserver.New`,
     `resource.NewFederatedAuthorization`, `Client.Begin`, and
     `Client.PollAuthToken`.
-  - Evidence: [`integration/core_four_party_test.go`](integration/core_four_party_test.go)
+  - Evidence: [`resource/storetest/held.go`](resource/storetest/held.go),
+    [`integration/core_four_party_test.go`](integration/core_four_party_test.go),
     and `go run ./example/fourparty`.
 
 ### Bounded journeys
