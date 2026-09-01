@@ -107,6 +107,21 @@ type ApprovedMission struct {
 	Blob      MissionBlob
 }
 
+// ApprovesTool reports whether name exactly matches a tool recorded in the
+// approved mission. The protocol defines no tool-name normalization and does
+// not make this local planning aid an enforceable permission at a Resource.
+func (mission ApprovedMission) ApprovesTool(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, tool := range mission.Blob.ApprovedTools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // MissionS256 returns the unpadded base64url SHA-256 identifier used for exact
 // mission-blob and accepted-update bytes.
 func MissionS256(exactJSON []byte) string {

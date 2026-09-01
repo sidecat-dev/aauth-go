@@ -27,6 +27,7 @@ func TestClientProposesAndVerifiesMission(t *testing.T) {
 	mission := mustEncodeMission(t, aauth.MissionBlob{
 		Approver: protocol.personServerID, Agent: protocol.agentID, ApprovedAt: approvedAt,
 		ExpiresAt: &expiresAt, Description: proposal.Description,
+		ApprovedTools:     []aauth.MissionTool{{Name: "Read", Description: "Read records for the report"}},
 		ApprovedResources: []string{protocol.resourceID},
 	})
 	personToken, err := aauth.MintPersonToken(protocol.personServerKey, aauth.PersonTokenClaims{
@@ -83,6 +84,14 @@ func TestClientProposesAndVerifiesMission(t *testing.T) {
 	if !slices.Equal(result.Capabilities(), []string{"interaction"}) {
 		t.Fatalf("capabilities = %#v", result.Capabilities())
 	}
+	if !result.ApprovesTool("Read") {
+		t.Fatal("verified pre-approved tool was not recognized")
+	}
+	for _, action := range []string{"", "read", "Publish"} {
+		if result.ApprovesTool(action) {
+			t.Errorf("unapproved action %q was treated as approved", action)
+		}
+	}
 	gotToken, ok := result.PersonToken(protocol.resourceID)
 	if !ok || gotToken != personToken || missionCalls != 1 {
 		t.Fatalf("person token = %q, present=%t, calls=%d", gotToken, ok, missionCalls)
@@ -95,6 +104,15 @@ func TestClientProposesAndVerifiesMission(t *testing.T) {
 	approved.ExactJSON[0] ^= 1
 	if result.Mission().ExactJSON[0] != mission.ExactJSON[0] {
 		t.Fatal("caller mutated exact mission bytes")
+	}
+}
+
+func TestZeroMissionResultApprovesNoTools(t *testing.T) {
+	t.Parallel()
+
+	var result agent.MissionResult
+	if result.ApprovesTool("Read") {
+		t.Fatal("zero mission result approved a tool")
 	}
 }
 

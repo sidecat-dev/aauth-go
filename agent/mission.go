@@ -205,6 +205,13 @@ func (result MissionResult) Mission() aauth.ApprovedMission {
 	return cloneApprovedMission(result.mission)
 }
 
+// ApprovesTool reports whether name exactly matches a tool recorded in the
+// verified mission. It does not contact the Person Server or report whether a
+// mission was later terminated there.
+func (result MissionResult) ApprovesTool(name string) bool {
+	return result.mission.ApprovesTool(name)
+}
+
 // Capabilities returns the Person Server capabilities available at approval.
 func (result MissionResult) Capabilities() []string {
 	return append([]string(nil), result.capabilities...)

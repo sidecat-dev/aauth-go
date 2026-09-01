@@ -278,6 +278,12 @@ Immediate policy returns a retained decision in one request. Deferred policy
 returns a private continuation and requires an explicit caller poll; no method
 sleeps or loops.
 
+For a verified mission, `MissionResult.ApprovesTool` exactly matches a name
+against `approved_tools`. While the mission is active, a listed tool skips this
+endpoint; an empty, case-different, or unlisted action uses it. This is
+Agent-side planning, not protocol enforcement or a live mission-status check:
+no remote party observes local tool use.
+
 Without `mission_s256`, the focused Permission store owns the request. With a
 mission, the Agent names an approved mission and the PS gives policy and the
 deferred host view its exact blob plus accepted updates. One
@@ -285,8 +291,8 @@ deferred host view its exact blob plus accepted updates. One
 decision, poll, and terminal consume each compare the exact active mission in
 the same transaction. A mission update after host review forces a fresh resume;
 expiry or termination prevents a grant from being released. These records are
-the permission sublog, not the complete cross-event mission log. Automatic
-pre-approved-tool matching and full log ordering remain unimplemented.
+the permission sublog, not the complete cross-event mission log. Full log
+ordering remains unimplemented.
 
 ### Mission-bound action audit
 

@@ -50,6 +50,45 @@ func TestMissionApprovalPreservesAndVerifiesExactBlob(t *testing.T) {
 	}
 }
 
+func TestApprovedMissionMatchesOnlyExactApprovedToolNames(t *testing.T) {
+	t.Parallel()
+
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver:    "https://person.example",
+		Agent:       "aauth:planner@agents.example",
+		ApprovedAt:  time.Date(2026, 9, 1, 18, 0, 0, 0, time.UTC),
+		Description: "Read the reviewed report inputs.",
+		ApprovedTools: []aauth.MissionTool{
+			{Name: "Read", Description: "Read reviewed inputs"},
+			{Name: "Summarize", Description: "Summarize the inputs"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name string
+		want bool
+	}{
+		{name: "Read", want: true},
+		{name: "Summarize", want: true},
+		{name: "read", want: false},
+		{name: " Read", want: false},
+		{name: "", want: false},
+		{name: "Publish", want: false},
+	} {
+		if got := mission.ApprovesTool(test.name); got != test.want {
+			t.Errorf("ApprovesTool(%q) = %t, want %t", test.name, got, test.want)
+		}
+	}
+
+	var zero aauth.ApprovedMission
+	if zero.ApprovesTool("Read") {
+		t.Fatal("zero mission approved a tool")
+	}
+}
+
 func TestEncodeMissionDoesNotAliasCallerValues(t *testing.T) {
 	t.Parallel()
 

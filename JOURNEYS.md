@@ -203,9 +203,23 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Evidence: [`integration/permission_missionless_test.go`](integration/permission_missionless_test.go),
     [`personserver/storetest/permission.go`](personserver/storetest/permission.go),
     and `go run ./example/permission`.
-  - Missing from the wider Permission Endpoint: `approved_tools` matching,
-    complete cross-event mission-log recording, durable adapters, and
-    recovery of an uncertain initial submission.
+  - Missing from the wider Permission Endpoint: complete cross-event
+    mission-log recording, durable adapters, and recovery of an uncertain
+    initial submission.
+
+- [x] **Mission pre-approved local tool — Implemented**
+  - Flow: verified mission approval → exact `approved_tools` name match → Agent
+    skips the Permission Endpoint for that tool; an empty, case-different, or
+    unlisted action still uses the ordinary permission journey.
+  - Start with: `ApprovedMission.ApprovesTool` and
+    `agent.MissionResult.ApprovesTool`.
+  - Evidence: [`mission_test.go`](mission_test.go),
+    [`agent/mission_test.go`](agent/mission_test.go),
+    [`integration/mission_deferred_proposal_test.go`](integration/mission_deferred_proposal_test.go),
+    and `go run ./example/mission`.
+  - Boundary: this is local Agent planning, not a mission-status read. The
+    protocol does not remotely enforce tool use; departures belong in the
+    mission log and Audit path.
 
 - [x] **Mission-bound local-action permission — Implemented**
   - Flow: Agent names one active mission → PS gives policy the approved blob

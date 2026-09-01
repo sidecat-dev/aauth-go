@@ -125,7 +125,9 @@ func TestDeferredMissionProposalContinuesThroughProtectedResource(t *testing.T) 
 	started, err := reader.BeginMission(ctx, clientagent.MissionRequest{
 		PersonServer: personServerID,
 		Proposal: aauth.MissionProposal{
-			Description: "Read the records needed for the report.", Resources: []string{resourceID},
+			Description: "Read the records needed for the report.",
+			Tools:       []aauth.MissionTool{{Name: "Read", Description: "Read report records"}},
+			Resources:   []string{resourceID},
 		},
 	})
 	if err != nil {
@@ -142,7 +144,8 @@ func TestDeferredMissionProposalContinuesThroughProtectedResource(t *testing.T) 
 	review := reviews[0]
 	missionExpiry := now.Add(20 * time.Minute)
 	if err := people.ApproveMissionProposal(ctx, review, personserver.MissionDecision{
-		Description: review.Proposal().Description, ApprovedResources: []string{resourceID}, ExpiresAt: &missionExpiry,
+		Description: review.Proposal().Description, ApprovedTools: review.Proposal().Tools,
+		ApprovedResources: []string{resourceID}, ExpiresAt: &missionExpiry,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +156,9 @@ func TestDeferredMissionProposalContinuesThroughProtectedResource(t *testing.T) 
 	mission, ok := completed.Approval()
 	if !ok {
 		t.Fatalf("mission poll = %#v, want approval", completed)
+	}
+	if !mission.ApprovesTool("Read") || mission.ApprovesTool("Publish") {
+		t.Fatalf("approved_tools planning = Read:%t Publish:%t", mission.ApprovesTool("Read"), mission.ApprovesTool("Publish"))
 	}
 	personToken, ok := mission.PersonToken(resourceID)
 	if !ok {

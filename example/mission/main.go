@@ -32,6 +32,7 @@ const (
 	personServerID  = "https://person.example"
 	resourceID      = "https://resource.example"
 	scope           = "records.read"
+	readTool        = "ReadRecords"
 )
 
 func main() {
@@ -126,7 +127,9 @@ func main() {
 	proposalResult := must(reader.BeginMission(ctx, clientagent.MissionRequest{
 		PersonServer: personServerID,
 		Proposal: aauth.MissionProposal{
-			Description: "# Read the report inputs", Resources: []string{resourceID},
+			Description: "# Read the report inputs",
+			Tools:       []aauth.MissionTool{{Name: readTool, Description: "Read one report record"}},
+			Resources:   []string{resourceID},
 		},
 	}))
 	pending, ok := proposalResult.Pending()
@@ -139,7 +142,8 @@ func main() {
 	}
 	proposal := reviews[0].Proposal()
 	if err := people.ApproveMissionProposal(ctx, reviews[0], personserver.MissionDecision{
-		Description: proposal.Description, ApprovedResources: proposal.Resources, ExpiresAt: &missionExpiry,
+		Description: proposal.Description, ApprovedTools: proposal.Tools,
+		ApprovedResources: proposal.Resources, ExpiresAt: &missionExpiry,
 	}); err != nil {
 		log.Fatal(err)
 	}
@@ -148,6 +152,13 @@ func main() {
 	if !approved {
 		log.Fatal("approved mission remained pending")
 	}
+	if !mission.ApprovesTool(readTool) {
+		log.Fatal("approved tool was not recognized")
+	}
+	if mission.ApprovesTool("SendMessage") {
+		log.Fatal("unapproved tool was treated as approved")
+	}
+	fmt.Printf("mission pre-approves %s; SendMessage still requires permission\n", readTool)
 	update := must(reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
 		PersonServer: personServerID, MissionS256: mission.Mission().S256,
 		Description: "Report inputs selected",
