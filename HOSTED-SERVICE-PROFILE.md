@@ -84,7 +84,7 @@ go run ./example/revocation
 | Operation authorization | MCP and OpenAPI R3 class and per-call journeys. The direct MCP class path composes with a fixed Budget in one protected call. Other registered vocabularies are not launch requirements. |
 | Human approval | Approval-only missions and deferred permission decisions with application-authenticated host review. |
 | Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. The direct MCP composition verifies the operation before charging and preserves the R3 reference on step-up. A commercial billing ledger remains an application concern. |
-| Restart and replay | Applications provide stores satisfying the public `storetest` contracts; services may be reconstructed around those retained stores. |
+| Restart and replay | Applications provide stores satisfying the public role-local `storetest` contracts, including R3 document, R3 issuance, and Budget charging; services may be reconstructed around those retained stores. |
 | Third-party credential isolation | The connector stores and uses its OAuth or API credential. AAuth conveys the permitted operation and limits, never the credential itself. |
 
 ## Host responsibilities
@@ -96,7 +96,10 @@ polls, or choose business policy. The host must:
 - authenticate people and administrators before invoking review or enrollment
   transition methods;
 - supply durable, transactionally correct store adapters;
-- run each applicable role-local `storetest` suite against those adapters;
+- run each applicable role-local `storetest` suite against those adapters,
+  including `resource/storetest.RunR3Document`,
+  `r3/storetest.RunIssuance`, and `resource/storetest.RunBudget` for the
+  operation-and-Budget path;
 - keep private keys and third-party credentials out of Agent-visible values;
 - use short Agent-token lifetimes appropriate to the delay between revocation
   and expiry;

@@ -39,8 +39,10 @@ Specifications:
   - Start with: [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md) and
     `go run ./example/hostedservice`.
   - Boundary: this proves exported-library composition with real signed HTTP
-    exchanges. It does not prove production persistence, account login, OAuth,
-    administrative authentication, or deployment.
+    exchanges. Its operation-and-Budget reference stores pass the public R3
+    document, R3 issuance, and Budget contracts. It does not prove production
+    persistence, account login, OAuth, administrative authentication, or
+    deployment.
 
 ## AAuth Protocol
 

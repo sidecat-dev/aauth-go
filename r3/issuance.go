@@ -31,6 +31,17 @@ type IssuanceRecord struct {
 	ParentAgent  string
 }
 
+// Clone returns an independent copy suitable for crossing an IssuanceStore
+// boundary.
+func (record IssuanceRecord) Clone() IssuanceRecord {
+	cloned := record
+	if record.Account != nil {
+		account := *record.Account
+		cloned.Account = &account
+	}
+	return cloned
+}
+
 // IssuanceStore durably and confidentially retains one complete mandatory
 // issuance audit record. Commits for one Auth-token reference must be
 // linearizable: Commit copies the record, concurrent exact repeats converge,

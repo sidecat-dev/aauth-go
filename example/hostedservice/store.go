@@ -58,13 +58,14 @@ func newR3IssuanceStore() *r3IssuanceStore {
 func (store *r3IssuanceStore) Commit(_ context.Context, record r3.IssuanceRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	owned := record.Clone()
 	if retained, ok := store.records[record.AuthTokenReference]; ok {
-		if !reflect.DeepEqual(retained, record) {
-			return errors.New("hosted-service example: R3 issuance conflicts with retained state")
+		if !reflect.DeepEqual(retained, owned) {
+			return r3.ErrIssuanceConflict
 		}
 		return nil
 	}
-	store.records[record.AuthTokenReference] = record
+	store.records[record.AuthTokenReference] = owned
 	return nil
 }
 
