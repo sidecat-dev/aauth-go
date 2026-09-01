@@ -59,7 +59,7 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | Direct Agent or Person identity | [`example/agentidentity`](example/agentidentity) |
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
-| Four-party fixed Budget through an Access Server | [`example/budgetfourparty`](example/budgetfourparty) |
+| Account-bound four-party fixed Budget through an Access Server | [`example/budgetfourparty`](example/budgetfourparty) |
 | Self-hosted local Agent linking to a hosted account | [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md), [`example/selfhosted`](example/selfhosted) |
 | Hosted enrollment or a self-hosted Agent through the full hosted-service path | [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md), [`example/hostedservice`](example/hostedservice) |
 | Local permission or a mission lifecycle | [`example/permission`](example/permission), [`example/mission`](example/mission) |

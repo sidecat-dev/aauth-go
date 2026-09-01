@@ -1358,7 +1358,7 @@ func TestMCPDirectConfigurationPreservesCoreOnlyRoutes(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "Core token on Core route", path: "/legacy", compact: coreToken, wantStatus: http.StatusNoContent},
-		{name: "Core account token remains unsupported", path: "/legacy", compact: coreAccountToken, wantStatus: http.StatusForbidden},
+		{name: "Core account token on Core route", path: "/legacy", compact: coreAccountToken, wantStatus: http.StatusNoContent},
 		{name: "R3 token on Core route", path: "/legacy", compact: r3Token, wantStatus: http.StatusForbidden},
 		{name: "Core token on R3 route", path: "/records", compact: coreToken, wantStatus: http.StatusForbidden},
 		{name: "R3 token on R3 route", path: "/records", compact: r3Token, wantStatus: http.StatusNoContent},

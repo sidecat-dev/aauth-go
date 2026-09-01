@@ -32,6 +32,7 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 		accessServerID  = "https://as.example"
 	)
 	scope := []string{"records.read"}
+	account := "primary"
 	agentProviderKey := newSigningKey(t, "three-party-ap")
 	agentKey := newSigningKey(t, "three-party-agent")
 	personServerKey := newSigningKey(t, "three-party-ps")
@@ -86,9 +87,11 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 		},
 		Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 			if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
-				request.Tenant != "tenant-1" || !slices.Equal(request.Scopes, scope) {
+				request.Tenant != "tenant-1" || request.Account == nil || *request.Account != account ||
+				!slices.Equal(request.Scopes, scope) {
 				return personserver.AuthorizationDecision{}, errors.New("unexpected authorization context")
 			}
+			*request.Account = "mutated-by-person-policy"
 			return personserver.AuthorizationDecision{Scopes: append([]string(nil), request.Scopes...), Lifetime: 30 * time.Minute}, nil
 		},
 	})
@@ -107,11 +110,18 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 			}
 			return nil
 		},
+		ValidateAccount: func(_ context.Context, identity resource.PersonIdentity, got string) error {
+			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) || got != account {
+				return errors.Join(resource.ErrInvalidAccount, errors.New("unexpected Resource account"))
+			}
+			return nil
+		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			protectedCalls++
 			principal, ok := resource.AuthPrincipalFromContext(request.Context())
 			if !ok || principal.PersonServer != personServerID || principal.Subject != "person-123" ||
-				principal.Tenant != "tenant-1" || !slices.Equal(principal.Scope, scope) ||
+				principal.Tenant != "tenant-1" || principal.Account == nil || *principal.Account != account ||
+				!slices.Equal(principal.Scope, scope) ||
 				!principal.Confirmation.Equal(agentKey.PublicJWK()) {
 				t.Errorf("three-party principal = %#v, present=%t", principal, ok)
 			}
@@ -145,7 +155,7 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 		t.Fatalf("person-token result = %#v", personResult)
 	}
 	resourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
-		Resource: resourceID, PersonToken: personToken, Scopes: scope,
+		Resource: resourceID, PersonToken: personToken, Scopes: scope, Account: &account,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +164,8 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resourceClaims.Audience != personServerID || resourceClaims.PersonServer != personServerID {
+	if resourceClaims.Audience != personServerID || resourceClaims.PersonServer != personServerID ||
+		resourceClaims.Account == nil || *resourceClaims.Account != account {
 		t.Fatalf("three-party resource token = %#v", resourceClaims)
 	}
 	authToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
@@ -169,7 +180,8 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 	}
 	if authClaims.Issuer != personServerID || authClaims.DWK != aauth.PersonDiscoveryDocument ||
 		authClaims.Audience != resourceID || authClaims.PersonServer != personServerID ||
-		authClaims.Subject != "person-123" || !slices.Equal(strings.Fields(authClaims.Scope), scope) {
+		authClaims.Subject != "person-123" || authClaims.Account == nil || *authClaims.Account != account ||
+		!slices.Equal(strings.Fields(authClaims.Scope), scope) {
 		t.Fatalf("three-party auth token = %#v", authClaims)
 	}
 	request, _ := http.NewRequest(http.MethodGet, resourceID+"/records", nil)

@@ -83,6 +83,9 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
 - [x] **Immediate three-party authorization — Implemented**
   - Flow: Agent → PS for a Person token → Resource for a Resource token → PS
     for a narrowed Auth token → protected Resource call.
+  - Account variant: the Agent selects one account, the Resource validates it,
+    and Resource token, PS policy, Auth token, Agent verification, and protected
+    principal preserve that exact value without requiring a companion profile.
   - Start with: `personserver.NewPSAuthorization`,
     `resource.NewPSAuthorization`, and `Client.PersonToken`, `Authorize`,
     `Exchange`, and `Do`.
@@ -103,6 +106,9 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Flow: Agent → PS → Resource → PS → AS → PS → Agent → protected
     Resource call. The Resource-held variant retains the invocation, executes
     it once after explicit polling, and replays the retained result.
+  - Account variant: the same Resource validation and exact Core account
+    binding crosses PS and AS policy and the AS-issued token; it does not
+    require R3 or Budget.
   - Start with: `personserver.NewFederatedAuthorization`, `accessserver.New`,
     `resource.NewFederatedAuthorization`, `Client.Begin`, and
     `Client.PollAuthToken`.
@@ -641,9 +647,13 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
   - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go),
     [`integration/r3_budget_three_party_test.go`](integration/r3_budget_three_party_test.go),
     and `go run ./example/budget`.
-  - Boundary: this is proactive, direct, fixed-price, non-streaming,
-    missionless, non-delegated, non-chained, and has no account binding. The
-    combined path is direct MCP class authorization only.
+  - Account variant: the Resource validates one account selected on the
+    authorization request; Resource lineage, PS policy, Auth token, Agent,
+    pricing, hard-cap storage, replacement challenge, and application
+    principal preserve it.
+  - Boundary: this is proactive or Resource-selected reactive, direct,
+    fixed-price, non-streaming, non-delegated, and non-chained. Account binding
+    is proactive only. The combined R3 path is direct MCP class authorization.
 
 ### Bounded journey
 
@@ -702,6 +712,10 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     authorization and Budget context. The Resource charges the grant under the
     same mission digest. A mission change or termination during AS work
     releases no token.
+  - Account variant: the Resource validates one selected account and signs it
+    into the Resource token. PS and AS policy receive it, the AS copies it into
+    the Auth token, and Agent verification, Resource pricing, charging, and
+    dispatch preserve it.
   - Boundary: a PS omission means the Resource offer at the AS as the source
     requires. A successful AS response must still carry an explicit signed
     Budget. Per-call R3 plus Budget, deferred interaction, delegation, call chaining, consumption
@@ -729,7 +743,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     class R3 uses the AS issuance commit followed by the PS mission comparison
     and exact-token commit; a later mission race withholds the token even though
     the independent AS audit remains.
-- [ ] **Delegation, call chaining, per-call mission R3, and account-bound Budgets — Not implemented.**
+- [ ] **Delegation, call chaining, and per-call mission R3 Budgets — Not implemented.**
   The Agent, PS, and Resource fail closed rather than carrying a Budget through
   these remaining compositions.
 

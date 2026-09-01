@@ -454,9 +454,6 @@ func (client *Client) finishExchangeRequest(
 	if resourceClaims.Interaction != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource-token interaction requires the deferred flow")
 	}
-	if resourceClaims.Account != nil && verifiedResource.r3Reference == nil {
-		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource-token account is not supported by the immediate flow")
-	}
 	thumbprint, err := credential.requestKey.Thumbprint()
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err

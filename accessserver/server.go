@@ -241,10 +241,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token interaction requires the deferred flow"))
 		return
 	}
-	if resourceClaims.Account != nil && r3Context == nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
-		return
-	}
 	var budgetCeiling *budgets.Value
 	if budgetOffer != nil {
 		if err := server.budget.validateOffer(request.Context(), resourceClaims.Issuer, *budgetOffer); err != nil {

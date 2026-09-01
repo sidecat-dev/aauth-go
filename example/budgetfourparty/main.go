@@ -113,6 +113,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	account := "primary"
 	declaration, err := budgets.NewBoundedUnitDeclaration(
 		unit, 1_000_000, "US dollars at micro-dollar precision",
 	)
@@ -130,7 +131,8 @@ func run(output io.Writer) error {
 			return nil
 		},
 		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
-			if request.Budget == nil || !sameBudget(*request.Budget, personCeiling) {
+			if request.Budget == nil || !sameBudget(*request.Budget, personCeiling) ||
+				request.Account == nil || *request.Account != account {
 				return accessserver.Decision{}, errors.New("unexpected Person Server Budget ceiling")
 			}
 			return accessserver.Decision{
@@ -160,17 +162,24 @@ func run(output io.Writer) error {
 			}
 			return nil
 		},
+		ValidateAccount: func(_ context.Context, identity resource.PersonIdentity, got string) error {
+			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) || got != account {
+				return errors.New("unexpected Resource account")
+			}
+			return nil
+		},
 		Budget: &resource.BudgetConfig{
 			Units: []budgets.UnitDeclaration{declaration},
 			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
-				if !sameBudget(request.Requested, requested) {
+				if !sameBudget(request.Requested, requested) || request.Account == nil || *request.Account != account {
 					return budgets.Value{}, errors.New("unexpected Agent Budget request")
 				}
 				return resourceOffer, nil
 			},
 			RetainLineage: lineages.Retain,
 			Cost: func(_ context.Context, request resource.BudgetCostRequest) (int64, error) {
-				if !sameBudget(request.Grant, accessGrant) {
+				if !sameBudget(request.Grant, accessGrant) ||
+					request.Principal.Account == nil || *request.Principal.Account != account {
 					return 0, errors.New("unexpected signed Budget grant")
 				}
 				return 125_000, nil
@@ -206,7 +215,8 @@ func run(output io.Writer) error {
 			return personserver.Person{Subject: "person-123", Lifetime: time.Hour}, nil
 		},
 		Consent: func(_ context.Context, request personserver.AuthorizationRequest) error {
-			if request.Budget == nil || !sameBudget(*request.Budget, resourceOffer) {
+			if request.Budget == nil || !sameBudget(*request.Budget, resourceOffer) ||
+				request.Account == nil || *request.Account != account {
 				return errors.Join(personserver.ErrAccessDenied, errors.New("unexpected Resource Budget offer"))
 			}
 			return nil
@@ -214,7 +224,8 @@ func run(output io.Writer) error {
 		Budget: &personserver.FederatedBudgetConfig{
 			ResolveResourceUnits: resourceUnits(resourceID, declaration),
 			Ceiling: func(_ context.Context, request personserver.AuthorizationRequest) (*budgets.Value, error) {
-				if request.Budget == nil || !sameBudget(*request.Budget, resourceOffer) {
+				if request.Budget == nil || !sameBudget(*request.Budget, resourceOffer) ||
+					request.Account == nil || *request.Account != account {
 					return nil, errors.New("unexpected Budget ceiling input")
 				}
 				return &personCeiling, nil
@@ -249,7 +260,7 @@ func run(output io.Writer) error {
 	}
 	resourceToken, err := agent.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Scopes: []string{scope}, Budget: &requested,
+		Scopes: []string{scope}, Account: &account, Budget: &requested,
 	})
 	if err != nil {
 		return err
@@ -283,13 +294,13 @@ func run(output io.Writer) error {
 	}
 	lineage, ok := lineages.Load()
 	if !ok || lineage.ResourceToken != (aauth.TokenReference{Issuer: resourceID, JTI: "budget-resource-token"}) ||
-		!sameBudget(lineage.Offer, resourceOffer) {
+		lineage.Account == nil || *lineage.Account != account || !sameBudget(lineage.Offer, resourceOffer) {
 		return errors.New("Resource did not retain the Budget authorization lineage")
 	}
 	_, err = fmt.Fprintf(
 		output,
-		"AAuth four-party Budget success: Resource offered %d %s/%d; Person Server ceiling %d; Access Server granted %d; charged %d; remaining %d; protected calls %d\n",
-		resourceOffer.Amount(), unit.Name(), unit.Decimals(), personCeiling.Amount(), accessGrant.Amount(),
+		"AAuth four-party Budget success: account %s; Resource offered %d %s/%d; Person Server ceiling %d; Access Server granted %d; charged %d; remaining %d; protected calls %d\n",
+		account, resourceOffer.Amount(), unit.Name(), unit.Decimals(), personCeiling.Amount(), accessGrant.Amount(),
 		cost, feedback.Remaining(), protectedCalls.Load(),
 	)
 	return err

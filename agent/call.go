@@ -305,7 +305,7 @@ func (client *Client) Begin(ctx context.Context, input InitialCall) (CallResult,
 				response.Body.Close()
 				return CallResult{}, fail(operation, err)
 			}
-			_, err = client.verifyResourceTokenContext(ctx, requirement.ResourceToken, resource, person, nil)
+			_, err = client.verifyResourceTokenContext(ctx, requirement.ResourceToken, resource, person, nil, nil)
 			response.Body.Close()
 			if err != nil {
 				return CallResult{}, fail(operation, err)
@@ -372,7 +372,7 @@ func (client *Client) pendingAuthTokenCall(
 	if err != nil {
 		return PendingAuthTokenCall{}, err
 	}
-	claims, err := client.verifyResourceTokenContext(ctx, requirement.ResourceToken, resource, person, nil)
+	claims, err := client.verifyResourceTokenContext(ctx, requirement.ResourceToken, resource, person, nil, nil)
 	if err != nil {
 		return PendingAuthTokenCall{}, err
 	}
@@ -511,6 +511,7 @@ func (client *Client) verifyResourceTokenContext(
 	resource string,
 	person aauth.PersonTokenClaims,
 	requestedScopes []string,
+	expectedAccount *string,
 ) (aauth.ResourceTokenClaims, error) {
 	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
 	if err != nil {
@@ -532,7 +533,7 @@ func (client *Client) verifyResourceTokenContext(
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, err
 	}
-	if err := client.validateResourceTokenContext(claims, resource, person, requestedScopes); err != nil {
+	if err := client.validateResourceTokenContext(claims, resource, person, requestedScopes, expectedAccount); err != nil {
 		return aauth.ResourceTokenClaims{}, err
 	}
 	return claims, nil
@@ -543,12 +544,13 @@ func (client *Client) validateResourceTokenContext(
 	resource string,
 	person aauth.PersonTokenClaims,
 	requestedScopes []string,
+	expectedAccount *string,
 ) error {
 	if claims.Interaction != nil {
 		return errors.New("resource-token interaction requires the deferred flow")
 	}
-	if claims.Account != nil {
-		return errors.New("resource-token account is not supported by the immediate flow")
+	if !equalStringPointers(claims.Account, expectedAccount) {
+		return errors.New("resource-token account does not match the request")
 	}
 	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
@@ -756,9 +758,6 @@ func (client *Client) validateAuthTokenForDirectCall(
 	resource string,
 	upstreamToken string,
 ) error {
-	if claims.Account != nil {
-		return errors.New("auth-token account is not supported by the immediate flow")
-	}
 	if claims.MissionS256 != "" && upstreamToken != "" {
 		return errors.New("mission-bound call-chain authorization is not supported")
 	}

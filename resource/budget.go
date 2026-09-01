@@ -24,11 +24,13 @@ var (
 
 // BudgetOfferRequest is the authenticated, typed input to an optional host
 // offer policy. Requested has already been checked against a declared unit
-// and capped at that declaration's Maximum. The policy may lower it or select
-// another declared denomination.
+// and capped at that declaration's Maximum. Account, when present, has already
+// been accepted by the Resource's account policy. The offer policy may lower
+// the value or select another declared denomination.
 type BudgetOfferRequest struct {
 	Person        PersonIdentity
 	PersonContext PersonContext
+	Account       *string
 	Scope         []string
 	Requested     budgets.Value
 }
@@ -47,12 +49,14 @@ type BudgetInitialOfferRequest struct {
 // BudgetLineage is the Resource-side record needed to construct a later
 // Budget step-up without recovering Person-token identity from an Auth token.
 // RetainLineage receives it after token minting and before token release. A
-// host with multiple live matching records must use its own policy or refuse
+// Account is the Resource-owned account selected on the authorization request.
+// A host with multiple live matching records must use its own policy or refuse
 // an ambiguous challenge; the protocol supplies no Auth-token lookup binding.
 type BudgetLineage struct {
 	ResourceToken aauth.TokenReference
 	Person        PersonIdentity
 	PersonContext PersonContext
+	Account       *string
 	PresentedJTI  string
 	AgentJKT      string
 	Scope         []string
@@ -245,6 +249,7 @@ func (config *budgetConfig) offerFor(
 	ctx context.Context,
 	person aauth.PersonTokenClaims,
 	scopes []string,
+	account *string,
 	raw []byte,
 ) (budgets.Value, error) {
 	requested, err := budgets.ParseValueJSON(raw)
@@ -276,7 +281,8 @@ func (config *budgetConfig) offerFor(
 			MissionS256: person.MissionS256,
 			Tenant:      person.Tenant,
 		},
-		Scope: append([]string(nil), scopes...), Requested: bounded,
+		Account: cloneBudgetAccount(account),
+		Scope:   append([]string(nil), scopes...), Requested: bounded,
 	}
 	offered, err := config.offer(ctx, policyInput)
 	if err != nil {

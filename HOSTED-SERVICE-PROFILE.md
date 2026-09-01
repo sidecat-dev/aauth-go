@@ -101,7 +101,7 @@ go run ./example/revocation
 | Service authorization | Three-party and four-party Auth-token journeys with explicit Agent calls and no hidden polling. |
 | Operation authorization | MCP and OpenAPI R3 class and per-call journeys. The direct MCP class path composes with a fixed Budget in one protected call. Other registered vocabularies are not launch requirements. |
 | Human approval | Approval-only missions and deferred permission decisions with application-authenticated host review. |
-| Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. The direct MCP composition verifies the operation before charging, preserves the R3 reference on step-up, refuses exhaustion before dispatch, and resumes only after explicit replacement exchange. A commercial billing ledger remains an application concern. |
+| Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. A proactive grant may name one Resource-validated billing account in either authorization topology. The direct MCP composition verifies the operation before charging, preserves the R3 reference on step-up, refuses exhaustion before dispatch, and resumes only after explicit replacement exchange. A commercial billing ledger remains an application concern. |
 | Restart and replay | Applications provide stores satisfying the public role-local `storetest` contracts, including the base mission transaction, direct mission-plus-R3 issuance, R3 document, R3 issuance, and Budget charging; services may be reconstructed around those retained stores. |
 | Third-party credential isolation | The connector stores and uses its OAuth or API credential. AAuth conveys the permitted operation and limits, never the credential itself. |
 

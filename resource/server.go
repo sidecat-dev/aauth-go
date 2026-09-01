@@ -22,6 +22,12 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
+// ErrInvalidAccount reports an intentional Resource-policy refusal because
+// the verified person does not hold the requested Resource-owned account.
+// ValidateAccount callbacks wrap this sentinel; operational failures remain
+// distinct so the authorization endpoint can return server_error.
+var ErrInvalidAccount = errors.New("resource: account is invalid")
+
 // FederatedAuthorizationConfig supplies a federated auth-token Resource's
 // identity, policy, storage, and application dependencies. Its resource tokens
 // name the configured Access Server. A mission-bound Person token requires no
@@ -44,7 +50,9 @@ type FederatedAuthorizationConfig struct {
 	RequiredScopes                func(*http.Request) []string
 	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	// ValidateAccount confirms an optional Resource-owned account belongs to
-	// the verified person before the account enters a Resource token.
+	// the verified person before the account enters a Resource token. It wraps
+	// ErrInvalidAccount for an intentional refusal and returns another error for
+	// an operational failure.
 	ValidateAccount func(context.Context, PersonIdentity, string) error
 	Protected       http.Handler
 	// R3 optionally enables registered R3 authorization on this HTTP Resource.
@@ -87,7 +95,12 @@ type PSAuthorizationConfig struct {
 	MaxSignedBodyBytes            int64
 	RequiredScopes                func(*http.Request) []string
 	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
-	Protected                     http.Handler
+	// ValidateAccount confirms an optional Resource-owned account belongs to
+	// the verified person before the account enters a Resource token. It wraps
+	// ErrInvalidAccount for an intentional refusal and returns another error for
+	// an operational failure.
+	ValidateAccount func(context.Context, PersonIdentity, string) error
+	Protected       http.Handler
 	// R3 optionally enables registered class authorization on this HTTP
 	// Resource. Per-call authorization remains a federated-only composition.
 	R3 *R3Config
@@ -376,8 +389,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		AdditionalSignatureComponents: config.AdditionalSignatureComponents,
 		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
-		Protected: config.Protected,
-		R3:        config.R3,
+		ValidateAccount: config.ValidateAccount,
+		Protected:       config.Protected,
+		R3:              config.R3,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
 }
 

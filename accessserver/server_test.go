@@ -454,6 +454,37 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		}
 	})
 
+	t.Run("Core account is preserved without a companion profile", func(t *testing.T) {
+		account := "account-123"
+		accountResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "https://as.example", JTI: "account-resource-token", AgentJKT: agentJKT,
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(), Scope: "records.read",
+			PersonServer: "https://ps.example", Subject: "directed-person-1", PresentedJTI: "person-token-1",
+			Account: &account, Tenant: "example-tenant",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := callTokenEndpoint(agentToken, accountResourceToken)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var output struct {
+			AuthToken string `json:"auth_token"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
+			t.Fatal(err)
+		}
+		claims, err := aauth.VerifyAuthToken(context.Background(), output.AuthToken, resolver, clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if evaluated.Account == nil || *evaluated.Account != account || claims.Account == nil || *claims.Account != account {
+			t.Fatalf("account policy/token = %#v/%#v", evaluated.Account, claims.Account)
+		}
+	})
+
 	t.Run("same-ID Person Server key rotation refreshes once", func(t *testing.T) {
 		rotated := accessServerTestKey(t, psKey.ID())
 		resolver.StageRefresh(signaturekey.StaticKeyReference{
@@ -541,7 +572,6 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		{name: "wrong audience", change: func(claims *aauth.ResourceTokenClaims) { claims.Audience = "https://other-as.example" }},
 		{name: "wrong person server", change: func(claims *aauth.ResourceTokenClaims) { claims.PersonServer = "https://other-ps.example" }},
 		{name: "wrong agent key", change: func(claims *aauth.ResourceTokenClaims) { claims.AgentJKT = otherAgentJKT }},
-		{name: "account", change: func(claims *aauth.ResourceTokenClaims) { claims.Account = testStringPointer("account-123") }},
 		{name: "interaction", change: func(claims *aauth.ResourceTokenClaims) {
 			claims.Interaction = &aauth.ResourceInteraction{URL: "https://resource.example/interaction", Code: "ABCD-EFGH"}
 		}},

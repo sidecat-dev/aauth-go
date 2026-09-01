@@ -222,7 +222,7 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token context does not match resource"))
 		return
 	}
-	if server.budget == nil && claims.Account != nil && (authorization == nil || server.validateAccount == nil) {
+	if claims.Account != nil && server.validateAccount == nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}
@@ -246,9 +246,6 @@ func (server *Server) serveAuthTokenProtected(
 		switch {
 		case budgetGrant == nil:
 			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("metered route requires a signed Budget grant"))
-			return
-		case claims.Account != nil:
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("fixed-price Budget grants do not compose with account authorization"))
 			return
 		}
 	}

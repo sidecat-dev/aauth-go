@@ -401,9 +401,15 @@ another exchange is required. The caller decides whether and when to continue.
 A higher-level helper may drive a complete journey, but it is built from the
 same explicit steps and exposes its progress.
 
+Core authorization may include one optional account selected by the Agent and
+validated by the Resource. The Resource token, issuer policy, Auth token,
+Agent verification, and protected principal preserve that exact value in both
+authorization topologies. Account is Core context; no companion profile owns
+or enables it.
+
 The current R3 path is explicit at the Agent boundary. The caller supplies a
-registered operation set and optional account, receives and verifies the
-Resource token, presents its exact compact form to the Person Server, verifies
+registered operation set, receives and verifies the Resource token, presents
+its exact compact form to the Person Server, verifies
 the returned Auth token, and chooses whether to begin, retry, or poll one HTTP
 call. Each method performs one network consequence. R3 documents remain opaque
 to the Agent.
@@ -412,7 +418,10 @@ The current fixed-price Budget path follows the same shape. The caller supplies
 the request and signed Budget Auth token. `BeginBudgetCall` returns either one
 caller-owned response or one verified step-up. An unverifiable result after
 HTTP handoff is a typed uncertain outcome carrying the full signed grant, not
-an automatic retry.
+an automatic retry. A proactive grant may also name one Resource-validated
+account. The Resource token, PS and AS policy inputs, Auth token, Resource
+lineage, metering state, and application principal preserve that exact account;
+Budgets adds no second account mechanism.
 
 ### `personserver`
 

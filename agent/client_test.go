@@ -654,7 +654,7 @@ func TestClientRefusesResourceTokenBranchesOutsideTheImmediateFlow(t *testing.T)
 			configure: func(protocol *testProtocol) {
 				protocol.resourceAccount = "account-123"
 			},
-			errorDetail: "account is not supported",
+			errorDetail: "account does not match the request",
 		},
 		{
 			name: "interaction",

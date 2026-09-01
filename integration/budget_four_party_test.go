@@ -82,6 +82,7 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	resourceOffer := integrationBudgetValue(t, 600_000, unit)
 	personCeiling := integrationBudgetValue(t, 450_000, unit)
 	accessGrant := integrationBudgetValue(t, 300_000, unit)
+	account := "primary"
 	declaration, err := budgets.NewBoundedUnitDeclaration(
 		unit, 1_000_000, "US dollars at micro-dollar precision",
 	)
@@ -111,7 +112,13 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 			return nil
 		},
 		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
+			if request.Account == nil || *request.Account != account {
+				return accessserver.Decision{}, errors.New("Access Server policy omitted the account")
+			}
 			accessPolicyRequest = request
+			capturedAccount := *request.Account
+			accessPolicyRequest.Account = &capturedAccount
+			*request.Account = "mutated-by-access-policy"
 			return accessserver.Decision{
 				Scopes: append([]string(nil), request.Scopes...),
 				Budget: &accessGrant, Lifetime: 30 * time.Minute,
@@ -151,17 +158,24 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 			}
 			return nil
 		},
+		ValidateAccount: func(_ context.Context, identity resource.PersonIdentity, got string) error {
+			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) || got != account {
+				return errors.New("unexpected Resource account")
+			}
+			return nil
+		},
 		Budget: &resource.BudgetConfig{
 			Units: []budgets.UnitDeclaration{declaration},
 			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
-				if !integrationSameBudget(request.Requested, requested) {
+				if !integrationSameBudget(request.Requested, requested) || request.Account == nil || *request.Account != account {
 					return budgets.Value{}, errors.New("unexpected requested Budget")
 				}
 				return resourceOffer, nil
 			},
 			RetainLineage: func(context.Context, resource.BudgetLineage) error { return nil },
 			Cost: func(_ context.Context, request resource.BudgetCostRequest) (int64, error) {
-				if !integrationSameBudget(request.Grant, accessGrant) {
+				if !integrationSameBudget(request.Grant, accessGrant) ||
+					request.Principal.Account == nil || *request.Principal.Account != account {
 					return 0, errors.New("unexpected signed Budget grant")
 				}
 				return 125_000, nil
@@ -202,9 +216,11 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 		},
 		Consent: func(_ context.Context, request personserver.AuthorizationRequest) error {
 			consentCalls.Add(1)
-			if request.Budget == nil || !integrationSameBudget(*request.Budget, resourceOffer) {
+			if request.Budget == nil || !integrationSameBudget(*request.Budget, resourceOffer) ||
+				request.Account == nil || *request.Account != account {
 				return errors.New("Person Server consent did not receive the Resource offer")
 			}
+			*request.Account = "mutated-by-consent-policy"
 			return nil
 		},
 		Budget: &personserver.FederatedBudgetConfig{
@@ -217,9 +233,11 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 			},
 			Ceiling: func(_ context.Context, request personserver.AuthorizationRequest) (*budgets.Value, error) {
 				ceilingCalls.Add(1)
-				if request.Budget == nil || !integrationSameBudget(*request.Budget, resourceOffer) {
+				if request.Budget == nil || !integrationSameBudget(*request.Budget, resourceOffer) ||
+					request.Account == nil || *request.Account != account {
 					return nil, errors.New("unexpected Person Server Budget input")
 				}
+				*request.Account = "mutated-by-ceiling-policy"
 				if omitPersonCeiling.Load() {
 					return nil, nil
 				}
@@ -298,7 +316,7 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	}
 	resourceToken, err := agent.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Scopes: []string{scope}, Budget: &requested,
+		Scopes: []string{scope}, Account: &account, Budget: &requested,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -313,6 +331,7 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	}
 
 	if accessPolicyRequest.Budget == nil || !integrationSameBudget(*accessPolicyRequest.Budget, personCeiling) ||
+		accessPolicyRequest.Account == nil || *accessPolicyRequest.Account != account ||
 		!slices.Equal(accessPolicyRequest.Scopes, []string{scope}) {
 		t.Fatalf("Access Server policy request = %#v", accessPolicyRequest)
 	}
@@ -326,8 +345,9 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	if signatureInput := accessProofHeaders.Get("Signature-Input"); !strings.Contains(signatureInput, `"content-type"`) || !strings.Contains(signatureInput, `"content-digest"`) {
 		t.Fatalf("PS-to-AS request did not sign its Budget-bearing JSON body: %s", signatureInput)
 	}
-	_, verifiedGrant, err := budgets.VerifyAuthToken(ctx, authToken, resolver, clock)
-	if err != nil || !integrationSameBudget(verifiedGrant, accessGrant) {
+	verifiedClaims, verifiedGrant, err := budgets.VerifyAuthToken(ctx, authToken, resolver, clock)
+	if err != nil || verifiedClaims.Account == nil || *verifiedClaims.Account != account ||
+		!integrationSameBudget(verifiedGrant, accessGrant) {
 		t.Fatalf("AS-issued Budget = %#v, error %v", verifiedGrant, err)
 	}
 

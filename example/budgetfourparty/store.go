@@ -73,6 +73,10 @@ func (store *lineageStore) Load() (resource.BudgetLineage, bool) {
 
 func cloneLineage(lineage resource.BudgetLineage) resource.BudgetLineage {
 	lineage.Scope = append([]string(nil), lineage.Scope...)
+	if lineage.Account != nil {
+		account := *lineage.Account
+		lineage.Account = &account
+	}
 	if lineage.PersonContext.AdditionalClaims != nil {
 		claims := make(map[string]json.RawMessage, len(lineage.PersonContext.AdditionalClaims))
 		for name, value := range lineage.PersonContext.AdditionalClaims {

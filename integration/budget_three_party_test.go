@@ -72,6 +72,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	requested := integrationBudgetValue(t, 800_000, unit)
 	resourceOffer := integrationBudgetValue(t, 600_000, unit)
 	personGrant := integrationBudgetValue(t, 400_000, unit)
+	account := "primary"
 	declaration, err := budgets.NewBoundedUnitDeclaration(
 		unit, 1_000_000, "US dollars at micro-dollar precision",
 	)
@@ -85,6 +86,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	}
 	personPolicyCalls := 0
 	missionPolicyCalls := 0
+	accountPolicyCalls := 0
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, Tokens: personTokens,
@@ -121,6 +123,13 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 					return personserver.AuthorizationDecision{}, errors.New("unexpected mission Budget context")
 				}
 			}
+			if request.Account != nil {
+				accountPolicyCalls++
+				if *request.Account != account {
+					return personserver.AuthorizationDecision{}, errors.New("unexpected Budget account")
+				}
+				*request.Account = "mutated-by-person-policy"
+			}
 			return personserver.AuthorizationDecision{
 				Scopes: []string{scope}, Lifetime: 30 * time.Minute, Budget: &personGrant,
 			}, nil
@@ -141,6 +150,9 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	cost.Store(150_000)
 	var protectedCalls atomic.Int64
 	var retainedLineage resource.BudgetLineage
+	var accountValidationCalls atomic.Int64
+	var accountOfferCalls atomic.Int64
+	var accountCostCalls atomic.Int64
 	var refreshIDs atomic.Int64
 	var resourceIDs atomic.Int64
 	resourceServer, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{
@@ -152,6 +164,13 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) ||
 				personContext.Tenant != "tenant-1" {
 				return errors.New("unexpected Resource person")
+			}
+			return nil
+		},
+		ValidateAccount: func(_ context.Context, identity resource.PersonIdentity, got string) error {
+			accountValidationCalls.Add(1)
+			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) || got != account {
+				return errors.New("unexpected Resource Budget account")
 			}
 			return nil
 		},
@@ -173,11 +192,24 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 				if !integrationSameBudget(request.Requested, requested) {
 					return budgets.Value{}, errors.New("unexpected Resource Budget request")
 				}
+				if request.Account != nil {
+					accountOfferCalls.Add(1)
+					if *request.Account != account {
+						return budgets.Value{}, errors.New("unexpected Resource Budget offer account")
+					}
+					*request.Account = "mutated-by-offer-policy"
+				}
 				return resourceOffer, nil
 			},
 			Cost: func(_ context.Context, request resource.BudgetCostRequest) (int64, error) {
 				if !integrationSameBudget(request.Grant, personGrant) {
 					return 0, errors.New("unexpected signed Budget grant at pricing")
+				}
+				if request.Principal.Account != nil {
+					accountCostCalls.Add(1)
+					if *request.Principal.Account != account {
+						return 0, errors.New("unexpected Budget pricing account")
+					}
 				}
 				return cost.Load(), nil
 			},
@@ -198,6 +230,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 					PresentedJTI: retainedLineage.PresentedJTI, AgentJKT: thumbprint,
 					IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 					Scope: scope, Tenant: retainedLineage.PersonContext.Tenant,
+					Account: cloneIntegrationString(challenge.Principal.Account),
 				}, resourceOffer, nil)
 			},
 		},
@@ -274,17 +307,18 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 
 	resourceToken, err := client.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Scopes: []string{scope}, Budget: &requested,
+		Scopes: []string{scope}, Account: &account, Budget: &requested,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	initialClaims, offered, consumed, err := budgets.VerifyResourceToken(ctx, resourceToken, resolver, clock)
-	if err != nil || !integrationSameBudget(offered, resourceOffer) || len(consumed) != 0 {
+	if err != nil || initialClaims.Account == nil || *initialClaims.Account != account ||
+		!integrationSameBudget(offered, resourceOffer) || len(consumed) != 0 {
 		t.Fatalf("Resource Budget = %#v consumed=%#v err=%v", offered, consumed, err)
 	}
 	if retainedLineage.ResourceToken != (aauth.TokenReference{Issuer: initialClaims.Issuer, JTI: initialClaims.JTI}) ||
-		retainedLineage.PresentedJTI == "" {
+		retainedLineage.PresentedJTI == "" || retainedLineage.Account == nil || *retainedLineage.Account != account {
 		t.Fatalf("retained Budget lineage = %#v", retainedLineage)
 	}
 	authToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
@@ -293,8 +327,8 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, granted, err := budgets.VerifyAuthToken(ctx, authToken, resolver, clock)
-	if err != nil || !integrationSameBudget(granted, personGrant) {
+	authClaims, granted, err := budgets.VerifyAuthToken(ctx, authToken, resolver, clock)
+	if err != nil || authClaims.Account == nil || *authClaims.Account != account || !integrationSameBudget(granted, personGrant) {
 		t.Fatalf("Auth Budget = %#v err=%v", granted, err)
 	}
 
@@ -354,8 +388,9 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, reauthorizedGrant, err := budgets.VerifyAuthToken(ctx, reauthorizedToken, resolver, clock)
-	if err != nil || !integrationSameBudget(reauthorizedGrant, personGrant) {
+	reauthorizedClaims, reauthorizedGrant, err := budgets.VerifyAuthToken(ctx, reauthorizedToken, resolver, clock)
+	if err != nil || reauthorizedClaims.Account == nil || *reauthorizedClaims.Account != account ||
+		!integrationSameBudget(reauthorizedGrant, personGrant) {
 		t.Fatalf("reauthorized Auth Budget = %#v err=%v", reauthorizedGrant, err)
 	}
 	retried := integrationBudgetCall(t, ctx, client, resourceID, reauthorizedToken)
@@ -368,8 +403,11 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	}
 	retriedResponse.Body.Close()
 	if statuses[http.StatusNoContent] != 1 || statuses[http.StatusUnauthorized] != 1 ||
-		protectedCalls.Load() != 4 || personPolicyCalls != 3 {
-		t.Fatalf("Budget consequences: statuses=%v Protected=%d policy=%d", statuses, protectedCalls.Load(), personPolicyCalls)
+		protectedCalls.Load() != 4 || personPolicyCalls != 3 || accountValidationCalls.Load() != 1 ||
+		accountPolicyCalls != 2 || accountOfferCalls.Load() != 1 || accountCostCalls.Load() != 4 {
+		t.Fatalf("Budget consequences: statuses=%v Protected=%d policy=%d account validation/policy/offer/cost=%d/%d/%d/%d",
+			statuses, protectedCalls.Load(), personPolicyCalls, accountValidationCalls.Load(),
+			accountPolicyCalls, accountOfferCalls.Load(), accountCostCalls.Load())
 	}
 	if got := ledger.personTotal(personServerID, "person-123", resourceID); got != 700_000 {
 		t.Fatalf("person Budget consumption = %d, want 700000", got)
@@ -548,4 +586,12 @@ func integrationSameOptionalString(left, right *string) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+func cloneIntegrationString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }

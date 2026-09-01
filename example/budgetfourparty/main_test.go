@@ -23,7 +23,7 @@ func TestRunCompletesFourPartyFixedBudgetJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const want = "AAuth four-party Budget success: Resource offered 600000 USD/6; Person Server ceiling 450000; Access Server granted 300000; charged 125000; remaining 175000; protected calls 1\n"
+	const want = "AAuth four-party Budget success: account primary; Resource offered 600000 USD/6; Person Server ceiling 450000; Access Server granted 300000; charged 125000; remaining 175000; protected calls 1\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}

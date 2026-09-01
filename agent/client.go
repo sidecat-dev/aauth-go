@@ -135,9 +135,9 @@ type PersonTokenRequest struct {
 }
 
 // AuthorizeRequest asks a Resource to issue one token for the exact directed
-// person token and either Core scopes, R3 operations, or both. Account is
-// supported only with R3 operations. UpstreamToken is local call-chain
-// context; it is verified but is not sent to the Resource.
+// person token and either Core scopes, R3 operations, or both. Account is one
+// optional Resource-owned selector. UpstreamToken is local call-chain context;
+// it is verified but is not sent to the Resource.
 type AuthorizeRequest struct {
 	Resource      string
 	PersonToken   string
@@ -317,9 +317,6 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 			return "", fail(operation, fmt.Errorf("R3 operations: %w", err))
 		}
 	}
-	if input.Account != nil && input.R3Operations == nil {
-		return "", fail(operation, errors.New("account requires R3 operations in the immediate client profile"))
-	}
 	var scopes []string
 	if len(input.Scopes) > 0 {
 		validated, err := validateScopes(input.Scopes)
@@ -456,7 +453,7 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		if err != nil {
 			return "", fail(operation, err)
 		}
-		if err := client.validateResourceTokenContext(claims, input.Resource, person, scopes); err != nil {
+		if err := client.validateResourceTokenContext(claims, input.Resource, person, scopes, input.Account); err != nil {
 			return "", fail(operation, err)
 		}
 		if offered.Unit().Equal(input.Budget.Unit()) {
@@ -467,7 +464,9 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		if err := validateOfferedBudget(offered, metadata.parsedBudgetUnits); err != nil {
 			return "", fail(operation, err)
 		}
-	} else if _, err := client.verifyResourceTokenContext(ctx, output.ResourceToken, input.Resource, person, scopes); err != nil {
+	} else if _, err := client.verifyResourceTokenContext(
+		ctx, output.ResourceToken, input.Resource, person, scopes, input.Account,
+	); err != nil {
 		return "", fail(operation, err)
 	}
 	return output.ResourceToken, nil

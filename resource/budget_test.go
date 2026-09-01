@@ -21,6 +21,15 @@ func TestBudgetResourcePublishesDeclaredUnitsAndNarrowsAnAuthorizationOffer(t *t
 	t.Parallel()
 
 	protocol := newBudgetResourceProtocol(t, 200_000, http.NotFoundHandler())
+	account := "primary"
+	accountChecks := 0
+	protocol.config.ValidateAccount = func(_ context.Context, identity PersonIdentity, got string) error {
+		accountChecks++
+		if identity != (PersonIdentity{Issuer: personIssuer, Subject: "person-1"}) || got != account {
+			return errors.New("unexpected Budget account")
+		}
+		return nil
+	}
 	var retained BudgetLineage
 	protocol.config.Budget.RetainLineage = func(_ context.Context, lineage BudgetLineage) error {
 		retained = lineage
@@ -29,10 +38,12 @@ func TestBudgetResourcePublishesDeclaredUnitsAndNarrowsAnAuthorizationOffer(t *t
 	protocol.config.Budget.Offer = func(_ context.Context, request BudgetOfferRequest) (budgets.Value, error) {
 		if request.Person != (PersonIdentity{Issuer: personIssuer, Subject: "person-1"}) ||
 			request.PersonContext.Tenant != "tenant-1" ||
+			request.Account == nil || *request.Account != account ||
 			len(request.Scope) != 1 || request.Scope[0] != "records.read" ||
 			request.Requested.Amount() != 800_000 {
 			t.Fatalf("Budget offer request = %#v", request)
 		}
+		*request.Account = "mutated-by-offer-policy"
 		return budgetValue(t, 600_000, protocol.unit), nil
 	}
 	server := protocol.server(t)
@@ -69,7 +80,7 @@ func TestBudgetResourcePublishesDeclaredUnitsAndNarrowsAnAuthorizationOffer(t *t
 	authorize := signedRequest(
 		t, protocol.clock, protocol.agentKey, personToken,
 		http.MethodPost, resourceIssuer+"/authorize",
-		`{"scope":"records.read","budget":{"amount":800000,"unit":"USD","decimals":6}}`,
+		`{"scope":"records.read","account":"primary","budget":{"amount":800000,"unit":"USD","decimals":6}}`,
 	)
 	authorizeResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(authorizeResponse, authorize)
@@ -95,14 +106,71 @@ func TestBudgetResourcePublishesDeclaredUnitsAndNarrowsAnAuthorizationOffer(t *t
 	if retained.ResourceToken != (aauth.TokenReference{Issuer: resourceIssuer, JTI: claims.JTI}) ||
 		retained.Person != (PersonIdentity{Issuer: personIssuer, Subject: "person-1"}) ||
 		retained.PresentedJTI != "budget-person-token" || retained.AgentJKT != thumbprint ||
+		retained.Account == nil || *retained.Account != account ||
 		retained.PersonContext.Tenant != "tenant-1" || len(retained.Scope) != 1 ||
 		retained.Scope[0] != "records.read" || retained.Offer.Amount() != offer.Amount() ||
 		!retained.Offer.Unit().Equal(offer.Unit()) ||
 		retained.ExpiresAt != claims.ExpiresAt {
 		t.Fatalf("retained Budget lineage = %#v", retained)
 	}
-	if claims.Audience != personIssuer || offer.Amount() != 600_000 || !offer.Unit().Equal(protocol.unit) {
+	if claims.Audience != personIssuer || claims.Account == nil || *claims.Account != account ||
+		accountChecks != 1 || offer.Amount() != 600_000 || !offer.Unit().Equal(protocol.unit) {
 		t.Fatalf("Resource token claims = %#v, offer = %d %q/%d", claims, offer.Amount(), offer.Unit().Name(), offer.Unit().Decimals())
+	}
+}
+
+func TestBudgetAuthorizationRefusesUnvalidatedAccountBeforeOfferAndLineage(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name       string
+		validate   func(context.Context, PersonIdentity, string) error
+		wantStatus int
+		wantError  string
+	}{
+		{name: "validator absent", wantStatus: http.StatusBadRequest, wantError: "invalid_account"},
+		{name: "account rejected", validate: func(context.Context, PersonIdentity, string) error {
+			return errors.Join(ErrInvalidAccount, errors.New("account is unavailable"))
+		}, wantStatus: http.StatusBadRequest, wantError: "invalid_account"},
+		{name: "validator unavailable", validate: func(context.Context, PersonIdentity, string) error {
+			return errors.New("account database is unavailable")
+		}, wantStatus: http.StatusInternalServerError, wantError: "server_error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			protocol := newBudgetResourceProtocol(t, 1, http.NotFoundHandler())
+			protocol.config.ValidateAccount = test.validate
+			offerCalls := 0
+			lineageCalls := 0
+			protocol.config.Budget.Offer = func(context.Context, BudgetOfferRequest) (budgets.Value, error) {
+				offerCalls++
+				return budgetValue(t, 1, protocol.unit), nil
+			}
+			protocol.config.Budget.RetainLineage = func(context.Context, BudgetLineage) error {
+				lineageCalls++
+				return nil
+			}
+			personToken := mintPersonToken(
+				t, protocol.personKey, protocol.agentKey.PublicJWK(), protocol.now,
+				resourceIssuer, "unvalidated-account-person-token",
+			)
+			request := signedRequest(
+				t, protocol.clock, protocol.agentKey, personToken,
+				http.MethodPost, resourceIssuer+"/authorize",
+				`{"scope":"records.read","account":"primary","budget":{"amount":1,"unit":"USD","decimals":6}}`,
+			)
+			response := httptest.NewRecorder()
+			protocol.server(t).Handler().ServeHTTP(response, request)
+			if response.Code != test.wantStatus || offerCalls != 0 || lineageCalls != 0 {
+				t.Fatalf("unvalidated account = status %d offer %d lineage %d body=%s",
+					response.Code, offerCalls, lineageCalls, response.Body.String())
+			}
+			var problem struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil || problem.Error != test.wantError {
+				t.Fatalf("unvalidated account problem = %#v, %v", problem, err)
+			}
+		})
 	}
 }
 
@@ -500,15 +568,6 @@ func TestBudgetUnsupportedGrantShapesStopBeforePoliciesStoresAndPersonResolution
 				return protocol.coreAuthToken(t, "early-unbudgeted-token")
 			},
 		},
-		{
-			name: "account-composed grant",
-			token: func(protocol *budgetResourceProtocol) string {
-				return protocol.authTokenWith(t, "early-account-token", budgetValue(t, 100_000, protocol.unit), func(claims *aauth.AuthTokenClaims) {
-					account := "primary"
-					claims.Account = &account
-				})
-			},
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var requiredScopes, resolved, costed, protected int
@@ -544,6 +603,42 @@ func TestBudgetUnsupportedGrantShapesStopBeforePoliciesStoresAndPersonResolution
 				)
 			}
 		})
+	}
+}
+
+func TestBudgetAccountBoundGrantPreservesContextAtProtectedUse(t *testing.T) {
+	t.Parallel()
+
+	account := "primary"
+	var principal AuthPrincipal
+	protocol := newBudgetResourceProtocol(t, 25_000, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var ok bool
+		principal, ok = AuthPrincipalFromContext(request.Context())
+		if !ok {
+			t.Fatal("protected request omitted Auth principal")
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	protocol.config.ValidateAccount = func(context.Context, PersonIdentity, string) error { return nil }
+	protocol.config.Budget.Cost = func(_ context.Context, request BudgetCostRequest) (int64, error) {
+		if request.Principal.Account == nil || *request.Principal.Account != account {
+			return 0, errors.New("Budget pricing omitted the validated account")
+		}
+		return 25_000, nil
+	}
+	grant := budgetValue(t, 100_000, protocol.unit)
+	token := protocol.authTokenWith(t, "account-budget-token", grant, func(claims *aauth.AuthTokenClaims) {
+		claims.Account = &account
+	})
+	assertBudgetSuccess(t, protocol.call(t, protocol.server(t), token), 25_000, 75_000, protocol.unit)
+	if principal.Account == nil || *principal.Account != account {
+		t.Fatalf("protected principal account = %#v", principal.Account)
+	}
+	protocol.store.mu.Lock()
+	retained := protocol.store.tokens[aauth.TokenReference{Issuer: personIssuer, JTI: "account-budget-token"}].charge
+	protocol.store.mu.Unlock()
+	if retained.Account == nil || *retained.Account != account {
+		t.Fatalf("retained Budget charge account = %#v", retained.Account)
 	}
 }
 

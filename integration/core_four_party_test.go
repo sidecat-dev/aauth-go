@@ -38,6 +38,7 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	now := time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	scope := []string{"records.read"}
+	account := "primary"
 
 	const (
 		agentProviderID = "https://ap.example"
@@ -121,6 +122,7 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	}
 
 	protectedCalls := 0
+	var protectedAccount *string
 	protected := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		protectedCalls++
 		principal, ok := resource.AuthPrincipalFromContext(request.Context())
@@ -133,6 +135,10 @@ func TestCurrentCoreFourParty(t *testing.T) {
 			!slices.Equal(principal.Scope, scope) ||
 			!principal.Confirmation.Equal(agentKey.PublicJWK()) {
 			t.Errorf("protected principal = %#v", principal)
+		}
+		if principal.Account != nil {
+			value := *principal.Account
+			protectedAccount = &value
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -155,6 +161,12 @@ func TestCurrentCoreFourParty(t *testing.T) {
 			}
 			return []string{"records.write"}
 		},
+		ValidateAccount: func(_ context.Context, identity resource.PersonIdentity, got string) error {
+			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) || got != account {
+				return errors.Join(resource.ErrInvalidAccount, errors.New("unknown account"))
+			}
+			return nil
+		},
 		ResolvePerson: func(_ context.Context, identity resource.PersonIdentity, _ resource.PersonContext) error {
 			if identity.Issuer != personServerID || identity.Subject != "person-123" {
 				return errors.New("unrecognized person identity")
@@ -167,6 +179,7 @@ func TestCurrentCoreFourParty(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var consentAccount *string
 	people, err := personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
 		Issuer:      personServerID,
 		SigningKey:  personServerKey,
@@ -187,7 +200,13 @@ func TestCurrentCoreFourParty(t *testing.T) {
 			}
 			return personserver.Person{Subject: "person-123", Lifetime: time.Hour}, nil
 		},
-		Consent: func(context.Context, personserver.AuthorizationRequest) error { return nil },
+		Consent: func(_ context.Context, request personserver.AuthorizationRequest) error {
+			if request.Account != nil {
+				value := *request.Account
+				consentAccount = &value
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -351,6 +370,44 @@ func TestCurrentCoreFourParty(t *testing.T) {
 		Issuer: accessServerID, Audience: resourceID, PersonServer: personServerID,
 		Subject: "person-123", Confirmation: agentKey.PublicJWK(), Scope: scope,
 	})
+
+	// Core account binding is independent of R3 and Budget. Every role sees the
+	// same Resource-validated selector, and the protected principal retains it.
+	tamperAuthorizationBody = false
+	accountResourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: resourceID, PersonToken: personToken, Scopes: scope, Account: &account,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: accountResourceToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountResponse, err := reader.Do(ctx, clientagent.Call{Request: request, AuthToken: accountAuthToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountResponse.Body.Close()
+	resourceAccountClaims, err := aauth.VerifyResourceToken(ctx, accountResourceToken, keyResolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authAccountClaims, err := aauth.VerifyAuthToken(ctx, accountAuthToken, keyResolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resourceAccountClaims.Account == nil || *resourceAccountClaims.Account != account ||
+		consentAccount == nil || *consentAccount != account ||
+		accessRequest.Account == nil || *accessRequest.Account != account ||
+		authAccountClaims.Account == nil || *authAccountClaims.Account != account ||
+		protectedAccount == nil || *protectedAccount != account || protectedCalls != 2 {
+		t.Fatalf("Core account path = resource=%#v consent=%#v access=%#v auth=%#v protected=%#v calls=%d",
+			resourceAccountClaims.Account, consentAccount, accessRequest.Account,
+			authAccountClaims.Account, protectedAccount, protectedCalls)
+	}
 
 	heldStore := newMemoryHeldInvocationStore()
 	heldCalls := 0

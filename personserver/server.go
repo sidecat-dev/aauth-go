@@ -967,10 +967,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated or call-chain authorization is not implemented"))
 		return
 	}
-	if resourceToken.Account != nil && r3Context == nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
-		return
-	}
 	if server.authorizationMode == authorizationModePersonServer && r3Context != nil {
 		if err := directR3UnsupportedCombination(delegated, upstream); err != nil {
 			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
@@ -1459,7 +1455,8 @@ func (server *Server) issuePSAuthorizationToken(
 		Audience: resourceToken.Issuer, JTI: server.newID(), PersonServer: server.issuer,
 		Subject: resourceToken.Subject, Confirmation: aauth.Confirmation{JWK: credentialAgent.Confirmation.JWK},
 		IssuedAt: issuedAt.Unix(), ExpiresAt: expiresAt.Unix(),
-		Scope: strings.Join(grantedScopes, " "), MissionS256: resourceToken.MissionS256, Tenant: resourceToken.Tenant,
+		Scope: strings.Join(grantedScopes, " "), Account: cloneAuthorizationAccount(resourceToken.Account),
+		MissionS256: resourceToken.MissionS256, Tenant: resourceToken.Tenant,
 	}
 	var compact string
 	if grantedBudget != nil {

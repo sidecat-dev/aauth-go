@@ -666,13 +666,6 @@ func TestServerRefusesUnusableResourceTokenBeforePolicy(t *testing.T) {
 			retainFor:             4 * time.Minute,
 		},
 		{
-			name:                  "account branch is outside the immediate flow",
-			resourceTokenLifetime: 5 * time.Minute,
-			personTokenLifetime:   20 * time.Minute,
-			retainFor:             25 * time.Minute,
-			account:               "account-123",
-		},
-		{
 			name:                  "interaction branch requires the deferred flow",
 			resourceTokenLifetime: 5 * time.Minute,
 			personTokenLifetime:   20 * time.Minute,

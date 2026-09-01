@@ -447,37 +447,51 @@ func TestAgentOrdinaryDoRefusesBudgetTokenBeforeNetworkUse(t *testing.T) {
 	}
 }
 
-func TestAgentRefusesAccountBoundBudgetBeforeNetworkUse(t *testing.T) {
+func TestAgentUsesAccountBoundBudgetOnce(t *testing.T) {
 	t.Parallel()
 
-	protocol := newTestProtocol(t)
-	unit := budgetUnit(t, "USD", 6)
-	requested := budgetValue(t, 1, unit)
-	networkCalls := 0
-	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		networkCalls++
-		return nil, errors.New("network must not be used")
-	})})
+	fixture := newBudgetCallFixture(t)
 	account := "primary"
-	accountToken, err := budgets.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
-		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
-		Audience: protocol.resourceID, JTI: "mission-budget-auth",
-		PersonServer: protocol.personServerID, Subject: "person-123",
-		Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
-		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
+	accountToken, err := budgets.MintAuthToken(fixture.protocol.personServerKey, aauth.AuthTokenClaims{
+		Issuer: fixture.protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+		Audience: fixture.protocol.resourceID, JTI: "account-budget-auth",
+		PersonServer: fixture.protocol.personServerID, Subject: "person-123",
+		Confirmation: aauth.Confirmation{JWK: fixture.protocol.agentKey.PublicJWK()},
+		IssuedAt:     fixture.protocol.now.Unix(), ExpiresAt: fixture.protocol.now.Add(30 * time.Minute).Unix(),
 		Scope: "records.read", Account: &account,
-	}, requested)
+	}, fixture.grant)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, _ := http.NewRequest(http.MethodGet, protocol.resourceID+"/records", nil)
-	if _, err := client.BeginBudgetCall(context.Background(), agent.BudgetCall{
-		Request: request, AuthToken: accountToken,
-	}); err == nil || !strings.Contains(err.Error(), "account is not supported") {
-		t.Fatalf("account-bound Budget error = %v", err)
+	feedback, err := budgets.NewSuccessFeedback(fixture.grant, 1, fixture.grant.Amount()-1)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if networkCalls != 0 {
-		t.Fatalf("unsupported Budget compositions made %d network calls", networkCalls)
+	formatted, err := budgets.FormatFeedback(feedback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applicationCalls := 0
+	client := fixture.protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == fixture.protocol.resourceID+"/.well-known/aauth-resource.json" {
+			return fixture.metadata(request), nil
+		}
+		applicationCalls++
+		return &http.Response{
+			StatusCode: http.StatusNoContent, Status: "204 No Content", Request: request,
+			Header: http.Header{"Aauth-Budget": []string{formatted}}, Body: http.NoBody,
+		}, nil
+	})})
+	request, _ := http.NewRequest(http.MethodGet, fixture.protocol.resourceID+"/records", nil)
+	result, err := client.BeginBudgetCall(context.Background(), agent.BudgetCall{
+		Request: request, AuthToken: accountToken,
+	})
+	response, ok := result.Response()
+	if err != nil || !ok || response.StatusCode != http.StatusNoContent {
+		t.Fatalf("account-bound Budget result = %#v, %v", result, err)
+	}
+	if applicationCalls != 1 {
+		t.Fatalf("account-bound Budget application calls = %d, want 1", applicationCalls)
 	}
 }
 

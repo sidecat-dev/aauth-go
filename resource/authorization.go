@@ -38,10 +38,6 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	if input.Account != nil && input.R3Operations == nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("request member \"account\" is not supported by the immediate Core resource flow"))
-		return
-	}
 	if input.Budget != nil && server.budget == nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("request member \"budget\" is not supported by the immediate resource flow"))
 		return
@@ -78,12 +74,16 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 	}
 	account, err := server.validateAuthorizationAccount(request, claims, input.Account)
 	if err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_account", err)
+		if errors.Is(err, ErrInvalidAccount) {
+			writeProblem(response, http.StatusBadRequest, "invalid_account", err)
+		} else {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		}
 		return
 	}
 	var budgetOffer *budgets.Value
 	if input.Budget != nil {
-		offer, err := server.budget.offerFor(request.Context(), claims, scopes, input.Budget)
+		offer, err := server.budget.offerFor(request.Context(), claims, scopes, account, input.Budget)
 		if err != nil {
 			var policyFailure *budgetOfferPolicyError
 			if errors.As(err, &policyFailure) {
@@ -183,6 +183,7 @@ func (server *Server) retainBudgetLineage(
 		ResourceToken: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		Person:        PersonIdentity{Issuer: claims.PersonServer, Subject: claims.Subject},
 		PersonContext: PersonContext{MissionS256: claims.MissionS256, Tenant: claims.Tenant},
+		Account:       cloneBudgetAccount(claims.Account),
 		PresentedJTI:  claims.PresentedJTI,
 		AgentJKT:      claims.AgentJKT,
 		Scope:         append([]string(nil), scopes...),
@@ -264,7 +265,7 @@ func (server *Server) validateAuthorizationAccount(
 		return nil, fmt.Errorf("aauth: authorization account must be a string: %w", err)
 	}
 	if server.validateAccount == nil {
-		return nil, fmt.Errorf("aauth: Resource does not accept account-bound authorization")
+		return nil, fmt.Errorf("%w: Resource does not accept account-bound authorization", ErrInvalidAccount)
 	}
 	identity := PersonIdentity{Issuer: person.Issuer, Subject: person.Subject}
 	if err := server.validateAccount(request.Context(), identity, account); err != nil {
