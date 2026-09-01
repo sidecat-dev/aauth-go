@@ -1,8 +1,8 @@
 # Local Agent profile
 
-This profile composes a self-hosted Agent, a local Person Server, and a
-Resource into the smallest useful local deployment. It is an implementation
-profile, not an additional AAuth specification.
+This profile composes a self-hosted Agent, a local Person Server, and local and
+hosted Resources into a practical user-controlled deployment. It is an
+implementation profile, not an additional AAuth specification.
 
 ## Journey
 
@@ -13,8 +13,16 @@ profile, not an additional AAuth specification.
 3. The token names a separately identified Person Server. The Agent asks that
    server for permission to perform one local action.
 4. The application acts only after the Agent receives a typed grant.
-5. The same Agent token and proof key can authenticate an ordinary direct
-   Agent-identity call to a Resource.
+5. The same Agent token and proof key authenticate an ordinary direct
+   Agent-identity call to a local Resource.
+6. For hosted work, the Agent self-issues a second short-lived token naming the
+   hosted Person Server. That server binds the Agent to one hosted account and
+   completes ordinary three-party authorization for a protected hosted
+   Resource call.
+
+Each Agent token names the Person Server responsible for that use. The Agent
+identity and proof key remain stable; local and hosted person authority do not
+collapse into one token or one server.
 
 Run the complete in-process composition:
 
@@ -23,8 +31,9 @@ go run ./example/selfhosted
 ```
 
 The example uses normal signed HTTP requests and the exported Agent Provider,
-Agent, Person Server, and Resource handlers. Its logical transport keeps the
-example in one process; it does not bypass protocol verification.
+Agent, Person Server, and Resource handlers. Local and hosted roles use
+distinct origins and signing keys. Its logical transport keeps the example in
+one process; it does not bypass protocol verification.
 
 ## Application boundary
 
@@ -35,5 +44,7 @@ restart recovery, operating-system key protection, TLS deployment, or user
 authentication. Use the applicable public `storetest` contracts for durable
 adapters.
 
-For enrollment, account-hosted review, service connectors, and Budget-limited
-operations, continue with [HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md).
+The hosted call demonstrates account binding and service authorization, not
+enrollment, administrative review, or connector credentials. For those
+capabilities and Budget-limited operations, continue with
+[HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md).

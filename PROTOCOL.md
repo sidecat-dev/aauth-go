@@ -492,15 +492,20 @@ source operation rather than one cross-role lifecycle object.
 sequenceDiagram
     participant A as Self-hosted Agent and AP
     participant PS as Local Person Server
-    participant R as Resource
+    participant LR as Local Resource
+    participant HPS as Hosted Person Server
+    participant HR as Hosted Resource
     A->>A: Publish ordinary AP metadata and JWKS
-    A->>A: Self-issue Agent token with the same confirmation key
+    A->>A: Self-issue token naming the local PS
     A->>PS: Signed local-action permission request
     PS-->>A: Typed permission grant
-    A->>R: Ordinary signed Agent-token request
-    R->>A: Resolve AP metadata/JWKS and verify the request
-    R-->>A: Protected response
-    A->>A: Self-issue a fresh short-lived token when needed
+    A->>LR: Ordinary signed Agent-token request
+    LR->>A: Resolve AP metadata/JWKS and verify the request
+    LR-->>A: Protected response
+    A->>A: Self-issue token naming the hosted PS
+    A->>HPS: Obtain account-bound Person authority
+    A->>HR: Complete ordinary three-party authorization
+    HR-->>A: Protected hosted response
 ```
 
 `agentprovider.NewSelfHostedAgent` fixes one HTTPS issuer, top-level Agent
@@ -511,7 +516,9 @@ refresh endpoint, no alternate token form, and no verifier exception. Core's
 functional sections and Bootstrap define this profile; Core's later
 distinct-AP rationale contradicts them (`AAG-F104`). The repository's local
 composition additionally uses the token's `person_server` with the ordinary
-Permission Endpoint before a direct Agent-identity Resource call; see
+Permission Endpoint before a direct Agent-identity Resource call. It then
+self-issues a second token naming a hosted Person Server and uses the same
+Agent identity and proof key for a hosted three-party call; see
 [LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md).
 
 ### Mission-bound interoperability profile

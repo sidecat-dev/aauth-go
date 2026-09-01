@@ -1,29 +1,26 @@
 // The self-hosted example publishes ordinary Agent Provider metadata and JWKS,
 // self-issues a short-lived Agent token, obtains one local-action permission
 // from the token's Person Server, and uses the same key for one signed Resource
-// call. Bootstrap defines no separate refresh ceremony for this profile; the
-// Agent self-issues another token when needed.
+// call. It then self-issues a second token naming a hosted Person Server and
+// completes one hosted three-party Resource call. Bootstrap defines no
+// separate refresh ceremony for this profile; the Agent self-issues another
+// token when needed.
 package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"sync"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
-	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -34,6 +31,9 @@ const (
 	agentID        = "aauth:local@agent.example"
 	personServerID = "https://person.example"
 	resourceID     = "https://resource.example"
+	hostedPersonID = "https://account.example"
+	hostedResource = "https://service.example"
+	hostedScope    = "records.read"
 )
 
 func main() {
@@ -57,9 +57,22 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	hostedPersonKey, err := newSigningKey("hosted-person-server-key")
+	if err != nil {
+		return err
+	}
+	hostedResourceKey, err := newSigningKey("hosted-resource-key")
+	if err != nil {
+		return err
+	}
+	agentTokenIDs := []string{"local-agent-token", "hosted-agent-token"}
 	selfHosted, err := agentprovider.NewSelfHostedAgent(agentprovider.SelfHostedAgentConfig{
 		Issuer: agentOrigin, Agent: agentID, SigningKey: key, Clock: clock,
-		NewID: func() string { return "self-hosted-agent-token" },
+		NewID: func() string {
+			id := agentTokenIDs[0]
+			agentTokenIDs = agentTokenIDs[1:]
+			return id
+		},
 	})
 	if err != nil {
 		return err
@@ -157,62 +170,28 @@ func run(output io.Writer) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("Resource returned %s: %s", response.Status, body)
 	}
-	_, err = fmt.Fprintf(output, "AAuth self-hosted Agent accepted: %s\n", body)
-	return err
-}
-
-func newSigningKey(id string) (jose.SigningKey, error) {
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return jose.SigningKey{}, err
+	if _, err = fmt.Fprintf(output, "AAuth self-hosted Agent accepted: %s\n", body); err != nil {
+		return err
 	}
-	return jose.NewEd25519SigningKey(id, privateKey)
-}
 
-type logicalTransport struct {
-	mu     sync.RWMutex
-	routes map[string]http.Handler
-}
-
-func newLogicalTransport() *logicalTransport {
-	return &logicalTransport{routes: make(map[string]http.Handler)}
-}
-
-func (transport *logicalTransport) Handle(origin string, handler http.Handler) {
-	transport.mu.Lock()
-	defer transport.mu.Unlock()
-	transport.routes[origin] = handler
-}
-
-func (transport *logicalTransport) Admit(_ context.Context, endpoint string) error {
-	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	hostedPeople, hostedService, err := hostedHandlers(resolver, clock, hostedPersonKey, hostedResourceKey)
 	if err != nil {
 		return err
 	}
-	origin := request.URL.Scheme + "://" + request.URL.Host
-	transport.mu.RLock()
-	_, ok := transport.routes[origin]
-	transport.mu.RUnlock()
-	if !ok {
-		return errors.New("self-hosted example: endpoint origin is not admitted")
+	network.Handle(hostedPersonID, hostedPeople)
+	network.Handle(hostedResource, hostedService)
+	hostedToken, err := selfHosted.Issue(agentprovider.SelfHostedAgentTokenRequest{
+		PersonServer: hostedPersonID, Lifetime: time.Hour,
+	})
+	if err != nil {
+		return err
 	}
-	return nil
-}
-
-func (transport *logicalTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.Body != nil {
-		defer request.Body.Close()
+	hostedClient, err := clientagent.New(ctx, clientagent.Config{
+		Identifier: agentID, SigningKey: key, AgentToken: hostedToken,
+		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+	})
+	if err != nil {
+		return err
 	}
-	origin := request.URL.Scheme + "://" + request.URL.Host
-	transport.mu.RLock()
-	handler := transport.routes[origin]
-	transport.mu.RUnlock()
-	if handler == nil {
-		return nil, fmt.Errorf("self-hosted example: no handler for %s", origin)
-	}
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	response := recorder.Result()
-	response.Request = request
-	return response, nil
+	return callHostedResource(ctx, output, hostedClient)
 }
