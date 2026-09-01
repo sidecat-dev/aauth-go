@@ -299,26 +299,7 @@ func TestClientRejectsResourceTokenThatOutlivesMissionBoundPersonToken(t *testin
 	}
 }
 
-func TestMissionSpecificContinuationsReturnTypedErrors(t *testing.T) {
-	t.Run("mission approval", func(t *testing.T) {
-		protocol := newTestProtocol(t)
-		client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-			if request.Method == http.MethodGet {
-				return jsonResponse(request, http.StatusOK, map[string]any{
-					"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
-					"auth_token_endpoint": protocol.authTokenEndpoint, "mission_endpoint": protocol.personServerID + "/mission",
-				}), nil
-			}
-			return missionPendingResponse(request), nil
-		})})
-
-		_, err := client.ProposeMission(context.Background(), agent.MissionRequest{
-			PersonServer: protocol.personServerID,
-			Proposal:     aauth.MissionProposal{Description: "Read records", Resources: []string{protocol.resourceID}},
-		})
-		assertMissionContinuationError(t, err, "approval", "ProposeMission")
-	})
-
+func TestMissionExchangeContinuationReturnsTypedError(t *testing.T) {
 	for _, operation := range []struct {
 		name string
 		call func(*agent.Client, agent.ExchangeRequest) error

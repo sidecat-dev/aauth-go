@@ -1,4 +1,4 @@
-// The mission example runs one immediate mission-bound three-party journey in
+// The mission example runs one deferred mission-bound three-party journey in
 // process. Each role still communicates through ordinary HTTP handlers.
 package main
 
@@ -67,12 +67,8 @@ func main() {
 			return id
 		},
 		Missions: &personserver.MissionConfig{
-			Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
-				return personserver.MissionDecision{
-					Description:       request.Proposal.Description,
-					ApprovedResources: request.Proposal.Resources,
-					ExpiresAt:         &missionExpiry,
-				}, nil
+			DeferProposal: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionProposalPendingPolicy, bool, error) {
+				return personserver.MissionProposalPendingPolicy{Lifetime: 5 * time.Minute, RetryAfter: 0}, true, nil
 			},
 			AcceptUpdate: func(_ context.Context, request personserver.MissionUpdatePolicyRequest) error {
 				if request.Document.Update.Description == "" {
@@ -127,12 +123,31 @@ func main() {
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
 	}))
 	ctx := context.Background()
-	mission := must(reader.ProposeMission(ctx, clientagent.MissionRequest{
+	proposalResult := must(reader.BeginMission(ctx, clientagent.MissionRequest{
 		PersonServer: personServerID,
 		Proposal: aauth.MissionProposal{
 			Description: "# Read the report inputs", Resources: []string{resourceID},
 		},
 	}))
+	pending, ok := proposalResult.Pending()
+	if !ok {
+		log.Fatal("mission proposal unexpectedly completed without host review")
+	}
+	reviews := must(people.PendingMissionProposals(ctx, 10))
+	if len(reviews) != 1 {
+		log.Fatalf("host mission queue contains %d proposals, want 1", len(reviews))
+	}
+	proposal := reviews[0].Proposal()
+	if err := people.ApproveMissionProposal(ctx, reviews[0], personserver.MissionDecision{
+		Description: proposal.Description, ApprovedResources: proposal.Resources, ExpiresAt: &missionExpiry,
+	}); err != nil {
+		log.Fatal(err)
+	}
+	completed := must(reader.PollMissionProposal(ctx, pending))
+	mission, approved := completed.Approval()
+	if !approved {
+		log.Fatal("approved mission remained pending")
+	}
 	update := must(reader.UpdateMission(ctx, clientagent.MissionUpdateRequest{
 		PersonServer: personServerID, MissionS256: mission.Mission().S256,
 		Description: "Report inputs selected",

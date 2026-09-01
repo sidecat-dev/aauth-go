@@ -51,7 +51,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
 | [Direct three-party R3](example/r3threeparty) | MCP operations narrowed and issued by the Person Server with no Access Server | `go run ./example/r3threeparty` |
-| [Mission-bound three-party authorization](example/mission) | Exact approval, an ordered accepted update, one protected call, and person-accepted completion | `go run ./example/mission` |
+| [Mission-bound three-party authorization](example/mission) | Retained proposal review, host approval, one Agent poll, an ordered update, one protected call, and person-accepted completion | `go run ./example/mission` |
 | [Mission-bound action audit](example/audit) | Application performs one local action; Agent submits its exact post-action record; Person Server appends it to the active mission | `go run ./example/audit` |
 | [Question through the Person Server](example/interactionquestion) | Missionless and mission-bound questions; policy answers immediately or parks the question for a host; one explicit poll returns a deferred answer | `go run ./example/interactionquestion` |
 | [Resource-hosted interaction relay](example/interactionrelay) | Missionless and mission-bound relays; the PS retains the URL and code; a host marks engagement; one explicit poll returns the relay state | `go run ./example/interactionrelay` |
@@ -80,6 +80,10 @@ uses those same Agent calls while the Person Server exposes the exact active
 mission only to host policy, binds the decision and issued token to that
 snapshot, permits later accepted updates as Core requires, and refuses delivery
 after mission termination.
+The [deferred mission-proposal journey](integration/mission_deferred_proposal_test.go)
+proves the separate entry boundary: exact proposal retention before `202`, a
+store-derived host review queue, atomic mission and Person-token approval,
+one explicit Agent poll, and continuation through a protected Resource call.
 The [missionless Permission journey](integration/permission_missionless_test.go)
 proves a signed local-action request, Person Server recomposition around the
 retained request, explicit host grant and denial, one caller-driven poll, one
@@ -232,11 +236,11 @@ lifecycle transaction boundary. The Resource-hosted pending URL remains the
 completion authority for a relay. The complete cross-event mission log,
 durable store adapters, and stable recovery after a lost initial response
 remain open.
-Mission support currently covers immediate
-top-level approval, ordered accepted updates, protected use, and
-person-accepted completion through both three-party and four-party
-authorization. Deferred mission actions and mission combinations with
-delegation, call chaining, held delivery, or revocation remain open.
+Mission support covers immediate approval or approval-only deferred host
+review, ordered accepted updates, protected use, and person-accepted completion
+through three- and four-party authorization. Mission clarification, deferred
+updates or completion, durable production adapters, and mission combinations
+with delegation, call chaining, held delivery, or revocation remain open.
 
 R3 has strict operation-object grammars and bounded native-definition adapters
 for all seven standard vocabularies. One parse atomically derives copied

@@ -202,6 +202,49 @@ atomically retains its mandatory R3 audit record before returning the token.
 The Resource then enforces `r3_granted` without fetching the document again.
 Per-call R3 remains a four-party path in this implementation.
 
+### Deferred mission proposal
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant PS as Person Server
+    participant H as Authenticated host
+    participant R as Resource
+    A->>PS: Signed proposal + Prefer: wait=0
+    PS->>PS: Retain exact bytes in host queue
+    PS-->>A: 202 requirement=approval + pending URL
+    H->>PS: List pending proposals
+    H->>PS: Approve or deny exact review
+    PS->>PS: Atomically retain Mission + Person tokens
+    A->>PS: One signed bodyless GET
+    PS-->>A: Approval or typed terminal result
+    A->>R: Continue ordinary mission-bound authorization
+```
+
+`Client.ProposeMission` is the immediate-only call. `Client.BeginMission`
+returns either `Approval()` or `Pending()`; neither polls automatically. A
+server that unexpectedly defers `ProposeMission` returns a typed error that
+still exposes the verified pending value. A pending value can be snapshotted
+and restored across Agent restart. Repeated
+`202`, `429`, and `503` responses return an updated pending value and retry
+interval; the caller owns its timer and cancellation.
+The host reads `Server.PendingMissionProposals`, authenticates the responsible
+person through application code, then calls `ApproveMissionProposal` or
+`DenyMissionProposal`. The review value is context, not authentication, and
+its untrusted Markdown must be sanitized before display.
+
+The proposal-store contract owns durable discovery and the atomic decision
+boundary; the executable adapter is in-memory. An approval that becomes stale
+before delivery returns one typed expiry instead of unusable credentials; its
+already-retained Mission and token records remain expired history and are not
+disclosed through the pending URL.
+Terminal polling is otherwise one-shot: the store records delivery before
+returning the winning result, and later polls receive `410`. Core defines no
+stable identity for recovering a lost initial `202` (`AAG-F012`) or terminal
+response (`AAG-F004`). This approval-only profile does not implement mission
+clarification. It also requires the original proposal key until decision;
+`AAG-F105` records the unresolved renewal boundary.
+
 ### Local-action permission
 
 ```mermaid

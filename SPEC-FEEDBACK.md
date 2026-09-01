@@ -138,7 +138,7 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F009 | Person-token policy denial has no registered error | ready below |
 | AAG-F010 | Four-party person and tenant context use the wrong issuer namespace | ready below |
 | AAG-F011 | Closed issues 88 and 89 are not reflected in the person-token endpoint text | ready below |
-| AAG-F012 | A lost initial deferred `202` has no stable recovery identity | evidence pending |
+| AAG-F012 | A lost initial deferred `202` has no stable recovery identity | ready below with typed uncertain mission-proposal submission evidence |
 | AAG-F013 | Restored deferred state can lose the verified request authority | held-store boundary implemented; generic deferred rule remains open |
 | AAG-F014 | R3 protected challenges do not define who selects the exact operation | exact-request Resource mapping covers direct and per-call enforcement |
 | AAG-F014a | An AS cannot distinguish requested operations from a broader R3 document carried only by URI and digest | exact-request document construction and independent AS fetch/policy evidence implemented |
@@ -156,6 +156,7 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F102 | Resource-hosted relay resolution has no terminal success response shape | ready below with retained relay and terminal-poll evidence |
 | AAG-F103 | Third-party login requires a Resource token before its required person claims exist | ready below from the current token grammar and flow sequence |
 | AAG-F104 | Core both permits and forbids self-hosted Agent Providers | ready below with ordinary metadata, issuance, and protected-use evidence |
+| AAG-F105 | Deferred mission approval does not define Agent key renewal before token delivery | ready below with original-key and rotated-key polling evidence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -237,6 +238,29 @@ terminal `AAuth-Access` response?
 
 **Placement:** Open a Core deferred-response issue and cross-link the held
 delivery replay exception.
+
+### AAG-F012 — A lost initial deferred response has no recovery identity
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Deferred Responses`, `Polling with GET`, and `Pending
+URL Security`.
+
+The initial request carries no caller-selected idempotency or lookup key. If a
+server retains the request and returns `202`, but the response is lost, the
+Agent never learns the pending URL. Repeating the request may create a second
+operation; a short HTTP-signature replay cache does not provide later lookup.
+
+The mission-proposal client submits once and returns a typed uncertain outcome
+after transport failure, server failure, or an unverifiable successful
+response. It does not automatically create a second proposal.
+
+**Question:** Should a deferred request carry a stable caller-selected identity
+that recovers its pending URL, or should exact replay return the original
+pending response for a bounded period?
+
+**Placement:** Open a general Core deferred-response issue and cross-link the
+terminal recovery question in `AAG-F004`.
 
 ### AAG-F033 — Three-party deferral does not define the resource-token expiry boundary
 
@@ -2066,6 +2090,31 @@ Bootstrap profile be removed or narrowed?
 
 **Placement:** Add to the current Core consistency sweep and cross-link the
 Bootstrap self-hosted section.
+
+### AAG-F105 — Deferred mission approval does not define key renewal before token delivery
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Mission Creation`, `Mission Approval`, `Deferred
+Responses`, `Pending URL Security`, and `Person Token`.
+
+Core requires every pending poll to authenticate the same Agent identity, but
+does not say whether that Agent may renew onto a different proof key while a
+mission proposal is pending. The host can approve before the next poll, while
+the returned Person tokens must be bound to an Agent key.
+
+This implementation retains the proposal key, bounds the pending state by the
+original Agent-token lifetime, and cloaks a poll under another key. If an
+approval becomes stale before delivery, it returns expiry instead of the old
+credentials. Original-key continuity is still an implementation choice rather
+than a stated Core requirement.
+
+**Question:** Must a pending mission proposal remain bound to the original
+proof key and Agent-token lifetime, or should terminal delivery mint Person
+tokens for the currently authenticated Agent key after renewal?
+
+**Placement:** Open a focused Core deferred-mission issue and cross-link the
+Pending URL Security and Person Token sections.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

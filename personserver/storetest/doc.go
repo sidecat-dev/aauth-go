@@ -1,5 +1,16 @@
 // Package storetest checks reusable Person Server store contracts.
 //
+// An application that supports deferred mission-proposal review can run the
+// mission-proposal contract against its real store adapter:
+//
+//	func TestMissionProposalStore(t *testing.T) {
+//		storetest.RunMissionProposal(t, storetest.MissionProposalContract{
+//			New: func(testing.TB) personserver.MissionProposalStore {
+//				return newApplicationMissionProposalStore()
+//			},
+//		})
+//	}
+//
 // An application that implements deferred authorization with clarification can
 // run the clarification contract against its real store adapter:
 //

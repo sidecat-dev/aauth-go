@@ -118,16 +118,24 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
 - [ ] **Mission-governed authorization — Partial**
-  - Flow: Agent → PS mission proposal → person approves exact content →
-    optional ordered updates → three- or four-party authorization → protected
-    call → person-accepted completion.
-  - Start with: `Client.ProposeMission`, `UpdateMission`, `CompleteMission`,
-    `personserver.MissionConfig`, and `personserver.MissionStore`.
+  - Flow: Agent → PS mission proposal → immediate approval or retained pending
+    URL → store-derived host queue and separately authenticated decision → one
+    Agent poll → optional ordered updates → three- or four-party authorization
+    → protected call → person-accepted completion.
+  - Start with: `Client.ProposeMission` for immediate-only deployments;
+    `Client.BeginMission`, `PollMissionProposal`,
+    `PendingMissionProposal.Snapshot`, `RestorePendingMissionProposal`,
+    `Server.PendingMissionProposals`,
+    `ApproveMissionProposal`, `DenyMissionProposal`, `UpdateMission`, and
+    `CompleteMission`.
   - Evidence: [`integration/mission_three_party_test.go`](integration/mission_three_party_test.go),
     [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go),
+    [`integration/mission_deferred_proposal_test.go`](integration/mission_deferred_proposal_test.go),
     `go run ./example/mission`, and `go run ./example/fourparty`.
-  - Missing: deferred mission proposal, update, or completion; delegation;
-    call chaining; held delivery; and revocation.
+  - Missing: mission clarification and POST-on-pending; deferred mission update
+    or completion; a helper that waits between polls; a durable production
+    adapter; recovery after an uncertain initial or terminal response;
+    delegation; call chaining; held delivery; and revocation.
 
 - [ ] **Parent-mediated sub-agents and one Resource call chain — Partial**
   - Flow: parent → PS on behalf of one child → credential bound to the child

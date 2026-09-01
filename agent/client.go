@@ -1,12 +1,7 @@
-// Package agent implements explicit calls for the bounded AAuth Core paths and
-// the immediate and per-call R3 paths. It also composes two-key Agent
-// enrollment and refresh, direct identity access, Resource-managed sessions,
-// one immediate mission journey, parent-mediated sub-agents, one Resource call
-// chain, missionless or mission-bound local-action permission, mission-bound post-action audit,
-// missionless or mission-bound Interaction questions and relays,
-// public Events registration and
-// correlation, and one-shot polling of supported interactions and held
-// invocations.
+// Package agent implements Agent-side AAuth protocol calls. Each Client method
+// performs one explicit network action; it never hides polling, retries,
+// browser interaction, or application consequences. JOURNEYS.md identifies
+// the supported compositions and their current limits.
 package agent
 
 import (

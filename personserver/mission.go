@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 )
 
 // ErrMissionNotFound reports that an owner-scoped MissionStore lookup cannot
@@ -134,11 +136,16 @@ type MissionStore interface {
 // Core permits the Person Server to accept an update on its own. In contrast,
 // ConfirmPersonAcceptedCompletion must return nil only after the host has
 // obtained the responsible person's actual acceptance of the completion
-// statement; it is not an autonomous reasonableness policy. Each callback wraps
-// ErrMissionDenied for an intentional refusal and returns other errors only
-// for operational failure.
+// statement; it is not an autonomous reasonableness policy. An omitted action
+// callback disables that action with a typed denial. Each configured callback
+// wraps ErrMissionDenied for an intentional refusal and returns other errors
+// only for operational failure.
 type MissionConfig struct {
-	Approve                         func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	Approve func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	// DeferProposal optionally selects separately authenticated host review.
+	// A true result retains the exact proposal and returns 202; false preserves
+	// the immediate Approve path.
+	DeferProposal                   func(context.Context, MissionApprovalRequest) (MissionProposalPendingPolicy, bool, error)
 	AcceptUpdate                    func(context.Context, MissionUpdatePolicyRequest) error
 	ConfirmPersonAcceptedCompletion func(context.Context, MissionCompletionPolicyRequest) error
 }
@@ -148,6 +155,7 @@ type MissionConfig struct {
 type MissionApprovalRequest struct {
 	Agent                 string
 	Proposal              aauth.MissionProposal
+	ExactJSON             []byte
 	AgentAdditionalClaims map[string]json.RawMessage
 }
 
@@ -195,7 +203,7 @@ func (failure *MissionTerminatedError) Error() string {
 }
 
 func (server *Server) handleMission(response http.ResponseWriter, request *http.Request) {
-	_, agent, _, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
+	_, agent, proof, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -205,7 +213,8 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		return
 	}
 	var proposal aauth.MissionProposal
-	if err := decodeJSON(request.Body, &proposal); err != nil {
+	exactJSON, err := httpapi.DecodeExactJSON(request.Body, maxRequestBytes, &proposal)
+	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
@@ -215,7 +224,63 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 	}
 	policyRequest := MissionApprovalRequest{
 		Agent: agent.Subject, Proposal: cloneMissionProposal(proposal),
+		ExactJSON:             append([]byte(nil), exactJSON...),
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+	}
+	if server.missionDeferProposal != nil {
+		pending, deferProposal, err := server.missionDeferProposal(request.Context(), cloneMissionApprovalRequest(policyRequest))
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if deferProposal {
+			if err := validateMissionProposalPendingPolicy(pending); err != nil {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				return
+			}
+			createdAt := proof.VerifiedAt().UTC()
+			agentExpiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
+			for attempt := 0; attempt < 3; attempt++ {
+				reference, err := interaction.GeneratePendingReference(nil)
+				if err != nil {
+					writeProblem(response, http.StatusInternalServerError, "server_error", err)
+					return
+				}
+				record := MissionProposalRecord{
+					ID: reference, PersonServer: server.issuer, AgentProvider: agent.Issuer, Agent: agent.Subject,
+					Confirmation: agent.Confirmation.JWK, AgentExpiresAt: agentExpiresAt,
+					AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+					ExactJSON:             append([]byte(nil), exactJSON...),
+					CreatedAt:             createdAt, ExpiresAt: createdAt.Add(pending.Lifetime), RetryAfter: pending.RetryAfter,
+				}
+				if agentExpiresAt.Before(record.ExpiresAt) {
+					record.ExpiresAt = agentExpiresAt
+				}
+				if !record.ExpiresAt.After(createdAt) {
+					writeProblem(response, http.StatusRequestTimeout, "expired", ErrMissionProposalExpired)
+					return
+				}
+				if err := validateMissionProposalRecord(record); err != nil {
+					writeProblem(response, http.StatusInternalServerError, "server_error", err)
+					return
+				}
+				if err := server.missionProposals.CreateMissionProposal(request.Context(), cloneMissionProposalRecord(record)); err != nil {
+					if errors.Is(err, ErrMissionProposalConflict) {
+						continue
+					}
+					writeProblem(response, http.StatusInternalServerError, "server_error", err)
+					return
+				}
+				writePendingMissionProposal(response, "/mission/pending/"+reference, record.RetryAfter)
+				return
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: could not allocate a unique mission proposal reference"))
+			return
+		}
+	}
+	if server.missionApprove == nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission proposal was not deferred and no immediate approval policy is configured"))
+		return
 	}
 	decision, err := server.missionApprove(request.Context(), policyRequest)
 	if err != nil {
@@ -227,6 +292,91 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	approval, err := server.prepareMissionApproval(request.Context(), agent, decision, approvedAt)
+	if err != nil {
+		var binding *missionPersonBindingError
+		if errors.As(err, &binding) {
+			writeProblem(response, http.StatusForbidden, "person_token_denied", err)
+		} else {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		}
+		return
+	}
+	if err := server.missions.CommitMission(request.Context(), approval.Mission, approval.PersonTokenRecords); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	writePrivateJSON(response, http.StatusOK, missionApprovalResponse(approval))
+}
+
+func validateMissionProposalPendingPolicy(policy MissionProposalPendingPolicy) error {
+	if policy.Lifetime <= 0 {
+		return errors.New("personserver: deferred mission proposal lifetime must be positive")
+	}
+	if policy.RetryAfter < 0 || policy.RetryAfter%time.Second != 0 {
+		return errors.New("personserver: deferred mission proposal retry interval must be whole nonnegative seconds")
+	}
+	return nil
+}
+
+func validateMissionProposalRecord(record MissionProposalRecord) error {
+	if record.ID == "" || record.PersonServer == "" || record.AgentProvider == "" || record.Agent == "" ||
+		record.AgentExpiresAt.IsZero() || record.CreatedAt.IsZero() || record.ExpiresAt.IsZero() ||
+		!record.ExpiresAt.After(record.CreatedAt) || record.ExpiresAt.After(record.AgentExpiresAt) ||
+		record.RetryAfter < 0 || record.RetryAfter%time.Second != 0 || len(record.ExactJSON) == 0 {
+		return ErrMissionProposalConflict
+	}
+	if _, err := record.Confirmation.PublicKey(); err != nil {
+		return ErrMissionProposalConflict
+	}
+	if _, err := missionProposalFromRecord(record); err != nil {
+		return ErrMissionProposalConflict
+	}
+	return nil
+}
+
+func missionProposalFromRecord(record MissionProposalRecord) (aauth.MissionProposal, error) {
+	var proposal aauth.MissionProposal
+	exact, err := httpapi.DecodeExactJSON(bytes.NewReader(record.ExactJSON), maxRequestBytes, &proposal)
+	if err != nil || !bytes.Equal(exact, record.ExactJSON) {
+		return aauth.MissionProposal{}, ErrMissionProposalConflict
+	}
+	if err := proposal.Validate(); err != nil {
+		return aauth.MissionProposal{}, ErrMissionProposalConflict
+	}
+	return cloneMissionProposal(proposal), nil
+}
+
+func cloneMissionApprovalRequest(request MissionApprovalRequest) MissionApprovalRequest {
+	request.Proposal = cloneMissionProposal(request.Proposal)
+	request.ExactJSON = append([]byte(nil), request.ExactJSON...)
+	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
+	return request
+}
+
+func writePendingMissionProposal(response http.ResponseWriter, location string, retryAfter time.Duration) {
+	response.Header().Set("AAuth-Requirement", "requirement=approval")
+	response.Header().Set("Location", location)
+	response.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
+	writePrivateJSON(response, http.StatusAccepted, map[string]string{"status": "pending"})
+}
+
+type missionPersonBindingError struct {
+	cause error
+}
+
+func (failure *missionPersonBindingError) Error() string {
+	return "personserver: mission person binding: " + failure.cause.Error()
+}
+
+func (failure *missionPersonBindingError) Unwrap() error { return failure.cause }
+
+func (server *Server) prepareMissionApproval(
+	ctx context.Context,
+	agent aauth.AgentTokenClaims,
+	decision MissionDecision,
+	approvedAt time.Time,
+) (MissionProposalApproval, error) {
 	blob := aauth.MissionBlob{
 		Approver: server.issuer, Agent: agent.Subject, ApprovedAt: approvedAt,
 		ExpiresAt: decision.ExpiresAt, Description: decision.Description,
@@ -235,8 +385,7 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 	}
 	mission, err := aauth.EncodeMission(blob)
 	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
+		return MissionProposalApproval{}, err
 	}
 	record := MissionRecord{
 		S256: mission.S256, Agent: agent.Subject, ExactJSON: append([]byte(nil), mission.ExactJSON...),
@@ -245,53 +394,43 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 	if decision.ExpiresAt != nil {
 		record.ExpiresAt = decision.ExpiresAt.UTC()
 	}
-
 	personTokens := make(map[string]string, len(decision.ApprovedResources))
 	personRecords := make([]PersonTokenRecord, 0, len(decision.ApprovedResources))
-	personIdentities := make(map[string]struct{}, len(decision.ApprovedResources))
+	identities := make(map[string]struct{}, len(decision.ApprovedResources))
 	for _, resource := range decision.ApprovedResources {
 		personRequest := PersonTokenRequest{
 			Agent: agent.Subject, Resource: resource, Mission: missionPolicyContext(mission),
 			AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		}
-		person, err := server.bindPerson(request.Context(), clonePersonTokenRequest(personRequest))
+		person, err := server.bindPerson(ctx, clonePersonTokenRequest(personRequest))
 		if err != nil {
-			writeProblem(response, http.StatusForbidden, "person_token_denied", err)
-			return
+			return MissionProposalApproval{}, &missionPersonBindingError{cause: fmt.Errorf("Resource %q: %w", resource, err)}
 		}
 		issuedAt := server.clock.Now().UTC()
 		if !record.ExpiresAt.IsZero() && !issuedAt.Before(record.ExpiresAt) {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission expired before approval could be retained"))
-			return
+			return MissionProposalApproval{}, errors.New("personserver: mission expired before approval could be retained")
 		}
 		compact, tokenRecord, err := server.preparePersonToken(
 			issuedAt, agent, agent, personRequest, person, &record, nil,
 		)
 		if err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			return
+			return MissionProposalApproval{}, err
 		}
 		identity := tokenRecord.PersonServer + "\x00" + tokenRecord.JTI
-		if _, duplicate := personIdentities[identity]; duplicate {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission approval produced duplicate person-token identities"))
-			return
+		if _, duplicate := identities[identity]; duplicate {
+			return MissionProposalApproval{}, errors.New("personserver: mission approval produced duplicate person-token identities")
 		}
-		personIdentities[identity] = struct{}{}
+		identities[identity] = struct{}{}
 		personTokens[resource] = compact
 		personRecords = append(personRecords, tokenRecord)
 	}
 	if !record.ExpiresAt.IsZero() && !server.clock.Now().UTC().Before(record.ExpiresAt) {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission expired before approval could be retained"))
-		return
+		return MissionProposalApproval{}, errors.New("personserver: mission expired before approval could be retained")
 	}
-	if err := server.missions.CommitMission(request.Context(), record, personRecords); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	writePrivateJSON(response, http.StatusOK, aauth.MissionApproval{
-		S256: mission.S256, Mission: mission.Encoded,
-		Capabilities: append([]string(nil), decision.Capabilities...), PersonTokens: personTokens,
-	})
+	return MissionProposalApproval{
+		Mission:      cloneMissionRecordForTransition(record),
+		PersonTokens: personTokens, PersonTokenRecords: personRecords,
+	}, nil
 }
 
 func (server *Server) handleMissionAction(response http.ResponseWriter, request *http.Request) {
@@ -346,6 +485,10 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 
 	switch action.Action {
 	case "update":
+		if server.missionAcceptUpdate == nil {
+			writeMissionPolicyProblem(response, "mission_update_denied", fmt.Errorf("%w: mission updates are not enabled", ErrMissionDenied))
+			return
+		}
 		policyRequest := MissionUpdatePolicyRequest{
 			Agent: agent.Subject, Mission: *cloneMissionContext(mission),
 			Document:              cloneMissionUpdateDocument(updateDocument),
@@ -378,6 +521,10 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 		}
 		writePrivateJSON(response, http.StatusOK, aauth.MissionUpdateResponse{S256: updateDocument.S256})
 	case "completion":
+		if server.missionConfirmPersonCompletion == nil {
+			writeMissionPolicyProblem(response, "mission_completion_denied", fmt.Errorf("%w: mission completion is not enabled", ErrMissionDenied))
+			return
+		}
 		policyRequest := MissionCompletionPolicyRequest{
 			Agent: agent.Subject, Mission: *cloneMissionContext(mission),
 			Document:              cloneMissionCompletionDocument(completionDocument),

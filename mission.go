@@ -12,6 +12,7 @@ import (
 )
 
 // MissionTool is one tool named in a mission proposal or approved mission.
+// Description is untrusted Markdown and must be sanitized before rendering.
 // The protocol records this declaration; it does not make the declaration an
 // enforceable permission at a remote Resource.
 type MissionTool struct {
@@ -20,7 +21,8 @@ type MissionTool struct {
 }
 
 // MissionProposal is the Agent-authored request body sent to a Person
-// Server's mission endpoint.
+// Server's mission endpoint. Description and tool descriptions are untrusted
+// Markdown and must be sanitized before rendering.
 type MissionProposal struct {
 	Description string        `json:"description"`
 	Tools       []MissionTool `json:"tools,omitempty"`

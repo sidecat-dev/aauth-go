@@ -473,19 +473,9 @@ func TestMissionConfigurationIsOptionalAndCoherent(t *testing.T) {
 	if _, err := NewPSAuthorization(base); err == nil {
 		t.Fatal("mission configuration without approval policy was accepted")
 	}
-	base.Missions = &MissionConfig{
-		Approve:                         protocol.server.missionApprove,
-		ConfirmPersonAcceptedCompletion: func(context.Context, MissionCompletionPolicyRequest) error { return nil },
-	}
-	if _, err := NewPSAuthorization(base); err == nil {
-		t.Fatal("mission configuration without update acceptance was accepted")
-	}
-	base.Missions = &MissionConfig{
-		Approve:      protocol.server.missionApprove,
-		AcceptUpdate: func(context.Context, MissionUpdatePolicyRequest) error { return nil },
-	}
-	if _, err := NewPSAuthorization(base); err == nil {
-		t.Fatal("mission configuration without completion acceptance was accepted")
+	base.Missions = &MissionConfig{Approve: protocol.server.missionApprove}
+	if _, err := NewPSAuthorization(base); err != nil {
+		t.Fatalf("mission configuration with disabled update and completion: %v", err)
 	}
 
 	missionConfig := &MissionConfig{

@@ -419,6 +419,30 @@ func TestMissionActionPolicyDenialIsTypedAndDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestMissionActionOmittedPoliciesFailClosed(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body []byte
+		code string
+	}{
+		{name: "update", body: []byte(`{"action":"update","description":"Change"}`), code: "mission_update_denied"},
+		{name: "completion", body: []byte(`{"action":"completion","summary":"Done"}`), code: "mission_completion_denied"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			protocol := newMissionProtocol(t)
+			mission := protocol.commitMission(t, protocol.agentID, protocol.now.Add(10*time.Minute), MissionActive, "")
+			protocol.server.missionAcceptUpdate = nil
+			protocol.server.missionConfirmPersonCompletion = nil
+			response := protocol.signedMissionAction(t, mission.S256, test.body)
+			if response.Code != http.StatusForbidden ||
+				!bytes.Contains(response.Body.Bytes(), []byte(`"error":"`+test.code+`"`)) {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestMissionActionOperationalCallbackFailureIsNotReportedAsDenial(t *testing.T) {
 	for _, test := range []struct {
 		name string

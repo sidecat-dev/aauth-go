@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
 
-// NewMissionStore returns a concurrency-safe in-memory Person Server mission
-// and mission-audit store for examples.
+// NewMissionStore returns the concurrency-safe in-memory Person Server store
+// used by the mission examples. It demonstrates interface semantics, not
+// production persistence.
 func NewMissionStore() personserver.MissionAuditStore {
 	return newMissionStore()
 }
@@ -32,6 +34,7 @@ func newMissionStore() *missionStore {
 		auth:        make(map[string]personserver.IssuedAuthTokenRecord),
 		audits:      make(map[string][]personserver.MissionAuditRecord),
 		permissions: make(map[string]personserver.PermissionRecord),
+		proposals:   make(map[string]personserver.MissionProposalSnapshot),
 	}
 }
 
@@ -42,10 +45,206 @@ type missionStore struct {
 	auth        map[string]personserver.IssuedAuthTokenRecord
 	audits      map[string][]personserver.MissionAuditRecord
 	permissions map[string]personserver.PermissionRecord
+	proposals   map[string]personserver.MissionProposalSnapshot
 }
 
 var _ personserver.MissionAuditStore = (*missionStore)(nil)
 var _ personserver.MissionPermissionStore = (*missionStore)(nil)
+var _ personserver.MissionProposalStore = (*missionStore)(nil)
+
+func (store *missionStore) CreateMissionProposal(
+	_ context.Context,
+	record personserver.MissionProposalRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, exists := store.proposals[record.ID]; exists {
+		return personserver.ErrMissionProposalConflict
+	}
+	store.proposals[record.ID] = (personserver.MissionProposalSnapshot{
+		Record: record, State: personserver.MissionProposalPending,
+	}).Clone()
+	return nil
+}
+
+func (store *missionStore) LoadMissionProposal(
+	_ context.Context,
+	reference string,
+	at time.Time,
+) (personserver.MissionProposalSnapshot, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	snapshot, ok := store.proposals[reference]
+	if !ok {
+		return personserver.MissionProposalSnapshot{}, personserver.ErrMissionProposalNotFound
+	}
+	if materializeMissionProposalExpiry(&snapshot, at) {
+		store.proposals[reference] = snapshot.Clone()
+	}
+	return snapshot.Clone(), nil
+}
+
+func (store *missionStore) ListPendingMissionProposals(
+	_ context.Context,
+	at time.Time,
+	limit int,
+) ([]personserver.MissionProposalRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	records := make([]personserver.MissionProposalRecord, 0, len(store.proposals))
+	for reference, snapshot := range store.proposals {
+		if materializeMissionProposalExpiry(&snapshot, at) {
+			store.proposals[reference] = snapshot.Clone()
+		}
+		if snapshot.State == personserver.MissionProposalPending {
+			records = append(records, snapshot.Record.Clone())
+		}
+	}
+	sort.Slice(records, func(left, right int) bool {
+		if records[left].CreatedAt.Equal(records[right].CreatedAt) {
+			return records[left].ID < records[right].ID
+		}
+		return records[left].CreatedAt.Before(records[right].CreatedAt)
+	})
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	return records, nil
+}
+
+func (store *missionStore) ApproveMissionProposal(
+	_ context.Context,
+	expected personserver.MissionProposalRecord,
+	approval personserver.MissionProposalApproval,
+	at time.Time,
+) (personserver.MissionProposalApproval, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	snapshot, ok := store.proposals[expected.ID]
+	if !ok || !snapshot.Record.Equal(expected) {
+		return personserver.MissionProposalApproval{}, personserver.ErrMissionProposalConflict
+	}
+	if materializeMissionProposalExpiry(&snapshot, at) {
+		store.proposals[expected.ID] = snapshot.Clone()
+	}
+	if snapshot.State == personserver.MissionProposalApproved {
+		if snapshot.Approval.Equivalent(approval) {
+			return snapshot.Approval.Clone(), nil
+		}
+		return personserver.MissionProposalApproval{}, personserver.ErrMissionProposalConflict
+	}
+	if snapshot.State == personserver.MissionProposalExpired || !at.Before(snapshot.Record.ExpiresAt) {
+		return personserver.MissionProposalApproval{}, personserver.ErrMissionProposalExpired
+	}
+	if snapshot.State != personserver.MissionProposalPending {
+		return personserver.MissionProposalApproval{}, personserver.ErrMissionProposalConflict
+	}
+	missionKey := approval.Mission.Agent + "\x00" + approval.Mission.S256
+	if _, exists := store.missions[missionKey]; exists {
+		return personserver.MissionProposalApproval{}, personserver.ErrMissionProposalConflict
+	}
+	batch := make(map[string]struct{}, len(approval.PersonTokenRecords))
+	for _, token := range approval.PersonTokenRecords {
+		key := token.PersonServer + "\x00" + token.JTI
+		if _, exists := store.tokens[key]; exists {
+			return personserver.MissionProposalApproval{}, personserver.ErrMissionProposalConflict
+		}
+		if _, duplicate := batch[key]; duplicate {
+			return personserver.MissionProposalApproval{}, personserver.ErrMissionProposalConflict
+		}
+		batch[key] = struct{}{}
+	}
+	store.missions[missionKey] = cloneMissionRecord(approval.Mission)
+	for _, token := range approval.PersonTokenRecords {
+		store.tokens[token.PersonServer+"\x00"+token.JTI] = token
+	}
+	snapshot.State = personserver.MissionProposalApproved
+	snapshot.Approval = approval.Clone()
+	snapshot.DecidedAt = at
+	store.proposals[expected.ID] = snapshot.Clone()
+	return snapshot.Approval.Clone(), nil
+}
+
+func (store *missionStore) DenyMissionProposal(
+	_ context.Context,
+	expected personserver.MissionProposalRecord,
+	at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	snapshot, ok := store.proposals[expected.ID]
+	if !ok || !snapshot.Record.Equal(expected) {
+		return personserver.ErrMissionProposalConflict
+	}
+	if materializeMissionProposalExpiry(&snapshot, at) {
+		store.proposals[expected.ID] = snapshot.Clone()
+	}
+	if snapshot.State == personserver.MissionProposalDenied {
+		return nil
+	}
+	if snapshot.State == personserver.MissionProposalExpired || !at.Before(snapshot.Record.ExpiresAt) {
+		return personserver.ErrMissionProposalExpired
+	}
+	if snapshot.State != personserver.MissionProposalPending {
+		return personserver.ErrMissionProposalConflict
+	}
+	snapshot.State = personserver.MissionProposalDenied
+	snapshot.DecidedAt = at
+	store.proposals[expected.ID] = snapshot.Clone()
+	return nil
+}
+
+func (store *missionStore) PollMissionProposal(
+	_ context.Context,
+	reference string,
+	identity personserver.MissionProposalPollIdentity,
+	at time.Time,
+) (personserver.MissionProposalSnapshot, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	snapshot, ok := store.proposals[reference]
+	if !ok {
+		return personserver.MissionProposalSnapshot{}, personserver.ErrMissionProposalNotFound
+	}
+	thumbprint, err := snapshot.Record.Confirmation.Thumbprint()
+	if err != nil || snapshot.Record.PersonServer != identity.PersonServer ||
+		snapshot.Record.AgentProvider != identity.AgentProvider || snapshot.Record.Agent != identity.Agent ||
+		thumbprint != identity.ConfirmationThumbprint {
+		return personserver.MissionProposalSnapshot{}, personserver.ErrMissionProposalNotFound
+	}
+	if !snapshot.DeliveredAt.IsZero() {
+		return personserver.MissionProposalSnapshot{}, personserver.ErrMissionProposalGone
+	}
+	materializeMissionProposalExpiry(&snapshot, at)
+	if snapshot.State != personserver.MissionProposalPending {
+		snapshot.DeliveredAt = at
+	}
+	store.proposals[reference] = snapshot.Clone()
+	return snapshot.Clone(), nil
+}
+
+func materializeMissionProposalExpiry(snapshot *personserver.MissionProposalSnapshot, at time.Time) bool {
+	if snapshot == nil {
+		return false
+	}
+	switch {
+	case (snapshot.State == personserver.MissionProposalPending || snapshot.State == personserver.MissionProposalApproved) &&
+		!at.Before(snapshot.Record.ExpiresAt):
+		wasPending := snapshot.State == personserver.MissionProposalPending
+		snapshot.State = personserver.MissionProposalExpired
+		snapshot.Approval = personserver.MissionProposalApproval{}
+		if wasPending {
+			snapshot.DecidedAt = at
+		}
+		return true
+	case snapshot.State == personserver.MissionProposalApproved && snapshot.Approval.Expired(at):
+		snapshot.State = personserver.MissionProposalExpired
+		snapshot.Approval = personserver.MissionProposalApproval{}
+		return true
+	default:
+		return false
+	}
+}
 
 func (store *missionStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
 	store.mu.Lock()

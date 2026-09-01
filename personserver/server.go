@@ -1,15 +1,8 @@
-// Package personserver implements explicit immediate three-party and federated
-// four-party Person Server compositions. Three-party authorization can issue
-// direct class-document R3 grants; federation can add independently fetched
-// class or per-call R3 consent. Both compositions support top-level
-// and parent-mediated issuance and can compose the immediate mission lifecycle:
-// approval, ordered accepted updates, person-accepted completion, and
-// mission-bound credential issuance. Both compositions can add missionless
-// local-action permission, mission-bound post-action audit, and one immediate
-// or deferred missionless Interaction question or missionless/mission-bound
-// relay. Three-party
-// composition also supports deferred authorization, issued-token revocation,
-// and one same-Person-Server Resource call chain.
+// Package personserver implements AAuth Person Server protocol handlers and
+// host-facing policy and storage boundaries. Constructors select direct or
+// federated authorization; optional focused configurations add only the
+// protocol journeys an application uses. JOURNEYS.md identifies the supported
+// compositions and their current limits.
 package personserver
 
 import (
@@ -76,9 +69,9 @@ type FederatedAuthorizationConfig struct {
 	Consent                       func(context.Context, AuthorizationRequest) error
 	// R3 optionally enables signed class-document and per-call proposal consent.
 	R3 *R3Config
-	// Missions optionally enables the immediate mission lifecycle and
-	// mission-bound Person and federated Auth-token issuance. When nonnil,
-	// Tokens must implement MissionStore.
+	// Missions enables mission approval and mission-bound Person and Auth-token
+	// issuance. Tokens implements MissionStore and, when DeferProposal is set,
+	// MissionProposalStore.
 	Missions *MissionConfig
 	// Permission optionally enables top-level permission decisions. With
 	// Missions, Tokens supplies the MissionPermissionStore and Permission.Store
@@ -108,9 +101,9 @@ type PSAuthorizationConfig struct {
 	Tokens                        TokenStore
 	BindPerson                    func(context.Context, PersonTokenRequest) (Person, error)
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
-	// Missions optionally enables immediate Agent-facing mission approval and
-	// mission-bound token issuance. When nonnil, Tokens must implement
-	// MissionStore.
+	// Missions enables Agent-facing mission approval and mission-bound token
+	// issuance. Tokens implements MissionStore and, when DeferProposal is set,
+	// MissionProposalStore.
 	Missions  *MissionConfig
 	Authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	// Budget enables the direct fixed-price companion. The resolver must return
@@ -274,7 +267,9 @@ type Server struct {
 	bindPerson                       func(context.Context, PersonTokenRequest) (Person, error)
 	requirePersonTokenInteraction    func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	missions                         MissionStore
+	missionProposals                 MissionProposalStore
 	missionApprove                   func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	missionDeferProposal             func(context.Context, MissionApprovalRequest) (MissionProposalPendingPolicy, bool, error)
 	missionAcceptUpdate              func(context.Context, MissionUpdatePolicyRequest) error
 	missionConfirmPersonCompletion   func(context.Context, MissionCompletionPolicyRequest) error
 	consent                          func(context.Context, AuthorizationRequest) error
@@ -499,7 +494,9 @@ func newServer(config serverConfig) (*Server, error) {
 		return nil, errors.New("personserver: person-binding policy is required")
 	}
 	var missions MissionStore
+	var missionProposals MissionProposalStore
 	var missionApprove func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	var missionDeferProposal func(context.Context, MissionApprovalRequest) (MissionProposalPendingPolicy, bool, error)
 	var missionAcceptUpdate func(context.Context, MissionUpdatePolicyRequest) error
 	var missionConfirmPersonCompletion func(context.Context, MissionCompletionPolicyRequest) error
 	var missionAudits MissionAuditStore
@@ -510,14 +507,8 @@ func newServer(config serverConfig) (*Server, error) {
 	var missionInteractionQuestions MissionInteractionQuestionStore
 	var interactionQuestionRecords InteractionQuestionStore
 	if config.missions != nil {
-		if config.missions.Approve == nil {
+		if config.missions.Approve == nil && config.missions.DeferProposal == nil {
 			return nil, errors.New("personserver: mission approval policy is required")
-		}
-		if config.missions.AcceptUpdate == nil {
-			return nil, errors.New("personserver: mission update acceptance is required")
-		}
-		if config.missions.ConfirmPersonAcceptedCompletion == nil {
-			return nil, errors.New("personserver: mission completion acceptance is required")
 		}
 		var ok bool
 		missions, ok = config.tokens.(MissionStore)
@@ -525,8 +516,15 @@ func newServer(config serverConfig) (*Server, error) {
 			return nil, errors.New("personserver: missions require a mission store")
 		}
 		missionApprove = config.missions.Approve
+		missionDeferProposal = config.missions.DeferProposal
 		missionAcceptUpdate = config.missions.AcceptUpdate
 		missionConfirmPersonCompletion = config.missions.ConfirmPersonAcceptedCompletion
+		if missionDeferProposal != nil {
+			missionProposals, ok = config.tokens.(MissionProposalStore)
+			if !ok {
+				return nil, errors.New("personserver: deferred mission proposals require Tokens to implement MissionProposalStore")
+			}
+		}
 		if config.audit != nil {
 			missionAudits, ok = config.tokens.(MissionAuditStore)
 			if !ok {
@@ -594,7 +592,8 @@ func newServer(config serverConfig) (*Server, error) {
 		tokens:                       config.tokens, deferredTokens: deferredTokens,
 		missionDeferredTokens: missionDeferredTokens, bindPerson: config.bindPerson,
 		requirePersonTokenInteraction: config.requirePersonTokenInteraction,
-		missions:                      missions, missionApprove: missionApprove,
+		missions:                      missions, missionProposals: missionProposals,
+		missionApprove: missionApprove, missionDeferProposal: missionDeferProposal,
 		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
 		missionAudits:               missionAudits,
 		permissionPolicy:            permissionPolicy(config.permission),
@@ -622,6 +621,9 @@ func (server *Server) Handler() http.Handler {
 	if server.missions != nil {
 		mux.HandleFunc("POST /mission", server.handleMission)
 		mux.HandleFunc("POST /mission/{s256}", server.handleMissionAction)
+	}
+	if server.missionProposals != nil {
+		mux.HandleFunc("GET /mission/pending/{id}", server.handlePendingMissionProposal)
 	}
 	if server.permissions != nil {
 		mux.HandleFunc("POST /permission", server.handlePermission)

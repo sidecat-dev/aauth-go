@@ -1267,6 +1267,25 @@ defined status values and are explicitly local profile choices (`AAG-F102`).
 The Resource's original pending URL remains authoritative for whether the
 underlying operation completed.
 
+## Deferred mission approval stays on the proposal key
+
+**Sources:** AAuth Core, `Mission Creation`, `Mission Approval`, `Deferred
+Responses`, `Pending URL Security`, and `Person Token`.
+
+Core authenticates every pending poll as the same Agent identity, defined by
+Agent Provider and Agent identifier. It does not say whether that Agent may
+renew onto a different proof key while approval is pending. Mission approval,
+however, returns Person tokens bound to an Agent key, and the host can approve
+before the next Agent poll supplies a current key.
+
+This implementation therefore retains the proposal key and bounds the pending
+deadline by the original Agent token. Approval-time Person tokens use that key;
+a poll under another key is cloaked as an invalid pending reference. Renewal
+with the same key remains valid until the original token's expiry. This is a
+local consistency choice, not a claim that Core defines key continuity.
+`AAG-F105` asks the editors to choose between original-key continuity and
+decision-time token issuance for a renewed Agent.
+
 ## Third-party login cannot yet construct its first protocol message
 
 **Sources:** AAuth Core, `Third-Party Login`, `Login Endpoint`, `Login Flow`,

@@ -25,8 +25,8 @@ or package name in this document is not by itself a conformance claim.
 5. **Preserve exact bytes when retained identity depends on bytes.** When a
    compact token, signed request, R3 document, approved mission blob, or result
    is retained, its original bytes remain available; a parsed value does not
-   replace them. The immediate mission path does not retain proposal request
-   bytes.
+   replace them. Immediate mission approval need not retain the proposal;
+   deferred review retains its exact signed bytes before returning `202`.
 6. **Compose companion behavior explicitly.** Core does not silently accept
    R3, Events, or Budget semantics. The role handling a token invokes the
    companion package that understands each authorization-bearing claim.
@@ -41,16 +41,18 @@ The current repository already has the `aauth`, `jose`, `signaturekey`,
 packages. Their implemented behavior is the subset listed in
 [CONFORMANCE.md](CONFORMANCE.md).
 
-The current mission slice is one immediate top-level lifecycle composed with
-both three-party PS issuance and four-party PS-to-AS federation. The root
-package owns proposal, blob, update, completion, digest, and response values;
-`agent` performs each exchange once; and `personserver` owns exact-byte mission
-state, ordered accepted updates, policy evaluation, person-accepted
-completion, and Auth-token retention before release. `resource` copies only
-the signed digest into the Resource token. `accessserver` treats that digest as
-opaque PS-validated context and copies it into the Auth token. Mission text and
-updates never cross the Person Server boundary, and no generic lifecycle or
-evidence object joins these boundaries.
+The current mission slice supports immediate approval or a retained proposal
+for separately authenticated host review. The root package owns proposal,
+approved blob, update, completion, digest, and response values. `agent` makes
+one explicit proposal or poll call. `personserver` retains exact deferred
+proposal bytes in a bounded host queue and atomically commits approval with the
+Mission and returned Person tokens. A stale approval becomes terminal expiry
+before credential delivery. The same role owns ordered accepted
+updates, policy evaluation, and person-accepted completion. `resource` and
+`accessserver` receive only the signed mission digest needed by ordinary
+three- or four-party authorization. Mission text and updates never cross the
+Person Server boundary, and no generic lifecycle or evidence object joins
+these roles.
 
 The current Bootstrap slice has explicit Ed25519 two-key and single-durable-key
 hosted profiles. Both share durable-key `hwk` enrollment and one stable Agent
@@ -523,7 +525,7 @@ Examples include:
 
 - `EnrollmentStore` at an AP for a durable-key enrollment and exact refresh
   result keyed by the verified identity and delegation JTI.
-- `PersonTokenStore`, `MissionStore`, `MissionAuditStore`,
+- `PersonTokenStore`, `MissionStore`, `MissionProposalStore`, `MissionAuditStore`,
   `PendingAuthorizationStore`, `PermissionStore`, and
   `InteractionQuestionStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
@@ -534,6 +536,12 @@ Examples include:
 An interface states only the atomicity, idempotency, lookup, and retention
 properties required by that state machine. It does not prescribe a database,
 file format, encryption system, process model, or universal record envelope.
+
+`MissionProposalStore` is used only when deferred mission review is enabled.
+It extends the existing mission store with exact proposal retention, a bounded
+pending queue, one host decision, and one terminal poll. Approval commits the
+Mission and returned Person-token records in that same transaction; it does
+not introduce a separate mission authority.
 
 The current `R3DocumentStore` is deliberately one small immutable-record
 boundary. It copies values across the interface, converges concurrent exact
