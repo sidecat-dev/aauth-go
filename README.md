@@ -31,8 +31,9 @@ go run gitlab.com/sidecat-dev/aauth-go/example/hostedservice@latest
 
 That profile adds enrollment and refresh, local permission, host-reviewed
 mission approval, an MCP operation under a fixed Budget, application-owned
-OAuth credential use, and Agent-token revocation. Its exact deployment
-boundary is in [HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md).
+OAuth credential use, refusal of an exhausted Budget before a second connector
+dispatch, and Agent-token revocation. Its exact deployment boundary is in
+[HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md).
 
 ## Choose a journey
 

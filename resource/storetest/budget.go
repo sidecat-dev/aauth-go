@@ -51,7 +51,7 @@ func RunBudget(t *testing.T, contract BudgetContract) {
 	}
 	charge.Cost = 1
 	result, err = store.Charge(ctx, charge)
-	if !budgetRefusal(err) || result.Remaining != 0 || result.Cost != 0 {
+	if !errors.Is(err, resource.ErrBudgetExhausted) || result.Remaining != 0 || result.Cost != 0 {
 		t.Fatalf("exhausted Charge = %#v, %v", result, err)
 	}
 
@@ -104,7 +104,7 @@ func runConcurrentBudgetCharges(t *testing.T, contract BudgetContract) {
 		t.Fatalf("concurrent Charges: succeeded = %d, refused = %d", succeeded, refused)
 	}
 	result, err := store.Charge(ctx, charge)
-	if !budgetRefusal(err) || result.Remaining != 0 {
+	if !errors.Is(err, resource.ErrBudgetExhausted) || result.Remaining != 0 {
 		t.Fatalf("terminal Charge = %#v, %v", result, err)
 	}
 }

@@ -34,8 +34,9 @@ Specifications:
 - [x] **Hosted-service launch composition — Implemented**
   - Flow: durable-key enrollment → delegated Agent-token refresh → local
     permission → separately host-reviewed mission approval → MCP operation and
-    fixed Budget → one connector application call → AP revocation at the PS
-    and local direct Resource.
+    fixed Budget → one connector application call → verified exhausted-Budget
+    step-up before a second dispatch → AP revocation at the PS and local direct
+    Resource.
   - Start with: [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md) and
     `go run ./example/hostedservice`.
   - Boundary: this proves exported-library composition with real signed HTTP

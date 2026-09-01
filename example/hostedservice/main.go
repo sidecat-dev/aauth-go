@@ -77,7 +77,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	personGrant, err := budgets.NewValue(300_000, unit)
+	personGrant, err := budgets.NewValue(100_000, unit)
 	if err != nil {
 		return err
 	}
@@ -134,7 +134,7 @@ func run(output io.Writer) error {
 	if err := callHostedConnector(ctx, bootstrap.client, operationSet, requestedBudget, roles.connector); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; fixed Budget charged before one connector call"); err != nil {
+	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; fixed Budget charged once; over-cap retry refused before connector dispatch"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(output, "5. OAuth service credential remained inside the connector application"); err != nil {

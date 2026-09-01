@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
@@ -90,7 +91,11 @@ func (store *budgetStore) Charge(_ context.Context, charge resource.BudgetCharge
 	}
 	remaining := charge.Grant.Amount() - store.consumed[charge.Token]
 	if charge.Cost > remaining {
-		return resource.BudgetChargeResult{Remaining: remaining}, resource.ErrBudgetInsufficient
+		result := resource.BudgetChargeResult{Remaining: remaining}
+		if remaining == 0 {
+			return result, resource.ErrBudgetExhausted
+		}
+		return result, resource.ErrBudgetInsufficient
 	}
 	store.charges[charge.Token] = cloneCharge(charge)
 	store.consumed[charge.Token] += charge.Cost
@@ -138,6 +143,23 @@ func (store *lineageStore) Retain(_ context.Context, lineage resource.BudgetLine
 	}
 	store.retained = &owned
 	return nil
+}
+
+func (store *lineageStore) Load() (resource.BudgetLineage, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.retained == nil {
+		return resource.BudgetLineage{}, false
+	}
+	owned := *store.retained
+	owned.Scope = append([]string(nil), store.retained.Scope...)
+	if store.retained.PersonContext.AdditionalClaims != nil {
+		owned.PersonContext.AdditionalClaims = make(map[string]json.RawMessage, len(store.retained.PersonContext.AdditionalClaims))
+		for name, value := range store.retained.PersonContext.AdditionalClaims {
+			owned.PersonContext.AdditionalClaims[name] = append(json.RawMessage(nil), value...)
+		}
+	}
+	return owned, true
 }
 
 type agentTokenRevocationStore struct {

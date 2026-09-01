@@ -134,8 +134,44 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 			},
 			Cost:  func(context.Context, resource.BudgetCostRequest) (int64, error) { return 100_000, nil },
 			Store: budgetCharges,
-			Challenge: func(context.Context, resource.BudgetChallengeRequest) (string, error) {
-				return "", errors.New("hosted-service example: Budget challenge was not expected")
+			Challenge: func(ctx context.Context, challenge resource.BudgetChallengeRequest) (string, error) {
+				retained, ok := lineage.Load()
+				if !ok {
+					return "", errors.New("hosted-service example: Budget lineage is unavailable")
+				}
+				if challenge.R3Reference == nil || challenge.Reason != budgets.ReasonBudgetExhausted ||
+					challenge.Remaining != 0 || challenge.Required != 100_000 ||
+					!sameBudget(challenge.Grant, input.personGrant) ||
+					challenge.Principal.PersonServer != retained.Person.Issuer ||
+					challenge.Principal.Subject != retained.Person.Subject ||
+					challenge.Principal.Tenant != retained.PersonContext.Tenant {
+					return "", errors.New("hosted-service example: unexpected Budget challenge")
+				}
+				document, err := documents.Load(ctx, challenge.R3Reference.URI())
+				if err != nil {
+					return "", err
+				}
+				now := input.clock.Now().UTC()
+				compact, reference, err := r3.MintBudgetResourceToken(
+					input.registry, input.resourceKey,
+					aauth.ResourceTokenClaims{
+						Issuer: hostedResourceID, DWK: aauth.ResourceDiscoveryDocument,
+						Audience: retained.Person.Issuer, JTI: "resource-token-step-up-1",
+						PersonServer: retained.Person.Issuer, Subject: retained.Person.Subject,
+						PresentedJTI: retained.PresentedJTI, AgentJKT: retained.AgentJKT,
+						IssuedAt: now.Unix(), ExpiresAt: retained.ExpiresAt,
+						MissionS256: retained.PersonContext.MissionS256,
+						Tenant:      retained.PersonContext.Tenant,
+					},
+					challenge.R3Reference.URI(), document.ExactJSON, retained.Offer, nil,
+				)
+				if err != nil {
+					return "", err
+				}
+				if reference != *challenge.R3Reference {
+					return "", errors.New("hosted-service example: Budget challenge changed the R3 reference")
+				}
+				return compact, nil
 			},
 		},
 		Protected: http.HandlerFunc(connector.serve),

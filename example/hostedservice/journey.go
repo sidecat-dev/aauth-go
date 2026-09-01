@@ -127,8 +127,31 @@ func callHostedConnector(
 	}
 	cost, hasCost := call.Cost()
 	feedback, hasFeedback := call.Feedback()
-	if !hasCost || cost != 100_000 || !hasFeedback || feedback.Remaining() != 200_000 || connector.calls.Load() != 1 {
+	if !hasCost || cost != 100_000 || !hasFeedback || feedback.Remaining() != 0 || connector.calls.Load() != 1 {
 		return errors.New("hosted-service example: R3 Budget consequence was not retained exactly once")
+	}
+	secondRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, hostedResourceID+"/records/current", nil)
+	if err != nil {
+		return err
+	}
+	refused, err := client.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: secondRequest, AuthToken: authToken})
+	if err != nil {
+		return err
+	}
+	if response, ok := refused.Response(); ok {
+		_ = response.Body.Close()
+		return errors.New("hosted-service example: exhausted Budget reached the connector")
+	}
+	authorization, ok := refused.AuthorizationRequired()
+	if !ok || authorization.ResourceToken() == "" {
+		return errors.New("hosted-service example: exhausted Budget returned no verified step-up")
+	}
+	reason, hasReason := authorization.Reason()
+	refusalFeedback, hasRefusalFeedback := refused.Feedback()
+	_, hasRefusalCost := refused.Cost()
+	if !hasReason || reason != budgets.ReasonBudgetExhausted || !hasRefusalFeedback ||
+		refusalFeedback.Remaining() != 0 || hasRefusalCost || connector.calls.Load() != 1 {
+		return errors.New("hosted-service example: exhausted Budget refusal was inconsistent")
 	}
 	if !connector.credentialStayedPrivate() {
 		return errors.New("hosted-service example: connector credential left application custody")

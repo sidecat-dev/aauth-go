@@ -57,9 +57,10 @@ Run the complete in-process composition spine with:
 go run ./example/hostedservice
 ```
 
-That example proves the features can share one configured environment. The
-focused examples below provide deeper evidence for individual paths, including
-exact refresh replay and Budget refusal:
+That example proves the features can share one configured environment. It
+charges one MCP connector call, then verifies that an exhausted-Budget step-up
+is returned before a second connector dispatch. The focused examples below
+provide deeper evidence for individual paths, including exact refresh replay:
 
 ```sh
 go run ./example/bootstrap
