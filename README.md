@@ -19,14 +19,14 @@ go get gitlab.com/sidecat-dev/aauth-go
 Run the smallest complete authorization journey:
 
 ```sh
-go run ./example/threeparty
+go run gitlab.com/sidecat-dev/aauth-go/example/threeparty@latest
 ```
 
 It carries an Agent through a Person Server to one protected Resource call.
 For a composed local-Agent and hosted-service profile, run:
 
 ```sh
-go run ./example/hostedservice
+go run gitlab.com/sidecat-dev/aauth-go/example/hostedservice@latest
 ```
 
 That profile adds enrollment and refresh, local permission, host-reviewed
