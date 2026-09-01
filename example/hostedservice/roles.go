@@ -1,0 +1,169 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"sync/atomic"
+	"time"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+)
+
+type roleInputs struct {
+	clock           aauth.Clock
+	resolver        signaturekey.KeyResolver
+	network         *logicalTransport
+	httpClient      *http.Client
+	personKey       jose.SigningKey
+	resourceKey     jose.SigningKey
+	registry        r3.Registry
+	definitions     r3.DefinitionRegistry
+	operation       r3.Operation
+	definition      r3.AuthoritativeSnapshot
+	requestedBudget budgets.Value
+	resourceOffer   budgets.Value
+	personGrant     budgets.Value
+	unit            budgets.UnitDeclaration
+}
+
+type composedRoles struct {
+	people    *personserver.Server
+	connector *connectorApplication
+	newPeople func() (*personserver.Server, error)
+	newLocal  func() (*resource.Server, error)
+}
+
+func composeRoles(input roleInputs) (composedRoles, error) {
+	documents := newR3DocumentStore()
+	issuances := newR3IssuanceStore()
+	budgetCharges := newBudgetStore()
+	lineage := &lineageStore{}
+	missionPermissions := exampleutil.NewMissionPermissionStore()
+	personRevocations := newAgentTokenRevocationStore()
+	localRevocations := newAgentTokenRevocationStore()
+	connector := &connectorApplication{oauthCredential: "application-only-oauth-credential"}
+	var personIDs atomic.Int64
+	newPeople := func() (*personserver.Server, error) {
+		return personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+			Issuer: personServerID, SigningKey: input.personKey, KeyResolver: input.resolver, Clock: input.clock,
+			NewID:  func() string { return fmt.Sprintf("person-server-token-%d", personIDs.Add(1)) },
+			Tokens: missionPermissions,
+			BindPerson: func(_ context.Context, request personserver.PersonTokenRequest) (personserver.Person, error) {
+				if request.Agent != agentID || request.Resource != hostedResourceID {
+					return personserver.Person{}, errors.New("hosted-service example: unexpected person binding")
+				}
+				return personserver.Person{Subject: "person-123", Tenant: "tenant-1", Lifetime: 30 * time.Minute}, nil
+			},
+			Missions: &personserver.MissionConfig{
+				DeferProposal: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionProposalPendingPolicy, bool, error) {
+					return personserver.MissionProposalPendingPolicy{Lifetime: 5 * time.Minute}, true, nil
+				},
+			},
+			Permission: &personserver.PermissionConfig{
+				Policy: func(_ context.Context, request personserver.PermissionPolicyRequest) (personserver.PermissionPolicyResult, error) {
+					if request.Agent != agentID || request.Mission != nil || request.Action != "connector.prepare" {
+						return personserver.PermissionPolicyResult{}, errors.New("hosted-service example: unexpected local permission")
+					}
+					return personserver.PermissionPolicyResult{Immediate: &personserver.PermissionDecision{Permission: aauth.PermissionGranted}}, nil
+				},
+			},
+			Budget: &personserver.BudgetConfig{ResolveResourceUnits: func(_ context.Context, resourceID string) ([]budgets.UnitDeclaration, error) {
+				if resourceID != hostedResourceID {
+					return nil, errors.New("hosted-service example: unexpected Resource unit lookup")
+				}
+				return []budgets.UnitDeclaration{input.unit}, nil
+			}},
+			R3: &personserver.DirectR3Config{
+				Registry: input.registry, HTTPClient: input.httpClient, Admit: input.network.Admit, Issuances: issuances,
+				AuthorizeDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (personserver.DirectR3Decision, error) {
+					if request.Agent != agentID || request.Resource != hostedResourceID || request.Subject != "person-123" ||
+						request.Budget == nil || !sameBudget(*request.Budget, input.resourceOffer) || len(request.Scopes) != 0 {
+						return personserver.DirectR3Decision{}, errors.New("hosted-service example: unexpected R3 Budget authorization")
+					}
+					operations, err := r3.NewGrantedOperations(mcp.Vocabulary(), input.operation)
+					if err != nil {
+						return personserver.DirectR3Decision{}, err
+					}
+					grant, err := r3.NewGrant(operations, document)
+					if err != nil {
+						return personserver.DirectR3Decision{}, err
+					}
+					return personserver.DirectR3Decision{Lifetime: 10 * time.Minute, Grant: grant, Budget: &input.personGrant}, nil
+				},
+			},
+			AgentTokenRevocations: personRevocations,
+		})
+	}
+
+	protectedResource, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{
+		Issuer: hostedResourceID, SigningKey: input.resourceKey, KeyResolver: input.resolver, Clock: input.clock,
+		NewID: func() string { return "resource-token-1" }, RequiredScopes: func(*http.Request) []string { return nil },
+		ResolvePerson: func(_ context.Context, identity resource.PersonIdentity, _ resource.PersonContext) error {
+			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) {
+				return errors.New("hosted-service example: unexpected person identity")
+			}
+			return nil
+		},
+		R3: &resource.R3Config{
+			Registry: input.registry, Definitions: input.definitions,
+			Vocabularies: []resource.R3VocabularyConfig{{Definition: input.definition}}, Documents: documents,
+			HTTP: resource.R3HTTPAdapter{OperationForRequest: func(request *http.Request) (r3.Operation, bool, error) {
+				if request.URL.Path == "/records/current" {
+					return input.operation, true, nil
+				}
+				return r3.Operation{}, false, nil
+			}},
+		},
+		Budget: &resource.BudgetConfig{
+			Units: []budgets.UnitDeclaration{input.unit}, RetainLineage: lineage.Retain,
+			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
+				if !sameBudget(request.Requested, input.requestedBudget) {
+					return budgets.Value{}, errors.New("hosted-service example: unexpected Budget request")
+				}
+				return input.resourceOffer, nil
+			},
+			Cost:  func(context.Context, resource.BudgetCostRequest) (int64, error) { return 100_000, nil },
+			Store: budgetCharges,
+			Challenge: func(context.Context, resource.BudgetChallengeRequest) (string, error) {
+				return "", errors.New("hosted-service example: Budget challenge was not expected")
+			},
+		},
+		Protected: http.HandlerFunc(connector.serve),
+	})
+	if err != nil {
+		return composedRoles{}, err
+	}
+	newLocal := func() (*resource.Server, error) {
+		return resource.NewAgentIdentity(resource.AgentIdentityConfig{
+			Issuer: localResourceID, KeyResolver: input.resolver, Clock: input.clock,
+			AgentTokenRevocations: localRevocations,
+			Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.WriteHeader(http.StatusNoContent)
+			}),
+		})
+	}
+	people, err := newPeople()
+	if err != nil {
+		return composedRoles{}, err
+	}
+	local, err := newLocal()
+	if err != nil {
+		return composedRoles{}, err
+	}
+	input.network.Handle(personServerID, people.Handler())
+	input.network.Handle(hostedResourceID, protectedResource.Handler())
+	input.network.Handle(localResourceID, local.Handler())
+	return composedRoles{
+		people: people, connector: connector, newPeople: newPeople, newLocal: newLocal,
+	}, nil
+}
