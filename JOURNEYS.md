@@ -153,17 +153,22 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Missing: recursive or remote delegation, delegated interaction, repeated
     chain depth, federated downstream chaining, and mission composition.
 
-- [ ] **Three-party Auth-token revocation and reauthorization — Partial**
-  - Flow: PS retains issued-token routing → signed revocation → Resource marks
-    the exact token revoked → later use fails → Agent explicitly performs a
-    fresh authorization.
+- [ ] **Agent- and three-party Auth-token revocation — Partial**
+  - Flow: AP signs an exact Agent-token reference → PS retains it and refuses
+    later requests before person policy. Separately, PS retains issued-token
+    routing → signed revocation → Resource marks the exact Auth token revoked →
+    later use fails → Agent explicitly performs a fresh authorization.
   - Start with: `personserver.AuthTokenRevocationConfig`,
     `personserver.IssuedAuthTokenStore`,
     `personserver.Server.RevokeIssuedAuthToken`, and
-    `resource.AuthTokenStatusStore`.
-  - Evidence: [`integration/revocation_reauthorization_test.go`](integration/revocation_reauthorization_test.go)
+    `resource.AuthTokenStatusStore`; for Agent tokens, start with
+    `agentprovider.RevocationClient` and
+    `personserver.AgentTokenRevocationStore`.
+  - Evidence: [`integration/revocation_reauthorization_test.go`](integration/revocation_reauthorization_test.go),
+    [`integration/agent_token_revocation_test.go`](integration/agent_token_revocation_test.go),
     and `go run ./example/revocation`.
-  - Missing: pre-use, four-party, Agent-token, mission, and session revocation.
+  - Missing: Auth-token pre-use and four-party propagation, direct Resource
+    Agent-token checks, mission cascade, and session revocation.
 
 - [x] **Missionless local-action permission — Implemented**
   - Flow: Agent → PS with one signed local-action request → immediate decision

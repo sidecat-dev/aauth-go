@@ -81,6 +81,29 @@ type authTokenStatusStore struct {
 	revoked map[aauth.TokenReference]bool
 }
 
+type agentTokenRevocationStore struct {
+	mu      sync.Mutex
+	revoked map[aauth.TokenReference]struct{}
+}
+
+func newAgentTokenRevocationStore() *agentTokenRevocationStore {
+	return &agentTokenRevocationStore{revoked: make(map[aauth.TokenReference]struct{})}
+}
+
+func (store *agentTokenRevocationStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.revoked[reference] = struct{}{}
+	return nil
+}
+
+func (store *agentTokenRevocationStore) IsRevoked(_ context.Context, reference aauth.TokenReference) (bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	_, revoked := store.revoked[reference]
+	return revoked, nil
+}
+
 func newAuthTokenStatusStore() *authTokenStatusStore {
 	return &authTokenStatusStore{
 		records: make(map[aauth.TokenReference]resource.ObservedAuthToken),
@@ -193,4 +216,5 @@ func (transport *loseOneRevocationResponseTransport) RoundTrip(request *http.Req
 
 var _ personserver.TokenStore = (*personTokenStore)(nil)
 var _ personserver.IssuedAuthTokenStore = (*issuedAuthTokenStore)(nil)
+var _ personserver.AgentTokenRevocationStore = (*agentTokenRevocationStore)(nil)
 var _ resource.AuthTokenStatusStore = (*authTokenStatusStore)(nil)

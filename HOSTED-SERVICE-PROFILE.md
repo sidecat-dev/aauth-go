@@ -43,7 +43,11 @@ retained state remain distinct even when their handlers share a server.
    retained results instead of repeating consequences.
 7. An authenticated host disables or revokes the enrollment with
    `EnrollmentStore.TransitionEnrollment`. New refreshes stop immediately.
-   Already-issued Agent tokens remain usable only until their signed expiry.
+   The issuing Agent Provider can also sign the exact `(iss, jti)` of an
+   already-issued Agent token to the configured Person Server revocation
+   endpoint. That Person Server then refuses later requests before policy.
+   Other recipients still rely on the token's signed expiry until they receive
+   and enforce a corresponding revocation signal.
 
 Run the enrollment-to-revocation portion with:
 
@@ -122,5 +126,5 @@ process restarts:
 - [ ] one fixed-price Budget charge and over-cap refusal;
 - [ ] one approval-only mission when the product exposes missions;
 - [ ] host suspension or revocation followed by refused refresh; and
-- [ ] expiry or explicit revocation of every previously issued credential that
-      the deployment promises to invalidate.
+- [ ] expiry or explicit revocation at every recipient the deployment promises
+      will invalidate a previously issued credential.

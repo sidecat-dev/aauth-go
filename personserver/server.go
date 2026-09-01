@@ -86,6 +86,9 @@ type FederatedAuthorizationConfig struct {
 	// InteractionRelay optionally relays missionless or mission-bound
 	// interaction and payment requirements through a retained deferred response.
 	InteractionRelay *InteractionRelayConfig
+	// AgentTokenRevocations enables the Agent Provider's signed revocation
+	// endpoint and checks retained revocations before any person policy runs.
+	AgentTokenRevocations AgentTokenRevocationStore
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -142,6 +145,9 @@ type PSAuthorizationConfig struct {
 	// InteractionRelay optionally relays missionless or mission-bound
 	// interaction and payment requirements through a retained deferred response.
 	InteractionRelay *InteractionRelayConfig
+	// AgentTokenRevocations enables the Agent Provider's signed revocation
+	// endpoint and checks retained revocations before any person policy runs.
+	AgentTokenRevocations AgentTokenRevocationStore
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -295,6 +301,7 @@ type Server struct {
 	interactionRelayPolicy           func(context.Context, InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error)
 	interactionRelayStore            InteractionRelayStore
 	missionInteractionRelays         MissionInteractionRelayStore
+	agentTokenRevocations            AgentTokenRevocationStore
 }
 
 type authorizationMode uint8
@@ -319,6 +326,7 @@ type serverConfig struct {
 	audit                         *AuditConfig
 	interactionQuestion           *InteractionQuestionConfig
 	interactionRelay              *InteractionRelayConfig
+	agentTokenRevocations         AgentTokenRevocationStore
 }
 
 // NewFederatedAuthorization constructs a four-party Person Server.
@@ -343,6 +351,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		audit:                         config.Audit,
 		interactionQuestion:           config.InteractionQuestion,
 		interactionRelay:              config.InteractionRelay,
+		agentTokenRevocations:         config.AgentTokenRevocations,
 	})
 	if err != nil {
 		return nil, err
@@ -402,6 +411,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		audit:                         config.Audit,
 		interactionQuestion:           config.InteractionQuestion,
 		interactionRelay:              config.InteractionRelay,
+		agentTokenRevocations:         config.AgentTokenRevocations,
 	})
 	if err != nil {
 		return nil, err
@@ -605,6 +615,7 @@ func newServer(config serverConfig) (*Server, error) {
 		interactionRelayPolicy:      interactionRelayPolicy(config.interactionRelay),
 		interactionRelayStore:       interactionRelayRecords,
 		missionInteractionRelays:    missionInteractionRelays,
+		agentTokenRevocations:       config.agentTokenRevocations,
 	}, nil
 }
 
@@ -640,6 +651,9 @@ func (server *Server) Handler() http.Handler {
 	}
 	if server.interactionRelayStore != nil {
 		mux.HandleFunc("GET /interaction/relay/{id}", server.handlePendingInteractionRelay)
+	}
+	if server.agentTokenRevocations != nil {
+		mux.HandleFunc("POST /revoke", server.handleAgentTokenRevocation)
 	}
 	return mux
 }
@@ -1518,6 +1532,18 @@ func (server *Server) verifyAgentProof(request *http.Request, requiredComponents
 	if err != nil {
 		return "", agent, signaturekey.VerifiedRequest{}, err
 	}
+	if server.agentTokenRevocations != nil {
+		revoked, err := server.agentTokenRevocations.IsRevoked(request.Context(), aauth.TokenReference{
+			Issuer: agent.Issuer,
+			JTI:    agent.JTI,
+		})
+		if err != nil {
+			return "", agent, signaturekey.VerifiedRequest{}, &agentTokenRevocationStoreError{cause: err}
+		}
+		if revoked {
+			return "", agent, signaturekey.VerifiedRequest{}, &requestTokenError{cause: ErrAgentTokenRevoked}
+		}
+	}
 	return compact, agent, proof, nil
 }
 
@@ -1538,7 +1564,17 @@ type requestTopologyError struct{ cause error }
 func (failure *requestTopologyError) Error() string { return failure.cause.Error() }
 func (failure *requestTopologyError) Unwrap() error { return failure.cause }
 
+type agentTokenRevocationStoreError struct{ cause error }
+
+func (failure *agentTokenRevocationStoreError) Error() string { return failure.cause.Error() }
+func (failure *agentTokenRevocationStoreError) Unwrap() error { return failure.cause }
+
 func writeAgentTokenProblem(response http.ResponseWriter, err error) {
+	var storeFailure *agentTokenRevocationStoreError
+	if errors.As(err, &storeFailure) {
+		writeProblem(response, http.StatusInternalServerError, "server_error", storeFailure.cause)
+		return
+	}
 	var tokenFailure *requestTokenError
 	if errors.As(err, &tokenFailure) {
 		writeEndpointTokenProblem(response, tokenFailure.cause, "invalid_agent_token", "expired_agent_token")
@@ -1579,6 +1615,9 @@ func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Reque
 	}
 	if server.interactionQuestionPolicy != nil || server.interactionRelayPolicy != nil {
 		metadata["interaction_endpoint"] = server.issuer + "/interaction"
+	}
+	if server.agentTokenRevocations != nil {
+		metadata["revocation_endpoint"] = server.issuer + "/revoke"
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }

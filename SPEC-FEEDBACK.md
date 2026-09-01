@@ -975,9 +975,19 @@ not recognized and does not say whether that response may still retain state,
 how long such state lasts, how later token bytes are checked, or which side of
 a concurrent first-use/revoke race wins.
 
+The Agent-token path makes the same gap unavoidable at the Person Server. The
+Agent Provider knows the token, but the PS may not have seen it before the
+revocation request. Core nevertheless says that the PS MUST deny later use.
+The executing PS path therefore retains the AP-signed `(iss, jti)` before first
+use and keeps that marker until the host can independently prove that no
+matching Agent token remains valid. The request does not carry `exp`, and Core
+does not define another portable retention bound.
+
 **Question:** Must `404` be non-mutating, or should the Resource retain a
 pre-use tombstone? If it retains one, what bounds its lifetime and how should a
-concurrent first use be resolved?
+concurrent first use be resolved? For AP-to-PS Agent-token revocation, should
+the request also carry a signed expiry, should the PS retain the marker
+indefinitely, or is another bound intended?
 
 **Placement:** Add to the focused AAuth Core revocation issue.
 
