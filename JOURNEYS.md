@@ -42,6 +42,7 @@ Specifications:
     `go run ./example/selfhosted`; the account-link seam uses
     `Client.PersonToken`, `Server.ConsumePersonTokenInteractionCode`,
     `Server.ApprovePersonTokenInteraction`, and `Client.PollPersonToken`.
+    Durable account-link adapters run `personserver/storetest.RunDeferredToken`.
   - Boundary: this proves ordinary signed HTTP exchanges among the exported
     local and hosted roles. Its in-memory stores and logical transport do not
     prove restart recovery, operating-system key custody, TLS deployment,

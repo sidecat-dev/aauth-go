@@ -83,7 +83,7 @@ go run ./example/revocation
 | Enrollment and renewal | Hosted two-key and single-key profiles in `agent` and `agentprovider`; endpoints and application evidence are host choices because Bootstrap does not standardize them. |
 | Enrollment suspension and revocation | Host-authenticated atomic state transition; disabled is reversible, revoked is terminal, and exact retries recover the retained transition. |
 | Local action | Immediate or explicitly deferred Permission Endpoint decision; the application executes only after a typed grant. |
-| Hosted account identity | Person tokens use the `(ps, sub)` namespace and are directed to one Resource. |
+| Hosted account identity | Person tokens use the `(ps, sub)` namespace and are directed to one Resource. A deferred account-link adapter runs `personserver/storetest.RunDeferredToken`. |
 | Service authorization | Three-party and four-party Auth-token journeys with explicit Agent calls and no hidden polling. |
 | Operation authorization | MCP and OpenAPI R3 class and per-call journeys. The direct MCP class path composes with a fixed Budget in one protected call. Other registered vocabularies are not launch requirements. |
 | Human approval | Approval-only missions and deferred permission decisions with application-authenticated host review. |
@@ -101,7 +101,8 @@ polls, or choose business policy. The host must:
   transition methods;
 - supply durable, transactionally correct store adapters;
 - run each applicable role-local `storetest` suite against those adapters,
-  including `resource/storetest.RunR3Document`,
+  including `personserver/storetest.RunDeferredToken`,
+  `resource/storetest.RunR3Document`,
   `r3/storetest.RunIssuance`, and `resource/storetest.RunBudget` for the
   operation-and-Budget path;
 - keep private keys and third-party credentials out of Agent-visible values;

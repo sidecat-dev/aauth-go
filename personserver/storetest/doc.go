@@ -32,6 +32,16 @@
 //		})
 //	}
 //
+// A Person Server-hosted account-link store uses:
+//
+//	func TestDeferredTokenStore(t *testing.T) {
+//		storetest.RunDeferredToken(t, storetest.DeferredTokenContract{
+//			New: func(testing.TB) personserver.DeferredTokenStore {
+//				return newApplicationDeferredTokenStore()
+//			},
+//		})
+//	}
+//
 // A mission and permission store uses the atomic combined contract:
 //
 //	func TestMissionPermissionStore(t *testing.T) {

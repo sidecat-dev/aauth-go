@@ -46,7 +46,9 @@ endpoints, durable stores, and the code that performs an approved local action.
 The example uses memory stores and fixed keys and time, so it does not prove
 restart recovery, operating-system key protection, TLS deployment, or user
 authentication. Use the applicable public `storetest` contracts for durable
-adapters.
+adapters. In particular, the hosted account-link store must pass
+`personserver/storetest.RunDeferredToken`; the example runs that same contract
+against its in-memory fixture.
 
 The hosted call demonstrates the protocol boundary around account linking and
 service authorization. It does not implement the browser, login session,

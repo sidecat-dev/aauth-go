@@ -236,9 +236,10 @@ func clonePendingPersonToken(record personserver.PendingPersonTokenRecord) perso
 	if record.AgentAdditionalClaims == nil {
 		return record
 	}
-	record.AgentAdditionalClaims = make(map[string]json.RawMessage, len(record.AgentAdditionalClaims))
+	claims := make(map[string]json.RawMessage, len(record.AgentAdditionalClaims))
 	for name, value := range record.AgentAdditionalClaims {
-		record.AgentAdditionalClaims[name] = append(json.RawMessage(nil), value...)
+		claims[name] = append(json.RawMessage(nil), value...)
 	}
+	record.AgentAdditionalClaims = claims
 	return record
 }
