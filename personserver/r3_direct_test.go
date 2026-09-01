@@ -423,6 +423,75 @@ func TestDirectR3MissionRequiresAtomicStoreBeforePolicyOrCommit(t *testing.T) {
 	}
 }
 
+func TestDirectR3MissionNormalizesRealClockInstantForAtomicIssuance(t *testing.T) {
+	t.Parallel()
+
+	protocol := newDirectR3TestProtocol(t)
+	protocol.now = protocol.now.Add(123 * time.Nanosecond)
+	protocol.clock = aauth.ClockFunc(func() time.Time { return protocol.now })
+	store := &directR3MissionClockStore{memoryMissionStore: newMemoryMissionStore()}
+	mission := commitCompositionMission(t, store.memoryMissionStore, protocol.personServerID, protocol.agentID, protocol.now)
+	record := directPersonTokenRecord(
+		protocol.personTokenJTI, protocol.personServerID, protocol.resourceID,
+		protocol.subject, protocol.tenant, protocol.providerID, protocol.agentID,
+		protocol.agentKey.PublicJWK(), protocol.now.Add(10*time.Minute), protocol.now.Add(15*time.Minute),
+	)
+	record.MissionS256 = mission.S256
+	if err := store.Commit(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	protocol.resourceClaims.JTI = "direct-R3-real-clock-mission-resource-token"
+	protocol.resourceClaims.MissionS256 = mission.S256
+	var err error
+	protocol.resourceToken, _, err = r3.MintResourceToken(
+		protocol.registry, protocol.resourceKey, protocol.resourceClaims,
+		protocol.reference.URI(), protocol.exactArtifact,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := protocol.config()
+	config.Tokens = store
+	config.Missions = unusedCompositionMissionConfig()
+	server, err := NewPSAuthorization(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := protocol.exchange(t, server, protocol.resourceToken, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("mission-bound direct R3 with real clock = %d body=%s", response.Code, response.Body.String())
+	}
+}
+
+type directR3MissionClockStore struct {
+	*memoryMissionStore
+}
+
+func (store *directR3MissionClockStore) CommitMissionR3AuthToken(
+	_ context.Context,
+	expected MissionRecord,
+	at time.Time,
+	token IssuedAuthTokenRecord,
+	issuance r3.IssuanceRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if token.MissionS256 != expected.S256 || issuance.AuthTokenReference != token.Reference ||
+		issuance.Resource != token.Resource || !issuance.IssuedAt.Equal(token.IssuedAt) ||
+		issuance.PersonServer != token.Reference.Issuer || issuance.Agent != expected.Agent {
+		return ErrMissionConflict
+	}
+	key := token.Reference.Issuer + "\x00" + token.Reference.JTI
+	if _, exists := store.authTokens[key]; exists {
+		return ErrMissionConflict
+	}
+	store.authTokens[key] = token
+	return nil
+}
+
 func TestDirectR3UnsupportedCombinationNamesDelegationBoundaries(t *testing.T) {
 	t.Parallel()
 

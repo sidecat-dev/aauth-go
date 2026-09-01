@@ -52,7 +52,10 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	issuedAt := server.clock.Now().UTC()
+	// JWT NumericDate carries whole seconds. Use that same instant for the
+	// issuance record so the atomic mission store never receives two different
+	// representations of one issuance time from a real sub-second clock.
+	issuedAt := server.clock.Now().UTC().Truncate(time.Second)
 	expiresAt := issuedAt.Add(decision.Lifetime)
 	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0)
 	if requestingAgentExpiresAt.Before(expiresAt) {
