@@ -9,6 +9,8 @@ The implementation is incomplete. It is not an official conformance suite,
 and independent interoperability has not yet been demonstrated. Start with the
 plain role-to-role catalog in [JOURNEYS.md](JOURNEYS.md); use
 [CONFORMANCE.md](CONFORMANCE.md) for the denser claim-to-test matrix.
+[HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md) selects the implemented
+journeys needed for a practical hosted service and local Agent deployment.
 
 ## Run it
 
@@ -44,7 +46,7 @@ stores. The programs are executable documentation, not deployment templates.
 
 | Path | What it demonstrates | Command |
 | --- | --- | --- |
-| [Hosted Agent bootstrap profiles](example/bootstrap) | Shared `hwk` enrollment, then either `jkt-jwt` refresh to a fresh Agent key or direct `hwk` refresh with the durable key, followed by Agent identity access | `go run ./example/bootstrap` |
+| [Hosted Agent bootstrap profiles](example/bootstrap) | Shared `hwk` enrollment, two refresh-key patterns, Agent identity access, and host revocation followed by a refused refresh | `go run ./example/bootstrap` |
 | [Self-hosted Agent](example/selfhosted) | One user-controlled key publishes AP metadata/JWKS, self-issues an ordinary Agent token, and signs a protected Resource call | `go run ./example/selfhosted` |
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
 | [Local-action permission](example/permission) | Missionless and mission-bound requests; the host reviews retained intent and exact mission context, and the application acts only after a typed grant | `go run ./example/permission` |

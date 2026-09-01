@@ -67,10 +67,11 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	enrollments := exampleutil.NewEnrollmentStore(clock)
 	// These literal checks demonstrate host policy injection, not platform or
 	// account attestation. A deployment validates its own trusted evidence.
 	service, err := agentprovider.NewEnrollmentService(agentprovider.EnrollmentServiceConfig{
-		Provider: provider, Store: exampleutil.NewEnrollmentStore(clock),
+		Provider: provider, Store: enrollments,
 		Enroll: func(_ context.Context, request agentprovider.EnrollmentRequest) (agentprovider.EnrollmentDecision, error) {
 			if string(request.Evidence) != `{"account":"person-1"}` {
 				return agentprovider.EnrollmentDecision{}, agentprovider.ErrEnrollmentDenied
@@ -208,7 +209,36 @@ func run(output io.Writer) error {
 	if singleResponse.StatusCode != http.StatusOK {
 		return fmt.Errorf("Resource returned %s: %s", singleResponse.Status, singleBody)
 	}
-	_, err = fmt.Fprintf(output, "AAuth single-key bootstrap complete: %s\n", singleBody)
+	if _, err := fmt.Fprintf(output, "AAuth single-key bootstrap complete: %s\n", singleBody); err != nil {
+		return err
+	}
+
+	identity, err := durableKey.PublicJWK().ThumbprintURI()
+	if err != nil {
+		return err
+	}
+	retainedEnrollment, err := enrollments.LoadEnrollment(ctx, identity)
+	if err != nil {
+		return err
+	}
+	if _, err := enrollments.TransitionEnrollment(
+		ctx,
+		identity,
+		retainedEnrollment.Revision,
+		agentprovider.EnrollmentRevoked,
+	); err != nil {
+		return err
+	}
+	_, err = singleKeyBootstrap.RefreshSingleKey(ctx, clientagent.SingleKeyRefreshAgentTokenInput{
+		Agent: enrollment.Agent, PersonServer: personServerID,
+		Evidence:   json.RawMessage(`{"posture":"current"}`),
+		RefreshJTI: "example-single-refresh-after-revocation", RefreshExpiresAt: now.Add(10 * time.Minute),
+	})
+	var problem *aauth.ProblemError
+	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "enrollment_inactive" {
+		return fmt.Errorf("refresh after enrollment revocation: %w", err)
+	}
+	_, err = fmt.Fprintln(output, "AAuth enrollment revoked: new Agent-token refresh refused")
 	return err
 }
 

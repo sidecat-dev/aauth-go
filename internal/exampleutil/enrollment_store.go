@@ -64,6 +64,26 @@ func (store *enrollmentStore) LoadEnrollment(
 	return record, nil
 }
 
+func (store *enrollmentStore) TransitionEnrollment(
+	_ context.Context,
+	identity string,
+	expectedRevision uint64,
+	next agentprovider.EnrollmentState,
+) (agentprovider.EnrollmentRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current, ok := store.enrollments[identity]
+	if !ok {
+		return agentprovider.EnrollmentRecord{}, agentprovider.ErrEnrollmentNotFound
+	}
+	updated, err := agentprovider.TransitionEnrollmentRecord(current, expectedRevision, next)
+	if err != nil {
+		return agentprovider.EnrollmentRecord{}, err
+	}
+	store.enrollments[identity] = updated
+	return updated, nil
+}
+
 func (store *enrollmentStore) LoadRefresh(
 	_ context.Context,
 	identity, requestJTI string,

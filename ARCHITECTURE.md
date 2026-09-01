@@ -67,6 +67,13 @@ key as both AP signing and Agent confirmation key, publishes the ordinary AP
 metadata/JWKS handler, and self-issues fresh Agent tokens without a refresh
 endpoint.
 
+Hosted administration stays outside the Bootstrap wire profile. The
+application authenticates the administrator, then asks its `EnrollmentStore`
+to atomically disable, restore, or permanently revoke the retained enrollment.
+The common transition helper preserves identity and key, advances one expected
+revision, and makes exact retry converge. Revocation prevents later refresh;
+an already-issued Agent token remains governed by its signed expiry.
+
 The current Events slice adds the `events` value package plus explicit
 `agentprovider`, `resource`, and `agent` role surfaces for public and protected
 subscriptions. The AP owns subscribe-token issuance and its inbox, the
@@ -354,9 +361,9 @@ Interfaces live next to the code that consumes them.
 ### `agentprovider`
 
 The current package owns Agent-token issuance, AP metadata/JWKS, optional
-enrollment and refresh composition, subscribe-token issuance, and the Events
-inbox. It accepts host policy for enrollment, attestation, renewal,
-revocation, and AP-to-Agent event delivery.
+enrollment and refresh composition, host-managed enrollment state transitions,
+subscribe-token issuance, and the Events inbox. It accepts host policy for
+enrollment, attestation, renewal, and AP-to-Agent event delivery.
 
 ### `agent`
 
@@ -523,8 +530,9 @@ the source defines no stable request replay key.
 Target state is split by protocol fact instead of accumulated in one store.
 Examples include:
 
-- `EnrollmentStore` at an AP for a durable-key enrollment and exact refresh
-  result keyed by the verified identity and delegation JTI.
+- `EnrollmentStore` at an AP for a durable-key enrollment, atomic administrative
+  state transition, and exact refresh result keyed by the verified identity
+  and delegation JTI.
 - `PersonTokenStore`, `MissionStore`, `MissionProposalStore`, `MissionAuditStore`,
   `PendingAuthorizationStore`, `PermissionStore`, and
   `InteractionQuestionStore` at a PS.

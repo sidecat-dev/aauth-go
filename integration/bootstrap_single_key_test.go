@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -162,5 +163,32 @@ func TestSingleKeyBootstrapRefreshPerformsDirectAgentCallAcrossRecomposition(t *
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || string(body) != "single-key identity accepted" {
 		t.Fatalf("protected response = %d %q", response.StatusCode, body)
+	}
+
+	retainedEnrollment, err := store.LoadEnrollment(ctx, durableIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := store.TransitionEnrollment(
+		ctx,
+		durableIdentity,
+		retainedEnrollment.Revision,
+		agentprovider.EnrollmentRevoked,
+	)
+	if err != nil || revoked.State != agentprovider.EnrollmentRevoked {
+		t.Fatalf("revoke enrollment = %#v, %v", revoked, err)
+	}
+	// Recompose the Agent Provider around the same retained store. Revoking an
+	// enrollment prevents new Agent tokens; it does not rewrite an already
+	// issued token, which remains bounded by its signed expiry.
+	network.Handle(agentProviderID, composeProvider(newService()))
+	_, err = bootstrap.RefreshSingleKey(ctx, clientagent.SingleKeyRefreshAgentTokenInput{
+		Agent: enrollment.Agent, PersonServer: personServerID,
+		Evidence:   json.RawMessage(`{"posture":"current"}`),
+		RefreshJTI: "single-bootstrap-refresh-after-revocation", RefreshExpiresAt: now.Add(10 * time.Minute),
+	})
+	var problem *aauth.ProblemError
+	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "enrollment_inactive" {
+		t.Fatalf("refresh after revocation = %v", err)
 	}
 }

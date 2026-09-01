@@ -76,10 +76,13 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
 - [ ] **Agent enrollment and refresh — Partial**
   - Flow: Agent → AP with a durable inline key → retained Agent identity →
     Agent token → either delegated-key or direct durable-key refresh → exact
-    replay returns the retained token.
+    replay returns the retained token → host disables, restores, or permanently
+    revokes the enrollment → new refresh is refused while already-issued tokens
+    remain bounded by their signed expiry.
   - Start with: `agent.NewBootstrapClient`, `BootstrapClient.Enroll`,
-    `BootstrapClient.Refresh`, `BootstrapClient.RefreshSingleKey`, and
-    `agentprovider.NewEnrollmentService`.
+    `BootstrapClient.Refresh`, `BootstrapClient.RefreshSingleKey`,
+    `agentprovider.NewEnrollmentService`, and
+    `agentprovider.EnrollmentStore.TransitionEnrollment`.
   - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go),
     [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go),
     and `go run ./example/bootstrap`.
@@ -478,7 +481,10 @@ below is explicitly a repository profile.
   - Flow: Agent → AP enrollment handler with an `hwk` durable key → AP retains
     a stable Agent identity → Agent creates a fresh proof key → durable key
     delegates through `jkt-jwt` while the fresh key signs refresh → AP returns
-    an exact retained Agent token → Agent uses it on a Resource request.
+    an exact retained Agent token → Agent uses it on a Resource request → an
+    authenticated host atomically revokes the enrollment → a fresh refresh is
+    refused. Already-issued Agent tokens remain valid only until their signed
+    expiry.
     In the single-key variant, the durable key signs refresh directly through
     `hwk` and remains the Agent-token confirmation key.
   - Start with: `agentprovider.NewEnrollmentService`,
@@ -486,8 +492,8 @@ below is explicitly a repository profile.
     `agentprovider.EnrollmentService.RefreshHandler`,
     `agentprovider.EnrollmentService.SingleKeyRefreshHandler`,
     `agent.NewBootstrapClient`, `BootstrapClient.Enroll`,
-    `BootstrapClient.Refresh`, `BootstrapClient.RefreshSingleKey`, `agent.New`,
-    `Client.CallAsAgent`, and
+    `BootstrapClient.Refresh`, `BootstrapClient.RefreshSingleKey`,
+    `EnrollmentStore.TransitionEnrollment`, `agent.New`, `Client.CallAsAgent`, and
     `resource.NewAgentIdentity`.
   - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go),
     [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go),

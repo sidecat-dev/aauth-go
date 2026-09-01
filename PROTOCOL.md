@@ -136,7 +136,7 @@ does not define one global lifecycle or evidence record.
 
 | State | Owner | Source or named profile boundary |
 | --- | --- | --- |
-| Agent enrollment and refresh result | AP | Repository hosted profiles: bind one durable-key identity to one stable Agent; retain an exact Agent-token result for a valid two-key or single-key refresh replay |
+| Agent enrollment and refresh result | AP | Repository hosted profiles: bind one durable-key identity to one stable Agent; retain an exact Agent-token result for a valid two-key or single-key refresh replay; let an authenticated host disable, restore, or permanently revoke future refresh without rewriting issued tokens |
 | Agent-person binding and directed identifiers | PS | Stable within the PS and Resource pair; opaque outside the PS |
 | Issued Person-token record | PS | Retained long enough to verify any Resource token that names it |
 | Mission blob and updates | PS | Exact approved bytes determine `s256`; termination is one-way |

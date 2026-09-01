@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"math"
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
@@ -20,6 +21,9 @@ var (
 	ErrEnrollmentInactive = errors.New("aauth: agent enrollment is not active")
 	// ErrEnrollmentDenied reports an application-policy refusal.
 	ErrEnrollmentDenied = errors.New("aauth: agent enrollment denied by policy")
+	// ErrInvalidEnrollmentTransition reports an unsupported host-managed state
+	// change. Revoked enrollments are reported as ErrEnrollmentInactive.
+	ErrInvalidEnrollmentTransition = errors.New("aauth: invalid Agent enrollment transition")
 	// ErrInvalidEnrollmentRequest reports invalid repository-profile input.
 	ErrInvalidEnrollmentRequest = errors.New("aauth: invalid Agent enrollment request")
 	// ErrRefreshNotFound reports an unknown refresh identity.
@@ -65,6 +69,38 @@ func (record EnrollmentRecord) Equal(other EnrollmentRecord) bool {
 	return record.Identity == other.Identity && record.Agent == other.Agent &&
 		record.State == other.State && record.Revision == other.Revision &&
 		record.IdentityKey.Equal(other.IdentityKey)
+}
+
+// TransitionEnrollmentRecord returns the exact next record for one
+// host-authenticated administrative change. Stores call it while holding their
+// atomic write boundary. An exact retry with the prior expected revision and
+// already-retained target state returns the retained record. Revocation is
+// permanent; disabling is reversible.
+func TransitionEnrollmentRecord(
+	current EnrollmentRecord,
+	expectedRevision uint64,
+	next EnrollmentState,
+) (EnrollmentRecord, error) {
+	if current.Identity == "" || current.Agent == "" || current.Revision == 0 {
+		return EnrollmentRecord{}, ErrEnrollmentConflict
+	}
+	if current.Revision == expectedRevision+1 && expectedRevision != math.MaxUint64 && current.State == next {
+		return current, nil
+	}
+	if current.Revision != expectedRevision || expectedRevision == math.MaxUint64 {
+		return EnrollmentRecord{}, ErrEnrollmentConflict
+	}
+	if current.State == EnrollmentRevoked {
+		return EnrollmentRecord{}, ErrEnrollmentInactive
+	}
+	valid := current.State == EnrollmentActive && (next == EnrollmentDisabled || next == EnrollmentRevoked) ||
+		current.State == EnrollmentDisabled && (next == EnrollmentActive || next == EnrollmentRevoked)
+	if !valid {
+		return EnrollmentRecord{}, ErrInvalidEnrollmentTransition
+	}
+	current.State = next
+	current.Revision++
+	return current, nil
 }
 
 // RefreshProfile identifies the key pattern authenticated by one refresh.
@@ -120,6 +156,10 @@ func (record RefreshRecord) SameRequest(other RefreshRecord) bool {
 type EnrollmentStore interface {
 	CommitEnrollment(context.Context, EnrollmentRecord) (EnrollmentRecord, error)
 	LoadEnrollment(context.Context, string) (EnrollmentRecord, error)
+	// TransitionEnrollment atomically applies TransitionEnrollmentRecord to the
+	// retained identity. Host authentication and authorization happen before
+	// this call; AAuth Bootstrap defines no administrative wire endpoint.
+	TransitionEnrollment(context.Context, string, uint64, EnrollmentState) (EnrollmentRecord, error)
 	LoadRefresh(context.Context, string, string) (RefreshRecord, error)
 	CommitRefresh(context.Context, EnrollmentRecord, RefreshRecord) (RefreshRecord, error)
 }

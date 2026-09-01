@@ -3,12 +3,52 @@ package agentprovider_test
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 )
+
+func TestTransitionEnrollmentRecord(t *testing.T) {
+	key := testSigningKey(t, "transition-key", 0x72).PublicJWK()
+	active := agentprovider.EnrollmentRecord{
+		Identity: "urn:jkt:sha-256:transition", IdentityKey: key,
+		Agent: "aauth:transition@ap.example", State: agentprovider.EnrollmentActive, Revision: 1,
+	}
+	disabled, err := agentprovider.TransitionEnrollmentRecord(active, 1, agentprovider.EnrollmentDisabled)
+	if err != nil || disabled.State != agentprovider.EnrollmentDisabled || disabled.Revision != 2 ||
+		disabled.Identity != active.Identity || disabled.Agent != active.Agent || !disabled.IdentityKey.Equal(key) {
+		t.Fatalf("disable = %#v, %v", disabled, err)
+	}
+	replayed, err := agentprovider.TransitionEnrollmentRecord(disabled, 1, agentprovider.EnrollmentDisabled)
+	if err != nil || !replayed.Equal(disabled) {
+		t.Fatalf("disable replay = %#v, %v", replayed, err)
+	}
+
+	tests := []struct {
+		name     string
+		current  agentprovider.EnrollmentRecord
+		expected uint64
+		next     agentprovider.EnrollmentState
+		want     error
+	}{
+		{name: "missing current", next: agentprovider.EnrollmentDisabled, want: agentprovider.ErrEnrollmentConflict},
+		{name: "revision conflict", current: active, expected: 2, next: agentprovider.EnrollmentDisabled, want: agentprovider.ErrEnrollmentConflict},
+		{name: "revision overflow", current: agentprovider.EnrollmentRecord{Identity: active.Identity, IdentityKey: key, Agent: active.Agent, State: agentprovider.EnrollmentActive, Revision: math.MaxUint64}, expected: math.MaxUint64, next: agentprovider.EnrollmentDisabled, want: agentprovider.ErrEnrollmentConflict},
+		{name: "same state", current: active, expected: 1, next: agentprovider.EnrollmentActive, want: agentprovider.ErrInvalidEnrollmentTransition},
+		{name: "unknown state", current: active, expected: 1, next: agentprovider.EnrollmentState("unknown"), want: agentprovider.ErrInvalidEnrollmentTransition},
+		{name: "revoked is terminal", current: agentprovider.EnrollmentRecord{Identity: active.Identity, IdentityKey: key, Agent: active.Agent, State: agentprovider.EnrollmentRevoked, Revision: 2}, expected: 2, next: agentprovider.EnrollmentActive, want: agentprovider.ErrEnrollmentInactive},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := agentprovider.TransitionEnrollmentRecord(test.current, test.expected, test.next); !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
 
 func TestEnrollmentStoreCommitRefreshExpiryOrdering(t *testing.T) {
 	ctx := context.Background()
@@ -100,6 +140,26 @@ func (store *memoryEnrollmentStore) LoadEnrollment(
 		return agentprovider.EnrollmentRecord{}, agentprovider.ErrEnrollmentNotFound
 	}
 	return record, nil
+}
+
+func (store *memoryEnrollmentStore) TransitionEnrollment(
+	_ context.Context,
+	identity string,
+	expectedRevision uint64,
+	next agentprovider.EnrollmentState,
+) (agentprovider.EnrollmentRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current, ok := store.enrollments[identity]
+	if !ok {
+		return agentprovider.EnrollmentRecord{}, agentprovider.ErrEnrollmentNotFound
+	}
+	updated, err := agentprovider.TransitionEnrollmentRecord(current, expectedRevision, next)
+	if err != nil {
+		return agentprovider.EnrollmentRecord{}, err
+	}
+	store.enrollments[identity] = updated
+	return updated, nil
 }
 
 func (store *memoryEnrollmentStore) LoadRefresh(

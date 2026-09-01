@@ -42,6 +42,27 @@ func RunEnrollment(t *testing.T, contract EnrollmentContract) {
 	if err != nil || !retained.Equal(enrollment) {
 		t.Fatalf("CommitEnrollment = %#v, %v", retained, err)
 	}
+	disabled, err := store.TransitionEnrollment(
+		ctx, enrollment.Identity, enrollment.Revision, agentprovider.EnrollmentDisabled,
+	)
+	if err != nil || disabled.State != agentprovider.EnrollmentDisabled || disabled.Revision != 2 ||
+		disabled.Identity != enrollment.Identity || disabled.Agent != enrollment.Agent ||
+		!disabled.IdentityKey.Equal(enrollment.IdentityKey) {
+		t.Fatalf("disable enrollment = %#v, %v", disabled, err)
+	}
+	replayedDisabled, err := store.TransitionEnrollment(
+		ctx, enrollment.Identity, enrollment.Revision, agentprovider.EnrollmentDisabled,
+	)
+	if err != nil || !replayedDisabled.Equal(disabled) {
+		t.Fatalf("replay disable enrollment = %#v, %v", replayedDisabled, err)
+	}
+	active, err := store.TransitionEnrollment(
+		ctx, enrollment.Identity, disabled.Revision, agentprovider.EnrollmentActive,
+	)
+	if err != nil || active.State != agentprovider.EnrollmentActive || active.Revision != 3 {
+		t.Fatalf("restore enrollment = %#v, %v", active, err)
+	}
+	enrollment = active
 	other := enrollment
 	other.Identity = "urn:jkt:sha-256:other"
 	if _, err := store.CommitEnrollment(ctx, other); !errors.Is(err, agentprovider.ErrEnrollmentConflict) {
@@ -82,6 +103,18 @@ func RunEnrollment(t *testing.T, contract EnrollmentContract) {
 	firstAtExpiry.RequestJTI = "refresh-first-at-expiry"
 	if _, err := store.CommitRefresh(ctx, enrollment, firstAtExpiry); !errors.Is(err, agentprovider.ErrRefreshExpired) {
 		t.Fatalf("first result at expiry = %v", err)
+	}
+
+	revoked, err := store.TransitionEnrollment(
+		ctx, enrollment.Identity, enrollment.Revision, agentprovider.EnrollmentRevoked,
+	)
+	if err != nil || revoked.State != agentprovider.EnrollmentRevoked || revoked.Revision != 4 {
+		t.Fatalf("revoke enrollment = %#v, %v", revoked, err)
+	}
+	if _, err := store.TransitionEnrollment(
+		ctx, enrollment.Identity, revoked.Revision, agentprovider.EnrollmentActive,
+	); !errors.Is(err, agentprovider.ErrEnrollmentInactive) {
+		t.Fatalf("restore revoked enrollment = %v", err)
 	}
 }
 
