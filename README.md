@@ -28,6 +28,11 @@ separate TLS processes, persists their application state, restarts them, and
 then revokes the active Agent token, use
 [`walkthrough/local`](walkthrough/local).
 
+For a standalone laptop-to-hosted-service path with separate TLS processes,
+authenticated account linking, mission approval, MCP authorization, a fixed
+Budget, restart recovery, and revocation, use
+[`walkthrough/hosted`](walkthrough/hosted).
+
 For a self-hosted Agent with a local permission boundary, direct local access,
 an explicit hosted account-link interaction, and one account-bound hosted
 Resource call, run:
@@ -64,6 +69,7 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | --- | --- |
 | Direct Agent or Person identity | [`example/agentidentity`](example/agentidentity) |
 | Separate local TLS processes, durable state, restart, and revocation | [`walkthrough/local`](walkthrough/local) |
+| Separate laptop and hosted-service TLS processes with mission, MCP, Budget, restart, and revocation | [`walkthrough/hosted`](walkthrough/hosted) |
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
 | Account-bound four-party fixed Budget through an Access Server | [`example/budgetfourparty`](example/budgetfourparty) |

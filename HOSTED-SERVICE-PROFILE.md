@@ -57,6 +57,10 @@ Run the complete in-process composition spine with:
 go run ./example/hostedservice
 ```
 
+For the same launch profile as separate TLS processes with durable
+application-owned stores and an authenticated account boundary, use
+[`walkthrough/hosted`](walkthrough/hosted).
+
 That default demonstrates host-controlled enrollment, delegated Agent-token
 refresh, and exact recipient revocation. A user-controlled Agent Provider can
 enter the same hosted mission, operation, Budget, and connector path with:

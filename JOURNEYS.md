@@ -48,6 +48,22 @@ Specifications:
     coordination, browser authentication, mission or Budget authorization, or
     independent implementation interoperability.
 
+- [x] **Hosted durable process walkthrough — Implemented locally**
+  - Flow: laptop durable-key enrollment over TLS → authenticated hosted
+    account login → host-created connector credential → reviewed mission →
+    MCP class authorization under a fixed Budget → one retained connector
+    write → host restart → exact replay without a second connector consequence
+    → enrollment and issued Agent-token revocation → later mission request
+    refused before connector dispatch.
+  - Start with: [`walkthrough/hosted`](walkthrough/hosted). It is a standalone
+    module using only the normally fetched public API.
+  - Evidence: `walkthrough/hosted/acceptance_test.go` and the public enrollment,
+    mission, mission-plus-R3, R3 document, R3 issuance, and Budget contracts in
+    `walkthrough/hosted/store_contract_test.go`.
+  - Boundary: the same-machine tests use separate real TLS processes and
+    separate state directories. The required laptop-to-disposable-host run is
+    still pending and is not claimed by this checkbox.
+
 - [x] **Local Agent composition — Implemented**
   - Flow: self-hosted Agent Provider metadata and JWKS → self-issued Agent
     token naming a local Person Server → typed permission for one local action
