@@ -342,9 +342,6 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if person.MissionS256 != "" && input.UpstreamToken != "" {
 		return "", fail(operation, errors.New("mission-bound call-chain authorization is not supported"))
 	}
-	if input.Budget != nil && person.MissionS256 != "" {
-		return "", fail(operation, errors.New("mission-bound Budget authorization is not implemented"))
-	}
 	if err := aauth.ValidatePersonTokenContext(person, input.Resource, client.signingKey.PublicJWK()); err != nil {
 		return "", fail(operation, err)
 	}

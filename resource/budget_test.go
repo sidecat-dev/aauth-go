@@ -501,14 +501,6 @@ func TestBudgetUnsupportedGrantShapesStopBeforePoliciesStoresAndPersonResolution
 			},
 		},
 		{
-			name: "mission-composed grant",
-			token: func(protocol *budgetResourceProtocol) string {
-				return protocol.authTokenWith(t, "early-mission-token", budgetValue(t, 100_000, protocol.unit), func(claims *aauth.AuthTokenClaims) {
-					claims.MissionS256 = aauth.MissionS256([]byte("approved mission"))
-				})
-			},
-		},
-		{
 			name: "account-composed grant",
 			token: func(protocol *budgetResourceProtocol) string {
 				return protocol.authTokenWith(t, "early-account-token", budgetValue(t, 100_000, protocol.unit), func(claims *aauth.AuthTokenClaims) {

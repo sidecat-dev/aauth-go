@@ -447,7 +447,7 @@ func TestAgentOrdinaryDoRefusesBudgetTokenBeforeNetworkUse(t *testing.T) {
 	}
 }
 
-func TestAgentRefusesMissionBoundBudgetBeforeNetworkUse(t *testing.T) {
+func TestAgentRefusesAccountBoundBudgetBeforeNetworkUse(t *testing.T) {
 	t.Parallel()
 
 	protocol := newTestProtocol(t)
@@ -458,22 +458,23 @@ func TestAgentRefusesMissionBoundBudgetBeforeNetworkUse(t *testing.T) {
 		networkCalls++
 		return nil, errors.New("network must not be used")
 	})})
-	missionToken, err := budgets.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
+	account := "primary"
+	accountToken, err := budgets.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
 		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
 		Audience: protocol.resourceID, JTI: "mission-budget-auth",
 		PersonServer: protocol.personServerID, Subject: "person-123",
 		Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
 		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
-		Scope: "records.read", MissionS256: aauth.MissionS256([]byte("unsupported Budget mission")),
+		Scope: "records.read", Account: &account,
 	}, requested)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request, _ := http.NewRequest(http.MethodGet, protocol.resourceID+"/records", nil)
 	if _, err := client.BeginBudgetCall(context.Background(), agent.BudgetCall{
-		Request: request, AuthToken: missionToken,
-	}); err == nil || !strings.Contains(err.Error(), "mission- or account-bound Budget") {
-		t.Fatalf("mission-bound Budget error = %v", err)
+		Request: request, AuthToken: accountToken,
+	}); err == nil || !strings.Contains(err.Error(), "account is not supported") {
+		t.Fatalf("account-bound Budget error = %v", err)
 	}
 	if networkCalls != 0 {
 		t.Fatalf("unsupported Budget compositions made %d network calls", networkCalls)

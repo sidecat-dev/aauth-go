@@ -215,8 +215,8 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	if err != nil {
 		return BudgetCallResult{}, fail(operation, err)
 	}
-	if claims.MissionS256 != "" || claims.Account != nil {
-		return BudgetCallResult{}, fail(operation, errors.New("mission- or account-bound Budget use is not implemented"))
+	if claims.Account != nil {
+		return BudgetCallResult{}, fail(operation, errors.New("account-bound Budget use is not implemented"))
 	}
 	metadata, err := client.resourceMetadata(ctx, resource)
 	if err != nil {

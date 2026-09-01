@@ -433,8 +433,9 @@ func (client *Client) finishExchangeRequest(
 ) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	resourceClaims := verifiedResource.claims
 	if verifiedResource.budget != nil &&
-		(input.SubagentToken != "" || input.UpstreamToken != "" || resourceClaims.MissionS256 != "") {
-		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("delegated, call-chain, or mission-bound Budget exchange is not implemented")
+		(input.SubagentToken != "" || input.UpstreamToken != "" ||
+			(resourceClaims.MissionS256 != "" && verifiedResource.r3Reference != nil)) {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("delegated, call-chain, or mission-bound R3 Budget exchange is not implemented")
 	}
 	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")

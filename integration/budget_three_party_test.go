@@ -16,6 +16,7 @@ import (
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -77,11 +78,13 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	personTokens := newMemoryPersonTokenStore()
+	personTokens := exampleutil.NewMissionStore()
 	personIDs := []string{
 		"budget-person-token", "budget-reactive-auth-token", "budget-proactive-auth-token", "budget-reauthorized-auth-token",
+		"budget-mission-person-token", "budget-mission-auth-token",
 	}
 	personPolicyCalls := 0
+	missionPolicyCalls := 0
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, Tokens: personTokens,
@@ -96,12 +99,27 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 			}
 			return personserver.Person{Subject: "person-123", Tenant: "tenant-1", Lifetime: time.Hour}, nil
 		},
+		Missions: &personserver.MissionConfig{
+			Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+				expiresAt := now.Add(20 * time.Minute)
+				return personserver.MissionDecision{
+					Description: request.Proposal.Description, ApprovedResources: request.Proposal.Resources, ExpiresAt: &expiresAt,
+				}, nil
+			},
+			ConfirmPersonAcceptedCompletion: func(context.Context, personserver.MissionCompletionPolicyRequest) error { return nil },
+		},
 		Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 			personPolicyCalls++
 			if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
 				request.Tenant != "tenant-1" || !slices.Equal(request.Scopes, []string{scope}) ||
 				request.Budget == nil || !integrationSameBudget(*request.Budget, resourceOffer) {
 				return personserver.AuthorizationDecision{}, errors.New("unexpected Budget authorization context")
+			}
+			if request.Mission != nil {
+				missionPolicyCalls++
+				if request.Mission.S256 == "" || request.Mission.Blob.Description != "Read records within a fixed Budget." {
+					return personserver.AuthorizationDecision{}, errors.New("unexpected mission Budget context")
+				}
 			}
 			return personserver.AuthorizationDecision{
 				Scopes: []string{scope}, Lifetime: 30 * time.Minute, Budget: &personGrant,
@@ -355,6 +373,68 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	}
 	if got := ledger.personTotal(personServerID, "person-123", resourceID); got != 700_000 {
 		t.Fatalf("person Budget consumption = %d, want 700000", got)
+	}
+	mission, err := client.ProposeMission(ctx, clientagent.MissionRequest{
+		PersonServer: personServerID,
+		Proposal: aauth.MissionProposal{
+			Description: "Read records within a fixed Budget.", Resources: []string{resourceID},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionPersonToken, ok := mission.PersonToken(resourceID)
+	if !ok {
+		t.Fatal("mission approval omitted its Resource Person token")
+	}
+	missionResourceToken, err := client.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: resourceID, PersonToken: missionPersonToken,
+		Scopes: []string{scope}, Budget: &requested,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionResourceClaims, missionOffer, _, err := budgets.VerifyResourceToken(ctx, missionResourceToken, resolver, clock)
+	if err != nil || missionResourceClaims.MissionS256 != mission.Mission().S256 || !integrationSameBudget(missionOffer, resourceOffer) {
+		t.Fatalf("mission Resource Budget = claims %#v offer %#v err=%v", missionResourceClaims, missionOffer, err)
+	}
+	missionAuthToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: missionResourceToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionAuthClaims, missionGrant, err := budgets.VerifyAuthToken(ctx, missionAuthToken, resolver, clock)
+	if err != nil || missionAuthClaims.MissionS256 != mission.Mission().S256 || !integrationSameBudget(missionGrant, personGrant) {
+		t.Fatalf("mission Auth Budget = claims %#v grant %#v err=%v", missionAuthClaims, missionGrant, err)
+	}
+	missionCall := integrationBudgetCall(t, ctx, client, resourceID, missionAuthToken)
+	missionResponse, missionOK := missionCall.result.Response()
+	if missionCall.err != nil || !missionOK || missionResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("mission Budget call = result %#v, error %v", missionCall.result, missionCall.err)
+	}
+	missionResponse.Body.Close()
+	if feedback := integrationBudgetFeedback(t, missionCall.result); feedback.Remaining() != 200_000 {
+		t.Fatalf("mission Budget remaining = %d, want 200000", feedback.Remaining())
+	}
+	if protectedCalls.Load() != 5 || personPolicyCalls != 4 || missionPolicyCalls != 1 {
+		t.Fatalf("mission Budget consequences: protected=%d policy=%d mission-policy=%d", protectedCalls.Load(), personPolicyCalls, missionPolicyCalls)
+	}
+	if got := ledger.personTotal(personServerID, "person-123", resourceID); got != 900_000 {
+		t.Fatalf("person Budget consumption after mission = %d, want 900000", got)
+	}
+	if err := client.CompleteMission(ctx, clientagent.MissionCompletionRequest{
+		PersonServer: personServerID, MissionS256: mission.Mission().S256, Summary: "Budgeted read completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: missionResourceToken,
+	}); err == nil || !strings.Contains(err.Error(), "mission") {
+		t.Fatalf("terminated mission Budget exchange error = %v", err)
+	}
+	if personPolicyCalls != 4 || missionPolicyCalls != 1 {
+		t.Fatalf("terminated mission reached policy: policy=%d mission-policy=%d", personPolicyCalls, missionPolicyCalls)
 	}
 }
 

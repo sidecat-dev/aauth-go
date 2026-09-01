@@ -939,8 +939,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
-	if budgetOffer != nil && (delegated || upstream != nil || resourceToken.MissionS256 != "") {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: direct Budget does not compose with delegation, call chaining, or missions"))
+	if budgetOffer != nil && (delegated || upstream != nil) {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: direct Budget does not compose with delegation or call chaining"))
 		return
 	}
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()

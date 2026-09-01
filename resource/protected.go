@@ -247,8 +247,8 @@ func (server *Server) serveAuthTokenProtected(
 		case budgetGrant == nil:
 			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("metered route requires a signed Budget grant"))
 			return
-		case claims.MissionS256 != "" || claims.Account != nil:
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("fixed-price Budget grants do not compose with mission or account authorization"))
+		case claims.Account != nil:
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("fixed-price Budget grants do not compose with account authorization"))
 			return
 		}
 	}

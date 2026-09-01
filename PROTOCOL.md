@@ -603,6 +603,14 @@ authorization checks, the Resource atomically charges the exact known cost
 before application dispatch and reports cost and remaining Budget as an RFC
 9651 Dictionary.
 
+The direct Core path also composes with an active mission. The exact mission
+digest flows from the mission Person token through the Resource and Auth tokens
+into the charge record; Person Server policy receives the active mission, and
+mission-token retention compares that lifecycle atomically. A completed or
+expired mission prevents another exchange before policy. Mission-plus-R3 stays
+disabled until its separate R3 issuance audit can share that same atomic
+mission transition.
+
 An insufficient or exhausted request consumes nothing. Its `401` carries a
 host-asserted replacement Resource token selected from retained Person-token
 state, the ordinary Core auth-token requirement, and a typed Budget reason.

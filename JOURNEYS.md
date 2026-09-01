@@ -654,9 +654,17 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
   `budgets.NewConsumptionRecord` and token helpers cover the carrier, while the
   direct PS refuses nonempty history until retained prior-grant resolution
   exists. There is no usage endpoint or counter-response journey.
-- [ ] **Delegation, call chaining, missions, and account-bound Budgets — Not implemented.**
+- [x] **Direct Core mission-bound fixed Budget — Implemented**
+  - Flow: host-reviewed mission and mission Person token → proactive Resource
+    Budget offer → PS policy receives the exact active mission and narrows the
+    offer → mission-bound Auth token → atomic charge carrying `mission_s256`.
+  - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go).
+  - Boundary: completing the mission prevents another exchange before policy.
+    Mission-plus-R3 remains disabled until mission comparison, R3 issuance
+    audit, and Auth-token retention can commit atomically.
+- [ ] **Delegation, call chaining, mission-bound R3, and account-bound Budgets — Not implemented.**
   The Agent, PS, and Resource fail closed rather than carrying a Budget through
-  these otherwise-supported Core compositions.
+  these remaining compositions.
 
 ## AAuth interoperability demo profile
 
