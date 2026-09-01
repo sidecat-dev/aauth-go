@@ -166,12 +166,19 @@ func (server *Server) serveAuthTokenProtected(
 		return
 	}
 	if carriesR3 && carriesBudget {
-		writeCredentialProblem(response, "invalid_token", &requestTokenError{
-			cause: errors.New("aauth: combined R3 and Budget auth tokens are not supported by this profile"),
-		})
-		return
-	}
-	if server.budget != nil && carriesBudget {
+		if server.r3 == nil || server.budget == nil {
+			writeCredentialProblem(response, "invalid_token", &requestTokenError{
+				cause: errors.New("aauth: combined R3 and Budget auth token requires both Resource profiles"),
+			})
+			return
+		}
+		var reference r3.Reference
+		var operations r3.AuthTokenOperations
+		var grant budgets.Value
+		proof, claims, reference, operations, grant, err = server.verifyPreparedR3BudgetAuthRequest(request, prepared, compact)
+		authorization = &r3ProtectedAuthorization{reference: reference, operations: operations}
+		budgetGrant = &grant
+	} else if server.budget != nil && carriesBudget {
 		var grant budgets.Value
 		proof, claims, grant, err = server.verifyPreparedBudgetAuthRequest(request, prepared, compact)
 		budgetGrant = &grant
@@ -312,13 +319,34 @@ func (server *Server) serveAuthTokenProtected(
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
 	if server.budget != nil {
-		if !server.enforceFixedBudget(response, request, claims, principal, *budgetGrant) {
+		var reference *r3.Reference
+		if authorization != nil {
+			value := authorization.reference
+			reference = &value
+		}
+		if !server.enforceFixedBudget(response, request, claims, principal, *budgetGrant, reference) {
 			return
 		}
 	}
 	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
 	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
 	server.protected.ServeHTTP(response, request.WithContext(protectedContext))
+}
+
+func (server *Server) verifyPreparedR3BudgetAuthRequest(
+	request *http.Request,
+	prepared signaturekey.PreparedRequest,
+	compact string,
+) (signaturekey.VerifiedRequest, aauth.AuthTokenClaims, r3.Reference, r3.AuthTokenOperations, budgets.Value, error) {
+	verificationClock := aauth.ClockFunc(func() time.Time { return prepared.VerifiedAt() })
+	claims, reference, operations, grant, err := r3.VerifyDirectBudgetAuthToken(
+		request.Context(), server.r3.registry, compact, server.keyResolver, verificationClock,
+	)
+	if err != nil {
+		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, r3.Reference{}, r3.AuthTokenOperations{}, budgets.Value{}, &requestTokenError{cause: err}
+	}
+	verifiedProof, err := prepared.Verify(claims.Confirmation.JWK)
+	return verifiedProof, claims, reference, operations, grant, err
 }
 
 func (server *Server) verifyPreparedBudgetAuthRequest(
@@ -341,6 +369,7 @@ func (server *Server) enforceFixedBudget(
 	claims aauth.AuthTokenClaims,
 	principal AuthPrincipal,
 	grant budgets.Value,
+	r3Reference *r3.Reference,
 ) bool {
 	policyRequest, finish, err := cloneScopePolicyRequest(request)
 	if err != nil {
@@ -427,12 +456,13 @@ func (server *Server) enforceFixedBudget(
 		Token:     aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		Principal: cloneBudgetPrincipal(principal), Grant: grant,
 		Remaining: result.Remaining, Required: cost, Reason: reason,
+		R3Reference: cloneR3Reference(r3Reference),
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
-	if err := server.validateBudgetChallenge(request.Context(), challengeToken, principal); err != nil {
+	if err := server.validateBudgetChallenge(request.Context(), challengeToken, principal, r3Reference); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
@@ -453,10 +483,28 @@ func (server *Server) validateBudgetChallenge(
 	ctx context.Context,
 	compact string,
 	principal AuthPrincipal,
+	expectedR3Reference *r3.Reference,
 ) error {
-	claims, offer, _, err := budgets.VerifyResourceToken(ctx, compact, server.keyResolver, server.clock)
-	if err != nil {
-		return err
+	var claims aauth.ResourceTokenClaims
+	var offer budgets.Value
+	if expectedR3Reference == nil {
+		var err error
+		claims, offer, _, err = budgets.VerifyResourceToken(ctx, compact, server.keyResolver, server.clock)
+		if err != nil {
+			return err
+		}
+	} else {
+		var reference r3.Reference
+		var err error
+		claims, reference, offer, _, err = r3.VerifyBudgetResourceToken(
+			ctx, server.r3.registry, compact, server.keyResolver, server.clock,
+		)
+		if err != nil {
+			return err
+		}
+		if reference != *expectedR3Reference {
+			return errors.New("fresh Resource token changed the protected R3 reference")
+		}
 	}
 	thumbprint, err := principal.Confirmation.Thumbprint()
 	if err != nil {
@@ -469,14 +517,27 @@ func (server *Server) validateBudgetChallenge(
 		!sameBudgetAccount(claims.Account, principal.Account) {
 		return errors.New("fresh Resource token does not preserve the protected Budget context")
 	}
-	scopes, err := server.validateScopes(claims.Scope)
-	if err != nil || !sameScopeSet(scopes, principal.Scope) {
-		return errors.New("fresh Resource token does not preserve the protected scopes")
+	if claims.Scope == "" && len(principal.Scope) == 0 && expectedR3Reference != nil {
+		// The R3 grant supplies operation authority; Budget does not require a
+		// duplicate Core scope in the combined profile.
+	} else {
+		scopes, err := server.validateScopes(claims.Scope)
+		if err != nil || !sameScopeSet(scopes, principal.Scope) {
+			return errors.New("fresh Resource token does not preserve the protected scopes")
+		}
 	}
 	if !server.budget.declared(offer) {
 		return errors.New("fresh Resource token carries an undeclared Budget offer")
 	}
 	return nil
+}
+
+func cloneR3Reference(reference *r3.Reference) *r3.Reference {
+	if reference == nil {
+		return nil
+	}
+	value := *reference
+	return &value
 }
 
 func cloneBudgetPrincipal(principal AuthPrincipal) AuthPrincipal {

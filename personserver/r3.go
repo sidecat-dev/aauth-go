@@ -77,6 +77,9 @@ type DirectR3Decision struct {
 	Scopes   []string
 	Lifetime time.Duration
 	Grant    r3.Grant
+	// Budget is required when the verified Resource token carried a Budget
+	// offer and must narrow that offer without changing denomination.
+	Budget *budgets.Value
 }
 
 type r3Config struct {
@@ -191,7 +194,19 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		return aauth.ResourceTokenClaims{}, nil, nil, err
 	}
 	if carriesR3 && carriesBudget {
-		return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: Resource token cannot combine R3 and Budget claims")
+		if server.authorizationMode != authorizationModePersonServer || server.r3 == nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: combined R3 and Budget resource token requires direct R3 authorization")
+		}
+		claims, reference, offer, consumed, err := r3.VerifyBudgetResourceToken(
+			ctx, server.r3.registry, compact, server.keyResolver, clock,
+		)
+		if err != nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, err
+		}
+		if len(consumed) != 0 {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: Budget consumption records require retained grant resolution")
+		}
+		return claims, &verifiedR3{reference: reference}, cloneBudgetValue(&offer), nil
 	}
 	if carriesBudget {
 		if server.authorizationMode != authorizationModePersonServer {

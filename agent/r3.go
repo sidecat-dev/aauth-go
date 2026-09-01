@@ -24,6 +24,17 @@ func (client *Client) verifyR3ResourceTokenContext(
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, r3.Reference{}, err
 	}
+	return client.validateR3ResourceTokenContext(claims, reference, resource, person, requestedScopes, expectedAccount)
+}
+
+func (client *Client) validateR3ResourceTokenContext(
+	claims aauth.ResourceTokenClaims,
+	reference r3.Reference,
+	resource string,
+	person aauth.PersonTokenClaims,
+	requestedScopes []string,
+	expectedAccount *string,
+) (aauth.ResourceTokenClaims, r3.Reference, error) {
 	if claims.Interaction != nil {
 		return aauth.ResourceTokenClaims{}, r3.Reference{}, errors.New("resource-token interaction requires the deferred flow")
 	}
@@ -75,6 +86,15 @@ func (client *Client) verifyR3AuthTokenForResourceBinding(
 	if authReference != reference {
 		return aauth.AuthTokenClaims{}, errors.New("auth token changed the R3 document reference")
 	}
+	return client.validateR3AuthTokenForResourceBinding(claims, resource, reference, credential)
+}
+
+func (client *Client) validateR3AuthTokenForResourceBinding(
+	claims aauth.AuthTokenClaims,
+	resource aauth.ResourceTokenClaims,
+	reference r3.Reference,
+	credential personServerCredential,
+) (aauth.AuthTokenClaims, error) {
 	// The signed token's dwk selects the issuing role. A class grant may come
 	// directly from the Person Server or from a distinct or collocated Access
 	// Server, so the Resource-token audience alone cannot select that role.
@@ -113,6 +133,14 @@ func (client *Client) verifyR3AuthTokenForCall(
 	if err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
+	return client.validateR3AuthTokenForCallClaims(ctx, claims, resource)
+}
+
+func (client *Client) validateR3AuthTokenForCallClaims(
+	ctx context.Context,
+	claims aauth.AuthTokenClaims,
+	resource string,
+) (aauth.AuthTokenClaims, error) {
 	if err := client.acceptIssuedPersonServer(
 		ctx, "", claims.PersonServer, time.Unix(claims.IssuedAt, 0),
 	); err != nil {

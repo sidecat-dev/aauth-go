@@ -376,7 +376,20 @@ func (client *Client) exchangeRequest(
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
 	}
 	if carriesR3 && carriesBudget {
-		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("combined R3 and Budget Resource tokens are not implemented")
+		if client.r3 == nil {
+			return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("R3 is not configured")
+		}
+		claims, reference, budget, _, err := r3.VerifyBudgetResourceToken(
+			ctx, client.r3.Registry, input.ResourceToken, client.keyResolver, client.clock,
+		)
+		if err != nil {
+			return nil, verifiedExchangeResource{}, personServerCredential{}, err
+		}
+		verifiedResource := verifiedExchangeResource{claims: claims, r3Reference: &reference, budget: &budget}
+		if !slices.Contains(input.Capabilities, "budget") {
+			input.Capabilities = append(append([]string(nil), input.Capabilities...), "budget")
+		}
+		return client.finishExchangeRequest(ctx, input, credential, verifiedResource)
 	}
 	verifiedResource := verifiedExchangeResource{}
 	if carriesR3 {
@@ -409,6 +422,15 @@ func (client *Client) exchangeRequest(
 		}
 		verifiedResource.claims = claims
 	}
+	return client.finishExchangeRequest(ctx, input, credential, verifiedResource)
+}
+
+func (client *Client) finishExchangeRequest(
+	ctx context.Context,
+	input ExchangeRequest,
+	credential personServerCredential,
+	verifiedResource verifiedExchangeResource,
+) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	resourceClaims := verifiedResource.claims
 	if verifiedResource.budget != nil &&
 		(input.SubagentToken != "" || input.UpstreamToken != "" || resourceClaims.MissionS256 != "") {
@@ -487,7 +509,22 @@ func (client *Client) verifiedExchangeResponse(
 		return "", errors.New("response did not contain an auth token")
 	}
 	var err error
-	if resource.r3Reference != nil {
+	if resource.r3Reference != nil && resource.budget != nil {
+		claims, authReference, _, granted, verifyErr := r3.VerifyDirectBudgetAuthToken(
+			ctx, client.r3.Registry, output.AuthToken, client.keyResolver, client.clock,
+		)
+		if verifyErr != nil {
+			err = verifyErr
+		} else if authReference != *resource.r3Reference {
+			err = errors.New("auth token changed the R3 document reference")
+		} else if _, validateErr := client.validateR3AuthTokenForResourceBinding(
+			claims, resource.claims, authReference, credential,
+		); validateErr != nil {
+			err = validateErr
+		} else if narrowErr := budgets.ValidateNarrowing(*resource.budget, granted); narrowErr != nil {
+			err = fmt.Errorf("auth-token Budget did not narrow the Resource offer: %w", narrowErr)
+		}
+	} else if resource.r3Reference != nil {
 		_, err = client.verifyR3AuthTokenForResourceBinding(
 			ctx, output.AuthToken, resource.claims, *resource.r3Reference, credential,
 		)

@@ -8,11 +8,167 @@ import (
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
+
+func TestR3BudgetTokenAPIsVerifyBothCompanionsTogether(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 1, 5, 0, 0, 0, time.UTC)
+	resourceKey := coreTokenKey(t, "r3-budget-resource-key")
+	personKey := coreTokenKey(t, "r3-budget-person-key")
+	agentKey := coreTokenKey(t, "r3-budget-agent-key")
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+		{Issuer: "https://person.example", DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personKey.ID()}:       personKey.PublicJWK(),
+	}
+	clock := aauth.ClockFunc(func() time.Time { return now })
+
+	operation, err := newMCPR3Operation("records.read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations, err := r3.NewOperationSet(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := r3.NewDocument(operations, r3.DocumentOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactDocument, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationGrant, err := r3.NewGrant(granted, document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit, err := budgets.NewUnit("USD", 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer, err := budgets.NewValue(600_000, unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := budgets.NewValue(400_000, unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resourceCompact, reference, err := r3.MintBudgetResourceToken(
+		tokenMCPRegistry,
+		resourceKey,
+		aauth.ResourceTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "https://person.example", JTI: "r3-budget-resource-token",
+			PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "person-token-1",
+			AgentJKT: coreTokenS256("agent-key"),
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+		},
+		"https://resource.example/r3/connector",
+		exactDocument,
+		offer,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceClaims, gotReference, gotOffer, consumed, err := r3.VerifyBudgetResourceToken(
+		context.Background(), tokenMCPRegistry, resourceCompact, resolver, clock,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resourceClaims.JTI != "r3-budget-resource-token" || gotReference != reference ||
+		gotOffer.Amount() != offer.Amount() || !gotOffer.Unit().Equal(offer.Unit()) || len(consumed) != 0 {
+		t.Fatalf("verified Resource token = %#v, %#v, %#v, %#v", resourceClaims, gotReference, gotOffer, consumed)
+	}
+	if _, _, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock); err == nil {
+		t.Fatal("R3-only verifier accepted a combined Resource token")
+	}
+	if _, _, _, err := budgets.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock); err == nil {
+		t.Fatal("Budget-only verifier accepted a combined Resource token")
+	}
+	resourceMembers := compactClaimMap(t, resourceCompact)
+	delete(resourceMembers, "budget")
+	partialResource := signCoreTokenPayload(t, resourceKey, aauth.ResourceTokenType, rawMembers(resourceMembers))
+	if _, _, _, _, err := r3.VerifyBudgetResourceToken(
+		context.Background(), tokenMCPRegistry, partialResource, resolver, clock,
+	); err == nil {
+		t.Fatal("combined verifier accepted an R3 Resource token without budget")
+	}
+	resourceMembers = compactClaimMap(t, resourceCompact)
+	resourceMembers["Budget"] = resourceMembers["budget"]
+	delete(resourceMembers, "budget")
+	caseVariantResource := signCoreTokenPayload(t, resourceKey, aauth.ResourceTokenType, rawMembers(resourceMembers))
+	if _, _, _, _, err := r3.VerifyBudgetResourceToken(
+		context.Background(), tokenMCPRegistry, caseVariantResource, resolver, clock,
+	); err == nil {
+		t.Fatal("combined verifier accepted a noncanonical Budget claim")
+	}
+
+	authCompact, err := r3.MintDirectBudgetAuthToken(
+		tokenMCPRegistry,
+		personKey,
+		aauth.AuthTokenClaims{
+			Issuer: "https://person.example", DWK: aauth.PersonDiscoveryDocument,
+			Audience: "https://resource.example", JTI: "r3-budget-auth-token",
+			PersonServer: "https://person.example", Subject: "person-1",
+			Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+			IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+		},
+		reference,
+		exactDocument,
+		operationGrant,
+		grant,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authClaims, authReference, authOperations, gotGrant, err := r3.VerifyDirectBudgetAuthToken(
+		context.Background(), tokenMCPRegistry, authCompact, resolver, clock,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authClaims.JTI != "r3-budget-auth-token" || authReference != reference ||
+		gotGrant.Amount() != grant.Amount() || !gotGrant.Unit().Equal(grant.Unit()) ||
+		!tokenGrantedEqual(t, authOperations.GrantedOperations(), operationGrant.GrantedOperations()) {
+		t.Fatalf("verified Auth token = %#v, %#v, %#v, %#v", authClaims, authReference, authOperations, gotGrant)
+	}
+	if _, _, _, err := r3.VerifyDirectAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock); err == nil {
+		t.Fatal("R3-only verifier accepted a combined Auth token")
+	}
+	if _, _, err := budgets.VerifyAuthToken(context.Background(), authCompact, resolver, clock); err == nil {
+		t.Fatal("Budget-only verifier accepted a combined Auth token")
+	}
+	authMembers := compactClaimMap(t, authCompact)
+	authMembers["budget_consumed"] = json.RawMessage(`[]`)
+	invalidAuth := signCoreTokenPayload(t, personKey, aauth.AuthTokenType, rawMembers(authMembers))
+	if _, _, _, _, err := r3.VerifyDirectBudgetAuthToken(
+		context.Background(), tokenMCPRegistry, invalidAuth, resolver, clock,
+	); err == nil {
+		t.Fatal("combined verifier accepted budget_consumed in an Auth token")
+	}
+}
+
+func rawMembers(members map[string]json.RawMessage) map[string]any {
+	result := make(map[string]any, len(members))
+	for name, value := range members {
+		result[name] = value
+	}
+	return result
+}
 
 func TestR3TokenAPIsPreserveCoreFailClosedBoundary(t *testing.T) {
 	t.Parallel()

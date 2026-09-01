@@ -14,6 +14,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -102,6 +103,7 @@ func (server *Server) issueR3ResourceToken(
 	claims aauth.ResourceTokenClaims,
 	person aauth.PersonTokenClaims,
 	operations r3.OperationSet,
+	budgetOffer *budgets.Value,
 ) (string, error) {
 	vocabulary, ok := server.r3.vocabularies[operations.Vocabulary()]
 	if !ok {
@@ -128,7 +130,15 @@ func (server *Server) issueR3ResourceToken(
 		return "", fmt.Errorf("aauth: serialize R3 document: %w", err)
 	}
 	documentURI := r3DocumentURI(server.issuer, exactJSON, claims.PersonServer, claims.Audience, claims.JTI)
-	compact, reference, err := r3.MintResourceToken(server.r3.registry, server.signingKey, claims, documentURI, exactJSON)
+	var compact string
+	var reference r3.Reference
+	if budgetOffer == nil {
+		compact, reference, err = r3.MintResourceToken(server.r3.registry, server.signingKey, claims, documentURI, exactJSON)
+	} else {
+		compact, reference, err = r3.MintBudgetResourceToken(
+			server.r3.registry, server.signingKey, claims, documentURI, exactJSON, *budgetOffer, nil,
+		)
+	}
 	if err != nil {
 		return "", err
 	}

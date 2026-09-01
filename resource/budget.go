@@ -8,6 +8,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 var (
@@ -70,6 +71,9 @@ type BudgetChallengeRequest struct {
 	Remaining int64
 	Required  int64
 	Reason    budgets.Reason
+	// R3Reference is present when the refused Auth token also authorizes one
+	// R3 class document. A replacement Resource token must preserve it.
+	R3Reference *r3.Reference
 }
 
 // BudgetCharge is the metering binding for one atomic fixed-price consequence.

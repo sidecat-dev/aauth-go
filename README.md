@@ -63,7 +63,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
 | [One chained Resource call](example/callchaining) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
 | [Public and protected event subscriptions](example/events) | Public registration plus an opaque, prior-interaction-bound, short-lived, single-use Resource ticket; both continue through `self-jwt` delivery and Agent correlation | `go run ./example/events` |
-| [Fixed-price Budget](example/budget) | Resource denomination selection, Person Server amount narrowing, one atomic charge, validated feedback, and a typed over-remainder step-up | `go run ./example/budget` |
+| [R3 operations under a fixed-price Budget](example/budget) | Two MCP operations share one R3 grant and hard cap; one call charges, one over-cap call refuses without dispatch, and the step-up preserves the R3 reference | `go run ./example/budget` |
 
 The integration suite also exercises
 [mission-bound four-party authorization](integration/mission_four_party_test.go),
@@ -135,9 +135,9 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `r3/vocab/standard` | Explicit registries for all seven standard operation codecs and definition parsers |
 | `r3/vocabtest` | Reusable operation-codec and native-definition contracts for standard and third-party adapters |
 | `agentprovider` | Agent-token and subscribe-token issuance, metadata/JWKS, and the Events inbox |
-| `agent` | Explicit Core, mission Audit, missionless or mission-bound Interaction questions and relays, R3, Events, and fixed-price Budget calls; no hidden polling, browser use, or consequence retry |
-| `personserver` | Person-token issuance, mission lifecycle and Audit, missionless or mission-bound local-action permission and Interaction questions or relays, direct Core/class-R3/Budget verification and narrowing, consent interaction, revocation, call-chain policy, and Access Server federation |
-| `resource` | Identity, session, authorization, registered R3 documents/enforcement, Events registration/delivery, Budget metadata/offers/fixed-price accounting/step-up verification, protected-call, held-invocation, and revocation behavior |
+| `agent` | Explicit Core, mission Audit, missionless or mission-bound Interaction questions and relays, R3, Events, fixed-price Budget calls, and the direct R3+Budget composition; no hidden polling, browser use, or consequence retry |
+| `personserver` | Person-token issuance, mission lifecycle and Audit, missionless or mission-bound local-action permission and Interaction questions or relays, direct Core/class-R3/Budget verification and narrowing, direct R3+Budget issuance, consent interaction, revocation, call-chain policy, and Access Server federation |
+| `resource` | Identity, session, authorization, registered R3 documents/enforcement, Events registration/delivery, Budget metadata/offers/fixed-price accounting/step-up verification, combined R3+Budget protected calls, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
 The root protocol package and focused JOSE and Signature-Key packages do not

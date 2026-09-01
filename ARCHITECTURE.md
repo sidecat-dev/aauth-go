@@ -510,6 +510,16 @@ bounded caller-acquired native sources. Network and external dependency
 acquisition, plus non-HTTP credential and execution bindings, remain host
 work.
 
+The direct MCP class path can compose with the fixed-price Budget profile
+without projecting one companion into the other. `r3` exposes explicitly
+combined token functions that validate and consume both claim sets; the
+single-companion functions continue to reject mixed tokens. The Resource maps
+and verifies the operation first, atomically charges the Budget second, and
+dispatches the application request only after both succeed. A replacement
+Resource token for an over-cap call must preserve the exact R3 document
+reference. Because R3 supplies the operation authority, this composition does
+not require a duplicate Core scope.
+
 ### `accessserver`
 
 The target owns four-party PS authentication, Resource-token verification,

@@ -13,7 +13,6 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
-	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 func TestAgentCompletesAndVerifiesAProactiveBudgetExchange(t *testing.T) {
@@ -448,7 +447,7 @@ func TestAgentOrdinaryDoRefusesBudgetTokenBeforeNetworkUse(t *testing.T) {
 	}
 }
 
-func TestAgentRefusesUnsupportedBudgetCompositionsBeforeNetworkUse(t *testing.T) {
+func TestAgentRefusesMissionBoundBudgetBeforeNetworkUse(t *testing.T) {
 	t.Parallel()
 
 	protocol := newTestProtocol(t)
@@ -459,14 +458,6 @@ func TestAgentRefusesUnsupportedBudgetCompositionsBeforeNetworkUse(t *testing.T)
 		networkCalls++
 		return nil, errors.New("network must not be used")
 	})})
-	operations := r3.OperationSet{}
-	if _, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
-		Resource: protocol.resourceID, PersonToken: "not-used",
-		Scopes: []string{"records.read"}, R3Operations: &operations, Budget: &requested,
-	}); err == nil || !strings.Contains(err.Error(), "combined R3 and Budget") {
-		t.Fatalf("combined authorization error = %v", err)
-	}
-
 	missionToken, err := budgets.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
 		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
 		Audience: protocol.resourceID, JTI: "mission-budget-auth",

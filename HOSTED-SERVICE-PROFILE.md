@@ -71,9 +71,9 @@ go run ./example/mission
 | Local action | Immediate or explicitly deferred Permission Endpoint decision; the application executes only after a typed grant. |
 | Hosted account identity | Person tokens use the `(ps, sub)` namespace and are directed to one Resource. |
 | Service authorization | Three-party and four-party Auth-token journeys with explicit Agent calls and no hidden polling. |
-| Operation authorization | MCP and OpenAPI R3 class and per-call journeys. Other registered vocabularies are not launch requirements. |
+| Operation authorization | MCP and OpenAPI R3 class and per-call journeys. The direct MCP class path composes with a fixed Budget in one protected call. Other registered vocabularies are not launch requirements. |
 | Human approval | Approval-only missions and deferred permission decisions with application-authenticated host review. |
-| Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. A commercial billing ledger remains an application concern. |
+| Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. The direct MCP composition verifies the operation before charging and preserves the R3 reference on step-up. A commercial billing ledger remains an application concern. |
 | Restart and replay | Applications provide stores satisfying the public `storetest` contracts; services may be reconstructed around those retained stores. |
 | Third-party credential isolation | The connector stores and uses its OAuth or API credential. AAuth conveys the permitted operation and limits, never the credential itself. |
 
@@ -124,4 +124,3 @@ process restarts:
 - [ ] host suspension or revocation followed by refused refresh; and
 - [ ] expiry or explicit revocation of every previously issued credential that
       the deployment promises to invalidate.
-

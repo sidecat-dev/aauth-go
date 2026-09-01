@@ -380,8 +380,8 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		return nil, errors.New("personserver: Core, R3, or deferred authorization policy is required")
 	}
 	if config.Budget != nil {
-		if config.Authorize == nil {
-			return nil, errors.New("personserver: Budget requires a direct authorization policy")
+		if config.Authorize == nil && config.R3 == nil {
+			return nil, errors.New("personserver: Budget requires a direct Core or R3 authorization policy")
 		}
 		if config.Budget.ResolveResourceUnits == nil {
 			return nil, errors.New("personserver: Budget Resource-unit resolver is required")

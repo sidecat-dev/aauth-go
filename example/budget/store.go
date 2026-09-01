@@ -3,13 +3,70 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 )
+
+type r3DocumentStore struct {
+	mu      sync.Mutex
+	records map[string]resource.R3DocumentRecord
+}
+
+func newR3DocumentStore() *r3DocumentStore {
+	return &r3DocumentStore{records: make(map[string]resource.R3DocumentRecord)}
+}
+
+func (store *r3DocumentStore) Commit(_ context.Context, record resource.R3DocumentRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	owned := record.Clone()
+	if retained, ok := store.records[record.Reference.URI()]; ok {
+		if !reflect.DeepEqual(retained, owned) {
+			return resource.ErrR3DocumentConflict
+		}
+		return nil
+	}
+	store.records[record.Reference.URI()] = owned
+	return nil
+}
+
+func (store *r3DocumentStore) Load(_ context.Context, uri string) (resource.R3DocumentRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, ok := store.records[uri]
+	if !ok {
+		return resource.R3DocumentRecord{}, resource.ErrR3DocumentNotFound
+	}
+	return record.Clone(), nil
+}
+
+type r3IssuanceStore struct {
+	mu      sync.Mutex
+	records map[aauth.TokenReference]r3.IssuanceRecord
+}
+
+func newR3IssuanceStore() *r3IssuanceStore {
+	return &r3IssuanceStore{records: make(map[aauth.TokenReference]r3.IssuanceRecord)}
+}
+
+func (store *r3IssuanceStore) Commit(_ context.Context, record r3.IssuanceRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if retained, ok := store.records[record.AuthTokenReference]; ok {
+		if !reflect.DeepEqual(retained, record) {
+			return errors.New("budget example: R3 issuance conflicts with retained state")
+		}
+		return nil
+	}
+	store.records[record.AuthTokenReference] = record
+	return nil
+}
 
 type personTokenStore struct {
 	mu      sync.Mutex
@@ -156,3 +213,5 @@ func budgetPersonKey(personServer, subject, resourceID string) string {
 
 var _ personserver.TokenStore = (*personTokenStore)(nil)
 var _ resource.BudgetStore = (*memoryBudgetStore)(nil)
+var _ resource.R3DocumentStore = (*r3DocumentStore)(nil)
+var _ r3.IssuanceStore = (*r3IssuanceStore)(nil)

@@ -149,7 +149,7 @@ does not define one global lifecycle or evidence record.
 | R3 per-call proposal and result | Resource | Exact parameters, one approval consumption, one execution, retained replay |
 | Events subscription | Resource and AP | Resource retains route identity; AP retains active inbox state and atomically advances any use limit |
 | Accepted event delivery | AP | Return `202` only after durable acceptance for delivery |
-| Fixed-price Budget consumption | Resource | Atomically charge the exact precomputed cost without exceeding the token cap |
+| Fixed-price Budget consumption | Resource | Atomically charge the exact precomputed cost without exceeding the token cap; in the direct MCP class composition, verify the R3 operation first and preserve its reference in any Budget step-up |
 | Person-level budget ceiling | PS | Narrow allocations without disclosing or inventing a cross-Resource grant |
 
 “Retain,” “durably accept,” and “atomically write” appear only where the

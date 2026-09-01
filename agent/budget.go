@@ -10,6 +10,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -185,20 +186,37 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 		return BudgetCallResult{}, fail(operation, err)
 	}
 	if carriesR3 && carriesBudget {
-		return BudgetCallResult{}, fail(operation, errors.New("combined R3 and Budget Auth tokens are not implemented"))
-	}
-	if !carriesBudget {
+		if client.r3 == nil {
+			return BudgetCallResult{}, fail(operation, errors.New("R3 is not configured"))
+		}
+	} else if !carriesBudget {
 		return BudgetCallResult{}, fail(operation, errors.New("Budget Auth token is required"))
 	}
-	claims, grant, err := budgets.VerifyAuthToken(ctx, call.AuthToken, client.keyResolver, client.clock)
+	var claims aauth.AuthTokenClaims
+	var grant budgets.Value
+	var r3Reference *r3.Reference
+	if carriesR3 {
+		var reference r3.Reference
+		claims, reference, _, grant, err = r3.VerifyDirectBudgetAuthToken(
+			ctx, client.r3.Registry, call.AuthToken, client.keyResolver, client.clock,
+		)
+		if err == nil {
+			_, err = client.validateR3AuthTokenForCallClaims(ctx, claims, resource)
+		}
+		if err == nil {
+			r3Reference = &reference
+		}
+	} else {
+		claims, grant, err = budgets.VerifyAuthToken(ctx, call.AuthToken, client.keyResolver, client.clock)
+		if err == nil {
+			err = client.validateAuthTokenForDirectCall(ctx, claims, resource, "")
+		}
+	}
 	if err != nil {
 		return BudgetCallResult{}, fail(operation, err)
 	}
 	if claims.MissionS256 != "" || claims.Account != nil {
 		return BudgetCallResult{}, fail(operation, errors.New("mission- or account-bound Budget use is not implemented"))
-	}
-	if err := client.validateAuthTokenForDirectCall(ctx, claims, resource, ""); err != nil {
-		return BudgetCallResult{}, fail(operation, err)
 	}
 	metadata, err := client.resourceMetadata(ctx, resource)
 	if err != nil {
@@ -264,7 +282,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	}
 	if response.StatusCode == http.StatusUnauthorized && len(response.Header.Values("AAuth-Requirement")) > 0 {
 		authorization, err := client.verifyBudgetCallAuthorization(
-			ctx, response.Header.Values("AAuth-Requirement"), claims, resource, metadata,
+			ctx, response.Header.Values("AAuth-Requirement"), claims, resource, metadata, r3Reference,
 		)
 		closeResponse(response)
 		if err != nil {
@@ -364,6 +382,7 @@ func (client *Client) verifyBudgetCallAuthorization(
 	current aauth.AuthTokenClaims,
 	resource string,
 	metadata resourceMetadata,
+	expectedR3Reference *r3.Reference,
 ) (BudgetAuthorization, error) {
 	requirement, reason, reasonPresent, err := budgets.ParseOptionalAuthTokenRequirement(values)
 	if err != nil {
@@ -374,7 +393,34 @@ func (client *Client) verifyBudgetCallAuthorization(
 		return BudgetAuthorization{}, err
 	}
 	var challenge aauth.ResourceTokenClaims
-	if carriesBudget {
+	carriesR3, err := r3dispatch.TokenCarriesClaims(requirement.ResourceToken)
+	if err != nil {
+		return BudgetAuthorization{}, err
+	}
+	if carriesBudget && carriesR3 {
+		if client.r3 == nil || expectedR3Reference == nil {
+			return BudgetAuthorization{}, errors.New("unexpected combined R3 and Budget step-up")
+		}
+		var reference r3.Reference
+		var offer budgets.Value
+		challenge, reference, offer, _, err = r3.VerifyBudgetResourceToken(
+			ctx, client.r3.Registry, requirement.ResourceToken, client.keyResolver, client.clock,
+		)
+		if err == nil && reference != *expectedR3Reference {
+			err = errors.New("Budget step-up Resource token changed the R3 reference")
+		}
+		if err == nil {
+			declarations, parseErr := parseBudgetUnitDeclarations(metadata.BudgetUnits)
+			if parseErr != nil {
+				err = parseErr
+			} else if declarationErr := budgets.ValidateDeclaredValue(declarations, offer); declarationErr != nil {
+				err = declarationErr
+			}
+		}
+	} else if carriesBudget {
+		if expectedR3Reference != nil {
+			return BudgetAuthorization{}, errors.New("Budget step-up Resource token dropped the R3 reference")
+		}
 		var offer budgets.Value
 		challenge, offer, _, err = budgets.VerifyResourceToken(
 			ctx, requirement.ResourceToken, client.keyResolver, client.clock,

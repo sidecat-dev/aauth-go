@@ -391,6 +391,23 @@ Start definition work with `r3.NewDefinitionRegistry`,
   - Missing: direct three-party per-call authorization and composition with
     missions, sub-agents, call chaining, or deferral.
 
+- [x] **Direct MCP class authorization with a fixed Budget — Implemented**
+  - Flow: Agent requests exact MCP operations and a Budget → Resource retains
+    one R3 document and Budget lineage → PS independently verifies both and
+    narrows the operation set and amount → Resource verifies both companions,
+    checks the operation, atomically charges, then dispatches → an over-cap
+    call returns a typed step-up with the same R3 reference and no dispatch.
+  - Start with: `r3.MintBudgetResourceToken`,
+    `r3.MintDirectBudgetAuthToken`, the ordinary direct-R3 configurations, and
+    the ordinary fixed-price Budget configurations and Agent calls.
+  - Evidence: [`integration/r3_budget_three_party_test.go`](integration/r3_budget_three_party_test.go),
+    [`token_r3_external_test.go`](token_r3_external_test.go), and
+    `go run ./example/budget`.
+  - Boundary: direct three-party class authorization only. R3-only and
+    Budget-only verifiers continue to reject mixed tokens. Per-call,
+    four-party, mission, delegation, call-chain, account, and variable-price
+    combinations remain unsupported.
+
 - [x] **Federated four-party class authorization — Implemented for MCP and OpenAPI**
   - Flow: Resource retains and publishes the exact class document → PS and AS
     fetch it independently → PS consents → AS narrows and audits the grant →
@@ -528,21 +545,23 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
 
 ### Runnable journey
 
-- [x] **Proactive direct three-party fixed-price Budget — Implemented**
+- [x] **Proactive direct three-party fixed-price Budget — Implemented alone or with an MCP class grant**
   - Flow: Agent → PS for a Person token → Resource selects one declared
     denomination and retains lineage → PS preserves the denomination and
-    narrows the amount → Agent calls `BeginBudgetCall` → Resource atomically
-    charges the known cost before application dispatch → Agent receives
-    validated cost and remaining feedback.
+    narrows the amount → Agent calls `BeginBudgetCall` → Resource verifies an
+    optional MCP class grant, atomically charges the known cost, then dispatches
+    → Agent receives validated cost and remaining feedback.
   - Start with: `budgets.NewUnit`, `budgets.NewValue`,
     `budgets.NewBoundedUnitDeclaration`, `resource.NewPSAuthorization`,
     `resource.BudgetConfig`, `personserver.NewPSAuthorization`,
     `personserver.BudgetConfig`, `Client.PersonToken`, `Client.Authorize`,
     `Client.Exchange`, and `Client.BeginBudgetCall`.
-  - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go)
+  - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go),
+    [`integration/r3_budget_three_party_test.go`](integration/r3_budget_three_party_test.go),
     and `go run ./example/budget`.
   - Boundary: this is proactive, direct, fixed-price, non-streaming,
-    missionless, non-delegated, non-chained, and has no account binding.
+    missionless, non-delegated, non-chained, and has no account binding. The
+    combined path is direct MCP class authorization only.
 
 ### Bounded journey
 
@@ -556,7 +575,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     `BudgetAuthorization.ResourceToken`, and `BudgetAuthorization.Reason`.
   - Evidence: [`agent/budget_call_test.go`](agent/budget_call_test.go),
     [`resource/budget_test.go`](resource/budget_test.go), and the fixed-price
-    integration journey.
+    integration journeys. A combined challenge preserves the R3 reference.
   - Missing: exhaustion has no composed replacement-token exchange, new
     narrowed Auth token, or protected-call retry. Insufficiency exposes
     `remaining` and `required` for an explicit same-token shrink-and-retry, but

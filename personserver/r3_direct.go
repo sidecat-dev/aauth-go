@@ -37,6 +37,11 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	grantedBudget, err := validateBudgetDecision(authorizationRequest.Budget, decision.Budget)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
 	issuedAt := server.clock.Now().UTC()
 	expiresAt := issuedAt.Add(decision.Lifetime)
 	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0)
@@ -59,10 +64,18 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		Scope: strings.Join(grantedScopes, " "), Account: cloneAuthorizationAccount(resourceToken.Account),
 		Tenant: resourceToken.Tenant,
 	}
-	compact, err := r3.MintDirectAuthToken(
-		server.r3.registry, server.signingKey, claims,
-		verified.reference, verified.exactArtifact, decision.Grant,
-	)
+	var compact string
+	if grantedBudget == nil {
+		compact, err = r3.MintDirectAuthToken(
+			server.r3.registry, server.signingKey, claims,
+			verified.reference, verified.exactArtifact, decision.Grant,
+		)
+	} else {
+		compact, err = r3.MintDirectBudgetAuthToken(
+			server.r3.registry, server.signingKey, claims,
+			verified.reference, verified.exactArtifact, decision.Grant, *grantedBudget,
+		)
+	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return

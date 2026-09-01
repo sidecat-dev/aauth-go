@@ -83,10 +83,6 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 	}
 	var budgetOffer *budgets.Value
 	if input.Budget != nil {
-		if operations != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("Budget and R3 authorization are not composable in the fixed-price profile"))
-			return
-		}
 		offer, err := server.budget.offerFor(request.Context(), claims, scopes, input.Budget)
 		if err != nil {
 			var policyFailure *budgetOfferPolicyError
@@ -152,29 +148,51 @@ func (server *Server) issueAuthorizationResourceToken(
 		return "", err
 	}
 	if budgetOffer != nil {
+		if operations != nil {
+			compact, err := server.issueR3ResourceToken(request.Context(), claims, person, *operations, budgetOffer)
+			if err != nil {
+				return "", err
+			}
+			if err := server.retainBudgetLineage(request, claims, scopes, *budgetOffer); err != nil {
+				return "", err
+			}
+			return compact, nil
+		}
 		compact, err := budgets.MintResourceToken(server.signingKey, claims, *budgetOffer, nil)
 		if err != nil {
 			return "", err
 		}
-		if err := server.budget.retain(request.Context(), BudgetLineage{
-			ResourceToken: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
-			Person:        PersonIdentity{Issuer: claims.PersonServer, Subject: claims.Subject},
-			PersonContext: PersonContext{MissionS256: claims.MissionS256, Tenant: claims.Tenant},
-			PresentedJTI:  claims.PresentedJTI,
-			AgentJKT:      claims.AgentJKT,
-			Scope:         append([]string(nil), scopes...),
-			Offer:         *budgetOffer,
-			IssuedAt:      claims.IssuedAt,
-			ExpiresAt:     claims.ExpiresAt,
-		}); err != nil {
-			return "", fmt.Errorf("retain Resource Budget lineage: %w", err)
+		if err := server.retainBudgetLineage(request, claims, scopes, *budgetOffer); err != nil {
+			return "", err
 		}
 		return compact, nil
 	}
 	if operations == nil {
 		return aauth.MintResourceToken(server.signingKey, claims)
 	}
-	return server.issueR3ResourceToken(request.Context(), claims, person, *operations)
+	return server.issueR3ResourceToken(request.Context(), claims, person, *operations, nil)
+}
+
+func (server *Server) retainBudgetLineage(
+	request *http.Request,
+	claims aauth.ResourceTokenClaims,
+	scopes []string,
+	offer budgets.Value,
+) error {
+	if err := server.budget.retain(request.Context(), BudgetLineage{
+		ResourceToken: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+		Person:        PersonIdentity{Issuer: claims.PersonServer, Subject: claims.Subject},
+		PersonContext: PersonContext{MissionS256: claims.MissionS256, Tenant: claims.Tenant},
+		PresentedJTI:  claims.PresentedJTI,
+		AgentJKT:      claims.AgentJKT,
+		Scope:         append([]string(nil), scopes...),
+		Offer:         offer,
+		IssuedAt:      claims.IssuedAt,
+		ExpiresAt:     claims.ExpiresAt,
+	}); err != nil {
+		return fmt.Errorf("retain Resource Budget lineage: %w", err)
+	}
+	return nil
 }
 
 func (server *Server) issueResourceToken(

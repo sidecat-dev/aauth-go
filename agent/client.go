@@ -305,9 +305,6 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if input.PersonToken == "" {
 		return "", fail(operation, errors.New("person token is required"))
 	}
-	if input.Budget != nil && input.R3Operations != nil {
-		return "", fail(operation, errors.New("combined R3 and Budget authorization is not implemented"))
-	}
 	if input.Budget != nil && (input.UpstreamToken != "" || client.agentClaims.ParentAgent != "") {
 		return "", fail(operation, errors.New("delegated or call-chain Budget authorization is not implemented"))
 	}
@@ -428,7 +425,27 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if output.ResourceToken == "" {
 		return "", fail(operation, errors.New("response did not contain a resource token"))
 	}
-	if input.R3Operations != nil {
+	if input.R3Operations != nil && input.Budget != nil {
+		claims, reference, offered, _, err := r3.VerifyBudgetResourceToken(
+			ctx, client.r3.Registry, output.ResourceToken, client.keyResolver, client.clock,
+		)
+		if err != nil {
+			return "", fail(operation, err)
+		}
+		if _, _, err := client.validateR3ResourceTokenContext(
+			claims, reference, input.Resource, person, scopes, input.Account,
+		); err != nil {
+			return "", fail(operation, err)
+		}
+		if offered.Unit().Equal(input.Budget.Unit()) {
+			if err := budgets.ValidateNarrowing(*input.Budget, offered); err != nil {
+				return "", fail(operation, fmt.Errorf("resource-token Budget did not narrow the request: %w", err))
+			}
+		}
+		if err := validateOfferedBudget(offered, metadata.parsedBudgetUnits); err != nil {
+			return "", fail(operation, err)
+		}
+	} else if input.R3Operations != nil {
 		if _, _, err := client.verifyR3ResourceTokenContext(
 			ctx, output.ResourceToken, input.Resource, person, scopes, input.Account,
 		); err != nil {

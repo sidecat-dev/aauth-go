@@ -1,7 +1,6 @@
-// The budget example runs the direct AP-Agent-Resource-PS-Resource Budget
-// path. The Resource narrows a proactive request, the Person Server narrows it
-// again, and a later over-remainder call returns a fresh Resource-token
-// challenge without an automatic retry.
+// The budget example runs two declared MCP operations through one direct R3
+// grant and one fixed-price Budget. An over-remainder call preserves the R3
+// reference in its fresh Resource-token challenge and is never retried.
 package main
 
 import (
@@ -14,7 +13,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +22,8 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -33,7 +33,6 @@ const (
 	agentID         = "aauth:budget-reader@agents.example"
 	personServerID  = "https://person.example"
 	resourceID      = "https://resource.example"
-	scope           = "records.read"
 )
 
 func main() {
@@ -51,6 +50,48 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	registry, err := r3.NewRegistry(mcp.Vocabulary())
+	if err != nil {
+		return err
+	}
+	definitions, err := r3.NewDefinitionRegistry(mcp.DefinitionRegistration())
+	if err != nil {
+		return err
+	}
+	currentMCP, err := mcp.NewOperation("records.current")
+	if err != nil {
+		return err
+	}
+	exportMCP, err := mcp.NewOperation("records.export")
+	if err != nil {
+		return err
+	}
+	currentOperation, err := currentMCP.ToR3()
+	if err != nil {
+		return err
+	}
+	exportOperation, err := exportMCP.ToR3()
+	if err != nil {
+		return err
+	}
+	requestedOperations, err := mcp.NewOperationSet(currentMCP, exportMCP)
+	if err != nil {
+		return err
+	}
+	definition, err := mcp.ParseDefinition(
+		resourceID+"/mcp",
+		mcp.NewToolsListSnapshot(mcp.NewInitialToolsListPage([]byte(`{
+			"tools":[
+				{"name":"records.current","inputSchema":{"type":"object"},"_meta":{"aauth.dev/budget":true}},
+				{"name":"records.export","inputSchema":{"type":"object"},"_meta":{"aauth.dev/budget":true}}
+			]
+		}`))),
+	)
+	if err != nil {
+		return err
+	}
+	documents := newR3DocumentStore()
+	issuances := newR3IssuanceStore()
 	agentKey, err := newSigningKey("budget-agent-key")
 	if err != nil {
 		return err
@@ -135,22 +176,34 @@ func run(output io.Writer) error {
 			}
 			return personserver.Person{Subject: "person-123", Tenant: "tenant-1", Lifetime: time.Hour}, nil
 		},
-		Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
-			if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
-				request.Tenant != "tenant-1" || !slices.Equal(request.Scopes, []string{scope}) ||
-				request.Budget == nil || !sameBudget(*request.Budget, resourceOffer) {
-				return personserver.AuthorizationDecision{}, errors.New("budget example: unexpected Person Server authorization context")
-			}
-			return personserver.AuthorizationDecision{
-				Scopes: []string{scope}, Lifetime: 30 * time.Minute, Budget: &personGrant,
-			}, nil
-		},
 		Budget: &personserver.BudgetConfig{ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
 			if resource != resourceID {
 				return nil, errors.New("budget example: unexpected Resource metadata request")
 			}
 			return []budgets.UnitDeclaration{unitDeclaration}, nil
 		}},
+		R3: &personserver.DirectR3Config{
+			Registry: registry, HTTPClient: httpClient, Admit: network.Admit,
+			AuthorizeDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (personserver.DirectR3Decision, error) {
+				if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
+					request.Tenant != "tenant-1" || len(request.Scopes) != 0 ||
+					request.Budget == nil || !sameBudget(*request.Budget, resourceOffer) {
+					return personserver.DirectR3Decision{}, errors.New("budget example: unexpected Person Server R3 Budget context")
+				}
+				grantedOperations, err := r3.NewGrantedOperations(mcp.Vocabulary(), currentOperation, exportOperation)
+				if err != nil {
+					return personserver.DirectR3Decision{}, err
+				}
+				operationGrant, err := r3.NewGrant(grantedOperations, document)
+				if err != nil {
+					return personserver.DirectR3Decision{}, err
+				}
+				return personserver.DirectR3Decision{
+					Lifetime: 30 * time.Minute, Grant: operationGrant, Budget: &personGrant,
+				}, nil
+			},
+			Issuances: issuances,
+		},
 	})
 	if err != nil {
 		return err
@@ -160,9 +213,8 @@ func run(output io.Writer) error {
 	var protectedCalls atomic.Int64
 	protectedResource, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{
 		Issuer: resourceID, SigningKey: resourceKey, KeyResolver: resolver, Clock: clock,
-		NewID:             func() string { return "resource-token-1" },
-		ScopeDescriptions: map[string]string{scope: "Read records"},
-		RequiredScopes:    func(*http.Request) []string { return []string{scope} },
+		NewID:          func() string { return "resource-token-1" },
+		RequiredScopes: func(*http.Request) []string { return nil },
 		ResolvePerson: func(_ context.Context, identity resource.PersonIdentity, personContext resource.PersonContext) error {
 			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) ||
 				personContext.Tenant != "tenant-1" {
@@ -170,11 +222,26 @@ func run(output io.Writer) error {
 			}
 			return nil
 		},
+		R3: &resource.R3Config{
+			Registry: registry, Definitions: definitions,
+			Vocabularies: []resource.R3VocabularyConfig{{Definition: definition}},
+			Documents:    documents,
+			HTTP: resource.R3HTTPAdapter{OperationForRequest: func(request *http.Request) (r3.Operation, bool, error) {
+				switch request.URL.Path {
+				case "/records/current":
+					return currentOperation, true, nil
+				case "/records/export":
+					return exportOperation, true, nil
+				default:
+					return r3.Operation{}, false, nil
+				}
+			}},
+		},
 		Budget: &resource.BudgetConfig{
 			Units:         []budgets.UnitDeclaration{unitDeclaration},
 			RetainLineage: lineage.Retain,
 			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
-				if !sameBudget(request.Requested, requested) {
+				if len(request.Scope) != 0 || !sameBudget(request.Requested, requested) {
 					return budgets.Value{}, errors.New("budget example: unexpected proactive Budget request")
 				}
 				return resourceOffer, nil
@@ -198,19 +265,27 @@ func run(output io.Writer) error {
 				if !ok {
 					return "", errors.New("budget example: Person-token lineage is unavailable")
 				}
-				if challenge.Reason != budgets.ReasonInsufficientBudget || challenge.Remaining != 250_000 ||
+				if challenge.R3Reference == nil || challenge.Reason != budgets.ReasonInsufficientBudget || challenge.Remaining != 250_000 ||
 					challenge.Required != 300_000 || !sameBudget(challenge.Grant, personGrant) ||
 					challenge.Principal.PersonServer != personServerID || challenge.Principal.Subject != retained.Subject {
 					return "", errors.New("budget example: unexpected Budget challenge context")
 				}
-				return budgets.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+				document, err := documents.Load(ctx, challenge.R3Reference.URI())
+				if err != nil {
+					return "", err
+				}
+				compact, reference, err := r3.MintBudgetResourceToken(registry, resourceKey, aauth.ResourceTokenClaims{
 					Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument,
 					Audience: personServerID, JTI: "resource-token-2",
 					PersonServer: personServerID, Subject: retained.Subject,
 					PresentedJTI: retained.JTI, AgentJKT: agentThumbprint,
 					IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
-					Scope: scope, Tenant: retained.Tenant,
-				}, resourceOffer, nil)
+					Tenant: retained.Tenant,
+				}, challenge.R3Reference.URI(), document.ExactJSON, resourceOffer, nil)
+				if err != nil || reference != *challenge.R3Reference {
+					return "", errors.New("budget example: replacement token changed the R3 reference")
+				}
+				return compact, nil
 			},
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -229,6 +304,7 @@ func run(output io.Writer) error {
 	reader, err := clientagent.New(ctx, clientagent.Config{
 		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+		R3: &clientagent.R3Config{Registry: registry},
 	})
 	if err != nil {
 		return err
@@ -245,7 +321,7 @@ func run(output io.Writer) error {
 	}
 	resourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Scopes: []string{scope}, Budget: &requested,
+		R3Operations: &requestedOperations, Budget: &requested,
 	})
 	if err != nil {
 		return err
@@ -254,7 +330,9 @@ func run(output io.Writer) error {
 	if !ok {
 		return errors.New("budget example: Resource did not retain Person-token lineage before releasing its token")
 	}
-	initialClaims, offered, _, err := budgets.VerifyResourceToken(ctx, resourceToken, resolver, clock)
+	initialClaims, initialReference, offered, _, err := r3.VerifyBudgetResourceToken(
+		ctx, registry, resourceToken, resolver, clock,
+	)
 	if err != nil {
 		return err
 	}
@@ -267,9 +345,14 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, granted, err := budgets.VerifyAuthToken(ctx, authToken, resolver, clock)
+	_, authReference, _, granted, err := r3.VerifyDirectBudgetAuthToken(
+		ctx, registry, authToken, resolver, clock,
+	)
 	if err != nil {
 		return err
+	}
+	if authReference != initialReference {
+		return errors.New("budget example: Auth token changed the R3 reference")
 	}
 	first, err := budgetCall(ctx, reader, "/records/current", authToken)
 	if err != nil {
@@ -316,13 +399,14 @@ func run(output io.Writer) error {
 	if !ok || reason != budgets.ReasonInsufficientBudget || authorization.ResourceToken() == "" {
 		return errors.New("budget example: refusal did not return a typed fresh-Resource-token challenge")
 	}
-	freshClaims, freshOffer, consumed, err := budgets.VerifyResourceToken(
-		ctx, authorization.ResourceToken(), resolver, clock,
+	freshClaims, freshReference, freshOffer, consumed, err := r3.VerifyBudgetResourceToken(
+		ctx, registry, authorization.ResourceToken(), resolver, clock,
 	)
 	if err != nil {
 		return err
 	}
-	if freshClaims.PresentedJTI != retainedLineage.JTI || !sameBudget(freshOffer, resourceOffer) || len(consumed) != 0 {
+	if freshClaims.PresentedJTI != retainedLineage.JTI || freshReference != initialReference ||
+		!sameBudget(freshOffer, resourceOffer) || len(consumed) != 0 {
 		return errors.New("budget example: fresh Resource token did not preserve retained Person-token lineage")
 	}
 	if protectedCalls.Load() != 1 {
@@ -330,14 +414,14 @@ func run(output io.Writer) error {
 	}
 
 	if _, err := fmt.Fprintf(output,
-		"AAuth Budget success: Resource offered %d; Person Server granted %d; charged %d; remaining %d\n",
+		"AAuth R3 Budget success: operations records.current and records.export; Resource offered %d; Person Server granted %d; charged %d; remaining %d\n",
 		offered.Amount(), granted.Amount(), firstCost, firstFeedback.Remaining(),
 	); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(output,
-		"AAuth Budget refusal: %s; required %d; remaining %d; fresh Resource token uses %s; protected calls %d\n",
-		reason, required, secondFeedback.Remaining(), freshClaims.PresentedJTI, protectedCalls.Load(),
+		"AAuth R3 Budget refusal: %s; required %d; remaining %d; R3 reference preserved; protected calls %d\n",
+		reason, required, secondFeedback.Remaining(), protectedCalls.Load(),
 	)
 	return err
 }

@@ -669,7 +669,7 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 		return nil, fail(operation, err)
 	}
 	if carriesR3 && carriesBudget {
-		return nil, fail(operation, errors.New("combined R3 and Budget Auth tokens are not implemented"))
+		return nil, fail(operation, errors.New("R3 Budget Auth tokens require BeginBudgetCall so operation enforcement, metering feedback, and uncertain outcomes are preserved"))
 	}
 	if carriesBudget {
 		return nil, fail(operation, errors.New("Budget Auth tokens require BeginBudgetCall so metering feedback and uncertain outcomes are not discarded"))
