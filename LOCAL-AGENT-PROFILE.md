@@ -54,4 +54,8 @@ The hosted call demonstrates the protocol boundary around account linking and
 service authorization. It does not implement the browser, login session,
 account database, administrative review, or connector credentials. For those
 deployment capabilities and Budget-limited operations, continue with
-[HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md).
+[HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md). The command
+`go run ./example/hostedservice --self-hosted` carries the same self-hosted
+identity shape through reviewed mission approval, MCP R3 authorization, fixed
+Budget enforcement and recovery, connector execution, and person-accepted
+mission completion.

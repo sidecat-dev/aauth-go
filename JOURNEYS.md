@@ -49,13 +49,15 @@ Specifications:
     browser login, or execution of an approved local action.
 
 - [x] **Hosted-service launch composition — Implemented**
-  - Flow: durable-key enrollment → delegated Agent-token refresh → local
-    permission → separately host-reviewed mission approval → MCP operation and
-    fixed Budget → one connector application call → verified exhausted-Budget
-    step-up before a second dispatch → AP revocation at the PS and local direct
-    Resource.
+  - Flow: either durable-key enrollment → delegated Agent-token refresh, or
+    self-hosted Agent Provider metadata/JWKS → self-issued short-lived token;
+    then local permission → separately host-reviewed mission approval → MCP
+    operation and fixed Budget → one connector application call → verified
+    exhausted-Budget step-up before a second dispatch. The hosted-enrollment
+    variant also proves AP revocation at the PS and local direct Resource.
   - Start with: [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md) and
-    `go run ./example/hostedservice`.
+    `go run ./example/hostedservice`; add `--self-hosted` for the
+    user-controlled Agent Provider profile.
   - Boundary: this proves exported-library composition with real signed HTTP
     exchanges. Its operation-and-Budget reference stores pass the public R3
     document, R3 issuance, and Budget contracts. It does not prove production

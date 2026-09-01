@@ -94,6 +94,40 @@ func bootstrapHostedAgent(
 	return bootstrappedAgent{provider: provider, client: client, agentToken: refreshed.AgentToken}, nil
 }
 
+func bootstrapSelfHostedAgent(
+	ctx context.Context,
+	clock aauth.Clock,
+	network *logicalTransport,
+	httpClient *http.Client,
+	resolver signaturekey.KeyResolver,
+	registry r3.Registry,
+	agentKey jose.SigningKey,
+) (bootstrappedAgent, error) {
+	provider, err := agentprovider.NewSelfHostedAgent(agentprovider.SelfHostedAgentConfig{
+		Issuer: agentProviderID, Agent: agentID, SigningKey: agentKey, Clock: clock,
+		NewID: func() string { return "self-hosted-agent-token" },
+	})
+	if err != nil {
+		return bootstrappedAgent{}, err
+	}
+	network.Handle(agentProviderID, provider.Handler())
+	agentToken, err := provider.Issue(agentprovider.SelfHostedAgentTokenRequest{
+		PersonServer: personServerID, Lifetime: 30 * time.Minute,
+	})
+	if err != nil {
+		return bootstrappedAgent{}, err
+	}
+	client, err := clientagent.New(ctx, clientagent.Config{
+		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
+		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+		R3: &clientagent.R3Config{Registry: registry},
+	})
+	if err != nil {
+		return bootstrappedAgent{}, err
+	}
+	return bootstrappedAgent{client: client, agentToken: agentToken}, nil
+}
+
 func providerWithBootstrap(provider *agentprovider.Server, service *agentprovider.EnrollmentService) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {

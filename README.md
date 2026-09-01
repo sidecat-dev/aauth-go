@@ -39,6 +39,13 @@ and hosted-service profile, run:
 go run gitlab.com/sidecat-dev/aauth-go/example/hostedservice@latest
 ```
 
+To use a self-hosted Agent identity and proof key against the same reviewed
+mission, R3, Budget, and connector path, run:
+
+```sh
+go run gitlab.com/sidecat-dev/aauth-go/example/hostedservice@latest --self-hosted
+```
+
 That profile adds enrollment and refresh, local permission, host-reviewed
 mission approval, an MCP operation under a fixed Budget, application-owned
 OAuth credential use, refusal of an exhausted Budget before a second connector
@@ -53,7 +60,7 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
 | Self-hosted local Agent linking to a hosted account | [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md), [`example/selfhosted`](example/selfhosted) |
-| Hosted enrollment and refresh | [`example/bootstrap`](example/bootstrap) |
+| Hosted enrollment or a self-hosted Agent through the full hosted-service path | [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md), [`example/hostedservice`](example/hostedservice) |
 | Local permission or a mission lifecycle | [`example/permission`](example/permission), [`example/mission`](example/mission) |
 | Person questions, relays, or consent clarification | [`example/interactionquestion`](example/interactionquestion), [`example/interactionrelay`](example/interactionrelay), [`example/psconsent`](example/psconsent) |
 | R3 operations and fixed hard-cap Budgets | [`example/r3threeparty`](example/r3threeparty), [`example/budget`](example/budget) |

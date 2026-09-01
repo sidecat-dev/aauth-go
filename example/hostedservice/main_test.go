@@ -26,6 +26,21 @@ func TestRunCompletesHostedServiceLaunchProfile(t *testing.T) {
 	}
 }
 
+func TestRunCompletesSelfHostedAgentLaunchProfile(t *testing.T) {
+	var output bytes.Buffer
+	if err := runSelfHosted(&output); err != nil {
+		t.Fatal(err)
+	}
+	want := "1. self-hosted Agent token for hosted Person Server complete\n" +
+		"2. missionless local permission granted\n" +
+		"3. reviewed mission supplied the connector Person token and approved tool\n" +
+		"4. MCP operation authorized; exhausted call recovered; person-accepted mission completion retained\n" +
+		"5. OAuth service credential remained inside the connector application\n"
+	if output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
+	}
+}
+
 func TestAgentTokenRevocationStoreContracts(t *testing.T) {
 	t.Run("Person Server", func(t *testing.T) {
 		personstoretest.RunAgentTokenRevocation(t, personstoretest.AgentTokenRevocationContract{

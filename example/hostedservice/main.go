@@ -1,12 +1,14 @@
 // The hosted-service example composes the launch-profile paths on one set of
-// AAuth roles. It demonstrates protocol boundaries; applications still own
-// account login, administrative authentication, persistence, and connector
-// credentials.
+// AAuth roles. Its default uses hosted enrollment; --self-hosted uses a
+// user-controlled Agent Provider and proof key against the same hosted roles.
+// It demonstrates protocol boundaries; applications still own account login,
+// administrative authentication, persistence, and connector credentials.
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -29,26 +31,35 @@ const (
 )
 
 func main() {
-	if err := run(os.Stdout); err != nil {
+	selfHosted := flag.Bool("self-hosted", false, "use a self-hosted Agent instead of hosted enrollment")
+	flag.Parse()
+	if flag.NArg() != 0 {
+		log.Fatal("hosted-service example: no positional arguments are accepted")
+	}
+	runner := run
+	if *selfHosted {
+		runner = runSelfHosted
+	}
+	if err := runner(os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func run(output io.Writer) error {
+	return runProfile(output, false)
+}
+
+func runSelfHosted(output io.Writer) error {
+	return runProfile(output, true)
+}
+
+func runProfile(output io.Writer, selfHosted bool) error {
 	if output == nil {
 		return errors.New("hosted-service example: output is required")
 	}
 	ctx := context.Background()
 	now := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	providerKey, err := newSigningKey("hosted-provider-key")
-	if err != nil {
-		return err
-	}
-	durableKey, err := newSigningKey("hosted-durable-key")
-	if err != nil {
-		return err
-	}
 	agentKey, err := newSigningKey("hosted-agent-key")
 	if err != nil {
 		return err
@@ -95,15 +106,34 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	bootstrap, err := bootstrapHostedAgent(
-		ctx, now, clock, network, httpClient, resolver, registry,
-		providerKey, durableKey, agentKey,
-	)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(output, "1. enrollment + delegated Agent-token refresh complete"); err != nil {
-		return err
+	var bootstrap bootstrappedAgent
+	if selfHosted {
+		bootstrap, err = bootstrapSelfHostedAgent(ctx, clock, network, httpClient, resolver, registry, agentKey)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(output, "1. self-hosted Agent token for hosted Person Server complete"); err != nil {
+			return err
+		}
+	} else {
+		providerKey, err := newSigningKey("hosted-provider-key")
+		if err != nil {
+			return err
+		}
+		durableKey, err := newSigningKey("hosted-durable-key")
+		if err != nil {
+			return err
+		}
+		bootstrap, err = bootstrapHostedAgent(
+			ctx, now, clock, network, httpClient, resolver, registry,
+			providerKey, durableKey, agentKey,
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(output, "1. enrollment + delegated Agent-token refresh complete"); err != nil {
+			return err
+		}
 	}
 
 	roles, err := composeRoles(roleInputs{
@@ -164,13 +194,16 @@ func run(output io.Writer) error {
 	if _, err := fmt.Fprintln(output, "5. OAuth service credential remained inside the connector application"); err != nil {
 		return err
 	}
-	if err := (revocationJourney{
-		client: bootstrap.client, agentToken: bootstrap.agentToken, provider: bootstrap.provider,
-		resolver: resolver, clock: clock, httpClient: httpClient, network: network,
-		newPeople: roles.newPeople, newLocal: roles.newLocal,
-	}).run(ctx); err != nil {
+	if bootstrap.provider != nil {
+		if err := (revocationJourney{
+			client: bootstrap.client, agentToken: bootstrap.agentToken, provider: bootstrap.provider,
+			resolver: resolver, clock: clock, httpClient: httpClient, network: network,
+			newPeople: roles.newPeople, newLocal: roles.newLocal,
+		}).run(ctx); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(output, "6. Agent token revoked at PS and local Resource; later requests refused")
 		return err
 	}
-	_, err = fmt.Fprintln(output, "6. Agent token revoked at PS and local Resource; later requests refused")
-	return err
+	return nil
 }

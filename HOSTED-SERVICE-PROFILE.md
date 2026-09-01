@@ -57,6 +57,20 @@ Run the complete in-process composition spine with:
 go run ./example/hostedservice
 ```
 
+That default demonstrates host-controlled enrollment, delegated Agent-token
+refresh, and exact recipient revocation. A user-controlled Agent Provider can
+enter the same hosted mission, operation, Budget, and connector path with:
+
+```sh
+go run ./example/hostedservice --self-hosted
+```
+
+The self-hosted profile publishes ordinary Agent Provider metadata and JWKS
+and self-issues a short-lived token naming the hosted Person Server. It has no
+host-controlled enrollment transition, so the example does not claim that its
+Agent Provider can be suspended or revoked by the hosted service. Hosted
+Person Server and Resource policy still decide whether to accept its tokens.
+
 That example proves the features can share one configured environment. It
 charges one MCP connector call, verifies that an exhausted-Budget step-up is
 returned before a second connector dispatch, exchanges the replacement token,
@@ -80,7 +94,7 @@ go run ./example/revocation
 
 | Capability | Current implementation boundary |
 | --- | --- |
-| Enrollment and renewal | Hosted two-key and single-key profiles in `agent` and `agentprovider`; endpoints and application evidence are host choices because Bootstrap does not standardize them. |
+| Agent entry profile | Either hosted two-key or single-key enrollment and refresh, or a self-hosted Agent Provider that publishes ordinary metadata/JWKS and self-issues short-lived tokens. Hosted endpoints and application evidence remain host choices because Bootstrap does not standardize them. |
 | Enrollment suspension and revocation | Host-authenticated atomic state transition; disabled is reversible, revoked is terminal, and exact retries recover the retained transition. |
 | Local action | Immediate or explicitly deferred Permission Endpoint decision; the application executes only after a typed grant. |
 | Hosted account identity | Person tokens use the `(ps, sub)` namespace and are directed to one Resource. A deferred account-link adapter runs `personserver/storetest.RunDeferredToken`. |
