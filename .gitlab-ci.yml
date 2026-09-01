@@ -19,6 +19,7 @@ test:
     - go test ./... -count=1
     - cd walkthrough/local && go test ./... -count=1
     - cd ../../walkthrough/hosted && go test ./... -count=1
+    - cd ../interop && go test ./... -count=1
 
 race:
   stage: verify
@@ -26,6 +27,7 @@ race:
     - go test -race ./... -count=1
     - cd walkthrough/local && go test -race ./... -count=1
     - cd ../../walkthrough/hosted && go test -race ./... -count=1
+    - cd ../interop && go test -race ./... -count=1
 
 vet:
   stage: verify
@@ -33,6 +35,7 @@ vet:
     - go vet ./...
     - cd walkthrough/local && go vet ./...
     - cd ../../walkthrough/hosted && go vet ./...
+    - cd ../interop && go vet ./...
 
 build:
   stage: verify
@@ -40,3 +43,4 @@ build:
     - go build ./...
     - cd walkthrough/local && go build ./...
     - cd ../../walkthrough/hosted && go build ./...
+    - cd ../interop && go build ./...
