@@ -67,6 +67,9 @@ type FederatedAuthorizationConfig struct {
 	// MissionDeferredTokenStore.
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	Consent                       func(context.Context, AuthorizationRequest) error
+	// Budget optionally validates the Resource offer and selects the ceiling
+	// carried in the signed request to the Access Server.
+	Budget *FederatedBudgetConfig
 	// R3 optionally enables signed class-document and per-call proposal consent.
 	R3 *R3Config
 	// Missions enables mission approval and mission-bound Person and Auth-token
@@ -154,6 +157,16 @@ type PSAuthorizationConfig struct {
 // direct Person Server can accept a Budget offer.
 type BudgetConfig struct {
 	ResolveResourceUnits func(context.Context, string) ([]budgets.UnitDeclaration, error)
+}
+
+// FederatedBudgetConfig supplies the independent Resource-metadata lookup and
+// Person Server ceiling decision for four-party Budget authorization. Ceiling
+// runs after consent and receives an independent copy of the same verified
+// policy input. It may return nil to omit the request member; the Access Server
+// then uses the verified Resource offer as the Person Server ceiling.
+type FederatedBudgetConfig struct {
+	ResolveResourceUnits func(context.Context, string) ([]budgets.UnitDeclaration, error)
+	Ceiling              func(context.Context, AuthorizationRequest) (*budgets.Value, error)
 }
 
 // CallChainingConfig maps a verified upstream person to a new directed person
@@ -283,6 +296,7 @@ type Server struct {
 	authorizationMode                authorizationMode
 	authorize                        func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	resolveBudgetResourceUnits       func(context.Context, string) ([]budgets.UnitDeclaration, error)
+	federatedBudgetCeiling           func(context.Context, AuthorizationRequest) (*budgets.Value, error)
 	bindChainedPerson                func(context.Context, PersonTokenRequest) (Person, error)
 	authorizeChained                 func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 	requireAuthorizationInteraction  func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
@@ -340,6 +354,14 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if config.Consent == nil {
 		return nil, errors.New("personserver: consent policy is required")
 	}
+	if config.Budget != nil {
+		if config.Budget.ResolveResourceUnits == nil {
+			return nil, errors.New("personserver: Budget Resource-unit resolver is required")
+		}
+		if config.Budget.Ceiling == nil {
+			return nil, errors.New("personserver: federated Budget ceiling policy is required")
+		}
+	}
 	server, err := newServer(serverConfig{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
@@ -363,6 +385,10 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	server.httpClient = &httpClient
 	server.accessServerEndpoint = config.AccessServerEndpoint
 	server.consent = config.Consent
+	if config.Budget != nil {
+		server.resolveBudgetResourceUnits = config.Budget.ResolveResourceUnits
+		server.federatedBudgetCeiling = config.Budget.Ceiling
+	}
 	r3Config, err := newR3Config(config.R3, config.HTTPClient, config.SigningKey, config.Issuer, config.Clock)
 	if err != nil {
 		return nil, err
@@ -857,7 +883,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	unsupportedCapabilities := input.Capabilities
-	if server.authorizationMode == authorizationModePersonServer {
+	supportsCapabilities := server.authorizationMode == authorizationModePersonServer ||
+		server.federatedBudgetCeiling != nil
+	if supportsCapabilities {
 		unsupportedCapabilities = nil
 	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
@@ -869,11 +897,19 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	var capabilities []string
-	if server.authorizationMode == authorizationModePersonServer {
+	if supportsCapabilities {
 		capabilities, err = parseAuthorizationCapabilities(input.Capabilities)
 		if err != nil {
 			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 			return
+		}
+		if server.authorizationMode == authorizationModeFederated {
+			for _, capability := range capabilities {
+				if capability != "budget" {
+					writeProblem(response, http.StatusBadRequest, "invalid_request", fmt.Errorf("personserver: federated Budget does not support capability %q", capability))
+					return
+				}
+			}
 		}
 	}
 	upstream, err := server.verifyOptionalUpstreamToken(
@@ -906,7 +942,11 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err != nil {
-		writeEndpointTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
+		if budgets.IsTokenClaimError(err) {
+			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
+		} else {
+			writeEndpointTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
+		}
 		return
 	}
 	if upstream != nil && resourceToken.Audience != server.issuer {
@@ -944,7 +984,11 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	if budgetOffer != nil && (delegated || upstream != nil) {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: direct Budget does not compose with delegation or call chaining"))
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: Budget does not compose with delegation or call chaining"))
+		return
+	}
+	if budgetOffer != nil && server.authorizationMode == authorizationModeFederated && resourceToken.MissionS256 != "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: four-party mission-bound Budget authorization is not implemented"))
 		return
 	}
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()
@@ -1018,7 +1062,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 		if err := budgets.ValidateDeclaredValue(declarations, *budgetOffer); err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", fmt.Errorf("resource-token Budget metadata: %w", err))
+			writeProblem(response, http.StatusBadRequest, "invalid_budget", fmt.Errorf("resource-token Budget metadata: %w", err))
 			return
 		}
 	}
@@ -1150,6 +1194,27 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeAccessPolicyProblem(response, consentErr)
 		return
 	}
+	var personBudgetCeiling *budgets.Value
+	if budgetOffer != nil {
+		if server.federatedBudgetCeiling == nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: federated Budget ceiling policy is not configured"))
+			return
+		}
+		selected, err := server.federatedBudgetCeiling(
+			request.Context(), cloneAuthorizationRequest(authorizationRequest),
+		)
+		if err != nil {
+			writeAccessPolicyProblem(response, err)
+			return
+		}
+		if selected != nil {
+			if err := budgets.ValidateNarrowing(*budgetOffer, *selected); err != nil {
+				writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Person Server Budget ceiling: %w", err))
+				return
+			}
+			personBudgetCeiling = cloneBudgetValue(selected)
+		}
+	}
 	endpoint, err := server.accessServerEndpoint(request.Context(), resourceToken.Audience)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -1160,10 +1225,14 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	accessInput, err := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-		AgentToken    string `json:"agent_token"`
-		SubagentToken string `json:"subagent_token,omitempty"`
-	}{ResourceToken: input.ResourceToken, AgentToken: agentToken, SubagentToken: subagentToken})
+		ResourceToken string         `json:"resource_token"`
+		AgentToken    string         `json:"agent_token"`
+		SubagentToken string         `json:"subagent_token,omitempty"`
+		Budget        *budgets.Value `json:"budget,omitempty"`
+	}{
+		ResourceToken: input.ResourceToken, AgentToken: agentToken,
+		SubagentToken: subagentToken, Budget: personBudgetCeiling,
+	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -1214,10 +1283,25 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	var authToken aauth.AuthTokenClaims
 	if r3Context != nil {
 		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
-	} else {
-		authToken, err = aauth.VerifyAuthToken(
+	} else if budgetOffer != nil {
+		var grant budgets.Value
+		authToken, grant, err = budgets.VerifyAuthToken(
 			request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
 		)
+		if err == nil {
+			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
+		}
+	} else {
+		carriesBudget, budgetErr := budgets.TokenCarriesClaims(accessOutput.AuthToken)
+		if budgetErr != nil {
+			err = budgetErr
+		} else if carriesBudget {
+			err = errors.New("Access Server auth token invented a Budget")
+		} else {
+			authToken, err = aauth.VerifyAuthToken(
+				request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
+			)
+		}
 	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -1445,6 +1529,23 @@ func validateBudgetDecision(offered, granted *budgets.Value) (*budgets.Value, er
 		return nil, fmt.Errorf("authorization decision Budget: %w", err)
 	}
 	return cloneBudgetValue(granted), nil
+}
+
+func validateFederatedBudgetGrant(
+	resourceOffer budgets.Value,
+	personCeiling *budgets.Value,
+	accessGrant budgets.Value,
+) error {
+	if err := budgets.ValidateNarrowing(resourceOffer, accessGrant); err != nil {
+		return fmt.Errorf("Access Server Budget exceeds the Resource offer: %w", err)
+	}
+	if personCeiling == nil {
+		return nil
+	}
+	if err := budgets.ValidateNarrowing(*personCeiling, accessGrant); err != nil {
+		return fmt.Errorf("Access Server Budget exceeds the Person Server ceiling: %w", err)
+	}
+	return nil
 }
 
 func relayAccessServerProblem(response http.ResponseWriter, accessResponse *http.Response) bool {

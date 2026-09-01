@@ -17,6 +17,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -100,6 +101,38 @@ func TestNewFederatedAuthorizationRejectsIncompleteConfiguration(t *testing.T) {
 			test.change(&config)
 			if _, err := NewFederatedAuthorization(config); err == nil {
 				t.Fatal("NewFederatedAuthorization succeeded with incomplete configuration")
+			}
+		})
+	}
+}
+
+func TestFederatedBudgetRejectsUnimplementedCompositions(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		change func(*FederatedAuthorizationConfig)
+		want   string
+	}{
+		{name: "R3", change: func(config *FederatedAuthorizationConfig) {
+			config.R3 = &R3Config{}
+		}, want: "four-party R3 and Budget"},
+		{name: "held invocation", change: func(config *FederatedAuthorizationConfig) {
+			config.HeldInvocations = newHeldMemoryStore()
+		}, want: "Resource-held Budget"},
+		{name: "reactive initial offer", change: func(config *FederatedAuthorizationConfig) {
+			config.Budget.InitialOffer = func(context.Context, BudgetInitialOfferRequest) (budgets.Value, error) {
+				return budgets.Value{}, nil
+			}
+		}, want: "reactive four-party Budget"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := validConfig(t, http.NotFoundHandler())
+			config.Budget = &BudgetConfig{}
+			test.change(&config)
+			_, err := NewFederatedAuthorization(config)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})
 	}

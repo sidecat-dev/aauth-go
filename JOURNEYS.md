@@ -319,7 +319,7 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Missing: durable adapters, complete cross-event mission-log recording, and
     stable uncertain-initial-submission recovery.
 
-### Not implemented
+### Bounded four-party journey
 
 - [ ] **Complete PS governance and mission log — Not implemented.** The
   bounded stores retain approval, accepted updates, mission-bound permission,
@@ -667,13 +667,29 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     and `go run ./example/budget`.
   - Boundary: the library does not guess a unit when no host initial-offer
     policy exists. Resource-held, R3+Budget, four-party, mission, account,
-    delegation, variable-cost, and streaming reactive paths remain absent.
+    delegation, variable-cost, and streaming **reactive** paths remain absent.
+
+### Bounded four-party journey
+
+- [x] **Immediate four-party Core fixed Budget — Implemented**
+  - Flow: Agent requests a declared Budget → Resource fixes the denomination
+    and offer → PS independently checks metadata and selects an optional lower
+    ceiling → signed PS-to-AS request → AS independently checks metadata and
+    narrows again → PS verifies both ceilings → Agent verifies → Resource
+    atomically charges before one protected consequence.
+  - Start with: `resource.FederatedAuthorizationConfig.Budget`,
+    `personserver.FederatedBudgetConfig`, `accessserver.Config.Budget`, and the
+    existing `Client.Authorize`, `Client.Exchange`, and `Client.BeginBudgetCall`.
+  - Evidence: [`integration/budget_four_party_test.go`](integration/budget_four_party_test.go),
+    [`accessserver/budget_test.go`](accessserver/budget_test.go), and
+    [`personserver/federated_budget_test.go`](personserver/federated_budget_test.go).
+  - Boundary: a PS omission means the Resource offer at the AS as the source
+    requires. A successful AS response must still carry an explicit signed
+    Budget. R3, deferred interaction, delegation, call chaining, consumption
+    history, variable cost, streaming, and usage queries remain excluded.
 
 ### Not implemented
 
-- [ ] **Four-party Budget authorization — Not implemented.** No PS-to-AS
-  Budget ceiling, AS narrowing, or AS-issued Budget protected-call journey
-  exists.
 - [ ] **Variable-cost and streaming calls — Not implemented.** There is no
   reservation/settlement store contract, trailer reconciliation, or safe
   interrupted-stream journey.

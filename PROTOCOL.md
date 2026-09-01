@@ -605,8 +605,8 @@ separators.
 
 ### Budgeted access
 
-The implemented profile is direct three-party, fixed-price, and non-streaming.
-It supports both source-defined entry paths. Proactively, the Agent requests
+The implemented profiles are fixed-price and non-streaming. Direct three-party
+supports both source-defined entry paths. Proactively, the Agent requests
 one denomination. Reactively, the Agent's ordinary Person-token call receives
 a Budget-bearing Resource token in the `401`; the host's `InitialOffer` policy
 selects one declared unit and amount rather than the library guessing among
@@ -619,6 +619,14 @@ lower the amount; its Auth token is the signed cap. After all ordinary
 authorization checks, the Resource atomically charges the exact known cost
 before application dispatch and reports cost and remaining Budget as an RFC
 9651 Dictionary.
+
+Immediate four-party Core uses the same Resource offer and protected-call
+enforcement. The Person Server and Access Server each resolve trusted current
+`budget_units` metadata. The PS may lower only the amount and carries that
+ceiling in its signed request. If it omits the optional member, the AS uses the
+verified Resource offer as the PS ceiling. AS policy may lower only the amount,
+the PS verifies the returned signed grant against both ceilings, and the Agent
+verifies the complete Resource-token context before protected use.
 
 The direct Core path also composes with an active mission. The exact mission
 digest flows from the mission Person token through the Resource and Auth tokens
@@ -646,9 +654,9 @@ hosted-service runnable journeys prove that composition. No library method
 retries a chargeable consequence automatically.
 When a post-send outcome cannot be verified, it carries the full signed grant
 as the only locally proved upper bound. Variable-cost settlement, streaming
-trailers, four-party forwarding, `budget_consumed` policy, usage queries,
-automatic reauthorization, and reactive Resource-held or R3+Budget first calls
-are not part of this profile.
+trailers, `budget_consumed` policy, usage queries, automatic reauthorization,
+and reactive Resource-held or R3+Budget first calls are not part of these
+profiles.
 
 ## Source tensions and implementation choices
 

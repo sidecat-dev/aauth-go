@@ -210,8 +210,8 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		return claims, &verifiedR3{reference: reference}, cloneBudgetValue(&offer), nil
 	}
 	if carriesBudget {
-		if server.authorizationMode != authorizationModePersonServer {
-			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: Budget resource token requires direct Person Server authorization")
+		if server.resolveBudgetResourceUnits == nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: Budget authorization is not configured")
 		}
 		claims, offer, consumed, err := budgets.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
 		if err != nil {

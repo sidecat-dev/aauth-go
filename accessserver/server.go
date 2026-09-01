@@ -14,6 +14,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
@@ -38,6 +39,7 @@ type Config struct {
 	NewID             func() string
 	TrustPersonServer func(context.Context, string) error
 	Authorize         func(context.Context, AuthorizationRequest) (Decision, error)
+	Budget            *BudgetConfig
 	R3                *R3Config
 }
 
@@ -65,6 +67,9 @@ type AuthorizationRequest struct {
 	// Subagent is present only for a parent-mediated request. Agent remains
 	// the top-level parent whose grant the policy evaluates.
 	Subagent *Agent
+	// Budget is the verified Resource offer narrowed by the Person Server. When
+	// the signed request omits a ceiling, it is the Resource offer itself.
+	Budget *budgets.Value
 }
 
 // Decision is the requested Core-scope subset and lifetime granted by Core
@@ -72,6 +77,9 @@ type AuthorizationRequest struct {
 type Decision struct {
 	Scopes   []string
 	Lifetime time.Duration
+	// Budget is required when AuthorizationRequest.Budget is present and may
+	// only lower its amount without changing unit or decimals.
+	Budget *budgets.Value
 }
 
 // Server is an immediate AAuth Access Server.
@@ -83,6 +91,7 @@ type Server struct {
 	newID             func() string
 	trustPersonServer func(context.Context, string) error
 	authorize         func(context.Context, AuthorizationRequest) (Decision, error)
+	budget            *budgetConfig
 	r3                *r3Config
 }
 
@@ -113,10 +122,15 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	budgetConfiguration, err := newBudgetConfig(config.Budget)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
-		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize, r3: r3Configuration,
+		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize,
+		budget: budgetConfiguration, r3: r3Configuration,
 	}, nil
 }
 
@@ -159,6 +173,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		AgentToken    string          `json:"agent_token"`
 		SubagentToken json.RawMessage `json:"subagent_token"`
 		UpstreamToken json.RawMessage `json:"upstream_token"`
+		Budget        json.RawMessage `json:"budget"`
 	}
 	if err := decodeJSON(request.Body, &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
@@ -174,11 +189,15 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
 		return
 	}
-	resourceClaims, r3Context, err := server.verifyResourceTokenForAuthorization(
+	resourceClaims, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err != nil {
-		writeTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
+		if budgets.IsTokenClaimError(err) {
+			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
+		} else {
+			writeTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
+		}
 		return
 	}
 	if agentClaims.ParentAgent != "" || agentClaims.PersonServer != personServer {
@@ -226,6 +245,28 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token account is not supported by the immediate flow"))
 		return
 	}
+	var budgetCeiling *budgets.Value
+	if budgetOffer != nil {
+		if err := server.budget.validateOffer(request.Context(), resourceClaims.Issuer, *budgetOffer); err != nil {
+			var resolutionFailure *budgetMetadataResolutionError
+			if errors.As(err, &resolutionFailure) {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			} else {
+				writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
+			}
+			return
+		}
+	}
+	personBudgetCeiling, err := decodeBudgetCeiling(input.Budget)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
+		return
+	}
+	budgetCeiling, err = selectBudgetCeiling(budgetOffer, personBudgetCeiling)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
+		return
+	}
 	agentJKT, err := confirmation.Thumbprint()
 	if err != nil || agentJKT != resourceClaims.AgentJKT {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the authorized agent key"))
@@ -255,6 +296,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			ExpiresAt:        time.Unix(agentClaims.ExpiresAt, 0).UTC(),
 			AdditionalClaims: cloneClaims(agentClaims.AdditionalClaims),
 		},
+		Budget: cloneBudgetValue(budgetCeiling),
 	}
 	if subagentClaims != nil {
 		policyRequest.Subagent = &Agent{
@@ -313,6 +355,11 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	grantedBudget, err := validateBudgetDecision(budgetCeiling, decision.Budget)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
 	if r3Context != nil && r3Context.kind == r3.ArtifactDocument {
 		if r3Authorization == nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: R3 document policy returned no class authorization"))
@@ -368,6 +415,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		default:
 			err = errors.New("accessserver: R3 artifact is unclassified")
 		}
+	} else if grantedBudget != nil {
+		authToken, err = budgets.MintAuthToken(server.signingKey, claims, *grantedBudget)
 	} else {
 		authToken, err = aauth.MintAuthToken(server.signingKey, claims)
 	}

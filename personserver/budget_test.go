@@ -139,8 +139,8 @@ func TestDirectPSRejectsMalformedBudgetBeforeAuthorizationPolicy(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
 		t.Fatal(err)
 	}
-	if problem.Error != "invalid_resource_token" {
-		t.Fatalf("error = %q, want invalid_resource_token", problem.Error)
+	if problem.Error != "invalid_budget" {
+		t.Fatalf("error = %q, want invalid_budget", problem.Error)
 	}
 }
 
@@ -190,23 +190,24 @@ func TestDirectPSChecksBudgetAgainstTrustedResourceMetadataBeforePolicy(t *testi
 		name       string
 		resolve    func(context.Context, string) ([]budgets.UnitDeclaration, error)
 		wantStatus int
+		wantCode   string
 	}{
 		{name: "matching", wantStatus: http.StatusOK, resolve: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
 			return []budgets.UnitDeclaration{matching}, nil
 		}},
-		{name: "not configured", wantStatus: http.StatusBadRequest},
+		{name: "not configured", wantStatus: http.StatusBadRequest, wantCode: "invalid_resource_token"},
 		{name: "resolution failure", wantStatus: http.StatusInternalServerError, resolve: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
 			return nil, errors.New("metadata unavailable")
-		}},
+		}, wantCode: "server_error"},
 		{name: "unit undeclared", wantStatus: http.StatusBadRequest, resolve: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
 			return nil, nil
-		}},
+		}, wantCode: "invalid_budget"},
 		{name: "wrong scale", wantStatus: http.StatusBadRequest, resolve: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
 			return []budgets.UnitDeclaration{wrongScale}, nil
-		}},
+		}, wantCode: "invalid_budget"},
 		{name: "offer exceeds metadata maximum", wantStatus: http.StatusBadRequest, resolve: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
 			return []budgets.UnitDeclaration{tooSmall}, nil
-		}},
+		}, wantCode: "invalid_budget"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			policyCalls := 0
@@ -217,6 +218,17 @@ func TestDirectPSChecksBudgetAgainstTrustedResourceMetadataBeforePolicy(t *testi
 			response := protocol.exchange(t, server, compact)
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if test.wantCode != "" {
+				var problem struct {
+					Error string `json:"error"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
+					t.Fatal(err)
+				}
+				if problem.Error != test.wantCode {
+					t.Fatalf("error = %q, want %q", problem.Error, test.wantCode)
+				}
 			}
 			wantCalls := 0
 			if test.wantStatus == http.StatusOK {

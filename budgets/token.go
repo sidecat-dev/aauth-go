@@ -20,6 +20,26 @@ const (
 
 var r3Claims = [...]string{"r3_uri", "r3_s256", "r3_granted", "r3_per_call"}
 
+type tokenClaimError struct{ cause error }
+
+func (failure *tokenClaimError) Error() string { return failure.cause.Error() }
+func (failure *tokenClaimError) Unwrap() error { return failure.cause }
+
+// IsTokenClaimError reports whether Core token verification succeeded but the
+// Budget companion claims were malformed. Token endpoints use this distinction
+// to return the Budgets protocol's registered invalid_budget error.
+func IsTokenClaimError(err error) bool {
+	var failure *tokenClaimError
+	return errors.As(err, &failure)
+}
+
+func invalidTokenClaims(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &tokenClaimError{cause: err}
+}
+
 // ConsumptionRecord reports metered consumption against one prior Auth token.
 type ConsumptionRecord struct {
 	jti      string
@@ -141,22 +161,22 @@ func VerifyResourceToken(
 		return aauth.ResourceTokenClaims{}, Value{}, nil, err
 	}
 	if err := validateBudgetScope(aauth.ResourceTokenType, claims.Scope); err != nil {
-		return aauth.ResourceTokenClaims{}, Value{}, nil, err
+		return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(err)
 	}
 	if err := validateCompanionClaims(aauth.ResourceTokenType, claims.AdditionalClaims, true); err != nil {
-		return aauth.ResourceTokenClaims{}, Value{}, nil, err
+		return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(err)
 	}
 	offer, err := ParseValueJSON(claims.AdditionalClaims[budgetClaim])
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, Value{}, nil, fmt.Errorf("budgets: Resource-token budget: %w", err)
+		return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(fmt.Errorf("budgets: Resource-token budget: %w", err))
 	}
 	var consumed []ConsumptionRecord
 	if raw, present := claims.AdditionalClaims[budgetConsumedClaim]; present {
 		if string(raw) == "null" {
-			return aauth.ResourceTokenClaims{}, Value{}, nil, errors.New("budgets: Resource-token budget_consumed must be an array")
+			return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(errors.New("budgets: Resource-token budget_consumed must be an array"))
 		}
 		if err := json.Unmarshal(raw, &consumed); err != nil {
-			return aauth.ResourceTokenClaims{}, Value{}, nil, fmt.Errorf("budgets: Resource-token budget_consumed: %w", err)
+			return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(fmt.Errorf("budgets: Resource-token budget_consumed: %w", err))
 		}
 	}
 	removeClaims(&claims.AdditionalClaims, budgetClaim, budgetConsumedClaim)
@@ -200,17 +220,17 @@ func VerifyAuthToken(
 		return aauth.AuthTokenClaims{}, Value{}, err
 	}
 	if err := validateBudgetScope(aauth.AuthTokenType, claims.Scope); err != nil {
-		return aauth.AuthTokenClaims{}, Value{}, err
+		return aauth.AuthTokenClaims{}, Value{}, invalidTokenClaims(err)
 	}
 	if err := validateCompanionClaims(aauth.AuthTokenType, claims.AdditionalClaims, false); err != nil {
-		return aauth.AuthTokenClaims{}, Value{}, err
+		return aauth.AuthTokenClaims{}, Value{}, invalidTokenClaims(err)
 	}
 	grant, err := ParseValueJSON(claims.AdditionalClaims[budgetClaim])
 	if err != nil {
-		return aauth.AuthTokenClaims{}, Value{}, fmt.Errorf("budgets: Auth-token budget: %w", err)
+		return aauth.AuthTokenClaims{}, Value{}, invalidTokenClaims(fmt.Errorf("budgets: Auth-token budget: %w", err))
 	}
 	if err := ValidateFeedbackUnit(grant.Unit()); err != nil {
-		return aauth.AuthTokenClaims{}, Value{}, err
+		return aauth.AuthTokenClaims{}, Value{}, invalidTokenClaims(err)
 	}
 	removeClaims(&claims.AdditionalClaims, budgetClaim)
 	return claims, grant, nil

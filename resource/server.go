@@ -49,6 +49,10 @@ type FederatedAuthorizationConfig struct {
 	Protected       http.Handler
 	// R3 optionally enables registered R3 authorization on this HTTP Resource.
 	R3 *R3Config
+	// Budget optionally enables proactive four-party Budget offers and
+	// fixed-price enforcement for metered protected routes. It does not compose
+	// with R3, held delivery, or mission-bound Budget authorization.
+	Budget *BudgetConfig
 	// HeldInvocations enables Resource-held auth-token delivery. The host store
 	// is a trusted persistence and authorization boundary; see
 	// HeldInvocationStore.
@@ -350,7 +354,16 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if err := aauth.ValidateServerIdentifier(config.AccessServer); err != nil {
 		return nil, fmt.Errorf("aauth: resource access server: %w", err)
 	}
-	return newAuthorizationServer(config, authorizationTopologyFederated, nil, nil)
+	if config.Budget != nil && config.R3 != nil {
+		return nil, errors.New("aauth: four-party R3 and Budget authorization is not implemented")
+	}
+	if config.Budget != nil && config.HeldInvocations != nil {
+		return nil, errors.New("aauth: Resource-held Budget authorization is not implemented")
+	}
+	if config.Budget != nil && config.Budget.InitialOffer != nil {
+		return nil, errors.New("aauth: reactive four-party Budget authorization is not implemented")
+	}
+	return newAuthorizationServer(config, authorizationTopologyFederated, nil, config.Budget)
 }
 
 // NewPSAuthorization constructs a Resource that challenges person-token

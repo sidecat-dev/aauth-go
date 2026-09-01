@@ -69,7 +69,7 @@ were read; it is not an implementation or conformance claim.
 | R3 | implementation-reviewed for the shared seven-vocabulary operation model, bounded definition adapters, and current three- and four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, `AAG-F076`, and `AAG-F086`. The seven definition registrations now provide bounded derivation or typed specification-gap refusal. MCP, OpenAPI, and AsyncAPI parse sparse annotations; OData annotation identity remains unresolved. Complete acquisition, general dependency resolution, invocation binding, and independent interop remain evidence-pending. |
 | Events | implementation-reviewed for the public and protected-subscription paths | `AAG-F058`, `AAG-F084`, and `AAG-F085` now have executing token, registration, endpoint-resolution, delivery, use-limit, and Agent-correlation evidence. The protected path additionally exercises opaque ticket issuance, Agent binding, expiry, single use, exact retry, and changed-input conflict. Independent interoperability remains evidence-pending. |
 | Bootstrap | implementation-reviewed for the explicit Ed25519 two-key and single-durable-key hosted profiles plus self-hosted issuance | `AAG-F071` through `AAG-F075` record hosted source and replay questions; `AAG-F104` records the Core self-hosting contradiction |
-| Budgets | implementation-reviewed for the direct fixed-price profile | `AAG-F087` through `AAG-F092` record field grammar, first-hop denomination ordering, omission, refusal examples, step-up lineage, and ambiguous-failure accounting questions exposed by executing code. Four-party forwarding, consumption-record policy, variable-cost settlement, streaming/trailers, and usage queries remain evidence-pending. |
+| Budgets | implementation-reviewed for direct and four-party fixed-price Core | `AAG-F087` through `AAG-F092` record field grammar, first-hop denomination ordering, omission, refusal examples, step-up lineage, and ambiguous-failure accounting questions exposed by executing code. Consumption-record policy, variable-cost settlement, streaming/trailers, and usage queries remain evidence-pending. |
 | Interoperability demo profile | source-reviewed against current internal paths | `AAG-F001` remains evidence-pending; no independent implementation has been exercised |
 
 ## Submitted history
@@ -1755,6 +1755,10 @@ full Resource-token offer as the PS ceiling. Separately, an Auth-token issuer
 may omit `budget` after the Resource token carried one, after which the
 Resource applies its own default. Either omission is fail-open when the PS
 intended to withhold metered authorization.
+
+The four-party fixed-price implementation now exercises that asymmetry: it
+uses the Resource offer when the signed PS request omits `budget`, but requires
+an explicit signed Budget in the successful Auth token before metered use.
 
 **Question:** When a Resource token carries Budget, should every successful
 hop carry an explicit equal-or-narrower Budget, with omission meaning no grant

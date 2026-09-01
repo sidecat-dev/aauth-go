@@ -995,11 +995,13 @@ protocol-verifiable numeric lowering; that source question is `AAG-F088`.
 
 The draft permits an Auth-token issuer to omit an offered Budget and then asks
 the Resource to apply a default. A positive default would bypass Person Server
-narrowing. The fixed-price profile therefore treats omission as no metering
-authorization and refuses the operation; it does not construct a synthetic
-zero-valued grant. This choice covers the implemented direct three-party path;
-the separate four-party PS-to-AS omission rule remains unimplemented. An
-unmetered Resource remains unchanged.
+narrowing. The fixed-price profiles therefore treat omission from the Auth
+token as no metering authorization and refuse the operation; they do not
+construct a synthetic zero-valued grant. In four-party Core, the distinct
+PS-to-AS omission rule is implemented exactly as written: the AS uses the
+verified Resource offer as the PS ceiling. It must still issue an explicit
+equal-or-lower Budget for metered protected use. An unmetered Resource remains
+unchanged.
 
 ## Fixed-price calls charge atomically before application execution
 

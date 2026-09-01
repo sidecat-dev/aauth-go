@@ -123,8 +123,8 @@ type BudgetStore interface {
 	Charge(context.Context, BudgetCharge) (BudgetChargeResult, error)
 }
 
-// BudgetConfig enables the first fixed-price Budget profile on a direct
-// Person-Server-authorized Resource. Units are advertised in Resource
+// BudgetConfig enables the fixed-price Budget profile on an authorized
+// Resource. Units are advertised in Resource
 // metadata. InitialOffer sizes an optional reactive first-call challenge;
 // Offer may lower a valid proactive request or select another declared
 // denomination. Cost returns the exact, finite charge before application
@@ -161,8 +161,8 @@ func validateBudgetConfig(config *BudgetConfig, topology authorizationTopology) 
 	if config == nil {
 		return nil, nil
 	}
-	if topology != authorizationTopologyPersonServer {
-		return nil, errors.New("aauth: fixed-price Resource Budget requires direct Person Server authorization")
+	if topology != authorizationTopologyPersonServer && topology != authorizationTopologyFederated {
+		return nil, errors.New("aauth: fixed-price Resource Budget requires an authorization topology")
 	}
 	if len(config.Units) == 0 {
 		return nil, errors.New("aauth: Resource Budget requires at least one declared unit")

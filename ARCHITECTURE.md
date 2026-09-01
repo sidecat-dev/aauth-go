@@ -323,8 +323,10 @@ inputs owned by PS and Resource compositions. The current Resource profile
 retains a purpose-specific `BudgetLineage` through host storage before releasing
 the Resource token, then uses one atomic `BudgetStore.Charge` after every other
 authorization check and before application dispatch. Variable-cost
-reservation/settlement, streaming, usage queries, four-party forwarding, and
-prior-consumption policy remain separate unimplemented profiles.
+reservation/settlement, streaming, usage queries, and prior-consumption policy
+remain separate unimplemented profiles. In four-party Core, the Person Server
+and Access Server independently resolve trusted Resource unit metadata, the PS
+may narrow the amount in its signed request, and the AS may narrow it again.
 
 ### `events`
 
