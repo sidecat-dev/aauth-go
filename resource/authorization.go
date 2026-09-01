@@ -55,11 +55,6 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 		}
 		operations = &validated
 	}
-	if server.authorizationTopology == authorizationTopologyFederated &&
-		claims.MissionS256 != "" && operations != nil && input.Budget != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission-bound R3 Budget authorization is not implemented"))
-		return
-	}
 	var scopes []string
 	if input.Scope != nil {
 		if bytes.Equal(bytes.TrimSpace(input.Scope), []byte("null")) {

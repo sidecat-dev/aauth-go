@@ -470,10 +470,16 @@ Start definition work with `r3.NewDefinitionRegistry`,
     [`integration/r3_direct_four_party_test.go`](integration/r3_direct_four_party_test.go),
     [`token_r3_external_test.go`](token_r3_external_test.go), and
     `go run ./example/budget`.
+  - Mission variant: either topology may carry the same class grant and fixed
+    Budget under an active mission. In federation, the AS commits its mandatory
+    R3 audit before responding; the PS then atomically compares the unchanged
+    mission and retains the exact AS token before release. A mission race may
+    leave an AS-audited token that the PS verified but did not retain or release
+    to the Agent.
   - Boundary: class authorization only. R3-only and Budget-only verifiers
     continue to reject mixed tokens. Per-call, held or reactive federation,
-    mission plus R3, delegation, call-chain, account, and variable-price
-    combinations remain unsupported.
+    delegation, call-chain, account, and variable-price combinations remain
+    unsupported.
 
 - [x] **Federated four-party class authorization — Implemented for MCP and OpenAPI**
   - Flow: Resource retains and publishes the exact class document → PS and AS
@@ -718,7 +724,10 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     and [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go).
   - Boundary: completing the mission prevents another exchange before policy.
     Direct class-document R3 uses `MissionR3IssuanceStore` to commit mission
-    comparison, Auth-token retention, and R3 audit facts atomically.
+    comparison, Auth-token retention, and R3 audit facts atomically. Federated
+    class R3 uses the AS issuance commit followed by the PS mission comparison
+    and exact-token commit; a later mission race withholds the token even though
+    the independent AS audit remains.
 - [ ] **Delegation, call chaining, per-call mission R3, and account-bound Budgets — Not implemented.**
   The Agent, PS, and Resource fail closed rather than carrying a Budget through
   these remaining compositions.

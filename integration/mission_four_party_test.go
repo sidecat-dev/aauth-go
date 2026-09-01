@@ -19,16 +19,17 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-// TestMissionBoundImmediateFourPartyBudgetJourney covers Core sections
+// TestMissionBoundImmediateFourPartyR3BudgetJourney covers Core sections
 // "Resource Token Verification", "PS-AS Federation", and "Mission Log" at
 // the exact pinned source revision plus the fixed-price Budgets profile. The
 // PS alone evaluates the retained mission and ordered accepted updates; the AS
 // receives only mission_s256 plus ordinary authorization and Budget context.
-func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
+func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -44,6 +45,17 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 	)
 	missionExpiry := now.Add(4 * time.Minute)
 	unit, err := budgets.NewUnit("USD", 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := newIntegrationR3Registry(t)
+	vocabulary := integrationR3Vocabularies()[0]
+	readOperation := vocabulary.newOperation(t, "records.read")
+	requestedOperations, err := r3.NewOperationSet(readOperation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	display, err := r3.NewDisplay("Read records", "", "Record contents", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +111,7 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 	resourceIDs := []string{"mission-four-party-resource", "mission-four-party-race-resource"}
 	authIDs := []string{"mission-four-party-auth", "mission-four-party-race-auth"}
 	var consentMissions []personserver.MissionContext
+	var consentAttempts int
 	var acceptedCompletions []personserver.MissionCompletionPolicyRequest
 	newPeople := func() *personserver.Server {
 		people, err := personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
@@ -149,24 +162,41 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 				}
 				return personserver.Person{Subject: "person-123", Tenant: "tenant-1", Lifetime: time.Hour}, nil
 			},
-			Consent: func(_ context.Context, request personserver.AuthorizationRequest) error {
-				if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
-					request.Mission == nil || request.Budget == nil ||
-					!integrationSameBudget(*request.Budget, resourceOffer) ||
-					!slices.Equal(request.Scopes, []string{scope}) {
-					return errors.New("unexpected mission authorization context")
-				}
-				if request.Mission.Blob.Description == "# Read the four-party report" {
-					if len(request.Mission.AcceptedUpdates) != 1 ||
-						request.Mission.AcceptedUpdates[0].Document.Update.Description != "Include the retained correction" {
-						return errors.New("mission authorization omitted the accepted update history")
+			Consent: func(context.Context, personserver.AuthorizationRequest) error {
+				return errors.New("Core consent must not receive an R3 request")
+			},
+			R3: &personserver.R3Config{
+				Registry: registry,
+				Admit: func(_ context.Context, endpoint string) error {
+					if !strings.HasPrefix(endpoint, resourceID+"/r3/") {
+						return errors.New("unexpected R3 document endpoint")
 					}
-				} else if request.Mission.Blob.Description != "# Race the four-party report" ||
-					len(request.Mission.AcceptedUpdates) != 0 {
-					return errors.New("unexpected race mission context")
-				}
-				consentMissions = append(consentMissions, cloneFourPartyMissionContext(*request.Mission))
-				return nil
+					return nil
+				},
+				ConsentDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
+					consentAttempts++
+					if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
+						request.Mission == nil || request.Budget == nil ||
+						!integrationSameBudget(*request.Budget, resourceOffer) ||
+						!slices.Equal(request.Scopes, []string{scope}) ||
+						!vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) {
+						t.Errorf("unexpected mission R3 Budget authorization context: %#v document=%#v", request, document)
+						return errors.New("unexpected mission authorization context")
+					}
+					if request.Mission.Blob.Description == "# Read the four-party report" {
+						if len(request.Mission.AcceptedUpdates) != 1 ||
+							request.Mission.AcceptedUpdates[0].Document.Update.Description != "Include the retained correction" {
+							t.Errorf("mission authorization omitted accepted update history: %#v", request.Mission)
+							return errors.New("mission authorization omitted the accepted update history")
+						}
+					} else if request.Mission.Blob.Description != "# Race the four-party report" ||
+						len(request.Mission.AcceptedUpdates) != 0 {
+						t.Errorf("unexpected race mission context: %#v", request.Mission)
+						return errors.New("unexpected race mission context")
+					}
+					consentMissions = append(consentMissions, cloneFourPartyMissionContext(*request.Mission))
+					return nil
+				},
 			},
 			Budget: &personserver.FederatedBudgetConfig{
 				ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
@@ -193,6 +223,7 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 
 	var terminateAtAccessServer string
 	var accessPolicyCalls int
+	issuances := &integrationR3IssuanceStore{}
 	access, err := accessserver.New(accessserver.Config{
 		Issuer: accessServerID, SigningKey: accessKey, KeyResolver: resolver, Clock: clock,
 		NewID: func() string {
@@ -206,24 +237,53 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 			}
 			return nil
 		},
-		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
-			accessPolicyCalls++
-			if request.PersonServer != personServerID || request.Resource != resourceID ||
-				request.Subject != "person-123" || request.Tenant != "tenant-1" ||
-				request.Agent.Identifier != agentID || request.MissionS256 == "" || request.Budget == nil ||
-				!integrationSameBudget(*request.Budget, personCeiling) ||
-				!slices.Equal(request.Scopes, []string{scope}) {
-				return accessserver.Decision{}, errors.New("unexpected access policy context")
-			}
-			if terminateAtAccessServer != "" {
-				if err := store.terminateMission(agentID, terminateAtAccessServer, "revoked-during-authorization"); err != nil {
-					return accessserver.Decision{}, err
+		Authorize: func(context.Context, accessserver.AuthorizationRequest) (accessserver.Decision, error) {
+			return accessserver.Decision{}, errors.New("Core policy must not receive an R3 request")
+		},
+		R3: &accessserver.R3Config{
+			Registry: registry, HTTPClient: httpClient,
+			Admit: func(_ context.Context, endpoint string) error {
+				if !strings.HasPrefix(endpoint, resourceID+"/r3/") {
+					return errors.New("unexpected R3 document endpoint")
 				}
-				terminateAtAccessServer = ""
-			}
-			return accessserver.Decision{
-				Scopes: []string{scope}, Lifetime: 30 * time.Minute, Budget: &accessGrant,
-			}, nil
+				return nil
+			},
+			AuthorizeDocument: func(_ context.Context, request accessserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (accessserver.R3DocumentDecision, error) {
+				accessPolicyCalls++
+				if !vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) {
+					return accessserver.R3DocumentDecision{}, errors.New("unexpected R3 document")
+				}
+				if request.PersonServer != personServerID || request.Resource != resourceID ||
+					request.Subject != "person-123" || request.Tenant != "tenant-1" ||
+					request.Agent.Identifier != agentID || request.MissionS256 == "" || request.Budget == nil ||
+					!integrationSameBudget(*request.Budget, personCeiling) ||
+					!slices.Equal(request.Scopes, []string{scope}) {
+					return accessserver.R3DocumentDecision{}, errors.New("unexpected access policy context")
+				}
+				if terminateAtAccessServer != "" {
+					if err := store.terminateMission(agentID, terminateAtAccessServer, "revoked-during-authorization"); err != nil {
+						return accessserver.R3DocumentDecision{}, err
+					}
+					terminateAtAccessServer = ""
+				}
+				granted, err := r3.NewGrantedOperations(vocabulary.registration, readOperation)
+				if err != nil {
+					return accessserver.R3DocumentDecision{}, err
+				}
+				empty, err := r3.NewGrantedOperations(vocabulary.registration)
+				if err != nil {
+					return accessserver.R3DocumentDecision{}, err
+				}
+				authorization, err := r3.NewAuthorization(granted, empty, document)
+				if err != nil {
+					return accessserver.R3DocumentDecision{}, err
+				}
+				return accessserver.R3DocumentDecision{
+					Scopes: []string{scope}, Lifetime: 30 * time.Minute,
+					Authorization: &authorization, Budget: &accessGrant,
+				}, nil
+			},
+			Issuances: issuances,
 		},
 		Budget: &accessserver.BudgetConfig{
 			ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
@@ -240,6 +300,7 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 
 	var retainedLineages sync.Map
 	budgetLedger := newIntegrationBudgetStore()
+	documents := newIntegrationR3DocumentStore()
 	var resolvedMission string
 	var protectedMission string
 	protectedResource, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
@@ -282,6 +343,20 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 				return "", errors.New("Budget step-up is outside this journey")
 			},
 		},
+		R3: &resource.R3Config{
+			Registry:    registry,
+			Definitions: newIntegrationR3DefinitionRegistry(t),
+			Vocabularies: integrationR3ResourceVocabularies(
+				t, resourceID, []string{"records.read"}, nil, &display,
+			),
+			Documents: documents,
+			HTTP: resource.R3HTTPAdapter{OperationForRequest: func(request *http.Request) (r3.Operation, bool, error) {
+				if request.Method == http.MethodGet && request.URL.Path == "/records" {
+					return readOperation, true, nil
+				}
+				return r3.Operation{}, false, nil
+			}},
+		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			principal, ok := resource.AuthPrincipalFromContext(request.Context())
 			if !ok {
@@ -295,11 +370,25 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requireIntegrationR3ResourceMetadata(t, protectedResource.Handler(), resourceID)
 
 	var accessWireMissions []string
+	var personR3Fetches, accessR3Fetches int
 	network.Handle(agentProviderID, provider.Handler())
 	network.Handle(personServerID, people.Handler())
 	network.Handle(resourceID, protectedResource.Handler())
+	network.Handle(resourceID, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/r3/") {
+			signature := request.Header.Get("Signature-Key")
+			switch {
+			case strings.Contains(signature, aauth.PersonDiscoveryDocument):
+				personR3Fetches++
+			case strings.Contains(signature, aauth.AccessDiscoveryDocument):
+				accessR3Fetches++
+			}
+		}
+		protectedResource.Handler().ServeHTTP(response, request)
+	}))
 	network.Handle(accessServerID, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method == http.MethodPost && request.URL.Path == "/token" {
 			body, readErr := io.ReadAll(request.Body)
@@ -315,12 +404,14 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			claims, offer, _, err := budgets.VerifyResourceToken(request.Context(), input.ResourceToken, resolver, clock)
+			claims, reference, offer, _, err := r3.VerifyBudgetResourceToken(
+				request.Context(), registry, input.ResourceToken, resolver, clock,
+			)
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			if !integrationSameBudget(offer, resourceOffer) {
+			if reference.URI() == "" || !integrationSameBudget(offer, resourceOffer) {
 				t.Errorf("PS-to-AS Resource-token Budget = %#v, want %#v", offer, resourceOffer)
 				return
 			}
@@ -332,6 +423,7 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 	reader, err := clientagent.New(ctx, clientagent.Config{
 		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+		R3: &clientagent.R3Config{Registry: registry},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -362,17 +454,24 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	resourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
-		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope}, Budget: &requestedBudget,
+		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope},
+		R3Operations: &requestedOperations, Budget: &requestedBudget,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceClaims, verifiedOffer, _, err := budgets.VerifyResourceToken(ctx, resourceToken, resolver, clock)
+	resourceClaims, resourceReference, verifiedOffer, _, err := r3.VerifyBudgetResourceToken(
+		ctx, registry, resourceToken, resolver, clock,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !integrationSameBudget(verifiedOffer, resourceOffer) {
 		t.Fatalf("Resource Budget offer = %#v, want %#v", verifiedOffer, resourceOffer)
+	}
+	documentRecord, err := documents.Load(ctx, resourceReference.URI())
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	for name, changedMission := range map[string]string{
@@ -381,7 +480,9 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 		tampered := resourceClaims
 		tampered.JTI = "mission-four-party-" + name + "-resource"
 		tampered.MissionS256 = changedMission
-		compact, err := budgets.MintResourceToken(resourceKey, tampered, resourceOffer, nil)
+		compact, _, err := r3.MintBudgetResourceToken(
+			registry, resourceKey, tampered, resourceReference.URI(), documentRecord.ExactJSON, resourceOffer, nil,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -410,6 +511,11 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 	}()
 	select {
 	case <-store.firstMissionAuthCommit:
+		retainedIssuances := issuances.recordsCopy()
+		if len(retainedIssuances) != 1 ||
+			retainedIssuances[0].AuthTokenReference != (aauth.TokenReference{Issuer: accessServerID, JTI: "mission-four-party-auth"}) {
+			t.Fatalf("AS R3 issuance before PS mission commit = %#v", retainedIssuances)
+		}
 		select {
 		case result := <-exchangeDone:
 			t.Fatalf("Person Server released auth token before retaining it: token=%q err=%v", result.token, result.err)
@@ -426,11 +532,13 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 		t.Fatal(result.err)
 	}
 	authToken := result.token
-	authClaims, verifiedGrant, err := budgets.VerifyAuthToken(ctx, authToken, resolver, clock)
+	authClaims, authReference, _, verifiedGrant, err := r3.VerifyBudgetAuthToken(
+		ctx, registry, authToken, resolver, clock,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !integrationSameBudget(verifiedGrant, accessGrant) {
+	if authReference != resourceReference || !integrationSameBudget(verifiedGrant, accessGrant) {
 		t.Fatalf("Access Server Budget grant = %#v, want %#v", verifiedGrant, accessGrant)
 	}
 	if accessPolicyCalls != 1 || !slices.Equal(accessWireMissions, []string{mission.S256}) {
@@ -537,7 +645,8 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 		t.Fatal("race mission approval omitted its person token")
 	}
 	raceResourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
-		Resource: resourceID, PersonToken: racePersonToken, Scopes: []string{scope}, Budget: &requestedBudget,
+		Resource: resourceID, PersonToken: racePersonToken, Scopes: []string{scope},
+		R3Operations: &requestedOperations, Budget: &requestedBudget,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -555,10 +664,14 @@ func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 	_, raceRetained := store.auth[accessServerID+"\x00mission-four-party-race-auth"]
 	authCount = len(store.auth)
 	store.mu.Unlock()
+	retainedIssuances := issuances.recordsCopy()
 	if accessPolicyCalls != 2 || len(accessWireMissions) != 2 || accessWireMissions[1] != raceMission.S256 ||
-		raceRetained || authCount != 1 || len(authIDs) != 0 {
-		t.Fatalf("termination race state = policy:%d missions:%v retained:%t count:%d remaining IDs:%v",
-			accessPolicyCalls, accessWireMissions, raceRetained, authCount, authIDs)
+		raceRetained || authCount != 1 || len(authIDs) != 0 || len(retainedIssuances) != 2 ||
+		personR3Fetches != 3 || accessR3Fetches != 2 ||
+		retainedIssuances[1].AuthTokenReference != (aauth.TokenReference{Issuer: accessServerID, JTI: "mission-four-party-race-auth"}) {
+		t.Fatalf("termination race state = policy:%d missions:%v retained:%t count:%d remaining IDs:%v fetches:%d/%d issuances:%#v",
+			accessPolicyCalls, accessWireMissions, raceRetained, authCount, authIDs,
+			personR3Fetches, accessR3Fetches, retainedIssuances)
 	}
 }
 
