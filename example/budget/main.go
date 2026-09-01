@@ -170,6 +170,8 @@ func run(output io.Writer) error {
 				return "reactive-auth-token-1"
 			case 3:
 				return "r3-auth-token-1"
+			case 4:
+				return "r3-reauthorized-auth-token-1"
 			default:
 				return "unexpected-person-token"
 			}
@@ -494,6 +496,36 @@ func run(output io.Writer) error {
 	if r3ProtectedCalls != 1 {
 		return errors.New("budget example: Agent retried the refused consequence")
 	}
+	reauthorizedToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: authorization.ResourceToken(),
+	})
+	if err != nil {
+		return err
+	}
+	_, reauthorizedReference, _, reauthorizedGrant, err := r3.VerifyDirectBudgetAuthToken(
+		ctx, registry, reauthorizedToken, resolver, clock,
+	)
+	if err != nil || reauthorizedReference != initialReference || !sameBudget(reauthorizedGrant, personGrant) {
+		return errors.New("budget example: replacement exchange changed the R3 or Budget grant")
+	}
+	retried, err := budgetCall(ctx, reader, "/records/export", reauthorizedToken)
+	if err != nil {
+		return err
+	}
+	retriedResponse, ok := retried.Response()
+	if !ok || retriedResponse.StatusCode != http.StatusNoContent {
+		return errors.New("budget example: reauthorized retry returned no application response")
+	}
+	retriedResponse.Body.Close()
+	retriedFeedback, ok := retried.Feedback()
+	if !ok {
+		return errors.New("budget example: reauthorized retry omitted Budget feedback")
+	}
+	retriedCost, hasRetriedCost := retried.Cost()
+	recoveredProtectedCalls := protectedCalls.Load() - reactiveProtectedCalls
+	if !hasRetriedCost || retriedCost != 300_000 || retriedFeedback.Remaining() != 100_000 || recoveredProtectedCalls != 2 {
+		return errors.New("budget example: reauthorized retry returned unexpected Budget evidence")
+	}
 
 	if _, err := fmt.Fprintf(output,
 		"AAuth Core reactive Budget success: first Person-token call returned a %d offer; Person Server granted %d; charged %d; remaining %d\n",
@@ -507,9 +539,15 @@ func run(output io.Writer) error {
 	); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output,
+	if _, err = fmt.Fprintf(output,
 		"AAuth R3 Budget refusal: %s; required %d; remaining %d; R3 reference preserved; protected calls %d\n",
 		reason, required, secondFeedback.Remaining(), r3ProtectedCalls,
+	); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(output,
+		"AAuth R3 Budget recovery: replacement offer exchanged; fresh grant %d; retry charged %d; remaining %d; protected calls %d\n",
+		reauthorizedGrant.Amount(), retriedCost, retriedFeedback.Remaining(), recoveredProtectedCalls,
 	)
 	return err
 }

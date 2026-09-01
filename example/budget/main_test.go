@@ -15,7 +15,8 @@ func TestRunCompletesDirectFixedPriceBudgetJourney(t *testing.T) {
 
 	const want = "AAuth Core reactive Budget success: first Person-token call returned a 600000 offer; Person Server granted 400000; charged 100000; remaining 300000\n" +
 		"AAuth R3 Budget success: operations records.current and records.export; Resource offered 600000; Person Server granted 400000; charged 150000; remaining 250000\n" +
-		"AAuth R3 Budget refusal: insufficient-budget; required 300000; remaining 250000; R3 reference preserved; protected calls 1\n"
+		"AAuth R3 Budget refusal: insufficient-budget; required 300000; remaining 250000; R3 reference preserved; protected calls 1\n" +
+		"AAuth R3 Budget recovery: replacement offer exchanged; fresh grant 400000; retry charged 300000; remaining 100000; protected calls 2\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}

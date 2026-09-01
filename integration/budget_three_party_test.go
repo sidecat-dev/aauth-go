@@ -78,7 +78,9 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 		t.Fatal(err)
 	}
 	personTokens := newMemoryPersonTokenStore()
-	personIDs := []string{"budget-person-token", "budget-reactive-auth-token", "budget-proactive-auth-token"}
+	personIDs := []string{
+		"budget-person-token", "budget-reactive-auth-token", "budget-proactive-auth-token", "budget-reauthorized-auth-token",
+	}
 	personPolicyCalls := 0
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
@@ -305,6 +307,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	calls.Wait()
 	close(results)
 	statuses := map[int]int{}
+	var stepUp clientagent.BudgetAuthorization
 	for result := range results {
 		if result.err != nil {
 			t.Fatalf("concurrent Budget call error = %v", result.err)
@@ -319,6 +322,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 		if !ok {
 			t.Fatalf("Budget call returned no response or authorization: %#v", result.result)
 		}
+		stepUp = authorization
 		statuses[http.StatusUnauthorized]++
 		reason, reasonOK := authorization.Reason()
 		if authorization.ResourceToken() == "" || !reasonOK || reason != budgets.ReasonInsufficientBudget ||
@@ -326,12 +330,31 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 			t.Fatalf("Budget refusal = authorization %#v reason %q/%t feedback %#v", authorization, reason, reasonOK, feedback)
 		}
 	}
+	reauthorizedToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: stepUp.ResourceToken(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, reauthorizedGrant, err := budgets.VerifyAuthToken(ctx, reauthorizedToken, resolver, clock)
+	if err != nil || !integrationSameBudget(reauthorizedGrant, personGrant) {
+		t.Fatalf("reauthorized Auth Budget = %#v err=%v", reauthorizedGrant, err)
+	}
+	retried := integrationBudgetCall(t, ctx, client, resourceID, reauthorizedToken)
+	retriedResponse, retriedOK := retried.result.Response()
+	if retried.err != nil || !retriedOK || retriedResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("reauthorized Budget retry = result %#v, error %v", retried.result, retried.err)
+	}
+	if feedback := integrationBudgetFeedback(t, retried.result); feedback.Remaining() != 200_000 {
+		t.Fatalf("reauthorized retry remaining = %d, want 200000", feedback.Remaining())
+	}
+	retriedResponse.Body.Close()
 	if statuses[http.StatusNoContent] != 1 || statuses[http.StatusUnauthorized] != 1 ||
-		protectedCalls.Load() != 3 || personPolicyCalls != 2 {
+		protectedCalls.Load() != 4 || personPolicyCalls != 3 {
 		t.Fatalf("Budget consequences: statuses=%v Protected=%d policy=%d", statuses, protectedCalls.Load(), personPolicyCalls)
 	}
-	if got := ledger.personTotal(personServerID, "person-123", resourceID); got != 500_000 {
-		t.Fatalf("person Budget consumption = %d, want 500000", got)
+	if got := ledger.personTotal(personServerID, "person-123", resourceID); got != 700_000 {
+		t.Fatalf("person Budget consumption = %d, want 700000", got)
 	}
 }
 

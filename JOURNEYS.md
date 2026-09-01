@@ -610,20 +610,22 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
 - [ ] **Exhaustion or insufficiency step-up — Partial**
   - Flow: Resource refuses without charging → returns `401`, typed Budget
     reason, validated feedback, and a host-selected replacement Resource token
-    → Agent returns `BudgetAuthorization` without exchanging or retrying it.
+    → Agent returns `BudgetAuthorization`; for insufficiency, the application
+    explicitly exchanges that token, obtains a fresh narrowed grant, and
+    retries once against the new cap.
   - Start with: `resource.BudgetConfig.RetainLineage`,
     `resource.BudgetConfig.Challenge`, `Client.BeginBudgetCall`, and
     `BudgetCallResult.AuthorizationRequired`, `BudgetCallResult.Feedback`,
     `BudgetAuthorization.ResourceToken`, and `BudgetAuthorization.Reason`.
   - Evidence: [`agent/budget_call_test.go`](agent/budget_call_test.go),
-    [`resource/budget_test.go`](resource/budget_test.go), and the fixed-price
-    integration journeys. A combined challenge preserves the R3 reference.
-  - Missing: exhaustion has no composed replacement-token exchange, new
-    narrowed Auth token, or protected-call retry. Insufficiency exposes
-    `remaining` and `required` for an explicit same-token shrink-and-retry, but
-    no executable journey proves that branch. After an unverifiable post-send
-    result, `BudgetCallUncertainError` carries the full signed grant and never
-    retries.
+    [`resource/budget_test.go`](resource/budget_test.go),
+    [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go),
+    and `go run ./example/budget`. The runnable combined challenge preserves
+    its R3 reference across replacement exchange and retry.
+  - Missing: exhaustion has no composed recovery journey. Insufficiency's
+    alternative same-token shrink-and-retry remains unproved. After an
+    unverifiable post-send result, `BudgetCallUncertainError` carries the full
+    signed grant and never retries.
 
 ### Bounded reactive journey
 
