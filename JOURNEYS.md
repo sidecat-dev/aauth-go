@@ -682,7 +682,8 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     existing `Client.Authorize`, `Client.Exchange`, and `Client.BeginBudgetCall`.
   - Evidence: [`integration/budget_four_party_test.go`](integration/budget_four_party_test.go),
     [`accessserver/budget_test.go`](accessserver/budget_test.go), and
-    [`personserver/federated_budget_test.go`](personserver/federated_budget_test.go).
+    [`personserver/federated_budget_test.go`](personserver/federated_budget_test.go);
+    run `go run ./example/budgetfourparty` for the public-API composition.
   - Boundary: a PS omission means the Resource offer at the AS as the source
     requires. A successful AS response must still carry an explicit signed
     Budget. R3, deferred interaction, delegation, call chaining, consumption
