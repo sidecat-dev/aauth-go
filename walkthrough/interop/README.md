@@ -72,3 +72,14 @@ go vet ./...
 The automated test proves the generated metadata, JWKS, token, HTTP Message
 Signature, and identity-response check. The independent claim requires the
 live call above; a same-implementation local test cannot establish it.
+
+## External qualification
+
+On 2026-09-01, published AAuth Go source
+`00eb6f0a2a3000ff96a44b988059acea3c2babf0` generated a short-lived public
+Agent Provider and called the live TypeScript Resource built from
+[`aauth-dev/whoami`](https://github.com/aauth-dev/whoami) revision
+`9f023d27ba51e0c11018e416b23140fbea14c9ff`. The Resource returned HTTP 200
+with the exact Go-generated provider issuer and Agent identifier. The
+temporary provider origin, DNS record, private state, and host were removed
+after the call.

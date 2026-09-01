@@ -841,11 +841,24 @@ sentences.
     and `go run ./example/subagent`.
   - Missing: mission-bound composition and Access Server deferred mediation.
 
-- [ ] **Independent-implementation interoperability — Not implemented**
-  - No journey crosses from a Go role to an independently implemented role and
-    back. The Explorer pin is comparator material, not bidirectional evidence.
-  - Next proof: select one black-box external role and run a complete profile
-    surface across that boundary with independent parsing, keys, and policy.
+- [x] **Agent identity at an independent Resource — Implemented and qualified**
+  - Flow: AAuth Go Agent Provider metadata and JWKS → Go-minted Agent token →
+    Go-signed identity request → the AAuth project's live TypeScript `whoami`
+    Resource → exact provider issuer and Agent identifier returned.
+  - Start with: [`walkthrough/interop`](walkthrough/interop).
+  - Qualification: published AAuth Go source
+    `00eb6f0a2a3000ff96a44b988059acea3c2babf0` called
+    [`aauth-dev/whoami`](https://github.com/aauth-dev/whoami) revision
+    `9f023d27ba51e0c11018e416b23140fbea14c9ff` over public HTTPS and received
+    HTTP 200 with the exact generated identity.
+  - Boundary: this is one independently parsed and verified Core identity
+    surface. It is not bidirectional and does not exercise person identity,
+    authorization, an Access Server, R3, or the five profile surfaces.
+
+- [ ] **Independent five-surface profile interoperability — Not implemented**
+  - Existing internal Surfaces 1–5 have not crossed an independent role
+    boundary. The next proof should compose the smallest available live PS,
+    AS, or Resource role without replacing its parsing, keys, or policy.
 
 ## How to verify the catalog
 

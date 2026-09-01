@@ -139,7 +139,7 @@ Notable exclusions include production store adapters, key custody, TLS and
 deployment infrastructure, platform attestation, general request-proof replay,
 several deferred and mission combinations, automatic revocation fan-out,
 complete Signature-Key schemes, variable or streaming Budgets, and independent
-implementation interoperability.
+person, authorization, and full-profile interoperability.
 
 Do not infer support from an exported type. Use:
 
