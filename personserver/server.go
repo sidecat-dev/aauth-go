@@ -70,7 +70,8 @@ type FederatedAuthorizationConfig struct {
 	BindPerson                   func(context.Context, PersonTokenRequest) (Person, error)
 	// RequirePersonTokenInteraction optionally selects a host-authenticated
 	// interaction before BindPerson. A required interaction uses the deferred
-	// extension implemented by Tokens.
+	// extension implemented by Tokens; with Missions, Tokens implements
+	// MissionDeferredTokenStore.
 	RequirePersonTokenInteraction func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	Consent                       func(context.Context, AuthorizationRequest) error
 	// R3 optionally enables signed class-document and per-call proposal consent.
@@ -266,6 +267,7 @@ type Server struct {
 	accessServerEndpoint            func(context.Context, string) (string, error)
 	tokens                          TokenStore
 	deferredTokens                  DeferredTokenStore
+	missionDeferredTokens           MissionDeferredTokenStore
 	bindPerson                      func(context.Context, PersonTokenRequest) (Person, error)
 	requirePersonTokenInteraction   func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
 	missions                        MissionStore
@@ -544,11 +546,19 @@ func newServer(config serverConfig) (*Server, error) {
 		interactionQuestionRecords = config.interactionQuestion.Store
 	}
 	var deferredTokens DeferredTokenStore
+	var missionDeferredTokens MissionDeferredTokenStore
 	if config.requirePersonTokenInteraction != nil {
 		var ok bool
 		deferredTokens, ok = config.tokens.(DeferredTokenStore)
 		if !ok {
 			return nil, errors.New("personserver: person-token interaction requires a deferred token store")
+		}
+		if config.missions != nil {
+			missionDeferredTokens, ok = config.tokens.(MissionDeferredTokenStore)
+			if !ok {
+				return nil, errors.New("personserver: missions with person-token interaction require Tokens to implement MissionDeferredTokenStore")
+			}
+			deferredTokens = missionDeferredTokens
 		}
 	}
 	maximumResourceTokenLifetime := config.maximumResourceTokenLifetime
@@ -562,7 +572,8 @@ func newServer(config serverConfig) (*Server, error) {
 		issuer: config.issuer, signingKey: config.signingKey,
 		keyResolver: config.keyResolver, clock: config.clock, newID: config.newID,
 		maximumResourceTokenLifetime: maximumResourceTokenLifetime,
-		tokens:                       config.tokens, deferredTokens: deferredTokens, bindPerson: config.bindPerson,
+		tokens:                       config.tokens, deferredTokens: deferredTokens,
+		missionDeferredTokens: missionDeferredTokens, bindPerson: config.bindPerson,
 		requirePersonTokenInteraction: config.requirePersonTokenInteraction,
 		missions:                      missions, missionApprove: missionApprove,
 		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
@@ -723,15 +734,11 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 		if required {
-			if personRequest.Mission != nil {
-				writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission-bound person-token interaction is not implemented"))
-				return
-			}
 			if delegated {
 				writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated person-token interaction is not implemented"))
 				return
 			}
-			if err := server.beginPersonTokenInteraction(response, request, personRequest, agent, policy); err != nil {
+			if err := server.beginPersonTokenInteraction(response, request, personRequest, agent, policy, missionRecord); err != nil {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
 			return

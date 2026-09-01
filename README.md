@@ -68,7 +68,7 @@ The integration suite also exercises
 [direct three-party MCP R3 authorization](integration/r3_direct_three_party_test.go),
 [immediate MCP, OpenAPI, and private-codec R3 four-party authorization](integration/r3_direct_four_party_test.go),
 [direct Person identity](integration/direct_identity_access_test.go),
-[Person-token interaction](integration/person_token_interaction_test.go), and
+[missionless and mission-bound Person-token interaction](integration/person_token_interaction_test.go), and
 both [baseline `401` and Resource-held `202` auth-token delivery](integration/core_four_party_test.go).
 The [three-party clarification journey](integration/clarification_three_party_test.go)
 proves a retained host question, a typed Agent view, a signed answer,

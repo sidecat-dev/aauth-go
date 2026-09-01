@@ -396,6 +396,13 @@ authorization, and PS-to-AS federation. Its policy inputs receive verified
 Core and companion values in source terminology. Mission approval stores the
 exact approved bytes before returning their digest.
 
+Interactive Person-token issuance uses the same `PersonToken` and
+`PollPersonToken` Agent calls with or without a mission. For a mission-bound
+request, `MissionDeferredTokenStore` keeps pending creation, host decision,
+token retention, poll, and terminal consume in the mission lifecycle boundary.
+The host handle exposes a copied exact mission view; the correlation code is
+still not approval authority.
+
 For R3, the Person Server independently fetches the exact Resource artifact
 after local token and person-lineage checks. In direct three-party class
 authorization, one typed policy receives Core context plus the exact document,

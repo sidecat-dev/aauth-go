@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,10 +63,29 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 		t.Fatal(err)
 	}
 	store := newMemoryPersonTokenStore()
+	missionExpiry := now.Add(30 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		ExpiresAt: &missionExpiry, Description: "Read the approved records.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitMission(ctx, personserver.MissionRecord{
+		S256: mission.S256, Agent: agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: missionExpiry,
+		State: personserver.MissionActive,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	nextTokenID := 0
 	newPeople := func() *personserver.Server {
 		server, err := personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
 			Issuer: personServerID, SigningKey: personServerKey,
-			KeyResolver: resolver, Clock: clock, NewID: func() string { return "interaction-person-token" },
+			KeyResolver: resolver, Clock: clock, NewID: func() string {
+				nextTokenID++
+				return "interaction-person-token-" + strconv.Itoa(nextTokenID)
+			},
 			HTTPClient: httpClient, Tokens: store,
 			AccessServerEndpoint: func(context.Context, string) (string, error) {
 				return "https://as.example/token", nil
@@ -77,11 +97,25 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 				if request.Agent != agentID || request.Resource != resourceID {
 					return personserver.PersonTokenInteractionPolicy{}, false, errors.New("unexpected person-token request")
 				}
+				if request.Mission != nil && request.Mission.S256 != mission.S256 {
+					return personserver.PersonTokenInteractionPolicy{}, false, errors.New("unexpected person-token mission")
+				}
 				return personserver.PersonTokenInteractionPolicy{
 					URL: personServerID + "/interaction", Lifetime: 5 * time.Minute, RetryAfter: 2 * time.Second,
 				}, true, nil
 			},
 			Consent: func(context.Context, personserver.AuthorizationRequest) error { return nil },
+			Missions: &personserver.MissionConfig{
+				Approve: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+					return personserver.MissionDecision{}, errors.New("mission approval is not used in this journey")
+				},
+				AcceptUpdate: func(context.Context, personserver.MissionUpdatePolicyRequest) error {
+					return errors.New("mission update is not used in this journey")
+				},
+				ConfirmPersonAcceptedCompletion: func(context.Context, personserver.MissionCompletionPolicyRequest) error {
+					return errors.New("mission completion is not used in this journey")
+				},
+			},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -171,5 +205,75 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	var gone *aauth.ProblemError
 	if !errors.As(err, &gone) || gone.Status != http.StatusGone || gone.Code != "invalid_code" {
 		t.Fatalf("terminal replay error = %v, problem = %#v", err, gone)
+	}
+
+	result, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+		PersonServer: personServerID, Resource: resourceID, MissionS256: mission.S256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok = result.Pending()
+	if !ok {
+		t.Fatalf("mission interaction result = %#v", result)
+	}
+	people = newPeople()
+	network.Handle(personServerID, people.Handler())
+	interactionReference = strings.TrimPrefix(pending.InteractionURL(), personServerID+"/interaction/")
+	interaction, err = people.ConsumePersonTokenInteractionCode(ctx, interactionReference, pending.InteractionCode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok := interaction.Mission()
+	if !ok || missionContext.S256 != mission.S256 {
+		t.Fatalf("mission interaction host context = %#v, %t", missionContext, ok)
+	}
+	if err := people.ApprovePersonTokenInteraction(ctx, interaction, personserver.Person{
+		Subject: "person-123", Lifetime: 20 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	approved, err = reader.PollPersonToken(ctx, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personToken, ok = approved.Token()
+	if !ok {
+		t.Fatalf("mission approved result = %#v", approved)
+	}
+	claims, err = aauth.VerifyPersonToken(ctx, personToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.MissionS256 != mission.S256 {
+		t.Fatalf("mission person token = %#v", claims)
+	}
+
+	result, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+		PersonServer: personServerID, Resource: resourceID, MissionS256: mission.S256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok = result.Pending()
+	if !ok {
+		t.Fatalf("second mission interaction result = %#v", result)
+	}
+	interactionReference = strings.TrimPrefix(pending.InteractionURL(), personServerID+"/interaction/")
+	interaction, err = people.ConsumePersonTokenInteractionCode(ctx, interactionReference, pending.InteractionCode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := people.ApprovePersonTokenInteraction(ctx, interaction, personserver.Person{
+		Subject: "person-123", Lifetime: 20 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.terminateMission(agentID, mission.S256, "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.PollPersonToken(ctx, pending)
+	if !errors.As(err, &gone) || gone.Status != http.StatusForbidden || gone.Code != "mission_terminated" {
+		t.Fatalf("terminated mission poll = %T %v", err, err)
 	}
 }

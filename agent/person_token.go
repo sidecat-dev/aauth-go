@@ -52,6 +52,7 @@ type PendingPersonToken struct {
 	kind            pendingPersonTokenKind
 	personServer    string
 	resource        string
+	missionS256     string
 	location        string
 	retryAfter      time.Duration
 	interactionURL  string
@@ -66,6 +67,10 @@ func (pending PendingPersonToken) PersonServer() string { return pending.personS
 
 // Resource returns the resource named by the original person-token request.
 func (pending PendingPersonToken) Resource() string { return pending.resource }
+
+// MissionS256 returns the mission named by the original request, or empty for
+// a missionless interaction.
+func (pending PendingPersonToken) MissionS256() string { return pending.missionS256 }
 
 // Location returns the verified same-origin pending URL.
 func (pending PendingPersonToken) Location() string { return pending.location }
@@ -91,14 +96,6 @@ func (client *Client) personTokenResponse(
 	credential personServerCredential,
 ) (PersonTokenResult, error) {
 	if response.StatusCode == http.StatusAccepted {
-		if input.MissionS256 != "" {
-			if err := validateUnsupportedMissionContinuation(response); err != nil {
-				return PersonTokenResult{}, err
-			}
-			return PersonTokenResult{}, &MissionContinuationUnsupportedError{
-				Phase: "person-token issuance", Operation: "PersonToken",
-			}
-		}
 		if input.SubagentToken != "" {
 			return PersonTokenResult{}, &SubagentInteractionUnsupportedError{Operation: "person-token issuance"}
 		}
@@ -124,6 +121,9 @@ func (client *Client) personTokenResponse(
 }
 
 func (client *Client) pendingPersonToken(response *http.Response, input PersonTokenRequest, prior PendingPersonToken) (PendingPersonToken, error) {
+	if prior.kind != 0 && input.MissionS256 != prior.missionS256 {
+		return PendingPersonToken{}, errors.New("pending person-token mission changed while polling")
+	}
 	location, err := parsePendingLocation(response)
 	if err != nil {
 		return PendingPersonToken{}, err
@@ -173,7 +173,8 @@ func (client *Client) pendingPersonToken(response *http.Response, input PersonTo
 	}
 	return PendingPersonToken{
 		kind: pendingPersonTokenVerified, personServer: input.PersonServer, resource: input.Resource,
-		location: location, retryAfter: retryAfter, interactionURL: interactionURL,
+		missionS256: input.MissionS256,
+		location:    location, retryAfter: retryAfter, interactionURL: interactionURL,
 		interactionCode: interactionCode, interacting: prior.interacting || body.Status == "interacting",
 		agent: client.identifier, agentJKT: thumbprint,
 	}, nil
@@ -241,6 +242,9 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 		pending.agent == "" || pending.agentJKT == "" {
 		return PersonTokenResult{}, fail(operation, errors.New("verified pending person token is required"))
 	}
+	if pending.missionS256 != "" && aauth.ValidateMissionS256(pending.missionS256) != nil {
+		return PersonTokenResult{}, fail(operation, errors.New("pending person token mission is invalid"))
+	}
 	if pending.personServer != client.agentClaims.PersonServer {
 		return PersonTokenResult{}, fail(operation, errors.New("pending person server does not match client"))
 	}
@@ -266,7 +270,9 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 		return PersonTokenResult{}, fail(operation, err)
 	}
 	defer response.Body.Close()
-	input := PersonTokenRequest{PersonServer: pending.personServer, Resource: pending.resource}
+	input := PersonTokenRequest{
+		PersonServer: pending.personServer, Resource: pending.resource, MissionS256: pending.missionS256,
+	}
 	if response.StatusCode == http.StatusAccepted {
 		next, err := client.pendingPersonToken(response, input, pending)
 		if err != nil {
@@ -282,7 +288,7 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 		response,
 		pending.personServer,
 		pending.resource,
-		"",
+		pending.missionS256,
 		personServerCredential{
 			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
 			expirySource: "agent token",

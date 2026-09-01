@@ -1014,6 +1014,177 @@ func (store *memoryPersonTokenStore) ConsumePendingPersonTokenResult(_ context.C
 	return nil
 }
 
+func (store *memoryPersonTokenStore) CreateMissionPendingPersonToken(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	record personserver.PendingPersonTokenRecord,
+	at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if record.Agent != expected.Agent || record.MissionS256 != expected.S256 {
+		return personserver.ErrMissionConflict
+	}
+	if _, ok := store.pending[record.ID]; ok {
+		return personserver.ErrPendingPersonTokenConflict
+	}
+	if _, ok := store.byCode[record.CodeSHA256]; ok {
+		return personserver.ErrPendingPersonTokenConflict
+	}
+	store.pending[record.ID] = &memoryPendingPersonToken{
+		record: clonePendingPersonToken(record), state: personserver.PersonTokenPollWaiting,
+	}
+	store.byCode[record.CodeSHA256] = record.ID
+	return nil
+}
+
+func (store *memoryPersonTokenStore) ApproveMissionPendingPersonToken(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	id string,
+	approval personserver.PersonTokenApproval,
+	at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	pending, ok := store.pending[id]
+	if !ok {
+		return personserver.ErrPendingPersonTokenNotFound
+	}
+	if pending.record.Agent != expected.Agent || pending.record.MissionS256 != expected.S256 ||
+		approval.Record.Agent != expected.Agent || approval.Record.MissionS256 != expected.S256 {
+		return personserver.ErrMissionConflict
+	}
+	if pending.state == personserver.PersonTokenPollApproved && reflect.DeepEqual(pending.approval.Person, approval.Person) {
+		return nil
+	}
+	if pending.state != personserver.PersonTokenPollInteracting {
+		return personserver.ErrPendingPersonTokenConflict
+	}
+	key := approval.Record.PersonServer + "\x00" + approval.Record.JTI
+	if existing, ok := store.records[key]; ok && !reflect.DeepEqual(existing, approval.Record) {
+		return personserver.ErrPendingPersonTokenConflict
+	}
+	store.records[key] = approval.Record
+	store.last, store.commits = approval.Record, store.commits+1
+	pending.approval, pending.state = approval, personserver.PersonTokenPollApproved
+	return nil
+}
+
+func (store *memoryPersonTokenStore) DenyMissionPendingPersonToken(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	id string,
+	at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	pending, ok := store.pending[id]
+	if !ok {
+		return personserver.ErrPendingPersonTokenNotFound
+	}
+	if pending.record.Agent != expected.Agent || pending.record.MissionS256 != expected.S256 {
+		return personserver.ErrMissionConflict
+	}
+	if pending.state == personserver.PersonTokenPollDenied && pending.denied {
+		return nil
+	}
+	if pending.state != personserver.PersonTokenPollInteracting {
+		return personserver.ErrPendingPersonTokenConflict
+	}
+	pending.denied, pending.state = true, personserver.PersonTokenPollDenied
+	return nil
+}
+
+func (store *memoryPersonTokenStore) PollMissionPendingPersonToken(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	id string,
+	identity personserver.PersonTokenPollIdentity,
+	at time.Time,
+) (personserver.PersonTokenPollRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return personserver.PersonTokenPollRecord{}, err
+	}
+	pending, ok := store.pending[id]
+	if !ok || pending.record.Agent != expected.Agent || pending.record.MissionS256 != expected.S256 {
+		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
+	}
+	wantJKT, _ := pending.record.Confirmation.Thumbprint()
+	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.Agent ||
+		identity.ConfirmationThumbprint != wantJKT {
+		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
+	}
+	if pending.state == personserver.PersonTokenPollGone {
+		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenGone
+	}
+	if !at.Before(pending.record.ExpiresAt) &&
+		(pending.state == personserver.PersonTokenPollWaiting || pending.state == personserver.PersonTokenPollInteracting) {
+		pending.state = personserver.PersonTokenPollExpired
+	}
+	result := personserver.PersonTokenPollRecord{State: pending.state, RetryAfter: pending.record.RetryAfter}
+	if pending.state == personserver.PersonTokenPollApproved {
+		result.Token, result.Record = pending.approval.Token, pending.approval.Record
+		result.ExpiresIn = pending.approval.ExpiresIn
+	}
+	return result, nil
+}
+
+func (store *memoryPersonTokenStore) ConsumeMissionPendingPersonTokenResult(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	id string,
+	result personserver.PersonTokenPollRecord,
+	at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	pending, ok := store.pending[id]
+	if !ok || pending.record.Agent != expected.Agent || pending.record.MissionS256 != expected.S256 {
+		return personserver.ErrPendingPersonTokenNotFound
+	}
+	if pending.state == personserver.PersonTokenPollGone {
+		return personserver.ErrPendingPersonTokenGone
+	}
+	if result.State != pending.state {
+		return personserver.ErrPendingPersonTokenConflict
+	}
+	switch pending.state {
+	case personserver.PersonTokenPollApproved:
+		want := personserver.PersonTokenPollRecord{
+			State: personserver.PersonTokenPollApproved, Token: pending.approval.Token,
+			Record: pending.approval.Record, ExpiresIn: pending.approval.ExpiresIn,
+			RetryAfter: pending.record.RetryAfter,
+		}
+		if !reflect.DeepEqual(result, want) {
+			return personserver.ErrPendingPersonTokenConflict
+		}
+	case personserver.PersonTokenPollDenied, personserver.PersonTokenPollExpired:
+		if result.Token != "" || result.Record != (personserver.PersonTokenRecord{}) || result.ExpiresIn != 0 ||
+			result.RetryAfter != pending.record.RetryAfter {
+			return personserver.ErrPendingPersonTokenConflict
+		}
+	default:
+		return personserver.ErrPendingPersonTokenConflict
+	}
+	pending.state = personserver.PersonTokenPollGone
+	return nil
+}
+
 func clonePendingPersonToken(record personserver.PendingPersonTokenRecord) personserver.PendingPersonTokenRecord {
 	if len(record.AgentAdditionalClaims) > 0 {
 		claims := make(map[string]json.RawMessage, len(record.AgentAdditionalClaims))
@@ -1026,6 +1197,7 @@ func clonePendingPersonToken(record personserver.PendingPersonTokenRecord) perso
 }
 
 var _ personserver.DeferredTokenStore = (*memoryPersonTokenStore)(nil)
+var _ personserver.MissionDeferredTokenStore = (*memoryPersonTokenStore)(nil)
 
 type memoryHeldInvocationStore struct {
 	mu         sync.Mutex

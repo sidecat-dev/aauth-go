@@ -56,6 +56,7 @@ type PendingPersonTokenRecord struct {
 	Agent                 string
 	ParentAgent           string
 	Resource              string
+	MissionS256           string
 	Confirmation          jose.JWK
 	AgentExpiresAt        time.Time
 	AgentAdditionalClaims map[string]json.RawMessage
@@ -145,6 +146,18 @@ type DeferredTokenStore interface {
 	ConsumePendingPersonTokenResult(context.Context, string, PersonTokenPollRecord) error
 }
 
+// MissionDeferredTokenStore keeps mission-bound pending creation, approval,
+// denial, polling, and terminal consumption in the mission transaction.
+type MissionDeferredTokenStore interface {
+	MissionStore
+	DeferredTokenStore
+	CreateMissionPendingPersonToken(context.Context, MissionRecord, PendingPersonTokenRecord, time.Time) error
+	ApproveMissionPendingPersonToken(context.Context, MissionRecord, string, PersonTokenApproval, time.Time) error
+	DenyMissionPendingPersonToken(context.Context, MissionRecord, string, time.Time) error
+	PollMissionPendingPersonToken(context.Context, MissionRecord, string, PersonTokenPollIdentity, time.Time) (PersonTokenPollRecord, error)
+	ConsumeMissionPendingPersonTokenResult(context.Context, MissionRecord, string, PersonTokenPollRecord, time.Time) error
+}
+
 // PersonTokenInteraction is a correlated pending request. Receiving this value
 // proves only that a code matched. The host must authenticate the person before
 // calling an approval or denial method.
@@ -157,6 +170,9 @@ type PersonTokenInteraction struct {
 	agentProvider         string
 	parentAgent           string
 	resource              string
+	missionS256           string
+	mission               *MissionContext
+	missionRecord         *MissionRecord
 	confirmation          jose.JWK
 	agentExpiresAt        time.Time
 	createdAt             time.Time
@@ -181,6 +197,15 @@ func (interaction PersonTokenInteraction) Reference() string { return interactio
 
 // ExpiresAt returns the pending interaction deadline.
 func (interaction PersonTokenInteraction) ExpiresAt() time.Time { return interaction.expiresAt }
+
+// Mission returns a caller-owned exact mission context for a mission-bound
+// interaction. The bool is false for a missionless interaction.
+func (interaction PersonTokenInteraction) Mission() (MissionContext, bool) {
+	if interaction.kind != personTokenInteractionCorrelated || interaction.mission == nil {
+		return MissionContext{}, false
+	}
+	return *cloneMissionContext(interaction.mission), true
+}
 
 // AgentAdditionalClaims returns an independent copy of the Agent Provider
 // claims available to host policy.
@@ -225,6 +250,11 @@ func validatePendingPersonTokenRecord(record PendingPersonTokenRecord) error {
 	if err := aauth.ValidateServerIdentifier(record.Resource); err != nil {
 		return err
 	}
+	if record.MissionS256 != "" {
+		if err := aauth.ValidateMissionS256(record.MissionS256); err != nil {
+			return err
+		}
+	}
 	if _, err := record.Confirmation.PublicKey(); err != nil {
 		return fmt.Errorf("personserver: pending confirmation key: %w", err)
 	}
@@ -237,6 +267,7 @@ func (server *Server) beginPersonTokenInteraction(
 	personRequest PersonTokenRequest,
 	agent aauth.AgentTokenClaims,
 	policy PersonTokenInteractionPolicy,
+	mission *MissionRecord,
 ) error {
 	if server.deferredTokens == nil {
 		return errors.New("personserver: deferred token store is required")
@@ -249,6 +280,9 @@ func (server *Server) beginPersonTokenInteraction(
 	agentExpiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
 	if agentExpiresAt.Before(expiresAt) {
 		expiresAt = agentExpiresAt
+	}
+	if mission != nil && !mission.ExpiresAt.IsZero() && mission.ExpiresAt.Before(expiresAt) {
+		expiresAt = mission.ExpiresAt
 	}
 	if !expiresAt.After(createdAt) {
 		return ErrPendingPersonTokenExpired
@@ -280,7 +314,7 @@ func (server *Server) beginPersonTokenInteraction(
 		record := PendingPersonTokenRecord{
 			ID: id, CodeSHA256: codeSHA256, PersonServer: server.issuer,
 			AgentProvider: agent.Issuer, Agent: personRequest.Agent, ParentAgent: agent.ParentAgent,
-			Resource: personRequest.Resource, Confirmation: agent.Confirmation.JWK,
+			Resource: personRequest.Resource, MissionS256: missionS256(mission), Confirmation: agent.Confirmation.JWK,
 			AgentExpiresAt:        agentExpiresAt,
 			AgentAdditionalClaims: cloneClaims(personRequest.AgentAdditionalClaims),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
@@ -288,11 +322,19 @@ func (server *Server) beginPersonTokenInteraction(
 		if err := validatePendingPersonTokenRecord(record); err != nil {
 			return err
 		}
-		if err := server.deferredTokens.CreatePendingPersonToken(request.Context(), record); err != nil {
-			if errors.Is(err, ErrPendingPersonTokenConflict) {
+		var createErr error
+		if mission != nil {
+			createErr = server.missionDeferredTokens.CreateMissionPendingPersonToken(
+				request.Context(), cloneMissionRecordForTransition(*mission), record, server.clock.Now().UTC(),
+			)
+		} else {
+			createErr = server.deferredTokens.CreatePendingPersonToken(request.Context(), record)
+		}
+		if createErr != nil {
+			if errors.Is(createErr, ErrPendingPersonTokenConflict) {
 				continue
 			}
-			return err
+			return createErr
 		}
 		location := "/person/pending/" + id
 		response.Header().Set("Location", location)
@@ -314,6 +356,13 @@ func pendingInteractionURL(base, id string) (string, error) {
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + id
 	parsed.RawPath = ""
 	return parsed.String(), nil
+}
+
+func missionS256(record *MissionRecord) string {
+	if record == nil {
+		return ""
+	}
+	return record.S256
 }
 
 // ConsumePersonTokenInteractionCode correlates the code entered at one
@@ -344,7 +393,7 @@ func (server *Server) ConsumePersonTokenInteractionCode(ctx context.Context, ref
 	if record.ID != reference || record.PersonServer != server.issuer || record.CodeSHA256 != digest {
 		return PersonTokenInteraction{}, errors.New("personserver: interaction store returned a different pending request")
 	}
-	return personTokenInteractionFromRecord(server.issuer, record), nil
+	return server.personTokenInteractionFromRecord(ctx, record, server.clock.Now().UTC())
 }
 
 // ResumePersonTokenInteraction reconstructs the non-authoritative host handle
@@ -372,7 +421,7 @@ func (server *Server) ResumePersonTokenInteraction(ctx context.Context, referenc
 	}
 	switch snapshot.State {
 	case PersonTokenPollWaiting, PersonTokenPollInteracting, PersonTokenPollApproved, PersonTokenPollDenied:
-		return personTokenInteractionFromRecord(server.issuer, snapshot.Record), nil
+		return server.personTokenInteractionFromRecord(ctx, snapshot.Record, server.clock.Now().UTC())
 	case PersonTokenPollExpired:
 		return PersonTokenInteraction{}, ErrPendingPersonTokenExpired
 	case PersonTokenPollGone:
@@ -382,16 +431,38 @@ func (server *Server) ResumePersonTokenInteraction(ctx context.Context, referenc
 	}
 }
 
-func personTokenInteractionFromRecord(issuer string, record PendingPersonTokenRecord) PersonTokenInteraction {
-	return PersonTokenInteraction{
-		kind: personTokenInteractionCorrelated, personServer: issuer, id: record.ID,
+func (server *Server) personTokenInteractionFromRecord(
+	ctx context.Context,
+	record PendingPersonTokenRecord,
+	at time.Time,
+) (PersonTokenInteraction, error) {
+	interaction := PersonTokenInteraction{
+		kind: personTokenInteractionCorrelated, personServer: server.issuer, id: record.ID,
 		codeSHA256:    record.CodeSHA256,
 		agentProvider: record.AgentProvider, agent: record.Agent, parentAgent: record.ParentAgent,
-		resource: record.Resource, confirmation: record.Confirmation,
+		resource: record.Resource, missionS256: record.MissionS256, confirmation: record.Confirmation,
 		agentExpiresAt: record.AgentExpiresAt, createdAt: record.CreatedAt, expiresAt: record.ExpiresAt,
 		retryAfter:            record.RetryAfter,
 		agentAdditionalClaims: cloneClaims(record.AgentAdditionalClaims),
 	}
+	if record.MissionS256 == "" {
+		return interaction, nil
+	}
+	if server.missionDeferredTokens == nil {
+		return PersonTokenInteraction{}, ErrPendingPersonTokenConflict
+	}
+	mission, err := server.loadActiveMission(ctx, record.MissionS256, record.Agent, at)
+	if err != nil {
+		return PersonTokenInteraction{}, err
+	}
+	context, err := missionContextFromRecord(mission)
+	if err != nil {
+		return PersonTokenInteraction{}, err
+	}
+	interaction.mission = context
+	clone := cloneMissionRecordForTransition(mission)
+	interaction.missionRecord = &clone
+	return interaction, nil
 }
 
 // ApprovePersonTokenInteraction records a host-authenticated approval. The
@@ -427,11 +498,15 @@ func (server *Server) ApprovePersonTokenInteraction(ctx context.Context, interac
 	if interaction.agentExpiresAt.Before(expiresAt) {
 		expiresAt = interaction.agentExpiresAt
 	}
+	if interaction.missionRecord != nil && !interaction.missionRecord.ExpiresAt.IsZero() && interaction.missionRecord.ExpiresAt.Before(expiresAt) {
+		expiresAt = interaction.missionRecord.ExpiresAt
+	}
 	claims := aauth.PersonTokenClaims{
 		Issuer: server.issuer, DWK: aauth.PersonDiscoveryDocument,
 		Audience: interaction.resource, Subject: person.Subject,
 		Confirmation: aauth.Confirmation{JWK: interaction.confirmation},
 		JTI:          server.newID(), IssuedAt: now.Unix(), ExpiresAt: expiresAt.Unix(), Tenant: person.Tenant,
+		MissionS256: interaction.missionS256,
 	}
 	compact, err := aauth.MintPersonToken(server.signingKey, claims)
 	if err != nil {
@@ -448,10 +523,16 @@ func (server *Server) ApprovePersonTokenInteraction(ctx context.Context, interac
 			server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime,
 		),
 	}
-	return server.deferredTokens.ApprovePendingPersonToken(ctx, interaction.id, PersonTokenApproval{
+	approval := PersonTokenApproval{
 		Person: person, Token: compact, Record: record,
 		ExpiresIn: claims.ExpiresAt - claims.IssuedAt, DecidedAt: now,
-	})
+	}
+	if interaction.missionRecord != nil {
+		return server.missionDeferredTokens.ApproveMissionPendingPersonToken(
+			ctx, cloneMissionRecordForTransition(*interaction.missionRecord), interaction.id, approval, now,
+		)
+	}
+	return server.deferredTokens.ApprovePendingPersonToken(ctx, interaction.id, approval)
 }
 
 // DenyPersonTokenInteraction records a host-authenticated denial.
@@ -475,6 +556,11 @@ func (server *Server) DenyPersonTokenInteraction(ctx context.Context, interactio
 	now := server.clock.Now().UTC()
 	if !now.Before(interaction.expiresAt) {
 		return ErrPendingPersonTokenExpired
+	}
+	if interaction.missionRecord != nil {
+		return server.missionDeferredTokens.DenyMissionPendingPersonToken(
+			ctx, cloneMissionRecordForTransition(*interaction.missionRecord), interaction.id, now,
+		)
 	}
 	return server.deferredTokens.DenyPendingPersonToken(ctx, interaction.id, now)
 }
@@ -514,6 +600,17 @@ func (server *Server) loadPersonTokenInteraction(ctx context.Context, interactio
 	if !pendingRecordMatchesInteraction(snapshot.Record, interaction) {
 		return PendingPersonTokenSnapshot{}, ErrPendingPersonTokenConflict
 	}
+	if interaction.missionRecord != nil {
+		current, err := server.loadActiveMission(
+			ctx, interaction.missionRecord.S256, interaction.missionRecord.Agent, server.clock.Now().UTC(),
+		)
+		if err != nil {
+			return PendingPersonTokenSnapshot{}, err
+		}
+		if !interaction.missionRecord.Equal(current) {
+			return PendingPersonTokenSnapshot{}, ErrMissionConflict
+		}
+	}
 	return snapshot, nil
 }
 
@@ -544,7 +641,8 @@ func pendingRecordMatchesInteraction(record PendingPersonTokenRecord, interactio
 	return record.ID == interaction.id && record.CodeSHA256 == interaction.codeSHA256 &&
 		record.PersonServer == interaction.personServer && record.AgentProvider == interaction.agentProvider &&
 		record.Agent == interaction.agent && record.ParentAgent == interaction.parentAgent &&
-		record.Resource == interaction.resource && record.Confirmation.Equal(interaction.confirmation) &&
+		record.Resource == interaction.resource && record.MissionS256 == interaction.missionS256 &&
+		record.Confirmation.Equal(interaction.confirmation) &&
 		record.AgentExpiresAt.Equal(interaction.agentExpiresAt) && record.CreatedAt.Equal(interaction.createdAt) &&
 		record.ExpiresAt.Equal(interaction.expiresAt) && record.RetryAfter == interaction.retryAfter &&
 		reflect.DeepEqual(record.AgentAdditionalClaims, interaction.agentAdditionalClaims)
@@ -561,6 +659,17 @@ func (server *Server) validateCorrelatedPersonTokenInteraction(ctx context.Conte
 		interaction.id == "" || interaction.codeSHA256 == ([32]byte{}) || interaction.agent == "" || interaction.resource == "" ||
 		interaction.createdAt.IsZero() || interaction.expiresAt.IsZero() || interaction.agentExpiresAt.IsZero() {
 		return errors.New("personserver: a correlated person-token interaction is required")
+	}
+	if (interaction.missionS256 == "") != (interaction.missionRecord == nil) ||
+		(interaction.missionS256 == "") != (interaction.mission == nil) {
+		return errors.New("personserver: interaction mission state is invalid")
+	}
+	if interaction.missionS256 != "" &&
+		(aauth.ValidateMissionS256(interaction.missionS256) != nil ||
+			interaction.missionRecord.S256 != interaction.missionS256 ||
+			interaction.missionRecord.Agent != interaction.agent ||
+			interaction.mission.S256 != interaction.missionS256) {
+		return errors.New("personserver: interaction mission state is invalid")
 	}
 	if _, err := interaction.confirmation.PublicKey(); err != nil {
 		return errors.New("personserver: interaction confirmation key is invalid")
@@ -600,10 +709,49 @@ func (server *Server) handlePendingPersonToken(response http.ResponseWriter, req
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingPersonTokenNotFound)
 		return
 	}
-	result, err := server.deferredTokens.PollPendingPersonToken(request.Context(), id, PersonTokenPollIdentity{
+	identity := PersonTokenPollIdentity{
 		PersonServer: server.issuer, Agent: agent.Subject, ConfirmationThumbprint: thumbprint,
-	}, server.clock.Now().UTC())
+	}
+	now := server.clock.Now().UTC()
+	var mission *MissionRecord
+	var result PersonTokenPollRecord
+	if server.missionDeferredTokens != nil {
+		snapshot, snapshotErr := server.deferredTokens.LoadPendingPersonToken(request.Context(), id)
+		if snapshotErr == nil && snapshot.Record.MissionS256 != "" {
+			retainedJKT, thumbprintErr := snapshot.Record.Confirmation.Thumbprint()
+			if thumbprintErr != nil {
+				writeProblem(response, http.StatusInternalServerError, "server_error", ErrPendingPersonTokenConflict)
+				return
+			}
+			if snapshot.Record.PersonServer != identity.PersonServer || snapshot.Record.Agent != identity.Agent ||
+				retainedJKT != identity.ConfirmationThumbprint {
+				writeProblem(response, http.StatusGone, "invalid_code", ErrPendingPersonTokenNotFound)
+				return
+			}
+			loaded, loadErr := server.loadActiveMission(
+				request.Context(), snapshot.Record.MissionS256, identity.Agent, now,
+			)
+			if loadErr != nil {
+				writeMissionActionProblem(response, loadErr)
+				return
+			}
+			mission = &loaded
+			result, err = server.missionDeferredTokens.PollMissionPendingPersonToken(
+				request.Context(), cloneMissionRecordForTransition(loaded), id, identity, now,
+			)
+		} else if snapshotErr != nil {
+			err = snapshotErr
+		} else {
+			result, err = server.deferredTokens.PollPendingPersonToken(request.Context(), id, identity, now)
+		}
+	} else {
+		result, err = server.deferredTokens.PollPendingPersonToken(request.Context(), id, identity, now)
+	}
 	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
 		switch {
 		case errors.Is(err, ErrPendingPersonTokenExpired):
 			writeProblem(response, http.StatusRequestTimeout, "expired", err)
@@ -623,7 +771,7 @@ func (server *Server) handlePendingPersonToken(response http.ResponseWriter, req
 		if err := server.validateApprovedPersonToken(request.Context(), result, agent); err != nil {
 			var tokenFailure *aauth.TokenValidationError
 			if errors.As(err, &tokenFailure) && tokenFailure.Code == aauth.TokenValidationExpired {
-				if !server.consumePendingPersonTokenResult(response, request, id, result) {
+				if !server.consumePendingPersonTokenResult(response, request, id, result, mission) {
 					return
 				}
 				writeProblem(response, http.StatusRequestTimeout, "expired", err)
@@ -632,7 +780,7 @@ func (server *Server) handlePendingPersonToken(response http.ResponseWriter, req
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		if !server.consumePendingPersonTokenResult(response, request, id, result) {
+		if !server.consumePendingPersonTokenResult(response, request, id, result, mission) {
 			return
 		}
 		writePrivateJSON(response, http.StatusOK, struct {
@@ -640,12 +788,12 @@ func (server *Server) handlePendingPersonToken(response http.ResponseWriter, req
 			ExpiresIn   int64  `json:"expires_in"`
 		}{PersonToken: result.Token, ExpiresIn: result.ExpiresIn})
 	case PersonTokenPollDenied:
-		if !server.consumePendingPersonTokenResult(response, request, id, result) {
+		if !server.consumePendingPersonTokenResult(response, request, id, result, mission) {
 			return
 		}
 		writeProblem(response, http.StatusForbidden, "denied", errors.New("person-token interaction was denied"))
 	case PersonTokenPollExpired:
-		if !server.consumePendingPersonTokenResult(response, request, id, result) {
+		if !server.consumePendingPersonTokenResult(response, request, id, result, mission) {
 			return
 		}
 		writeProblem(response, http.StatusRequestTimeout, "expired", ErrPendingPersonTokenExpired)
@@ -661,8 +809,21 @@ func (server *Server) consumePendingPersonTokenResult(
 	request *http.Request,
 	id string,
 	result PersonTokenPollRecord,
+	mission *MissionRecord,
 ) bool {
-	if err := server.deferredTokens.ConsumePendingPersonTokenResult(request.Context(), id, result); err != nil {
+	var err error
+	if mission != nil {
+		err = server.missionDeferredTokens.ConsumeMissionPendingPersonTokenResult(
+			request.Context(), cloneMissionRecordForTransition(*mission), id, result, server.clock.Now().UTC(),
+		)
+	} else {
+		err = server.deferredTokens.ConsumePendingPersonTokenResult(request.Context(), id, result)
+	}
+	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return false
+		}
 		if errors.Is(err, ErrPendingPersonTokenNotFound) || errors.Is(err, ErrPendingPersonTokenGone) {
 			writeProblem(response, http.StatusGone, "invalid_code", err)
 		} else {

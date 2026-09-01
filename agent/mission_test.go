@@ -319,25 +319,6 @@ func TestMissionSpecificContinuationsReturnTypedErrors(t *testing.T) {
 		assertMissionContinuationError(t, err, "approval", "ProposeMission")
 	})
 
-	t.Run("person-token issuance", func(t *testing.T) {
-		protocol := newTestProtocol(t)
-		client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-			if request.Method == http.MethodGet {
-				return jsonResponse(request, http.StatusOK, map[string]any{
-					"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
-					"auth_token_endpoint": protocol.authTokenEndpoint,
-				}), nil
-			}
-			return missionPendingResponse(request), nil
-		})})
-
-		_, err := client.PersonToken(context.Background(), agent.PersonTokenRequest{
-			PersonServer: protocol.personServerID, Resource: protocol.resourceID,
-			MissionS256: aauth.MissionS256([]byte("approved mission")),
-		})
-		assertMissionContinuationError(t, err, "person-token issuance", "PersonToken")
-	})
-
 	for _, operation := range []struct {
 		name string
 		call func(*agent.Client, agent.ExchangeRequest) error

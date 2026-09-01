@@ -86,13 +86,15 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Missing: platform-attestation profiles and durable-key replacement.
 
 - [ ] **Interactive Person-token issuance — Partial**
-  - Flow: Agent → PS → pending URL and interaction code → separately
-    authenticated person decision → explicit Agent poll → Person token or
-    terminal error.
+  - Flow: Agent → PS with an optional active mission → pending URL and
+    interaction code → separately authenticated person decision over the exact
+    mission context when named → explicit Agent poll → Person token or terminal
+    error only while that mission remains active.
   - Start with: `Client.PersonToken`, `Client.PollPersonToken`,
-    `personserver.DeferredTokenStore`, and the PS interaction methods.
+    `personserver.DeferredTokenStore`, `MissionDeferredTokenStore`, and the PS
+    interaction methods.
   - Evidence: [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go).
-  - Missing: mission-bound and parent-mediated composition.
+  - Missing: parent-mediated composition and durable adapters.
 
 - [ ] **Deferred three-party consent and clarification — Partial**
   - Flow: Agent → PS → pending interaction → one host question → explicit
