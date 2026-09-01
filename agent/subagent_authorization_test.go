@@ -287,19 +287,40 @@ func TestParentMediatedSubagentPersonTokenReturnsPendingInteraction(t *testing.T
 	}
 }
 
-func TestParentMediatedSubagentExchangeStillRejectsPendingInteraction(t *testing.T) {
+func TestParentMediatedSubagentExchangeReturnsPendingInteraction(t *testing.T) {
 	t.Parallel()
 	harness := newSubagentClientHarness(t)
 	harness.exchangePending = true
-	_, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
+	result, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
 		PersonServer:  harness.protocol.personServerID,
 		ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
 		SubagentToken: harness.childToken,
 		Capabilities:  []string{"interaction"},
 	})
-	var unsupported *agent.SubagentInteractionUnsupportedError
-	if !errors.As(err, &unsupported) || unsupported.Operation == "" {
-		t.Fatalf("error = %v, want typed unsupported delegated exchange interaction", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok || pending.PersonServer() != harness.protocol.personServerID ||
+		pending.Location() != harness.protocol.personServerID+"/pending/exchange-1" {
+		t.Fatalf("pending result = %#v, pending=%#v", result, pending)
+	}
+}
+
+func TestParentMediatedSubagentExchangeConvenienceNamesPendingAPI(t *testing.T) {
+	t.Parallel()
+	harness := newSubagentClientHarness(t)
+	harness.exchangePending = true
+	_, err := harness.client(t).Exchange(context.Background(), agent.ExchangeRequest{
+		PersonServer:  harness.protocol.personServerID,
+		ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
+		SubagentToken: harness.childToken,
+		Capabilities:  []string{"interaction"},
+	})
+	var pendingRequired *agent.SubagentPendingExchangeRequiredError
+	if !errors.As(err, &pendingRequired) || pendingRequired.Operation != "Exchange" ||
+		!strings.Contains(err.Error(), "use BeginExchange and PollExchange") {
+		t.Fatalf("error = %v, want typed pending-exchange direction", err)
 	}
 }
 

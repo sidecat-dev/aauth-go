@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -328,6 +329,14 @@ func newClarificationFixture(t *testing.T, contract Contract, name string) clari
 		t.Fatal(err)
 	}
 	confirmation := signingKey.PublicJWK()
+	_, childPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSigningKey, err := jose.NewEd25519SigningKey("storetest-child-"+name, childPrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	thumbprint, err := confirmation.Thumbprint()
 	if err != nil {
 		t.Fatal(err)
@@ -339,31 +348,43 @@ func newClarificationFixture(t *testing.T, contract Contract, name string) clari
 		PersonServer:           "https://person.example",
 		AgentProvider:          "https://agents.example",
 		Agent:                  "aauth:storetest@agents.example",
+		Subagent:               "aauth:storetest+worker@agents.example",
 		Resource:               "https://resource.example",
 		Subject:                "person-123",
 		Tenant:                 "tenant-1",
 		Scopes:                 []string{"records.read"},
 		Confirmation:           confirmation,
 		AgentExpiresAt:         now.Add(2 * time.Hour),
+		SubagentConfirmation:   childSigningKey.PublicJWK(),
+		SubagentExpiresAt:      now.Add(90 * time.Minute),
 		ResourceTokenExpiresAt: now.Add(2 * time.Hour),
-		Capabilities:           []string{"clarification"},
-		CreatedAt:              now,
-		ExpiresAt:              now.Add(time.Hour),
-		RetryAfter:             time.Second,
+		SubagentAdditionalClaims: map[string]json.RawMessage{
+			"workload": json.RawMessage(`"worker"`),
+		},
+		Capabilities: []string{"clarification"},
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(time.Hour),
+		RetryAfter:   time.Second,
 	}
 	ctx := context.Background()
 	if err := store.CreatePendingAuthorization(ctx, record); err != nil {
 		t.Fatalf("storetest: create pending authorization: %v", err)
 	}
-	if _, err := store.ConsumeAuthorizationInteractionCode(
+	record.SubagentAdditionalClaims["workload"] = json.RawMessage(`"mutated input"`)
+	consumed, err := store.ConsumeAuthorizationInteractionCode(
 		ctx,
 		record.PersonServer,
 		record.ID,
 		personserver.AuthorizationCodePresentation{CodeSHA256: record.CodeSHA256, SyntacticallyValid: true},
 		now,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("storetest: consume interaction code: %v", err)
 	}
+	if string(consumed.SubagentAdditionalClaims["workload"]) != `"worker"` {
+		t.Fatalf("storetest: delegated pending claims were not copied: %s", consumed.SubagentAdditionalClaims["workload"])
+	}
+	record.SubagentAdditionalClaims["workload"] = json.RawMessage(`"worker"`)
 	return clarificationFixture{
 		ctx: ctx, store: store, record: record, now: now,
 		identity: personserver.AuthorizationPollIdentity{

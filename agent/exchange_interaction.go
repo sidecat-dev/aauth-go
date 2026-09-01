@@ -15,6 +15,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -117,6 +118,10 @@ type PendingExchange struct {
 	agentProvider        string
 	agent                string
 	agentJKT             string
+	tokenKey             jose.JWK
+	tokenExpiresAt       int64
+	tokenExpirySource    string
+	parentMediated       bool
 }
 
 // PersonServer returns the Person Server that accepted the exchange.
@@ -204,13 +209,12 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 			return ExchangeResult{}, fail(operation, errors.New("Budget exchange interaction is not implemented"))
 		}
 		resourceClaims := verifiedResource.claims
-		if input.SubagentToken != "" {
-			return ExchangeResult{}, fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
-		}
 		if input.UpstreamToken != "" {
 			return ExchangeResult{}, fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
 		}
-		pending, err := client.pendingExchangeResponse(response, input.PersonServer, input.ResourceToken, resourceClaims, PendingExchange{})
+		pending, err := client.pendingExchangeResponse(
+			response, input.PersonServer, input.ResourceToken, resourceClaims, PendingExchange{}, credential,
+		)
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
@@ -280,6 +284,10 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 	case http.StatusAccepted:
 		next, err := client.pendingExchangeResponse(
 			response, pending.personServer, pending.resourceToken, *pending.resourceClaims, pending,
+			personServerCredential{
+				requestKey: pending.tokenKey, expiresAt: pending.tokenExpiresAt, expirySource: pending.tokenExpirySource,
+				parentMediated: pending.parentMediated,
+			},
 		)
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
@@ -291,8 +299,8 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 			response,
 			verifiedExchangeResource{claims: *pending.resourceClaims},
 			personServerCredential{
-				requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
-				expirySource: "agent token",
+				requestKey: pending.tokenKey, expiresAt: pending.tokenExpiresAt,
+				expirySource: pending.tokenExpirySource, parentMediated: pending.parentMediated,
 			},
 		)
 		if err != nil {
@@ -316,7 +324,7 @@ func (client *Client) validatePendingExchange(ctx context.Context, pending Pendi
 	}
 	if pending.kind != pendingExchangeVerified || pending.personServer == "" || pending.location == "" ||
 		pending.resourceToken == "" || pending.resourceClaims == nil || pending.agentProvider == "" ||
-		pending.agent == "" || pending.agentJKT == "" {
+		pending.agent == "" || pending.agentJKT == "" || pending.tokenExpiresAt <= 0 || pending.tokenExpirySource == "" {
 		return errors.New("verified pending exchange for this client is required")
 	}
 	if err := validatePendingExchangeLocation(pending); err != nil {
@@ -336,7 +344,11 @@ func (client *Client) validatePendingExchange(ctx context.Context, pending Pendi
 	if thumbprint != pending.agentJKT {
 		return errors.New("pending exchange does not match client key")
 	}
-	if pending.resourceClaims.PersonServer != pending.personServer || pending.resourceClaims.AgentJKT != pending.agentJKT {
+	tokenJKT, err := pending.tokenKey.Thumbprint()
+	if err != nil {
+		return errors.New("pending exchange credential key is invalid")
+	}
+	if pending.resourceClaims.PersonServer != pending.personServer || pending.resourceClaims.AgentJKT != tokenJKT {
 		return errors.New("pending exchange resource-token context does not match client")
 	}
 	return nil
@@ -556,6 +568,7 @@ func (client *Client) pendingExchangeResponse(
 	resourceToken string,
 	resourceClaims aauth.ResourceTokenClaims,
 	prior PendingExchange,
+	credential personServerCredential,
 ) (PendingExchange, error) {
 	observedAt := client.clock.Now()
 	location, err := parsePendingLocation(response)
@@ -645,6 +658,19 @@ func (client *Client) pendingExchangeResponse(
 	if err != nil {
 		return PendingExchange{}, err
 	}
+	tokenKey := credential.requestKey
+	tokenExpiresAt := credential.expiresAt
+	tokenExpirySource := credential.expirySource
+	parentMediated := credential.parentMediated
+	if prior.kind != 0 {
+		tokenKey = prior.tokenKey
+		tokenExpiresAt = prior.tokenExpiresAt
+		tokenExpirySource = prior.tokenExpirySource
+		parentMediated = prior.parentMediated
+	}
+	if _, err := tokenKey.PublicKey(); err != nil || tokenExpiresAt <= 0 || tokenExpirySource == "" {
+		return PendingExchange{}, errors.New("pending exchange credential binding is invalid")
+	}
 	claims := resourceClaims
 	return PendingExchange{
 		kind: pendingExchangeVerified, personServer: personServer,
@@ -654,6 +680,8 @@ func (client *Client) pendingExchangeResponse(
 		clarification: clarification, clarificationCapable: prior.clarificationCapable,
 		resourceToken: resourceToken, resourceClaims: &claims,
 		agentProvider: client.agentClaims.Issuer, agent: client.identifier, agentJKT: thumbprint,
+		tokenKey: tokenKey, tokenExpiresAt: tokenExpiresAt, tokenExpirySource: tokenExpirySource,
+		parentMediated: parentMediated,
 	}, nil
 }
 

@@ -85,25 +85,29 @@ type AuthorizationInteractionPolicy struct {
 // retained before the Person Server exposes an interaction. CodeSHA256 is the
 // normalized code digest; the plaintext correlation code is never retained.
 type PendingAuthorizationRecord struct {
-	ID                     string
-	CodeSHA256             [32]byte
-	PersonServer           string
-	AgentProvider          string
-	Agent                  string
-	Resource               string
-	Subject                string
-	Tenant                 string
-	MissionS256            string
-	MissionExpiresAt       time.Time
-	Scopes                 []string
-	Confirmation           jose.JWK
-	AgentExpiresAt         time.Time
-	ResourceTokenExpiresAt time.Time
-	AgentAdditionalClaims  map[string]json.RawMessage
-	Capabilities           []string
-	CreatedAt              time.Time
-	ExpiresAt              time.Time
-	RetryAfter             time.Duration
+	ID                       string
+	CodeSHA256               [32]byte
+	PersonServer             string
+	AgentProvider            string
+	Agent                    string
+	Subagent                 string
+	Resource                 string
+	Subject                  string
+	Tenant                   string
+	MissionS256              string
+	MissionExpiresAt         time.Time
+	Scopes                   []string
+	Confirmation             jose.JWK
+	AgentExpiresAt           time.Time
+	SubagentConfirmation     jose.JWK
+	SubagentExpiresAt        time.Time
+	ResourceTokenExpiresAt   time.Time
+	AgentAdditionalClaims    map[string]json.RawMessage
+	SubagentAdditionalClaims map[string]json.RawMessage
+	Capabilities             []string
+	CreatedAt                time.Time
+	ExpiresAt                time.Time
+	RetryAfter               time.Duration
 }
 
 // AuthorizationApproval is the canonical host decision and PS-issued token
@@ -301,6 +305,15 @@ func (value AuthorizationInteraction) AgentProvider() string { return value.reco
 // Agent returns the verified Agent that requested authorization.
 func (value AuthorizationInteraction) Agent() string { return value.record.Agent }
 
+// Subagent returns the child credential recipient for a parent-mediated
+// request. The bool is false for a top-level request.
+func (value AuthorizationInteraction) Subagent() (string, bool) {
+	if value.record.Subagent == "" {
+		return "", false
+	}
+	return value.record.Subagent, true
+}
+
 // Resource returns the Resource named by the verified resource token.
 func (value AuthorizationInteraction) Resource() string { return value.record.Resource }
 
@@ -332,6 +345,15 @@ func (value AuthorizationInteraction) Capabilities() []string {
 // AgentAdditionalClaims returns an independent copy for authenticated host policy.
 func (value AuthorizationInteraction) AgentAdditionalClaims() map[string]json.RawMessage {
 	return cloneClaims(value.record.AgentAdditionalClaims)
+}
+
+// SubagentAdditionalClaims returns the child Agent Provider claims for a
+// parent-mediated request. A top-level request returns nil.
+func (value AuthorizationInteraction) SubagentAdditionalClaims() map[string]json.RawMessage {
+	if value.record.Subagent == "" {
+		return nil
+	}
+	return cloneClaims(value.record.SubagentAdditionalClaims)
 }
 
 // Reference returns the non-secret continuation reference.
@@ -370,6 +392,26 @@ func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error
 	if err := aauth.ValidateAgentIdentifier(record.Agent); err != nil {
 		return err
 	}
+	if err := aauth.ValidateAgentRelationship(record.Agent, ""); err != nil {
+		return err
+	}
+	if record.Subagent == "" {
+		if record.SubagentConfirmation != (jose.JWK{}) || !record.SubagentExpiresAt.IsZero() ||
+			len(record.SubagentAdditionalClaims) != 0 {
+			return errors.New("personserver: top-level pending authorization has sub-agent context")
+		}
+	} else {
+		if err := aauth.ValidateAgentRelationship(record.Subagent, record.Agent); err != nil {
+			return err
+		}
+		if record.SubagentExpiresAt.IsZero() || record.SubagentExpiresAt.Before(record.ExpiresAt) ||
+			record.SubagentConfirmation == (jose.JWK{}) || record.SubagentConfirmation.Equal(record.Confirmation) {
+			return errors.New("personserver: delegated pending authorization is inconsistent")
+		}
+		if _, err := record.SubagentConfirmation.PublicKey(); err != nil {
+			return fmt.Errorf("personserver: pending sub-agent confirmation key: %w", err)
+		}
+	}
 	if err := aauth.ValidateServerIdentifier(record.Resource); err != nil {
 		return err
 	}
@@ -399,6 +441,7 @@ func (server *Server) beginAuthorizationInteraction(
 	request *http.Request,
 	authorization AuthorizationRequest,
 	agent aauth.AgentTokenClaims,
+	credentialAgent aauth.AgentTokenClaims,
 	resourceToken aauth.ResourceTokenClaims,
 	missionRecord *MissionRecord,
 	policy AuthorizationInteractionPolicy,
@@ -415,9 +458,13 @@ func (server *Server) beginAuthorizationInteraction(
 		return ErrPendingAuthorizationExpired
 	}
 	agentExpiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
+	credentialAgentExpiresAt := time.Unix(credentialAgent.ExpiresAt, 0).UTC()
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()
 	if agentExpiresAt.Before(expiresAt) {
 		expiresAt = agentExpiresAt
+	}
+	if credentialAgentExpiresAt.Before(expiresAt) {
+		expiresAt = credentialAgentExpiresAt
 	}
 	if resourceTokenExpiresAt.Before(expiresAt) {
 		expiresAt = resourceTokenExpiresAt
@@ -463,6 +510,12 @@ func (server *Server) beginAuthorizationInteraction(
 			AgentAdditionalClaims: cloneClaims(authorization.AgentAdditionalClaims),
 			Capabilities:          append([]string(nil), authorization.Capabilities...),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
+		}
+		if authorization.Subagent != "" {
+			record.Subagent = authorization.Subagent
+			record.SubagentConfirmation = credentialAgent.Confirmation.JWK
+			record.SubagentExpiresAt = credentialAgentExpiresAt
+			record.SubagentAdditionalClaims = cloneClaims(authorization.SubagentAdditionalClaims)
 		}
 		if err := validatePendingAuthorizationRecord(record); err != nil {
 			return err
@@ -604,12 +657,16 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	default:
 		return ErrPendingAuthorizationConflict
 	}
-	if !now.Before(value.record.ExpiresAt) || !now.Before(value.record.AgentExpiresAt) {
+	if !now.Before(value.record.ExpiresAt) || !now.Before(value.record.AgentExpiresAt) ||
+		(!value.record.SubagentExpiresAt.IsZero() && !now.Before(value.record.SubagentExpiresAt)) {
 		return ErrPendingAuthorizationExpired
 	}
 	expiresAt := now.Add(decision.Lifetime)
 	if value.record.AgentExpiresAt.Before(expiresAt) {
 		expiresAt = value.record.AgentExpiresAt
+	}
+	if !value.record.SubagentExpiresAt.IsZero() && value.record.SubagentExpiresAt.Before(expiresAt) {
+		expiresAt = value.record.SubagentExpiresAt
 	}
 	if !value.record.MissionExpiresAt.IsZero() && value.record.MissionExpiresAt.Before(expiresAt) {
 		expiresAt = value.record.MissionExpiresAt
@@ -617,10 +674,14 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	if !expiresAt.After(now) {
 		return ErrPendingAuthorizationExpired
 	}
+	confirmation := value.record.Confirmation
+	if value.record.Subagent != "" {
+		confirmation = value.record.SubagentConfirmation
+	}
 	claims := aauth.AuthTokenClaims{
 		Issuer: server.issuer, DWK: aauth.PersonDiscoveryDocument, Audience: value.record.Resource,
 		JTI: server.newID(), PersonServer: server.issuer, Subject: value.record.Subject,
-		Confirmation: aauth.Confirmation{JWK: value.record.Confirmation},
+		Confirmation: aauth.Confirmation{JWK: confirmation},
 		IssuedAt:     now.Unix(), ExpiresAt: expiresAt.Unix(), Scope: strings.Join(granted, " "),
 		MissionS256: value.record.MissionS256, Tenant: value.record.Tenant,
 	}
@@ -897,14 +958,25 @@ func (server *Server) validatePendingAuthorizationSnapshot(ctx context.Context, 
 
 func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bool {
 	return left.ID == right.ID && left.CodeSHA256 == right.CodeSHA256 && left.PersonServer == right.PersonServer &&
-		left.AgentProvider == right.AgentProvider && left.Agent == right.Agent && left.Resource == right.Resource &&
+		left.AgentProvider == right.AgentProvider && left.Agent == right.Agent && left.Subagent == right.Subagent &&
+		left.Resource == right.Resource &&
 		left.Subject == right.Subject && left.Tenant == right.Tenant && reflect.DeepEqual(left.Scopes, right.Scopes) &&
 		left.Confirmation.Equal(right.Confirmation) && left.AgentExpiresAt.Equal(right.AgentExpiresAt) &&
+		optionalAuthorizationJWKEqual(left.SubagentConfirmation, right.SubagentConfirmation) &&
+		left.SubagentExpiresAt.Equal(right.SubagentExpiresAt) &&
 		left.ResourceTokenExpiresAt.Equal(right.ResourceTokenExpiresAt) &&
 		left.MissionS256 == right.MissionS256 && left.MissionExpiresAt.Equal(right.MissionExpiresAt) &&
 		reflect.DeepEqual(left.AgentAdditionalClaims, right.AgentAdditionalClaims) &&
+		reflect.DeepEqual(left.SubagentAdditionalClaims, right.SubagentAdditionalClaims) &&
 		reflect.DeepEqual(left.Capabilities, right.Capabilities) && left.CreatedAt.Equal(right.CreatedAt) &&
 		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetryAfter == right.RetryAfter
+}
+
+func optionalAuthorizationJWKEqual(left, right jose.JWK) bool {
+	if left == (jose.JWK{}) || right == (jose.JWK{}) {
+		return left == right
+	}
+	return left.Equal(right)
 }
 
 func (server *Server) handlePendingAuthorization(response http.ResponseWriter, request *http.Request) {
@@ -1109,6 +1181,7 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 	}
 	if result.DecidedAt.Before(result.Pending.CreatedAt) || !result.DecidedAt.Before(result.Pending.ExpiresAt) ||
 		!result.DecidedAt.Before(result.Pending.AgentExpiresAt) ||
+		(!result.Pending.SubagentExpiresAt.IsZero() && !result.DecidedAt.Before(result.Pending.SubagentExpiresAt)) ||
 		(!result.Pending.MissionExpiresAt.IsZero() && !result.DecidedAt.Before(result.Pending.MissionExpiresAt)) {
 		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token has an invalid decision time")
 	}
@@ -1116,16 +1189,23 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 	if err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
+	confirmation := result.Pending.Confirmation
+	if result.Pending.Subagent != "" {
+		confirmation = result.Pending.SubagentConfirmation
+	}
 	if err := aauth.ValidateCurrentAuthTokenContext(claims, aauth.AuthTokenContext{
 		Issuer: server.issuer, DiscoveryDocument: aauth.PersonDiscoveryDocument,
 		Resource: result.Pending.Resource, PersonServer: server.issuer, Subject: result.Pending.Subject,
-		RequestKey: result.Pending.Confirmation,
+		RequestKey: confirmation,
 	}); err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
 	expiresAt := result.DecidedAt.Add(result.Decision.Lifetime)
 	if result.Pending.AgentExpiresAt.Before(expiresAt) {
 		expiresAt = result.Pending.AgentExpiresAt
+	}
+	if !result.Pending.SubagentExpiresAt.IsZero() && result.Pending.SubagentExpiresAt.Before(expiresAt) {
+		expiresAt = result.Pending.SubagentExpiresAt
 	}
 	if !result.Pending.MissionExpiresAt.IsZero() && result.Pending.MissionExpiresAt.Before(expiresAt) {
 		expiresAt = result.Pending.MissionExpiresAt
@@ -1219,6 +1299,7 @@ func authorizationDecisionsSemanticallyEqual(left, right AuthorizationDecision) 
 func clonePendingAuthorizationRecord(record PendingAuthorizationRecord) PendingAuthorizationRecord {
 	record.Scopes = append([]string(nil), record.Scopes...)
 	record.AgentAdditionalClaims = cloneClaims(record.AgentAdditionalClaims)
+	record.SubagentAdditionalClaims = cloneClaims(record.SubagentAdditionalClaims)
 	record.Capabilities = append([]string(nil), record.Capabilities...)
 	return record
 }

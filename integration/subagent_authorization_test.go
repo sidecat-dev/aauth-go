@@ -25,16 +25,22 @@ import (
 func TestCurrentCoreParentMediatedSubagentImmediatePSAuthorization(t *testing.T) {
 	t.Parallel()
 
-	runCurrentCoreParentMediatedSubagentAuthorization(t, false)
+	runCurrentCoreParentMediatedSubagentAuthorization(t, false, false)
 }
 
 func TestCurrentCoreParentMediatedSubagentImmediateASAuthorization(t *testing.T) {
 	t.Parallel()
 
-	runCurrentCoreParentMediatedSubagentAuthorization(t, true)
+	runCurrentCoreParentMediatedSubagentAuthorization(t, true, false)
 }
 
-func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated bool) {
+func TestCurrentCoreParentMediatedSubagentDeferredPSAuthorization(t *testing.T) {
+	t.Parallel()
+
+	runCurrentCoreParentMediatedSubagentAuthorization(t, false, true)
+}
+
+func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated, deferred bool) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -107,7 +113,7 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated b
 	// requires, including its authoritative parent_agent relationship.
 	childToken, err := aauth.MintAgentToken(agentProviderID, agentProviderKey, aauth.AgentTokenRequest{
 		Agent: childAgentID, ParentAgent: parentAgentID,
-		PublicKey: childKey.PublicJWK(), Lifetime: time.Hour,
+		PublicKey: childKey.PublicJWK(), Lifetime: 10 * time.Minute,
 		AdditionalClaims: childAdditionalClaims,
 	}, now, "subagent-child-token")
 	if err != nil {
@@ -140,6 +146,7 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated b
 	}
 
 	var newPeople func() (*personserver.Server, error)
+	var deferredAuthorizations *integrationDeferredAuthorizationStore
 	if federated {
 		config := personserver.FederatedAuthorizationConfig{
 			Issuer: personServerID, SigningKey: personServerKey, KeyResolver: keyResolver,
@@ -183,13 +190,27 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated b
 				}
 				return personserver.Person{Subject: "person-123", Tenant: "tenant-1", Lifetime: 20 * time.Minute}, nil
 			},
-			Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
+		}
+		if deferred {
+			deferredAuthorizations = newIntegrationDeferredAuthorizationStore()
+			config.AuthorizationInteractions = deferredAuthorizations
+			config.RequireAuthorizationInteraction = func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationInteractionPolicy, bool, error) {
+				authorizationPolicyCalls++
+				if err := requireAuthorizationPolicy(request); err != nil {
+					return personserver.AuthorizationInteractionPolicy{}, false, err
+				}
+				return personserver.AuthorizationInteractionPolicy{
+					URL: personServerID + "/consent", Lifetime: 5 * time.Minute,
+				}, true, nil
+			}
+		} else {
+			config.Authorize = func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 				authorizationPolicyCalls++
 				if err := requireAuthorizationPolicy(request); err != nil {
 					return personserver.AuthorizationDecision{}, err
 				}
 				return personserver.AuthorizationDecision{Scopes: append([]string(nil), scope...), Lifetime: 15 * time.Minute}, nil
-			},
+			}
 		}
 		newPeople = func() (*personserver.Server, error) {
 			return personserver.NewPSAuthorization(config)
@@ -357,11 +378,83 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated b
 		t.Fatalf("resource token agent_jkt = %q, want child key %q", resourceClaims.AgentJKT, childJKT)
 	}
 
-	authToken, err := parent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken, SubagentToken: childToken,
-	})
-	if err != nil {
-		t.Fatal(err)
+	var authToken string
+	if deferred {
+		result, err := parent.BeginExchange(ctx, clientagent.ExchangeRequest{
+			PersonServer: personServerID, ResourceToken: resourceToken, SubagentToken: childToken,
+			Capabilities: []string{"interaction"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending, ok := result.Pending()
+		if !ok || pending.InteractionCode() == "" || !strings.HasPrefix(pending.InteractionURL(), personServerID+"/consent/") {
+			t.Fatalf("sub-agent pending authorization = %#v, present=%t", result, ok)
+		}
+		snapshot, err := pending.Snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restoredSnapshot clientagent.PendingExchangeSnapshot
+		if err := json.Unmarshal(encoded, &restoredSnapshot); err != nil {
+			t.Fatal(err)
+		}
+		pending, err = parent.RestorePendingExchange(ctx, restoredSnapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := child.PollExchange(ctx, pending); err == nil {
+			t.Fatal("child polled a parent-mediated authorization interaction")
+		}
+		reference := strings.TrimPrefix(pending.InteractionURL(), personServerID+"/consent/")
+		interaction, err := people.ConsumeAuthorizationInteractionCode(ctx, reference, pending.InteractionCode())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if interaction.Agent() != parentAgentID || !reflect.DeepEqual(interaction.AgentAdditionalClaims(), parentAdditionalClaims) {
+			t.Fatalf("authorization interaction parent = %q %#v", interaction.Agent(), interaction.AgentAdditionalClaims())
+		}
+		if subagent, ok := interaction.Subagent(); !ok || subagent != childAgentID ||
+			!reflect.DeepEqual(interaction.SubagentAdditionalClaims(), childAdditionalClaims) {
+			t.Fatalf("authorization interaction child = %q %t %#v", subagent, ok, interaction.SubagentAdditionalClaims())
+		}
+		people, err = newPeople()
+		if err != nil {
+			t.Fatal(err)
+		}
+		network.Handle(personServerID, people.Handler())
+		resumed, err := people.ResumeAuthorizationInteraction(ctx, reference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := people.ApproveAuthorizationInteraction(ctx, resumed, personserver.AuthorizationDecision{
+			Scopes: append([]string(nil), scope...), Lifetime: 15 * time.Minute,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		result, err = parent.PollExchange(ctx, pending)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authToken, ok = result.Token()
+		if !ok || authToken == "" {
+			t.Fatalf("sub-agent approved authorization = %#v, present=%t", result, ok)
+		}
+		creates, approvals, terminalConsumes := deferredAuthorizations.counts()
+		if creates != 1 || approvals != 1 || terminalConsumes != 1 {
+			t.Fatalf("deferred sub-agent effects: creates=%d approvals=%d consumes=%d", creates, approvals, terminalConsumes)
+		}
+	} else {
+		authToken, err = parent.Exchange(ctx, clientagent.ExchangeRequest{
+			PersonServer: personServerID, ResourceToken: resourceToken, SubagentToken: childToken,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	authClaims, err := aauth.VerifyAuthToken(ctx, authToken, keyResolver, clock)
 	if err != nil {
@@ -369,6 +462,11 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated b
 	}
 	if !authClaims.Confirmation.JWK.Equal(childKey.PublicJWK()) {
 		t.Fatalf("auth token cnf = %#v, want child key %#v", authClaims.Confirmation.JWK, childKey.PublicJWK())
+	}
+	expectedAuthExpiry := now.Add(10 * time.Minute)
+	if authClaims.ExpiresAt != expectedAuthExpiry.Unix() {
+		t.Fatalf("auth token expiry = %s, want bounded ceiling %s",
+			time.Unix(authClaims.ExpiresAt, 0), expectedAuthExpiry)
 	}
 	if _, exposed := tokenClaims(t, authToken)["parent_agent"]; exposed {
 		t.Fatal("auth token exposed the retained parent/sub-agent relationship to the Resource")

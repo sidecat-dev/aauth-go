@@ -3,6 +3,7 @@ package personserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -114,11 +115,25 @@ func (p *subagentPersonServerProtocol) tokenRequest(
 	parentKey jose.SigningKey,
 	parentToken, childToken, resourceToken string,
 ) *httptest.ResponseRecorder {
+	return p.tokenRequestWithCapabilities(t, server, parentKey, parentToken, childToken, resourceToken, nil)
+}
+
+func (p *subagentPersonServerProtocol) tokenRequestWithCapabilities(
+	t *testing.T,
+	server *Server,
+	parentKey jose.SigningKey,
+	parentToken, childToken, resourceToken string,
+	capabilities []string,
+) *httptest.ResponseRecorder {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
+	requestBody := map[string]any{
 		"resource_token": resourceToken,
 		"subagent_token": childToken,
-	})
+	}
+	if len(capabilities) > 0 {
+		requestBody["capabilities"] = capabilities
+	}
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +752,7 @@ func TestValidatePersonTokenRecordRequiresCredentialRecipient(t *testing.T) {
 	}
 }
 
-func TestServerRejectsDelegatedAuthorizationInteractionBeforePendingMutation(t *testing.T) {
+func TestServerRetainsDelegatedAuthorizationInteractionForParentPolling(t *testing.T) {
 	t.Parallel()
 
 	p := newSubagentPersonServerProtocol(t)
@@ -765,16 +780,63 @@ func TestServerRejectsDelegatedAuthorizationInteractionBeforePendingMutation(t *
 		t.Fatal(err)
 	}
 	resourceToken := p.resourceToken(t, "https://ps.example", "person-token", p.childKey.PublicJWK())
-	response := p.tokenRequest(t, server, p.parentKey, p.parentToken, p.childToken, resourceToken)
-	if response.Code != http.StatusInternalServerError || p.requireAuthInteractionCalls != 1 || p.authorizationCalls != 0 {
+	response := p.tokenRequestWithCapabilities(
+		t, server, p.parentKey, p.parentToken, p.childToken, resourceToken, []string{"interaction"},
+	)
+	if response.Code != http.StatusAccepted || p.requireAuthInteractionCalls != 1 || p.authorizationCalls != 0 {
 		t.Fatalf("delegated authorization interaction = %d %s interaction=%d authorize=%d", response.Code, response.Body.String(), p.requireAuthInteractionCalls, p.authorizationCalls)
 	}
-	assertSubagentProblem(t, response, http.StatusInternalServerError, "server_error")
 	authorizationStore.mu.Lock()
-	pendingCount := len(authorizationStore.pending)
-	authorizationStore.mu.Unlock()
-	if pendingCount != 0 {
-		t.Fatalf("delegated authorization interaction created %d pending records", pendingCount)
+	defer authorizationStore.mu.Unlock()
+	if len(authorizationStore.pending) != 1 {
+		t.Fatalf("delegated authorization interaction created %d pending records, want 1", len(authorizationStore.pending))
+	}
+	var pending PendingAuthorizationRecord
+	for _, retained := range authorizationStore.pending {
+		pending = retained.record
+	}
+	if pending.Agent != "aauth:planner@ap.example" || pending.Subagent != "aauth:planner+search@ap.example" ||
+		!pending.Confirmation.Equal(p.parentKey.PublicJWK()) ||
+		!pending.SubagentConfirmation.Equal(p.childKey.PublicJWK()) ||
+		!pending.AgentExpiresAt.Equal(p.now.Add(40*time.Minute)) ||
+		!pending.SubagentExpiresAt.Equal(p.now.Add(10*time.Minute)) ||
+		!pending.ExpiresAt.Equal(p.now.Add(time.Minute)) ||
+		!reflect.DeepEqual(pending.AgentAdditionalClaims, p.parentAdditionalClaims) ||
+		!reflect.DeepEqual(pending.SubagentAdditionalClaims, p.childAdditionalClaims) {
+		t.Fatalf("delegated pending authorization = %#v", pending)
+	}
+}
+
+func TestValidatePendingAuthorizationRecordRequiresSeparateParentAndChildBindings(t *testing.T) {
+	t.Parallel()
+
+	p := newSubagentPersonServerProtocol(t)
+	valid := PendingAuthorizationRecord{
+		ID: "pending-subagent", CodeSHA256: sha256.Sum256([]byte("pending-subagent-code")),
+		PersonServer: "https://ps.example", AgentProvider: "https://ap.example",
+		Agent: "aauth:planner@ap.example", Subagent: "aauth:planner+search@ap.example",
+		Resource: "https://resource.example", Subject: "person-123", Scopes: []string{"records.read"},
+		Confirmation: p.parentKey.PublicJWK(), AgentExpiresAt: p.now.Add(40 * time.Minute),
+		SubagentConfirmation: p.childKey.PublicJWK(), SubagentExpiresAt: p.now.Add(10 * time.Minute),
+		ResourceTokenExpiresAt:   p.now.Add(5 * time.Minute),
+		SubagentAdditionalClaims: cloneClaims(p.childAdditionalClaims),
+		CreatedAt:                p.now, ExpiresAt: p.now.Add(time.Minute),
+	}
+	if err := validatePendingAuthorizationRecord(valid); err != nil {
+		t.Fatalf("valid delegated record: %v", err)
+	}
+	for _, change := range []func(*PendingAuthorizationRecord){
+		func(record *PendingAuthorizationRecord) { record.Subagent = "aauth:other+search@ap.example" },
+		func(record *PendingAuthorizationRecord) { record.SubagentConfirmation = record.Confirmation },
+		func(record *PendingAuthorizationRecord) { record.SubagentExpiresAt = time.Time{} },
+		func(record *PendingAuthorizationRecord) { record.SubagentExpiresAt = record.CreatedAt },
+		func(record *PendingAuthorizationRecord) { record.Subagent = "" },
+	} {
+		record := clonePendingAuthorizationRecord(valid)
+		change(&record)
+		if err := validatePendingAuthorizationRecord(record); err == nil {
+			t.Fatalf("invalid delegated record accepted: %#v", record)
+		}
 	}
 }
 

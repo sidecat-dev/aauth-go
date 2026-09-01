@@ -13,6 +13,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -105,9 +106,12 @@ type PendingExchangeSnapshot struct {
 	ClarificationAnswerBefore   *time.Time `json:"clarification_answer_before,omitempty"`
 	ClarificationOptions        []string   `json:"clarification_options,omitempty"`
 
-	ResourceToken string `json:"resource_token"`
-	AgentProvider string `json:"agent_provider"`
-	Agent         string `json:"agent"`
+	ResourceToken       string   `json:"resource_token"`
+	AgentProvider       string   `json:"agent_provider"`
+	Agent               string   `json:"agent"`
+	CredentialKey       jose.JWK `json:"credential_key"`
+	CredentialExpiresAt int64    `json:"credential_expires_at"`
+	ParentMediated      bool     `json:"parent_mediated,omitempty"`
 }
 
 // Snapshot returns caller-owned persistence state for this verified
@@ -115,7 +119,8 @@ type PendingExchangeSnapshot struct {
 // confidentially and with integrity protection.
 func (pending PendingExchange) Snapshot() (PendingExchangeSnapshot, error) {
 	if pending.kind != pendingExchangeVerified || pending.personServer == "" || pending.resourceToken == "" ||
-		pending.resourceClaims == nil || pending.agentProvider == "" || pending.agent == "" || pending.agentJKT == "" {
+		pending.resourceClaims == nil || pending.agentProvider == "" || pending.agent == "" || pending.agentJKT == "" ||
+		pending.tokenExpiresAt <= 0 || pending.tokenExpirySource == "" {
 		return PendingExchangeSnapshot{}, errors.New("aauth agent: verified pending exchange is required")
 	}
 	if pending.retryAfter < 0 || pending.retryAfter%time.Second != 0 {
@@ -128,14 +133,17 @@ func (pending PendingExchange) Snapshot() (PendingExchangeSnapshot, error) {
 		return PendingExchangeSnapshot{}, fmt.Errorf("aauth agent: snapshot pending exchange: %w", err)
 	}
 	snapshot := PendingExchangeSnapshot{
-		PersonServer:      pending.personServer,
-		Location:          pending.location,
-		RetryAfterSeconds: int64(pending.retryAfter / time.Second),
-		Interacting:       pending.interacting,
-		Requirement:       pending.requirement,
-		ResourceToken:     pending.resourceToken,
-		AgentProvider:     pending.agentProvider,
-		Agent:             pending.agent,
+		PersonServer:        pending.personServer,
+		Location:            pending.location,
+		RetryAfterSeconds:   int64(pending.retryAfter / time.Second),
+		Interacting:         pending.interacting,
+		Requirement:         pending.requirement,
+		ResourceToken:       pending.resourceToken,
+		AgentProvider:       pending.agentProvider,
+		Agent:               pending.agent,
+		CredentialKey:       pending.tokenKey,
+		CredentialExpiresAt: pending.tokenExpiresAt,
+		ParentMediated:      pending.parentMediated,
 	}
 	if pending.interactionCapable {
 		snapshot.Capabilities = append(snapshot.Capabilities, "interaction")
@@ -188,7 +196,8 @@ func (client *Client) RestorePendingExchange(ctx context.Context, snapshot Pendi
 		return PendingExchange{}, fail(operation, errors.New("current Agent token does not match client identity and key"))
 	}
 	if snapshot.PersonServer == "" || snapshot.Location == "" ||
-		snapshot.ResourceToken == "" || snapshot.AgentProvider == "" || snapshot.Agent == "" {
+		snapshot.ResourceToken == "" || snapshot.AgentProvider == "" || snapshot.Agent == "" ||
+		snapshot.CredentialExpiresAt <= 0 {
 		return PendingExchange{}, fail(operation, errors.New("snapshot is incomplete"))
 	}
 	if snapshot.RetryAfterSeconds < 0 || snapshot.RetryAfterSeconds > int64(math.MaxInt64/time.Second) {
@@ -200,6 +209,13 @@ func (client *Client) RestorePendingExchange(ctx context.Context, snapshot Pendi
 	if snapshot.AgentProvider != currentAgent.Issuer || snapshot.Agent != currentAgent.Subject ||
 		snapshot.PersonServer != currentAgent.PersonServer {
 		return PendingExchange{}, fail(operation, errors.New("snapshot does not match current Agent identity and Person Server"))
+	}
+	if snapshot.ParentMediated {
+		if snapshot.CredentialKey.Equal(client.signingKey.PublicJWK()) {
+			return PendingExchange{}, fail(operation, errors.New("parent-mediated snapshot uses the parent key as credential recipient"))
+		}
+	} else if !snapshot.CredentialKey.Equal(client.signingKey.PublicJWK()) {
+		return PendingExchange{}, fail(operation, errors.New("snapshot does not match current Agent key"))
 	}
 	if len(snapshot.Capabilities) > 0 {
 		if _, err := aauth.FormatCapabilities(snapshot.Capabilities); err != nil {
@@ -227,8 +243,19 @@ func (client *Client) RestorePendingExchange(ctx context.Context, snapshot Pendi
 	if err != nil {
 		return PendingExchange{}, fail(operation, err)
 	}
-	if claims.PersonServer != snapshot.PersonServer || claims.AgentJKT != thumbprint {
-		return PendingExchange{}, fail(operation, errors.New("Resource token does not match current Person Server and Agent key"))
+	credentialThumbprint, err := snapshot.CredentialKey.Thumbprint()
+	if err != nil {
+		return PendingExchange{}, fail(operation, errors.New("snapshot credential key is invalid"))
+	}
+	if claims.PersonServer != snapshot.PersonServer || claims.AgentJKT != credentialThumbprint {
+		return PendingExchange{}, fail(operation, errors.New("Resource token does not match current Person Server and credential key"))
+	}
+	if snapshot.CredentialExpiresAt < claims.ExpiresAt {
+		return PendingExchange{}, fail(operation, errors.New("snapshot credential lifetime is invalid"))
+	}
+	credentialExpiresAt := snapshot.CredentialExpiresAt
+	if currentAgent.ExpiresAt < credentialExpiresAt {
+		credentialExpiresAt = currentAgent.ExpiresAt
 	}
 	if claims.Interaction != nil || claims.Account != nil {
 		return PendingExchange{}, fail(operation, errors.New("Resource token is outside the direct pending-exchange profile"))
@@ -263,6 +290,10 @@ func (client *Client) RestorePendingExchange(ctx context.Context, snapshot Pendi
 		agentProvider:        snapshot.AgentProvider,
 		agent:                snapshot.Agent,
 		agentJKT:             thumbprint,
+		tokenKey:             snapshot.CredentialKey,
+		tokenExpiresAt:       credentialExpiresAt,
+		tokenExpirySource:    "restored exchange credential",
+		parentMediated:       snapshot.ParentMediated,
 	}
 	if snapshot.Clarification != "" || snapshot.ClarificationTimeoutSeconds != nil ||
 		snapshot.ClarificationAnswerBefore != nil || snapshot.ClarificationOptions != nil {

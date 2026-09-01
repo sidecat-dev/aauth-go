@@ -738,9 +738,12 @@ sentences.
   - Flow: parent → PS with child Agent token → Person token bound to child key
     → child → Resource → parent → PS with child Resource and Agent tokens →
     Auth token bound to child key → child → Resource.
+  - Consent: in direct-PS mode, either PS call may return a pending
+    interaction. The host sees parent and child separately; the parent retains,
+    restores, and polls the handle; the approved token remains child-bound.
   - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go)
     and `go run ./example/subagent`.
-  - Missing: one journey that prepends mission-bound Surfaces 1–4 to Surface 5.
+  - Missing: mission-bound composition and Access Server deferred mediation.
 
 - [ ] **Independent-implementation interoperability — Not implemented**
   - No journey crosses from a Go role to an independently implemented role and

@@ -1101,15 +1101,13 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: Budget authorization interaction is not implemented"))
 					return
 				}
-				if delegated {
-					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated authorization interaction is not implemented"))
-					return
-				}
 				if !slices.Contains(capabilities, "interaction") {
 					writeProblem(response, http.StatusForbidden, "user_unreachable", errors.New("Agent did not declare interaction capability"))
 					return
 				}
-				if err := server.beginAuthorizationInteraction(response, request, authorizationRequest, agent, resourceToken, missionRecord, policy); err != nil {
+				if err := server.beginAuthorizationInteraction(
+					response, request, authorizationRequest, agent, credentialAgent, resourceToken, missionRecord, policy,
+				); err != nil {
 					if missionRecord != nil {
 						writeMissionActionProblem(response, err)
 						return

@@ -65,10 +65,11 @@ type Client struct {
 }
 
 type personServerCredential struct {
-	personServer string
-	requestKey   jose.JWK
-	expiresAt    int64
-	expirySource string
+	personServer   string
+	requestKey     jose.JWK
+	expiresAt      int64
+	expirySource   string
+	parentMediated bool
 }
 
 // Error identifies the client operation that failed while preserving its
@@ -92,18 +93,18 @@ func (failure *Error) Unwrap() error {
 	return failure.Cause
 }
 
-// SubagentInteractionUnsupportedError reports a parent-mediated Auth-token
-// exchange that reached a deferred response. Parent-mediated Person-token
-// issuance has its own supported pending interaction path.
-type SubagentInteractionUnsupportedError struct {
+// SubagentPendingExchangeRequiredError reports that the synchronous Exchange
+// convenience call reached a parent-mediated pending response. Callers that
+// support consent use BeginExchange, persist its handle, and call PollExchange.
+type SubagentPendingExchangeRequiredError struct {
 	Operation string
 }
 
-func (failure *SubagentInteractionUnsupportedError) Error() string {
+func (failure *SubagentPendingExchangeRequiredError) Error() string {
 	if failure == nil || failure.Operation == "" {
-		return "aauth agent: parent-mediated sub-agent interaction is not supported"
+		return "aauth agent: synchronous parent-mediated exchange cannot return a pending interaction"
 	}
-	return "aauth agent: parent-mediated sub-agent " + failure.Operation + " does not support interaction"
+	return "aauth agent: " + failure.Operation + " cannot return a pending parent-mediated interaction; use BeginExchange and PollExchange"
 }
 
 // CallChainingInteractionUnsupportedError reports a call-chain request that
@@ -500,7 +501,7 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 		})
 	}
 	if response.StatusCode == http.StatusAccepted && input.SubagentToken != "" {
-		return "", fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
+		return "", fail(operation, &SubagentPendingExchangeRequiredError{Operation: "Exchange"})
 	}
 	if response.StatusCode == http.StatusAccepted && input.UpstreamToken != "" {
 		return "", fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
@@ -595,6 +596,7 @@ func (client *Client) personServerRequestBinding(
 	return personServerCredential{
 		personServer: personServer,
 		requestKey:   claims.Confirmation.JWK, expiresAt: expiryCeiling, expirySource: expirySource,
+		parentMediated: true,
 	}, nil
 }
 
