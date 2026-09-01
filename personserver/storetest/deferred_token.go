@@ -21,8 +21,9 @@ type DeferredTokenContract struct {
 }
 
 // RunDeferredToken checks the store boundary behind a Person Server-hosted
-// account-link interaction. Passing the suite complements, but does not
-// replace, backend transaction, restart, and failure-injection tests.
+// account-link interaction, including distinct parent poll authority and child
+// credential authority. Passing the suite complements, but does not replace,
+// backend transaction, restart, and failure-injection tests.
 func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 	t.Helper()
 	if contract.New == nil {
@@ -82,6 +83,56 @@ func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 			context.Background(), record.PersonServer, record.ID, record.CodeSHA256, deferredTokenNow,
 		); !errors.Is(err, personserver.ErrInteractionCodeUsed) {
 			t.Fatalf("reused code = %v", err)
+		}
+	})
+
+	t.Run("delegated request separates parent poller from child recipient", func(t *testing.T) {
+		store := contract.New(t)
+		record := deferredTokenRecord(t, "delegated", "code-delegated")
+		record.Agent = "aauth:local+worker@agent.example"
+		record.ParentAgent = record.RequestingAgent
+		record.Confirmation = deferredTokenJWKFor(t, "storetest-child-key", 1)
+		record.AgentAdditionalClaims = map[string]json.RawMessage{
+			"workload": json.RawMessage(`"records-worker"`),
+		}
+		if err := store.CreatePendingPersonToken(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+		record.AgentAdditionalClaims["workload"][0] = '['
+		record.RequestingAgentAdditionalClaims["attestation"][0] = '['
+		retained, err := store.LoadPendingPersonToken(context.Background(), record.ID)
+		if err != nil || retained.Record.Agent != "aauth:local+worker@agent.example" ||
+			retained.Record.RequestingAgent != "aauth:local@agent.example" ||
+			string(retained.Record.AgentAdditionalClaims["workload"]) != `"records-worker"` ||
+			string(retained.Record.RequestingAgentAdditionalClaims["attestation"]) != `{"level":"example"}` {
+			t.Fatalf("delegated retained request = %#v, %v", retained, err)
+		}
+		childJKT, err := retained.Record.Confirmation.Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.PollPendingPersonToken(context.Background(), record.ID, personserver.PersonTokenPollIdentity{
+			PersonServer: record.PersonServer, Agent: record.Agent, ConfirmationThumbprint: childJKT,
+		}, deferredTokenNow); !errors.Is(err, personserver.ErrPendingPersonTokenNotFound) {
+			t.Fatalf("child poll = %v", err)
+		}
+		consumed, err := store.ConsumePersonTokenInteractionCode(
+			context.Background(), record.PersonServer, record.ID, record.CodeSHA256, deferredTokenNow,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approval := deferredTokenApproval(consumed, "account-123", "delegated-token")
+		if err := store.ApprovePendingPersonToken(context.Background(), record.ID, approval); err != nil {
+			t.Fatal(err)
+		}
+		result, err := store.PollPendingPersonToken(
+			context.Background(), record.ID, deferredTokenIdentity(t, consumed), deferredTokenNow,
+		)
+		if err != nil || result.State != personserver.PersonTokenPollApproved ||
+			result.Record.Agent != consumed.Agent || result.Record.ParentAgent != consumed.ParentAgent ||
+			!result.Record.Confirmation.Equal(consumed.Confirmation) {
+			t.Fatalf("delegated approved result = %#v, %v", result, err)
 		}
 	})
 
@@ -259,7 +310,11 @@ func deferredTokenRecord(t testing.TB, id, code string) personserver.PendingPers
 		AgentAdditionalClaims: map[string]json.RawMessage{
 			"attestation": json.RawMessage(`{"level":"example"}`),
 		},
-		CreatedAt: deferredTokenNow, ExpiresAt: deferredTokenNow.Add(5 * time.Minute),
+		RequestingAgent:                 "aauth:local@agent.example",
+		RequestingConfirmation:          deferredTokenJWK(t),
+		RequestingAgentExpiresAt:        deferredTokenNow.Add(time.Hour),
+		RequestingAgentAdditionalClaims: map[string]json.RawMessage{"attestation": json.RawMessage(`{"level":"example"}`)},
+		CreatedAt:                       deferredTokenNow, ExpiresAt: deferredTokenNow.Add(5 * time.Minute),
 		RetryAfter: time.Second,
 	}
 }
@@ -294,7 +349,7 @@ func deferredTokenApproval(
 		Record: personserver.PersonTokenRecord{
 			JTI: "person-token-" + subject, PersonServer: record.PersonServer,
 			Resource: record.Resource, Subject: subject, AgentProvider: record.AgentProvider,
-			Agent: record.Agent, Confirmation: record.Confirmation,
+			Agent: record.Agent, ParentAgent: record.ParentAgent, Confirmation: record.Confirmation,
 			ExpiresAt: deferredTokenNow.Add(20 * time.Minute), RetainUntil: deferredTokenNow.Add(time.Hour),
 		},
 		ExpiresIn: 1200, DecidedAt: deferredTokenNow,
@@ -303,12 +358,12 @@ func deferredTokenApproval(
 
 func deferredTokenIdentity(t testing.TB, record personserver.PendingPersonTokenRecord) personserver.PersonTokenPollIdentity {
 	t.Helper()
-	thumbprint, err := record.Confirmation.Thumbprint()
+	thumbprint, err := record.RequestingConfirmation.Thumbprint()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return personserver.PersonTokenPollIdentity{
-		PersonServer: record.PersonServer, Agent: record.Agent, ConfirmationThumbprint: thumbprint,
+		PersonServer: record.PersonServer, Agent: record.RequestingAgent, ConfirmationThumbprint: thumbprint,
 	}
 }
 
@@ -349,9 +404,15 @@ func consumeTerminalDeferredToken(
 }
 
 func deferredTokenJWK(t testing.TB) jose.JWK {
+	return deferredTokenJWKFor(t, "storetest-key", 0)
+}
+
+func deferredTokenJWKFor(t testing.TB, id string, firstSeedByte byte) jose.JWK {
 	t.Helper()
-	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	signingKey, err := jose.NewEd25519SigningKey("storetest-key", privateKey)
+	seed := make([]byte, ed25519.SeedSize)
+	seed[0] = firstSeedByte
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	signingKey, err := jose.NewEd25519SigningKey(id, privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}

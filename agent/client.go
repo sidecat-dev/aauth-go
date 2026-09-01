@@ -92,9 +92,9 @@ func (failure *Error) Unwrap() error {
 	return failure.Cause
 }
 
-// SubagentInteractionUnsupportedError reports a parent-mediated request that
-// reached a deferred response. This client path supports immediate sub-agent
-// issuance only and never exposes a pending handle for delegated authority.
+// SubagentInteractionUnsupportedError reports a parent-mediated Auth-token
+// exchange that reached a deferred response. Parent-mediated Person-token
+// issuance has its own supported pending interaction path.
 type SubagentInteractionUnsupportedError struct {
 	Operation string
 }

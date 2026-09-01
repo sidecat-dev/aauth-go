@@ -62,9 +62,11 @@ func TestDeferredPersonTokenInteractionApprovesOnceAcrossServerRecomposition(t *
 	}
 	pending := store.onlyPending(t)
 	if pending.PersonServer != protocol.personServerID || pending.Agent != protocol.agentID || pending.Resource != protocol.resourceID ||
+		pending.RequestingAgent != protocol.agentID ||
 		pending.CodeSHA256 == ([32]byte{}) || pending.Confirmation.Equal(jose.JWK{}) ||
 		!pending.Confirmation.Equal(protocol.agentKey.PublicJWK()) ||
-		pending.AgentAdditionalClaims == nil {
+		!pending.RequestingConfirmation.Equal(protocol.agentKey.PublicJWK()) ||
+		pending.AgentAdditionalClaims == nil || pending.RequestingAgentAdditionalClaims == nil {
 		t.Fatalf("pending record = %#v", pending)
 	}
 
@@ -84,6 +86,9 @@ func TestDeferredPersonTokenInteractionApprovesOnceAcrossServerRecomposition(t *
 		!interaction.ExpiresAt().Equal(protocol.now.Add(5*time.Minute)) ||
 		string(interaction.AgentAdditionalClaims()["platform_attestation"]) != `{"level":"example"}` {
 		t.Fatalf("interaction = %#v", interaction)
+	}
+	if subagent, ok := interaction.Subagent(); ok || subagent != "" || interaction.SubagentAdditionalClaims() != nil {
+		t.Fatalf("top-level interaction exposed sub-agent context: %q %t %v", subagent, ok, interaction.SubagentAdditionalClaims())
 	}
 	if _, err := server.ConsumePersonTokenInteractionCode(context.Background(), reference, requirement.Code); !errors.Is(err, ErrInteractionCodeUsed) {
 		t.Fatalf("second code use error = %v", err)
@@ -370,6 +375,11 @@ func TestDeferredPersonTokenRejectsMisdirectedCodeLookup(t *testing.T) {
 		func(record *PendingPersonTokenRecord) { record.PersonServer = "https://other-person.example" },
 		func(record *PendingPersonTokenRecord) { record.CodeSHA256 = sha256.Sum256([]byte("different-code")) },
 		func(record *PendingPersonTokenRecord) { record.ExpiresAt = record.AgentExpiresAt.Add(time.Second) },
+		func(record *PendingPersonTokenRecord) { record.RequestingAgent = "aauth:other@provider.example" },
+		func(record *PendingPersonTokenRecord) {
+			record.RequestingAgentExpiresAt = record.ExpiresAt.Add(-time.Second)
+		},
+		func(record *PendingPersonTokenRecord) { record.ParentAgent = "aauth:other@provider.example" },
 	} {
 		protocol := newPersonInteractionProtocol(t)
 		store := newMemoryDeferredTokenStore()
@@ -1038,8 +1048,8 @@ func (store *memoryDeferredTokenStore) PollPendingPersonToken(_ context.Context,
 	if !ok {
 		return PersonTokenPollRecord{}, ErrPendingPersonTokenNotFound
 	}
-	wantJKT, _ := pending.record.Confirmation.Thumbprint()
-	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.Agent || identity.ConfirmationThumbprint != wantJKT {
+	wantJKT, _ := pending.record.RequestingConfirmation.Thumbprint()
+	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.RequestingAgent || identity.ConfirmationThumbprint != wantJKT {
 		return PersonTokenPollRecord{}, ErrPendingPersonTokenNotFound
 	}
 	if store.pollOverride != nil {
@@ -1125,6 +1135,7 @@ func (store *memoryDeferredTokenStore) onlyPending(t *testing.T) PendingPersonTo
 
 func clonePendingPersonTokenRecord(record PendingPersonTokenRecord) PendingPersonTokenRecord {
 	record.AgentAdditionalClaims = cloneClaims(record.AgentAdditionalClaims)
+	record.RequestingAgentAdditionalClaims = cloneClaims(record.RequestingAgentAdditionalClaims)
 	return record
 }
 

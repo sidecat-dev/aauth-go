@@ -268,39 +268,38 @@ func TestParentMediatedSubagentUsesEarlierAgentExpiryCeiling(t *testing.T) {
 	}
 }
 
-func TestParentMediatedSubagentRejectsPendingInteractionWithTypedError(t *testing.T) {
+func TestParentMediatedSubagentPersonTokenReturnsPendingInteraction(t *testing.T) {
 	t.Parallel()
+	harness := newSubagentClientHarness(t)
+	harness.personPending = true
+	result, err := harness.client(t).PersonToken(context.Background(), agent.PersonTokenRequest{
+		PersonServer:  harness.protocol.personServerID,
+		Resource:      harness.protocol.resourceID,
+		SubagentToken: harness.childToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok || pending.PersonServer() != harness.protocol.personServerID ||
+		pending.Resource() != harness.protocol.resourceID {
+		t.Fatalf("pending result = %#v, pending=%#v", result, pending)
+	}
+}
 
-	for _, operation := range []string{"person token", "begin exchange"} {
-		operation := operation
-		t.Run(operation, func(t *testing.T) {
-			harness := newSubagentClientHarness(t)
-			if operation == "person token" {
-				harness.personPending = true
-			} else {
-				harness.exchangePending = true
-			}
-			client := harness.client(t)
-			var err error
-			if operation == "person token" {
-				_, err = client.PersonToken(context.Background(), agent.PersonTokenRequest{
-					PersonServer:  harness.protocol.personServerID,
-					Resource:      harness.protocol.resourceID,
-					SubagentToken: harness.childToken,
-				})
-			} else {
-				_, err = client.BeginExchange(context.Background(), agent.ExchangeRequest{
-					PersonServer:  harness.protocol.personServerID,
-					ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
-					SubagentToken: harness.childToken,
-					Capabilities:  []string{"interaction"},
-				})
-			}
-			var unsupported *agent.SubagentInteractionUnsupportedError
-			if !errors.As(err, &unsupported) || unsupported.Operation == "" {
-				t.Fatalf("error = %v, want typed unsupported delegated interaction", err)
-			}
-		})
+func TestParentMediatedSubagentExchangeStillRejectsPendingInteraction(t *testing.T) {
+	t.Parallel()
+	harness := newSubagentClientHarness(t)
+	harness.exchangePending = true
+	_, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
+		PersonServer:  harness.protocol.personServerID,
+		ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
+		SubagentToken: harness.childToken,
+		Capabilities:  []string{"interaction"},
+	})
+	var unsupported *agent.SubagentInteractionUnsupportedError
+	if !errors.As(err, &unsupported) || unsupported.Operation == "" {
+		t.Fatalf("error = %v, want typed unsupported delegated exchange interaction", err)
 	}
 }
 

@@ -769,11 +769,9 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 		if required {
-			if delegated {
-				writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated person-token interaction is not implemented"))
-				return
-			}
-			if err := server.beginPersonTokenInteraction(response, request, personRequest, agent, policy, missionRecord); err != nil {
+			if err := server.beginPersonTokenInteraction(
+				response, request, personRequest, agent, credentialAgent, policy, missionRecord,
+			); err != nil {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
 			return

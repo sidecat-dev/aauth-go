@@ -7,6 +7,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -45,21 +46,25 @@ type pendingPersonTokenKind uint8
 
 const pendingPersonTokenVerified pendingPersonTokenKind = 1
 
-// PendingPersonToken is a verified Person Server interaction. Its fields are
-// private so a caller cannot invent a polling target or transfer authority by
-// filling a struct.
+// PendingPersonToken is a verified Person Server interaction. For a
+// parent-mediated request, the parent retains and polls this handle while the
+// verified result remains bound to the child key. Its fields are private so a
+// caller cannot invent a polling target or credential binding.
 type PendingPersonToken struct {
-	kind            pendingPersonTokenKind
-	personServer    string
-	resource        string
-	missionS256     string
-	location        string
-	retryAfter      time.Duration
-	interactionURL  string
-	interactionCode string
-	interacting     bool
-	agent           string
-	agentJKT        string
+	kind              pendingPersonTokenKind
+	personServer      string
+	resource          string
+	missionS256       string
+	location          string
+	retryAfter        time.Duration
+	interactionURL    string
+	interactionCode   string
+	interacting       bool
+	agent             string
+	agentJKT          string
+	tokenKey          jose.JWK
+	tokenExpiresAt    int64
+	tokenExpirySource string
 }
 
 // PersonServer returns the Person Server that accepted the original request.
@@ -96,13 +101,10 @@ func (client *Client) personTokenResponse(
 	credential personServerCredential,
 ) (PersonTokenResult, error) {
 	if response.StatusCode == http.StatusAccepted {
-		if input.SubagentToken != "" {
-			return PersonTokenResult{}, &SubagentInteractionUnsupportedError{Operation: "person-token issuance"}
-		}
 		if input.UpstreamToken != "" {
 			return PersonTokenResult{}, &CallChainingInteractionUnsupportedError{Operation: "person-token issuance"}
 		}
-		pending, err := client.pendingPersonToken(response, input, PendingPersonToken{})
+		pending, err := client.pendingPersonToken(response, input, PendingPersonToken{}, credential)
 		if err != nil {
 			return PersonTokenResult{}, err
 		}
@@ -120,7 +122,12 @@ func (client *Client) personTokenResponse(
 	return PersonTokenResult{kind: personTokenResultToken, token: token}, nil
 }
 
-func (client *Client) pendingPersonToken(response *http.Response, input PersonTokenRequest, prior PendingPersonToken) (PendingPersonToken, error) {
+func (client *Client) pendingPersonToken(
+	response *http.Response,
+	input PersonTokenRequest,
+	prior PendingPersonToken,
+	credential personServerCredential,
+) (PendingPersonToken, error) {
 	if prior.kind != 0 && input.MissionS256 != prior.missionS256 {
 		return PendingPersonToken{}, errors.New("pending person-token mission changed while polling")
 	}
@@ -171,12 +178,24 @@ func (client *Client) pendingPersonToken(response *http.Response, input PersonTo
 	if err != nil {
 		return PendingPersonToken{}, err
 	}
+	tokenKey := credential.requestKey
+	tokenExpiresAt := credential.expiresAt
+	tokenExpirySource := credential.expirySource
+	if prior.kind != 0 {
+		tokenKey = prior.tokenKey
+		tokenExpiresAt = prior.tokenExpiresAt
+		tokenExpirySource = prior.tokenExpirySource
+	}
+	if _, err := tokenKey.PublicKey(); err != nil || tokenExpiresAt <= 0 || tokenExpirySource == "" {
+		return PendingPersonToken{}, errors.New("pending person-token credential binding is invalid")
+	}
 	return PendingPersonToken{
 		kind: pendingPersonTokenVerified, personServer: input.PersonServer, resource: input.Resource,
 		missionS256: input.MissionS256,
 		location:    location, retryAfter: retryAfter, interactionURL: interactionURL,
 		interactionCode: interactionCode, interacting: prior.interacting || body.Status == "interacting",
 		agent: client.identifier, agentJKT: thumbprint,
+		tokenKey: tokenKey, tokenExpiresAt: tokenExpiresAt, tokenExpirySource: tokenExpirySource,
 	}, nil
 }
 
@@ -239,7 +258,7 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 	}
 	if pending.kind != pendingPersonTokenVerified || pending.personServer == "" || pending.resource == "" ||
 		pending.location == "" || pending.interactionURL == "" || pending.interactionCode == "" ||
-		pending.agent == "" || pending.agentJKT == "" {
+		pending.agent == "" || pending.agentJKT == "" || pending.tokenExpiresAt <= 0 || pending.tokenExpirySource == "" {
 		return PersonTokenResult{}, fail(operation, errors.New("verified pending person token is required"))
 	}
 	if pending.missionS256 != "" && aauth.ValidateMissionS256(pending.missionS256) != nil {
@@ -258,6 +277,9 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 	if thumbprint != pending.agentJKT {
 		return PersonTokenResult{}, fail(operation, errors.New("pending person token belongs to another client key"))
 	}
+	if _, err := pending.tokenKey.PublicKey(); err != nil {
+		return PersonTokenResult{}, fail(operation, errors.New("pending person-token credential key is invalid"))
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.location, nil)
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
@@ -274,7 +296,9 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 		PersonServer: pending.personServer, Resource: pending.resource, MissionS256: pending.missionS256,
 	}
 	if response.StatusCode == http.StatusAccepted {
-		next, err := client.pendingPersonToken(response, input, pending)
+		next, err := client.pendingPersonToken(response, input, pending, personServerCredential{
+			requestKey: pending.tokenKey, expiresAt: pending.tokenExpiresAt, expirySource: pending.tokenExpirySource,
+		})
 		if err != nil {
 			return PersonTokenResult{}, fail(operation, err)
 		}
@@ -290,8 +314,8 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 		pending.resource,
 		pending.missionS256,
 		personServerCredential{
-			requestKey: client.signingKey.PublicJWK(), expiresAt: client.agentClaims.ExpiresAt,
-			expirySource: "agent token",
+			requestKey: pending.tokenKey, expiresAt: pending.tokenExpiresAt,
+			expirySource: pending.tokenExpirySource,
 		},
 	)
 	if err != nil {

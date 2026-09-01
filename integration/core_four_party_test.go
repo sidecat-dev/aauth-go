@@ -958,8 +958,8 @@ func (store *memoryPersonTokenStore) PollPendingPersonToken(
 	if !ok {
 		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
 	}
-	wantJKT, _ := pending.record.Confirmation.Thumbprint()
-	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.Agent || identity.ConfirmationThumbprint != wantJKT {
+	wantJKT, _ := pending.record.RequestingConfirmation.Thumbprint()
+	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.RequestingAgent || identity.ConfirmationThumbprint != wantJKT {
 		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
 	}
 	if pending.state == personserver.PersonTokenPollGone {
@@ -1121,8 +1121,8 @@ func (store *memoryPersonTokenStore) PollMissionPendingPersonToken(
 	if !ok || pending.record.Agent != expected.Agent || pending.record.MissionS256 != expected.S256 {
 		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
 	}
-	wantJKT, _ := pending.record.Confirmation.Thumbprint()
-	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.Agent ||
+	wantJKT, _ := pending.record.RequestingConfirmation.Thumbprint()
+	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.RequestingAgent ||
 		identity.ConfirmationThumbprint != wantJKT {
 		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
 	}
@@ -1192,6 +1192,13 @@ func clonePendingPersonToken(record personserver.PendingPersonTokenRecord) perso
 			claims[name] = append(json.RawMessage(nil), value...)
 		}
 		record.AgentAdditionalClaims = claims
+	}
+	if len(record.RequestingAgentAdditionalClaims) > 0 {
+		claims := make(map[string]json.RawMessage, len(record.RequestingAgentAdditionalClaims))
+		for name, value := range record.RequestingAgentAdditionalClaims {
+			claims[name] = append(json.RawMessage(nil), value...)
+		}
+		record.RequestingAgentAdditionalClaims = claims
 	}
 	return record
 }

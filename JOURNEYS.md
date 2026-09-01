@@ -127,15 +127,17 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Missing: platform-attestation profiles and durable-key replacement.
 
 - [ ] **Interactive Person-token issuance — Partial**
-  - Flow: Agent → PS with an optional active mission → pending URL and
-    interaction code → separately authenticated person decision over the exact
-    mission context when named → explicit Agent poll → Person token or terminal
-    error only while that mission remains active.
+  - Flow: top-level Agent → PS with an optional active mission, or parent → PS
+    with one verified child token → pending URL and interaction code →
+    separately authenticated person decision over the exact context → explicit
+    top-level or parent poll → Person token bound to the requesting Agent or
+    child key. A mission-bound result is released only while that mission
+    remains active.
   - Start with: `Client.PersonToken`, `Client.PollPersonToken`,
     `personserver.DeferredTokenStore`, `MissionDeferredTokenStore`, and the PS
     interaction methods.
   - Evidence: [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go).
-  - Missing: parent-mediated composition and durable adapters.
+  - Missing: mission-bound parent mediation and durable adapters.
 
 - [ ] **Deferred three-party consent and clarification — Partial**
   - Flow: Agent → PS → pending interaction, optionally bound to one mission →
@@ -179,17 +181,20 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     delegation; call chaining; held delivery; and revocation.
 
 - [ ] **Parent-mediated sub-agents and one Resource call chain — Partial**
-  - Flow: parent → PS on behalf of one child → credential bound to the child
+  - Flow: parent → PS on behalf of one child → immediate issuance or standard
+    host interaction and explicit parent poll → credential bound to the child
     key → child → Resource. Alternatively, Resource 1 receives an authorized
     call → acts as its own Agent → PS → Resource 2.
   - Start with: `PersonTokenRequest.SubagentToken`,
     `ExchangeRequest.SubagentToken`, `PersonTokenRequest.UpstreamToken`,
     `ExchangeRequest.UpstreamToken`, and `personserver.CallChainingConfig`.
   - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go),
+    [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go),
     [`integration/call_chaining_test.go`](integration/call_chaining_test.go),
     `go run ./example/subagent`, and `go run ./example/callchaining`.
-  - Missing: recursive or remote delegation, delegated interaction, repeated
-    chain depth, federated downstream chaining, and mission composition.
+  - Missing: deferred Auth-token exchange, recursive or remote delegation,
+    repeated chain depth, federated downstream chaining, and mission
+    composition.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
   - Flow: AP signs an exact Agent-token reference → PS or a known direct

@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -275,5 +276,63 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	_, err = reader.PollPersonToken(ctx, pending)
 	if !errors.As(err, &gone) || gone.Status != http.StatusForbidden || gone.Code != "mission_terminated" {
 		t.Fatalf("terminated mission poll = %T %v", err, err)
+	}
+
+	const childID = "aauth:reader+worker@ap.example"
+	childKey := newSigningKey(t, "interaction-child-key")
+	childToken, err := aauth.MintAgentToken(agentProviderID, providerKey, aauth.AgentTokenRequest{
+		Agent: childID, ParentAgent: agentID, PersonServer: personServerID,
+		PublicKey: childKey.PublicJWK(), Lifetime: 20 * time.Minute,
+		AdditionalClaims: map[string]json.RawMessage{"workload": json.RawMessage(`"records-worker"`)},
+	}, now, "interaction-child-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+		PersonServer: personServerID, Resource: resourceID, SubagentToken: childToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok = result.Pending()
+	if !ok {
+		t.Fatalf("sub-agent interaction result = %#v", result)
+	}
+	interactionReference = strings.TrimPrefix(pending.InteractionURL(), personServerID+"/interaction/")
+	interaction, err = people.ConsumePersonTokenInteractionCode(ctx, interactionReference, pending.InteractionCode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interaction.Agent() != agentID || interaction.Resource() != resourceID {
+		t.Fatalf("sub-agent host context: agent=%q resource=%q", interaction.Agent(), interaction.Resource())
+	}
+	subagent, ok := interaction.Subagent()
+	if !ok || subagent != childID || string(interaction.SubagentAdditionalClaims()["workload"]) != `"records-worker"` {
+		t.Fatalf("sub-agent host context: subagent=%q present=%t claims=%v", subagent, ok, interaction.SubagentAdditionalClaims())
+	}
+	if err := people.ApprovePersonTokenInteraction(ctx, interaction, personserver.Person{
+		Subject: "person-123", Lifetime: 10 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	approved, err = reader.PollPersonToken(ctx, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personToken, ok = approved.Token()
+	if !ok {
+		t.Fatalf("sub-agent approved result = %#v", approved)
+	}
+	claims, err = aauth.VerifyPersonToken(ctx, personToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !claims.Confirmation.JWK.Equal(childKey.PublicJWK()) {
+		t.Fatalf("sub-agent person-token confirmation = %#v", claims.Confirmation)
+	}
+	record, err := store.Load(ctx, claims.Issuer, claims.JTI)
+	if err != nil || record.Agent != childID || record.ParentAgent != agentID ||
+		!record.Confirmation.Equal(childKey.PublicJWK()) {
+		t.Fatalf("retained sub-agent person token = %#v, %v", record, err)
 	}
 }

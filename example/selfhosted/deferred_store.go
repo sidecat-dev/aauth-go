@@ -180,8 +180,8 @@ func (store *deferredPersonTokenStore) PollPendingPersonToken(
 	if !ok {
 		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
 	}
-	wantJKT, _ := pending.record.Confirmation.Thumbprint()
-	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.Agent ||
+	wantJKT, _ := pending.record.RequestingConfirmation.Thumbprint()
+	if identity.PersonServer != pending.record.PersonServer || identity.Agent != pending.record.RequestingAgent ||
 		identity.ConfirmationThumbprint != wantJKT {
 		return personserver.PersonTokenPollRecord{}, personserver.ErrPendingPersonTokenNotFound
 	}
@@ -233,13 +233,18 @@ func (store *deferredPersonTokenStore) ConsumePendingPersonTokenResult(
 }
 
 func clonePendingPersonToken(record personserver.PendingPersonTokenRecord) personserver.PendingPersonTokenRecord {
-	if record.AgentAdditionalClaims == nil {
-		return record
-	}
-	claims := make(map[string]json.RawMessage, len(record.AgentAdditionalClaims))
-	for name, value := range record.AgentAdditionalClaims {
-		claims[name] = append(json.RawMessage(nil), value...)
-	}
-	record.AgentAdditionalClaims = claims
+	record.AgentAdditionalClaims = cloneRawClaims(record.AgentAdditionalClaims)
+	record.RequestingAgentAdditionalClaims = cloneRawClaims(record.RequestingAgentAdditionalClaims)
 	return record
+}
+
+func cloneRawClaims(input map[string]json.RawMessage) map[string]json.RawMessage {
+	if input == nil {
+		return nil
+	}
+	output := make(map[string]json.RawMessage, len(input))
+	for name, value := range input {
+		output[name] = append(json.RawMessage(nil), value...)
+	}
+	return output
 }

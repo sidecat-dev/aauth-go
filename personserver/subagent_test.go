@@ -486,7 +486,7 @@ func TestServerVerifiesDirectSubagentProofBeforeTopologyRefusal(t *testing.T) {
 	}
 }
 
-func TestServerRejectsDelegatedInteractionBeforePendingMutation(t *testing.T) {
+func TestServerRetainsParentPollAndChildCredentialForDelegatedInteraction(t *testing.T) {
 	t.Parallel()
 
 	p := newSubagentPersonServerProtocol(t)
@@ -504,15 +504,15 @@ func TestServerRejectsDelegatedInteractionBeforePendingMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := p.personRequest(t, server, p.childToken)
-	if response.Code != http.StatusInternalServerError {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("delegated person interaction = %d %s", response.Code, response.Body.String())
 	}
-	assertSubagentProblem(t, response, http.StatusInternalServerError, "server_error")
-	store.mu.Lock()
-	pendingCount := len(store.pending)
-	store.mu.Unlock()
-	if pendingCount != 0 || p.bindCalls != 0 {
-		t.Fatalf("delegated interaction mutated pending state or called binding: pending=%d bind=%d", pendingCount, p.bindCalls)
+	pending := store.onlyPending(t)
+	if pending.RequestingAgent != "aauth:planner@ap.example" || pending.Agent != "aauth:planner+search@ap.example" ||
+		pending.ParentAgent != "aauth:planner@ap.example" ||
+		!pending.RequestingConfirmation.Equal(p.parentKey.PublicJWK()) ||
+		!pending.Confirmation.Equal(p.childKey.PublicJWK()) || p.bindCalls != 0 {
+		t.Fatalf("delegated pending record = %#v, bind=%d", pending, p.bindCalls)
 	}
 }
 
