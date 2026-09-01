@@ -71,9 +71,10 @@ func (store *r3IssuanceStore) Commit(_ context.Context, record r3.IssuanceRecord
 }
 
 type budgetStore struct {
-	mu       sync.Mutex
-	charges  map[aauth.TokenReference]resource.BudgetCharge
-	consumed map[aauth.TokenReference]int64
+	mu           sync.Mutex
+	charges      map[aauth.TokenReference]resource.BudgetCharge
+	consumed     map[aauth.TokenReference]int64
+	observations *profileObservations
 }
 
 func newBudgetStore() *budgetStore {
@@ -84,6 +85,9 @@ func newBudgetStore() *budgetStore {
 }
 
 func (store *budgetStore) Charge(_ context.Context, charge resource.BudgetCharge) (resource.BudgetChargeResult, error) {
+	if store.observations != nil {
+		store.observations.budgetCharges.Add(1)
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if retained, ok := store.charges[charge.Token]; ok && !sameCharge(retained, charge) {
@@ -124,6 +128,14 @@ func sameOptionalString(left, right *string) bool {
 	return *left == *right
 }
 
+func cloneOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func sameBudget(left, right budgets.Value) bool {
 	return left.Amount() == right.Amount() && left.Unit().Equal(right.Unit())
 }
@@ -138,6 +150,7 @@ func (store *lineageStore) Retain(_ context.Context, lineage resource.BudgetLine
 	defer store.mu.Unlock()
 	owned := lineage
 	owned.Scope = append([]string(nil), lineage.Scope...)
+	owned.Account = cloneOptionalString(lineage.Account)
 	if store.retained != nil && !reflect.DeepEqual(*store.retained, owned) {
 		return errors.New("hosted-service example: Budget lineage conflicts with retained state")
 	}
@@ -153,6 +166,7 @@ func (store *lineageStore) Load() (resource.BudgetLineage, bool) {
 	}
 	owned := *store.retained
 	owned.Scope = append([]string(nil), store.retained.Scope...)
+	owned.Account = cloneOptionalString(store.retained.Account)
 	if store.retained.PersonContext.AdditionalClaims != nil {
 		owned.PersonContext.AdditionalClaims = make(map[string]json.RawMessage, len(store.retained.PersonContext.AdditionalClaims))
 		for name, value := range store.retained.PersonContext.AdditionalClaims {

@@ -30,10 +30,18 @@ type roleInputs struct {
 	definitions     r3.DefinitionRegistry
 	operation       r3.Operation
 	definition      r3.AuthoritativeSnapshot
+	account         string
+	observations    *profileObservations
 	requestedBudget budgets.Value
 	resourceOffer   budgets.Value
 	personGrant     budgets.Value
 	unit            budgets.UnitDeclaration
+}
+
+type profileObservations struct {
+	budgetOffers   atomic.Int64
+	budgetCharges  atomic.Int64
+	connectorCalls atomic.Int64
 }
 
 type composedRoles struct {
@@ -47,11 +55,16 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 	documents := newR3DocumentStore()
 	issuances := newR3IssuanceStore()
 	budgetCharges := newBudgetStore()
+	budgetCharges.observations = input.observations
 	lineage := &lineageStore{}
 	missionPermissions := exampleutil.NewMissionPermissionStore()
 	personRevocations := newAgentTokenRevocationStore()
 	localRevocations := newAgentTokenRevocationStore()
-	connector := &connectorApplication{oauthCredential: "application-only-oauth-credential"}
+	connector := &connectorApplication{
+		oauthCredential: "application-only-oauth-credential",
+		account:         input.account,
+		observations:    input.observations,
+	}
 	var personIDs atomic.Int64
 	newPeople := func() (*personserver.Server, error) {
 		return personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
@@ -94,7 +107,8 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 				Registry: input.registry, HTTPClient: input.httpClient, Admit: input.network.Admit, Issuances: issuances,
 				AuthorizeDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (personserver.DirectR3Decision, error) {
 					if request.Agent != agentID || request.Resource != hostedResourceID || request.Subject != "person-123" ||
-						request.Budget == nil || !sameBudget(*request.Budget, input.resourceOffer) || len(request.Scopes) != 0 {
+						request.Account == nil || *request.Account != input.account || request.Budget == nil ||
+						!sameBudget(*request.Budget, input.resourceOffer) || len(request.Scopes) != 0 {
 						return personserver.DirectR3Decision{}, errors.New("hosted-service example: unexpected R3 Budget authorization")
 					}
 					operations, err := r3.NewGrantedOperations(mcp.Vocabulary(), input.operation)
@@ -121,6 +135,13 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 			}
 			return nil
 		},
+		ValidateAccount: func(_ context.Context, identity resource.PersonIdentity, account string) error {
+			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) ||
+				account != input.account {
+				return errors.Join(resource.ErrInvalidAccount, errors.New("hosted-service example: unknown account"))
+			}
+			return nil
+		},
 		R3: &resource.R3Config{
 			Registry: input.registry, Definitions: input.definitions,
 			Vocabularies: []resource.R3VocabularyConfig{{Definition: input.definition}}, Documents: documents,
@@ -134,12 +155,21 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 		Budget: &resource.BudgetConfig{
 			Units: []budgets.UnitDeclaration{input.unit}, RetainLineage: lineage.Retain,
 			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
-				if !sameBudget(request.Requested, input.requestedBudget) {
+				if input.observations != nil {
+					input.observations.budgetOffers.Add(1)
+				}
+				if request.Account == nil || *request.Account != input.account ||
+					!sameBudget(request.Requested, input.requestedBudget) {
 					return budgets.Value{}, errors.New("hosted-service example: unexpected Budget request")
 				}
 				return input.resourceOffer, nil
 			},
-			Cost:  func(context.Context, resource.BudgetCostRequest) (int64, error) { return 100_000, nil },
+			Cost: func(_ context.Context, request resource.BudgetCostRequest) (int64, error) {
+				if request.Principal.Account == nil || *request.Principal.Account != input.account {
+					return 0, errors.New("hosted-service example: Budget pricing lost the account")
+				}
+				return 100_000, nil
+			},
 			Store: budgetCharges,
 			Challenge: func(ctx context.Context, challenge resource.BudgetChallengeRequest) (string, error) {
 				retained, ok := lineage.Load()
@@ -149,6 +179,7 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 				if challenge.R3Reference == nil || challenge.Reason != budgets.ReasonBudgetExhausted ||
 					challenge.Remaining != 0 || challenge.Required != 100_000 ||
 					!sameBudget(challenge.Grant, input.personGrant) ||
+					challenge.Principal.Account == nil || *challenge.Principal.Account != input.account ||
 					challenge.Principal.PersonServer != retained.Person.Issuer ||
 					challenge.Principal.Subject != retained.Person.Subject ||
 					challenge.Principal.Tenant != retained.PersonContext.Tenant {
@@ -167,6 +198,7 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 						PersonServer: retained.Person.Issuer, Subject: retained.Person.Subject,
 						PresentedJTI: retained.PresentedJTI, AgentJKT: retained.AgentJKT,
 						IssuedAt: now.Unix(), ExpiresAt: retained.ExpiresAt,
+						Account:     cloneOptionalString(retained.Account),
 						MissionS256: retained.PersonContext.MissionS256,
 						Tenant:      retained.PersonContext.Tenant,
 					},

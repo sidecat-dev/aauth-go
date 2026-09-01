@@ -38,17 +38,23 @@ func hostedR3Model() (r3.Registry, r3.DefinitionRegistry, r3.OperationSet, r3.Op
 
 type connectorApplication struct {
 	oauthCredential string
+	account         string
+	observations    *profileObservations
 	calls           atomic.Int64
 }
 
 func (connector *connectorApplication) serve(response http.ResponseWriter, request *http.Request) {
 	principal, ok := resource.AuthPrincipalFromContext(request.Context())
-	if !ok || principal.Subject != "person-123" || connector.oauthCredential == "" {
+	if !ok || principal.Subject != "person-123" || principal.Account == nil ||
+		*principal.Account != connector.account || connector.oauthCredential == "" {
 		http.Error(response, "connector context unavailable", http.StatusInternalServerError)
 		return
 	}
 	// Only application code can read oauthCredential. AAuth policy and tokens
-	// carry the person, operation, and Budget—not this third-party secret.
+	// carry the person, account, operation, and Budget—not this third-party secret.
+	if connector.observations != nil {
+		connector.observations.connectorCalls.Add(1)
+	}
 	connector.calls.Add(1)
 	response.WriteHeader(http.StatusNoContent)
 }

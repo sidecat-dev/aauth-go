@@ -125,9 +125,10 @@ ownership. Present-tense support must never be inferred from the target import
 map alone.
 
 The hosted-service example composes existing role APIs; it does not add a
-hosted-service package. Enrollment, permission, mission review, R3, Budget,
-one successful connector dispatch, exhausted-Budget refusal before a second
-dispatch, and revocation remain independently configurable role capabilities.
+hosted-service package. Enrollment, permission, mission review, Resource-owned
+account selection, R3, Budget, one successful connector dispatch,
+exhausted-Budget refusal before a second dispatch, and revocation remain
+independently configurable role capabilities.
 Their composition is evidence that the package boundaries work together, not
 a new cross-role lifecycle abstraction.
 

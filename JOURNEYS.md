@@ -51,8 +51,9 @@ Specifications:
 - [x] **Hosted-service launch composition — Implemented**
   - Flow: either durable-key enrollment → delegated Agent-token refresh, or
     self-hosted Agent Provider metadata/JWKS → self-issued short-lived token;
-    then local permission → separately host-reviewed mission approval → MCP
-    operation and fixed Budget → one connector application call → verified
+    then local permission → separately host-reviewed mission approval → one
+    Resource-validated account → MCP operation and fixed Budget → one connector
+    application call → verified
     exhausted-Budget step-up before a second dispatch. The hosted-enrollment
     variant also proves AP revocation at the PS and local direct Resource.
   - Start with: [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md) and
@@ -60,8 +61,8 @@ Specifications:
     user-controlled Agent Provider profile.
   - Boundary: this proves exported-library composition with real signed HTTP
     exchanges. Its mission transaction passes the public base and direct-R3
-    extension contracts; its operation-and-Budget stores pass the R3 document,
-    R3 issuance, and Budget contracts. It does not prove production
+    extension contracts; its account-bound operation-and-Budget stores pass
+    the R3 document, R3 issuance, and Budget contracts. It does not prove production
     persistence, account login, OAuth, administrative authentication, or
     deployment.
 
@@ -483,9 +484,13 @@ Start definition work with `r3.NewDefinitionRegistry`,
     mission and retains the exact AS token before release. A mission race may
     leave an AS-audited token that the PS verified but did not retain or release
     to the Agent.
+  - Account variant: one Resource-validated account survives the R3 document
+    policy, Budget lineage and issuer policy, signed tokens, pricing, step-up,
+    atomic charge, and application principal. `go run ./example/hostedservice`
+    exercises this under an active mission.
   - Boundary: class authorization only. R3-only and Budget-only verifiers
     continue to reject mixed tokens. Per-call, held or reactive federation,
-    delegation, call-chain, account, and variable-price combinations remain
+    delegation, call-chain, and variable-price combinations remain
     unsupported.
 
 - [x] **Federated four-party class authorization — Implemented for MCP and OpenAPI**

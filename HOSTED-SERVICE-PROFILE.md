@@ -35,9 +35,9 @@ retained state remain distinct even when their handlers share a server.
    - local-action permission from the Person Server;
    - three-party authorization from the Person Server; or
    - four-party authorization through the Person Server and Access Server.
-5. The Resource executes only the operation and Budget admitted by the verified
-   token. A connector retains any third-party service credential; the Agent
-   receives AAuth authority, not that credential.
+5. The Resource executes only the account, operation, and Budget admitted by
+   the verified token. A connector retains any third-party service credential;
+   the Agent receives AAuth authority, not that credential.
 6. Each role can be reconstructed around the same retained stores. Exact
    enrollment, refresh, authorization, and execution replays recover their
    retained results instead of repeating consequences.
@@ -98,7 +98,7 @@ go run ./example/revocation
 | Enrollment suspension and revocation | Host-authenticated atomic state transition; disabled is reversible, revoked is terminal, and exact retries recover the retained transition. |
 | Local action | Immediate or explicitly deferred Permission Endpoint decision; the application executes only after a typed grant. |
 | Hosted account identity | Person tokens use the `(ps, sub)` namespace and are directed to one Resource. A deferred account-link adapter runs `personserver/storetest.RunDeferredToken`. |
-| Service authorization | Three-party and four-party Auth-token journeys with explicit Agent calls and no hidden polling. |
+| Service authorization | Three-party and four-party Auth-token journeys with explicit Agent calls, one Resource-validated account carried as Core context, and no hidden polling. |
 | Operation authorization | MCP and OpenAPI R3 class and per-call journeys. The direct MCP class path composes with a fixed Budget in one protected call. Other registered vocabularies are not launch requirements. |
 | Human approval | Approval-only missions and deferred permission decisions with application-authenticated host review. |
 | Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. A proactive grant may name one Resource-validated billing account in either authorization topology. The direct MCP composition verifies the operation before charging, preserves the R3 reference on step-up, refuses exhaustion before dispatch, and resumes only after explicit replacement exchange. A commercial billing ledger remains an application concern. |
@@ -153,7 +153,7 @@ process restarts:
 
 - [ ] enrollment and exact refresh replay;
 - [ ] one local-action permission;
-- [ ] one hosted Resource authorization and protected call;
+- [ ] one account-bound hosted Resource authorization and protected call;
 - [ ] one MCP or OpenAPI operation grant;
 - [ ] one fixed-price Budget charge, over-cap refusal before dispatch, and
       explicit replacement-grant recovery;

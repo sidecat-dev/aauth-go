@@ -92,6 +92,7 @@ func callHostedConnector(
 	client *clientagent.Client,
 	operations r3.OperationSet,
 	requestedBudget budgets.Value,
+	account string,
 	mission clientagent.MissionResult,
 	connector *connectorApplication,
 ) error {
@@ -104,7 +105,7 @@ func callHostedConnector(
 	}
 	resourceToken, err := client.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: hostedResourceID, PersonToken: personToken,
-		R3Operations: &operations, Budget: &requestedBudget,
+		Account: &account, R3Operations: &operations, Budget: &requestedBudget,
 	})
 	if err != nil {
 		return err

@@ -28,6 +28,7 @@ const (
 	personServerID   = "https://person.example"
 	hostedResourceID = "https://service.example"
 	localResourceID  = "https://local.example"
+	hostedAccountID  = "account-primary"
 )
 
 func main() {
@@ -54,6 +55,19 @@ func runSelfHosted(output io.Writer) error {
 }
 
 func runProfile(output io.Writer, selfHosted bool) error {
+	return runProfileForAccountObserved(output, selfHosted, hostedAccountID, nil)
+}
+
+func runProfileForAccount(output io.Writer, selfHosted bool, requestedAccount string) error {
+	return runProfileForAccountObserved(output, selfHosted, requestedAccount, nil)
+}
+
+func runProfileForAccountObserved(
+	output io.Writer,
+	selfHosted bool,
+	requestedAccount string,
+	observations *profileObservations,
+) error {
 	if output == nil {
 		return errors.New("hosted-service example: output is required")
 	}
@@ -140,6 +154,7 @@ func runProfile(output io.Writer, selfHosted bool) error {
 		clock: clock, resolver: resolver, network: network, httpClient: httpClient,
 		personKey: personKey, resourceKey: resourceKey,
 		registry: registry, definitions: definitions, operation: operation, definition: definition,
+		account: hostedAccountID, observations: observations,
 		requestedBudget: requestedBudget, resourceOffer: resourceOffer,
 		personGrant: personGrant, unit: unitDeclaration,
 	})
@@ -163,7 +178,9 @@ func runProfile(output io.Writer, selfHosted bool) error {
 	if _, err := fmt.Fprintln(output, "3. reviewed mission supplied the connector Person token and approved tool"); err != nil {
 		return err
 	}
-	if err := callHostedConnector(ctx, bootstrap.client, operationSet, requestedBudget, mission, roles.connector); err != nil {
+	if err := callHostedConnector(
+		ctx, bootstrap.client, operationSet, requestedBudget, requestedAccount, mission, roles.connector,
+	); err != nil {
 		return err
 	}
 	if err := bootstrap.client.CompleteMission(ctx, clientagent.MissionCompletionRequest{
@@ -178,7 +195,7 @@ func runProfile(output io.Writer, selfHosted bool) error {
 	}
 	lateResourceToken, err := bootstrap.client.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: hostedResourceID, PersonToken: missionPersonToken,
-		R3Operations: &operationSet, Budget: &requestedBudget,
+		Account: &requestedAccount, R3Operations: &operationSet, Budget: &requestedBudget,
 	})
 	if err != nil {
 		return err
@@ -188,7 +205,7 @@ func runProfile(output io.Writer, selfHosted bool) error {
 	}); err == nil {
 		return errors.New("hosted-service example: completed mission authorized more connector work")
 	}
-	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; exhausted call recovered; person-accepted mission completion retained"); err != nil {
+	if _, err := fmt.Fprintln(output, "4. account-bound MCP operation authorized; exhausted call recovered; person-accepted mission completion retained"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(output, "5. OAuth service credential remained inside the connector application"); err != nil {
