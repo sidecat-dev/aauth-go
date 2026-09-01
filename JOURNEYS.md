@@ -209,19 +209,25 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     uncertain-initial-submission recovery.
 
 - [x] **Interaction and payment relay — Implemented**
-  - Flow: Agent → PS with one exact signed URL/code relay → PS retains before
-    `202` → independently authenticated host marks engagement or no progress →
-    one explicit Agent poll consumes the terminal relay state. A configured
-    `max_wait` resolves the relay without replacing a Resource-hosted pending
-    URL as the authority for completing the underlying work.
+  - Flow: Agent → PS with one exact signed URL/code relay and optional mission
+    digest → PS verifies the exact active mission when present and retains
+    before `202` → independently authenticated host sees that same mission view
+    and marks engagement or no progress → one explicit Agent poll consumes the
+    terminal relay state. A configured `max_wait` resolves the relay without
+    replacing a Resource-hosted pending URL as the authority for completing the
+    underlying work.
   - Start with: `aauth.InteractionRelay`,
     `agent.Client.RequestInteractionRelay`, and
-    `personserver.InteractionRelayConfig`.
+    `personserver.InteractionRelayConfig`. Mission-aware applications set
+    `InteractionRelay.MissionS256`, read `InteractionRelayPolicyRequest.Mission`
+    and `InteractionRelayHandle.Mission`, and implement
+    `MissionInteractionRelayStore`.
   - Evidence: [`integration/interaction_relay_test.go`](integration/interaction_relay_test.go),
     [`personserver/storetest/interaction_relay.go`](personserver/storetest/interaction_relay.go),
+    [`personserver/storetest/mission_interaction_relay.go`](personserver/storetest/mission_interaction_relay.go),
     and `go run ./example/interactionrelay`.
-  - Missing: durable adapters, mission association and mission-log recording,
-    and stable uncertain-initial-submission recovery.
+  - Missing: mission-bound questions, durable adapters, complete cross-event
+    mission-log recording, and stable uncertain-initial-submission recovery.
 
 ### Not implemented
 

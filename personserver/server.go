@@ -6,7 +6,8 @@
 // approval, ordered accepted updates, person-accepted completion, and
 // mission-bound credential issuance. Both compositions can add missionless
 // local-action permission, mission-bound post-action audit, and one immediate
-// or deferred missionless Interaction question or relay. Three-party
+// or deferred missionless Interaction question or missionless/mission-bound
+// relay. Three-party
 // composition also supports deferred authorization, issued-token revocation,
 // and one same-Person-Server Resource call chain.
 package personserver
@@ -87,8 +88,8 @@ type FederatedAuthorizationConfig struct {
 	Audit *AuditConfig
 	// InteractionQuestion optionally enables immediate top-level questions.
 	InteractionQuestion *InteractionQuestionConfig
-	// InteractionRelay optionally relays missionless interaction and payment
-	// requirements through a retained deferred response.
+	// InteractionRelay optionally relays missionless or mission-bound
+	// interaction and payment requirements through a retained deferred response.
 	InteractionRelay *InteractionRelayConfig
 }
 
@@ -139,8 +140,8 @@ type PSAuthorizationConfig struct {
 	Audit *AuditConfig
 	// InteractionQuestion optionally enables immediate top-level questions.
 	InteractionQuestion *InteractionQuestionConfig
-	// InteractionRelay optionally relays missionless interaction and payment
-	// requirements through a retained deferred response.
+	// InteractionRelay optionally relays missionless or mission-bound
+	// interaction and payment requirements through a retained deferred response.
 	InteractionRelay *InteractionRelayConfig
 }
 
@@ -289,6 +290,7 @@ type Server struct {
 	interactionQuestionStore        InteractionQuestionStore
 	interactionRelayPolicy          func(context.Context, InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error)
 	interactionRelayStore           InteractionRelayStore
+	missionInteractionRelays        MissionInteractionRelayStore
 }
 
 type authorizationMode uint8
@@ -437,9 +439,16 @@ func newServer(config serverConfig) (*Server, error) {
 	if config.interactionQuestion != nil && config.interactionQuestion.Policy == nil {
 		return nil, errors.New("personserver: interaction question policy is required")
 	}
-	if config.interactionRelay != nil &&
-		(config.interactionRelay.Policy == nil || config.interactionRelay.Store == nil) {
-		return nil, errors.New("personserver: interaction relay policy and store are required together")
+	if config.interactionRelay != nil {
+		if config.interactionRelay.Policy == nil {
+			return nil, errors.New("personserver: interaction relay policy is required")
+		}
+		if config.missions == nil && config.interactionRelay.Store == nil {
+			return nil, errors.New("personserver: missionless interaction relay store is required")
+		}
+		if config.missions != nil && config.interactionRelay.Store != nil {
+			return nil, errors.New("personserver: mission interaction relay store must be supplied through Tokens")
+		}
 	}
 	if err := aauth.ValidateServerIdentifier(config.issuer); err != nil {
 		return nil, fmt.Errorf("personserver: issuer: %w", err)
@@ -469,6 +478,8 @@ func newServer(config serverConfig) (*Server, error) {
 	var missionAudits MissionAuditStore
 	var missionPermissions MissionPermissionStore
 	var permissions PermissionStore
+	var missionInteractionRelays MissionInteractionRelayStore
+	var interactionRelayRecords InteractionRelayStore
 	if config.missions != nil {
 		if config.missions.Approve == nil {
 			return nil, errors.New("personserver: mission approval policy is required")
@@ -500,9 +511,19 @@ func newServer(config serverConfig) (*Server, error) {
 			}
 			permissions = missionPermissions
 		}
+		if config.interactionRelay != nil {
+			missionInteractionRelays, ok = config.tokens.(MissionInteractionRelayStore)
+			if !ok {
+				return nil, errors.New("personserver: missions with interaction relay require Tokens to implement MissionInteractionRelayStore")
+			}
+			interactionRelayRecords = missionInteractionRelays
+		}
 	}
 	if config.permission != nil && config.missions == nil {
 		permissions = config.permission.Store
+	}
+	if config.interactionRelay != nil && config.missions == nil {
+		interactionRelayRecords = config.interactionRelay.Store
 	}
 	var deferredTokens DeferredTokenStore
 	if config.requirePersonTokenInteraction != nil {
@@ -534,7 +555,8 @@ func newServer(config serverConfig) (*Server, error) {
 		interactionQuestionPolicy: interactionQuestionPolicy(config.interactionQuestion),
 		interactionQuestionStore:  interactionQuestionStore(config.interactionQuestion),
 		interactionRelayPolicy:    interactionRelayPolicy(config.interactionRelay),
-		interactionRelayStore:     interactionRelayStore(config.interactionRelay),
+		interactionRelayStore:     interactionRelayRecords,
+		missionInteractionRelays:  missionInteractionRelays,
 	}, nil
 }
 

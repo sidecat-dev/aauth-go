@@ -24,17 +24,21 @@ type interactionRelayStore struct {
 func (store *interactionRelayStore) CreateInteractionRelay(_ context.Context, record personserver.InteractionRelayRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if _, exists := store.records[record.ID]; exists {
+	return createInteractionRelayRecord(store.records, record)
+}
+
+func createInteractionRelayRecord(records map[string]personserver.InteractionRelayRecord, record personserver.InteractionRelayRecord) error {
+	if _, exists := records[record.ID]; exists {
 		return personserver.ErrInteractionRelayConflict
 	}
-	store.records[record.ID] = cloneExampleRelayRecord(record)
+	records[record.ID] = cloneExampleRelayRecord(record)
 	return nil
 }
 
 func (store *interactionRelayStore) LoadInteractionRelay(_ context.Context, id string, at time.Time) (personserver.InteractionRelayRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	return store.load(id, at)
+	return loadInteractionRelayRecord(store.records, id, at)
 }
 
 func (store *interactionRelayStore) ResolveInteractionRelay(
@@ -45,7 +49,16 @@ func (store *interactionRelayStore) ResolveInteractionRelay(
 ) (personserver.InteractionRelayRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, err := store.load(id, at)
+	return resolveInteractionRelayRecord(store.records, id, status, at)
+}
+
+func resolveInteractionRelayRecord(
+	records map[string]personserver.InteractionRelayRecord,
+	id string,
+	status aauth.InteractionRelayStatus,
+	at time.Time,
+) (personserver.InteractionRelayRecord, error) {
+	record, err := loadInteractionRelayRecord(records, id, at)
 	if err != nil {
 		return personserver.InteractionRelayRecord{}, err
 	}
@@ -61,7 +74,7 @@ func (store *interactionRelayStore) ResolveInteractionRelay(
 	record.State = personserver.InteractionRelayResolved
 	record.Completion = aauth.InteractionRelayCompletion{Status: status}
 	record.ResolvedAt = at
-	store.records[id] = cloneExampleRelayRecord(record)
+	records[id] = cloneExampleRelayRecord(record)
 	return cloneExampleRelayRecord(record), nil
 }
 
@@ -73,7 +86,16 @@ func (store *interactionRelayStore) PollInteractionRelay(
 ) (personserver.InteractionRelayRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, err := store.load(id, at)
+	return pollInteractionRelayRecord(store.records, id, identity, at)
+}
+
+func pollInteractionRelayRecord(
+	records map[string]personserver.InteractionRelayRecord,
+	id string,
+	identity personserver.InteractionRelayPollIdentity,
+	at time.Time,
+) (personserver.InteractionRelayRecord, error) {
+	record, err := loadInteractionRelayRecord(records, id, at)
 	if err != nil {
 		return personserver.InteractionRelayRecord{}, err
 	}
@@ -91,7 +113,15 @@ func (store *interactionRelayStore) ConsumeInteractionRelay(
 ) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, exists := store.records[id]
+	return consumeInteractionRelayRecord(store.records, id, expected)
+}
+
+func consumeInteractionRelayRecord(
+	records map[string]personserver.InteractionRelayRecord,
+	id string,
+	expected personserver.InteractionRelayRecord,
+) error {
+	record, exists := records[id]
 	if !exists {
 		return personserver.ErrInteractionRelayNotFound
 	}
@@ -102,12 +132,16 @@ func (store *interactionRelayStore) ConsumeInteractionRelay(
 		return personserver.ErrInteractionRelayConflict
 	}
 	record.State = personserver.InteractionRelayGone
-	store.records[id] = cloneExampleRelayRecord(record)
+	records[id] = cloneExampleRelayRecord(record)
 	return nil
 }
 
-func (store *interactionRelayStore) load(id string, at time.Time) (personserver.InteractionRelayRecord, error) {
-	record, exists := store.records[id]
+func loadInteractionRelayRecord(
+	records map[string]personserver.InteractionRelayRecord,
+	id string,
+	at time.Time,
+) (personserver.InteractionRelayRecord, error) {
+	record, exists := records[id]
 	if !exists {
 		return personserver.InteractionRelayRecord{}, personserver.ErrInteractionRelayNotFound
 	}
@@ -118,7 +152,7 @@ func (store *interactionRelayStore) load(id string, at time.Time) (personserver.
 		record.State = personserver.InteractionRelayResolved
 		record.Completion = aauth.InteractionRelayCompletion{Status: aauth.InteractionRelayPending}
 		record.ResolvedAt = record.ExpiresAt
-		store.records[id] = cloneExampleRelayRecord(record)
+		records[id] = cloneExampleRelayRecord(record)
 	}
 	return cloneExampleRelayRecord(record), nil
 }

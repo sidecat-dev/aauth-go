@@ -15,7 +15,7 @@ import (
 )
 
 // InteractionRelayRequest selects the Person Server and supplies one
-// missionless interaction or payment relay.
+// interaction or payment relay, optionally associated with a mission.
 type InteractionRelayRequest struct {
 	PersonServer string
 	Relay        aauth.InteractionRelay
@@ -131,9 +131,6 @@ func (client *Client) RequestInteractionRelay(ctx context.Context, input Interac
 	}
 	if err := ctx.Err(); err != nil {
 		return InteractionRelayResult{}, fail(operation, err)
-	}
-	if input.Relay.MissionS256 != "" {
-		return InteractionRelayResult{}, fail(operation, errors.New("mission-bound interaction relays are not implemented"))
 	}
 	document, err := aauth.EncodeInteractionRelay(input.Relay)
 	if err != nil {

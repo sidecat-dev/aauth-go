@@ -20,8 +20,9 @@ var (
 	ErrInteractionRelayGone        = errors.New("personserver: interaction relay is gone")
 )
 
-// InteractionRelayConfig enables retained, missionless interaction and
-// payment relays.
+// InteractionRelayConfig enables retained interaction and payment relays.
+// With missions, Store must be nil and the server's Tokens must implement
+// MissionInteractionRelayStore.
 type InteractionRelayConfig struct {
 	Policy func(context.Context, InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error)
 	Store  InteractionRelayStore
@@ -33,6 +34,7 @@ type InteractionRelayPolicyRequest struct {
 	Agent      string
 	Document   aauth.InteractionRelayDocument
 	ReceivedAt time.Time
+	Mission    *MissionContext
 }
 
 // InteractionRelayPendingPolicy bounds one accepted relay. The request's
@@ -87,6 +89,17 @@ type InteractionRelayStore interface {
 	ConsumeInteractionRelay(context.Context, string, InteractionRelayRecord) error
 }
 
+// MissionInteractionRelayStore keeps relay transitions in the same atomic
+// boundary as mission lifecycle and mission-bound tokens.
+type MissionInteractionRelayStore interface {
+	MissionStore
+	InteractionRelayStore
+	CreateMissionInteractionRelay(context.Context, MissionRecord, InteractionRelayRecord, time.Time) error
+	ResolveMissionInteractionRelay(context.Context, MissionRecord, string, aauth.InteractionRelayStatus, time.Time) (InteractionRelayRecord, error)
+	PollMissionInteractionRelay(context.Context, MissionRecord, string, InteractionRelayPollIdentity, time.Time) (InteractionRelayRecord, error)
+	ConsumeMissionInteractionRelay(context.Context, MissionRecord, string, InteractionRelayRecord, time.Time) error
+}
+
 type interactionRelayHandleKind uint8
 
 const interactionRelayHandleVerified interactionRelayHandleKind = 1
@@ -94,8 +107,10 @@ const interactionRelayHandleVerified interactionRelayHandleKind = 1
 // InteractionRelayHandle is a non-authoritative host handle reconstructed from
 // retained state. The host authenticates the person separately.
 type InteractionRelayHandle struct {
-	kind   interactionRelayHandleKind
-	record InteractionRelayRecord
+	kind          interactionRelayHandleKind
+	record        InteractionRelayRecord
+	mission       *MissionContext
+	missionRecord *MissionRecord
 }
 
 // Reference returns the opaque relay reference.
@@ -130,6 +145,15 @@ func (handle InteractionRelayHandle) ExpiresAt() time.Time {
 	return handle.record.ExpiresAt
 }
 
+// Mission returns a caller-owned exact mission context for a mission-bound
+// relay. The bool is false for a missionless relay.
+func (handle InteractionRelayHandle) Mission() (MissionContext, bool) {
+	if handle.kind != interactionRelayHandleVerified || handle.mission == nil {
+		return MissionContext{}, false
+	}
+	return *cloneMissionContext(handle.mission), true
+}
+
 func interactionRelayPolicy(config *InteractionRelayConfig) func(
 	context.Context,
 	InteractionRelayPolicyRequest,
@@ -138,13 +162,6 @@ func interactionRelayPolicy(config *InteractionRelayConfig) func(
 		return nil
 	}
 	return config.Policy
-}
-
-func interactionRelayStore(config *InteractionRelayConfig) InteractionRelayStore {
-	if config == nil {
-		return nil
-	}
-	return config.Store
 }
 
 func (server *Server) handleVerifiedInteractionRelay(
@@ -158,19 +175,37 @@ func (server *Server) handleVerifiedInteractionRelay(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	if document.Relay.MissionS256 != "" {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission-bound interaction relays are not implemented"))
-		return
-	}
 	if server.interactionRelayPolicy == nil {
 		writeProblem(response, http.StatusFailedDependency, "interaction_unavailable", ErrInteractionRelayUnavailable)
 		return
 	}
 	receivedAt := server.clock.Now().UTC()
+	var missionRecord *MissionRecord
+	var missionContext *MissionContext
+	if document.Relay.MissionS256 != "" {
+		if server.missionInteractionRelays == nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound interaction relay is not configured"))
+			return
+		}
+		loaded, err := server.loadActiveMission(
+			request.Context(), document.Relay.MissionS256, agent.Subject, receivedAt,
+		)
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		missionRecord = &loaded
+		missionContext, err = missionContextFromRecord(loaded)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	}
 	policy, err := server.interactionRelayPolicy(request.Context(), InteractionRelayPolicyRequest{
 		Agent:      agent.Subject,
 		Document:   cloneInteractionRelayDocument(document),
 		ReceivedAt: receivedAt,
+		Mission:    missionContext,
 	})
 	if err != nil {
 		if errors.Is(err, ErrInteractionRelayUnavailable) {
@@ -224,11 +259,26 @@ func (server *Server) handleVerifiedInteractionRelay(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		if err := server.interactionRelayStore.CreateInteractionRelay(request.Context(), cloneInteractionRelayRecord(record)); err != nil {
-			if errors.Is(err, ErrInteractionRelayConflict) {
+		var createErr error
+		if missionRecord != nil {
+			createErr = server.missionInteractionRelays.CreateMissionInteractionRelay(
+				request.Context(), cloneMissionRecordForTransition(*missionRecord),
+				cloneInteractionRelayRecord(record), server.clock.Now().UTC(),
+			)
+		} else {
+			createErr = server.interactionRelayStore.CreateInteractionRelay(
+				request.Context(), cloneInteractionRelayRecord(record),
+			)
+		}
+		if createErr != nil {
+			if errors.Is(createErr, ErrInteractionRelayConflict) {
 				continue
 			}
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			if missionRecord != nil {
+				writeMissionActionProblem(response, createErr)
+				return
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", createErr)
 			return
 		}
 		server.writePendingInteractionQuestion(response, "/interaction/relay/"+id, record.RetryAfter)
@@ -257,9 +307,32 @@ func (server *Server) ResumeInteractionRelay(ctx context.Context, reference stri
 		record.PersonServer != server.issuer || record.State != InteractionRelayPending {
 		return InteractionRelayHandle{}, ErrInteractionRelayConflict
 	}
+	var mission *MissionContext
+	var missionRecord *MissionRecord
+	if record.Document.Relay.MissionS256 != "" {
+		if server.missionInteractionRelays == nil {
+			return InteractionRelayHandle{}, ErrInteractionRelayConflict
+		}
+		loaded, err := server.loadActiveMission(
+			ctx, record.Document.Relay.MissionS256, record.Agent, now,
+		)
+		if err != nil {
+			return InteractionRelayHandle{}, err
+		}
+		mission, err = missionContextFromRecord(loaded)
+		if err != nil {
+			return InteractionRelayHandle{}, err
+		}
+		missionRecord = &loaded
+	}
+	var retainedMission *MissionRecord
+	if missionRecord != nil {
+		clone := cloneMissionRecordForTransition(*missionRecord)
+		retainedMission = &clone
+	}
 	return InteractionRelayHandle{
-		kind:   interactionRelayHandleVerified,
-		record: cloneInteractionRelayRecord(record),
+		kind: interactionRelayHandleVerified, record: cloneInteractionRelayRecord(record),
+		mission: cloneMissionContext(mission), missionRecord: retainedMission,
 	}, nil
 }
 
@@ -289,12 +362,32 @@ func (server *Server) resolveInteractionRelay(
 		validateInteractionRelayRecord(handle.record) != nil || handle.record.PersonServer != server.issuer {
 		return ErrInteractionRelayConflict
 	}
-	_, err := server.interactionRelayStore.ResolveInteractionRelay(
-		ctx,
-		handle.record.ID,
-		status,
-		server.clock.Now().UTC(),
-	)
+	now := server.clock.Now().UTC()
+	if handle.record.Document.Relay.MissionS256 != "" {
+		if server.missionInteractionRelays == nil || handle.mission == nil || handle.missionRecord == nil ||
+			handle.mission.S256 != handle.record.Document.Relay.MissionS256 ||
+			handle.missionRecord.S256 != handle.record.Document.Relay.MissionS256 ||
+			handle.missionRecord.Agent != handle.record.Agent {
+			return ErrInteractionRelayConflict
+		}
+		loaded, err := server.loadActiveMission(
+			ctx, handle.missionRecord.S256, handle.missionRecord.Agent, now,
+		)
+		if err != nil {
+			return err
+		}
+		if !handle.missionRecord.Equal(loaded) {
+			return ErrMissionConflict
+		}
+		_, err = server.missionInteractionRelays.ResolveMissionInteractionRelay(
+			ctx, cloneMissionRecordForTransition(*handle.missionRecord), handle.record.ID, status, now,
+		)
+		return err
+	}
+	if handle.mission != nil || handle.missionRecord != nil {
+		return ErrInteractionRelayConflict
+	}
+	_, err := server.interactionRelayStore.ResolveInteractionRelay(ctx, handle.record.ID, status, now)
 	return err
 }
 
@@ -324,8 +417,44 @@ func (server *Server) handlePendingInteractionRelay(response http.ResponseWriter
 	}
 	id := request.PathValue("id")
 	now := server.clock.Now().UTC()
-	record, err := server.interactionRelayStore.PollInteractionRelay(request.Context(), id, identity, now)
+	var mission *MissionRecord
+	var record InteractionRelayRecord
+	if server.missionInteractionRelays != nil {
+		peek, peekErr := server.interactionRelayStore.LoadInteractionRelay(request.Context(), id, now)
+		if peekErr == nil && peek.Document.Relay.MissionS256 != "" {
+			if peek.PersonServer != identity.PersonServer || peek.AgentProvider != identity.AgentProvider ||
+				peek.Agent != identity.Agent || peek.ConfirmationThumbprint != identity.ConfirmationThumbprint {
+				writeProblem(response, http.StatusGone, "invalid_code", ErrInteractionRelayNotFound)
+				return
+			}
+			if validateInteractionRelayRecordAt(peek, now) != nil || peek.ID != id {
+				writeProblem(response, http.StatusInternalServerError, "server_error", ErrInteractionRelayConflict)
+				return
+			}
+			loaded, loadErr := server.loadActiveMission(
+				request.Context(), peek.Document.Relay.MissionS256, identity.Agent, now,
+			)
+			if loadErr != nil {
+				writeMissionActionProblem(response, loadErr)
+				return
+			}
+			mission = &loaded
+			record, err = server.missionInteractionRelays.PollMissionInteractionRelay(
+				request.Context(), cloneMissionRecordForTransition(loaded), id, identity, now,
+			)
+		} else if peekErr != nil {
+			err = peekErr
+		} else {
+			record, err = server.interactionRelayStore.PollInteractionRelay(request.Context(), id, identity, now)
+		}
+	} else {
+		record, err = server.interactionRelayStore.PollInteractionRelay(request.Context(), id, identity, now)
+	}
 	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
 		server.writeInteractionRelayStoreError(response, err)
 		return
 	}
@@ -348,11 +477,21 @@ func (server *Server) handlePendingInteractionRelay(response http.ResponseWriter
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if err := server.interactionRelayStore.ConsumeInteractionRelay(
-		request.Context(),
-		record.ID,
-		cloneInteractionRelayRecord(record),
-	); err != nil {
+	if mission != nil {
+		err = server.missionInteractionRelays.ConsumeMissionInteractionRelay(
+			request.Context(), cloneMissionRecordForTransition(*mission), record.ID,
+			cloneInteractionRelayRecord(record), server.clock.Now().UTC(),
+		)
+	} else {
+		err = server.interactionRelayStore.ConsumeInteractionRelay(
+			request.Context(), record.ID, cloneInteractionRelayRecord(record),
+		)
+	}
+	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
 		server.writeInteractionRelayStoreError(response, err)
 		return
 	}
@@ -384,7 +523,7 @@ func validateInteractionRelayRecord(record InteractionRelayRecord) error {
 	}
 	decoded, err := aauth.DecodeInteractionRelay(record.Document.ExactJSON)
 	if err != nil || decoded.Relay != record.Document.Relay ||
-		!bytes.Equal(decoded.ExactJSON, record.Document.ExactJSON) || decoded.Relay.MissionS256 != "" {
+		!bytes.Equal(decoded.ExactJSON, record.Document.ExactJSON) {
 		return ErrInteractionRelayConflict
 	}
 	switch record.State {

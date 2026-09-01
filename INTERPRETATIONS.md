@@ -1208,13 +1208,19 @@ response gap.
 **Sources:** AAuth Core, `Interaction Request`, `Interaction Response`,
 `Interaction Relay`, and `Deferred Responses`.
 
-The relay path is top-level and missionless. `interaction` and `payment`
-documents preserve the exact signed JSON while exposing a validated HTTPS URL,
-code, optional untrusted Markdown description, and whole-second `max_wait`.
-The Person Server retains a focused relay record before `202`. Host policy
-chooses whether it has a person channel; `interaction_unavailable` is the
-defined non-terminal refusal and returns the original document to the Agent
-application for direct presentation.
+The relay path may be top-level missionless or name one active mission.
+`interaction` and `payment` documents preserve the exact signed JSON while
+exposing a validated HTTPS URL, code, optional untrusted Markdown description,
+whole-second `max_wait`, and optional `mission_s256`. When a mission is named,
+policy and the resumed host receive the same exact active mission view, and
+create, resolution, poll, and consume share its lifecycle boundary. This is a
+focused relay sublog, not the complete cross-event mission log. Mission-bound
+questions remain unimplemented.
+
+The Person Server retains the relay record before `202`. Host policy chooses
+whether it has a person channel; `interaction_unavailable` is the defined
+non-terminal refusal and returns the original document to the Agent application
+for direct presentation.
 
 An accepted relay creates only Person Server delivery-progress authority. A
 separately authenticated host marks that the person engaged or that the server

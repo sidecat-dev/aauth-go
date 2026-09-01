@@ -79,6 +79,37 @@ func TestRequestInteractionRelayReturnsFallbackOrVerifiedContinuation(t *testing
 	}
 }
 
+func TestRequestInteractionRelayCarriesMissionDigest(t *testing.T) {
+	fixture := newInteractionRelayFixture(t)
+	mission := aauth.MissionS256([]byte(`{"description":"complete payment"}`))
+	input := agent.InteractionRelayRequest{
+		PersonServer: fixture.protocol.personServerID,
+		Relay: aauth.InteractionRelay{
+			Type: aauth.InteractionRelayPayment, URL: "https://resource.example/pay",
+			Code: "X7K2-M9P4", MissionS256: mission,
+		},
+	}
+	want, err := aauth.EncodeInteractionRelay(input.Relay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.wantRequest = want.ExactJSON
+	fixture.submit = func(request *http.Request) *http.Response {
+		response := interactionQuestionResponse(request, http.StatusAccepted, []byte(`{"status":"pending"}`))
+		response.Header.Set("Location", "/interaction/pending/relay-mission")
+		response.Header.Set("Retry-After", "1")
+		response.Header.Set("Cache-Control", "no-store")
+		return response
+	}
+	result, err := fixture.client.RequestInteractionRelay(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result.Pending(); !ok {
+		t.Fatal("mission relay did not return pending")
+	}
+}
+
 func TestPollInteractionRelayPreservesInteractingAndReturnsTerminalState(t *testing.T) {
 	fixture := newInteractionRelayFixture(t)
 	fixture.submit = func(request *http.Request) *http.Response {
@@ -201,7 +232,7 @@ func TestRequestInteractionRelayRejectsInvalidInputBeforeNetwork(t *testing.T) {
 		{},
 		{PersonServer: protocol.personServerID},
 		{PersonServer: protocol.personServerID, Relay: aauth.InteractionRelay{Type: aauth.InteractionRelayInteraction, URL: "http://resource.example/a", Code: "ABCD-EFGH"}},
-		{PersonServer: protocol.personServerID, Relay: aauth.InteractionRelay{Type: aauth.InteractionRelayInteraction, URL: "https://resource.example/a", Code: "ABCD-EFGH", MissionS256: aauth.MissionS256([]byte("unsupported"))}},
+		{PersonServer: protocol.personServerID, Relay: aauth.InteractionRelay{Type: aauth.InteractionRelayInteraction, URL: "https://resource.example/a", Code: "ABCD-EFGH", MissionS256: "not-a-digest"}},
 	} {
 		if _, err := client.RequestInteractionRelay(context.Background(), input); err == nil {
 			t.Fatalf("invalid relay accepted: %#v", input)

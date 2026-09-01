@@ -55,6 +55,145 @@ func TestInteractionRelayRetainsBeforeDeferredResponseInBothPersonServerModes(t 
 	}
 }
 
+func TestMissionInteractionRelayPolicyAndHostUseExactActiveMission(t *testing.T) {
+	protocol := newInteractionQuestionProtocol(t)
+	store := &missionRelayTestStore{
+		memoryMissionStore: newMemoryMissionStore(), relayTestStore: newRelayTestStore(),
+	}
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Complete the approved payment.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionRecord := MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}
+	if err := store.CommitMission(context.Background(), missionRecord, nil); err != nil {
+		t.Fatal(err)
+	}
+	policyCalls := 0
+	config := PSAuthorizationConfig{
+		Issuer: protocol.personServerID, SigningKey: protocol.personKey, KeyResolver: protocol.resolver,
+		Clock: protocol.clock, NewID: func() string { return "mission-relay-token" }, Tokens: store,
+		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) {
+			return Person{Subject: "person", Lifetime: time.Minute}, nil
+		},
+		Authorize: func(context.Context, AuthorizationRequest) (AuthorizationDecision, error) {
+			return AuthorizationDecision{Scopes: []string{"read"}, Lifetime: time.Minute}, nil
+		},
+		Missions: permissionMissionConfig(),
+		InteractionRelay: &InteractionRelayConfig{
+			Policy: func(_ context.Context, request InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error) {
+				policyCalls++
+				if request.Mission == nil || request.Mission.S256 != mission.S256 ||
+					request.Mission.Blob.Description != mission.Blob.Description {
+					t.Fatalf("mission relay policy = %#v", request.Mission)
+				}
+				return InteractionRelayPendingPolicy{Lifetime: 5 * time.Minute}, nil
+			},
+		},
+	}
+	server, err := NewPSAuthorization(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"type":"payment","url":"https://merchant.example/pay","code":"X7K2-M9P4","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusAccepted || policyCalls != 1 || store.createMissionCalls != 1 {
+		t.Fatalf("mission relay response=%d %s policy=%d creates=%d", response.Code, response.Body.String(), policyCalls, store.createMissionCalls)
+	}
+	reference := strings.TrimPrefix(response.Header().Get("Location"), "/interaction/relay/")
+	handle, err := server.ResumeInteractionRelay(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok := handle.Mission()
+	if !ok || missionContext.S256 != mission.S256 {
+		t.Fatalf("mission relay host context = %#v, %t", missionContext, ok)
+	}
+	update, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{
+		Action: "update", Description: "Use the final approved payment amount.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendMissionUpdate(context.Background(), missionRecord, protocol.now.Add(time.Second), update); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.MarkInteractionRelayEngaged(context.Background(), handle); !errors.Is(err, ErrMissionConflict) {
+		t.Fatalf("relay resolution against unseen mission update = %v", err)
+	}
+	handle, err = server.ResumeInteractionRelay(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok = handle.Mission()
+	if !ok || len(missionContext.AcceptedUpdates) != 1 {
+		t.Fatalf("updated relay mission context = %#v, %t", missionContext, ok)
+	}
+	if err := server.MarkInteractionRelayEngaged(context.Background(), handle); err != nil {
+		t.Fatal(err)
+	}
+	store.terminateMission(protocol.agentID, mission.S256, "revoked")
+	poll := pollInteractionRelay(t, protocol, server, response.Header().Get("Location"))
+	assertAuditProblem(t, poll, http.StatusForbidden, "mission_terminated", "terminated", "revoked")
+}
+
+func TestMissionInteractionRelayIsAvailableInFederatedMode(t *testing.T) {
+	protocol := newInteractionQuestionProtocol(t)
+	store := &missionRelayTestStore{
+		memoryMissionStore: newMemoryMissionStore(), relayTestStore: newRelayTestStore(),
+	}
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Complete the approved confirmation.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitMission(context.Background(), MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewFederatedAuthorization(FederatedAuthorizationConfig{
+		Issuer: protocol.personServerID, SigningKey: protocol.personKey, KeyResolver: protocol.resolver,
+		Clock: protocol.clock, NewID: func() string { return "mission-relay-token" }, Tokens: store,
+		HTTPClient: &http.Client{}, AccessServerEndpoint: func(context.Context, string) (string, error) {
+			return "https://access.example/token", nil
+		},
+		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) {
+			return Person{Subject: "person", Lifetime: time.Minute}, nil
+		},
+		Consent:  func(context.Context, AuthorizationRequest) error { return nil },
+		Missions: permissionMissionConfig(),
+		InteractionRelay: &InteractionRelayConfig{
+			Policy: func(_ context.Context, request InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error) {
+				if request.Mission == nil || request.Mission.S256 != mission.S256 {
+					t.Fatalf("federated mission relay policy = %#v", request.Mission)
+				}
+				return InteractionRelayPendingPolicy{Lifetime: time.Minute}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"type":"interaction","url":"https://resource.example/confirm","code":"ABCD-EFGH","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusAccepted || store.createMissionCalls != 1 {
+		t.Fatalf("federated mission relay response=%d %s creates=%d", response.Code, response.Body.String(), store.createMissionCalls)
+	}
+}
+
 func TestInteractionRelayHostEngagementResolvesOnce(t *testing.T) {
 	protocol := newInteractionQuestionProtocol(t)
 	store := newRelayTestStore()
@@ -214,6 +353,141 @@ type relayTestStore struct {
 	mu          sync.Mutex
 	records     map[string]InteractionRelayRecord
 	createCalls int
+}
+
+type missionRelayTestStore struct {
+	*memoryMissionStore
+	*relayTestStore
+	createMissionCalls int
+}
+
+func (store *missionRelayTestStore) CreateMissionInteractionRelay(
+	_ context.Context,
+	expected MissionRecord,
+	record InteractionRelayRecord,
+	at time.Time,
+) error {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.relayTestStore.mu.Lock()
+	defer store.relayTestStore.mu.Unlock()
+	store.createMissionCalls++
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if record.Agent != expected.Agent || record.Document.Relay.MissionS256 != expected.S256 {
+		return ErrMissionConflict
+	}
+	if _, exists := store.relayTestStore.records[record.ID]; exists {
+		return ErrInteractionRelayConflict
+	}
+	store.relayTestStore.records[record.ID] = cloneRelayTestRecord(record)
+	return nil
+}
+
+func (store *missionRelayTestStore) ResolveMissionInteractionRelay(
+	_ context.Context,
+	expected MissionRecord,
+	id string,
+	status aauth.InteractionRelayStatus,
+	at time.Time,
+) (InteractionRelayRecord, error) {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.relayTestStore.mu.Lock()
+	defer store.relayTestStore.mu.Unlock()
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return InteractionRelayRecord{}, err
+	}
+	record, err := store.requireMissionRelay(id, expected)
+	if err != nil {
+		return InteractionRelayRecord{}, err
+	}
+	if record.State == InteractionRelayResolved {
+		if record.Completion.Status == status {
+			return cloneRelayTestRecord(record), nil
+		}
+		return InteractionRelayRecord{}, ErrInteractionRelayConflict
+	}
+	if record.State != InteractionRelayPending {
+		return InteractionRelayRecord{}, ErrInteractionRelayConflict
+	}
+	record.State = InteractionRelayResolved
+	record.Completion = aauth.InteractionRelayCompletion{Status: status}
+	record.ResolvedAt = at
+	store.relayTestStore.records[id] = cloneRelayTestRecord(record)
+	return cloneRelayTestRecord(record), nil
+}
+
+func (store *missionRelayTestStore) PollMissionInteractionRelay(
+	_ context.Context,
+	expected MissionRecord,
+	id string,
+	identity InteractionRelayPollIdentity,
+	at time.Time,
+) (InteractionRelayRecord, error) {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.relayTestStore.mu.Lock()
+	defer store.relayTestStore.mu.Unlock()
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return InteractionRelayRecord{}, err
+	}
+	record, err := store.requireMissionRelay(id, expected)
+	if err != nil {
+		return InteractionRelayRecord{}, err
+	}
+	if record.PersonServer != identity.PersonServer || record.AgentProvider != identity.AgentProvider ||
+		record.Agent != identity.Agent || record.ConfirmationThumbprint != identity.ConfirmationThumbprint {
+		return InteractionRelayRecord{}, ErrInteractionRelayNotFound
+	}
+	if record.State == InteractionRelayPending && !at.Before(record.ExpiresAt) {
+		record.State = InteractionRelayResolved
+		record.Completion = aauth.InteractionRelayCompletion{Status: aauth.InteractionRelayPending}
+		record.ResolvedAt = record.ExpiresAt
+		store.relayTestStore.records[id] = cloneRelayTestRecord(record)
+	}
+	return cloneRelayTestRecord(record), nil
+}
+
+func (store *missionRelayTestStore) ConsumeMissionInteractionRelay(
+	_ context.Context,
+	expected MissionRecord,
+	id string,
+	want InteractionRelayRecord,
+	at time.Time,
+) error {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.relayTestStore.mu.Lock()
+	defer store.relayTestStore.mu.Unlock()
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	record, err := store.requireMissionRelay(id, expected)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(record, want) || record.State != InteractionRelayResolved {
+		return ErrInteractionRelayConflict
+	}
+	record.State = InteractionRelayGone
+	store.relayTestStore.records[id] = cloneRelayTestRecord(record)
+	return nil
+}
+
+func (store *missionRelayTestStore) requireMissionRelay(
+	id string,
+	mission MissionRecord,
+) (InteractionRelayRecord, error) {
+	record, exists := store.relayTestStore.records[id]
+	if !exists {
+		return InteractionRelayRecord{}, ErrInteractionRelayNotFound
+	}
+	if record.Agent != mission.Agent || record.Document.Relay.MissionS256 != mission.S256 {
+		return InteractionRelayRecord{}, ErrMissionConflict
+	}
+	return record, nil
 }
 
 func newRelayTestStore() *relayTestStore {

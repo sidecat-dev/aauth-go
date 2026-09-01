@@ -305,10 +305,10 @@ sequenceDiagram
     participant Host as Host policy
     participant P as Person
     R-->>A: 202 + Resource pending URL + URL/code requirement
-    A->>PS: One signed interaction or payment relay
-    PS->>PS: Retain exact relay before 202
+    A->>PS: One signed relay, optionally naming an active mission
+    PS->>PS: Verify mission when named; retain exact relay before 202
     PS-->>A: PS relay pending URL
-    PS->>Host: Exact untrusted description, URL, and code
+    PS->>Host: Exact mission view, description, URL, and code
     Host->>P: Present the relay through a host-selected channel
     P-->>Host: Engage with the Resource URL
     Host->>PS: Mark engagement
@@ -317,11 +317,15 @@ sequenceDiagram
     A->>R: Continue polling the authoritative Resource URL
 ```
 
-`RequestInteractionRelay` submits one missionless `interaction` or `payment`.
-The Person Server retains the exact request before `202`; a separately
-authenticated host either marks engagement or states that it can make no more
-progress. `max_wait` can shorten the policy window. `PollInteractionRelay`
-performs exactly one poll and never follows the Resource URL.
+`RequestInteractionRelay` submits one `interaction` or `payment`, optionally
+bound to an active mission by `mission_s256`. For a mission-bound relay, policy
+and the separately authenticated host receive the same exact mission view;
+create, resolution, poll, and terminal consume all compare mission lifecycle
+state in the relay store's transaction. The Person Server retains the exact
+request before `202`; the host either marks engagement or states that it can
+make no more progress. `max_wait` can shorten the policy window.
+`PollInteractionRelay` performs exactly one poll and never follows the Resource
+URL.
 
 When the Person Server returns `424 interaction_unavailable`, the Agent result
 returns the original verified URL and code for direct presentation. Once a

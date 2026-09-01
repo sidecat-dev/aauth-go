@@ -94,13 +94,14 @@ audit store extends the mission lifecycle boundary because an append must race
 atomically with expiry or completion. Audit does not execute the action, and
 it does not create a general evidence container.
 
-The current Interaction Endpoint slice is one top-level missionless question.
-The root package owns exact question and answer documents, `agent` performs one
-signed request or poll, and `personserver` hands untrusted Markdown to host
-policy in either composition. `InteractionQuestionStore` owns only a bounded
-pending question, identity binding, host answer, expiry, and single terminal
-consumption. It is not a generic interaction engine. Mission composition and
-the interaction and payment relay state machines remain distinct later work.
+The current Interaction Endpoint slice has one top-level missionless question
+and separate missionless or mission-bound relay state machines. The root
+package owns exact documents, `agent` performs one signed request or poll, and
+`personserver` hands untrusted Markdown to host policy in either composition.
+`InteractionQuestionStore` owns only a bounded pending question, while
+`MissionInteractionRelayStore` extends the existing mission boundary for relay
+create, resolution, poll, and consume. Neither is a generic interaction engine,
+and mission-bound questions remain later work.
 
 The current model includes focused `r3`, `events`, and `budgets` protocol
 packages. Sections below distinguish their implemented profiles from target
@@ -434,6 +435,13 @@ Audit-entry order. Identical records are distinct actions, not idempotent
 retries. A host read is owner-scoped; the current HTTP surface exposes
 submission only. Cross-event ordering with updates, tokens, permissions, and
 interactions belongs to the still-unimplemented complete mission log.
+
+Mission-bound interaction relay state follows the same composition rule.
+`MissionInteractionRelayStore` embeds the ordinary mission and relay contracts
+so all relay transitions compare the exact active mission atomically. Policy
+and a resumed host handle receive caller-owned copies of that mission view. A
+relay remains a delivery-progress sublog; it does not become the complete
+cross-event mission log or the authority for the Resource operation.
 
 ### `resource`
 
