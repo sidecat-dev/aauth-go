@@ -23,6 +23,11 @@ go run gitlab.com/sidecat-dev/aauth-go/example/threeparty@latest
 ```
 
 It carries an Agent through a Person Server to one protected Resource call.
+For a standalone external module that runs an Agent and local service as
+separate TLS processes, persists their application state, restarts them, and
+then revokes the active Agent token, use
+[`walkthrough/local`](walkthrough/local).
+
 For a self-hosted Agent with a local permission boundary, direct local access,
 an explicit hosted account-link interaction, and one account-bound hosted
 Resource call, run:
@@ -58,6 +63,7 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | Need | Start with |
 | --- | --- |
 | Direct Agent or Person identity | [`example/agentidentity`](example/agentidentity) |
+| Separate local TLS processes, durable state, restart, and revocation | [`walkthrough/local`](walkthrough/local) |
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
 | Account-bound four-party fixed Budget through an Access Server | [`example/budgetfourparty`](example/budgetfourparty) |

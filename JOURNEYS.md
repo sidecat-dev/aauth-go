@@ -31,6 +31,23 @@ Specifications:
 
 ## Repository deployment profiles
 
+- [x] **Local durable process walkthrough — Implemented**
+  - Flow: standalone external module → generated local CA and distinct role
+    keys → Agent and service TLS processes → unsigned request refused before
+    application use → missionless permission → signed protected note creation
+    → both processes restart → exact retained result returned without a second
+    note → issuing Agent Provider revokes the token at the Person Server and
+    Resource → later action refused before dispatch.
+  - Start with: [`walkthrough/local`](walkthrough/local). It requires the
+    published module without a `replace` directive or private-package import.
+  - Evidence: `walkthrough/local/acceptance_test.go`, the public permission and
+    Agent-token revocation store contracts, and the restart-specific store
+    test in `walkthrough/local/store_contract_test.go`.
+  - Boundary: loopback-only development certificates and single-process JSON
+    file ownership. It does not claim hosted deployment, multi-process store
+    coordination, browser authentication, mission or Budget authorization, or
+    independent implementation interoperability.
+
 - [x] **Local Agent composition — Implemented**
   - Flow: self-hosted Agent Provider metadata and JWKS → self-issued Agent
     token naming a local Person Server → typed permission for one local action

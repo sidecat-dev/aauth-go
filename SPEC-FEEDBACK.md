@@ -7,9 +7,12 @@ editor answers remain authoritative.
 
 ## Submission dashboard
 
-**Last reconciled:** 2026-08-31
+**Last reconciled:** 2026-09-01
 
-- No current `AAG-F` finding in this register has been submitted upstream.
+- Four current findings were submitted on 2026-09-01: `AAG-F008` as a comment
+  on issue 104, `AAG-F011` as a comment on issue 88, and `AAG-F061` and
+  `AAG-F089` as issues 121 and 122 respectively. Every other current `AAG-F`
+  finding remains unsubmitted.
 - `AAG-H001`, `AAG-H002`, and `AAG-H003` are delivered historical feedback.
 - A submitted item must name its submission date and public issue, pull
   request, or comment URL. If no public record exists, it must say so
@@ -120,10 +123,10 @@ This compact index preserves the prior register without carrying obsolete
 implementation journals into the library. Detailed current questions appear
 below where evidence is ready.
 
-Every `AAG-F` item in this index and in **Current unsubmitted questions** is
-unsubmitted unless its own section is moved to submitted history and names an
-upstream record. Descriptions such as “implementation bridge evidenced” report
-local evidence maturity; they do not mean the question was sent.
+Every `AAG-F` item in this index and in **Current findings and questions** is
+unsubmitted unless its status says otherwise and its section names an upstream
+record. Descriptions such as “implementation bridge evidenced” report local
+evidence maturity; they do not mean the question was sent.
 
 | ID | Question | Current status |
 | --- | --- | --- |
@@ -134,10 +137,10 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | immutable Resource store, conflict evidence, and complete direct-grant journey implemented |
 | AAG-F006 | R3 example hashes are not executable SHA-256 vectors | evidence pending until a source-example vector test is added |
 | AAG-F007 | Mission completion still appears in the introductory interaction list after moving endpoints | withdrawn: current Interaction Endpoint explicitly excludes mission completion |
-| AAG-F008 | Clarification requires an `agent` claim removed from resource tokens | ready below |
+| AAG-F008 | Clarification requires an `agent` claim removed from resource tokens | submitted as issue 104 comment |
 | AAG-F009 | Person-token policy denial has no registered error | ready below |
 | AAG-F010 | Four-party person and tenant context use the wrong issuer namespace | ready below |
-| AAG-F011 | Closed issues 88 and 89 are not reflected in the person-token endpoint text | ready below |
+| AAG-F011 | Closed issues 88 and 89 are not reflected in the person-token endpoint text | submitted as issue 88 comment |
 | AAG-F012 | A lost initial deferred `202` has no stable recovery identity | ready below with typed uncertain mission-proposal submission evidence |
 | AAG-F013 | Restored deferred state can lose the verified request authority | held-store boundary implemented; generic deferred rule remains open |
 | AAG-F014 | R3 protected challenges do not define who selects the exact operation | exact-request Resource mapping covers direct and per-call enforcement |
@@ -158,11 +161,12 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F104 | Core both permits and forbids self-hosted Agent Providers | ready below with ordinary metadata, issuance, and protected-use evidence |
 | AAG-F105 | Deferred mission approval does not define Agent key renewal before token delivery | ready below with original-key and rotated-key polling evidence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
+| AAG-F089 | An omitted PS-to-AS Budget ceiling is indistinguishable from extension non-participation | submitted as issue 122 |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
 | AAG-F059 | Mission proposal policy denial has no registered error | ready below with immediate mission evidence |
 | AAG-F060 | Unknown mission references at the Person Token Endpoint have no assigned error | ready below with ownership-safe refusal evidence |
-| AAG-F061 | A Resource and Access Server cannot directly enforce mission expiry without receiving mission content | implementation bridges recorded; ready below |
+| AAG-F061 | A Resource and Access Server cannot directly enforce mission expiry without receiving mission content | submitted as issue 121 |
 | AAG-F062 | `approved_at` alone does not make a mission digest globally unique | ready below with immediate mission evidence |
 | AAG-F063 | The exact byte object identified by a mission-update digest is underspecified | ready below with exact-body implementation evidence |
 | AAG-F064 | Immediate mission-action refusal is undefined, including its error if allowed | ready below with typed provisional refusal evidence |
@@ -188,11 +192,12 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F084 | The Events public-registration example leaves subscription parameters outside the signed content digest | ready below with body-bound registration evidence |
 | AAG-F085 | Events disagrees on whether the Resource stores or re-resolves the AP event endpoint | ready below with delivery-time endpoint-change evidence |
 
-## Current unsubmitted questions
+## Current findings and questions
 
 The questions below come from the pinned editor sources in
 [SPECIFICATIONS.md](SPECIFICATIONS.md). Their placement notes avoid duplicating
-existing discussions.
+existing discussions. Each submitted finding names its public upstream record;
+every other finding remains unsubmitted.
 
 ### AAG-F003 — Audit delivery has no stable retry identity after a lost `201`
 
@@ -396,7 +401,11 @@ not, which identifier and error shape apply?
 
 ### AAG-F008 — Updated clarification requests refer to a removed `agent` claim
 
-**Status:** ready / unsubmitted
+**Status:** submitted / still open
+
+**Submitted:** 2026-09-01
+
+**Upstream record:** [comment on AAuth issue 104](https://github.com/dickhardt/AAuth/issues/104#issuecomment-5498039783)
 
 **Source:** AAuth Core, `Updated Request` and `Resource Token Structure`.
 
@@ -415,11 +424,16 @@ and Person Server value recomposition around retained state while deliberately
 refusing to implement `updated_request`. That separation confirms this is a
 source-binding gap, not a missing common clarification primitive.
 
-**Placement:** Add this instance to
-[AAuth issue 104](https://github.com/dickhardt/AAuth/issues/104), which collects
-remaining agent-token references after the person-token change.
+**Placement:** Submitted to AAuth issue 104, which collects remaining
+agent-token references after the person-token change.
 
 ### AAG-F011 — The person-token endpoint omits eight resolved request parameters
+
+**Status:** submitted / still open
+
+**Submitted:** 2026-09-01
+
+**Upstream record:** [comment on AAuth issue 88](https://github.com/dickhardt/AAuth/issues/88#issuecomment-5498039809)
 
 **Source:** AAuth Core, `Person Token Endpoint` and `Agent Token Request`.
 
@@ -438,8 +452,9 @@ does not yet contain that edit.
 semantics into `Person Token Endpoint`, including the rule that a PS should not
 return an interaction requirement when `capabilities` excludes interaction?
 
-**Placement:** Comment on issue 88 and cross-link issue 89. Both issues are
-closed with the same recorded resolution, so a new issue would duplicate it.
+**Placement:** Submitted to issue 88 and cross-linked there to issue 89. Both
+issues are closed with the same recorded resolution, so a new issue would have
+duplicated it.
 
 ### AAG-F009 — Person-token policy denial has no registered error
 
@@ -494,6 +509,12 @@ should the token error registry add an ownership-safe mission-reference error?
 
 ### AAG-F061 — A Resource and Access Server cannot read the mission expiry they must enforce
 
+**Status:** submitted / still open
+
+**Submitted:** 2026-09-01
+
+**Upstream record:** [AAuth issue 121](https://github.com/dickhardt/AAuth/issues/121)
+
 **Source:** AAuth Core, `Mission Approval`, `Resource Token Structure`, and
 `Why Mission Content Stays at the PS`.
 
@@ -509,7 +530,7 @@ mission expiry before release.
 preceding mission-bound token's authenticated expiry ceiling, or expose another
 authenticated mission-expiry value?
 
-**Placement:** Open a focused Core mission-lifetime clarification.
+**Placement:** Submitted as focused Core mission-lifetime issue 121.
 
 ### AAG-F062 — `approved_at` does not ensure a globally unique mission digest
 
@@ -1745,7 +1766,11 @@ Resource offer policy as implementation evidence.
 
 ### AAG-F089 — Auth-token Budget omission can bypass Person Server narrowing
 
-**Status:** ready / unsubmitted
+**Status:** submitted / still open
+
+**Submitted:** 2026-09-01
+
+**Upstream record:** [AAuth issue 122](https://github.com/dickhardt/AAuth/issues/122)
 
 **Source:** AAuth Budgets, `PS-to-AS Token Request Extensions`, `Auth Token
 Extensions`, and `The Resource Enforces`.
@@ -1764,7 +1789,7 @@ an explicit signed Budget in the successful Auth token before metered use.
 hop carry an explicit equal-or-narrower Budget, with omission meaning no grant
 or refusal at both PS-to-AS and Auth-token issuance?
 
-**Placement:** Open a focused Budgets authorization issue.
+**Placement:** Submitted as focused Budgets authorization issue 122.
 
 ### AAG-F090 — The exhausted example charges a refused request
 

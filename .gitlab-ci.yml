@@ -17,13 +17,22 @@ test:
   stage: verify
   script:
     - go test ./... -count=1
+    - cd walkthrough/local && go test ./... -count=1
 
 race:
   stage: verify
   script:
     - go test -race ./... -count=1
+    - cd walkthrough/local && go test -race ./... -count=1
 
 vet:
   stage: verify
   script:
     - go vet ./...
+    - cd walkthrough/local && go vet ./...
+
+build:
+  stage: verify
+  script:
+    - go build ./...
+    - cd walkthrough/local && go build ./...
