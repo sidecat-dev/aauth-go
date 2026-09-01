@@ -18,7 +18,7 @@ import (
 const maximumRevocationResponseBytes = 1 << 20
 
 // RevocationClientConfig supplies transport and egress policy for Agent-token
-// revocation at a Person Server.
+// revocation at Person Servers and direct Agent-identity Resources.
 type RevocationClientConfig struct {
 	Provider   *Server
 	HTTPClient *http.Client
@@ -31,6 +31,16 @@ type RevocationClient struct {
 	provider *Server
 	client   *http.Client
 	admit    signaturekey.EgressAdmitter
+}
+
+type revocationTarget struct {
+	label        string
+	metadataPath string
+}
+
+type revocationProfile struct {
+	endpoint             string
+	additionalComponents []string
 }
 
 // NewRevocationClient constructs an Agent Provider revocation client.
@@ -47,14 +57,45 @@ func NewRevocationClient(config RevocationClientConfig) (*RevocationClient, erro
 // RevokeAgentToken asks the identified Person Server to refuse every later
 // request authenticated by reference.
 func (client *RevocationClient) RevokeAgentToken(ctx context.Context, personServer string, reference aauth.TokenReference) error {
+	return client.revokeAgentToken(ctx, personServer, reference, nil, revocationTarget{
+		label: "Person Server", metadataPath: "/.well-known/aauth-person.json",
+	})
+}
+
+// RevokeAgentTokenAtResource asks a Resource that accepts direct Agent
+// identity to refuse every later request authenticated by reference.
+func (client *RevocationClient) RevokeAgentTokenAtResource(ctx context.Context, resource string, reference aauth.TokenReference) error {
+	return client.RevokeAgentTokenAtResourceWithHeaders(ctx, resource, reference, nil)
+}
+
+// RevokeAgentTokenAtResourceWithHeaders supplies values for additional
+// signature components advertised by the Resource.
+func (client *RevocationClient) RevokeAgentTokenAtResourceWithHeaders(
+	ctx context.Context,
+	resource string,
+	reference aauth.TokenReference,
+	header http.Header,
+) error {
+	return client.revokeAgentToken(ctx, resource, reference, header, revocationTarget{
+		label: "Resource", metadataPath: "/.well-known/aauth-resource.json",
+	})
+}
+
+func (client *RevocationClient) revokeAgentToken(
+	ctx context.Context,
+	server string,
+	reference aauth.TokenReference,
+	header http.Header,
+	target revocationTarget,
+) error {
 	if client == nil || client.provider == nil {
 		return errors.New("aauth: Agent-token revocation client is required")
 	}
 	if ctx == nil {
 		return errors.New("aauth: Agent-token revocation context is required")
 	}
-	if err := aauth.ValidateServerIdentifier(personServer); err != nil {
-		return fmt.Errorf("aauth: Person Server: %w", err)
+	if err := aauth.ValidateServerIdentifier(server); err != nil {
+		return fmt.Errorf("aauth: %s: %w", target.label, err)
 	}
 	if err := aauth.ValidateTokenReference(reference); err != nil {
 		return err
@@ -62,7 +103,7 @@ func (client *RevocationClient) RevokeAgentToken(ctx context.Context, personServ
 	if reference.Issuer != client.provider.issuer {
 		return errors.New("aauth: Agent-token reference was not issued by this provider")
 	}
-	endpoint, err := client.revocationEndpoint(ctx, personServer)
+	profile, err := client.revocationProfile(ctx, server, target)
 	if err != nil {
 		return err
 	}
@@ -70,11 +111,15 @@ func (client *RevocationClient) RevokeAgentToken(ctx context.Context, personServ
 	if err != nil {
 		return fmt.Errorf("aauth: encode Agent-token revocation: %w", err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, profile.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("aauth: create Agent-token revocation request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	components, err := agentTokenRevocationComponents(target.label, profile.additionalComponents, header, request.Header)
+	if err != nil {
+		return err
+	}
 	if err := signaturekey.SignJWKSURIRequestWithOptions(
 		request,
 		client.provider.signingKey,
@@ -82,7 +127,7 @@ func (client *RevocationClient) RevokeAgentToken(ctx context.Context, personServ
 		aauth.AgentDiscoveryDocument,
 		client.provider.clock,
 		signaturekey.SignOptions{
-			AdditionalComponents: []string{"content-type", "content-digest"},
+			AdditionalComponents: components,
 			MaxBodyBytes:         maximumRevocationResponseBytes,
 		},
 	); err != nil {
@@ -108,55 +153,90 @@ func (client *RevocationClient) RevokeAgentToken(ctx context.Context, personServ
 		}
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumRevocationResponseBytes))
-	return fmt.Errorf("aauth: Person Server revocation endpoint returned %s", response.Status)
+	return fmt.Errorf("aauth: %s revocation endpoint returned %s", target.label, response.Status)
 }
 
-func (client *RevocationClient) revocationEndpoint(ctx context.Context, personServer string) (string, error) {
-	metadataEndpoint := personServer + "/.well-known/aauth-person.json"
+func (client *RevocationClient) revocationProfile(ctx context.Context, server string, target revocationTarget) (revocationProfile, error) {
+	metadataEndpoint := server + target.metadataPath
 	if err := client.admit(ctx, metadataEndpoint); err != nil {
-		return "", fmt.Errorf("aauth: Person Server metadata egress admission failed for %q: %w", metadataEndpoint, err)
+		return revocationProfile{}, fmt.Errorf("aauth: %s metadata egress admission failed for %q: %w", target.label, metadataEndpoint, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataEndpoint, nil)
 	if err != nil {
-		return "", fmt.Errorf("aauth: create Person Server metadata request: %w", err)
+		return revocationProfile{}, fmt.Errorf("aauth: create %s metadata request: %w", target.label, err)
 	}
 	response, err := client.client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("aauth: fetch Person Server metadata: %w", err)
+		return revocationProfile{}, fmt.Errorf("aauth: fetch %s metadata: %w", target.label, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumRevocationResponseBytes))
-		return "", fmt.Errorf("aauth: Person Server metadata returned %s", response.Status)
+		return revocationProfile{}, fmt.Errorf("aauth: %s metadata returned %s", target.label, response.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumRevocationResponseBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("aauth: read Person Server metadata: %w", err)
+		return revocationProfile{}, fmt.Errorf("aauth: read %s metadata: %w", target.label, err)
 	}
 	if len(body) > maximumRevocationResponseBytes {
-		return "", errors.New("aauth: Person Server metadata is too large")
+		return revocationProfile{}, fmt.Errorf("aauth: %s metadata is too large", target.label)
 	}
 	var metadata struct {
-		Issuer             string `json:"issuer"`
-		RevocationEndpoint string `json:"revocation_endpoint"`
+		Issuer                        string   `json:"issuer"`
+		RevocationEndpoint            string   `json:"revocation_endpoint"`
+		AdditionalSignatureComponents []string `json:"additional_signature_components"`
 	}
 	if err := jsonstrict.RejectAmbiguousNames(body); err != nil {
-		return "", fmt.Errorf("aauth: decode Person Server metadata: %w", err)
+		return revocationProfile{}, fmt.Errorf("aauth: decode %s metadata: %w", target.label, err)
 	}
 	if err := jsonstrict.RejectCaseVariants(body, &metadata); err != nil {
-		return "", fmt.Errorf("aauth: decode Person Server metadata: %w", err)
+		return revocationProfile{}, fmt.Errorf("aauth: decode %s metadata: %w", target.label, err)
 	}
 	if err := json.Unmarshal(body, &metadata); err != nil {
-		return "", fmt.Errorf("aauth: decode Person Server metadata: %w", err)
+		return revocationProfile{}, fmt.Errorf("aauth: decode %s metadata: %w", target.label, err)
 	}
-	if metadata.Issuer != personServer {
-		return "", errors.New("aauth: Person Server metadata issuer does not match requested server")
+	if metadata.Issuer != server {
+		return revocationProfile{}, fmt.Errorf("aauth: %s metadata issuer does not match requested server", target.label)
 	}
 	if err := aauth.ValidateEndpoint(metadata.RevocationEndpoint); err != nil {
-		return "", fmt.Errorf("aauth: Person Server metadata revocation_endpoint: %w", err)
+		return revocationProfile{}, fmt.Errorf("aauth: %s metadata revocation_endpoint: %w", target.label, err)
 	}
 	if err := client.admit(ctx, metadata.RevocationEndpoint); err != nil {
-		return "", fmt.Errorf("aauth: Person Server revocation egress admission failed for %q: %w", metadata.RevocationEndpoint, err)
+		return revocationProfile{}, fmt.Errorf("aauth: %s revocation egress admission failed for %q: %w", target.label, metadata.RevocationEndpoint, err)
 	}
-	return metadata.RevocationEndpoint, nil
+	return revocationProfile{
+		endpoint:             metadata.RevocationEndpoint,
+		additionalComponents: append([]string(nil), metadata.AdditionalSignatureComponents...),
+	}, nil
+}
+
+func agentTokenRevocationComponents(label string, additional []string, provided, destination http.Header) ([]string, error) {
+	components := []string{"content-type", "content-digest"}
+	seen := map[string]struct{}{"content-type": {}, "content-digest": {}}
+	var missing []string
+	for _, component := range additional {
+		if err := signaturekey.ValidateAdditionalComponent(component); err != nil {
+			return nil, fmt.Errorf("aauth: %s revocation signature profile: %w", label, err)
+		}
+		if _, duplicate := seen[component]; duplicate {
+			return nil, fmt.Errorf("aauth: %s revocation signature component %q is duplicated", label, component)
+		}
+		seen[component] = struct{}{}
+		values := provided.Values(component)
+		if len(values) == 0 {
+			missing = append(missing, component)
+			continue
+		}
+		for _, value := range values {
+			destination.Add(component, value)
+		}
+		components = append(components, component)
+	}
+	if len(missing) > 0 {
+		return nil, &signaturekey.Error{
+			Code: signaturekey.ErrorInvalidInput, RequiredInput: missing,
+			Cause: fmt.Errorf("aauth: %s revocation requires advertised headers", label),
+		}
+	}
+	return components, nil
 }

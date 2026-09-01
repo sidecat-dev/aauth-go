@@ -12,6 +12,7 @@ import (
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -127,6 +128,105 @@ func TestAgentProviderRevokesAgentTokenAtPersonServerAcrossRecomposition(t *test
 	}
 }
 
+func TestAgentProviderRevokesAgentTokenAtDirectResourceAcrossRecomposition(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	const (
+		agentProviderID = "https://ap.example"
+		agentID         = "aauth:local@ap.example"
+		resourceID      = "https://resource.example"
+	)
+	providerKey := newSigningKey(t, "resource-revocation-provider")
+	agentKey := newSigningKey(t, "resource-revocation-agent")
+	provider, err := agentprovider.New(agentprovider.Config{
+		Issuer: agentProviderID, SigningKey: providerKey, Clock: clock,
+		NewID: func() string { return "resource-agent-token" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
+		Agent: agentID, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := aauth.VerifyAgentToken(ctx, agentToken, signaturekey.StaticKeyResolver{
+		{Issuer: agentProviderID, DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
+	}, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
+
+	network := newLogicalTransport()
+	httpClient := &http.Client{Transport: network}
+	admit := func(context.Context, string) error { return nil }
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
+		Client: httpClient, Clock: clock, Admit: admit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocations := newIntegrationAgentTokenRevocationStore()
+	applicationCalls := 0
+	newResource := func(store resource.AgentTokenRevocationStore) *resource.Server {
+		server, err := resource.NewAgentIdentity(resource.AgentIdentityConfig{
+			Issuer: resourceID, KeyResolver: resolver, Clock: clock,
+			AgentTokenRevocations: store,
+			Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				applicationCalls++
+				response.WriteHeader(http.StatusNoContent)
+			}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return server
+	}
+	network.Handle(agentProviderID, provider.Handler())
+	network.Handle(resourceID, newResource(revocations).Handler())
+	agent, err := clientagent.New(ctx, clientagent.Config{
+		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
+		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records", nil)
+	response, err := agent.CallAsAgent(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || applicationCalls != 1 {
+		t.Fatalf("initial call = %d; application_calls=%d", response.StatusCode, applicationCalls)
+	}
+
+	revoker, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
+		Provider: provider, HTTPClient: httpClient, Admit: admit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := revoker.RevokeAgentTokenAtResource(ctx, resourceID, reference); err != nil {
+		t.Fatal(err)
+	}
+	if err := revoker.RevokeAgentTokenAtResource(ctx, resourceID, reference); err != nil {
+		t.Fatalf("exact Resource revocation replay = %v", err)
+	}
+	network.Handle(resourceID, newResource(revocations).Handler())
+	request, _ = http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records", nil)
+	response, err = agent.CallAsAgent(ctx, request)
+	if response != nil {
+		response.Body.Close()
+	}
+	if err == nil || applicationCalls != 1 {
+		t.Fatalf("revoked direct call = response %#v, error %v; application_calls=%d", response, err, applicationCalls)
+	}
+}
+
 type integrationAgentTokenRevocationStore struct {
 	mu      sync.Mutex
 	revoked map[aauth.TokenReference]struct{}
@@ -157,3 +257,4 @@ func (store *integrationAgentTokenRevocationStore) IsRevoked(
 }
 
 var _ personserver.AgentTokenRevocationStore = (*integrationAgentTokenRevocationStore)(nil)
+var _ resource.AgentTokenRevocationStore = (*integrationAgentTokenRevocationStore)(nil)

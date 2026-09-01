@@ -44,10 +44,12 @@ retained state remain distinct even when their handlers share a server.
 7. An authenticated host disables or revokes the enrollment with
    `EnrollmentStore.TransitionEnrollment`. New refreshes stop immediately.
    The issuing Agent Provider can also sign the exact `(iss, jti)` of an
-   already-issued Agent token to the configured Person Server revocation
-   endpoint. That Person Server then refuses later requests before policy.
-   Other recipients still rely on the token's signed expiry until they receive
-   and enforce a corresponding revocation signal.
+   already-issued Agent token to the configured Person Server and each known
+   direct Agent-identity Resource revocation endpoint. Those recipients then
+   refuse later requests before policy or application dispatch. Other
+   recipients still rely on the token's signed expiry until they receive and
+   enforce a corresponding revocation signal; the protocol defines no Resource
+   registry or automatic fan-out.
 
 Run the enrollment-to-revocation portion with:
 

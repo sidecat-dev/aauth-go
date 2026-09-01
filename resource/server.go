@@ -1,6 +1,7 @@
 // Package resource implements direct Agent and Person identity access,
 // Resource-managed opaque sessions, and explicit PS-authorized or federated
-// auth-token access. It also implements immediate R3 class and per-call
+// auth-token access. It also implements direct Agent-token revocation,
+// immediate R3 class and per-call
 // documents and enforcement, exposes a verified auth token to a call-chain
 // intermediary, retains observed three-party revocation state, and supports
 // Resource-held delivery in the federated composition. A separate EventService
@@ -104,6 +105,9 @@ type AgentIdentityConfig struct {
 	AdditionalSignatureComponents []string
 	MaxSignedBodyBytes            int64
 	Protected                     http.Handler
+	// AgentTokenRevocations enables the issuing Agent Provider's signed
+	// revocation endpoint and checks retained markers before application use.
+	AgentTokenRevocations AgentTokenRevocationStore
 }
 
 // PersonIdentityConfig constructs a Resource that authorizes application
@@ -250,6 +254,7 @@ type Server struct {
 	validateAccount               func(context.Context, PersonIdentity, string) error
 	protected                     http.Handler
 	authTokenStatuses             AuthTokenStatusStore
+	agentTokenRevocations         AgentTokenRevocationStore
 	heldInvocations               HeldInvocationStore
 	holdAuthTokenRequest          func(*http.Request) bool
 	maxRetainedRequestBodyBytes   int64
@@ -276,6 +281,7 @@ type directIdentityConfig struct {
 	maxSignedBodyBytes            int64
 	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	protected                     http.Handler
+	agentTokenRevocations         AgentTokenRevocationStore
 }
 
 // NewAgentIdentity constructs an identity-only Resource that accepts verified
@@ -286,6 +292,7 @@ func NewAgentIdentity(config AgentIdentityConfig) (*Server, error) {
 		keyResolver: config.KeyResolver, clock: config.Clock,
 		additionalSignatureComponents: config.AdditionalSignatureComponents,
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes, protected: config.Protected,
+		agentTokenRevocations: config.AgentTokenRevocations,
 	})
 }
 
@@ -330,6 +337,7 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 		additionalSignatureComponents: additionalComponents,
 		maxSignedBodyBytes:            config.maxSignedBodyBytes,
 		resolvePerson:                 config.resolvePerson, protected: config.protected,
+		agentTokenRevocations: config.agentTokenRevocations,
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -516,7 +524,7 @@ func (server *Server) newHandler() http.Handler {
 	if server.accessMode == aauth.AccessModeAuthToken {
 		mux.HandleFunc("POST /authorize", server.serveAuthorization)
 	}
-	if server.authTokenStatuses != nil {
+	if server.authTokenStatuses != nil || server.agentTokenRevocations != nil {
 		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
 	if server.r3 != nil {
@@ -590,7 +598,7 @@ func resourceAuthorizationEndpoint(server *Server) string {
 }
 
 func resourceRevocationEndpoint(server *Server) string {
-	if server.authTokenStatuses == nil {
+	if server.authTokenStatuses == nil && server.agentTokenRevocations == nil {
 		return ""
 	}
 	return server.issuer + "/revoke"

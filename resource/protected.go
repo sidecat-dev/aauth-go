@@ -101,6 +101,20 @@ func (server *Server) serveAgentTokenProtected(
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request key does not match agent token"))
 		return
 	}
+	if server.agentTokenRevocations != nil {
+		revoked, err := server.agentTokenRevocations.IsRevoked(request.Context(), aauth.TokenReference{
+			Issuer: claims.Issuer,
+			JTI:    claims.JTI,
+		})
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("check Agent-token revocation: %w", err))
+			return
+		}
+		if revoked {
+			writeCredentialProblem(response, "invalid_token", &requestTokenError{cause: ErrAgentTokenRevoked})
+			return
+		}
+	}
 	principal := AgentPrincipal{
 		AgentProvider: claims.Issuer, Agent: claims.Subject, ParentAgent: claims.ParentAgent,
 		PersonServer: claims.PersonServer, Confirmation: claims.Confirmation.JWK,

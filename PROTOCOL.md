@@ -450,6 +450,30 @@ Both freshly sign the outer request. An exact retry returns the same Agent
 token; a changed profile, proof key, or body conflicts. The generic AAuth token
 and Signature-Key formats remain unchanged.
 
+### Agent-token revocation
+
+```mermaid
+sequenceDiagram
+    participant AP as Agent Provider
+    participant PS as Person Server
+    participant R as Direct Agent-identity Resource
+    participant A as Agent
+    AP->>PS: Signed POST with exact Agent-token iss and jti
+    PS->>PS: Retain revocation marker
+    AP->>R: Signed POST with the same exact reference
+    R->>R: Retain revocation marker
+    A->>PS: Later signed Agent-token request
+    PS-->>A: Refused before person policy
+    A->>R: Later direct Agent-token request
+    R-->>A: Refused before application dispatch
+```
+
+Enrollment disablement or revocation stops new refreshes. Token revocation is
+the separate immediate path for a token that already exists. The AP names each
+known recipient explicitly; Core defines no Resource registry or automatic
+fan-out. The PS and Resource expose role-local store interfaces with the same
+source operation rather than one cross-role lifecycle object.
+
 ### Self-hosted Agent profile
 
 ```mermaid

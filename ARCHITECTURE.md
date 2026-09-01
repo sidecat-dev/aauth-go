@@ -72,7 +72,12 @@ application authenticates the administrator, then asks its `EnrollmentStore`
 to atomically disable, restore, or permanently revoke the retained enrollment.
 The common transition helper preserves identity and key, advances one expected
 revision, and makes exact retry converge. Revocation prevents later refresh;
-an already-issued Agent token remains governed by its signed expiry.
+it does not alter an already-issued Agent token. The separate Core revocation
+path lets the AP explicitly target a configured PS or a known direct
+Agent-identity Resource. Each recipient retains the exact `(iss, jti)` marker
+through its own role-local store and checks it after token and proof
+verification but before policy or application dispatch. No shared revocation
+lifecycle or automatic Resource registry joins those roles.
 
 The current Events slice adds the `events` value package plus explicit
 `agentprovider`, `resource`, and `agent` role surfaces for public and protected
@@ -362,6 +367,7 @@ Interfaces live next to the code that consumes them.
 
 The current package owns Agent-token issuance, AP metadata/JWKS, optional
 enrollment and refresh composition, host-managed enrollment state transitions,
+explicit Agent-token revocation clients for a PS or known direct Resource,
 subscribe-token issuance, and the Events inbox. It accepts host policy for
 enrollment, attestation, renewal, and AP-to-Agent event delivery.
 
@@ -404,6 +410,11 @@ records, missions, permission/audit/interaction endpoints, three-party
 authorization, and PS-to-AS federation. Its policy inputs receive verified
 Core and companion values in source terminology. Mission approval stores the
 exact approved bytes before returning their digest.
+
+A configured Agent-token revocation store is checked across the Person
+Server's existing Agent-authenticated endpoints. The AP-signed `/revoke`
+request and later Agent request meet only at the exact token reference; a
+retained marker refuses use before person or authorization policy.
 
 Interactive Person-token issuance uses the same `PersonToken` and
 `PollPersonToken` Agent calls with or without a mission. For a mission-bound
@@ -479,6 +490,12 @@ The target owns Resource metadata/JWKS, the five access modes, Resource-local
 sessions, authorization endpoints, Resource-token issuance, requirements,
 protected calls, revocation, held invocations, R3 document/proposal/result
 state, Events registration/delivery, and Budget accounting.
+
+A direct Agent-identity Resource may expose the same `/revoke` URL used by an
+Auth-token Resource while keeping the stores and signer roles distinct. An AP
+proof selects the Agent-token marker store; a PS proof selects the observed
+Auth-token store. Direct Agent use checks its marker only after the Agent token
+and proof key verify, then refuses before the application handler.
 
 Each current Resource server enforces its configured runtime access mode.
 Parsed operation hints support Agent-side preparation only; they do not select

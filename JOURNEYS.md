@@ -154,21 +154,23 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     chain depth, federated downstream chaining, and mission composition.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
-  - Flow: AP signs an exact Agent-token reference → PS retains it and refuses
-    later requests before person policy. Separately, PS retains issued-token
-    routing → signed revocation → Resource marks the exact Auth token revoked →
-    later use fails → Agent explicitly performs a fresh authorization.
+  - Flow: AP signs an exact Agent-token reference → PS or a known direct
+    Agent-identity Resource retains it and refuses later requests before policy
+    or application dispatch. Separately, PS retains issued-token routing →
+    signed revocation → Resource marks the exact Auth token revoked → later use
+    fails → Agent explicitly performs a fresh authorization.
   - Start with: `personserver.AuthTokenRevocationConfig`,
     `personserver.IssuedAuthTokenStore`,
     `personserver.Server.RevokeIssuedAuthToken`, and
     `resource.AuthTokenStatusStore`; for Agent tokens, start with
-    `agentprovider.RevocationClient` and
-    `personserver.AgentTokenRevocationStore`.
+    `agentprovider.RevocationClient`,
+    `personserver.AgentTokenRevocationStore`, and
+    `resource.AgentTokenRevocationStore`.
   - Evidence: [`integration/revocation_reauthorization_test.go`](integration/revocation_reauthorization_test.go),
     [`integration/agent_token_revocation_test.go`](integration/agent_token_revocation_test.go),
     and `go run ./example/revocation`.
-  - Missing: Auth-token pre-use and four-party propagation, direct Resource
-    Agent-token checks, mission cascade, and session revocation.
+  - Missing: automatic Agent-token fan-out, Auth-token pre-use and four-party
+    propagation, mission cascade, and session revocation.
 
 - [x] **Missionless local-action permission — Implemented**
   - Flow: Agent → PS with one signed local-action request → immediate decision

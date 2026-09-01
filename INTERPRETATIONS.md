@@ -950,17 +950,19 @@ callbacks; it does not cancel an already-admitted in-flight request.
 The Resource returns `404` when it has not yet observed `(iss, jti)`; it does
 not invent a pre-use tombstone from an underspecified request.
 
-The Person Server cannot make the same choice for Agent tokens: Core says that
-an AP revocation makes subsequent use fail, even when the PS has not seen the
-token. A configured `AgentTokenRevocationStore` therefore accepts the
-AP-signed reference before first use and retains it until the host can prove no
-matching token remains valid. This is intentionally a host retention contract,
-not a guessed fixed duration in the protocol library.
+The Person Server and a direct Agent-identity Resource cannot make the same
+choice for Agent tokens: Core says that an AP revocation makes subsequent use
+fail, even when the recipient has not seen the token. A configured
+`AgentTokenRevocationStore` therefore accepts the AP-signed reference before
+first use and retains it until the host can prove no matching token remains
+valid. This is intentionally a host retention contract, not a guessed fixed
+duration in the protocol library.
 
 **Executable examples:**
 `resource/revocation_test.go:TestRevocationEndpointRequiresBoundPersonServerProof`
 `integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`,
-`personserver/agent_token_revocation_test.go`, and
+`personserver/agent_token_revocation_test.go`,
+`resource/agent_token_revocation_test.go`, and
 `integration/agent_token_revocation_test.go`.
 
 ## Budget fields follow their declared RFC 9651 Dictionary shape

@@ -22,6 +22,21 @@ var ErrAuthTokenRevoked = errors.New("resource: auth token revoked")
 // token bytes.
 var ErrAuthTokenConflict = errors.New("resource: auth token identity conflict")
 
+// ErrAgentTokenRevoked reports an Agent token revoked by its issuing Agent
+// Provider.
+var ErrAgentTokenRevoked = errors.New("resource: Agent token revoked")
+
+// AgentTokenRevocationStore retains Agent-token references revoked by their
+// issuer. Revoke must be idempotent. IsRevoked and Revoke for one reference
+// must be linearizable. A non-sentinel Revoke error may be indeterminate, so an
+// exact retry must be safe. Because the wire request does not carry token
+// expiry, a host retains a marker until it can independently prove no matching
+// Agent token can remain valid.
+type AgentTokenRevocationStore interface {
+	Revoke(context.Context, aauth.TokenReference) error
+	IsRevoked(context.Context, aauth.TokenReference) (bool, error)
+}
+
 // ObservedAuthToken is the minimum status record a Resource needs to enforce
 // later revocation without retaining the compact credential.
 type ObservedAuthToken struct {
@@ -71,13 +86,17 @@ func (server *Server) serveRevocation(response http.ResponseWriter, request *htt
 		return
 	}
 	issuer, document, _, ok := prepared.Credential().JWKSURI()
-	if !ok || document != aauth.PersonDiscoveryDocument {
-		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("person server proof is required"))
+	if !ok || (document != aauth.PersonDiscoveryDocument && document != aauth.AgentDiscoveryDocument) {
+		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("token issuer proof is required"))
 		return
 	}
 	proof, err := prepared.VerifyJWKSURI(request.Context(), server.keyResolver)
-	if err != nil || proof.Signer() != issuer {
+	if err != nil {
 		writeProblem(response, http.StatusUnauthorized, "invalid_request", err)
+		return
+	}
+	if proof.Signer() != issuer {
+		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("token issuer proof signer does not match its issuer"))
 		return
 	}
 	var input aauth.TokenReference
@@ -93,11 +112,26 @@ func (server *Server) serveRevocation(response http.ResponseWriter, request *htt
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("revocation caller is not the token issuer"))
 		return
 	}
-	err = server.authTokenStatuses.Revoke(request.Context(), input)
+	var notFound error
+	switch document {
+	case aauth.PersonDiscoveryDocument:
+		if server.authTokenStatuses == nil {
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("Auth-token revocation is not configured"))
+			return
+		}
+		err = server.authTokenStatuses.Revoke(request.Context(), input)
+		notFound = ErrAuthTokenNotFound
+	case aauth.AgentDiscoveryDocument:
+		if server.agentTokenRevocations == nil {
+			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("Agent-token revocation is not configured"))
+			return
+		}
+		err = server.agentTokenRevocations.Revoke(request.Context(), input)
+	}
 	switch {
 	case err == nil:
 		response.WriteHeader(http.StatusOK)
-	case errors.Is(err, ErrAuthTokenNotFound):
+	case notFound != nil && errors.Is(err, notFound):
 		response.WriteHeader(http.StatusNotFound)
 	default:
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)

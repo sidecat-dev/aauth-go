@@ -975,13 +975,14 @@ not recognized and does not say whether that response may still retain state,
 how long such state lasts, how later token bytes are checked, or which side of
 a concurrent first-use/revoke race wins.
 
-The Agent-token path makes the same gap unavoidable at the Person Server. The
-Agent Provider knows the token, but the PS may not have seen it before the
-revocation request. Core nevertheless says that the PS MUST deny later use.
-The executing PS path therefore retains the AP-signed `(iss, jti)` before first
-use and keeps that marker until the host can independently prove that no
-matching Agent token remains valid. The request does not carry `exp`, and Core
-does not define another portable retention bound.
+The Agent-token path makes the same gap unavoidable at the Person Server and
+at a direct Agent-identity Resource. The Agent Provider knows the token, but a
+recipient may not have seen it before the revocation request. Core nevertheless
+says that later use must fail. The executing PS and direct Resource paths
+therefore retain the AP-signed `(iss, jti)` before first use and keep that
+marker until the host can independently prove that no matching Agent token
+remains valid. The request does not carry `exp`, and Core does not define
+another portable retention bound.
 
 **Question:** Must `404` be non-mutating, or should the Resource retain a
 pre-use tombstone? If it retains one, what bounds its lifetime and how should a

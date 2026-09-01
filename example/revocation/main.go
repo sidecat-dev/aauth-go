@@ -24,11 +24,12 @@ import (
 )
 
 const (
-	agentProviderID = "https://agents.example"
-	agentID         = "aauth:reader@agents.example"
-	personServerID  = "https://person.example"
-	resourceID      = "https://resource.example"
-	scope           = "records.read"
+	agentProviderID  = "https://agents.example"
+	agentID          = "aauth:reader@agents.example"
+	personServerID   = "https://person.example"
+	resourceID       = "https://resource.example"
+	directResourceID = "https://direct-resource.example"
+	scope            = "records.read"
 )
 
 func main() {
@@ -71,7 +72,8 @@ func run(output io.Writer) error {
 	}
 	personTokens := newPersonTokenStore()
 	issuedTokens := newIssuedAuthTokenStore()
-	agentTokenRevocations := newAgentTokenRevocationStore()
+	personAgentRevocations := newAgentTokenRevocationStore()
+	resourceAgentRevocations := newAgentTokenRevocationStore()
 	personIDs := []string{"person-token-1", "auth-token-1", "auth-token-2"}
 	newPersonServer := func() (*personserver.Server, error) {
 		return personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
@@ -94,7 +96,7 @@ func run(output io.Writer) error {
 			Revocation: &personserver.AuthTokenRevocationConfig{
 				IssuedTokens: issuedTokens, HTTPClient: httpClient, Admit: network.Admit,
 			},
-			AgentTokenRevocations: agentTokenRevocations,
+			AgentTokenRevocations: personAgentRevocations,
 		})
 	}
 	people, err := newPersonServer()
@@ -129,15 +131,40 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	directCalls := 0
+	newDirectResource := func() (*resource.Server, error) {
+		return resource.NewAgentIdentity(resource.AgentIdentityConfig{
+			Issuer: directResourceID, KeyResolver: resolver, Clock: clock,
+			AgentTokenRevocations: resourceAgentRevocations,
+			Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				directCalls++
+				response.WriteHeader(http.StatusNoContent)
+			}),
+		})
+	}
+	directResource, err := newDirectResource()
+	if err != nil {
+		return err
+	}
 	network.Handle(agentProviderID, provider.Handler())
 	network.Handle(personServerID, people.Handler())
 	network.Handle(resourceID, protectedResource.Handler())
+	network.Handle(directResourceID, directResource.Handler())
 	reader, err := clientagent.New(ctx, clientagent.Config{
 		Identifier: agentID, SigningKey: agentKey, AgentToken: agentToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
 	})
 	if err != nil {
 		return err
+	}
+	directRequest, _ := http.NewRequestWithContext(ctx, http.MethodGet, directResourceID+"/status", nil)
+	directResponse, err := reader.CallAsAgent(ctx, directRequest)
+	if err != nil {
+		return err
+	}
+	directResponse.Body.Close()
+	if directResponse.StatusCode != http.StatusNoContent || directCalls != 1 {
+		return fmt.Errorf("direct Agent call returned %s", directResponse.Status)
 	}
 	personResult, err := reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID,
@@ -247,18 +274,37 @@ func run(output io.Writer) error {
 	if err := revoker.RevokeAgentToken(ctx, personServerID, agentReference); err != nil {
 		return err
 	}
+	if err := revoker.RevokeAgentTokenAtResource(ctx, directResourceID, agentReference); err != nil {
+		return err
+	}
+	if err := revoker.RevokeAgentTokenAtResource(ctx, directResourceID, agentReference); err != nil {
+		return err
+	}
 	people, err = newPersonServer()
 	if err != nil {
 		return err
 	}
 	network.Handle(personServerID, people.Handler())
+	directResource, err = newDirectResource()
+	if err != nil {
+		return err
+	}
+	network.Handle(directResourceID, directResource.Handler())
 	_, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID,
 	})
 	if !errors.As(err, &problem) || problem.Code != "invalid_agent_token" {
 		return fmt.Errorf("revoked Agent token returned %v", err)
 	}
-	fmt.Fprintf(output, "%s Agent token revoked; exact replay succeeded; later Person Server request refused\n", agentClaims.JTI)
+	directRequest, _ = http.NewRequestWithContext(ctx, http.MethodGet, directResourceID+"/status", nil)
+	directResponse, err = reader.CallAsAgent(ctx, directRequest)
+	if directResponse != nil {
+		directResponse.Body.Close()
+	}
+	if err == nil || directCalls != 1 {
+		return fmt.Errorf("revoked Agent token direct call returned response %v, error %v", directResponse, err)
+	}
+	fmt.Fprintf(output, "%s Agent token revoked at Person Server and direct Resource; exact replays succeeded; later requests refused\n", agentClaims.JTI)
 	return nil
 }
 
