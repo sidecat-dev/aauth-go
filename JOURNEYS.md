@@ -192,9 +192,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go),
     [`integration/call_chaining_test.go`](integration/call_chaining_test.go),
     `go run ./example/subagent`, and `go run ./example/callchaining`.
-  - Missing: deferred Auth-token exchange, recursive or remote delegation,
-    repeated chain depth, federated downstream chaining, and mission
-    composition.
+  - Missing: recursive or remote delegation, repeated chain depth, federated
+    downstream chaining, and mission composition.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
   - Flow: AP signs an exact Agent-token reference → PS or a known direct
