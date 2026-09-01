@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"gitlab.com/sidecat-dev/aauth-go/jose"
-	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
 
 func newSigningKey(id string) (jose.SigningKey, error) {
@@ -20,36 +19,6 @@ func newSigningKey(id string) (jose.SigningKey, error) {
 		return jose.SigningKey{}, err
 	}
 	return jose.NewEd25519SigningKey(id, privateKey)
-}
-
-type personTokenStore struct {
-	mu      sync.Mutex
-	records map[string]personserver.PersonTokenRecord
-}
-
-func newPersonTokenStore() *personTokenStore {
-	return &personTokenStore{records: make(map[string]personserver.PersonTokenRecord)}
-}
-
-func (store *personTokenStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := record.PersonServer + "\x00" + record.JTI
-	if _, exists := store.records[key]; exists {
-		return errors.New("self-hosted example: person-token record already exists")
-	}
-	store.records[key] = record
-	return nil
-}
-
-func (store *personTokenStore) Load(_ context.Context, issuer, tokenID string) (personserver.PersonTokenRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	record, ok := store.records[issuer+"\x00"+tokenID]
-	if !ok {
-		return personserver.PersonTokenRecord{}, personserver.ErrPersonTokenNotFound
-	}
-	return record, nil
 }
 
 type logicalTransport struct {

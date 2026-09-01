@@ -24,7 +24,8 @@ go run gitlab.com/sidecat-dev/aauth-go/example/threeparty@latest
 
 It carries an Agent through a Person Server to one protected Resource call.
 For a self-hosted Agent with a local permission boundary, direct local access,
-and one account-bound hosted Resource call, run:
+an explicit hosted account-link interaction, and one account-bound hosted
+Resource call, run:
 
 ```sh
 go run gitlab.com/sidecat-dev/aauth-go/example/selfhosted@latest
@@ -51,7 +52,7 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | Direct Agent or Person identity | [`example/agentidentity`](example/agentidentity) |
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
-| Self-hosted local Agent connecting to a hosted account | [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md), [`example/selfhosted`](example/selfhosted) |
+| Self-hosted local Agent linking to a hosted account | [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md), [`example/selfhosted`](example/selfhosted) |
 | Hosted enrollment and refresh | [`example/bootstrap`](example/bootstrap) |
 | Local permission or a mission lifecycle | [`example/permission`](example/permission), [`example/mission`](example/mission) |
 | Person questions, relays, or consent clarification | [`example/interactionquestion`](example/interactionquestion), [`example/interactionrelay`](example/interactionrelay), [`example/psconsent`](example/psconsent) |
@@ -119,7 +120,7 @@ Do not infer support from an exported type. Use:
 - [CONFORMANCE.md](CONFORMANCE.md) for supported behavior and exclusions;
 - [JOURNEYS.md](JOURNEYS.md) for caller-visible flows and evidence; and
 - [LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md) for self-hosted local work
-  and an account-bound hosted Resource call;
+  plus explicit hosted account linking and Resource access;
 - [HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md) for the deliberately
   narrower first hosted deployment.
 

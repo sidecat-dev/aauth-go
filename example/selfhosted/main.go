@@ -178,7 +178,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	network.Handle(hostedPersonID, hostedPeople)
+	network.Handle(hostedPersonID, hostedPeople.Handler())
 	network.Handle(hostedResource, hostedService)
 	hostedToken, err := selfHosted.Issue(agentprovider.SelfHostedAgentTokenRequest{
 		PersonServer: hostedPersonID, Lifetime: time.Hour,
@@ -193,5 +193,5 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return callHostedResource(ctx, output, hostedClient)
+	return callHostedResource(ctx, output, hostedClient, hostedPeople)
 }

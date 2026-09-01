@@ -503,7 +503,10 @@ sequenceDiagram
     LR->>A: Resolve AP metadata/JWKS and verify the request
     LR-->>A: Protected response
     A->>A: Self-issue token naming the hosted PS
-    A->>HPS: Obtain account-bound Person authority
+    A->>HPS: Request Person authority
+    HPS-->>A: Interaction URL and code
+    A->>HPS: Person-authenticated host approves account
+    A->>HPS: Explicit poll returns Person token
     A->>HR: Complete ordinary three-party authorization
     HR-->>A: Protected hosted response
 ```
@@ -518,7 +521,8 @@ distinct-AP rationale contradicts them (`AAG-F104`). The repository's local
 composition additionally uses the token's `person_server` with the ordinary
 Permission Endpoint before a direct Agent-identity Resource call. It then
 self-issues a second token naming a hosted Person Server and uses the same
-Agent identity and proof key for a hosted three-party call; see
+Agent identity and proof key through an explicit account-link interaction,
+Agent poll, and hosted three-party call; see
 [LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md).
 
 ### Mission-bound interoperability profile

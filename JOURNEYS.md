@@ -35,14 +35,17 @@ Specifications:
   - Flow: self-hosted Agent Provider metadata and JWKS → self-issued Agent
     token naming a local Person Server → typed permission for one local action
     → direct Agent-identity Resource call → second self-issued token naming a
-    hosted Person Server → hosted account binding → three-party protected
-    Resource call. The Agent identity and proof key remain stable.
+    hosted Person Server → interaction URL/code → person-authenticated account
+    approval → explicit Agent poll → three-party protected Resource call. The
+    Agent identity and proof key remain stable.
   - Start with: [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md) and
-    `go run ./example/selfhosted`.
+    `go run ./example/selfhosted`; the account-link seam uses
+    `Client.PersonToken`, `Server.ConsumePersonTokenInteractionCode`,
+    `Server.ApprovePersonTokenInteraction`, and `Client.PollPersonToken`.
   - Boundary: this proves ordinary signed HTTP exchanges among the exported
     local and hosted roles. Its in-memory stores and logical transport do not
     prove restart recovery, operating-system key custody, TLS deployment,
-    account login, or execution of an approved local action.
+    browser login, or execution of an approved local action.
 
 - [x] **Hosted-service launch composition — Implemented**
   - Flow: durable-key enrollment → delegated Agent-token refresh → local
@@ -579,8 +582,9 @@ below is explicitly a repository profile.
     self-issues a current token with the same signing and confirmation key →
     ordinary Agent client → local Person Server permission → protected direct
     Resource call → second token naming a hosted Person Server → hosted
-    three-party Resource call. Reissuance creates another short-lived token;
-    there is no separate refresh endpoint.
+    account-link interaction and explicit poll → hosted three-party Resource
+    call. Reissuance creates another short-lived token; there is no separate
+    refresh endpoint.
   - Start with: `agentprovider.NewSelfHostedAgent`,
     `SelfHostedAgent.Issue`, `SelfHostedAgent.Handler`, `agent.New`, and
     `resource.NewAgentIdentity`.

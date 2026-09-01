@@ -13,6 +13,7 @@ func TestRunCompletesSelfHostedJourney(t *testing.T) {
 	}
 	const want = "AAuth local permission granted: workspace.inspect\n" +
 		"AAuth self-hosted Agent accepted: aauth:local@agent.example\n" +
+		"AAuth hosted account linked: account-123\n" +
 		"AAuth hosted Resource accepted: account-123 has records.read\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)

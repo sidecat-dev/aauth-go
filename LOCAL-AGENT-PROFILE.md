@@ -16,9 +16,13 @@ implementation profile, not an additional AAuth specification.
 5. The same Agent token and proof key authenticate an ordinary direct
    Agent-identity call to a local Resource.
 6. For hosted work, the Agent self-issues a second short-lived token naming the
-   hosted Person Server. That server binds the Agent to one hosted account and
-   completes ordinary three-party authorization for a protected hosted
-   Resource call.
+   hosted Person Server. The server returns an interaction URL and code rather
+   than choosing an account from the request alone.
+7. After authenticating the person, the host consumes that exact code and
+   approves the account binding. The Agent polls explicitly and receives the
+   account-bound Person token.
+8. The Agent completes ordinary three-party authorization for a protected
+   hosted Resource call.
 
 Each Agent token names the Person Server responsible for that use. The Agent
 identity and proof key remain stable; local and hosted person authority do not
@@ -44,7 +48,8 @@ restart recovery, operating-system key protection, TLS deployment, or user
 authentication. Use the applicable public `storetest` contracts for durable
 adapters.
 
-The hosted call demonstrates account binding and service authorization, not
-enrollment, administrative review, or connector credentials. For those
-capabilities and Budget-limited operations, continue with
+The hosted call demonstrates the protocol boundary around account linking and
+service authorization. It does not implement the browser, login session,
+account database, administrative review, or connector credentials. For those
+deployment capabilities and Budget-limited operations, continue with
 [HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md).
