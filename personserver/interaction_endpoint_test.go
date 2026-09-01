@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,221 @@ func TestInteractionQuestionConfigurationAndExactAnswerInBothPersonServerModes(t
 	}
 }
 
-func TestInteractionQuestionRejectsUnsupportedShapeMissionAndTopologyBeforePolicy(t *testing.T) {
+func TestMissionInteractionQuestionPolicyReceivesExactActiveMission(t *testing.T) {
+	protocol := newInteractionQuestionProtocol(t)
+	store := newMemoryMissionStore()
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Choose the route for the approved trip.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitMission(context.Background(), MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: protocol.personServerID, SigningKey: protocol.personKey, KeyResolver: protocol.resolver,
+		Clock: protocol.clock, NewID: func() string { return "question-token" }, Tokens: store,
+		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) {
+			return Person{Subject: "person", Lifetime: time.Minute}, nil
+		},
+		Authorize: func(context.Context, AuthorizationRequest) (AuthorizationDecision, error) {
+			return AuthorizationDecision{Scopes: []string{"read"}, Lifetime: time.Minute}, nil
+		},
+		Missions: permissionMissionConfig(),
+		InteractionQuestion: &InteractionQuestionConfig{
+			Policy: func(_ context.Context, request InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error) {
+				if request.Mission == nil || request.Mission.S256 != mission.S256 ||
+					request.Mission.Blob.Description != mission.Blob.Description {
+					t.Fatalf("mission question policy = %#v", request.Mission)
+				}
+				decision := InteractionQuestionDecision{Answer: "Take the northern route."}
+				return InteractionQuestionPolicyResult{Immediate: &decision}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"type":"question","question":"Which route?","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusOK || response.Body.String() != `{"answer":"Take the northern route."}` {
+		t.Fatalf("mission question response = %d %s", response.Code, response.Body.String())
+	}
+	if len(store.questions) != 1 {
+		t.Fatalf("retained mission questions = %d", len(store.questions))
+	}
+	for _, record := range store.questions {
+		if record.State != InteractionQuestionAnswered || record.Document.Question.MissionS256 != mission.S256 ||
+			record.Answer.Answer.Answer != "Take the northern route." {
+			t.Fatalf("retained immediate mission question = %#v", record)
+		}
+	}
+}
+
+func TestMissionInteractionQuestionIsAvailableInFederatedMode(t *testing.T) {
+	protocol := newInteractionQuestionProtocol(t)
+	store := newMemoryMissionStore()
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Choose the route for the approved trip.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitMission(context.Background(), MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewFederatedAuthorization(FederatedAuthorizationConfig{
+		Issuer: protocol.personServerID, SigningKey: protocol.personKey, KeyResolver: protocol.resolver,
+		Clock: protocol.clock, NewID: func() string { return "question-token" }, Tokens: store,
+		HTTPClient: &http.Client{}, AccessServerEndpoint: func(context.Context, string) (string, error) {
+			return "https://access.example/token", nil
+		},
+		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) {
+			return Person{Subject: "person", Lifetime: time.Minute}, nil
+		},
+		Consent:  func(context.Context, AuthorizationRequest) error { return nil },
+		Missions: permissionMissionConfig(),
+		InteractionQuestion: &InteractionQuestionConfig{
+			Policy: func(_ context.Context, request InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error) {
+				if request.Mission == nil || request.Mission.S256 != mission.S256 {
+					t.Fatalf("federated mission question policy = %#v", request.Mission)
+				}
+				decision := InteractionQuestionDecision{Answer: "Take the northern route."}
+				return InteractionQuestionPolicyResult{Immediate: &decision}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"type":"question","question":"Which route?","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusOK || len(store.questions) != 1 {
+		t.Fatalf("federated mission question response=%d %s records=%d", response.Code, response.Body.String(), len(store.questions))
+	}
+}
+
+func TestDeferredMissionInteractionQuestionUsesExactMissionThroughConsume(t *testing.T) {
+	protocol := newInteractionQuestionProtocol(t)
+	store := newMemoryMissionStore()
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Choose the route for the approved trip.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionRecord := MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}
+	if err := store.CommitMission(context.Background(), missionRecord, nil); err != nil {
+		t.Fatal(err)
+	}
+	newServer := func() *Server {
+		server, err := NewPSAuthorization(PSAuthorizationConfig{
+			Issuer: protocol.personServerID, SigningKey: protocol.personKey, KeyResolver: protocol.resolver,
+			Clock: protocol.clock, NewID: func() string { return "question-token" }, Tokens: store,
+			BindPerson: func(context.Context, PersonTokenRequest) (Person, error) {
+				return Person{Subject: "person", Lifetime: time.Minute}, nil
+			},
+			Authorize: func(context.Context, AuthorizationRequest) (AuthorizationDecision, error) {
+				return AuthorizationDecision{Scopes: []string{"read"}, Lifetime: time.Minute}, nil
+			},
+			Missions: permissionMissionConfig(),
+			InteractionQuestion: &InteractionQuestionConfig{
+				Policy: func(_ context.Context, request InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error) {
+					if request.Mission == nil || request.Mission.S256 != mission.S256 {
+						t.Fatalf("deferred mission question policy = %#v", request.Mission)
+					}
+					return InteractionQuestionPolicyResult{Deferred: &InteractionQuestionPendingPolicy{
+						Lifetime: 5 * time.Minute, RetryAfter: time.Second,
+					}}, nil
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return server
+	}
+	server := newServer()
+	response := interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"type":"question","question":"Which route?","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("deferred mission question = %d %s", response.Code, response.Body.String())
+	}
+	reference := strings.TrimPrefix(response.Header().Get("Location"), "/interaction/pending/")
+	server = newServer()
+	handle, err := server.ResumeInteractionQuestion(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok := handle.Mission()
+	if !ok || missionContext.S256 != mission.S256 {
+		t.Fatalf("mission question host context = %#v, %t", missionContext, ok)
+	}
+	update, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{Action: "update", Description: "Prefer the safer route."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedMission, err := store.AppendMissionUpdate(context.Background(), missionRecord, protocol.now.Add(time.Second), update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.AnswerInteractionQuestion(context.Background(), handle, "Take the northern route."); !errors.Is(err, ErrMissionConflict) {
+		t.Fatalf("answer against unseen mission update = %v", err)
+	}
+	handle, err = server.ResumeInteractionQuestion(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok = handle.Mission()
+	if !ok || len(missionContext.AcceptedUpdates) != 1 {
+		t.Fatalf("updated mission question context = %#v, %t", missionContext, ok)
+	}
+	if err := server.AnswerInteractionQuestion(context.Background(), handle, "Take the northern route."); err != nil {
+		t.Fatal(err)
+	}
+	poll := pollInteractionQuestion(t, protocol, server, response.Header().Get("Location"))
+	if poll.Code != http.StatusOK || poll.Body.String() != `{"answer":"Take the northern route."}` {
+		t.Fatalf("mission question poll = %d %s", poll.Code, poll.Body.String())
+	}
+
+	response = interactionQuestionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"type":"question","question":"Should I continue?","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("second mission question = %d %s", response.Code, response.Body.String())
+	}
+	reference = strings.TrimPrefix(response.Header().Get("Location"), "/interaction/pending/")
+	handle, err = server.ResumeInteractionQuestion(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.AnswerInteractionQuestion(context.Background(), handle, "Continue."); err != nil {
+		t.Fatal(err)
+	}
+	store.terminateMission(updatedMission.Agent, updatedMission.S256, "revoked")
+	poll = pollInteractionQuestion(t, protocol, server, response.Header().Get("Location"))
+	assertAuditProblem(t, poll, http.StatusForbidden, "mission_terminated", "terminated", "revoked")
+}
+
+func TestInteractionQuestionRejectsUnsupportedShapeUnconfiguredMissionAndTopologyBeforePolicy(t *testing.T) {
 	protocol := newInteractionQuestionProtocol(t)
 	policyCalls := 0
 	server := protocol.newServer(t, "direct", &InteractionQuestionConfig{
@@ -175,6 +390,184 @@ func TestInteractionQuestionMapsUnreachableAndOperationalPolicyFailures(t *testi
 			assertAuditProblem(t, response, test.status, test.code, "", "")
 		})
 	}
+}
+
+func (store *memoryMissionStore) CreateInteractionQuestion(_ context.Context, record InteractionQuestionRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.createInteractionQuestionLocked(record)
+}
+
+func (store *memoryMissionStore) LoadInteractionQuestion(_ context.Context, id string, at time.Time) (InteractionQuestionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.loadInteractionQuestionLocked(id, at)
+}
+
+func (store *memoryMissionStore) ResolveInteractionQuestion(
+	_ context.Context, id string, state InteractionQuestionState,
+	answer aauth.InteractionAnswerDocument, at time.Time,
+) (InteractionQuestionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.resolveInteractionQuestionLocked(id, state, answer, at)
+}
+
+func (store *memoryMissionStore) PollInteractionQuestion(
+	_ context.Context, id string, identity InteractionQuestionPollIdentity, at time.Time,
+) (InteractionQuestionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, err := store.loadInteractionQuestionLocked(id, at)
+	if err != nil {
+		return InteractionQuestionRecord{}, err
+	}
+	if record.PersonServer != identity.PersonServer || record.AgentProvider != identity.AgentProvider ||
+		record.Agent != identity.Agent || record.ConfirmationThumbprint != identity.ConfirmationThumbprint {
+		return InteractionQuestionRecord{}, ErrInteractionQuestionNotFound
+	}
+	return record, nil
+}
+
+func (store *memoryMissionStore) ConsumeInteractionQuestion(
+	_ context.Context, id string, expected InteractionQuestionRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.consumeInteractionQuestionLocked(id, expected)
+}
+
+func (store *memoryMissionStore) CommitMissionInteractionQuestion(
+	_ context.Context, expected MissionRecord, record InteractionQuestionRecord, at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if record.Agent != expected.Agent || record.Document.Question.MissionS256 != expected.S256 {
+		return ErrMissionConflict
+	}
+	return store.createInteractionQuestionLocked(record)
+}
+
+func (store *memoryMissionStore) ResolveMissionInteractionQuestion(
+	_ context.Context, expected MissionRecord, id string, state InteractionQuestionState,
+	answer aauth.InteractionAnswerDocument, at time.Time,
+) (InteractionQuestionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return InteractionQuestionRecord{}, err
+	}
+	if err := store.requireMissionQuestionLocked(id, expected); err != nil {
+		return InteractionQuestionRecord{}, err
+	}
+	return store.resolveInteractionQuestionLocked(id, state, answer, at)
+}
+
+func (store *memoryMissionStore) PollMissionInteractionQuestion(
+	_ context.Context, expected MissionRecord, id string,
+	identity InteractionQuestionPollIdentity, at time.Time,
+) (InteractionQuestionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return InteractionQuestionRecord{}, err
+	}
+	if err := store.requireMissionQuestionLocked(id, expected); err != nil {
+		return InteractionQuestionRecord{}, err
+	}
+	record, err := store.loadInteractionQuestionLocked(id, at)
+	if err != nil {
+		return InteractionQuestionRecord{}, err
+	}
+	if record.PersonServer != identity.PersonServer || record.AgentProvider != identity.AgentProvider ||
+		record.Agent != identity.Agent || record.ConfirmationThumbprint != identity.ConfirmationThumbprint {
+		return InteractionQuestionRecord{}, ErrInteractionQuestionNotFound
+	}
+	return record, nil
+}
+
+func (store *memoryMissionStore) ConsumeMissionInteractionQuestion(
+	_ context.Context, expected MissionRecord, id string,
+	record InteractionQuestionRecord, at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if err := store.requireMissionQuestionLocked(id, expected); err != nil {
+		return err
+	}
+	return store.consumeInteractionQuestionLocked(id, record)
+}
+
+func (store *memoryMissionStore) createInteractionQuestionLocked(record InteractionQuestionRecord) error {
+	if _, exists := store.questions[record.ID]; exists {
+		return ErrInteractionQuestionConflict
+	}
+	store.questions[record.ID] = cloneInteractionQuestionRecord(record)
+	return nil
+}
+
+func (store *memoryMissionStore) loadInteractionQuestionLocked(id string, at time.Time) (InteractionQuestionRecord, error) {
+	record, exists := store.questions[id]
+	if !exists {
+		return InteractionQuestionRecord{}, ErrInteractionQuestionNotFound
+	}
+	if record.State == InteractionQuestionGone {
+		return InteractionQuestionRecord{}, ErrInteractionQuestionGone
+	}
+	if record.State == InteractionQuestionPending && !at.Before(record.ExpiresAt) {
+		record.State = InteractionQuestionExpired
+		store.questions[id] = cloneInteractionQuestionRecord(record)
+	}
+	return cloneInteractionQuestionRecord(record), nil
+}
+
+func (store *memoryMissionStore) resolveInteractionQuestionLocked(
+	id string, state InteractionQuestionState, answer aauth.InteractionAnswerDocument, at time.Time,
+) (InteractionQuestionRecord, error) {
+	record, err := store.loadInteractionQuestionLocked(id, at)
+	if err != nil {
+		return InteractionQuestionRecord{}, err
+	}
+	if record.State != InteractionQuestionPending ||
+		state != InteractionQuestionAnswered && state != InteractionQuestionUnreachable {
+		return InteractionQuestionRecord{}, ErrInteractionQuestionConflict
+	}
+	record.State, record.Answer, record.AnsweredAt = state, cloneInteractionAnswerDocument(answer), at
+	store.questions[id] = cloneInteractionQuestionRecord(record)
+	return cloneInteractionQuestionRecord(record), nil
+}
+
+func (store *memoryMissionStore) consumeInteractionQuestionLocked(id string, expected InteractionQuestionRecord) error {
+	record, exists := store.questions[id]
+	if !exists {
+		return ErrInteractionQuestionNotFound
+	}
+	if record.State == InteractionQuestionGone {
+		return ErrInteractionQuestionGone
+	}
+	if !reflect.DeepEqual(record, expected) {
+		return ErrInteractionQuestionConflict
+	}
+	record.State = InteractionQuestionGone
+	store.questions[id] = cloneInteractionQuestionRecord(record)
+	return nil
+}
+
+func (store *memoryMissionStore) requireMissionQuestionLocked(id string, mission MissionRecord) error {
+	record, exists := store.questions[id]
+	if !exists {
+		return ErrInteractionQuestionNotFound
+	}
+	if record.Agent != mission.Agent || record.Document.Question.MissionS256 != mission.S256 {
+		return ErrMissionConflict
+	}
+	return nil
 }
 
 type interactionQuestionProtocol struct {
@@ -286,4 +679,20 @@ func interactionQuestionMetadata(t *testing.T, server *Server) map[string]string
 		t.Fatal(err)
 	}
 	return metadata
+}
+
+func pollInteractionQuestion(
+	t *testing.T,
+	protocol *interactionQuestionProtocol,
+	server *Server,
+	location string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, protocol.personServerID+location, nil)
+	if err := signaturekey.SignJWTRequest(request, protocol.agentKey, protocol.agentToken, protocol.clock); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
 }

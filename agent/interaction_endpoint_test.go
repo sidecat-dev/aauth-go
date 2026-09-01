@@ -64,6 +64,35 @@ func TestAskPersonQuestionSendsOneExactSignedRequestAndReturnsExactAnswer(t *tes
 	}
 }
 
+func TestAskPersonQuestionCarriesMissionDigest(t *testing.T) {
+	fixture := newInteractionQuestionFixture(t)
+	mission := aauth.MissionS256([]byte(`{"description":"choose the route"}`))
+	request := agent.InteractionQuestionRequest{
+		PersonServer: fixture.protocol.personServerID,
+		Question:     "Which route should I take?",
+		MissionS256:  mission,
+	}
+	want, err := aauth.EncodeInteractionQuestion(aauth.InteractionQuestion{
+		Question: request.Question, MissionS256: mission,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.submit = func(httpRequest *http.Request) (*http.Response, error) {
+		verified := verifyProofWithComponents(
+			t, httpRequest, fixture.protocol.resolver, fixture.protocol.clock,
+			aauth.AgentTokenType, []string{"content-type", "content-digest"},
+		)
+		if string(verified.Proof.ExactBody()) != string(want.ExactJSON) {
+			t.Fatalf("mission question body = %s", verified.Proof.ExactBody())
+		}
+		return interactionQuestionResponse(httpRequest, http.StatusOK, []byte(`{"answer":"Take the northern route."}`)), nil
+	}
+	if _, err := fixture.client.AskPersonQuestion(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAskPersonQuestionRejectsInvalidOrUnsupportedInputBeforeNetwork(t *testing.T) {
 	valid := agent.InteractionQuestionRequest{
 		PersonServer: "https://ps.example", Question: "Which route?",

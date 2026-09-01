@@ -41,8 +41,8 @@
 //		})
 //	}
 //
-// A deferred Interaction-question store uses RunInteractionQuestion with a
-// fresh store from InteractionQuestionContract.New.
+// Missionless and mission-bound Interaction-question stores use
+// RunInteractionQuestion and RunMissionInteractionQuestion respectively.
 //
 // Missionless and mission-bound Interaction-relay stores use
 // RunInteractionRelay and RunMissionInteractionRelay respectively.

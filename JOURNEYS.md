@@ -194,19 +194,26 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     stable recovery after an uncertain acknowledgment; and Agent-facing log
     retrieval.
 
-- [x] **Missionless Interaction question — Implemented**
-  - Flow: Agent → PS with one exact signed raw-Markdown question → host policy
-    returns an immediate answer or retains a bounded pending question → an
-    independently authenticated host resumes and answers → one explicit Agent
-    poll consumes the exact result.
+- [x] **Missionless or mission-bound Interaction question — Implemented**
+  - Flow: Agent → PS with one exact signed raw-Markdown question and optional
+    mission digest → PS supplies the exact active mission to policy when named
+    → policy returns an atomically retained immediate answer or a bounded
+    pending question → an independently authenticated host resumes the same
+    mission view and answers → one explicit Agent poll consumes the result only
+    while the mission remains active.
   - Start with: `aauth.InteractionQuestion`,
     `agent.Client.AskPersonQuestion`, and
-    `personserver.InteractionQuestionConfig`.
-  - Evidence: [`integration/interaction_question_test.go`](integration/interaction_question_test.go)
+    `personserver.InteractionQuestionConfig`. Mission-aware applications set
+    `InteractionQuestionRequest.MissionS256`, read
+    `InteractionQuestionPolicyRequest.Mission` and
+    `InteractionQuestionHandle.Mission`, and implement
+    `MissionInteractionQuestionStore`.
+  - Evidence: [`integration/interaction_question_test.go`](integration/interaction_question_test.go),
+    [`personserver/storetest/mission_interaction_question.go`](personserver/storetest/mission_interaction_question.go),
     and `go run ./example/interactionquestion`.
-  - Missing from the wider Interaction Endpoint: durable adapters, mission
-    association and mission-log recording, and stable
-    uncertain-initial-submission recovery.
+  - Missing from the wider Interaction Endpoint: durable adapters, complete
+    cross-event mission-log recording, and stable uncertain-initial-submission
+    recovery.
 
 - [x] **Interaction and payment relay — Implemented**
   - Flow: Agent → PS with one exact signed URL/code relay and optional mission
@@ -226,8 +233,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`personserver/storetest/interaction_relay.go`](personserver/storetest/interaction_relay.go),
     [`personserver/storetest/mission_interaction_relay.go`](personserver/storetest/mission_interaction_relay.go),
     and `go run ./example/interactionrelay`.
-  - Missing: mission-bound questions, durable adapters, complete cross-event
-    mission-log recording, and stable uncertain-initial-submission recovery.
+  - Missing: durable adapters, complete cross-event mission-log recording, and
+    stable uncertain-initial-submission recovery.
 
 ### Not implemented
 

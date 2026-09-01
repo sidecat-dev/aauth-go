@@ -263,7 +263,7 @@ request before acknowledging it. Host code can read the ordered Audit-entry
 sublog through `MissionAuditStore`. The complete cross-event mission log and
 an Agent-facing retrieval route are not implemented here.
 
-### Missionless Interaction question
+### Missionless or mission-bound Interaction question
 
 ```mermaid
 sequenceDiagram
@@ -271,13 +271,14 @@ sequenceDiagram
     participant PS as Person Server
     participant Host as Host policy
     participant P as Person
-    A->>PS: One signed question POST with exact JSON
-    PS->>PS: Verify top-level Agent and request shape
-    PS->>Host: Exact untrusted Markdown question
+    A->>PS: One signed question, optionally naming an active mission
+    PS->>PS: Verify Agent, request shape, and mission when named
+    PS->>Host: Exact mission view and untrusted Markdown question
     Host->>P: Reach person through host-selected channel
     P-->>Host: Answer
     alt immediate
         Host-->>PS: Answer
+        PS->>PS: Retain mission result when mission-bound
         PS-->>A: 200 with exact answer document
     else deferred
         PS->>PS: Retain question before 202
@@ -290,10 +291,12 @@ sequenceDiagram
 
 The library carries raw Markdown but does not render it or choose a person
 communication channel. The Agent submits once and does not retry an uncertain
-initial result. Policy may answer immediately or retain a bounded question
-before `202`; a separately authenticated host later answers, and the Agent
-polls explicitly once per call. This path is top-level and missionless.
-Mission-log composition remains outside this path.
+initial result. A question may optionally name an active mission. Policy and a
+resumed host then receive the same exact mission view; immediate retention,
+deferred creation, resolution, poll, and consume all compare mission lifecycle
+state atomically. A separately authenticated host answers a deferred question,
+and the Agent polls explicitly once per call. These records remain a focused
+Interaction sublog; complete cross-event mission-log composition remains open.
 
 ### Resource-hosted interaction relay
 

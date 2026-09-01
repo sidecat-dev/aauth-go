@@ -94,14 +94,14 @@ audit store extends the mission lifecycle boundary because an append must race
 atomically with expiry or completion. Audit does not execute the action, and
 it does not create a general evidence container.
 
-The current Interaction Endpoint slice has one top-level missionless question
-and separate missionless or mission-bound relay state machines. The root
-package owns exact documents, `agent` performs one signed request or poll, and
-`personserver` hands untrusted Markdown to host policy in either composition.
-`InteractionQuestionStore` owns only a bounded pending question, while
-`MissionInteractionRelayStore` extends the existing mission boundary for relay
-create, resolution, poll, and consume. Neither is a generic interaction engine,
-and mission-bound questions remain later work.
+The current Interaction Endpoint slice has separate question and relay state
+machines, each usable with or without a mission. The root package owns exact
+documents, `agent` performs one signed request or poll, and `personserver` hands
+untrusted Markdown and an optional exact mission view to host policy in either
+composition. `InteractionQuestionStore` and `InteractionRelayStore` own only
+their focused deferred state; their mission-aware counterparts extend the
+existing mission boundary for immediate retention and deferred transitions.
+Neither is a generic interaction engine or the complete mission log.
 
 The current model includes focused `r3`, `events`, and `budgets` protocol
 packages. Sections below distinguish their implemented profiles from target
@@ -442,6 +442,12 @@ so all relay transitions compare the exact active mission atomically. Policy
 and a resumed host handle receive caller-owned copies of that mission view. A
 relay remains a delivery-progress sublog; it does not become the complete
 cross-event mission log or the authority for the Resource operation.
+
+Mission-bound question state uses `MissionInteractionQuestionStore` for the
+same reason. An immediate answer or unreachable result is retained before the
+response, while deferred create, resolution, poll, and consume compare the
+exact active mission. A resumed host handle carries the mission snapshot it
+displayed; a later accepted update requires the host to resume again.
 
 ### `resource`
 

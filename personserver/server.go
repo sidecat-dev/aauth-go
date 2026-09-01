@@ -86,7 +86,8 @@ type FederatedAuthorizationConfig struct {
 	// Audit optionally enables mission-bound audit retention. Missions must be
 	// configured and Tokens must implement MissionAuditStore.
 	Audit *AuditConfig
-	// InteractionQuestion optionally enables immediate top-level questions.
+	// InteractionQuestion optionally enables immediate or deferred,
+	// missionless or mission-bound top-level questions.
 	InteractionQuestion *InteractionQuestionConfig
 	// InteractionRelay optionally relays missionless or mission-bound
 	// interaction and payment requirements through a retained deferred response.
@@ -138,7 +139,8 @@ type PSAuthorizationConfig struct {
 	// Audit optionally enables mission-bound audit retention. Missions must be
 	// configured and Tokens must implement MissionAuditStore.
 	Audit *AuditConfig
-	// InteractionQuestion optionally enables immediate top-level questions.
+	// InteractionQuestion optionally enables immediate or deferred,
+	// missionless or mission-bound top-level questions.
 	InteractionQuestion *InteractionQuestionConfig
 	// InteractionRelay optionally relays missionless or mission-bound
 	// interaction and payment requirements through a retained deferred response.
@@ -288,6 +290,7 @@ type Server struct {
 	missionAudits                   MissionAuditStore
 	interactionQuestionPolicy       func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
 	interactionQuestionStore        InteractionQuestionStore
+	missionInteractionQuestions     MissionInteractionQuestionStore
 	interactionRelayPolicy          func(context.Context, InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error)
 	interactionRelayStore           InteractionRelayStore
 	missionInteractionRelays        MissionInteractionRelayStore
@@ -439,6 +442,9 @@ func newServer(config serverConfig) (*Server, error) {
 	if config.interactionQuestion != nil && config.interactionQuestion.Policy == nil {
 		return nil, errors.New("personserver: interaction question policy is required")
 	}
+	if config.interactionQuestion != nil && config.missions != nil && config.interactionQuestion.Store != nil {
+		return nil, errors.New("personserver: mission interaction question store must be supplied through Tokens")
+	}
 	if config.interactionRelay != nil {
 		if config.interactionRelay.Policy == nil {
 			return nil, errors.New("personserver: interaction relay policy is required")
@@ -480,6 +486,8 @@ func newServer(config serverConfig) (*Server, error) {
 	var permissions PermissionStore
 	var missionInteractionRelays MissionInteractionRelayStore
 	var interactionRelayRecords InteractionRelayStore
+	var missionInteractionQuestions MissionInteractionQuestionStore
+	var interactionQuestionRecords InteractionQuestionStore
 	if config.missions != nil {
 		if config.missions.Approve == nil {
 			return nil, errors.New("personserver: mission approval policy is required")
@@ -518,12 +526,22 @@ func newServer(config serverConfig) (*Server, error) {
 			}
 			interactionRelayRecords = missionInteractionRelays
 		}
+		if config.interactionQuestion != nil {
+			missionInteractionQuestions, ok = config.tokens.(MissionInteractionQuestionStore)
+			if !ok {
+				return nil, errors.New("personserver: missions with interaction questions require Tokens to implement MissionInteractionQuestionStore")
+			}
+			interactionQuestionRecords = missionInteractionQuestions
+		}
 	}
 	if config.permission != nil && config.missions == nil {
 		permissions = config.permission.Store
 	}
 	if config.interactionRelay != nil && config.missions == nil {
 		interactionRelayRecords = config.interactionRelay.Store
+	}
+	if config.interactionQuestion != nil && config.missions == nil {
+		interactionQuestionRecords = config.interactionQuestion.Store
 	}
 	var deferredTokens DeferredTokenStore
 	if config.requirePersonTokenInteraction != nil {
@@ -548,15 +566,16 @@ func newServer(config serverConfig) (*Server, error) {
 		requirePersonTokenInteraction: config.requirePersonTokenInteraction,
 		missions:                      missions, missionApprove: missionApprove,
 		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
-		missionAudits:             missionAudits,
-		permissionPolicy:          permissionPolicy(config.permission),
-		permissions:               permissions,
-		missionPermissions:        missionPermissions,
-		interactionQuestionPolicy: interactionQuestionPolicy(config.interactionQuestion),
-		interactionQuestionStore:  interactionQuestionStore(config.interactionQuestion),
-		interactionRelayPolicy:    interactionRelayPolicy(config.interactionRelay),
-		interactionRelayStore:     interactionRelayRecords,
-		missionInteractionRelays:  missionInteractionRelays,
+		missionAudits:               missionAudits,
+		permissionPolicy:            permissionPolicy(config.permission),
+		permissions:                 permissions,
+		missionPermissions:          missionPermissions,
+		interactionQuestionPolicy:   interactionQuestionPolicy(config.interactionQuestion),
+		interactionQuestionStore:    interactionQuestionRecords,
+		missionInteractionQuestions: missionInteractionQuestions,
+		interactionRelayPolicy:      interactionRelayPolicy(config.interactionRelay),
+		interactionRelayStore:       interactionRelayRecords,
+		missionInteractionRelays:    missionInteractionRelays,
 	}, nil
 }
 

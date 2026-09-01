@@ -17,11 +17,13 @@ import (
 const defaultMaxInteractionQuestionBytes = 1 << 20
 
 // InteractionQuestionRequest selects the Person Server and supplies one
-// missionless question. Description and Question are untrusted raw Markdown.
+// question, optionally associated with a mission. Description and Question
+// are untrusted raw Markdown.
 type InteractionQuestionRequest struct {
 	PersonServer string
 	Description  string
 	Question     string
+	MissionS256  string
 }
 type interactionQuestionResultKind uint8
 type pendingInteractionQuestionKind uint8
@@ -112,7 +114,9 @@ func (client *Client) AskPersonQuestion(ctx context.Context, input InteractionQu
 	if err := ctx.Err(); err != nil {
 		return InteractionQuestionResult{}, fail(operation, err)
 	}
-	document, err := aauth.EncodeInteractionQuestion(aauth.InteractionQuestion{Description: input.Description, Question: input.Question})
+	document, err := aauth.EncodeInteractionQuestion(aauth.InteractionQuestion{
+		Description: input.Description, Question: input.Question, MissionS256: input.MissionS256,
+	})
 	if err != nil {
 		return InteractionQuestionResult{}, fail(operation, err)
 	}

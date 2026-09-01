@@ -16,7 +16,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
+func TestCurrentCoreMissionlessAndMissionBoundInteractionQuestion(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -60,18 +60,46 @@ func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	questionStore := exampleutil.NewMissionInteractionQuestionStore()
+	missionExpiry := now.Add(30 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		ExpiresAt: &missionExpiry, Description: "Choose the route for the approved trip.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := questionStore.CommitMission(ctx, personserver.MissionRecord{
+		S256: mission.S256, Agent: agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: missionExpiry,
+		State: personserver.MissionActive,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	missionConfig := &personserver.MissionConfig{
+		Approve: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+			return personserver.MissionDecision{}, errors.New("mission approval is not used in this journey")
+		},
+		AcceptUpdate: func(context.Context, personserver.MissionUpdatePolicyRequest) error {
+			return errors.New("mission update is not used in this journey")
+		},
+		ConfirmPersonAcceptedCompletion: func(context.Context, personserver.MissionCompletionPolicyRequest) error {
+			return errors.New("mission completion is not used in this journey")
+		},
+	}
 
 	questionCalls := 0
 	newPeople := func(answer func(context.Context, personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionDecision, error)) *personserver.Server {
 		people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 			Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
-			Clock: clock, Tokens: exampleutil.NewMissionStore(), NewID: func() string { return "unused-person-token" },
+			Clock: clock, Tokens: questionStore, NewID: func() string { return "unused-person-token" },
 			BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
 				return personserver.Person{Subject: "person", Lifetime: time.Minute}, nil
 			},
 			Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 				return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
 			},
+			Missions: missionConfig,
 			InteractionQuestion: &personserver.InteractionQuestionConfig{Policy: func(ctx context.Context, request personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionPolicyResult, error) {
 				decision, err := answer(ctx, request)
 				return personserver.InteractionQuestionPolicyResult{Immediate: &decision}, err
@@ -130,6 +158,25 @@ func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
 		t.Fatalf("answer = %#v", answer.Answer)
 	}
 
+	people = newPeople(func(_ context.Context, request personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionDecision, error) {
+		questionCalls++
+		if request.Mission == nil || request.Mission.S256 != mission.S256 {
+			return personserver.InteractionQuestionDecision{}, errors.New("mission question has no exact mission context")
+		}
+		return personserver.InteractionQuestionDecision{Answer: "Take the mission route."}, nil
+	})
+	servePeople(people)
+	result, err = operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+		PersonServer: personServerID, Question: "Which mission route?", MissionS256: mission.S256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, ok = result.Answer()
+	if !ok || answer.Answer.Answer != "Take the mission route." {
+		t.Fatalf("mission answer = %#v, present=%t", answer, ok)
+	}
+
 	people = newPeople(func(context.Context, personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionDecision, error) {
 		questionCalls++
 		return personserver.InteractionQuestionDecision{}, personserver.ErrInteractionUserUnreachable
@@ -142,20 +189,25 @@ func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
 	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "user_unreachable" {
 		t.Fatalf("unreachable question = %T %v", err, err)
 	}
+	_, err = operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+		PersonServer: personServerID, Question: "Can the person answer the mission question?", MissionS256: mission.S256,
+	})
+	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "user_unreachable" {
+		t.Fatalf("mission unreachable question = %T %v", err, err)
+	}
 
-	deferredStore := exampleutil.NewInteractionQuestionStore()
 	newDeferredPeople := func() *personserver.Server {
 		people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 			Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
-			Clock: clock, Tokens: exampleutil.NewMissionStore(), NewID: func() string { return "unused-person-token" },
+			Clock: clock, Tokens: questionStore, NewID: func() string { return "unused-person-token" },
 			BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
 				return personserver.Person{Subject: "person", Lifetime: time.Minute}, nil
 			},
 			Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 				return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
 			},
+			Missions: missionConfig,
 			InteractionQuestion: &personserver.InteractionQuestionConfig{
-				Store: deferredStore,
 				Policy: func(context.Context, personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionPolicyResult, error) {
 					questionCalls++
 					return personserver.InteractionQuestionPolicyResult{Deferred: &personserver.InteractionQuestionPendingPolicy{
@@ -223,7 +275,39 @@ func TestCurrentCoreMissionlessInteractionQuestion(t *testing.T) {
 		t.Fatalf("deferred unreachable = %T %v", err, err)
 	}
 
-	if questionCalls != 4 || questionPosts != 4 || resourceCalls != 0 || accessServerCalls != 0 {
+	result, err = operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+		PersonServer: personServerID, Question: "Should I continue the mission?", MissionS256: mission.S256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok = result.Pending()
+	if !ok {
+		t.Fatalf("deferred mission result = %#v", result)
+	}
+	people = newDeferredPeople()
+	servePeople(people)
+	handle, err = people.ResumeInteractionQuestion(ctx, strings.TrimPrefix(pending.Location(), personServerID+"/interaction/pending/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok := handle.Mission()
+	if !ok || missionContext.S256 != mission.S256 {
+		t.Fatalf("deferred mission host context = %#v, %t", missionContext, ok)
+	}
+	if err := people.AnswerInteractionQuestion(ctx, handle, "Continue the mission."); err != nil {
+		t.Fatal(err)
+	}
+	result, err = operator.PollPersonQuestion(ctx, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferredAnswer, ok = result.Answer()
+	if !ok || deferredAnswer.Answer.Answer != "Continue the mission." {
+		t.Fatalf("deferred mission answer = %#v", deferredAnswer)
+	}
+
+	if questionCalls != 7 || questionPosts != 7 || resourceCalls != 0 || accessServerCalls != 0 {
 		t.Fatalf("effects: policy=%d question=%d Resource=%d AS=%d",
 			questionCalls, questionPosts, resourceCalls, accessServerCalls)
 	}

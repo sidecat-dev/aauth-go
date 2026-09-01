@@ -18,6 +18,8 @@ import (
 var ErrInteractionUserUnreachable = errors.New("personserver: interaction user is unreachable")
 
 // InteractionQuestionConfig enables immediate or deferred top-level questions.
+// With missions, Store must be nil and the server's Tokens must implement
+// MissionInteractionQuestionStore.
 type InteractionQuestionConfig struct {
 	// Policy selects one immediate answer or bounded deferred question.
 	Policy func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
@@ -26,11 +28,13 @@ type InteractionQuestionConfig struct {
 }
 
 // InteractionQuestionPolicyRequest supplies the verified Agent identity,
-// exact untrusted question document, and post-validation server instant.
+// exact untrusted question document, post-validation server instant, and an
+// exact active mission context when the question named one.
 type InteractionQuestionPolicyRequest struct {
 	Agent      string
 	Document   aauth.InteractionQuestionDocument
 	ReceivedAt time.Time
+	Mission    *MissionContext
 }
 
 // InteractionQuestionDecision is the host's immediate answer. Answer remains
@@ -47,13 +51,6 @@ func interactionQuestionPolicy(config *InteractionQuestionConfig) func(
 		return nil
 	}
 	return config.Policy
-}
-
-func interactionQuestionStore(config *InteractionQuestionConfig) InteractionQuestionStore {
-	if config == nil {
-		return nil
-	}
-	return config.Store
 }
 
 func (server *Server) handleInteraction(response http.ResponseWriter, request *http.Request) {
@@ -109,16 +106,43 @@ func (server *Server) handleVerifiedInteractionQuestion(
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	if document.Question.MissionS256 != "" {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission-bound interaction questions are not implemented"))
-		return
-	}
 	receivedAt := server.clock.Now().UTC()
+	var missionRecord *MissionRecord
+	var missionContext *MissionContext
+	if document.Question.MissionS256 != "" {
+		if server.missions == nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission-bound interaction questions are not configured"))
+			return
+		}
+		loaded, err := server.loadActiveMission(
+			request.Context(), document.Question.MissionS256, agent.Subject, receivedAt,
+		)
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		missionRecord = &loaded
+		missionContext, err = missionContextFromRecord(loaded)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	}
 	result, err := server.interactionQuestionPolicy(request.Context(), InteractionQuestionPolicyRequest{
 		Agent: agent.Subject, Document: cloneInteractionQuestionDocument(document), ReceivedAt: receivedAt,
+		Mission: missionContext,
 	})
 	if err != nil {
 		if errors.Is(err, ErrInteractionUserUnreachable) {
+			if missionRecord != nil {
+				if err := server.commitImmediateMissionInteractionQuestion(
+					request.Context(), agent, document, aauth.InteractionAnswerDocument{},
+					InteractionQuestionUnreachable, *missionRecord, receivedAt,
+				); err != nil {
+					writeMissionActionProblem(response, err)
+					return
+				}
+			}
 			writeProblem(response, http.StatusForbidden, "user_unreachable", err)
 			return
 		}
@@ -129,8 +153,30 @@ func (server *Server) handleVerifiedInteractionQuestion(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if missionRecord != nil {
+		current, err := server.recheckActiveMission(request.Context(), *missionRecord, server.clock.Now().UTC())
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		missionRecord = &current
+	}
 	if result.Immediate != nil {
-		server.writeInteractionAnswer(response, *result.Immediate)
+		answer, err := aauth.EncodeInteractionAnswer(aauth.InteractionAnswer{Answer: result.Immediate.Answer})
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if missionRecord != nil {
+			if err := server.commitImmediateMissionInteractionQuestion(
+				request.Context(), agent, document, answer,
+				InteractionQuestionAnswered, *missionRecord, receivedAt,
+			); err != nil {
+				writeMissionActionProblem(response, err)
+				return
+			}
+		}
+		server.writeInteractionAnswerDocument(response, answer)
 		return
 	}
 	if server.interactionQuestionStore == nil {
@@ -168,11 +214,26 @@ func (server *Server) handleVerifiedInteractionQuestion(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		if err := server.interactionQuestionStore.CreateInteractionQuestion(request.Context(), cloneInteractionQuestionRecord(record)); err != nil {
-			if errors.Is(err, ErrInteractionQuestionConflict) {
+		var createErr error
+		if missionRecord != nil {
+			createErr = server.missionInteractionQuestions.CommitMissionInteractionQuestion(
+				request.Context(), cloneMissionRecordForTransition(*missionRecord),
+				cloneInteractionQuestionRecord(record), server.clock.Now().UTC(),
+			)
+		} else {
+			createErr = server.interactionQuestionStore.CreateInteractionQuestion(
+				request.Context(), cloneInteractionQuestionRecord(record),
+			)
+		}
+		if createErr != nil {
+			if errors.Is(createErr, ErrInteractionQuestionConflict) {
 				continue
 			}
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			if missionRecord != nil {
+				writeMissionActionProblem(response, createErr)
+				return
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", createErr)
 			return
 		}
 		server.writePendingInteractionQuestion(response, "/interaction/pending/"+id, record.RetryAfter)
@@ -181,16 +242,58 @@ func (server *Server) handleVerifiedInteractionQuestion(
 	writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("could not allocate interaction question reference"))
 }
 
-func (server *Server) writeInteractionAnswer(response http.ResponseWriter, decision InteractionQuestionDecision) {
-	answer, err := aauth.EncodeInteractionAnswer(aauth.InteractionAnswer{Answer: decision.Answer})
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
+func (server *Server) writeInteractionAnswerDocument(response http.ResponseWriter, answer aauth.InteractionAnswerDocument) {
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(answer.ExactJSON)
+}
+
+func (server *Server) commitImmediateMissionInteractionQuestion(
+	ctx context.Context,
+	agent aauth.AgentTokenClaims,
+	question aauth.InteractionQuestionDocument,
+	answer aauth.InteractionAnswerDocument,
+	state InteractionQuestionState,
+	mission MissionRecord,
+	at time.Time,
+) error {
+	if server.missionInteractionQuestions == nil {
+		return errors.New("personserver: mission interaction question store is not configured")
+	}
+	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	if err != nil {
+		return err
+	}
+	expiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
+	if !mission.ExpiresAt.IsZero() && mission.ExpiresAt.Before(expiresAt) {
+		expiresAt = mission.ExpiresAt
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		id, err := interaction.GeneratePendingReference(nil)
+		if err != nil {
+			return err
+		}
+		record := InteractionQuestionRecord{
+			ID: id, PersonServer: server.issuer, AgentProvider: agent.Issuer,
+			Agent: agent.Subject, ConfirmationThumbprint: thumbprint,
+			AgentExpiresAt: time.Unix(agent.ExpiresAt, 0).UTC(),
+			Document:       cloneInteractionQuestionDocument(question),
+			State:          state, Answer: cloneInteractionAnswerDocument(answer),
+			CreatedAt: at, ExpiresAt: expiresAt, AnsweredAt: at,
+		}
+		if err := validateInteractionQuestionRecord(record); err != nil {
+			return err
+		}
+		err = server.missionInteractionQuestions.CommitMissionInteractionQuestion(
+			ctx, cloneMissionRecordForTransition(mission), cloneInteractionQuestionRecord(record), server.clock.Now().UTC(),
+		)
+		if errors.Is(err, ErrInteractionQuestionConflict) {
+			continue
+		}
+		return err
+	}
+	return errors.New("personserver: could not allocate mission interaction question record")
 }
 
 func (server *Server) writePendingInteractionQuestion(response http.ResponseWriter, location string, retryAfter time.Duration) {

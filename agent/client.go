@@ -3,7 +3,7 @@
 // enrollment and refresh, direct identity access, Resource-managed sessions,
 // one immediate mission journey, parent-mediated sub-agents, one Resource call
 // chain, missionless or mission-bound local-action permission, mission-bound post-action audit,
-// missionless Interaction questions, missionless or mission-bound relays,
+// missionless or mission-bound Interaction questions and relays,
 // public Events registration and
 // correlation, and one-shot polling of supported interactions and held
 // invocations.

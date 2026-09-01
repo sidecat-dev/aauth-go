@@ -74,6 +74,17 @@ type InteractionQuestionStore interface {
 	ConsumeInteractionQuestion(context.Context, string, InteractionQuestionRecord) error
 }
 
+// MissionInteractionQuestionStore keeps question transitions in the same
+// atomic boundary as mission lifecycle and mission-bound tokens.
+type MissionInteractionQuestionStore interface {
+	MissionStore
+	InteractionQuestionStore
+	CommitMissionInteractionQuestion(context.Context, MissionRecord, InteractionQuestionRecord, time.Time) error
+	ResolveMissionInteractionQuestion(context.Context, MissionRecord, string, InteractionQuestionState, aauth.InteractionAnswerDocument, time.Time) (InteractionQuestionRecord, error)
+	PollMissionInteractionQuestion(context.Context, MissionRecord, string, InteractionQuestionPollIdentity, time.Time) (InteractionQuestionRecord, error)
+	ConsumeMissionInteractionQuestion(context.Context, MissionRecord, string, InteractionQuestionRecord, time.Time) error
+}
+
 type interactionQuestionHandleKind uint8
 
 const interactionQuestionHandleVerified interactionQuestionHandleKind = 1
@@ -81,8 +92,10 @@ const interactionQuestionHandleVerified interactionQuestionHandleKind = 1
 // InteractionQuestionHandle is a non-authoritative host handle reconstructed
 // from retained state. The host must authenticate the person separately.
 type InteractionQuestionHandle struct {
-	kind   interactionQuestionHandleKind
-	record InteractionQuestionRecord
+	kind          interactionQuestionHandleKind
+	record        InteractionQuestionRecord
+	mission       *MissionContext
+	missionRecord *MissionRecord
 }
 
 // Reference returns the opaque pending reference.
@@ -117,6 +130,15 @@ func (handle InteractionQuestionHandle) ExpiresAt() time.Time {
 	return handle.record.ExpiresAt
 }
 
+// Mission returns a caller-owned exact mission context for a mission-bound
+// question. The bool is false for a missionless question.
+func (handle InteractionQuestionHandle) Mission() (MissionContext, bool) {
+	if handle.kind != interactionQuestionHandleVerified || handle.mission == nil {
+		return MissionContext{}, false
+	}
+	return *cloneMissionContext(handle.mission), true
+}
+
 // ResumeInteractionQuestion reconstructs a non-authoritative host handle.
 func (server *Server) ResumeInteractionQuestion(ctx context.Context, reference string) (InteractionQuestionHandle, error) {
 	if server == nil || server.interactionQuestionStore == nil {
@@ -139,7 +161,29 @@ func (server *Server) ResumeInteractionQuestion(ctx context.Context, reference s
 	if record.State != InteractionQuestionPending {
 		return InteractionQuestionHandle{}, interactionQuestionStateError(record.State)
 	}
-	return InteractionQuestionHandle{kind: interactionQuestionHandleVerified, record: cloneInteractionQuestionRecord(record)}, nil
+	var mission *MissionContext
+	var missionRecord *MissionRecord
+	if record.Document.Question.MissionS256 != "" {
+		if server.missionInteractionQuestions == nil {
+			return InteractionQuestionHandle{}, ErrInteractionQuestionConflict
+		}
+		loaded, err := server.loadActiveMission(
+			ctx, record.Document.Question.MissionS256, record.Agent, now,
+		)
+		if err != nil {
+			return InteractionQuestionHandle{}, err
+		}
+		mission, err = missionContextFromRecord(loaded)
+		if err != nil {
+			return InteractionQuestionHandle{}, err
+		}
+		clone := cloneMissionRecordForTransition(loaded)
+		missionRecord = &clone
+	}
+	return InteractionQuestionHandle{
+		kind: interactionQuestionHandleVerified, record: cloneInteractionQuestionRecord(record),
+		mission: cloneMissionContext(mission), missionRecord: missionRecord,
+	}, nil
 }
 
 // AnswerInteractionQuestion retains one host-authenticated answer.
@@ -166,7 +210,35 @@ func (server *Server) resolveInteractionQuestion(ctx context.Context, handle Int
 	if handle.kind != interactionQuestionHandleVerified || validateInteractionQuestionRecord(handle.record) != nil || handle.record.PersonServer != server.issuer {
 		return ErrInteractionQuestionConflict
 	}
-	_, err := server.interactionQuestionStore.ResolveInteractionQuestion(ctx, handle.record.ID, state, cloneInteractionAnswerDocument(answer), server.clock.Now().UTC())
+	now := server.clock.Now().UTC()
+	if handle.record.Document.Question.MissionS256 != "" {
+		if server.missionInteractionQuestions == nil || handle.mission == nil || handle.missionRecord == nil ||
+			handle.mission.S256 != handle.record.Document.Question.MissionS256 ||
+			handle.missionRecord.S256 != handle.record.Document.Question.MissionS256 ||
+			handle.missionRecord.Agent != handle.record.Agent {
+			return ErrInteractionQuestionConflict
+		}
+		loaded, err := server.loadActiveMission(
+			ctx, handle.missionRecord.S256, handle.missionRecord.Agent, now,
+		)
+		if err != nil {
+			return err
+		}
+		if !handle.missionRecord.Equal(loaded) {
+			return ErrMissionConflict
+		}
+		_, err = server.missionInteractionQuestions.ResolveMissionInteractionQuestion(
+			ctx, cloneMissionRecordForTransition(*handle.missionRecord), handle.record.ID,
+			state, cloneInteractionAnswerDocument(answer), now,
+		)
+		return err
+	}
+	if handle.mission != nil || handle.missionRecord != nil {
+		return ErrInteractionQuestionConflict
+	}
+	_, err := server.interactionQuestionStore.ResolveInteractionQuestion(
+		ctx, handle.record.ID, state, cloneInteractionAnswerDocument(answer), now,
+	)
 	return err
 }
 
@@ -209,7 +281,7 @@ func validateInteractionQuestionRecord(record InteractionQuestionRecord) error {
 		return ErrInteractionQuestionConflict
 	}
 	decoded, err := aauth.DecodeInteractionQuestion(record.Document.ExactJSON)
-	if err != nil || decoded.Question != record.Document.Question || !bytes.Equal(decoded.ExactJSON, record.Document.ExactJSON) || decoded.Question.MissionS256 != "" {
+	if err != nil || decoded.Question != record.Document.Question || !bytes.Equal(decoded.ExactJSON, record.Document.ExactJSON) {
 		return ErrInteractionQuestionConflict
 	}
 	switch record.State {
@@ -306,8 +378,44 @@ func (server *Server) handlePendingInteractionQuestion(response http.ResponseWri
 	}
 	id := request.PathValue("id")
 	now := server.clock.Now().UTC()
-	record, err := server.interactionQuestionStore.PollInteractionQuestion(request.Context(), id, identity, now)
+	var mission *MissionRecord
+	var record InteractionQuestionRecord
+	if server.missionInteractionQuestions != nil {
+		peek, peekErr := server.interactionQuestionStore.LoadInteractionQuestion(request.Context(), id, now)
+		if peekErr == nil && peek.Document.Question.MissionS256 != "" {
+			if peek.PersonServer != identity.PersonServer || peek.AgentProvider != identity.AgentProvider ||
+				peek.Agent != identity.Agent || peek.ConfirmationThumbprint != identity.ConfirmationThumbprint {
+				writeProblem(response, http.StatusGone, "invalid_code", ErrInteractionQuestionNotFound)
+				return
+			}
+			if validateInteractionQuestionRecordAt(peek, now) != nil || peek.ID != id {
+				writeProblem(response, http.StatusInternalServerError, "server_error", ErrInteractionQuestionConflict)
+				return
+			}
+			loaded, loadErr := server.loadActiveMission(
+				request.Context(), peek.Document.Question.MissionS256, identity.Agent, now,
+			)
+			if loadErr != nil {
+				writeMissionActionProblem(response, loadErr)
+				return
+			}
+			mission = &loaded
+			record, err = server.missionInteractionQuestions.PollMissionInteractionQuestion(
+				request.Context(), cloneMissionRecordForTransition(loaded), id, identity, now,
+			)
+		} else if peekErr != nil {
+			err = peekErr
+		} else {
+			record, err = server.interactionQuestionStore.PollInteractionQuestion(request.Context(), id, identity, now)
+		}
+	} else {
+		record, err = server.interactionQuestionStore.PollInteractionQuestion(request.Context(), id, identity, now)
+	}
 	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
 		server.writeInteractionQuestionStoreError(response, err)
 		return
 	}
@@ -319,7 +427,7 @@ func (server *Server) handlePendingInteractionQuestion(response http.ResponseWri
 	case InteractionQuestionPending:
 		server.writePendingInteractionQuestion(response, request.URL.Path, record.RetryAfter)
 	case InteractionQuestionAnswered:
-		if !server.consumeInteractionQuestion(response, request, record) {
+		if !server.consumeInteractionQuestion(response, request, record, mission) {
 			return
 		}
 		response.Header().Set("Cache-Control", "no-store")
@@ -327,12 +435,12 @@ func (server *Server) handlePendingInteractionQuestion(response http.ResponseWri
 		response.WriteHeader(http.StatusOK)
 		_, _ = response.Write(record.Answer.ExactJSON)
 	case InteractionQuestionUnreachable:
-		if !server.consumeInteractionQuestion(response, request, record) {
+		if !server.consumeInteractionQuestion(response, request, record, mission) {
 			return
 		}
 		writeProblem(response, http.StatusForbidden, "user_unreachable", ErrInteractionUserUnreachable)
 	case InteractionQuestionExpired:
-		if !server.consumeInteractionQuestion(response, request, record) {
+		if !server.consumeInteractionQuestion(response, request, record, mission) {
 			return
 		}
 		writeProblem(response, http.StatusRequestTimeout, "expired", ErrInteractionQuestionExpired)
@@ -341,8 +449,28 @@ func (server *Server) handlePendingInteractionQuestion(response http.ResponseWri
 	}
 }
 
-func (server *Server) consumeInteractionQuestion(response http.ResponseWriter, request *http.Request, record InteractionQuestionRecord) bool {
-	if err := server.interactionQuestionStore.ConsumeInteractionQuestion(request.Context(), record.ID, cloneInteractionQuestionRecord(record)); err != nil {
+func (server *Server) consumeInteractionQuestion(
+	response http.ResponseWriter,
+	request *http.Request,
+	record InteractionQuestionRecord,
+	mission *MissionRecord,
+) bool {
+	var err error
+	if mission != nil {
+		err = server.missionInteractionQuestions.ConsumeMissionInteractionQuestion(
+			request.Context(), cloneMissionRecordForTransition(*mission), record.ID,
+			cloneInteractionQuestionRecord(record), server.clock.Now().UTC(),
+		)
+	} else {
+		err = server.interactionQuestionStore.ConsumeInteractionQuestion(
+			request.Context(), record.ID, cloneInteractionQuestionRecord(record),
+		)
+	}
+	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return false
+		}
 		server.writeInteractionQuestionStoreError(response, err)
 		return false
 	}

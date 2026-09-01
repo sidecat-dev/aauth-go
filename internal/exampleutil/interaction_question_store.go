@@ -22,17 +22,21 @@ type interactionQuestionStore struct {
 func (store *interactionQuestionStore) CreateInteractionQuestion(_ context.Context, record personserver.InteractionQuestionRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if _, exists := store.records[record.ID]; exists {
+	return createInteractionQuestionRecord(store.records, record)
+}
+
+func createInteractionQuestionRecord(records map[string]personserver.InteractionQuestionRecord, record personserver.InteractionQuestionRecord) error {
+	if _, exists := records[record.ID]; exists {
 		return personserver.ErrInteractionQuestionConflict
 	}
-	store.records[record.ID] = cloneExampleQuestionRecord(record)
+	records[record.ID] = cloneExampleQuestionRecord(record)
 	return nil
 }
 
 func (store *interactionQuestionStore) LoadInteractionQuestion(_ context.Context, id string, at time.Time) (personserver.InteractionQuestionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, err := store.load(id, at)
+	record, err := loadInteractionQuestionRecord(store.records, id, at)
 	if err != nil {
 		return personserver.InteractionQuestionRecord{}, err
 	}
@@ -42,7 +46,17 @@ func (store *interactionQuestionStore) LoadInteractionQuestion(_ context.Context
 func (store *interactionQuestionStore) ResolveInteractionQuestion(_ context.Context, id string, state personserver.InteractionQuestionState, answer aauth.InteractionAnswerDocument, at time.Time) (personserver.InteractionQuestionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, err := store.load(id, at)
+	return resolveInteractionQuestionRecord(store.records, id, state, answer, at)
+}
+
+func resolveInteractionQuestionRecord(
+	records map[string]personserver.InteractionQuestionRecord,
+	id string,
+	state personserver.InteractionQuestionState,
+	answer aauth.InteractionAnswerDocument,
+	at time.Time,
+) (personserver.InteractionQuestionRecord, error) {
+	record, err := loadInteractionQuestionRecord(records, id, at)
 	if err != nil {
 		return personserver.InteractionQuestionRecord{}, err
 	}
@@ -60,14 +74,23 @@ func (store *interactionQuestionStore) ResolveInteractionQuestion(_ context.Cont
 	}
 	record.State, record.AnsweredAt = state, at
 	record.Answer = cloneExampleAnswer(answer)
-	store.records[id] = cloneExampleQuestionRecord(record)
+	records[id] = cloneExampleQuestionRecord(record)
 	return cloneExampleQuestionRecord(record), nil
 }
 
 func (store *interactionQuestionStore) PollInteractionQuestion(_ context.Context, id string, identity personserver.InteractionQuestionPollIdentity, at time.Time) (personserver.InteractionQuestionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, err := store.load(id, at)
+	return pollInteractionQuestionRecord(store.records, id, identity, at)
+}
+
+func pollInteractionQuestionRecord(
+	records map[string]personserver.InteractionQuestionRecord,
+	id string,
+	identity personserver.InteractionQuestionPollIdentity,
+	at time.Time,
+) (personserver.InteractionQuestionRecord, error) {
+	record, err := loadInteractionQuestionRecord(records, id, at)
 	if err != nil {
 		return personserver.InteractionQuestionRecord{}, err
 	}
@@ -80,7 +103,15 @@ func (store *interactionQuestionStore) PollInteractionQuestion(_ context.Context
 func (store *interactionQuestionStore) ConsumeInteractionQuestion(_ context.Context, id string, expected personserver.InteractionQuestionRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, exists := store.records[id]
+	return consumeInteractionQuestionRecord(store.records, id, expected)
+}
+
+func consumeInteractionQuestionRecord(
+	records map[string]personserver.InteractionQuestionRecord,
+	id string,
+	expected personserver.InteractionQuestionRecord,
+) error {
+	record, exists := records[id]
 	if !exists {
 		return personserver.ErrInteractionQuestionNotFound
 	}
@@ -94,12 +125,16 @@ func (store *interactionQuestionStore) ConsumeInteractionQuestion(_ context.Cont
 		return personserver.ErrInteractionQuestionConflict
 	}
 	record.State = personserver.InteractionQuestionGone
-	store.records[id] = cloneExampleQuestionRecord(record)
+	records[id] = cloneExampleQuestionRecord(record)
 	return nil
 }
 
-func (store *interactionQuestionStore) load(id string, at time.Time) (personserver.InteractionQuestionRecord, error) {
-	record, exists := store.records[id]
+func loadInteractionQuestionRecord(
+	records map[string]personserver.InteractionQuestionRecord,
+	id string,
+	at time.Time,
+) (personserver.InteractionQuestionRecord, error) {
+	record, exists := records[id]
 	if !exists {
 		return personserver.InteractionQuestionRecord{}, personserver.ErrInteractionQuestionNotFound
 	}
@@ -108,7 +143,7 @@ func (store *interactionQuestionStore) load(id string, at time.Time) (personserv
 	}
 	if record.State == personserver.InteractionQuestionPending && !at.Before(record.ExpiresAt) {
 		record.State = personserver.InteractionQuestionExpired
-		store.records[id] = cloneExampleQuestionRecord(record)
+		records[id] = cloneExampleQuestionRecord(record)
 	}
 	return record, nil
 }

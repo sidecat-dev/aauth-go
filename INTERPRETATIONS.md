@@ -1182,18 +1182,22 @@ signed JSON and additive members, and rejects relay-only `url`, `code`, and
 Person Server host must sanitize them before display and chooses how to reach
 the person; the protocol library performs neither action.
 
-The question role journey is top-level and missionless. Policy returns one
-immediate answer or a bounded deferred policy. Deferred state is retained
-before `202`; a separately authenticated host reconstructs a non-authoritative
-handle, records one answer or unreachable result, and the Agent makes one
-explicit poll. Mission association would require cross-event mission-log
-composition. Relay requests are decoded and retained by their separate
-purpose-specific path rather than being silently treated as questions.
+The question role journey is top-level and may optionally name one active
+mission. Policy returns one immediate answer or a bounded deferred policy. For
+a mission-bound request, policy and a resumed host receive the same exact
+mission view; immediate answer or unreachable retention and every deferred
+transition compare mission lifecycle state atomically. A separately
+authenticated host reconstructs a non-authoritative handle, records one answer
+or unreachable result, and the Agent makes one explicit poll. These records
+are an Interaction sublog, not the undefined complete cross-event mission log.
+Relay requests remain a separate purpose-specific state machine.
 
-Core recommends recording every Interaction request and response. The deferred
-path retains the exact request and answer, while the immediate path leaves
-recording to host policy. Complete immediate recording and the cross-event
-mission log remain explicit conformance gaps.
+Core recommends recording every Interaction request and response and requires
+mission interactions in the mission log. The mission-bound path retains exact
+immediate and deferred question documents and results. Missionless immediate
+recording remains host policy, and the complete cross-event mission log remains
+an explicit conformance gap because Core defines neither its representation nor
+retrieval surface.
 
 `AskPersonQuestion` makes one request and never retries. A valid immediate
 answer returns its exact bytes; a valid `202` returns a verified pending handle.
@@ -1214,8 +1218,7 @@ exposing a validated HTTPS URL, code, optional untrusted Markdown description,
 whole-second `max_wait`, and optional `mission_s256`. When a mission is named,
 policy and the resumed host receive the same exact active mission view, and
 create, resolution, poll, and consume share its lifecycle boundary. This is a
-focused relay sublog, not the complete cross-event mission log. Mission-bound
-questions remain unimplemented.
+focused relay sublog, not the complete cross-event mission log.
 
 The Person Server retains the relay record before `202`. Host policy chooses
 whether it has a person channel; `interaction_unavailable` is the defined

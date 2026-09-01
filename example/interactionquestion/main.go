@@ -1,5 +1,5 @@
-// The interaction-question example sends one missionless question from an
-// Agent to its Person Server and returns the host's immediate answer.
+// The interaction-question example sends missionless and mission-bound
+// questions from an Agent to its Person Server and returns retained answers.
 package main
 
 import (
@@ -79,20 +79,49 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	questionStore := exampleutil.NewInteractionQuestionStore()
+	questionStore := exampleutil.NewMissionInteractionQuestionStore()
+	missionExpiry := now.Add(30 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		ExpiresAt: &missionExpiry, Description: "Choose the route for the approved trip.",
+	})
+	if err != nil {
+		return err
+	}
+	if err := questionStore.CommitMission(ctx, personserver.MissionRecord{
+		S256: mission.S256, Agent: agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: missionExpiry,
+		State: personserver.MissionActive,
+	}, nil); err != nil {
+		return err
+	}
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
-		Clock: clock, Tokens: exampleutil.NewMissionStore(), NewID: func() string { return "unused-person-token" },
+		Clock: clock, Tokens: questionStore, NewID: func() string { return "unused-person-token" },
 		BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
 			return personserver.Person{Subject: "person", Lifetime: time.Minute}, nil
 		},
 		Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 			return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
 		},
+		Missions: &personserver.MissionConfig{
+			Approve: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+				return personserver.MissionDecision{}, errors.New("mission approval is not used in this example")
+			},
+			AcceptUpdate: func(context.Context, personserver.MissionUpdatePolicyRequest) error {
+				return errors.New("mission update is not used in this example")
+			},
+			ConfirmPersonAcceptedCompletion: func(context.Context, personserver.MissionCompletionPolicyRequest) error {
+				return errors.New("mission completion is not used in this example")
+			},
+		},
 		InteractionQuestion: &personserver.InteractionQuestionConfig{
-			Store: questionStore,
 			Policy: func(_ context.Context, request personserver.InteractionQuestionPolicyRequest) (personserver.InteractionQuestionPolicyResult, error) {
-				if _, err := fmt.Fprintf(output, "Person Server received question: %s\n", request.Document.Question.Question); err != nil {
+				format := "Person Server received question: %s\n"
+				if request.Mission != nil {
+					format = "Person Server received mission question: %s\n"
+				}
+				if _, err := fmt.Fprintf(output, format, request.Document.Question.Question); err != nil {
 					return personserver.InteractionQuestionPolicyResult{}, err
 				}
 				return personserver.InteractionQuestionPolicyResult{Deferred: &personserver.InteractionQuestionPendingPolicy{
@@ -142,7 +171,41 @@ func run(output io.Writer) error {
 	if !ok {
 		return errors.New("Person Server did not return the retained answer")
 	}
-	_, err = fmt.Fprintf(output, "Agent received answer: %s\n", answer.Answer.Answer)
+	if _, err = fmt.Fprintf(output, "Agent received answer: %s\n", answer.Answer.Answer); err != nil {
+		return err
+	}
+
+	result, err = operator.AskPersonQuestion(ctx, clientagent.InteractionQuestionRequest{
+		PersonServer: personServerID, Question: "Should I continue the mission?", MissionS256: mission.S256,
+	})
+	if err != nil {
+		return err
+	}
+	pending, ok = result.Pending()
+	if !ok {
+		return errors.New("Person Server did not return a pending mission question")
+	}
+	reference = strings.TrimPrefix(pending.Location(), personServerID+"/interaction/pending/")
+	handle, err = people.ResumeInteractionQuestion(ctx, reference)
+	if err != nil {
+		return err
+	}
+	missionContext, ok := handle.Mission()
+	if !ok || missionContext.S256 != mission.S256 {
+		return errors.New("Person Server resumed the wrong question mission")
+	}
+	if err := people.AnswerInteractionQuestion(ctx, handle, "Continue the mission."); err != nil {
+		return err
+	}
+	result, err = operator.PollPersonQuestion(ctx, pending)
+	if err != nil {
+		return err
+	}
+	answer, ok = result.Answer()
+	if !ok {
+		return errors.New("Person Server did not return the retained mission answer")
+	}
+	_, err = fmt.Fprintf(output, "Agent received mission answer: %s\n", answer.Answer.Answer)
 	return err
 }
 

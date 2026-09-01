@@ -750,6 +750,7 @@ type memoryMissionStore struct {
 	missions             map[string]MissionRecord
 	records              map[string]PersonTokenRecord
 	authTokens           map[string]IssuedAuthTokenRecord
+	questions            map[string]InteractionQuestionRecord
 	commitMissionError   error
 	appendMissionError   error
 	completeMissionError error
@@ -758,7 +759,7 @@ type memoryMissionStore struct {
 func newMemoryMissionStore() *memoryMissionStore {
 	return &memoryMissionStore{
 		missions: make(map[string]MissionRecord), records: make(map[string]PersonTokenRecord),
-		authTokens: make(map[string]IssuedAuthTokenRecord),
+		authTokens: make(map[string]IssuedAuthTokenRecord), questions: make(map[string]InteractionQuestionRecord),
 	}
 }
 
