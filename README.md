@@ -45,6 +45,7 @@ stores. The programs are executable documentation, not deployment templates.
 | Path | What it demonstrates | Command |
 | --- | --- | --- |
 | [Hosted Agent bootstrap profiles](example/bootstrap) | Shared `hwk` enrollment, then either `jkt-jwt` refresh to a fresh Agent key or direct `hwk` refresh with the durable key, followed by Agent identity access | `go run ./example/bootstrap` |
+| [Self-hosted Agent](example/selfhosted) | One user-controlled key publishes AP metadata/JWKS, self-issues an ordinary Agent token, and signs a protected Resource call | `go run ./example/selfhosted` |
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
 | [Missionless local-action permission](example/permission) | Agent asks its Person Server about one local action; the host records a decision; the application acts only after a typed grant | `go run ./example/permission` |
 | [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
@@ -192,8 +193,9 @@ application implementations.
 
 The repository does not yet implement all of AAuth Core. Agent enrollment and
 renewal cover explicit Ed25519 two-key and single-durable-key hosted profiles
-with application-selected Agent Provider routes. Platform-attestation,
-durable-key replacement, and self-hosted patterns remain open. Clarification
+with application-selected Agent Provider routes, plus the source-described
+self-hosted profile. Platform-attestation and durable-key replacement remain
+open. Clarification
 currently covers one direct three-party question, answer, and cancellation
 during host-authenticated consent. Updated requests, Access Server relay,
 mission-bound clarification, and other general deferred paths remain open, as
@@ -254,7 +256,8 @@ egress admission, body-bearing and bodyless `self-jwt` delivery, AP retention
 before `202`, bounded-use feedback, and Agent-side context correlation and
 exact replay detection. Protected subscription tickets, AP-to-Agent transport,
 automatic AsyncAPI payload validation, and durable store adapters remain host
-or future concerns. Bootstrap has two explicit hosted profiles. Budgets has
+or future concerns. Bootstrap has two hosted profiles and one self-hosted
+profile. Budgets has
 one direct fixed-price profile; four-party, variable-cost, streaming, usage,
 consumption-history policy, and automatic reauthorization paths remain open.
 HTTP Signature Keys is implemented only to the extent required by current role

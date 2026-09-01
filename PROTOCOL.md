@@ -391,6 +391,28 @@ Both freshly sign the outer request. An exact retry returns the same Agent
 token; a changed profile, proof key, or body conflicts. The generic AAuth token
 and Signature-Key formats remain unchanged.
 
+### Self-hosted Agent profile
+
+```mermaid
+sequenceDiagram
+    participant A as Self-hosted Agent and AP
+    participant R as Resource
+    A->>A: Publish ordinary AP metadata and JWKS
+    A->>A: Self-issue Agent token with the same confirmation key
+    A->>R: Ordinary signed Agent-token request
+    R->>A: Resolve AP metadata/JWKS and verify the request
+    R-->>A: Protected response
+    A->>A: Self-issue a fresh short-lived token when needed
+```
+
+`agentprovider.NewSelfHostedAgent` fixes one HTTPS issuer, top-level Agent
+identifier in that issuer's namespace, and Ed25519 key. Its handler is the
+ordinary Agent Provider metadata/JWKS handler, and `Issue` is ordinary current
+Agent-token issuance with that same key as `cnf.jwk`. There is no enrollment or
+refresh endpoint, no alternate token form, and no verifier exception. Core's
+functional sections and Bootstrap define this profile; Core's later
+distinct-AP rationale contradicts them (`AAG-F104`).
+
 ### Mission-bound interoperability profile
 
 The profile's five demonstrations form one coherent progression:
@@ -504,6 +526,7 @@ remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 | Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`) | Use an exact token, signed-content-type, and payload fingerprint; retain `eid` as routing context |
 | Signature-Key labels `cached` an open design | Keep it opt-in and visibly provisional |
 | Bootstrap defines hosted key patterns but no portable wire or replay rule | Keep routes application-selected and document explicit AP-owned exact-result profiles rather than adding metadata fields or a generic Bootstrap package |
+| Core and Bootstrap define self-hosting, while one Core rationale paragraph forbids a self-signed Agent token (`AAG-F104`) | Implement the functional self-hosted profile without verifier exceptions and ask the editors to reconcile the rationale |
 
 ## Model-to-code rule
 

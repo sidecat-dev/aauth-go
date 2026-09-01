@@ -60,7 +60,10 @@ before release. `agent` performs each caller-selected exchange once and
 returns material for a new immutable authenticated client. Endpoint paths,
 JSON envelopes, refresh identity, replay rules, and policy errors are
 documented implementation choices because Bootstrap does not standardize
-them.
+them. A third, source-defined self-hosted composition fixes one user-controlled
+key as both AP signing and Agent confirmation key, publishes the ordinary AP
+metadata/JWKS handler, and self-issues fresh Agent tokens without a refresh
+endpoint.
 
 The current Events slice adds the `events` value package plus explicit
 `agentprovider`, `resource`, and `agent` role surfaces for public
@@ -323,7 +326,9 @@ explicit Agent caller. Both require body-bound JSON requests. The preferred
 profile uses `jkt-jwt` to rotate to an ephemeral key; the simpler profile uses
 the durable `hwk` key directly. Both store refresh replay state with the Agent
 Provider. Neither is added to Agent Provider metadata or described as a
-portable Bootstrap protocol. The self-hosted pattern remains a target.
+portable Bootstrap protocol. The self-hosted composition instead uses the
+ordinary metadata and token format Core already defines; it adds no hosted
+wire surface.
 
 The interoperability profile is an integration-test and example boundary, not
 a library package. Its five surfaces must run through the same exported APIs

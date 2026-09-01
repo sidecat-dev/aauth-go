@@ -68,7 +68,7 @@ were read; it is not an implementation or conformance claim.
 | HTTP Signature Keys | implementation-reviewed for the schemes and proof profile currently used | Current parser, proof, discovery, and negotiation questions appear below; unused schemes are not claimed reviewed through execution |
 | R3 | implementation-reviewed for the shared seven-vocabulary operation model, bounded definition adapters, and current three- and four-party execution paths | Executing role evidence supports `AAG-F005`, `AAG-F014`, `AAG-F014a`, `AAG-F015`, `AAG-F069`, `AAG-F076`, and `AAG-F086`. The seven definition registrations now provide bounded derivation or typed specification-gap refusal. MCP, OpenAPI, and AsyncAPI parse sparse annotations; OData annotation identity remains unresolved. Complete acquisition, general dependency resolution, invocation binding, and independent interop remain evidence-pending. |
 | Events | implementation-reviewed for the public-subscription path | `AAG-F058`, `AAG-F084`, and `AAG-F085` now have executing token, registration, endpoint-resolution, delivery, use-limit, and Agent-correlation evidence. Protected tickets and independent interoperability remain evidence-pending. |
-| Bootstrap | implementation-reviewed for the explicit Ed25519 two-key and single-durable-key hosted profiles | `AAG-F071` through `AAG-F075` record the source and replay questions exposed by the executing enrollment and refresh paths |
+| Bootstrap | implementation-reviewed for the explicit Ed25519 two-key and single-durable-key hosted profiles plus self-hosted issuance | `AAG-F071` through `AAG-F075` record hosted source and replay questions; `AAG-F104` records the Core self-hosting contradiction |
 | Budgets | implementation-reviewed for the direct fixed-price profile | `AAG-F087` through `AAG-F092` record field grammar, first-hop denomination ordering, omission, refusal examples, step-up lineage, and ambiguous-failure accounting questions exposed by executing code. Four-party forwarding, consumption-record policy, variable-cost settlement, streaming/trailers, and usage queries remain evidence-pending. |
 | Interoperability demo profile | source-reviewed against current internal paths | `AAG-F001` remains evidence-pending; no independent implementation has been exercised |
 
@@ -155,6 +155,7 @@ local evidence maturity; they do not mean the question was sent.
 | AAG-F101 | An uncertain Interaction question submission has no recovery identity | ready below with exact one-shot Agent evidence |
 | AAG-F102 | Resource-hosted relay resolution has no terminal success response shape | ready below with retained relay and terminal-poll evidence |
 | AAG-F103 | Third-party login requires a Resource token before its required person claims exist | ready below from the current token grammar and flow sequence |
+| AAG-F104 | Core both permits and forbids self-hosted Agent Providers | ready below with ordinary metadata, issuance, and protected-use evidence |
 | AAG-F086 | R3 assigns common Auth-token-issuer duties only to an AS although Core permits direct PS issuance | ready below with direct three-party execution evidence |
 | AAG-F033 | Three-party deferral does not define whether the original resource-token expiry is terminal | ready below with PS-consent evidence |
 | AAG-F058 | Events uses a subscription identifier as the Agent's event deduplication key | ready below with distinct-delivery and exact-replay evidence |
@@ -2034,6 +2035,36 @@ claims do not require prior person context?
 
 **Placement:** Open a focused Core Third-Party Login issue; this blocks an
 interoperable implementation of the flow as currently written.
+
+### AAG-F104 — Core both permits and forbids a self-hosted Agent Provider
+
+**Status:** ready / unsubmitted
+
+**Source:** AAuth Core, `Agent + AP`, `AAuth Platform Value Registry`, `Why
+Agents Are Under an Agent Provider`, and `Static Hosting`; AAuth Bootstrap,
+`Self-Hosted Agents` and `Refresh Patterns`.
+
+Core's topology says a self-hosted Agent is its own AP. Its platform registry
+includes `self-hosted`, and its static-hosting rationale cites self-hosted AP
+metadata. Bootstrap then specifies the complete key relationship: the
+JWKS-published key signs the self-issued Agent token and is also the token's
+confirmation key; fresh self-issued tokens replace a refresh ceremony.
+
+Core's later `Why Agents Are Under an Agent Provider` rationale says that an
+Agent acting as its own AP weakens the protocol and concludes that every Agent
+must hold a token from a distinct AP, not a self-signed token. Both statements
+cannot describe the same conformance model.
+
+The implementation follows the functional topology and Bootstrap profile. It
+uses ordinary AP metadata, JWKS, Agent-token minting, Agent verification, and
+protected Resource use without a special verifier path.
+
+**Question:** Is the distinct-AP conclusion in the rationale stale, or should
+the functional self-hosted topology, platform value, static-hosting text, and
+Bootstrap profile be removed or narrowed?
+
+**Placement:** Add to the current Core consistency sweep and cross-link the
+Bootstrap self-hosted section.
 
 [core-person-endpoint]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L651-L700
 [core-person-lifetime]: https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md#L714-L726

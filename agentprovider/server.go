@@ -1,7 +1,7 @@
 // Package agentprovider issues current AAuth Agent tokens, publishes Agent
 // Provider discovery, and composes explicit two-key and single-durable-key
-// hosted profiles plus the public Events inbox through host policy and storage
-// interfaces.
+// hosted profiles, the source-defined self-hosted composition, and the public
+// Events inbox through host policy and storage interfaces.
 package agentprovider
 
 import (

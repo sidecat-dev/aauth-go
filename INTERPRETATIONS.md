@@ -611,6 +611,36 @@ before.
 `integration/bootstrap_refresh_test.go`,
 `integration/bootstrap_single_key_test.go`, and `example/bootstrap`.
 
+## Self-hosted issuance uses the ordinary Agent-token trust path
+
+**Sources:** AAuth Core, `Agent + AP`, `AAuth Platform Value Registry`, and
+`Why Agents Are Under an Agent Provider`; AAuth Bootstrap, `Self-Hosted Agents`
+and `Refresh Patterns`.
+
+Core's functional topology and Bootstrap both define a self-hosted Agent as its
+own AP. One user-controlled Ed25519 key signs the AP's ordinary Agent token and
+is copied into that token's `cnf.jwk`; ordinary AP metadata and JWKS publish the
+same public key. There is no enrollment or refresh endpoint. The host issues a
+fresh short-lived token when needed, and every receiver follows the unchanged
+Agent-token discovery and request-proof rules.
+
+`NewSelfHostedAgent` is therefore a small composition around the existing
+Agent Provider, not a new token issuer or verifier mode. It fixes one issuer,
+one top-level Agent identifier in that issuer's namespace, and one key. `Issue`
+accepts only the claims that can vary between tokens. The resulting compact
+token is passed to the ordinary immutable Agent client and protected Resource
+path.
+
+One later Core rationale paragraph says the opposite: every Agent must have a
+distinct AP and self-signed tokens are forbidden. Because the executable
+protocol sections, platform registry, static-metadata rationale, and Bootstrap
+all explicitly describe self-hosting, this implementation follows those
+functional sections and records the contradiction as `AAG-F104` rather than
+adding a hidden verifier exception.
+
+**Executable examples:** `agentprovider/self_hosted_test.go`,
+`integration/bootstrap_self_hosted_test.go`, and `example/selfhosted`.
+
 ## Failed JWKS refresh may use the bounded cached entry
 
 **Source:** AAuth Core, `JWKS Discovery and Caching`; Signature-Key, `Caching

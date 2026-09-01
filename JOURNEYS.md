@@ -83,8 +83,7 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go),
     [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go),
     and `go run ./example/bootstrap`.
-  - Missing: platform-attestation profiles, durable-key replacement, and
-    self-hosted enrollment.
+  - Missing: platform-attestation profiles and durable-key replacement.
 
 - [ ] **Interactive Person-token issuance — Partial**
   - Flow: Agent → PS → pending URL and interaction code → separately
@@ -441,11 +440,22 @@ below is explicitly a repository profile.
     durable `agentprovider.EnrollmentStore`; the repository supplies no
     database adapter.
 
+- [x] **Self-hosted Agent issuance and use — Implemented source profile**
+  - Flow: user-controlled Agent origin → ordinary AP metadata and JWKS → Agent
+    self-issues a current token with the same signing and confirmation key →
+    ordinary Agent client → protected Resource call. Reissuance creates another
+    short-lived token; there is no separate refresh endpoint.
+  - Start with: `agentprovider.NewSelfHostedAgent`,
+    `SelfHostedAgent.Issue`, `SelfHostedAgent.Handler`, `agent.New`, and
+    `resource.NewAgentIdentity`.
+  - Evidence: [`integration/bootstrap_self_hosted_test.go`](integration/bootstrap_self_hosted_test.go)
+    and `go run ./example/selfhosted`.
+  - Source note: Core's functional sections explicitly support this profile,
+    while one later rationale paragraph says APs must always be distinct.
+    `AAG-F104` records the contradiction.
+
 ### Not implemented
 
-- [ ] **Self-hosted Agent enrollment and refresh — Not implemented.** Core
-  issuance pieces exist, but no self-hosted metadata, JWKS, issuance, refresh,
-  and protected-use journey runs end to end.
 - [ ] **Concrete platform attestation — Not implemented.** The repository
   profile hands opaque evidence to host policy; it does not verify WebAuthn,
   App Attest, Play Integrity, or another platform trust chain.
