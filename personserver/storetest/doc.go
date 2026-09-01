@@ -63,6 +63,24 @@
 //		})
 //	}
 //
+// The base mission lifecycle and mission-bound token transaction use:
+//
+//	func TestMissionStore(t *testing.T) {
+//		storetest.RunMission(t, storetest.MissionContract{
+//			New: newApplicationMissionFixture,
+//		})
+//	}
+//
+// MissionFixture.LoadAuthToken is a test-only observation callback around the
+// application's durable store. A direct mission-bound R3 deployment runs the
+// separate atomic extension contract:
+//
+//	func TestMissionR3IssuanceStore(t *testing.T) {
+//		storetest.RunMissionR3Issuance(t, storetest.MissionR3IssuanceContract{
+//			New: newApplicationMissionR3Fixture,
+//		})
+//	}
+//
 // A mission store that also accepts audit records uses:
 //
 //	func TestMissionAuditStore(t *testing.T) {

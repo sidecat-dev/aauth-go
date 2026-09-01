@@ -22,8 +22,9 @@ import (
 // see a mission. It covers both an absent identifier and a different owner.
 var ErrMissionNotFound = errors.New("personserver: mission not found")
 
-// ErrMissionConflict reports that a mission changed after policy read it and
-// before the resulting token could be retained.
+// ErrMissionConflict reports that a mission creation conflicts with retained
+// state, or that a mission changed after policy read it and before the
+// resulting transition could be retained.
 var ErrMissionConflict = errors.New("personserver: mission conflicts with retained state")
 
 // ErrMissionDenied distinguishes a host policy or person refusal from an
@@ -102,8 +103,10 @@ type MissionContext struct {
 
 // MissionStore owns mission lifecycle and mission-bound token retention.
 // CommitMission retains an approval and all Person tokens returned with it in
-// one atomic operation, rejecting duplicate token identities within the
-// batch. LoadMissionForAgent uses a combined owner-and-mission lookup (or an
+// one atomic operation. It returns ErrMissionConflict if the mission already
+// exists, if any token identity already exists, or if a token identity is
+// duplicated within the batch. LoadMissionForAgent uses a combined
+// owner-and-mission lookup (or an
 // observably equivalent design), returns ErrMissionNotFound with equivalent
 // timing for both an absent mission and a different owner, and atomically
 // turns an expired active mission into terminated/expired. It must not look up
@@ -133,7 +136,11 @@ type MissionStore interface {
 
 // MissionR3IssuanceStore atomically compares one active mission and retains
 // both the mission-bound Auth-token record and the mandatory R3 issuance audit
-// facts before the token becomes observable.
+// facts before the token becomes observable. The token must name the expected
+// mission. The issuance Auth-token reference, Resource, and issuance instant
+// must equal the token record; its Person Server must equal the token issuer;
+// and its Agent must equal the mission owner. A mismatch returns
+// ErrMissionConflict without retaining either record.
 type MissionR3IssuanceStore interface {
 	MissionStore
 	CommitMissionR3AuthToken(

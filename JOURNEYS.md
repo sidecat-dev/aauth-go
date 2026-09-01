@@ -59,8 +59,9 @@ Specifications:
     `go run ./example/hostedservice`; add `--self-hosted` for the
     user-controlled Agent Provider profile.
   - Boundary: this proves exported-library composition with real signed HTTP
-    exchanges. Its operation-and-Budget reference stores pass the public R3
-    document, R3 issuance, and Budget contracts. It does not prove production
+    exchanges. Its mission transaction passes the public base and direct-R3
+    extension contracts; its operation-and-Budget stores pass the R3 document,
+    R3 issuance, and Budget contracts. It does not prove production
     persistence, account login, OAuth, administrative authentication, or
     deployment.
 

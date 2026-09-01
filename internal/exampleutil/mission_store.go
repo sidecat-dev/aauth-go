@@ -280,16 +280,16 @@ func (store *missionStore) CommitMission(
 	defer store.mu.Unlock()
 	missionKey := mission.Agent + "\x00" + mission.S256
 	if _, exists := store.missions[missionKey]; exists {
-		return errors.New("example mission store: mission already exists")
+		return personserver.ErrMissionConflict
 	}
 	batch := make(map[string]struct{}, len(tokens))
 	for _, token := range tokens {
 		key := token.PersonServer + "\x00" + token.JTI
 		if _, exists := store.tokens[key]; exists {
-			return errors.New("example mission store: person-token record already exists")
+			return personserver.ErrMissionConflict
 		}
 		if _, duplicate := batch[key]; duplicate {
-			return errors.New("example mission store: duplicate person-token identity")
+			return personserver.ErrMissionConflict
 		}
 		batch[key] = struct{}{}
 	}

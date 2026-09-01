@@ -306,6 +306,7 @@ func mutateAuditRecord(record *personserver.MissionAuditRecord) {
 
 func cloneMission(record personserver.MissionRecord) personserver.MissionRecord {
 	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.Capabilities = append([]string(nil), record.Capabilities...)
 	record.AcceptedUpdates = append([]personserver.MissionUpdateRecord(nil), record.AcceptedUpdates...)
 	for index := range record.AcceptedUpdates {
 		record.AcceptedUpdates[index].Document.ExactJSON = append(
