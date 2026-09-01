@@ -920,6 +920,26 @@ that the application `Location` identifies a separate deferred operation?
 **Placement:** Add to the held-delivery issue or open a focused deferred-state
 issue if the editors prefer to separate result identity from crash recovery.
 
+### Revocation tracker reconciliation
+
+**Checked:** 2026-09-01 against the public `dickhardt/AAuth` tracker and Core
+revision `a99d353`.
+
+- [Issue #59](https://github.com/dickhardt/AAuth/issues/59) and
+  [issue #60](https://github.com/dickhardt/AAuth/issues/60) are closed as
+  completed by merged [PR #64](https://github.com/dickhardt/AAuth/pull/64).
+  That change established `(iss, jti)` and the AP-to-PS Agent-token scenario.
+- [Issue #71](https://github.com/dickhardt/AAuth/issues/71) is open, but it is
+  deliberately about advisory compromise signals between parties. Its own
+  text distinguishes those reports from issuer-controlled revocation commands.
+- The current tracker search exposes no open issue for request authentication,
+  body binding, post-revocation response semantics, or pre-use marker
+  retention. The least-fragmented placement for `AAG-F034` through `AAG-F037`
+  is one new focused Core revocation follow-up that cross-links #59, #60, and
+  PR #64. Do not add these command-semantics questions to #71.
+
+No issue or comment has been posted from this register.
+
 ### AAG-F034 — The three-party revocation example cannot authenticate the PS as written
 
 **Source:** AAuth Core, `Token Revocation` and `Keying Material`.
@@ -932,7 +952,8 @@ PS's existing `jwks_uri` server identity.
 **Question:** Should the example target the Resource and use the issuing
 server's `jwks_uri` credential, or is another PS credential intended?
 
-**Placement:** Open a focused AAuth Core revocation issue.
+**Placement:** Include in one new focused AAuth Core revocation follow-up;
+cross-link issues #59 and #60 plus merged PR #64.
 
 ### AAG-F035 — The revocation example does not bind the token reference body
 
@@ -947,8 +968,8 @@ components.
 **Question:** Should Core require `content-type` and `content-digest` for every
 JSON revocation request?
 
-**Placement:** Add to the focused AAuth Core revocation issue and cross-link
-the Signature-Key covered-components discussion.
+**Placement:** Include in the same new focused Core revocation follow-up and
+cross-link the Signature-Key covered-components discussion.
 
 ### AAG-F036 — Protected use after revocation has no response contract
 
@@ -963,7 +984,7 @@ token and request proof may both verify. The implementation returns
 **Question:** What status and machine-readable error should a Resource return
 when a valid proof presents a revoked auth token?
 
-**Placement:** Add to the focused AAuth Core revocation issue.
+**Placement:** Include in the same new focused Core revocation follow-up.
 
 ### AAG-F037 — Core does not define the lifetime or race semantics of a pre-use tombstone
 
@@ -990,7 +1011,8 @@ concurrent first use be resolved? For AP-to-PS Agent-token revocation, should
 the request also carry a signed expiry, should the PS retain the marker
 indefinitely, or is another bound intended?
 
-**Placement:** Add to the focused AAuth Core revocation issue.
+**Placement:** Include in the same new focused Core revocation follow-up. Link
+issue #71 only to explain why advisory signal propagation is a separate topic.
 
 ### AAG-F038 — Parent-mediated person-token expiry has two Agent-token ceilings
 
