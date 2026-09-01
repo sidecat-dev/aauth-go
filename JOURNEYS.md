@@ -607,12 +607,12 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
 
 ### Bounded journey
 
-- [ ] **Exhaustion or insufficiency step-up — Partial**
+- [x] **Replacement-grant exhaustion and insufficiency step-up — Implemented**
   - Flow: Resource refuses without charging → returns `401`, typed Budget
     reason, validated feedback, and a host-selected replacement Resource token
-    → Agent returns `BudgetAuthorization`; for insufficiency, the application
-    explicitly exchanges that token, obtains a fresh narrowed grant, and
-    retries once against the new cap.
+    → Agent returns `BudgetAuthorization` → application explicitly exchanges
+    that token, obtains a fresh narrowed grant, and retries once against the
+    new cap.
   - Start with: `resource.BudgetConfig.RetainLineage`,
     `resource.BudgetConfig.Challenge`, `Client.BeginBudgetCall`, and
     `BudgetCallResult.AuthorizationRequired`, `BudgetCallResult.Feedback`,
@@ -622,10 +622,9 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go),
     and `go run ./example/budget`. The runnable combined challenge preserves
     its R3 reference across replacement exchange and retry.
-  - Missing: exhaustion has no composed recovery journey. Insufficiency's
-    alternative same-token shrink-and-retry remains unproved. After an
-    unverifiable post-send result, `BudgetCallUncertainError` carries the full
-    signed grant and never retries.
+  - Boundary: insufficiency's alternative same-token shrink-and-retry remains
+    unproved. After an unverifiable post-send result,
+    `BudgetCallUncertainError` carries the full signed grant and never retries.
 
 ### Bounded reactive journey
 

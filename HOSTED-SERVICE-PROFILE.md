@@ -58,9 +58,11 @@ go run ./example/hostedservice
 ```
 
 That example proves the features can share one configured environment. It
-charges one MCP connector call, then verifies that an exhausted-Budget step-up
-is returned before a second connector dispatch. The focused examples below
-provide deeper evidence for individual paths, including exact refresh replay:
+charges one MCP connector call, verifies that an exhausted-Budget step-up is
+returned before a second connector dispatch, exchanges the replacement token,
+and resumes one connector call under the fresh grant. The focused examples
+below provide deeper evidence for individual paths, including exact refresh
+replay:
 
 ```sh
 go run ./example/bootstrap
@@ -84,7 +86,7 @@ go run ./example/revocation
 | Service authorization | Three-party and four-party Auth-token journeys with explicit Agent calls and no hidden polling. |
 | Operation authorization | MCP and OpenAPI R3 class and per-call journeys. The direct MCP class path composes with a fixed Budget in one protected call. Other registered vocabularies are not launch requirements. |
 | Human approval | Approval-only missions and deferred permission decisions with application-authenticated host review. |
-| Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. The direct MCP composition verifies the operation before charging and preserves the R3 reference on step-up. A commercial billing ledger remains an application concern. |
+| Spending or usage limit | Fixed-price, hard-cap Budgets with atomic Resource charging. The direct MCP composition verifies the operation before charging, preserves the R3 reference on step-up, refuses exhaustion before dispatch, and resumes only after explicit replacement exchange. A commercial billing ledger remains an application concern. |
 | Restart and replay | Applications provide stores satisfying the public role-local `storetest` contracts, including R3 document, R3 issuance, and Budget charging; services may be reconstructed around those retained stores. |
 | Third-party credential isolation | The connector stores and uses its OAuth or API credential. AAuth conveys the permitted operation and limits, never the credential itself. |
 
@@ -134,7 +136,8 @@ process restarts:
 - [ ] one local-action permission;
 - [ ] one hosted Resource authorization and protected call;
 - [ ] one MCP or OpenAPI operation grant;
-- [ ] one fixed-price Budget charge and over-cap refusal;
+- [ ] one fixed-price Budget charge, over-cap refusal before dispatch, and
+      explicit replacement-grant recovery;
 - [ ] one approval-only mission when the product exposes missions;
 - [ ] host suspension or revocation followed by refused refresh; and
 - [ ] expiry or explicit revocation at every recipient the deployment promises

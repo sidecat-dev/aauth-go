@@ -134,7 +134,7 @@ func run(output io.Writer) error {
 	if err := callHostedConnector(ctx, bootstrap.client, operationSet, requestedBudget, roles.connector); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; fixed Budget charged once; over-cap retry refused before connector dispatch"); err != nil {
+	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; exhausted call refused before dispatch; replacement grant resumed connector work once"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(output, "5. OAuth service credential remained inside the connector application"); err != nil {

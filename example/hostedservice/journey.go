@@ -153,6 +153,35 @@ func callHostedConnector(
 		refusalFeedback.Remaining() != 0 || hasRefusalCost || connector.calls.Load() != 1 {
 		return errors.New("hosted-service example: exhausted Budget refusal was inconsistent")
 	}
+	reauthorizedToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: authorization.ResourceToken(),
+	})
+	if err != nil {
+		return err
+	}
+	recoveredRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, hostedResourceID+"/records/current", nil)
+	if err != nil {
+		return err
+	}
+	recovered, err := client.BeginBudgetCall(ctx, clientagent.BudgetCall{
+		Request: recoveredRequest, AuthToken: reauthorizedToken,
+	})
+	if err != nil {
+		return err
+	}
+	recoveredResponse, ok := recovered.Response()
+	if !ok || recoveredResponse.StatusCode != http.StatusNoContent {
+		return errors.New("hosted-service example: replacement Budget grant did not resume connector work")
+	}
+	if err := recoveredResponse.Body.Close(); err != nil {
+		return err
+	}
+	recoveredCost, hasRecoveredCost := recovered.Cost()
+	recoveredFeedback, hasRecoveredFeedback := recovered.Feedback()
+	if !hasRecoveredCost || recoveredCost != 100_000 || !hasRecoveredFeedback ||
+		recoveredFeedback.Remaining() != 0 || connector.calls.Load() != 2 {
+		return errors.New("hosted-service example: resumed connector consequence was not retained exactly once")
+	}
 	if !connector.credentialStayedPrivate() {
 		return errors.New("hosted-service example: connector credential left application custody")
 	}

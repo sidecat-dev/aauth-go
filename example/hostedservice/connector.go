@@ -54,5 +54,5 @@ func (connector *connectorApplication) serve(response http.ResponseWriter, reque
 }
 
 func (connector *connectorApplication) credentialStayedPrivate() bool {
-	return connector.oauthCredential == "application-only-oauth-credential" && connector.calls.Load() == 1
+	return connector.oauthCredential == "application-only-oauth-credential"
 }

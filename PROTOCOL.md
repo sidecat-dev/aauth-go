@@ -612,10 +612,11 @@ libraries verify the replacement's observable context but cannot prove which
 retained record the host selected or its freshness from the presented Auth
 token alone.
 `BeginBudgetCall` verifies and returns that step-up without exchanging or
-retrying it. After a definite insufficiency refusal, the application can pass
-its verified replacement token to `Exchange` and make one explicit retry under
-the fresh narrowed grant; Core and R3+Budget runnable journeys prove that
-composition. No library method retries a chargeable consequence automatically.
+retrying it. After a definite insufficiency or exhaustion refusal, the
+application can pass its verified replacement token to `Exchange` and make one
+explicit retry under the fresh narrowed grant; Core, R3+Budget, and
+hosted-service runnable journeys prove that composition. No library method
+retries a chargeable consequence automatically.
 When a post-send outcome cannot be verified, it carries the full signed grant
 as the only locally proved upper bound. Variable-cost settlement, streaming
 trailers, four-party forwarding, `budget_consumed` policy, usage queries,
