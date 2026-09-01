@@ -31,7 +31,8 @@ func newTestEnrollmentService(
 			return agentprovider.EnrollmentDecision{Agent: agentID}, nil
 		},
 		Refresh: func(_ context.Context, request agentprovider.RefreshRequest) (agentprovider.RefreshDecision, error) {
-			if request.Enrollment.Agent != agentID || request.Delegation.JTI() != "refresh-1" ||
+			if request.Profile != agentprovider.RefreshProfileTwoKey ||
+				request.Enrollment.Agent != agentID || request.Delegation.JTI() != "refresh-1" ||
 				request.RequestedPersonServer != "https://ps.example" || string(request.Evidence) != `{"posture":"current"}` {
 				t.Fatalf("refresh request = %#v", request)
 			}

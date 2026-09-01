@@ -74,9 +74,9 @@ func TestEnrollmentServiceIssuesAndReplaysTwoKeyRefresh(t *testing.T) {
 		string(claims.AdditionalClaims["device_class"]) != `"reference"` {
 		t.Fatalf("agent token claims = %#v", claims)
 	}
-	if result.Identity != identity || result.DelegationJTI != "refresh-1" ||
+	if result.Identity != identity || result.RequestJTI != "refresh-1" ||
 		result.Agent != agentID || result.PersonServer != "https://ps.example" ||
-		!result.DelegationExpiresAt.Equal(now.Add(10*time.Minute)) {
+		!result.RequestExpiresAt.Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("refresh result = %#v", result)
 	}
 	recomposed, err := newTestEnrollmentService(t, provider, store, identity, agentID)

@@ -75,14 +75,16 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
 
 - [ ] **Agent enrollment and refresh — Partial**
   - Flow: Agent → AP with a durable inline key → retained Agent identity →
-    Agent token → delegated-key refresh → exact replay returns the retained
-    token.
+    Agent token → either delegated-key or direct durable-key refresh → exact
+    replay returns the retained token.
   - Start with: `agent.NewBootstrapClient`, `BootstrapClient.Enroll`,
-    `BootstrapClient.Refresh`, and `agentprovider.NewEnrollmentService`.
-  - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go)
+    `BootstrapClient.Refresh`, `BootstrapClient.RefreshSingleKey`, and
+    `agentprovider.NewEnrollmentService`.
+  - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go),
+    [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go),
     and `go run ./example/bootstrap`.
-  - Missing: single-key enrollment, platform-attestation profiles,
-    durable-key replacement, and self-hosted enrollment.
+  - Missing: platform-attestation profiles, durable-key replacement, and
+    self-hosted enrollment.
 
 - [ ] **Interactive Person-token issuance — Partial**
   - Flow: Agent → PS → pending URL and interaction code → separately
@@ -417,18 +419,23 @@ below is explicitly a repository profile.
 
 ### Runnable journey
 
-- [x] **Hosted two-key enrollment, refresh, and Agent use — Implemented repository profile**
+- [x] **Hosted two-key and single-key enrollment, refresh, and Agent use — Implemented repository profiles**
   - Flow: Agent → AP enrollment handler with an `hwk` durable key → AP retains
     a stable Agent identity → Agent creates a fresh proof key → durable key
     delegates through `jkt-jwt` while the fresh key signs refresh → AP returns
     an exact retained Agent token → Agent uses it on a Resource request.
+    In the single-key variant, the durable key signs refresh directly through
+    `hwk` and remains the Agent-token confirmation key.
   - Start with: `agentprovider.NewEnrollmentService`,
     `agentprovider.EnrollmentService.EnrollmentHandler`,
     `agentprovider.EnrollmentService.RefreshHandler`,
+    `agentprovider.EnrollmentService.SingleKeyRefreshHandler`,
     `agent.NewBootstrapClient`, `BootstrapClient.Enroll`,
-    `BootstrapClient.Refresh`, `agent.New`, `Client.CallAsAgent`, and
+    `BootstrapClient.Refresh`, `BootstrapClient.RefreshSingleKey`, `agent.New`,
+    `Client.CallAsAgent`, and
     `resource.NewAgentIdentity`.
-  - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go)
+  - Evidence: [`integration/bootstrap_refresh_test.go`](integration/bootstrap_refresh_test.go),
+    [`integration/bootstrap_single_key_test.go`](integration/bootstrap_single_key_test.go),
     and `go run ./example/bootstrap`.
   - Host boundary: applications supply attestation/evidence policy and a
     durable `agentprovider.EnrollmentStore`; the repository supplies no
@@ -436,8 +443,6 @@ below is explicitly a repository profile.
 
 ### Not implemented
 
-- [ ] **Single-key hosted refresh — Not implemented.** Generic `hwk` and token
-  primitives exist, but there is no retained single-key Bootstrap composition.
 - [ ] **Self-hosted Agent enrollment and refresh — Not implemented.** Core
   issuance pieces exist, but no self-hosted metadata, JWKS, issuance, refresh,
   and protected-use journey runs end to end.

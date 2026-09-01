@@ -67,40 +67,50 @@ func (record EnrollmentRecord) Equal(other EnrollmentRecord) bool {
 		record.IdentityKey.Equal(other.IdentityKey)
 }
 
+// RefreshProfile identifies the key pattern authenticated by one refresh.
+type RefreshProfile string
+
+const (
+	RefreshProfileTwoKey    RefreshProfile = "two-key"
+	RefreshProfileSingleKey RefreshProfile = "single-key"
+)
+
 // RefreshRecord binds one exact verified refresh request to its first issued
-// Agent token. Hosts retain it through DelegationExpiresAt at minimum.
+// Agent token. Hosts retain it through RequestExpiresAt at minimum.
 type RefreshRecord struct {
-	Identity            string
-	DelegationJTI       string
-	RequestSHA256       [sha256.Size]byte
-	Agent               string
-	PersonServer        string
-	Confirmation        jose.JWK
-	DelegationExpiresAt time.Time
-	AgentToken          string
-	TokenExpiresAt      time.Time
+	Identity         string
+	Profile          RefreshProfile
+	RequestJTI       string
+	RequestSHA256    [sha256.Size]byte
+	Agent            string
+	PersonServer     string
+	Confirmation     jose.JWK
+	RequestExpiresAt time.Time
+	AgentToken       string
+	TokenExpiresAt   time.Time
 }
 
 // SameRequest reports whether two records identify the same refresh request.
 func (record RefreshRecord) SameRequest(other RefreshRecord) bool {
-	return record.Identity == other.Identity && record.DelegationJTI == other.DelegationJTI &&
+	return record.Identity == other.Identity && record.Profile == other.Profile &&
+		record.RequestJTI == other.RequestJTI &&
 		record.RequestSHA256 == other.RequestSHA256 && record.Agent == other.Agent &&
 		record.PersonServer == other.PersonServer && record.Confirmation.Equal(other.Confirmation) &&
-		record.DelegationExpiresAt.Equal(other.DelegationExpiresAt)
+		record.RequestExpiresAt.Equal(other.RequestExpiresAt)
 }
 
 // EnrollmentStore atomically creates stable enrollments and exact refresh
 // results. CommitEnrollment must reject an Agent already bound to a different
-// durable Identity. Refresh identity is (Identity, DelegationJTI). CommitRefresh must
+// durable Identity. Refresh identity is (Identity, RequestJTI). CommitRefresh must
 // compare the current enrollment with expected, let one first writer retain
 // the complete candidate, return that retained winner to every concurrent
 // exact caller, and reject any different request under the same identity.
 //
 // A refresh record, including its compact AgentToken, must remain available
-// through DelegationExpiresAt. If the token expires first, an exact replay
+// through RequestExpiresAt. If the token expires first, an exact replay
 // still returns those bytes and the Agent rejects the expired token; the
 // caller must start a new refresh with a new JTI. After its trusted clock
-// reaches DelegationExpiresAt, CommitRefresh may return an existing exact
+// reaches RequestExpiresAt, CommitRefresh may return an existing exact
 // winner or conflict but must return ErrRefreshExpired rather than create a
 // first record. That lookup/insert decision and any pruning must be
 // linearizable. This prevents a request verified just before expiry from
@@ -133,6 +143,7 @@ type EnrollmentDecision struct {
 // application-owned policy input.
 type RefreshRequest struct {
 	Enrollment            EnrollmentRecord
+	Profile               RefreshProfile
 	Delegation            signaturekey.JKTJWTDelegation
 	RequestedPersonServer string
 	Evidence              json.RawMessage
@@ -175,8 +186,10 @@ type enrollmentHTTPInput struct {
 }
 
 type refreshHTTPInput struct {
-	PersonServer string          `json:"ps,omitempty"`
-	Evidence     json.RawMessage `json:"evidence"`
+	PersonServer     string          `json:"ps,omitempty"`
+	Evidence         json.RawMessage `json:"evidence"`
+	RefreshJTI       string          `json:"refresh_jti,omitempty"`
+	RefreshExpiresAt int64           `json:"refresh_expires_at,omitempty"`
 }
 
 // NewEnrollmentService validates and constructs an enrollment service.

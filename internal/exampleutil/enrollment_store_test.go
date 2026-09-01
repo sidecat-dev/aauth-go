@@ -33,15 +33,16 @@ func TestEnrollmentStoreRetainsExactEnrollmentAndRefresh(t *testing.T) {
 		t.Fatalf("duplicate Agent CommitEnrollment error = %v", err)
 	}
 	refresh := agentprovider.RefreshRecord{
-		Identity: enrollment.Identity, DelegationJTI: "refresh-1",
+		Identity: enrollment.Identity, Profile: agentprovider.RefreshProfileTwoKey,
+		RequestJTI:    "refresh-1",
 		RequestSHA256: sha256.Sum256([]byte("request")), Agent: enrollment.Agent,
-		Confirmation: identityKey, DelegationExpiresAt: now.Add(time.Minute), AgentToken: "agent-token",
+		Confirmation: identityKey, RequestExpiresAt: now.Add(time.Minute), AgentToken: "agent-token",
 	}
 	retainedRefresh, err := store.CommitRefresh(ctx, enrollment, refresh)
 	if err != nil || !retainedRefresh.SameRequest(refresh) || retainedRefresh.AgentToken != refresh.AgentToken {
 		t.Fatalf("CommitRefresh = %#v, %v", retainedRefresh, err)
 	}
-	loaded, err := store.LoadRefresh(ctx, enrollment.Identity, refresh.DelegationJTI)
+	loaded, err := store.LoadRefresh(ctx, enrollment.Identity, refresh.RequestJTI)
 	if err != nil || loaded.AgentToken != refresh.AgentToken {
 		t.Fatalf("LoadRefresh = %#v, %v", loaded, err)
 	}

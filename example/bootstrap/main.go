@@ -1,6 +1,6 @@
-// The bootstrap example runs the repository's explicit two-key Agent
-// enrollment profile. Bootstrap leaves endpoint discovery and JSON envelopes
-// to each Agent Provider, so the host selects and mounts both routes here.
+// The bootstrap example runs the repository's two-key and single-durable-key
+// hosted Agent profiles. Bootstrap leaves endpoint discovery and JSON
+// envelopes to each Agent Provider, so the host selects and mounts the routes.
 package main
 
 import (
@@ -56,9 +56,13 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	issued := 0
 	provider, err := agentprovider.New(agentprovider.Config{
 		Issuer: agentProviderID, SigningKey: providerKey, Clock: clock,
-		NewID: func() string { return "example-agent-token" },
+		NewID: func() string {
+			issued++
+			return fmt.Sprintf("example-agent-token-%d", issued)
+		},
 	})
 	if err != nil {
 		return err
@@ -79,7 +83,9 @@ func run(output io.Writer) error {
 			}
 			return agentprovider.RefreshDecision{
 				PersonServer: personServerID, Lifetime: 30 * time.Minute,
-				AdditionalClaims: map[string]json.RawMessage{"profile": json.RawMessage(`"two-key"`)},
+				AdditionalClaims: map[string]json.RawMessage{
+					"profile": json.RawMessage(fmt.Sprintf("%q", request.Profile)),
+				},
 			}, nil
 		},
 	})
@@ -157,6 +163,52 @@ func run(output io.Writer) error {
 		return fmt.Errorf("Resource returned %s: %s", response.Status, body)
 	}
 	_, err = fmt.Fprintf(output, "AAuth two-key bootstrap complete: %s\n", body)
+	if err != nil {
+		return err
+	}
+
+	singleKeyBootstrap, err := clientagent.NewBootstrapClient(clientagent.BootstrapConfig{
+		AgentProvider:      agentProviderID,
+		EnrollmentEndpoint: agentProviderID + "/internal/enrollment",
+		RefreshEndpoint:    agentProviderID + "/internal/refresh-single",
+		DurableKey:         durableKey, KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+	})
+	if err != nil {
+		return err
+	}
+	singleKeyToken, err := singleKeyBootstrap.RefreshSingleKey(ctx, clientagent.SingleKeyRefreshAgentTokenInput{
+		Agent: enrollment.Agent, PersonServer: personServerID,
+		Evidence:   json.RawMessage(`{"posture":"current"}`),
+		RefreshJTI: "example-single-refresh-1", RefreshExpiresAt: now.Add(10 * time.Minute),
+	})
+	if err != nil {
+		return err
+	}
+	singleKeyAgent, err := clientagent.New(ctx, clientagent.Config{
+		Identifier: enrollment.Agent, SigningKey: durableKey,
+		AgentToken: singleKeyToken.AgentToken, KeyResolver: resolver,
+		HTTPClient: httpClient, Clock: clock,
+	})
+	if err != nil {
+		return err
+	}
+	singleRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records", nil)
+	if err != nil {
+		return err
+	}
+	singleResponse, err := singleKeyAgent.CallAsAgent(ctx, singleRequest)
+	if err != nil {
+		return err
+	}
+	defer singleResponse.Body.Close()
+	singleBody, err := io.ReadAll(singleResponse.Body)
+	if err != nil {
+		return err
+	}
+	if singleResponse.StatusCode != http.StatusOK {
+		return fmt.Errorf("Resource returned %s: %s", singleResponse.Status, singleBody)
+	}
+	_, err = fmt.Fprintf(output, "AAuth single-key bootstrap complete: %s\n", singleBody)
 	return err
 }
 
@@ -167,6 +219,8 @@ func providerWithBootstrap(provider *agentprovider.Server, service *agentprovide
 			service.EnrollmentHandler().ServeHTTP(response, request)
 		case "/internal/refresh":
 			service.RefreshHandler().ServeHTTP(response, request)
+		case "/internal/refresh-single":
+			service.SingleKeyRefreshHandler().ServeHTTP(response, request)
 		default:
 			provider.Handler().ServeHTTP(response, request)
 		}

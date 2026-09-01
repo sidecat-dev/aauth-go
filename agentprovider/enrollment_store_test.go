@@ -25,15 +25,16 @@ func TestEnrollmentStoreCommitRefreshExpiryOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := agentprovider.RefreshRecord{
-		Identity: enrollment.Identity, DelegationJTI: "refresh-retained",
+		Identity: enrollment.Identity, Profile: agentprovider.RefreshProfileTwoKey,
+		RequestJTI:    "refresh-retained",
 		RequestSHA256: [32]byte{1}, Agent: enrollment.Agent,
-		Confirmation: key, DelegationExpiresAt: now.Add(time.Minute), AgentToken: "agent-token",
+		Confirmation: key, RequestExpiresAt: now.Add(time.Minute), AgentToken: "agent-token",
 	}
 	retained, err := store.CommitRefresh(ctx, enrollment, record)
 	if err != nil || retained.AgentToken != record.AgentToken {
 		t.Fatalf("first CommitRefresh = %#v, %v", retained, err)
 	}
-	current = record.DelegationExpiresAt
+	current = record.RequestExpiresAt
 	retained, err = store.CommitRefresh(ctx, enrollment, record)
 	if err != nil || retained.AgentToken != record.AgentToken {
 		t.Fatalf("existing CommitRefresh at expiry = %#v, %v", retained, err)
@@ -44,7 +45,7 @@ func TestEnrollmentStoreCommitRefreshExpiryOrdering(t *testing.T) {
 		t.Fatalf("changed CommitRefresh at expiry error = %v", err)
 	}
 	newRecord := record
-	newRecord.DelegationJTI = "refresh-first-at-expiry"
+	newRecord.RequestJTI = "refresh-first-at-expiry"
 	if _, err := store.CommitRefresh(ctx, enrollment, newRecord); !errors.Is(err, agentprovider.ErrRefreshExpired) {
 		t.Fatalf("first CommitRefresh at expiry error = %v", err)
 	}
@@ -103,11 +104,11 @@ func (store *memoryEnrollmentStore) LoadEnrollment(
 
 func (store *memoryEnrollmentStore) LoadRefresh(
 	_ context.Context,
-	identity, delegationJTI string,
+	identity, requestJTI string,
 ) (agentprovider.RefreshRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, ok := store.refreshes[identity+"\x00"+delegationJTI]
+	record, ok := store.refreshes[identity+"\x00"+requestJTI]
 	if !ok {
 		return agentprovider.RefreshRecord{}, agentprovider.ErrRefreshNotFound
 	}
@@ -129,14 +130,14 @@ func (store *memoryEnrollmentStore) CommitRefresh(
 	if !current.Equal(expected) {
 		return agentprovider.RefreshRecord{}, agentprovider.ErrEnrollmentConflict
 	}
-	key := record.Identity + "\x00" + record.DelegationJTI
+	key := record.Identity + "\x00" + record.RequestJTI
 	if retained, ok := store.refreshes[key]; ok {
 		if !retained.SameRequest(record) {
 			return agentprovider.RefreshRecord{}, agentprovider.ErrRefreshConflict
 		}
 		return retained, nil
 	}
-	if !record.DelegationExpiresAt.After(store.now().UTC()) {
+	if !record.RequestExpiresAt.After(store.now().UTC()) {
 		return agentprovider.RefreshRecord{}, agentprovider.ErrRefreshExpired
 	}
 	store.refreshes[key] = record

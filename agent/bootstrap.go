@@ -16,7 +16,7 @@ import (
 )
 
 // BootstrapConfig supplies the application-selected endpoints and
-// dependencies for the repository's two-key Bootstrap profile.
+// dependencies for the repository's hosted Bootstrap profiles.
 type BootstrapConfig struct {
 	AgentProvider      string
 	EnrollmentEndpoint string
@@ -62,13 +62,24 @@ type RefreshAgentTokenInput struct {
 	DelegationExpiresAt time.Time
 }
 
+// SingleKeyRefreshAgentTokenInput requests one Agent token bound to the
+// already-enrolled durable key. RefreshJTI and RefreshExpiresAt identify the
+// exact replayable request in this repository profile.
+type SingleKeyRefreshAgentTokenInput struct {
+	Agent            string
+	PersonServer     string
+	Evidence         json.RawMessage
+	RefreshJTI       string
+	RefreshExpiresAt time.Time
+}
+
 // RefreshAgentTokenResult contains the exact token and its verified claims.
 type RefreshAgentTokenResult struct {
 	AgentToken string
 	Claims     aauth.AgentTokenClaims
 }
 
-// NewBootstrapClient constructs the explicit two-key Bootstrap caller. The
+// NewBootstrapClient constructs the explicit hosted Bootstrap caller. The
 // endpoint URLs are an AAuth Go profile choice because Bootstrap does not
 // define portable endpoint discovery or request envelopes.
 func NewBootstrapClient(config BootstrapConfig) (*BootstrapClient, error) {
@@ -237,6 +248,83 @@ func (client *BootstrapClient) Refresh(
 	return client.refreshAgentToken(ctx, input, compact)
 }
 
+// RefreshSingleKey performs one hwk-signed refresh with the enrolled durable
+// key and verifies that the returned Agent token remains bound to that key.
+func (client *BootstrapClient) RefreshSingleKey(
+	ctx context.Context,
+	input SingleKeyRefreshAgentTokenInput,
+) (RefreshAgentTokenResult, error) {
+	const operation = "bootstrap single-key refresh"
+	if client == nil {
+		return RefreshAgentTokenResult{}, fail(operation, errors.New("bootstrap client is required"))
+	}
+	if ctx == nil {
+		return RefreshAgentTokenResult{}, fail(operation, errors.New("context is required"))
+	}
+	if err := validateBootstrapAgent(input.Agent, client.agentProvider); err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	if input.PersonServer != "" {
+		if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {
+			return RefreshAgentTokenResult{}, fail(operation, fmt.Errorf("Person Server: %w", err))
+		}
+	}
+	if !json.Valid(input.Evidence) {
+		return RefreshAgentTokenResult{}, fail(operation, errors.New("refresh evidence must be valid JSON"))
+	}
+	if strings.TrimSpace(input.RefreshJTI) == "" || input.RefreshJTI != strings.TrimSpace(input.RefreshJTI) {
+		return RefreshAgentTokenResult{}, fail(operation, errors.New("refresh JTI is required without surrounding whitespace"))
+	}
+	now := client.clock.Now().UTC().Truncate(time.Second)
+	expiresAt := input.RefreshExpiresAt.UTC().Truncate(time.Second)
+	if !expiresAt.After(now) || expiresAt.After(now.Add(24*time.Hour)) {
+		return RefreshAgentTokenResult{}, fail(operation, errors.New("refresh expiry must be within 24 hours"))
+	}
+	body, err := json.Marshal(struct {
+		PersonServer     string          `json:"ps,omitempty"`
+		Evidence         json.RawMessage `json:"evidence"`
+		RefreshJTI       string          `json:"refresh_jti"`
+		RefreshExpiresAt int64           `json:"refresh_expires_at"`
+	}{
+		PersonServer:     input.PersonServer,
+		Evidence:         input.Evidence,
+		RefreshJTI:       input.RefreshJTI,
+		RefreshExpiresAt: expiresAt.Unix(),
+	})
+	if err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	request, err := newJSONRequest(ctx, client.refreshEndpoint, body)
+	if err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	credential, err := signaturekey.NewHWKCredential(client.durableKey.PublicJWK())
+	if err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	if err := signaturekey.SignRequest(request, client.durableKey, credential, client.clock, signaturekey.SignOptions{
+		AdditionalComponents: []string{"content-type", "content-digest"},
+		MaxBodyBytes:         client.maxSignedBodyBytes,
+	}); err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	result, err := client.readRefreshAgentTokenResponse(
+		ctx,
+		response,
+		input.Agent,
+		input.PersonServer,
+		client.durableKey.PublicJWK(),
+	)
+	if err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	return result, nil
+}
+
 func (client *BootstrapClient) refreshAgentToken(
 	ctx context.Context,
 	input RefreshAgentTokenInput,
@@ -268,21 +356,41 @@ func (client *BootstrapClient) refreshAgentToken(
 	if err != nil {
 		return RefreshAgentTokenResult{}, fail(operation, err)
 	}
+	result, err := client.readRefreshAgentTokenResponse(
+		ctx,
+		response,
+		input.Agent,
+		input.PersonServer,
+		input.SigningKey.PublicJWK(),
+	)
+	if err != nil {
+		return RefreshAgentTokenResult{}, fail(operation, err)
+	}
+	return result, nil
+}
+
+func (client *BootstrapClient) readRefreshAgentTokenResponse(
+	ctx context.Context,
+	response *http.Response,
+	agent string,
+	personServer string,
+	confirmation jose.JWK,
+) (RefreshAgentTokenResult, error) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return RefreshAgentTokenResult{}, fail(operation, responseFailure(response))
+		return RefreshAgentTokenResult{}, responseFailure(response)
 	}
 	if err := requireNoStore(response); err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return RefreshAgentTokenResult{}, err
 	}
 	var output struct {
 		AgentToken string `json:"agent_token"`
 	}
 	if err := decodeJSONResponse(response, &output); err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return RefreshAgentTokenResult{}, err
 	}
 	if output.AgentToken == "" {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("response agent_token is required"))
+		return RefreshAgentTokenResult{}, errors.New("response agent_token is required")
 	}
 	claims, err := aauth.VerifyAgentToken(
 		ctx,
@@ -291,12 +399,12 @@ func (client *BootstrapClient) refreshAgentToken(
 		client.clock,
 	)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, fmt.Errorf("verify Agent token: %w", err))
+		return RefreshAgentTokenResult{}, fmt.Errorf("verify Agent token: %w", err)
 	}
-	if claims.Issuer != client.agentProvider || claims.Subject != input.Agent ||
-		claims.PersonServer != input.PersonServer || claims.ParentAgent != "" ||
-		!claims.Confirmation.JWK.Equal(input.SigningKey.PublicJWK()) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("returned Agent token does not match the refresh request"))
+	if claims.Issuer != client.agentProvider || claims.Subject != agent ||
+		claims.PersonServer != personServer || claims.ParentAgent != "" ||
+		!claims.Confirmation.JWK.Equal(confirmation) {
+		return RefreshAgentTokenResult{}, errors.New("returned Agent token does not match the refresh request")
 	}
 	return RefreshAgentTokenResult{AgentToken: output.AgentToken, Claims: claims}, nil
 }

@@ -66,11 +66,11 @@ func (store *enrollmentStore) LoadEnrollment(
 
 func (store *enrollmentStore) LoadRefresh(
 	_ context.Context,
-	identity, delegationJTI string,
+	identity, requestJTI string,
 ) (agentprovider.RefreshRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, ok := store.refreshes[identity+"\x00"+delegationJTI]
+	record, ok := store.refreshes[identity+"\x00"+requestJTI]
 	if !ok {
 		return agentprovider.RefreshRecord{}, agentprovider.ErrRefreshNotFound
 	}
@@ -91,14 +91,14 @@ func (store *enrollmentStore) CommitRefresh(
 	if !current.Equal(expected) {
 		return agentprovider.RefreshRecord{}, agentprovider.ErrEnrollmentConflict
 	}
-	key := record.Identity + "\x00" + record.DelegationJTI
+	key := record.Identity + "\x00" + record.RequestJTI
 	if retained, ok := store.refreshes[key]; ok {
 		if !retained.SameRequest(record) {
 			return agentprovider.RefreshRecord{}, agentprovider.ErrRefreshConflict
 		}
 		return retained, nil
 	}
-	if !record.DelegationExpiresAt.After(store.clock.Now().UTC()) {
+	if !record.RequestExpiresAt.After(store.clock.Now().UTC()) {
 		return agentprovider.RefreshRecord{}, agentprovider.ErrRefreshExpired
 	}
 	store.refreshes[key] = record

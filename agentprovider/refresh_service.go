@@ -54,10 +54,13 @@ func (service *EnrollmentService) Refresh(
 			return RefreshRecord{}, fmt.Errorf("%w: requested Person Server: %v", ErrInvalidRefreshRequest, err)
 		}
 	}
+	if input.RefreshJTI != "" || input.RefreshExpiresAt != 0 {
+		return RefreshRecord{}, fmt.Errorf("%w: two-key refresh must not contain single-key identity fields", ErrInvalidRefreshRequest)
+	}
 	requestDigest := refreshRequestSHA256(delegation, exactBody)
 	retained, err := service.store.LoadRefresh(ctx, issuer, jti)
 	if err == nil {
-		if retained.Identity != issuer || retained.DelegationJTI != jti ||
+		if retained.Identity != issuer || retained.Profile != RefreshProfileTwoKey || retained.RequestJTI != jti ||
 			retained.RequestSHA256 != requestDigest || retained.PersonServer != input.PersonServer ||
 			!retained.Confirmation.Equal(confirmationKey) || retained.AgentToken == "" {
 			return RefreshRecord{}, ErrRefreshConflict
@@ -78,7 +81,7 @@ func (service *EnrollmentService) Refresh(
 		return RefreshRecord{}, ErrEnrollmentConflict
 	}
 	decision, err := service.refresh(ctx, RefreshRequest{
-		Enrollment: enrollment, Delegation: delegation,
+		Enrollment: enrollment, Profile: RefreshProfileTwoKey, Delegation: delegation,
 		RequestedPersonServer: input.PersonServer,
 		Evidence:              append(json.RawMessage(nil), input.Evidence...),
 	})
@@ -98,10 +101,10 @@ func (service *EnrollmentService) Refresh(
 		return RefreshRecord{}, err
 	}
 	candidate := RefreshRecord{
-		Identity: issuer, DelegationJTI: jti,
+		Identity: issuer, Profile: RefreshProfileTwoKey, RequestJTI: jti,
 		RequestSHA256: requestDigest,
 		Agent:         enrollment.Agent, PersonServer: decision.PersonServer,
-		Confirmation: confirmationKey, DelegationExpiresAt: delegation.ExpiresAt(),
+		Confirmation: confirmationKey, RequestExpiresAt: delegation.ExpiresAt(),
 		AgentToken:     compact,
 		TokenExpiresAt: tokenExpiresAt,
 	}

@@ -52,14 +52,15 @@ opaque PS-validated context and copies it into the Auth token. Mission text and
 updates never cross the Person Server boundary, and no generic lifecycle or
 evidence object joins these boundaries.
 
-The current Bootstrap slice is one explicit Ed25519 two-key profile. The
-Agent Provider verifies a durable-key `hwk` enrollment, retains the stable
-Agent identity, verifies a durable-to-ephemeral `jkt-jwt` refresh, and retains
-the exact first Agent-token result before release. `agent` performs each
-caller-selected exchange once and returns material for a new immutable
-authenticated client. The endpoint paths, JSON envelopes, replay rule, and
-policy errors are documented implementation choices because Bootstrap does
-not standardize them.
+The current Bootstrap slice has explicit Ed25519 two-key and single-durable-key
+hosted profiles. Both share durable-key `hwk` enrollment and one stable Agent
+identity. Refresh then either verifies a durable-to-ephemeral `jkt-jwt` or a
+direct durable `hwk` proof. Both retain the exact first Agent-token result
+before release. `agent` performs each caller-selected exchange once and
+returns material for a new immutable authenticated client. Endpoint paths,
+JSON envelopes, refresh identity, replay rules, and policy errors are
+documented implementation choices because Bootstrap does not standardize
+them.
 
 The current Events slice adds the `events` value package plus explicit
 `agentprovider`, `resource`, and `agent` role surfaces for public
@@ -316,12 +317,13 @@ enrollment and refresh composition points, while executable examples
 demonstrate the two-key, single-key, and self-hosted patterns using Core and
 Signature-Key primitives.
 
-The implemented first profile covers the two-key pattern only. Hosts mount
-the two path-agnostic handlers at Agent-Provider-origin URLs they configure in
-the explicit Agent caller. The profile requires body-bound JSON requests,
-uses `hwk` for enrollment and `jkt-jwt` for refresh, and stores refresh replay
-state with the Agent Provider. It is not added to Agent Provider metadata and
-is not described as a portable Bootstrap protocol.
+The implemented hosted profiles share enrollment and expose separate
+path-agnostic refresh handlers at Agent-Provider-origin URLs configured in the
+explicit Agent caller. Both require body-bound JSON requests. The preferred
+profile uses `jkt-jwt` to rotate to an ephemeral key; the simpler profile uses
+the durable `hwk` key directly. Both store refresh replay state with the Agent
+Provider. Neither is added to Agent Provider metadata or described as a
+portable Bootstrap protocol. The self-hosted pattern remains a target.
 
 The interoperability profile is an integration-test and example boundary, not
 a library package. Its five surfaces must run through the same exported APIs

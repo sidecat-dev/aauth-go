@@ -136,7 +136,7 @@ does not define one global lifecycle or evidence record.
 
 | State | Owner | Source or named profile boundary |
 | --- | --- | --- |
-| Agent enrollment and refresh result | AP | Repository two-key profile: bind one durable-key identity to one stable Agent; retain an exact Agent-token result for a valid refresh replay |
+| Agent enrollment and refresh result | AP | Repository hosted profiles: bind one durable-key identity to one stable Agent; retain an exact Agent-token result for a valid two-key or single-key refresh replay |
 | Agent-person binding and directed identifiers | PS | Stable within the PS and Resource pair; opaque outside the PS |
 | Issued Person-token record | PS | Retained long enough to verify any Resource token that names it |
 | Mission blob and updates | PS | Exact approved bytes determine `s256`; termination is one-way |
@@ -357,7 +357,7 @@ defers `updated_request`:
 the current editor text requires equality of a Resource-token `agent` claim
 that current Resource tokens do not contain (`AAG-F008`).
 
-### Two-key Agent bootstrap profile
+### Hosted Agent bootstrap profiles
 
 ```mermaid
 sequenceDiagram
@@ -367,21 +367,29 @@ sequenceDiagram
 
     A->>AP: Application-selected enrollment POST, durable hwk proof
     AP-->>A: Stable Agent identifier after enrollment retention
-    A->>AP: Application-selected refresh POST, durable jkt-jwt plus ephemeral HTTP proof
-    AP-->>A: Exact retained Agent token bound to the ephemeral key
-    A->>R: Ordinary Agent-token protected request with ephemeral proof
+    alt preferred two-key profile
+        A->>AP: Refresh POST, durable jkt-jwt plus ephemeral HTTP proof
+        AP-->>A: Exact retained Agent token bound to the ephemeral key
+        A->>R: Agent-token request with ephemeral proof
+    else optional single-key profile
+        A->>AP: Refresh POST with durable hwk proof
+        AP-->>A: Exact retained Agent token bound to the durable key
+        A->>R: Agent-token request with durable proof
+    end
 ```
 
-Bootstrap supplies the two-key pattern but does not define portable endpoint
+Bootstrap supplies both hosted key patterns but does not define portable endpoint
 discovery, JSON envelopes, statuses, or replay semantics. This repository
-profile makes those choices explicitly: both endpoints are selected
+profile makes those choices explicitly: all endpoints are selected
 by the application on the AP origin; request bodies use signed
 `application/json`; enrollment carries `evidence`; refresh carries optional
-`ps` plus `evidence`; and `(durable identity, delegation jti)` identifies one
-exact retained refresh request and result. A retry reuses the exact naming JWT
-and JSON body while freshly signing the outer HTTP request. The same request
-returns the same Agent token; a different naming JWT or body conflicts. The
-generic AAuth token and Signature-Key formats remain unchanged.
+`ps` plus `evidence`; and `(durable identity, refresh jti)` identifies one
+exact retained refresh request and result. Two-key refresh derives that JTI and
+expiry from the durable-signed delegation. Single-key refresh carries them in
+the durable-key-signed JSON body and bounds the recovery window to 24 hours.
+Both freshly sign the outer request. An exact retry returns the same Agent
+token; a changed profile, proof key, or body conflicts. The generic AAuth token
+and Signature-Key formats remain unchanged.
 
 ### Mission-bound interoperability profile
 
@@ -495,7 +503,7 @@ remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 | Events gives two strengths for expired-token refusal | Apply `MUST NOT` |
 | Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`) | Use an exact token, signed-content-type, and payload fingerprint; retain `eid` as routing context |
 | Signature-Key labels `cached` an open design | Keep it opt-in and visibly provisional |
-| Bootstrap defines a two-key pattern but no portable wire or replay rule | Keep routes application-selected and document one AP-owned exact-result profile rather than adding metadata fields or a generic Bootstrap package |
+| Bootstrap defines hosted key patterns but no portable wire or replay rule | Keep routes application-selected and document explicit AP-owned exact-result profiles rather than adding metadata fields or a generic Bootstrap package |
 
 ## Model-to-code rule
 

@@ -518,18 +518,20 @@ fresh values for any other advertised header fields through
 **Executable example:**
 `integration/resource_managed_session_test.go:TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition`.
 
-## The first two-key Bootstrap path is an explicit Agent Provider profile
+## Hosted Bootstrap key patterns share one explicit Agent Provider profile
 
-**Source:** AAuth Bootstrap, `Per-Platform Key Handling`, `Two-Key Refresh`,
+**Source:** AAuth Bootstrap, `Per-Platform Key Handling`, `Refresh Patterns`,
 `Web App Enrollment`, and `Mobile App Enrollment`; Signature-Key, `Header Web
 Key (hwk)`, `JKT JWT Self-Issued Key Delegation (jkt-jwt)`, `Signature-Key
 Integrity`, and `Signature-Error HTTP Response Header`; AAuth Core, `Covered
 Components` and `Freshness and Replay`.
 
-Bootstrap describes a preferred durable-to-ephemeral key pattern but says its
+Bootstrap describes a preferred durable-to-ephemeral key pattern and an
+optional simpler single-durable-key pattern, but says its
 mechanisms are informational. It defines no discoverable endpoint, request or
 response envelope, status table, or replay-store contract. The implementation
-therefore exposes two path-agnostic handlers that a host mounts at configured
+therefore exposes one shared enrollment handler and separate path-agnostic
+two-key and single-key refresh handlers that a host mounts at configured
 Agent-Provider-origin URLs. The explicit Agent caller receives those URLs; AP
 metadata is unchanged.
 
@@ -538,6 +540,9 @@ Both operations use signed `application/json` with exact `content-type` and
 and carries one opaque `evidence` value. Refresh carries optional `ps` plus one
 opaque `evidence` value, presents a durable-signed Ed25519
 `jkt-s256+jwt`, and signs the HTTP request with its delegated ephemeral key.
+Single-key refresh presents the same durable key through `hwk`, signs the HTTP
+request with it directly, and carries a signed `refresh_jti` plus
+`refresh_expires_at` for bounded exact-result recovery.
 The AP callbacks interpret evidence, assign the Agent identity, approve the
 requested PS, and decide token lifetime and additive claims. Evidence is
 opaque authenticated input, not proof of account state or attestation; the
@@ -545,7 +550,7 @@ host callback validates any session, server nonce, and platform trust chain.
 These field names and statuses are repository profile choices, not additions
 to AAuth.
 
-The first profile has one exact signed-component set: the Core method,
+Both profiles have one exact signed-component set: the Core method,
 authority, path, and `signature-key` fields plus `content-type` and
 `content-digest`. Host login, nonce, or attestation material belongs inside
 the signed `evidence` value. Additional application-specific signed headers
@@ -562,25 +567,24 @@ The profile uses one explicit response table:
 | Method other than `POST` | `405 invalid_request` plus `Allow: POST` |
 | Media type other than `application/json` | `415 invalid_request` |
 | Signature-Key proof failure | `401`; `Signature-Error`, problem `type`, and body `error` carry the same Signature-Key code |
-| Delegation expires before a first result commits | `401 expired_jwt`; no result is retained |
+| Signed refresh identity expires before a first result commits | `401 expired_jwt`; no result is retained |
 | Invalid profile body or semantic input | `400 invalid_request` |
 | Policy denial or inactive enrollment | `403` with the profile-specific denial code and no Signature-Key challenge |
 | Missing enrollment | `404 enrollment_not_found` |
 | Conflicting enrollment or refresh identity | `409` with the corresponding profile conflict code |
 | Policy, store, or signing failure | `500 server_error` |
 
-The refresh profile requires `jti` even though generic Signature-Key requires
-it only for assertion caching. The AP treats `(durable identity, jti)` as one
-request identity. It binds the exact naming JWT and JSON body. Recovery reuses
-the full `RefreshAgentTokenInput`: Agent, requested PS, exact evidence bytes,
-delegated key, JTI, issued time, and expiry. The client reconstructs that
-stable input but freshly signs the outer HTTP request. An exact retry returns
-the retained first Agent token; a different naming JWT or JSON body conflicts.
-The store returns any existing winner first, then atomically refuses a first
-commit when its trusted clock reaches the delegation expiry. A host may
-therefore prune at expiry without allowing an already-verified request to
-recreate the result. Generic HTTP-proof replay enforcement remains separate
-and unimplemented.
+The AP treats `(durable identity, refresh jti)` as one request identity. In the
+two-key profile it binds the exact naming JWT and JSON body; recovery reuses the
+full `RefreshAgentTokenInput`, including delegated key and delegation times. In
+the single-key profile it binds the exact signed JSON body; recovery reuses
+`SingleKeyRefreshAgentTokenInput`, including the unchanged durable key, JTI,
+and expiry. The single-key recovery window is at most 24 hours so caller input
+cannot impose unbounded retention. Both clients freshly sign the outer HTTP
+request. An exact retry returns the retained first Agent token; a changed key
+profile, proof material, or JSON body conflicts. The store returns any existing
+winner first, then atomically refuses a first commit when its trusted clock
+reaches the signed request expiry.
 
 An exact retained result remains available from the host-supplied
 `EnrollmentStore` while that record is retained, even after the enrollment
@@ -591,7 +595,7 @@ does not invalidate an already-issued token under Core, so a host that needs
 active invalidation must apply its separate Agent-token revocation policy. A
 new JTI still loads the current enrollment and is refused unless it is active.
 
-This first profile supports Ed25519 durable and ephemeral keys only. Rotating
+These profiles support Ed25519 keys only. Rotating
 the ephemeral key preserves the assigned Agent identifier. Replacing the
 durable key is a new enrollment; continuity for that case is not implemented.
 The Agent caller is responsible for generating a new ephemeral key for each
@@ -602,8 +606,10 @@ before.
 **Executable examples:**
 `signaturekey/jkt_jwt_external_test.go`,
 `agentprovider/enrollment_http_test.go`,
+`agentprovider/storetest/enrollment.go`,
 `agent/bootstrap_test.go`,
-`integration/bootstrap_refresh_test.go`, and `example/bootstrap`.
+`integration/bootstrap_refresh_test.go`,
+`integration/bootstrap_single_key_test.go`, and `example/bootstrap`.
 
 ## Failed JWKS refresh may use the bounded cached entry
 

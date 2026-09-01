@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,6 +83,135 @@ func TestTwoKeyBootstrapClientEnrollsAndRefreshesOnce(t *testing.T) {
 	}
 	if got := fmt.Sprint(calls); got != "[/custom/enrollment /custom/refresh]" {
 		t.Fatalf("bootstrap calls = %s", got)
+	}
+}
+
+func TestSingleKeyBootstrapClientRefreshesWithDurableHWK(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 8, 31, 7, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	providerKey := testSigningKey(t, "single-key-bootstrap-ap", 0xa1)
+	durable := testSigningKey(t, "single-key-bootstrap-durable", 0xa2)
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://ap.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
+	}
+	calls := 0
+	httpClient := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		prepared, err := signaturekey.PrepareRequest(request, clock, signaturekey.VerifyOptions{
+			AcceptedSchemes:        []signaturekey.Scheme{signaturekey.SchemeHWK},
+			RequiredComponents:     []string{"content-type", "content-digest"},
+			RequireExactComponents: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		key, ok := prepared.Credential().InlineJWK()
+		if !ok || !key.Equal(durable.PublicJWK()) {
+			return nil, errors.New("single-key refresh did not use the durable hwk")
+		}
+		proof, err := prepared.Verify(key)
+		if err != nil {
+			return nil, err
+		}
+		var input struct {
+			PersonServer  string          `json:"ps"`
+			Evidence      json.RawMessage `json:"evidence"`
+			RefreshJTI    string          `json:"refresh_jti"`
+			RefreshExpiry int64           `json:"refresh_expires_at"`
+		}
+		if err := json.Unmarshal(proof.ExactBody(), &input); err != nil ||
+			input.PersonServer != "https://ps.example" || input.RefreshJTI != "single-refresh-1" ||
+			input.RefreshExpiry != now.Add(10*time.Minute).Unix() || string(input.Evidence) != `{"posture":"current"}` {
+			return nil, fmt.Errorf("single-key refresh body = %s, error = %v", proof.ExactBody(), err)
+		}
+		compact, err := aauth.MintAgentToken("https://ap.example", providerKey, aauth.AgentTokenRequest{
+			Agent: "aauth:reference@ap.example", PersonServer: input.PersonServer,
+			PublicKey: durable.PublicJWK(), Lifetime: 30 * time.Minute,
+		}, now, "single-key-agent-token")
+		if err != nil {
+			return nil, err
+		}
+		return bootstrapJSONResponse(http.StatusOK, fmt.Sprintf(`{"agent_token":%q}`, compact)), nil
+	})}
+	bootstrap, err := agent.NewBootstrapClient(agent.BootstrapConfig{
+		AgentProvider:      "https://ap.example",
+		EnrollmentEndpoint: "https://ap.example/custom/enrollment",
+		RefreshEndpoint:    "https://ap.example/custom/refresh",
+		DurableKey:         durable, KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := bootstrap.RefreshSingleKey(ctx, agent.SingleKeyRefreshAgentTokenInput{
+		Agent: "aauth:reference@ap.example", PersonServer: "https://ps.example",
+		Evidence:   json.RawMessage(`{"posture":"current"}`),
+		RefreshJTI: "single-refresh-1", RefreshExpiresAt: now.Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Claims.Subject != "aauth:reference@ap.example" ||
+		!result.Claims.Confirmation.JWK.Equal(durable.PublicJWK()) || calls != 1 {
+		t.Fatalf("single-key refresh = %#v, calls=%d", result.Claims, calls)
+	}
+	if _, err := agent.New(ctx, agent.Config{
+		Identifier: result.Claims.Subject, SigningKey: durable, AgentToken: result.AgentToken,
+		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSingleKeyBootstrapClientRejectsInvalidInputBeforeNetwork(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 31, 7, 10, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	durable := testSigningKey(t, "single-key-negative-durable", 0xa3)
+	calls := 0
+	bootstrap, err := agent.NewBootstrapClient(agent.BootstrapConfig{
+		AgentProvider:      "https://ap.example",
+		EnrollmentEndpoint: "https://ap.example/enroll",
+		RefreshEndpoint:    "https://ap.example/refresh",
+		DurableKey:         durable,
+		KeyResolver:        signaturekey.StaticKeyResolver{},
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("unexpected request")
+		})},
+		Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := agent.SingleKeyRefreshAgentTokenInput{
+		Agent: "aauth:reference@ap.example", PersonServer: "https://ps.example",
+		Evidence: json.RawMessage(`{}`), RefreshJTI: "refresh-1",
+		RefreshExpiresAt: now.Add(time.Minute),
+	}
+	tests := []agent.SingleKeyRefreshAgentTokenInput{
+		{},
+		func() agent.SingleKeyRefreshAgentTokenInput { value := valid; value.RefreshJTI = ""; return value }(),
+		func() agent.SingleKeyRefreshAgentTokenInput { value := valid; value.Evidence = nil; return value }(),
+		func() agent.SingleKeyRefreshAgentTokenInput {
+			value := valid
+			value.RefreshExpiresAt = now
+			return value
+		}(),
+		func() agent.SingleKeyRefreshAgentTokenInput {
+			value := valid
+			value.RefreshExpiresAt = now.Add(25 * time.Hour)
+			return value
+		}(),
+	}
+	for _, input := range tests {
+		if _, err := bootstrap.RefreshSingleKey(context.Background(), input); err == nil {
+			t.Fatalf("invalid input accepted: %#v", input)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("network calls = %d", calls)
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-// EnrollmentHandler returns the two-key profile's enrollment operation. The
+// EnrollmentHandler returns the hosted profiles' shared enrollment operation. The
 // host chooses where to mount it; AAuth Bootstrap does not define a route.
 func (service *EnrollmentService) EnrollmentHandler() http.Handler {
 	if service == nil {
@@ -26,6 +26,15 @@ func (service *EnrollmentService) RefreshHandler() http.Handler {
 		return http.NotFoundHandler()
 	}
 	return http.HandlerFunc(service.serveRefresh)
+}
+
+// SingleKeyRefreshHandler returns the single-durable-key refresh operation.
+// The host chooses where to mount it; AAuth Bootstrap does not define a route.
+func (service *EnrollmentService) SingleKeyRefreshHandler() http.Handler {
+	if service == nil {
+		return http.NotFoundHandler()
+	}
+	return http.HandlerFunc(service.serveSingleKeyRefresh)
 }
 
 func (service *EnrollmentService) serveEnrollment(response http.ResponseWriter, request *http.Request) {
@@ -107,6 +116,49 @@ func (service *EnrollmentService) serveRefresh(response http.ResponseWriter, req
 		return
 	}
 	record, err := service.Refresh(request.Context(), proof, delegation)
+	service.writeRefreshResponse(response, record, err)
+}
+
+func (service *EnrollmentService) serveSingleKeyRefresh(response http.ResponseWriter, request *http.Request) {
+	if !acceptJSONPost(response, request) {
+		return
+	}
+	prepared, err := signaturekey.PrepareRequest(request, service.provider.clock, signaturekey.VerifyOptions{
+		AcceptedSchemes:        []signaturekey.Scheme{signaturekey.SchemeHWK},
+		RequiredComponents:     []string{"content-type", "content-digest"},
+		RequireExactComponents: true,
+		MaxBodyBytes:           httpapi.DefaultMaxBodyBytes,
+	})
+	if err != nil {
+		writeSignatureProblem(response, err)
+		return
+	}
+	key, ok := prepared.Credential().InlineJWK()
+	if !ok {
+		writeSignatureProblem(response, signaturekey.NewError(
+			signaturekey.ErrorInvalidKey,
+			errors.New("agentprovider: hwk credential is required"),
+		))
+		return
+	}
+	proof, err := prepared.Verify(key)
+	if err != nil {
+		writeSignatureProblem(response, err)
+		return
+	}
+	if err := service.validateProviderAuthority(proof); err != nil {
+		writeSignatureProblem(response, err)
+		return
+	}
+	record, err := service.RefreshSingleKey(request.Context(), proof)
+	service.writeRefreshResponse(response, record, err)
+}
+
+func (service *EnrollmentService) writeRefreshResponse(
+	response http.ResponseWriter,
+	record RefreshRecord,
+	err error,
+) {
 	if err != nil {
 		if errors.Is(err, ErrInvalidRefreshRequest) {
 			httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", err)

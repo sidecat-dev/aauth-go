@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -80,6 +82,109 @@ func TestEnrollmentHTTPHandlersComposeAtCallerSelectedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestSingleKeyRefreshHTTPHandlerRetainsAndReplaysExactResult(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 31, 7, 20, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	providerKey := testSigningKey(t, "single-key-http-provider", 0xb1)
+	durable := testSigningKey(t, "single-key-http-durable", 0xb2)
+	ids := []string{"single-key-agent-token", "unused-agent-token"}
+	provider, err := agentprovider.New(agentprovider.Config{
+		Issuer: "https://ap.example", SigningKey: providerKey, Clock: clock,
+		NewID: func() string { id := ids[0]; ids = ids[1:]; return id },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := durable.PublicJWK().ThumbprintURI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryEnrollmentStore()
+	newService := func() *agentprovider.EnrollmentService {
+		service, err := agentprovider.NewEnrollmentService(agentprovider.EnrollmentServiceConfig{
+			Provider: provider,
+			Store:    store,
+			Enroll: func(_ context.Context, request agentprovider.EnrollmentRequest) (agentprovider.EnrollmentDecision, error) {
+				if request.Identity != identity {
+					return agentprovider.EnrollmentDecision{}, errors.New("wrong durable identity")
+				}
+				return agentprovider.EnrollmentDecision{Agent: "aauth:reference@ap.example"}, nil
+			},
+			Refresh: func(_ context.Context, request agentprovider.RefreshRequest) (agentprovider.RefreshDecision, error) {
+				if request.Profile != agentprovider.RefreshProfileSingleKey || request.Delegation.JTI() != "" ||
+					request.Enrollment.Identity != identity || request.RequestedPersonServer != "https://ps.example" ||
+					string(request.Evidence) != `{"posture":"current"}` {
+					return agentprovider.RefreshDecision{}, errors.New("wrong single-key policy request")
+				}
+				return agentprovider.RefreshDecision{PersonServer: "https://ps.example", Lifetime: 30 * time.Minute}, nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+	service := newService()
+	enrollment := httptest.NewRecorder()
+	service.EnrollmentHandler().ServeHTTP(enrollment, signedEnrollmentHTTPRequest(t, durable, clock))
+	if enrollment.Code != http.StatusCreated {
+		t.Fatalf("enrollment = %d %s", enrollment.Code, enrollment.Body.String())
+	}
+	body := `{"ps":"https://ps.example","evidence":{"posture":"current"},"refresh_jti":"single-refresh-1","refresh_expires_at":` +
+		fmt.Sprint(now.Add(10*time.Minute).Unix()) + `}`
+	first := httptest.NewRecorder()
+	service.SingleKeyRefreshHandler().ServeHTTP(first, signedSingleKeyRefreshHTTPRequest(t, durable, clock, body))
+	if first.Code != http.StatusOK || first.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("single-key refresh = %d %s", first.Code, first.Body.String())
+	}
+	var output struct {
+		AgentToken string `json:"agent_token"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := aauth.VerifyAgentToken(context.Background(), output.AgentToken, signaturekey.StaticKeyResolver{
+		{Issuer: "https://ap.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
+	}, clock)
+	if err != nil || !claims.Confirmation.JWK.Equal(durable.PublicJWK()) {
+		t.Fatalf("single-key claims = %#v, %v", claims, err)
+	}
+
+	replay := httptest.NewRecorder()
+	newService().SingleKeyRefreshHandler().ServeHTTP(replay, signedSingleKeyRefreshHTTPRequest(t, durable, clock, body))
+	if replay.Code != http.StatusOK || replay.Body.String() != first.Body.String() || len(ids) != 1 {
+		t.Fatalf("replay = %d %s; remaining IDs=%v", replay.Code, replay.Body.String(), ids)
+	}
+	changed := httptest.NewRecorder()
+	changedBody := strings.Replace(body, `"current"`, `"changed"`, 1)
+	newService().SingleKeyRefreshHandler().ServeHTTP(changed, signedSingleKeyRefreshHTTPRequest(t, durable, clock, changedBody))
+	if changed.Code != http.StatusConflict {
+		t.Fatalf("changed replay = %d %s", changed.Code, changed.Body.String())
+	}
+}
+
+func signedSingleKeyRefreshHTTPRequest(
+	t *testing.T,
+	durable jose.SigningKey,
+	clock aauth.Clock,
+	body string,
+) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "https://ap.example/custom/refresh", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	credential, err := signaturekey.NewHWKCredential(durable.PublicJWK())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signaturekey.SignRequest(request, durable, credential, clock, signaturekey.SignOptions{
+		AdditionalComponents: []string{"content-type", "content-digest"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return request
 }
 
 func TestEnrollmentHTTPHandlersRejectProofForDifferentProviderAuthority(t *testing.T) {
