@@ -16,23 +16,36 @@ import (
 // NewMissionStore returns a concurrency-safe in-memory Person Server mission
 // and mission-audit store for examples.
 func NewMissionStore() personserver.MissionAuditStore {
+	return newMissionStore()
+}
+
+// NewMissionPermissionStore returns one in-memory transaction boundary for
+// mission lifecycle, mission-bound tokens, and permission state.
+func NewMissionPermissionStore() personserver.MissionPermissionStore {
+	return newMissionStore()
+}
+
+func newMissionStore() *missionStore {
 	return &missionStore{
-		missions: make(map[string]personserver.MissionRecord),
-		tokens:   make(map[string]personserver.PersonTokenRecord),
-		auth:     make(map[string]personserver.IssuedAuthTokenRecord),
-		audits:   make(map[string][]personserver.MissionAuditRecord),
+		missions:    make(map[string]personserver.MissionRecord),
+		tokens:      make(map[string]personserver.PersonTokenRecord),
+		auth:        make(map[string]personserver.IssuedAuthTokenRecord),
+		audits:      make(map[string][]personserver.MissionAuditRecord),
+		permissions: make(map[string]personserver.PermissionRecord),
 	}
 }
 
 type missionStore struct {
-	mu       sync.Mutex
-	missions map[string]personserver.MissionRecord
-	tokens   map[string]personserver.PersonTokenRecord
-	auth     map[string]personserver.IssuedAuthTokenRecord
-	audits   map[string][]personserver.MissionAuditRecord
+	mu          sync.Mutex
+	missions    map[string]personserver.MissionRecord
+	tokens      map[string]personserver.PersonTokenRecord
+	auth        map[string]personserver.IssuedAuthTokenRecord
+	audits      map[string][]personserver.MissionAuditRecord
+	permissions map[string]personserver.PermissionRecord
 }
 
 var _ personserver.MissionAuditStore = (*missionStore)(nil)
+var _ personserver.MissionPermissionStore = (*missionStore)(nil)
 
 func (store *missionStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
 	store.mu.Lock()
@@ -242,6 +255,136 @@ func (store *missionStore) LoadMissionAuditsForAgent(
 		cloned[index] = cloneMissionAuditRecord(records[index])
 	}
 	return cloned, nil
+}
+
+func (store *missionStore) CreatePermission(_ context.Context, record personserver.PermissionRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return createPermissionRecord(store.permissions, record)
+}
+
+func (store *missionStore) LoadPermission(
+	_ context.Context,
+	id string,
+	at time.Time,
+) (personserver.PermissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return loadPermissionRecord(store.permissions, id, at)
+}
+
+func (store *missionStore) DecidePermission(
+	_ context.Context,
+	id string,
+	decision personserver.PermissionDecision,
+	at time.Time,
+) (personserver.PermissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return decidePermissionRecord(store.permissions, id, decision, at)
+}
+
+func (store *missionStore) PollPermission(
+	_ context.Context,
+	id string,
+	identity personserver.PermissionPollIdentity,
+	at time.Time,
+) (personserver.PermissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return pollPermissionRecord(store.permissions, id, identity, at)
+}
+
+func (store *missionStore) ConsumePermissionResult(
+	_ context.Context,
+	id string,
+	expected personserver.PermissionRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return consumePermissionRecord(store.permissions, id, expected)
+}
+
+func (store *missionStore) CreateMissionPermission(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	record personserver.PermissionRecord,
+	at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActive(expected, at); err != nil {
+		return err
+	}
+	if record.MissionS256 != expected.S256 || record.Agent != expected.Agent {
+		return personserver.ErrMissionConflict
+	}
+	return createPermissionRecord(store.permissions, record)
+}
+
+func (store *missionStore) DecideMissionPermission(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	id string,
+	decision personserver.PermissionDecision,
+	at time.Time,
+) (personserver.PermissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActive(expected, at); err != nil {
+		return personserver.PermissionRecord{}, err
+	}
+	if err := store.requireMissionPermission(id, expected); err != nil {
+		return personserver.PermissionRecord{}, err
+	}
+	return decidePermissionRecord(store.permissions, id, decision, at)
+}
+
+func (store *missionStore) PollMissionPermission(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	id string,
+	identity personserver.PermissionPollIdentity,
+	at time.Time,
+) (personserver.PermissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActive(expected, at); err != nil {
+		return personserver.PermissionRecord{}, err
+	}
+	if err := store.requireMissionPermission(id, expected); err != nil {
+		return personserver.PermissionRecord{}, err
+	}
+	return pollPermissionRecord(store.permissions, id, identity, at)
+}
+
+func (store *missionStore) ConsumeMissionPermissionResult(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	id string,
+	record personserver.PermissionRecord,
+	at time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActive(expected, at); err != nil {
+		return err
+	}
+	if err := store.requireMissionPermission(id, expected); err != nil {
+		return err
+	}
+	return consumePermissionRecord(store.permissions, id, record)
+}
+
+func (store *missionStore) requireMissionPermission(id string, mission personserver.MissionRecord) error {
+	record, ok := store.permissions[id]
+	if !ok {
+		return personserver.ErrPermissionNotFound
+	}
+	if record.MissionS256 != mission.S256 || record.Agent != mission.Agent {
+		return personserver.ErrMissionConflict
+	}
+	return nil
 }
 
 func (store *missionStore) requireActive(expected personserver.MissionRecord, at time.Time) error {

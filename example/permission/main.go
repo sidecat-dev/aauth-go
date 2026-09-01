@@ -1,6 +1,6 @@
-// The permission example runs one missionless local-action decision entirely
-// in process. The library carries the request and decision; the application
-// remains responsible for executing the action after a typed grant.
+// The permission example runs missionless and mission-bound local-action
+// decisions entirely in process. The library carries the request and decision;
+// the application remains responsible for acting after a typed grant.
 package main
 
 import (
@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -81,21 +80,49 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	permissions := exampleutil.NewPermissionStore()
+	permissions := exampleutil.NewMissionPermissionStore()
+	missionExpiry := now.Add(30 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		ExpiresAt: &missionExpiry, Description: "Archive the reviewed incident report.",
+	})
+	if err != nil {
+		return err
+	}
+	if err := permissions.CommitMission(ctx, personserver.MissionRecord{
+		S256: mission.S256, Agent: agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: missionExpiry,
+		State: personserver.MissionActive,
+	}, nil); err != nil {
+		return err
+	}
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, NewID: func() string { return "unused-token" },
-		Tokens: newMemoryTokenStore(),
+		Tokens: permissions,
 		BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
 			return personserver.Person{Subject: "person", Lifetime: time.Minute}, nil
 		},
 		Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
 			return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
 		},
+		Missions: &personserver.MissionConfig{
+			Approve: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
+				return personserver.MissionDecision{}, errors.New("mission approval is not used in this example")
+			},
+			AcceptUpdate: func(context.Context, personserver.MissionUpdatePolicyRequest) error {
+				return errors.New("mission update is not used in this example")
+			},
+			ConfirmPersonAcceptedCompletion: func(context.Context, personserver.MissionCompletionPolicyRequest) error {
+				return errors.New("mission completion is not used in this example")
+			},
+		},
 		Permission: &personserver.PermissionConfig{
-			Store: permissions,
 			Policy: func(_ context.Context, request personserver.PermissionPolicyRequest) (personserver.PermissionPolicyResult, error) {
-				if request.Agent != agentID || request.Action != "messages.send" {
+				validMissionless := request.Mission == nil && request.Action == "messages.send"
+				validMission := request.Mission != nil && request.Mission.S256 == mission.S256 &&
+					request.Action == "reports.archive"
+				if request.Agent != agentID || (!validMissionless && !validMission) {
 					return personserver.PermissionPolicyResult{}, errors.New("unexpected permission request")
 				}
 				return personserver.PermissionPolicyResult{Deferred: &personserver.PermissionPendingPolicy{
@@ -162,6 +189,41 @@ func run(output io.Writer) error {
 	if _, err := fmt.Fprintln(output, "Permission granted: application sent one message"); err != nil {
 		return err
 	}
+
+	missionResult, err := operator.RequestPermission(ctx, clientagent.PermissionRequest{
+		PersonServer: personServerID, MissionS256: mission.S256,
+		Action: "reports.archive", Description: "Archive the reviewed incident report.",
+	})
+	if err != nil {
+		return err
+	}
+	missionPending, ok := missionResult.Pending()
+	if !ok {
+		return errors.New("Person Server did not defer the mission permission request")
+	}
+	missionReference := strings.TrimPrefix(missionPending.Location(), personServerID+"/permission/pending/")
+	missionRequest, err := people.ResumePermission(ctx, missionReference)
+	if err != nil {
+		return err
+	}
+	missionContext, ok := missionRequest.Mission()
+	if !ok || missionContext.S256 != mission.S256 {
+		return errors.New("Person Server resumed the wrong mission")
+	}
+	if err := people.GrantPermission(ctx, missionRequest); err != nil {
+		return err
+	}
+	missionCompletion, err := operator.PollPermission(ctx, missionPending)
+	if err != nil {
+		return err
+	}
+	missionDecision, ok := missionCompletion.Decision()
+	if !ok || missionDecision.Permission() != aauth.PermissionGranted {
+		return errors.New("mission permission request was not granted")
+	}
+	if _, err := fmt.Fprintln(output, "Mission permission granted: application archived one report"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -171,34 +233,4 @@ func newSigningKey(id string) (jose.SigningKey, error) {
 		return jose.SigningKey{}, err
 	}
 	return jose.NewEd25519SigningKey(id, privateKey)
-}
-
-type memoryTokenStore struct {
-	mu      sync.Mutex
-	records map[string]personserver.PersonTokenRecord
-}
-
-func newMemoryTokenStore() *memoryTokenStore {
-	return &memoryTokenStore{records: make(map[string]personserver.PersonTokenRecord)}
-}
-
-func (store *memoryTokenStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := record.PersonServer + "\x00" + record.JTI
-	if _, exists := store.records[key]; exists {
-		return errors.New("person-token record already exists")
-	}
-	store.records[key] = record
-	return nil
-}
-
-func (store *memoryTokenStore) Load(_ context.Context, issuer, tokenID string) (personserver.PersonTokenRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	record, ok := store.records[issuer+"\x00"+tokenID]
-	if !ok {
-		return personserver.PersonTokenRecord{}, personserver.ErrPersonTokenNotFound
-	}
-	return record, nil
 }

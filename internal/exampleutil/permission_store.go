@@ -27,10 +27,14 @@ var _ personserver.PermissionStore = (*permissionStore)(nil)
 func (store *permissionStore) CreatePermission(_ context.Context, record personserver.PermissionRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if _, exists := store.records[record.ID]; exists {
+	return createPermissionRecord(store.records, record)
+}
+
+func createPermissionRecord(records map[string]personserver.PermissionRecord, record personserver.PermissionRecord) error {
+	if _, exists := records[record.ID]; exists {
 		return personserver.ErrPermissionConflict
 	}
-	store.records[record.ID] = clonePermissionRecord(record)
+	records[record.ID] = clonePermissionRecord(record)
 	return nil
 }
 
@@ -41,12 +45,20 @@ func (store *permissionStore) LoadPermission(
 ) (personserver.PermissionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, ok := store.records[id]
+	return loadPermissionRecord(store.records, id, now)
+}
+
+func loadPermissionRecord(
+	records map[string]personserver.PermissionRecord,
+	id string,
+	now time.Time,
+) (personserver.PermissionRecord, error) {
+	record, ok := records[id]
 	if !ok {
 		return personserver.PermissionRecord{}, personserver.ErrPermissionNotFound
 	}
 	materializePermissionExpiry(&record, now)
-	store.records[id] = clonePermissionRecord(record)
+	records[id] = clonePermissionRecord(record)
 	return clonePermissionRecord(record), nil
 }
 
@@ -58,13 +70,22 @@ func (store *permissionStore) DecidePermission(
 ) (personserver.PermissionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, ok := store.records[id]
+	return decidePermissionRecord(store.records, id, decision, now)
+}
+
+func decidePermissionRecord(
+	records map[string]personserver.PermissionRecord,
+	id string,
+	decision personserver.PermissionDecision,
+	now time.Time,
+) (personserver.PermissionRecord, error) {
+	record, ok := records[id]
 	if !ok {
 		return personserver.PermissionRecord{}, personserver.ErrPermissionNotFound
 	}
 	materializePermissionExpiry(&record, now)
 	if record.State == personserver.PermissionStateExpired {
-		store.records[id] = clonePermissionRecord(record)
+		records[id] = clonePermissionRecord(record)
 		return personserver.PermissionRecord{}, personserver.ErrPermissionExpired
 	}
 	if record.State == personserver.PermissionStateGranted || record.State == personserver.PermissionStateDenied {
@@ -83,7 +104,7 @@ func (store *permissionStore) DecidePermission(
 	}
 	record.Decision = decision
 	record.DecidedAt = now
-	store.records[id] = clonePermissionRecord(record)
+	records[id] = clonePermissionRecord(record)
 	return clonePermissionRecord(record), nil
 }
 
@@ -95,12 +116,21 @@ func (store *permissionStore) PollPermission(
 ) (personserver.PermissionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, ok := store.records[id]
+	return pollPermissionRecord(store.records, id, identity, now)
+}
+
+func pollPermissionRecord(
+	records map[string]personserver.PermissionRecord,
+	id string,
+	identity personserver.PermissionPollIdentity,
+	now time.Time,
+) (personserver.PermissionRecord, error) {
+	record, ok := records[id]
 	if !ok || !permissionIdentityMatches(record, identity) {
 		return personserver.PermissionRecord{}, personserver.ErrPermissionNotFound
 	}
 	materializePermissionExpiry(&record, now)
-	store.records[id] = clonePermissionRecord(record)
+	records[id] = clonePermissionRecord(record)
 	if record.State == personserver.PermissionStateGone {
 		return personserver.PermissionRecord{}, personserver.ErrPermissionGone
 	}
@@ -114,7 +144,15 @@ func (store *permissionStore) ConsumePermissionResult(
 ) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	record, ok := store.records[id]
+	return consumePermissionRecord(store.records, id, expected)
+}
+
+func consumePermissionRecord(
+	records map[string]personserver.PermissionRecord,
+	id string,
+	expected personserver.PermissionRecord,
+) error {
+	record, ok := records[id]
 	if !ok {
 		return personserver.ErrPermissionNotFound
 	}
@@ -125,7 +163,7 @@ func (store *permissionStore) ConsumePermissionResult(
 		return personserver.ErrPermissionConflict
 	}
 	record.State = personserver.PermissionStateGone
-	store.records[id] = clonePermissionRecord(record)
+	records[id] = clonePermissionRecord(record)
 	return nil
 }
 

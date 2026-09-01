@@ -78,7 +78,9 @@ type FederatedAuthorizationConfig struct {
 	// mission-bound Person and federated Auth-token issuance. When nonnil,
 	// Tokens must implement MissionStore.
 	Missions *MissionConfig
-	// Permission optionally enables missionless top-level permission decisions.
+	// Permission optionally enables top-level permission decisions. With
+	// Missions, Tokens supplies the MissionPermissionStore and Permission.Store
+	// must be nil.
 	Permission *PermissionConfig
 	// Audit optionally enables mission-bound audit retention. Missions must be
 	// configured and Tokens must implement MissionAuditStore.
@@ -128,7 +130,9 @@ type PSAuthorizationConfig struct {
 	// Revocation optionally retains issued auth-token routing and enables one
 	// explicit Resource revocation attempt.
 	Revocation *AuthTokenRevocationConfig
-	// Permission optionally enables missionless top-level permission decisions.
+	// Permission optionally enables top-level permission decisions. With
+	// Missions, Tokens supplies the MissionPermissionStore and Permission.Store
+	// must be nil.
 	Permission *PermissionConfig
 	// Audit optionally enables mission-bound audit retention. Missions must be
 	// configured and Tokens must implement MissionAuditStore.
@@ -279,6 +283,7 @@ type Server struct {
 	revocationAdmit                 signaturekey.EgressAdmitter
 	permissionPolicy                func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
 	permissions                     PermissionStore
+	missionPermissions              MissionPermissionStore
 	missionAudits                   MissionAuditStore
 	interactionQuestionPolicy       func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
 	interactionQuestionStore        InteractionQuestionStore
@@ -349,8 +354,6 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	}
 	server.r3 = r3Config
 	server.authorizationMode = authorizationModeFederated
-	server.permissionPolicy = permissionPolicy(config.Permission)
-	server.permissions = permissionStore(config.Permission)
 	return server, nil
 }
 
@@ -410,8 +413,6 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	}
 	server.requireAuthorizationInteraction = config.RequireAuthorizationInteraction
 	server.authorizationInteractions = config.AuthorizationInteractions
-	server.permissionPolicy = permissionPolicy(config.Permission)
-	server.permissions = permissionStore(config.Permission)
 	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
 		return nil, err
 	}
@@ -419,8 +420,16 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 }
 
 func newServer(config serverConfig) (*Server, error) {
-	if config.permission != nil && (config.permission.Policy == nil || config.permission.Store == nil) {
-		return nil, errors.New("personserver: permission policy and store are required together")
+	if config.permission != nil {
+		if config.permission.Policy == nil {
+			return nil, errors.New("personserver: permission policy is required")
+		}
+		if config.missions == nil && config.permission.Store == nil {
+			return nil, errors.New("personserver: missionless permission store is required")
+		}
+		if config.missions != nil && config.permission.Store != nil {
+			return nil, errors.New("personserver: mission permission store must be supplied through Tokens")
+		}
 	}
 	if config.audit != nil && config.missions == nil {
 		return nil, errors.New("personserver: audit requires missions")
@@ -458,6 +467,8 @@ func newServer(config serverConfig) (*Server, error) {
 	var missionAcceptUpdate func(context.Context, MissionUpdatePolicyRequest) error
 	var missionConfirmPersonCompletion func(context.Context, MissionCompletionPolicyRequest) error
 	var missionAudits MissionAuditStore
+	var missionPermissions MissionPermissionStore
+	var permissions PermissionStore
 	if config.missions != nil {
 		if config.missions.Approve == nil {
 			return nil, errors.New("personserver: mission approval policy is required")
@@ -482,6 +493,16 @@ func newServer(config serverConfig) (*Server, error) {
 				return nil, errors.New("personserver: audit requires Tokens to implement MissionAuditStore")
 			}
 		}
+		if config.permission != nil {
+			missionPermissions, ok = config.tokens.(MissionPermissionStore)
+			if !ok {
+				return nil, errors.New("personserver: missions with permission require Tokens to implement MissionPermissionStore")
+			}
+			permissions = missionPermissions
+		}
+	}
+	if config.permission != nil && config.missions == nil {
+		permissions = config.permission.Store
 	}
 	var deferredTokens DeferredTokenStore
 	if config.requirePersonTokenInteraction != nil {
@@ -507,6 +528,9 @@ func newServer(config serverConfig) (*Server, error) {
 		missions:                      missions, missionApprove: missionApprove,
 		missionAcceptUpdate: missionAcceptUpdate, missionConfirmPersonCompletion: missionConfirmPersonCompletion,
 		missionAudits:             missionAudits,
+		permissionPolicy:          permissionPolicy(config.permission),
+		permissions:               permissions,
+		missionPermissions:        missionPermissions,
 		interactionQuestionPolicy: interactionQuestionPolicy(config.interactionQuestion),
 		interactionQuestionStore:  interactionQuestionStore(config.interactionQuestion),
 		interactionRelayPolicy:    interactionRelayPolicy(config.interactionRelay),

@@ -47,7 +47,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Hosted Agent bootstrap profiles](example/bootstrap) | Shared `hwk` enrollment, then either `jkt-jwt` refresh to a fresh Agent key or direct `hwk` refresh with the durable key, followed by Agent identity access | `go run ./example/bootstrap` |
 | [Self-hosted Agent](example/selfhosted) | One user-controlled key publishes AP metadata/JWKS, self-issues an ordinary Agent token, and signs a protected Resource call | `go run ./example/selfhosted` |
 | [Direct Agent identity](example/agentidentity) | Agent Provider to Agent to Resource, with no Person Server or Access Server | `go run ./example/agentidentity` |
-| [Missionless local-action permission](example/permission) | Agent asks its Person Server about one local action; the host records a decision; the application acts only after a typed grant | `go run ./example/permission` |
+| [Local-action permission](example/permission) | Missionless and mission-bound requests; the host reviews retained intent and exact mission context, and the application acts only after a typed grant | `go run ./example/permission` |
 | [Resource-managed session](example/resourcesession) | Resource-owned interaction and an opaque proof-bound session | `go run ./example/resourcesession` |
 | [Immediate three-party authorization](example/threeparty) | Person Server identity and authorization with no Access Server | `go run ./example/threeparty` |
 | [Direct three-party R3](example/r3threeparty) | MCP operations narrowed and issued by the Person Server with no Access Server | `go run ./example/r3threeparty` |
@@ -79,6 +79,10 @@ The [missionless Permission journey](integration/permission_missionless_test.go)
 proves a signed local-action request, Person Server recomposition around the
 retained request, explicit host grant and denial, one caller-driven poll, one
 application action after the grant, and no Resource or Access Server calls.
+The [mission-bound Permission journey](integration/permission_mission_test.go)
+adds the active owned mission and its accepted updates to policy and the host
+view, and keeps create, decision, and delivery atomic with that exact mission
+state.
 The [mission Audit journey](integration/audit_mission_test.go) proves one
 signed post-action record, exact retention against the still-active
 owned mission, host-side read-back, and refusal after mission completion.
@@ -121,7 +125,7 @@ See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 | `r3/vocabtest` | Reusable operation-codec and native-definition contracts for standard and third-party adapters |
 | `agentprovider` | Agent-token and subscribe-token issuance, metadata/JWKS, and the Events inbox |
 | `agent` | Explicit Core, mission Audit, missionless Interaction questions and relays, R3, Events, and fixed-price Budget calls; no hidden polling, browser use, or consequence retry |
-| `personserver` | Person-token issuance, mission lifecycle and Audit, missionless local-action permission and Interaction, direct Core/class-R3/Budget verification and narrowing, consent interaction, revocation, call-chain policy, and Access Server federation |
+| `personserver` | Person-token issuance, mission lifecycle and Audit, missionless or mission-bound local-action permission, missionless Interaction, direct Core/class-R3/Budget verification and narrowing, consent interaction, revocation, call-chain policy, and Access Server federation |
 | `resource` | Identity, session, authorization, registered R3 documents/enforcement, Events registration/delivery, Budget metadata/offers/fixed-price accounting/step-up verification, protected-call, held-invocation, and revocation behavior |
 | `accessserver` | Person-Server-authenticated Core/R3 policy, narrowing, issuance, and R3 audit |
 
@@ -203,10 +207,13 @@ during host-authenticated consent. Updated requests, Access Server relay,
 mission-bound clarification, and other general deferred paths remain open, as
 do the remaining mission log and control
 surfaces, and several delegation and revocation variants also remain open.
-Permission covers top-level missionless actions with immediate or deferred
-decisions. Mission association, `approved_tools` matching, mission-log
-recording, durable adapters, and recovery of an uncertain initial submission
-remain open.
+Permission covers top-level missionless and mission-bound actions with
+immediate or deferred decisions. Mission-bound retention, host decision, and
+terminal delivery compare the exact active mission; an unseen accepted update
+requires the host to resume and review again. Permission records form only the
+permission sublog. Automatic `approved_tools` matching, the complete
+cross-event mission log, durable adapters, and recovery of an uncertain initial
+submission remain open.
 Audit covers one top-level Agent submitting an exact post-action record to its
 active mission. The Person Server appends before acknowledging; the Agent
 never retries an uncertain result. Deferred audit delivery, sub-agent and

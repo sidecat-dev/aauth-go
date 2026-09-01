@@ -24,9 +24,11 @@ const (
 )
 
 // PermissionRequest asks the request's Person Server to decide one action not
-// governed by a remote Resource. This journey is deliberately missionless.
+// governed by a remote Resource. MissionS256 optionally associates the action
+// with an already-approved mission owned by this Agent.
 type PermissionRequest struct {
 	PersonServer string
+	MissionS256  string
 	Action       string
 	Description  string
 	Parameters   json.RawMessage
@@ -250,6 +252,11 @@ func (client *Client) PollPermission(ctx context.Context, pending PendingPermiss
 }
 
 func validatePermissionInput(input PermissionRequest) error {
+	if input.MissionS256 != "" {
+		if err := aauth.ValidateMissionS256(input.MissionS256); err != nil {
+			return fmt.Errorf("permission mission: %w", err)
+		}
+	}
 	if !utf8.ValidString(input.Action) || strings.TrimSpace(input.Action) == "" {
 		return errors.New("permission action must be a nonempty UTF-8 string")
 	}
@@ -287,9 +294,11 @@ func marshalPermissionRequest(input PermissionRequest) ([]byte, error) {
 		Action      string          `json:"action"`
 		Description string          `json:"description,omitempty"`
 		Parameters  json.RawMessage `json:"parameters,omitempty"`
+		MissionS256 string          `json:"mission_s256,omitempty"`
 	}{
 		Action: input.Action, Description: input.Description,
-		Parameters: append(json.RawMessage(nil), input.Parameters...),
+		Parameters:  append(json.RawMessage(nil), input.Parameters...),
+		MissionS256: input.MissionS256,
 	}
 	body, err := json.Marshal(wire)
 	if err != nil {

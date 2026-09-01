@@ -21,6 +21,16 @@
 //		})
 //	}
 //
+// A mission and permission store uses the atomic combined contract:
+//
+//	func TestMissionPermissionStore(t *testing.T) {
+//		storetest.RunMissionPermission(t, storetest.MissionPermissionContract{
+//			New: func(testing.TB) (personserver.MissionPermissionStore, personserver.MissionRecord) {
+//				return newApplicationMissionPermissionStore()
+//			},
+//		})
+//	}
+//
 // A mission store that also accepts audit records uses:
 //
 //	func TestMissionAuditStore(t *testing.T) {

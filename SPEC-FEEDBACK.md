@@ -1869,13 +1869,14 @@ polling problem?
 **Source:** AAuth Core, `Permission Endpoint`, `Permission Request`,
 `Permission Response`, and `Error Responses`.
 
-The endpoint can receive malformed input, an unsupported mission association,
-a policy or storage failure, an expired pending request, an identity-mismatched
-poll, or an already consumed reference. Core defines general authentication
+The endpoint can receive malformed input, an absent or terminated mission
+reference, a policy or storage failure, an expired pending request, an
+identity-mismatched poll, or an already consumed reference. Core defines general authentication
 and polling errors but does not assign a Permission-specific registry or say
 which general registries apply to the initial POST.
 
-The implementation uses `invalid_request` for malformed or unsupported input,
+The implementation uses `invalid_request` for malformed input or an absent
+mission at initial submission, the mission-status error for termination,
 `server_error` for operational failure, and the generic polling errors for the
 pending URL. Those are explicit local choices rather than a conformance claim.
 

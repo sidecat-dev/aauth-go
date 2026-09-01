@@ -202,7 +202,7 @@ atomically retains its mandatory R3 audit record before returning the token.
 The Resource then enforces `r3_granted` without fetching the document again.
 Per-call R3 remains a four-party path in this implementation.
 
-### Missionless local-action permission
+### Local-action permission
 
 ```mermaid
 sequenceDiagram
@@ -211,8 +211,9 @@ sequenceDiagram
     participant PS as Person Server
     participant App as Application
 
-    A->>PS: Signed POST with action, description, and parameters
-    PS->>PS: Retain pending request before 202
+    A->>PS: Signed POST with action, parameters, optional mission_s256
+    PS->>PS: If named, load exact active mission context
+    PS->>PS: Retain pending request against mission before 202
     PS-->>A: 202 + same-origin pending URL
     P->>PS: Host-authenticated grant or denial
     PS->>PS: Atomically retain first decision
@@ -226,9 +227,17 @@ library verifies and carries intent but does not render the description,
 authenticate the person, interpret the parameters, or execute the action.
 Immediate policy returns a retained decision in one request. Deferred policy
 returns a private continuation and requires an explicit caller poll; no method
-sleeps or loops. The current profile is top-level and missionless. Mission
-association, pre-approved-tool matching, and mission-log recording remain
-separate unimplemented source requirements.
+sleeps or loops.
+
+Without `mission_s256`, the focused Permission store owns the request. With a
+mission, the Agent names an approved mission and the PS gives policy and the
+deferred host view its exact blob plus accepted updates. One
+`MissionPermissionStore` owns mission, token, and permission state, so create,
+decision, poll, and terminal consume each compare the exact active mission in
+the same transaction. A mission update after host review forces a fresh resume;
+expiry or termination prevents a grant from being released. These records are
+the permission sublog, not the complete cross-event mission log. Automatic
+pre-approved-tool matching and full log ordering remain unimplemented.
 
 ### Mission-bound action audit
 

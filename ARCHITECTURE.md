@@ -73,13 +73,17 @@ consumption, and outbound delivery, and the Agent owns local context and replay
 correlation. Each role receives its own small store interface; no shared Events
 lifecycle object crosses those boundaries.
 
-The current Permission slice is one top-level missionless local-action path.
-The root package owns the `granted` and `denied` wire values; `agent` performs
-one signed request or poll; and `personserver` owns verified intent, immediate
-or deferred policy, and the purpose-specific `PermissionStore`. A host handle
-recovers retained intent after Server recomposition but carries no person
-authority. The application authenticates the person, interprets parameters,
-and executes an action only after receiving the typed grant.
+The current Permission slice covers top-level missionless and mission-bound
+local actions. The root package owns the `granted` and `denied` wire values;
+`agent` performs one signed request or poll; and `personserver` owns verified
+intent, immediate or deferred policy, and purpose-specific store interfaces.
+Missionless calls use `PermissionStore`. Mission-bound calls require the
+server's token store to implement `MissionPermissionStore`, placing mission,
+mission-bound token, and permission transitions in one atomic boundary. A host
+handle recovers retained intent and a copied exact mission view after Server
+recomposition but carries no person authority. The application authenticates
+the person, interprets parameters, and executes an action only after receiving
+the typed grant.
 
 The current Audit slice is one top-level mission-bound post-action path. The
 root package owns the exact audit document, `agent` makes one signed
@@ -413,12 +417,16 @@ idempotent. Cancellation is terminal. The host—not the protocol library—auth
 sanitizes Markdown, and decides whether the answer permits authorization.
 There is no cross-domain pending-request or evidence container.
 
-The missionless Permission path is independent of token authorization state.
 `PermissionStore` retains one complete verified action request and either its
 immediate decision or a bounded pending state. Host grant and denial compare
 that exact context, first-writer wins, and one terminal Agent poll consumes the
-decision before delivery. This focused store is not reused for missions,
-clarification, interaction relay, or application execution.
+decision before delivery. For a mission-bound request,
+`MissionPermissionStore` extends the existing mission/token boundary rather
+than creating a parallel mission view. It compares the complete mission on
+create, decision, poll, and consume; a host decision is also bound to the exact
+mission view returned by `ResumePermission`. Permission records are a focused
+sublog and are not reused for clarification, interaction relay, application
+execution, or the complete cross-event mission log.
 
 Mission audit state stays with mission lifecycle state. `MissionAuditStore`
 compares stable identity and lifecycle state and appends one exact record in

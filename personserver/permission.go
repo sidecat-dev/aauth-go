@@ -38,9 +38,12 @@ var (
 	ErrPermissionGone = errors.New("personserver: permission request is gone")
 )
 
-// PermissionConfig enables the missionless, top-level Agent permission
-// endpoint. Policy evaluates verified intent only; it never executes Action.
-// Store retains every immediate decision or deferred request before release.
+// PermissionConfig enables the top-level Agent permission endpoint. Policy
+// evaluates verified intent only; it never executes Action. Store retains every
+// immediate decision or deferred request before release. When missions are
+// also configured, Store must be nil and the server's Tokens must implement
+// MissionPermissionStore so mission, token, and permission state share one
+// atomic backing-store boundary.
 type PermissionConfig struct {
 	Policy func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
 	Store  PermissionStore
@@ -49,7 +52,8 @@ type PermissionConfig struct {
 // PermissionPolicyRequest is the caller-owned verified intent presented to
 // host policy. Description and Parameters are untrusted display/application
 // input. Sanitize Description before rendering and validate Parameters before
-// any later application use.
+// any later application use. Mission is a caller-owned exact active context
+// when the Agent supplied mission_s256, otherwise nil.
 type PermissionPolicyRequest struct {
 	AgentProvider         string
 	Agent                 string
@@ -57,6 +61,7 @@ type PermissionPolicyRequest struct {
 	Action                string
 	Description           string
 	Parameters            json.RawMessage
+	Mission               *MissionContext
 }
 
 // PermissionPolicyResult selects exactly one immediate decision or deferred
@@ -101,6 +106,7 @@ type PermissionRecord struct {
 	ConfirmationThumbprint string
 	AgentExpiresAt         time.Time
 	AgentAdditionalClaims  map[string]json.RawMessage
+	MissionS256            string
 	Action                 string
 	Description            string
 	Parameters             json.RawMessage
@@ -146,18 +152,25 @@ type PermissionStore interface {
 	ConsumePermissionResult(context.Context, string, PermissionRecord) error
 }
 
+// MissionPermissionStore adds the atomic boundary required when a permission
+// is associated with a mission. Each method compares the complete expected
+// mission, materializes expiry at the supplied instant, requires the mission
+// to remain active and owned by the permission Agent, and commits no
+// permission change on mismatch or termination.
+type MissionPermissionStore interface {
+	MissionStore
+	PermissionStore
+	CreateMissionPermission(context.Context, MissionRecord, PermissionRecord, time.Time) error
+	DecideMissionPermission(context.Context, MissionRecord, string, PermissionDecision, time.Time) (PermissionRecord, error)
+	PollMissionPermission(context.Context, MissionRecord, string, PermissionPollIdentity, time.Time) (PermissionRecord, error)
+	ConsumeMissionPermissionResult(context.Context, MissionRecord, string, PermissionRecord, time.Time) error
+}
+
 func permissionPolicy(config *PermissionConfig) func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error) {
 	if config == nil {
 		return nil
 	}
 	return config.Policy
-}
-
-func permissionStore(config *PermissionConfig) PermissionStore {
-	if config == nil {
-		return nil
-	}
-	return config.Store
 }
 
 type permissionRequestKind uint8
@@ -167,8 +180,10 @@ const permissionRequestVerified permissionRequestKind = 1
 // PermissionRequest is a verified private host handle for one deferred
 // permission request. It carries no authority to execute the requested action.
 type PermissionRequest struct {
-	kind   permissionRequestKind
-	record PermissionRecord
+	kind          permissionRequestKind
+	record        PermissionRecord
+	mission       *MissionContext
+	missionRecord *MissionRecord
 }
 
 // AgentProvider returns the issuer of the verified Agent token.
@@ -233,6 +248,16 @@ func (request PermissionRequest) ExpiresAt() time.Time {
 		return time.Time{}
 	}
 	return request.record.ExpiresAt
+}
+
+// Mission returns the active mission context associated with this request.
+// The returned values are caller-owned. The bool is false for a missionless
+// permission.
+func (request PermissionRequest) Mission() (MissionContext, bool) {
+	if request.kind != permissionRequestVerified || request.mission == nil {
+		return MissionContext{}, false
+	}
+	return *cloneMissionContext(request.mission), true
 }
 
 func validatePermissionPolicyResult(result PermissionPolicyResult) error {
@@ -326,9 +351,29 @@ func (server *Server) handlePermission(response http.ResponseWriter, request *ht
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("permission request must be valid UTF-8 JSON"))
 		return
 	}
+	var missionRecord *MissionRecord
+	var missionContext *MissionContext
 	if input.MissionS256 != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission-bound permission requests are not implemented"))
-		return
+		var s256 string
+		if err := json.Unmarshal(input.MissionS256, &s256); err != nil || aauth.ValidateMissionS256(s256) != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: permission mission_s256 is invalid"))
+			return
+		}
+		if server.missionPermissions == nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound permission is not configured"))
+			return
+		}
+		loaded, err := server.loadActiveMission(request.Context(), s256, agent.Subject, server.clock.Now().UTC())
+		if err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+		missionRecord = &loaded
+		missionContext, err = missionContextFromRecord(loaded)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
 	}
 	if err := validatePermissionIntent(input.Action, input.Description, input.Parameters); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
@@ -345,6 +390,7 @@ func (server *Server) handlePermission(response http.ResponseWriter, request *ht
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		Action:                input.Action, Description: input.Description,
 		Parameters: append(json.RawMessage(nil), parameters...),
+		Mission:    missionContext,
 	}
 	result, err := server.permissionPolicy(request.Context(), policyRequest)
 	if err != nil {
@@ -367,8 +413,12 @@ func (server *Server) handlePermission(response http.ResponseWriter, request *ht
 			ID: id, PersonServer: server.issuer, AgentProvider: agent.Issuer, Agent: agent.Subject,
 			ConfirmationThumbprint: thumbprint, AgentExpiresAt: agentExpiresAt,
 			AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+			MissionS256:           "",
 			Action:                input.Action, Description: input.Description, Parameters: append(json.RawMessage(nil), parameters...),
 			CreatedAt: createdAt,
+		}
+		if missionRecord != nil {
+			record.MissionS256 = missionRecord.S256
 		}
 		if result.Immediate != nil {
 			record.State = permissionStateForDecision(*result.Immediate)
@@ -390,11 +440,24 @@ func (server *Server) handlePermission(response http.ResponseWriter, request *ht
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		if err := server.permissions.CreatePermission(request.Context(), cloneRetainedPermissionRecord(record)); err != nil {
-			if errors.Is(err, ErrPermissionConflict) {
+		var createErr error
+		if missionRecord != nil {
+			createErr = server.missionPermissions.CreateMissionPermission(
+				request.Context(), cloneMissionRecordForTransition(*missionRecord),
+				cloneRetainedPermissionRecord(record), server.clock.Now().UTC(),
+			)
+		} else {
+			createErr = server.permissions.CreatePermission(request.Context(), cloneRetainedPermissionRecord(record))
+		}
+		if createErr != nil {
+			if errors.Is(createErr, ErrPermissionConflict) {
 				continue
 			}
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			if missionRecord != nil {
+				writeMissionActionProblem(response, createErr)
+				return
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", createErr)
 			return
 		}
 		if result.Immediate != nil {
@@ -420,6 +483,9 @@ func validatePermissionRecord(record PermissionRecord) error {
 		return ErrPermissionConflict
 	}
 	if err := aauth.ValidateAgentIdentifier(record.Agent); err != nil {
+		return ErrPermissionConflict
+	}
+	if record.MissionS256 != "" && aauth.ValidateMissionS256(record.MissionS256) != nil {
 		return ErrPermissionConflict
 	}
 	for _, raw := range record.AgentAdditionalClaims {
@@ -541,8 +607,44 @@ func (server *Server) handlePendingPermission(response http.ResponseWriter, requ
 		return
 	}
 	now := proof.VerifiedAt().UTC()
-	record, err := server.permissions.PollPermission(request.Context(), id, identity, now)
+	var mission *MissionRecord
+	var record PermissionRecord
+	if server.missionPermissions != nil {
+		peek, peekErr := server.permissions.LoadPermission(request.Context(), id, now)
+		if peekErr == nil && peek.MissionS256 != "" {
+			if peek.PersonServer != identity.PersonServer || peek.AgentProvider != identity.AgentProvider ||
+				peek.Agent != identity.Agent || peek.ConfirmationThumbprint != identity.ConfirmationThumbprint {
+				writeProblem(response, http.StatusGone, "invalid_code", ErrPermissionNotFound)
+				return
+			}
+			if err := validatePolledPermissionRecord(id, identity, peek, now); err != nil {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				return
+			}
+			loaded, loadErr := server.loadActiveMission(
+				request.Context(), peek.MissionS256, identity.Agent, now,
+			)
+			if loadErr != nil {
+				writeMissionActionProblem(response, loadErr)
+				return
+			}
+			mission = &loaded
+			record, err = server.missionPermissions.PollMissionPermission(
+				request.Context(), cloneMissionRecordForTransition(loaded), id, identity, now,
+			)
+		} else if peekErr != nil {
+			err = peekErr
+		} else {
+			record, err = server.permissions.PollPermission(request.Context(), id, identity, now)
+		}
+	} else {
+		record, err = server.permissions.PollPermission(request.Context(), id, identity, now)
+	}
 	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
 		switch {
 		case errors.Is(err, ErrPermissionNotFound), errors.Is(err, ErrPermissionGone):
 			writeProblem(response, http.StatusGone, "invalid_code", err)
@@ -561,12 +663,12 @@ func (server *Server) handlePendingPermission(response http.ResponseWriter, requ
 	case PermissionStatePending:
 		server.writePendingPermission(response, request.URL.Path, record.RetryAfter)
 	case PermissionStateGranted, PermissionStateDenied:
-		if !server.consumePermissionResult(response, request, id, record) {
+		if !server.consumePermissionResult(response, request, id, record, mission) {
 			return
 		}
 		writePermissionDecision(response, record.Decision)
 	case PermissionStateExpired:
-		if !server.consumePermissionResult(response, request, id, record) {
+		if !server.consumePermissionResult(response, request, id, record, mission) {
 			return
 		}
 		writeProblem(response, http.StatusRequestTimeout, "expired", ErrPermissionExpired)
@@ -619,8 +721,22 @@ func (server *Server) consumePermissionResult(
 	request *http.Request,
 	id string,
 	record PermissionRecord,
+	mission *MissionRecord,
 ) bool {
-	if err := server.permissions.ConsumePermissionResult(request.Context(), id, cloneRetainedPermissionRecord(record)); err != nil {
+	var err error
+	if mission != nil {
+		err = server.missionPermissions.ConsumeMissionPermissionResult(
+			request.Context(), cloneMissionRecordForTransition(*mission), id,
+			cloneRetainedPermissionRecord(record), server.clock.Now().UTC(),
+		)
+	} else {
+		err = server.permissions.ConsumePermissionResult(request.Context(), id, cloneRetainedPermissionRecord(record))
+	}
+	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return false
+		}
 		if errors.Is(err, ErrPermissionNotFound) || errors.Is(err, ErrPermissionGone) {
 			writeProblem(response, http.StatusGone, "invalid_code", err)
 		} else {
@@ -652,9 +768,25 @@ func (server *Server) ResumePermission(ctx context.Context, reference string) (P
 	if err := validatePermissionRecordAt(record, now); err != nil || record.ID != reference || record.PersonServer != server.issuer {
 		return PermissionRequest{}, ErrPermissionConflict
 	}
+	var mission *MissionContext
+	var missionRecord *MissionRecord
+	if record.MissionS256 != "" {
+		if server.missionPermissions == nil {
+			return PermissionRequest{}, ErrPermissionConflict
+		}
+		loaded, err := server.loadActiveMission(ctx, record.MissionS256, record.Agent, now)
+		if err != nil {
+			return PermissionRequest{}, err
+		}
+		mission, err = missionContextFromRecord(loaded)
+		if err != nil {
+			return PermissionRequest{}, err
+		}
+		missionRecord = &loaded
+	}
 	switch record.State {
 	case PermissionStatePending, PermissionStateGranted, PermissionStateDenied:
-		return permissionRequestFromRecord(record), nil
+		return permissionRequestFromRecord(record, mission, missionRecord), nil
 	case PermissionStateExpired:
 		return PermissionRequest{}, ErrPermissionExpired
 	case PermissionStateGone:
@@ -664,8 +796,22 @@ func (server *Server) ResumePermission(ctx context.Context, reference string) (P
 	}
 }
 
-func permissionRequestFromRecord(record PermissionRecord) PermissionRequest {
-	return PermissionRequest{kind: permissionRequestVerified, record: cloneRetainedPermissionRecord(record)}
+func permissionRequestFromRecord(
+	record PermissionRecord,
+	mission *MissionContext,
+	missionRecord *MissionRecord,
+) PermissionRequest {
+	var retainedMission *MissionRecord
+	if missionRecord != nil {
+		clone := cloneMissionRecordForTransition(*missionRecord)
+		retainedMission = &clone
+	}
+	return PermissionRequest{
+		kind:          permissionRequestVerified,
+		record:        cloneRetainedPermissionRecord(record),
+		mission:       cloneMissionContext(mission),
+		missionRecord: retainedMission,
+	}
 }
 
 // GrantPermission durably retains a host-authenticated permission grant. It
@@ -701,6 +847,20 @@ func (server *Server) decidePermission(ctx context.Context, request PermissionRe
 	if err := validatePermissionRecordAt(canonical, now); err != nil || !permissionRecordContextEqual(canonical, request.record) {
 		return ErrPermissionConflict
 	}
+	var mission *MissionRecord
+	if canonical.MissionS256 != "" {
+		if server.missionPermissions == nil {
+			return ErrPermissionConflict
+		}
+		loaded, err := server.loadActiveMission(ctx, canonical.MissionS256, canonical.Agent, now)
+		if err != nil {
+			return err
+		}
+		if request.missionRecord == nil || !request.missionRecord.Equal(loaded) {
+			return ErrMissionConflict
+		}
+		mission = request.missionRecord
+	}
 	switch canonical.State {
 	case PermissionStateGranted, PermissionStateDenied:
 		if canonical.Decision == decision {
@@ -718,7 +878,14 @@ func (server *Server) decidePermission(ctx context.Context, request PermissionRe
 	default:
 		return ErrPermissionConflict
 	}
-	decided, err := server.permissions.DecidePermission(ctx, canonical.ID, decision, now)
+	var decided PermissionRecord
+	if mission != nil {
+		decided, err = server.missionPermissions.DecideMissionPermission(
+			ctx, cloneMissionRecordForTransition(*mission), canonical.ID, decision, now,
+		)
+	} else {
+		decided, err = server.permissions.DecidePermission(ctx, canonical.ID, decision, now)
+	}
 	if err != nil {
 		return err
 	}
@@ -732,6 +899,15 @@ func (server *Server) decidePermission(ctx context.Context, request PermissionRe
 func (server *Server) validatePermissionRequest(request PermissionRequest) error {
 	if request.kind != permissionRequestVerified || validatePermissionRecord(request.record) != nil ||
 		request.record.PersonServer != server.issuer {
+		return ErrPermissionConflict
+	}
+	if request.record.MissionS256 == "" {
+		if request.mission != nil || request.missionRecord != nil {
+			return ErrPermissionConflict
+		}
+	} else if request.mission == nil || request.missionRecord == nil ||
+		request.mission.S256 != request.record.MissionS256 || request.missionRecord.S256 != request.record.MissionS256 ||
+		request.missionRecord.Agent != request.record.Agent {
 		return ErrPermissionConflict
 	}
 	switch request.record.State {

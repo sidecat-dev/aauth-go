@@ -1104,11 +1104,23 @@ can interoperate with a server that follows the generic state machine. It does
 not treat any other `403` problem as a permission decision. `AAG-F096` asks the
 editors to choose one terminal wire representation.
 
-The first executing profile is top-level and missionless. Supplying
-`mission_s256`, even as JSON `null`, is an explicit `invalid_request` rather
-than a silently ignored field. Mission-bound tool matching and mission-log
-recording require their own source-defined semantics; this profile does not
-guess them.
+The executing profiles are top-level and either missionless or associated with
+one active mission. A nonempty `mission_s256` is validated and owner-scoped;
+JSON `null` remains an explicit `invalid_request` rather than silently becoming
+missionless. Mission policy and a resumed host decision receive the approved
+blob plus accepted updates. The host handle retains the exact mission state it
+displayed, so a later accepted update conflicts and requires another resume.
+Expiry or termination before create, decision, or terminal consume prevents a
+grant from reaching the Agent.
+
+The mission-bound store retains permission request and response state in the
+same atomic backing-store boundary as mission lifecycle and mission-bound
+tokens. This is the Permission sublog required by the source, not an invented
+cross-protocol history object. Core still requires one ordered mission log
+across token requests, updates, permission, Audit, Interaction, and
+clarification; that wider log remains unimplemented. The Agent does not infer
+whether `action` matches `approved_tools`: Core tells the Agent when it may skip
+the endpoint but defines no matching algorithm.
 
 An application may defer policy while it authenticates and consults the
 person through its own channel. `ResumePermission` reconstructs the verified

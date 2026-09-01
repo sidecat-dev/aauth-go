@@ -157,9 +157,26 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Evidence: [`integration/permission_missionless_test.go`](integration/permission_missionless_test.go),
     [`personserver/storetest/permission.go`](personserver/storetest/permission.go),
     and `go run ./example/permission`.
-  - Missing from the wider Permission Endpoint: mission association,
-    `approved_tools` matching, mission-log recording, durable adapters, and
+  - Missing from the wider Permission Endpoint: `approved_tools` matching,
+    complete cross-event mission-log recording, durable adapters, and
     recovery of an uncertain initial submission.
+
+- [x] **Mission-bound local-action permission — Implemented**
+  - Flow: Agent names one active mission → PS gives policy the approved blob
+    and accepted updates → immediate decision or retained pending URL → host
+    resumes the exact mission context and records a decision → one explicit
+    Agent poll consumes the result only while the mission remains active.
+  - Start with: `agent.PermissionRequest.MissionS256`,
+    `personserver.PermissionPolicyRequest.Mission`,
+    `personserver.MissionPermissionStore`, and
+    `personserver.PermissionRequest.Mission`.
+  - Evidence: [`integration/permission_mission_test.go`](integration/permission_mission_test.go),
+    [`personserver/storetest/mission_permission.go`](personserver/storetest/mission_permission.go),
+    [`internal/exampleutil/permission_store_test.go`](internal/exampleutil/permission_store_test.go),
+    and `go run ./example/permission`.
+  - Boundary: retained permission state is the permission sublog. Cross-event
+    ordering with tokens, updates, Audit, Interaction, and clarification
+    remains part of the incomplete mission log.
 
 - [x] **Mission-bound action audit — Implemented**
   - Flow: application performs one action → Agent sends one exact signed
@@ -209,9 +226,9 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
 ### Not implemented
 
 - [ ] **Complete PS governance and mission log — Not implemented.** The
-  bounded mission store retains approval, accepted updates, and completion,
-  but there is no complete Agent-facing mission-log or governance control-plane
-  journey.
+  bounded stores retain approval, accepted updates, mission-bound permission,
+  Audit, and completion, but there is no single ordered log across all required
+  PS interactions or complete governance-policy history.
 - [ ] **Third-party login — Blocked by the current Core flow.** The Login Flow
   tells the recipient to create a Resource token and post it directly to the
   Person Server, but a current Resource token requires person-derived `sub` and

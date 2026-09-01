@@ -93,6 +93,37 @@ func TestRequestPermissionSendsOneSignedMissionlessRequest(t *testing.T) {
 	}
 }
 
+func TestRequestPermissionCarriesMissionDigest(t *testing.T) {
+	fixture := newPermissionFixture(t)
+	mission := aauth.MissionS256([]byte(`{"agent":"aauth:agent@ap.example"}`))
+	fixture.initial = func(request *http.Request) (*http.Response, error) {
+		verified := verifyProof(t, request, fixture.protocol.resolver, fixture.protocol.clock, aauth.AgentTokenType)
+		if _, err := verified.AgentClaims(); err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]json.RawMessage
+		decodeRequest(t, request, &body)
+		var got string
+		if err := json.Unmarshal(body["mission_s256"], &got); err != nil || got != mission {
+			t.Fatalf("mission_s256 = %q, %v", got, err)
+		}
+		return jsonResponse(request, http.StatusOK, map[string]any{"permission": "granted"}), nil
+	}
+
+	result, err := fixture.client.RequestPermission(context.Background(), agent.PermissionRequest{
+		PersonServer: fixture.protocol.personServerID,
+		MissionS256:  mission,
+		Action:       "files.write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, ok := result.Decision()
+	if !ok || decision.Permission() != aauth.PermissionGranted {
+		t.Fatalf("decision = %#v, %t", decision, ok)
+	}
+}
+
 func TestPermissionPendingAndExplicitPoll(t *testing.T) {
 	fixture := newPermissionFixture(t)
 	fixture.initial = func(request *http.Request) (*http.Response, error) {
@@ -242,6 +273,7 @@ func TestRequestPermissionRejectsInvalidInputWithoutNetwork(t *testing.T) {
 		{name: "blank action", request: agent.PermissionRequest{PersonServer: "https://ps.example", Action: "  \n"}},
 		{name: "action too large", request: agent.PermissionRequest{PersonServer: "https://ps.example", Action: strings.Repeat("a", 4097)}},
 		{name: "description too large", request: agent.PermissionRequest{PersonServer: "https://ps.example", Action: "read", Description: strings.Repeat("d", 65537)}},
+		{name: "invalid mission", request: agent.PermissionRequest{PersonServer: "https://ps.example", MissionS256: "not-a-digest", Action: "read"}},
 		{name: "malformed parameters", request: agent.PermissionRequest{PersonServer: "https://ps.example", Action: "read", Parameters: json.RawMessage(`{"x":`)}},
 		{name: "null parameters", request: agent.PermissionRequest{PersonServer: "https://ps.example", Action: "read", Parameters: json.RawMessage(`null`)}},
 		{name: "array parameters", request: agent.PermissionRequest{PersonServer: "https://ps.example", Action: "read", Parameters: json.RawMessage(`[]`)}},

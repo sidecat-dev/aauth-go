@@ -56,6 +56,28 @@ func TestPermissionConfigurationAndMetadataAreExplicitForBothPersonServerModes(t
 	}
 }
 
+func TestMissionPermissionConfigurationUsesTheMissionTokenStoreBoundary(t *testing.T) {
+	protocol := newPermissionProtocol(t)
+	config := protocol.config("direct", nil).(PSAuthorizationConfig)
+	config.Missions = permissionMissionConfig()
+	config.Permission = &PermissionConfig{Policy: protocol.policy}
+	config.Tokens = newMemoryMissionStore()
+	if _, err := NewPSAuthorization(config); err == nil || !strings.Contains(err.Error(), "MissionPermissionStore") {
+		t.Fatalf("mission-only Tokens error = %v", err)
+	}
+
+	store := newMissionPermissionTestStore()
+	config.Tokens = store
+	config.Permission.Store = store
+	if _, err := NewPSAuthorization(config); err == nil || !strings.Contains(err.Error(), "supplied through Tokens") {
+		t.Fatalf("duplicated store configuration error = %v", err)
+	}
+	config.Permission.Store = nil
+	if _, err := NewPSAuthorization(config); err != nil {
+		t.Fatalf("mission permission configuration = %v", err)
+	}
+}
+
 func TestPermissionImmediateDecisionRetainedBeforeResponse(t *testing.T) {
 	for _, permission := range []aauth.Permission{aauth.PermissionGranted, aauth.PermissionDenied} {
 		permission := permission
@@ -125,6 +147,240 @@ func TestPermissionPolicyInputIsOwnedAndNeverExecutesTheAction(t *testing.T) {
 	if !bytes.Equal(record.Parameters, []byte(`{"path":"draft.txt"}`)) ||
 		!bytes.Equal(record.AgentAdditionalClaims["platform_attestation"], []byte(`{"level":"example"}`)) {
 		t.Fatalf("policy mutation escaped into retained record = %#v", record)
+	}
+}
+
+func TestMissionPermissionImmediateDecisionUsesExactActiveMission(t *testing.T) {
+	protocol := newPermissionProtocol(t)
+	store := newMissionPermissionTestStore()
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Prepare and send the reviewed itinerary.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{
+		Action: "update", Description: "Use the final approved recipient list.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionRecord := MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+		AcceptedUpdates: []MissionUpdateRecord{{
+			Document:   update,
+			AcceptedAt: protocol.now.Add(-30 * time.Second),
+		}},
+	}
+	if err := store.CommitMission(context.Background(), missionRecord, nil); err != nil {
+		t.Fatal(err)
+	}
+	policyCalls := 0
+	policy := func(_ context.Context, request PermissionPolicyRequest) (PermissionPolicyResult, error) {
+		policyCalls++
+		if request.Mission == nil || request.Mission.S256 != mission.S256 ||
+			request.Mission.Blob.Description != mission.Blob.Description ||
+			len(request.Mission.AcceptedUpdates) != 1 {
+			t.Fatalf("mission policy context = %#v", request.Mission)
+		}
+		request.Mission.ExactJSON[0] = 'x'
+		request.Mission.AcceptedUpdates[0].Document.ExactJSON[0] = 'x'
+		return PermissionPolicyResult{Immediate: &PermissionDecision{Permission: aauth.PermissionGranted}}, nil
+	}
+	config := protocol.config("direct", nil).(PSAuthorizationConfig)
+	config.Tokens = store
+	config.Missions = permissionMissionConfig()
+	config.Permission = &PermissionConfig{Policy: policy}
+	server := protocol.newServer(t, "direct", config)
+	response := permissionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"action":"SendEmail","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusOK || policyCalls != 1 || store.createMissionCalls != 1 {
+		t.Fatalf("response=%d %s policy=%d mission creates=%d", response.Code, response.Body.String(), policyCalls, store.createMissionCalls)
+	}
+	retained := store.onlyRecord(t)
+	if retained.MissionS256 != mission.S256 || retained.State != PermissionStateGranted {
+		t.Fatalf("retained mission permission = %#v", retained)
+	}
+	reloaded, err := store.LoadMissionForAgent(context.Background(), protocol.agentID, mission.S256, protocol.now)
+	if err != nil || reloaded.ExactJSON[0] != '{' || reloaded.AcceptedUpdates[0].Document.ExactJSON[0] != '{' {
+		t.Fatalf("policy mutation changed mission = %#v, %v", reloaded, err)
+	}
+}
+
+func TestMissionPermissionImmediateDecisionRefusesExpiryDuringPolicy(t *testing.T) {
+	protocol := newPermissionProtocol(t)
+	store := newMissionPermissionTestStore()
+	expiresAt := protocol.now.Add(time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Prepare the reviewed itinerary.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionRecord := MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}
+	if err := store.CommitMission(context.Background(), missionRecord, nil); err != nil {
+		t.Fatal(err)
+	}
+	policy := func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error) {
+		protocol.now = expiresAt
+		return PermissionPolicyResult{Immediate: &PermissionDecision{Permission: aauth.PermissionGranted}}, nil
+	}
+	config := protocol.config("direct", nil).(PSAuthorizationConfig)
+	config.Tokens = store
+	config.Missions = permissionMissionConfig()
+	config.Permission = &PermissionConfig{Policy: policy}
+	server := protocol.newServer(t, "direct", config)
+	response := permissionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"action":"files.write","mission_s256":"`+mission.S256+`"}`)
+	assertPermissionProblem(t, response, http.StatusForbidden, "mission_terminated")
+	if store.count() != 0 {
+		t.Fatalf("expired mission retained %d permission records", store.count())
+	}
+}
+
+func TestMissionPermissionDeferredGrantRefusesTerminatedMission(t *testing.T) {
+	protocol := newPermissionProtocol(t)
+	store := newMissionPermissionTestStore()
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Prepare the reviewed itinerary.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionRecord := MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}
+	if err := store.CommitMission(context.Background(), missionRecord, nil); err != nil {
+		t.Fatal(err)
+	}
+	policy := func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error) {
+		return PermissionPolicyResult{Deferred: &PermissionPendingPolicy{Lifetime: 5 * time.Minute}}, nil
+	}
+	config := protocol.config("direct", nil).(PSAuthorizationConfig)
+	config.Tokens = store
+	config.Missions = permissionMissionConfig()
+	config.Permission = &PermissionConfig{Policy: policy}
+	server := protocol.newServer(t, "direct", config)
+	response := permissionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"action":"files.write","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("deferred response = %d %s", response.Code, response.Body.String())
+	}
+	otherKey := personServerTestKey(t, "mission-permission-other-agent")
+	otherToken, err := aauth.MintAgentToken(protocol.providerID, protocol.providerKey, aauth.AgentTokenRequest{
+		Agent: "aauth:other@provider.example", PersonServer: protocol.personServerID,
+		PublicKey: otherKey.PublicJWK(), Lifetime: 30 * time.Minute,
+	}, protocol.now, "mission-permission-other-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongAgent := pollPermission(
+		t, protocol, server, otherKey, otherToken, response.Header().Get("Location"),
+	)
+	assertPermissionProblem(t, wrongAgent, http.StatusGone, "invalid_code")
+	record := store.onlyRecord(t)
+	handle, err := server.ResumePermission(context.Background(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok := handle.Mission()
+	if !ok || missionContext.S256 != mission.S256 || missionContext.Blob.Description != mission.Blob.Description {
+		t.Fatalf("deferred mission context = %#v, %t", missionContext, ok)
+	}
+	update, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{
+		Action: "update", Description: "Use the final approved message body.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendMissionUpdate(context.Background(), missionRecord, protocol.now.Add(time.Second), update); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.GrantPermission(context.Background(), handle); !errors.Is(err, ErrMissionConflict) {
+		t.Fatalf("grant against changed mission = %v", err)
+	}
+	handle, err = server.ResumePermission(context.Background(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionContext, ok = handle.Mission()
+	if !ok || len(missionContext.AcceptedUpdates) != 1 {
+		t.Fatalf("resumed updated mission context = %#v, %t", missionContext, ok)
+	}
+	store.terminateMission(protocol.agentID, mission.S256, "revoked")
+	if err := server.GrantPermission(context.Background(), handle); err == nil {
+		t.Fatal("grant succeeded after mission termination")
+	} else {
+		var terminated *MissionTerminatedError
+		if !errors.As(err, &terminated) || terminated.TerminationReason != "revoked" {
+			t.Fatalf("grant error = %T %v", err, err)
+		}
+	}
+	retained := store.onlyRecord(t)
+	if retained.State != PermissionStatePending || retained.Decision != (PermissionDecision{}) {
+		t.Fatalf("terminated mission changed permission = %#v", retained)
+	}
+}
+
+func TestMissionPermissionPollDoesNotDeliverGrantAfterTermination(t *testing.T) {
+	protocol := newPermissionProtocol(t)
+	store := newMissionPermissionTestStore()
+	expiresAt := protocol.now.Add(20 * time.Minute)
+	mission, err := aauth.EncodeMission(aauth.MissionBlob{
+		Approver: protocol.personServerID, Agent: protocol.agentID,
+		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
+		Description: "Prepare the reviewed itinerary.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missionRecord := MissionRecord{
+		S256: mission.S256, Agent: protocol.agentID, ExactJSON: mission.ExactJSON,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: expiresAt, State: MissionActive,
+	}
+	if err := store.CommitMission(context.Background(), missionRecord, nil); err != nil {
+		t.Fatal(err)
+	}
+	policy := func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error) {
+		return PermissionPolicyResult{Deferred: &PermissionPendingPolicy{Lifetime: 5 * time.Minute}}, nil
+	}
+	config := protocol.config("direct", nil).(PSAuthorizationConfig)
+	config.Tokens = store
+	config.Missions = permissionMissionConfig()
+	config.Permission = &PermissionConfig{Policy: policy}
+	server := protocol.newServer(t, "direct", config)
+	response := permissionRequest(t, protocol, server, protocol.agentKey, protocol.agentToken,
+		`{"action":"files.write","mission_s256":"`+mission.S256+`"}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("deferred response = %d %s", response.Code, response.Body.String())
+	}
+	record := store.onlyRecord(t)
+	handle, err := server.ResumePermission(context.Background(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.GrantPermission(context.Background(), handle); err != nil {
+		t.Fatal(err)
+	}
+	store.terminateMission(protocol.agentID, mission.S256, "revoked")
+	poll := pollPermission(t, protocol, server, protocol.agentKey, protocol.agentToken, response.Header().Get("Location"))
+	assertPermissionProblem(t, poll, http.StatusForbidden, "mission_terminated")
+	retained := store.onlyRecord(t)
+	if retained.State != PermissionStateGranted {
+		t.Fatalf("poll after termination changed permission = %#v", retained)
 	}
 }
 
@@ -636,6 +892,149 @@ func assertPermissionProblem(t *testing.T, response *httptest.ResponseRecorder, 
 	if problem.Code != code {
 		t.Fatalf("permission problem = %q, want %q", problem.Code, code)
 	}
+}
+
+func permissionMissionConfig() *MissionConfig {
+	return &MissionConfig{
+		Approve: func(context.Context, MissionApprovalRequest) (MissionDecision, error) {
+			return MissionDecision{}, errors.New("unused mission approval")
+		},
+		AcceptUpdate: func(context.Context, MissionUpdatePolicyRequest) error {
+			return errors.New("unused mission update")
+		},
+		ConfirmPersonAcceptedCompletion: func(context.Context, MissionCompletionPolicyRequest) error {
+			return errors.New("unused mission completion")
+		},
+	}
+}
+
+type missionPermissionTestStore struct {
+	*memoryMissionStore
+	*memoryPermissionStore
+	createMissionCalls int
+}
+
+func newMissionPermissionTestStore() *missionPermissionTestStore {
+	return &missionPermissionTestStore{
+		memoryMissionStore:    newMemoryMissionStore(),
+		memoryPermissionStore: newMemoryPermissionStore(),
+	}
+}
+
+func (store *missionPermissionTestStore) CreateMissionPermission(
+	_ context.Context,
+	expected MissionRecord,
+	record PermissionRecord,
+	at time.Time,
+) error {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.memoryPermissionStore.mu.Lock()
+	defer store.memoryPermissionStore.mu.Unlock()
+	store.createMissionCalls++
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	if _, exists := store.memoryPermissionStore.records[record.ID]; exists {
+		return ErrPermissionConflict
+	}
+	store.memoryPermissionStore.records[record.ID] = clonePermissionRecord(record)
+	return nil
+}
+
+func (store *missionPermissionTestStore) DecideMissionPermission(
+	_ context.Context,
+	expected MissionRecord,
+	id string,
+	decision PermissionDecision,
+	at time.Time,
+) (PermissionRecord, error) {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.memoryPermissionStore.mu.Lock()
+	defer store.memoryPermissionStore.mu.Unlock()
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return PermissionRecord{}, err
+	}
+	record, ok := store.memoryPermissionStore.records[id]
+	if !ok {
+		return PermissionRecord{}, ErrPermissionNotFound
+	}
+	materializePermissionExpiry(&record, at)
+	if record.State == PermissionStateExpired {
+		store.memoryPermissionStore.records[id] = record
+		return PermissionRecord{}, ErrPermissionExpired
+	}
+	if record.State == PermissionStateGranted || record.State == PermissionStateDenied {
+		if record.Decision == decision {
+			return clonePermissionRecord(record), nil
+		}
+		return PermissionRecord{}, ErrPermissionConflict
+	}
+	if record.State != PermissionStatePending {
+		return PermissionRecord{}, ErrPermissionGone
+	}
+	record.State = permissionStateForDecision(decision)
+	record.Decision = decision
+	record.DecidedAt = at
+	store.memoryPermissionStore.records[id] = record
+	return clonePermissionRecord(record), nil
+}
+
+func (store *missionPermissionTestStore) PollMissionPermission(
+	_ context.Context,
+	expected MissionRecord,
+	id string,
+	identity PermissionPollIdentity,
+	at time.Time,
+) (PermissionRecord, error) {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.memoryPermissionStore.mu.Lock()
+	defer store.memoryPermissionStore.mu.Unlock()
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return PermissionRecord{}, err
+	}
+	record, ok := store.memoryPermissionStore.records[id]
+	if !ok || !permissionIdentityMatches(record, identity) {
+		return PermissionRecord{}, ErrPermissionNotFound
+	}
+	materializePermissionExpiry(&record, at)
+	store.memoryPermissionStore.records[id] = record
+	if record.State == PermissionStateGone {
+		return PermissionRecord{}, ErrPermissionGone
+	}
+	return clonePermissionRecord(record), nil
+}
+
+func (store *missionPermissionTestStore) ConsumeMissionPermissionResult(
+	_ context.Context,
+	expected MissionRecord,
+	id string,
+	want PermissionRecord,
+	at time.Time,
+) error {
+	store.memoryMissionStore.mu.Lock()
+	defer store.memoryMissionStore.mu.Unlock()
+	store.memoryPermissionStore.mu.Lock()
+	defer store.memoryPermissionStore.mu.Unlock()
+	if err := store.memoryMissionStore.requireActiveMissionLocked(expected, at); err != nil {
+		return err
+	}
+	record, ok := store.memoryPermissionStore.records[id]
+	if !ok {
+		return ErrPermissionNotFound
+	}
+	if record.State == PermissionStateGone {
+		return ErrPermissionGone
+	}
+	if !reflect.DeepEqual(record, want) ||
+		(record.State != PermissionStateGranted && record.State != PermissionStateDenied && record.State != PermissionStateExpired) {
+		return ErrPermissionConflict
+	}
+	record.State = PermissionStateGone
+	store.memoryPermissionStore.records[id] = record
+	return nil
 }
 
 type memoryPermissionStore struct {
