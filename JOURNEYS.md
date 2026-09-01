@@ -48,7 +48,7 @@ Specifications:
     coordination, browser authentication, mission or Budget authorization, or
     independent implementation interoperability.
 
-- [x] **Hosted durable process walkthrough — Implemented locally**
+- [x] **Hosted durable process walkthrough — Implemented and externally qualified**
   - Flow: laptop durable-key enrollment over TLS → authenticated hosted
     account login → host-created connector credential → reviewed mission →
     MCP class authorization under a fixed Budget → one retained connector
@@ -60,9 +60,14 @@ Specifications:
   - Evidence: `walkthrough/hosted/acceptance_test.go` and the public enrollment,
     mission, mission-plus-R3, R3 document, R3 issuance, and Budget contracts in
     `walkthrough/hosted/store_contract_test.go`.
-  - Boundary: the same-machine tests use separate real TLS processes and
-    separate state directories. The required laptop-to-disposable-host run is
-    still pending and is not claimed by this checkbox.
+  - Qualification: revision `7bad00b7ae6dfe3b093157c8e63ddb8540ee78b2`
+    was fetched, tested, vetted, and built on a clean Ubuntu 24.04 host. A
+    separate laptop Agent then completed the journey over public-network TLS,
+    recovered the exact result after host restart and loss of its final result
+    cache, and observed revocation before a second connector dispatch.
+  - Boundary: the qualification used generated certificates, a direct test
+    address override, and the single-process stores documented by the
+    walkthrough. It does not claim production hosting infrastructure.
 
 - [x] **Local Agent composition — Implemented**
   - Flow: self-hosted Agent Provider metadata and JWKS → self-issued Agent
