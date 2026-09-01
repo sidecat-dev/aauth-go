@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -56,14 +57,19 @@ func run(output io.Writer) error {
 		{Issuer: resourceID, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}:   resourceKey.PublicJWK(),
 	}
 	providerStore := newProviderEventStore()
+	eventIDs := []string{"event-1", "event-protected"}
 	provider, err := agentprovider.New(agentprovider.Config{
 		Issuer: agentProviderID, SigningKey: providerKey, Clock: clock,
 		NewID: func() string { return "agent-token-1" },
 		Events: &agentprovider.EventsConfig{
 			EventEndpoint: agentProviderID + "/events",
-			NewEventID:    func() string { return "event-1" },
-			KeyResolver:   keys,
-			Store:         providerStore,
+			NewEventID: func() string {
+				id := eventIDs[0]
+				eventIDs = eventIDs[1:]
+				return id
+			},
+			KeyResolver: keys,
+			Store:       providerStore,
 		},
 	})
 	if err != nil {
@@ -89,6 +95,16 @@ func run(output io.Writer) error {
 			}
 			return resource.PublicSubscriptionDecision{ExpiresAt: now.Add(24 * time.Hour)}, nil
 		},
+		Protected: &resource.ProtectedSubscriptionConfig{
+			EndpointPrefix: resourceID + "/events/protected/", NewTicketID: func() string { return "ticket-1" },
+			MaximumTicketLifetime: 5 * time.Minute,
+			Register: func(_ context.Context, request resource.ProtectedSubscriptionRequest) (resource.PublicSubscriptionDecision, error) {
+				if request.Ticket.Agent != agentID || string(request.Ticket.Context) != "created appointment" {
+					return resource.PublicSubscriptionDecision{}, resource.ErrEventSubscriptionDenied
+				}
+				return resource.PublicSubscriptionDecision{ExpiresAt: now.Add(24 * time.Hour)}, nil
+			},
+		},
 		ResolveEventEndpoint: endpointResolver,
 		AdmitEventEndpoint:   network.Admit,
 		HTTPClient:           httpClient,
@@ -97,7 +113,13 @@ func run(output io.Writer) error {
 		return err
 	}
 	network.Handle(agentProviderID, provider.Handler())
-	network.Handle(resourceID, eventService.PublicSubscriptionHandler())
+	network.Handle(resourceID, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/events/protected/") {
+			eventService.ProtectedSubscriptionHandler().ServeHTTP(response, request)
+			return
+		}
+		eventService.PublicSubscriptionHandler().ServeHTTP(response, request)
+	}))
 
 	agentToken, err := provider.Issue(aauth.AgentTokenRequest{
 		Agent: agentID, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
@@ -128,6 +150,26 @@ func run(output io.Writer) error {
 	}); err != nil {
 		return err
 	}
+	ticket, err := eventService.IssueProtectedSubscriptionTicket(ctx, resource.ProtectedSubscriptionTicketRequest{
+		Agent: agentID, Context: []byte("created appointment"), Lifetime: 2 * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+	protectedToken, err := provider.IssueSubscribeToken(ctx, agentprovider.SubscribeRequest{
+		Agent: agentID, Resource: resourceID, ConfirmationKey: agentKey.PublicJWK(),
+		Lifetime: 10 * time.Minute, MaxUses: 1,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := agentClient.RegisterProtectedSubscription(ctx, clientagent.ProtectedSubscriptionInput{
+		TicketURL: ticket.URL, SubscribeToken: protectedToken.Compact,
+		Parameters: []byte(`{"event_types":["appointment.changed"]}`), ContentType: "application/json",
+		Context: []byte("protected appointment"),
+	}); err != nil {
+		return err
+	}
 	prepared, err := eventService.PrepareEvent(ctx, resource.EventInput{
 		AgentProvider: agentProviderID, EventID: issued.EventID, ContentType: "application/json",
 		Payload: []byte(`{"event_type":"slot.available","slot":"10:00"}`), Lifetime: 5 * time.Minute,
@@ -153,6 +195,34 @@ func run(output io.Writer) error {
 		return errors.New("events example: Agent received an uncorrelated event")
 	}
 	_, err = fmt.Fprintf(output, "AAuth public event complete: %s; remaining uses %d\n", received.Payload, result.RemainingUses)
+	if err != nil {
+		return err
+	}
+	protectedPrepared, err := eventService.PrepareEvent(ctx, resource.EventInput{
+		AgentProvider: agentProviderID, EventID: protectedToken.EventID, ContentType: "application/json",
+		Payload: []byte(`{"event_type":"appointment.changed"}`), Lifetime: 5 * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := eventService.DeliverEvent(ctx, protectedPrepared); err != nil {
+		return err
+	}
+	protectedDelivery, err := providerStore.Delivery(protectedToken.EventID)
+	if err != nil {
+		return err
+	}
+	protectedReceived, err := agentClient.AcceptEvent(ctx, clientagent.EventDeliveryInput{
+		EventToken: protectedDelivery.Token, Payload: protectedDelivery.Payload,
+		ContentType: protectedDelivery.ContentType,
+	})
+	if err != nil {
+		return err
+	}
+	if protectedReceived.Duplicate || string(protectedReceived.Context) != "protected appointment" {
+		return errors.New("events example: Agent received an uncorrelated protected event")
+	}
+	_, err = fmt.Fprintf(output, "AAuth protected event complete: %s\n", protectedReceived.Payload)
 	return err
 }
 

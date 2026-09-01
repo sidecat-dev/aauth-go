@@ -116,6 +116,29 @@ implementation hashes the compact subscribe token, content type, and exact
 parameter bytes. The same registration recovers the first retained Resource
 record; changed bytes under that `eid` conflict.
 
+## Protected Events tickets keep Resource policy opaque
+
+**Source:** Events, `Protected Subscriptions` and `Subscription Ticket
+Replay`.
+
+Events defines the protected ticket as an opaque, short-lived, single-use URL
+bound to the Agent and context of a prior authenticated interaction. It leaves
+the ticket representation, lifetime, and Resource policy undefined. This
+implementation therefore retains a host-generated path segment and opaque
+context rather than defining another token. The Resource host chooses a
+same-origin URL prefix, an explicit maximum lifetime, and the policy that
+interprets the retained context.
+
+Ticket consumption and subscription registration share one store operation.
+While the original subscribe token remains valid, an exact retry returns the
+retained registration even after the unused-ticket deadline and does not rerun
+host policy; a changed retry conflicts. An unused ticket still expires at its
+deadline.
+A request whose subscribe-token `sub` does not match the retained Agent is
+cloaked as a missing ticket, and an expired ticket returns a distinct terminal
+refusal. These are repository storage and HTTP-response choices around the
+source-defined binding, not new Events wire fields.
+
 ## Bodyless Events deliveries sign the exact empty body
 
 **Source:** Events, `Event Delivery: Resource to AP`; HTTP Signature Keys,

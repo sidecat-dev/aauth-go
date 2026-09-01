@@ -90,7 +90,18 @@ type PublicSubscriptionInput struct {
 	Context        []byte
 }
 
-// EventSubscription is the verified public registration identity.
+// ProtectedSubscriptionInput contains an already-obtained AP subscribe token,
+// a Resource-issued opaque ticket URL, registration parameters, and durable
+// local context.
+type ProtectedSubscriptionInput struct {
+	TicketURL      string
+	SubscribeToken string
+	Parameters     []byte
+	ContentType    string
+	Context        []byte
+}
+
+// EventSubscription is the verified public or protected registration identity.
 type EventSubscription struct {
 	EventID  string
 	Resource string
@@ -122,7 +133,29 @@ func (client *Client) RegisterPublicSubscription(
 	ctx context.Context,
 	input PublicSubscriptionInput,
 ) (EventSubscription, error) {
-	const operation = "register public event subscription"
+	return client.registerEventSubscription(ctx, "register public event subscription", input)
+}
+
+// RegisterProtectedSubscription binds context and performs one signed POST to
+// a Resource-issued ticket URL. It never retries.
+func (client *Client) RegisterProtectedSubscription(
+	ctx context.Context,
+	input ProtectedSubscriptionInput,
+) (EventSubscription, error) {
+	return client.registerEventSubscription(ctx, "register protected event subscription", PublicSubscriptionInput{
+		Endpoint:       input.TicketURL,
+		SubscribeToken: input.SubscribeToken,
+		Parameters:     input.Parameters,
+		ContentType:    input.ContentType,
+		Context:        input.Context,
+	})
+}
+
+func (client *Client) registerEventSubscription(
+	ctx context.Context,
+	operation string,
+	input PublicSubscriptionInput,
+) (EventSubscription, error) {
 	var subscription EventSubscription
 	if client == nil || client.events == nil {
 		return subscription, fail(operation, errors.New("Events is not configured"))

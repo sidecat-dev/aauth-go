@@ -60,7 +60,7 @@ stores. The programs are executable documentation, not deployment templates.
 | [Parent-mediated sub-agent authorization](example/subagent) | Parent performs Person Server calls; child performs Resource calls | `go run ./example/subagent` |
 | [Revocation and re-authorization](example/revocation) | Signed three-party revocation, idempotent retry after a lost response, and explicit replacement | `go run ./example/revocation` |
 | [One chained Resource call](example/callchaining) | An authorized Resource acts as an Agent for one same-Person-Server downstream operation | `go run ./example/callchaining` |
-| [Public event subscription](example/events) | AP-issued subscribe token, Agent context binding, public Resource registration, current AP endpoint discovery, `self-jwt` delivery, and Agent correlation | `go run ./example/events` |
+| [Public and protected event subscriptions](example/events) | Public registration plus an opaque, prior-interaction-bound, short-lived, single-use Resource ticket; both continue through `self-jwt` delivery and Agent correlation | `go run ./example/events` |
 | [Fixed-price Budget](example/budget) | Resource denomination selection, Person Server amount narrowing, one atomic charge, validated feedback, and a typed over-remainder step-up | `go run ./example/budget` |
 
 The integration suite also exercises
@@ -98,10 +98,12 @@ them before metadata or application I/O. An unverifiable post-send outcome
 carries the full signed grant and is never retried automatically.
 The Resource calls the host's `RetainLineage` before releasing its initial
 Budget Resource token; the later challenge callback reads that host state.
-The [public Events journey](integration/events_public_subscription_test.go)
-also exercises exact registration recovery, bodyless delivery, bounded uses,
-delivery replay, and two distinct payloads that share one deterministic Event
-token.
+The Events integrations exercise both
+[public registration](integration/events_public_subscription_test.go) and a
+[protected ticket](integration/events_protected_subscription_test.go). Together
+they cover exact registration recovery, wrong-Agent cloaking, ticket expiry and
+single use, bodyless delivery, bounded uses, delivery replay, and two distinct
+payloads that share one deterministic Event token.
 See [CONFORMANCE.md](CONFORMANCE.md) for their exact limits.
 
 ## Packages
@@ -249,15 +251,16 @@ dependency resolution, non-HTTP invocation bindings, durable store adapters,
 and independent-implementation interoperability remain open. Callers must
 bound source bytes, nesting, collection sizes, and parser work before passing
 untrusted material to these parsers.
-Events has one complete public-subscription path. It covers AP retention before
-subscribe-token release, Agent context retention before registration, exact
-Resource registration recovery, current AP endpoint discovery with explicit
-egress admission, body-bearing and bodyless `self-jwt` delivery, AP retention
-before `202`, bounded-use feedback, and Agent-side context correlation and
-exact replay detection. Protected subscription tickets, AP-to-Agent transport,
-automatic AsyncAPI payload validation, and durable store adapters remain host
-or future concerns. Bootstrap has two hosted profiles and one self-hosted
-profile. Budgets has
+Events has complete public and protected-subscription paths. Both cover AP
+retention before subscribe-token release, Agent context retention before
+registration, exact Resource registration recovery, current AP endpoint
+discovery with explicit egress admission, body-bearing and bodyless `self-jwt`
+delivery, AP retention before `202`, bounded-use feedback, and Agent-side
+context correlation and exact replay detection. The protected path also binds
+an opaque Resource ticket to the prior Agent and application context and
+atomically consumes it with registration. AP-to-Agent transport, automatic
+AsyncAPI payload validation, and durable store adapters remain host concerns.
+Bootstrap has two hosted profiles and one self-hosted profile. Budgets has
 one direct fixed-price profile; four-party, variable-cost, streaming, usage,
 consumption-history policy, and automatic reauthorization paths remain open.
 HTTP Signature Keys is implemented only to the extent required by current role

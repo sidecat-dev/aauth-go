@@ -118,6 +118,49 @@ func TestAgentRegistersContextBeforePublicSubscriptionAndAcceptsDistinctEvents(t
 	}
 }
 
+func TestAgentRegistersProtectedSubscriptionAtOpaqueTicketURL(t *testing.T) {
+	t.Parallel()
+	protocol := newTestProtocol(t)
+	store := &agentEventStore{}
+	calls := 0
+	client, err := agent.New(context.Background(), agent.Config{
+		Identifier: protocol.agentID, SigningKey: protocol.agentKey,
+		AgentToken: protocol.agentToken, KeyResolver: protocol.resolver,
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			calls++
+			if request.Method != http.MethodPost || request.URL.String() != protocol.resourceID+"/events/protected/ticket-1" ||
+				store.context.EventID != "event-protected" {
+				t.Fatalf("protected registration = %s %s context=%#v", request.Method, request.URL, store.context)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Cache-Control": []string{"no-store"}},
+				Body: io.NopCloser(strings.NewReader("")), Request: request,
+			}, nil
+		})},
+		Clock: protocol.clock, Events: &agent.EventsConfig{Store: store},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := events.MintSubscribeToken(protocol.agentProviderID, protocol.agentProviderKey, events.SubscribeTokenRequest{
+		Agent: protocol.agentID, Resource: protocol.resourceID,
+		ConfirmationKey: protocol.agentKey.PublicJWK(), EventID: "event-protected", Lifetime: time.Hour,
+	}, protocol.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.RegisterProtectedSubscription(context.Background(), agent.ProtectedSubscriptionInput{
+		TicketURL: protocol.resourceID + "/events/protected/ticket-1", SubscribeToken: compact,
+		Context: []byte(`{"purpose":"protected waitlist"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EventID != "event-protected" || result.Resource != protocol.resourceID || calls != 1 {
+		t.Fatalf("subscription = %#v, calls=%d", result, calls)
+	}
+}
+
 type agentEventStore struct {
 	context       agent.EventContext
 	accepted      map[events.DeliveryFingerprint]agent.AcceptedEvent

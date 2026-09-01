@@ -454,16 +454,24 @@ retained first result on duplicate valid presentation.
 
 ### Events delivery
 
-The implemented path is the public-subscription variant. The AP first retains
-one subscription and issues its subscribe token. The Agent verifies the token,
-retains its own context, and signs one body-bound registration request. The
-Resource retains the registration, resolves the AP's current event endpoint at
-delivery time, admits that endpoint, then signs a self-issued Event token and
-the request with the same key. The AP validates the subscription, atomically
-enforces any use limit, durably accepts the exact token, signed content type,
-and payload, and only then returns `202`. Its host uses an out-of-scope
-mechanism to reach the Agent, which independently verifies the Event token and
-correlates it with its local context.
+The implemented public variant begins when the AP retains one subscription and
+issues its subscribe token. In the protected variant, a prior authenticated
+Resource interaction instead causes the Resource to retain and return an
+opaque short-lived ticket URL bound to the Agent and application context. The
+Agent then obtains the same kind of subscribe token and signs one POST to that
+exact ticket path. The Resource verifies Agent, expiry, and single use and
+atomically consumes the ticket with registration. The ticket encoding and the
+application decision to issue it remain Resource-owned.
+
+In both variants, the Agent verifies the token, retains its own context, and
+signs one body-bound registration request. The Resource retains the
+registration, resolves the AP's current event endpoint at delivery time, admits
+that endpoint, then signs a self-issued Event token and the request with the
+same key. The AP validates the subscription, atomically enforces any use limit,
+durably accepts the exact token, signed content type, and payload, and only
+then returns `202`. Its host uses an out-of-scope mechanism to reach the Agent,
+which independently verifies the Event token and correlates it with its local
+context.
 
 Registration retries with the same subscribe token and exact parameters
 recover the first Resource record; changed parameters conflict. Delivery has
@@ -471,7 +479,7 @@ an explicit prepare/send split and no hidden retry. An exact token, signed
 content type, and payload retry recovers the first AP acceptance without
 consuming another use. The
 optional bodyless form signs an empty `content-digest` and omits
-`content-type`. Protected subscription tickets are not implemented.
+`content-type`.
 
 The Events draft conflicts with itself on expired events (`MUST NOT` versus
 `SHOULD NOT`). The implementation follows the stricter normative behavior.

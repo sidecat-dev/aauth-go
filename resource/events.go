@@ -55,6 +55,7 @@ type EventServiceConfig struct {
 	SubscriptionEndpoint string
 	Store                EventSubscriptionStore
 	RegisterPublic       func(context.Context, PublicSubscriptionRequest) (PublicSubscriptionDecision, error)
+	Protected            *ProtectedSubscriptionConfig
 	ResolveEventEndpoint EventEndpointResolver
 	AdmitEventEndpoint   signaturekey.EgressAdmitter
 	HTTPClient           *http.Client
@@ -186,9 +187,12 @@ type EventService struct {
 	maxRegistrationBytes int64
 	maxEventPayloadBytes int64
 	registrationHandler  http.Handler
+	protected            *protectedSubscriptionConfig
+	protectedHandler     http.Handler
 }
 
-// NewEventService constructs a public Events Resource surface.
+// NewEventService constructs the configured public and optional protected
+// Events Resource surfaces.
 func NewEventService(config EventServiceConfig) (*EventService, error) {
 	if err := aauth.ValidateServerIdentifier(config.Issuer); err != nil {
 		return nil, fmt.Errorf("resource: Events issuer: %w", err)
@@ -234,6 +238,9 @@ func NewEventService(config EventServiceConfig) (*EventService, error) {
 		httpClient:    &client, maxRegistrationBytes: maxRegistration, maxEventPayloadBytes: maxPayload,
 	}
 	service.registrationHandler = http.HandlerFunc(service.handlePublicSubscription)
+	if err := service.configureProtectedSubscriptions(config.Protected); err != nil {
+		return nil, err
+	}
 	return service, nil
 }
 

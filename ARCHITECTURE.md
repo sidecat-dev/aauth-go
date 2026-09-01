@@ -66,11 +66,12 @@ metadata/JWKS handler, and self-issues fresh Agent tokens without a refresh
 endpoint.
 
 The current Events slice adds the `events` value package plus explicit
-`agentprovider`, `resource`, and `agent` role surfaces for public
+`agentprovider`, `resource`, and `agent` role surfaces for public and protected
 subscriptions. The AP owns subscribe-token issuance and its inbox, the
-Resource owns registration and outbound delivery, and the Agent owns local
-context and replay correlation. Each role receives its own small store
-interface; no shared Events lifecycle object crosses those boundaries.
+Resource owns public registration, opaque protected-ticket issuance and
+consumption, and outbound delivery, and the Agent owns local context and replay
+correlation. Each role receives its own small store interface; no shared Events
+lifecycle object crosses those boundaries.
 
 The current Permission slice is one top-level missionless local-action path.
 The root package owns the `granted` and `denied` wire values; `agent` performs
@@ -299,8 +300,8 @@ prior-consumption policy remain separate unimplemented profiles.
 
 ### `events`
 
-The current `events` package owns reusable Events semantics for the public
-subscription path:
+The current `events` package owns reusable token and delivery semantics shared
+by public and protected subscription paths:
 
 - AP metadata extension.
 - Subscribe and Event token types and validation.
@@ -308,9 +309,11 @@ subscription path:
 - Agent-side event verification and duplicate identity.
 
 Role packages own registration, subscription, use-limit, and delivery state.
-It does not define AP-to-Agent transport or automatically validate payloads
-against AsyncAPI. Protected ticket URLs and a complete Events-specific
-AsyncAPI discovery surface are not implemented.
+The Resource role separately owns the protected ticket because the source
+defines it as opaque and Resource-controlled; its store contract atomically
+consumes that ticket with registration. The package does not define AP-to-Agent
+transport or automatically validate payloads against AsyncAPI. A complete
+Events-specific AsyncAPI discovery surface is not implemented.
 
 ### Bootstrap and interoperability
 

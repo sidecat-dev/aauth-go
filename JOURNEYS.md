@@ -393,6 +393,24 @@ Pinned source: [Events editor source](https://github.com/dickhardt/AAuth/blob/a9
     platform-defined; the host supplies the queue, push channel, or other
     durable delivery adapter.
 
+- [x] **Protected subscription ticket and event delivery — Implemented**
+  - Flow: authenticated Agent interaction → Resource retains an opaque ticket
+    bound to the verified Agent and application context → AP issues a subscribe
+    token → Agent signs one POST to the ticket URL → Resource verifies the
+    Agent, expiry, and single use and atomically commits registration → ordinary
+    Events delivery continues.
+  - Start with: `resource.ProtectedSubscriptionConfig`,
+    `EventService.IssueProtectedSubscriptionTicket`,
+    `EventService.ProtectedSubscriptionHandler`,
+    `resource.ProtectedSubscriptionStore`, and
+    `Client.RegisterProtectedSubscription`.
+  - Evidence: [`integration/events_protected_subscription_test.go`](integration/events_protected_subscription_test.go),
+    [`resource/storetest/events_protected.go`](resource/storetest/events_protected.go),
+    and `go run ./example/events`.
+  - Host boundary: the Resource application decides which prior authenticated
+    interaction may issue a ticket and what opaque context the registration
+    policy receives. The specification does not define ticket encoding.
+
 ### Bounded and missing journeys
 
 - [ ] **AsyncAPI event discovery — Partial helper coverage**
@@ -400,13 +418,6 @@ Pinned source: [Events editor source](https://github.com/dickhardt/AAuth/blob/a9
     It does not acquire the document, choose a subscription endpoint, register
     a subscription, or validate event payloads.
   - Evidence: [`r3/vocab/asyncapi/definition_test.go`](r3/vocab/asyncapi/definition_test.go).
-
-- [ ] **Protected subscription ticket — Not implemented**
-  - Intended flow: authorized Agent → Resource ticket → AP subscribe token →
-    signed one-use ticket registration → Resource binds it to the prior
-    authorization.
-  - Missing: ticket issuance, retention, expiry, single-use consumption, and
-    protected-subscription Agent APIs.
 
 ## AAuth Bootstrap Guidance
 
