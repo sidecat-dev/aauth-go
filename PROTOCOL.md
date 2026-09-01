@@ -588,16 +588,20 @@ separators.
 
 ### Budgeted access
 
-The implemented profile is proactive, direct three-party, fixed-price, and
-non-streaming. The Agent requests one denomination. For a same-denomination
-offer, the Resource may only lower the amount. It may instead select another
-denomination from its own `budget_units`; that establishes the Resource's new
-offer, while its ordering against the Agent request remains unresolved by
-`AAG-F088`. The Person Server then preserves that Resource-selected unit and
-scale and may only lower the amount; its Auth token is the signed cap. After
-all ordinary authorization checks, the Resource atomically charges the exact
-known cost before application dispatch and reports cost and remaining Budget
-as an RFC 9651 Dictionary.
+The implemented profile is direct three-party, fixed-price, and non-streaming.
+It supports both source-defined entry paths. Proactively, the Agent requests
+one denomination. Reactively, the Agent's ordinary Person-token call receives
+a Budget-bearing Resource token in the `401`; the host's `InitialOffer` policy
+selects one declared unit and amount rather than the library guessing among
+currencies. For a same-denomination proactive offer, the Resource may only
+lower the amount. It may instead select another denomination from its own
+`budget_units`; that establishes the Resource's new offer, while its ordering
+against the Agent request remains unresolved by `AAG-F088`. In both paths the
+Person Server preserves the Resource-selected unit and scale and may only
+lower the amount; its Auth token is the signed cap. After all ordinary
+authorization checks, the Resource atomically charges the exact known cost
+before application dispatch and reports cost and remaining Budget as an RFC
+9651 Dictionary.
 
 An insufficient or exhausted request consumes nothing. Its `401` carries a
 host-asserted replacement Resource token selected from retained Person-token
@@ -611,7 +615,8 @@ token alone.
 retrying it. When a post-send outcome cannot be verified, it carries the full
 signed grant as the only locally proved upper bound. Variable-cost settlement,
 streaming trailers, four-party forwarding, `budget_consumed` policy, usage
-queries, and automatic reauthorization are not part of this profile.
+queries, automatic reauthorization, and reactive Resource-held or R3+Budget
+first calls are not part of this profile.
 
 ## Source tensions and implementation choices
 

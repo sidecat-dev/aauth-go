@@ -106,12 +106,14 @@ type personLineage struct {
 }
 
 type personLineageStore struct {
-	mu       sync.RWMutex
-	lineage  personLineage
-	retained bool
+	mu      sync.RWMutex
+	records map[aauth.TokenReference]personLineage
+	latest  aauth.TokenReference
 }
 
-func newPersonLineageStore() *personLineageStore { return &personLineageStore{} }
+func newPersonLineageStore() *personLineageStore {
+	return &personLineageStore{records: make(map[aauth.TokenReference]personLineage)}
+}
 
 func (store *personLineageStore) Retain(_ context.Context, retained resource.BudgetLineage) error {
 	store.mu.Lock()
@@ -122,18 +124,19 @@ func (store *personLineageStore) Retain(_ context.Context, retained resource.Bud
 		Subject:       retained.Person.Subject,
 		Tenant:        retained.PersonContext.Tenant,
 	}
-	if store.retained && store.lineage != lineage {
+	if prior, found := store.records[retained.ResourceToken]; found && prior != lineage {
 		return errors.New("budget example: Person-token lineage conflicts with retained state")
 	}
-	store.lineage = lineage
-	store.retained = true
+	store.records[retained.ResourceToken] = lineage
+	store.latest = retained.ResourceToken
 	return nil
 }
 
 func (store *personLineageStore) Load() (personLineage, bool) {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	return store.lineage, store.retained
+	lineage, found := store.records[store.latest]
+	return lineage, found
 }
 
 type memoryBudgetStore struct {

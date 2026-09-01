@@ -625,12 +625,24 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     result, `BudgetCallUncertainError` carries the full signed grant and never
     retries.
 
+### Bounded reactive journey
+
+- [x] **Reactive first-call Budget acquisition — Implemented for direct Core**
+  - Flow: Agent makes one ordinary Core call with a Person token → Resource
+    host selects a declared initial offer and retains its exact Person-token
+    lineage before returning a Budget Resource token in `401` → PS narrows the
+    offer → Agent makes one fixed-price Budget call.
+  - Start with: `resource.BudgetConfig.InitialOffer`, `Client.Begin`,
+    `CallResult.AuthorizationRequired`, `Client.Exchange`, and
+    `Client.BeginBudgetCall`.
+  - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go)
+    and `go run ./example/budget`.
+  - Boundary: the library does not guess a unit when no host initial-offer
+    policy exists. Resource-held, R3+Budget, four-party, mission, account,
+    delegation, variable-cost, and streaming reactive paths remain absent.
+
 ### Not implemented
 
-- [ ] **Reactive first-call Budget acquisition — Not implemented.** The
-  baseline Person-token `401` challenge does not mint a default-sized Budget
-  Resource token. Only proactive `AuthorizeRequest.Budget` requests enter the
-  Budget offer path.
 - [ ] **Four-party Budget authorization — Not implemented.** No PS-to-AS
   Budget ceiling, AS narrowing, or AS-issued Budget protected-call journey
   exists.

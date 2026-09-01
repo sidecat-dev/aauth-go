@@ -33,6 +33,17 @@ type BudgetOfferRequest struct {
 	Requested     budgets.Value
 }
 
+// BudgetInitialOfferRequest is the verified context for sizing a Budget when
+// the Agent first calls the Resource with a Person token rather than making a
+// proactive authorization request. The host selects one declared unit and
+// amount; the library does not guess among declarations.
+type BudgetInitialOfferRequest struct {
+	Request       *http.Request
+	Person        PersonIdentity
+	PersonContext PersonContext
+	Scope         []string
+}
+
 // BudgetLineage is the Resource-side record needed to construct a later
 // Budget step-up without recovering Person-token identity from an Auth token.
 // RetainLineage receives it after token minting and before token release. A
@@ -114,13 +125,15 @@ type BudgetStore interface {
 
 // BudgetConfig enables the first fixed-price Budget profile on a direct
 // Person-Server-authorized Resource. Units are advertised in Resource
-// metadata. Offer may lower a valid proactive request or select another
-// declared denomination. Cost returns the exact, finite charge before
-// application dispatch. Challenge requires the host to select retained
-// Person-token lineage and mint a fresh Resource token for a hard-cap refusal;
-// the library verifies context but cannot independently prove freshness.
+// metadata. InitialOffer sizes an optional reactive first-call challenge;
+// Offer may lower a valid proactive request or select another declared
+// denomination. Cost returns the exact, finite charge before application
+// dispatch. Challenge requires the host to select retained Person-token
+// lineage and mint a fresh Resource token for a hard-cap refusal; the library
+// verifies context but cannot independently prove freshness.
 type BudgetConfig struct {
 	Units         []budgets.UnitDeclaration
+	InitialOffer  func(context.Context, BudgetInitialOfferRequest) (budgets.Value, error)
 	Offer         func(context.Context, BudgetOfferRequest) (budgets.Value, error)
 	RetainLineage func(context.Context, BudgetLineage) error
 	Cost          func(context.Context, BudgetCostRequest) (int64, error)
@@ -129,13 +142,14 @@ type BudgetConfig struct {
 }
 
 type budgetConfig struct {
-	units     []budgets.UnitDeclaration
-	byName    map[string]budgets.UnitDeclaration
-	offer     func(context.Context, BudgetOfferRequest) (budgets.Value, error)
-	retain    func(context.Context, BudgetLineage) error
-	cost      func(context.Context, BudgetCostRequest) (int64, error)
-	store     BudgetStore
-	challenge func(context.Context, BudgetChallengeRequest) (string, error)
+	units        []budgets.UnitDeclaration
+	byName       map[string]budgets.UnitDeclaration
+	initialOffer func(context.Context, BudgetInitialOfferRequest) (budgets.Value, error)
+	offer        func(context.Context, BudgetOfferRequest) (budgets.Value, error)
+	retain       func(context.Context, BudgetLineage) error
+	cost         func(context.Context, BudgetCostRequest) (int64, error)
+	store        BudgetStore
+	challenge    func(context.Context, BudgetChallengeRequest) (string, error)
 }
 
 type budgetOfferPolicyError struct{ cause error }
@@ -166,9 +180,9 @@ func validateBudgetConfig(config *BudgetConfig, topology authorizationTopology) 
 		return nil, errors.New("aauth: Resource Budget challenge issuer is required")
 	}
 	validated := &budgetConfig{
-		units:  make([]budgets.UnitDeclaration, 0, len(config.Units)),
-		byName: make(map[string]budgets.UnitDeclaration, len(config.Units)),
-		offer:  config.Offer, retain: config.RetainLineage,
+		units:        make([]budgets.UnitDeclaration, 0, len(config.Units)),
+		byName:       make(map[string]budgets.UnitDeclaration, len(config.Units)),
+		initialOffer: config.InitialOffer, offer: config.Offer, retain: config.RetainLineage,
 		cost: config.Cost, store: config.Store, challenge: config.Challenge,
 	}
 	if err := budgets.ValidateUnitDeclarations(config.Units); err != nil {
@@ -190,6 +204,41 @@ func validateBudgetConfig(config *BudgetConfig, topology authorizationTopology) 
 		validated.byName[declaration.Unit().Name()] = declaration
 	}
 	return validated, nil
+}
+
+func (config *budgetConfig) initialOfferFor(
+	ctx context.Context,
+	request *http.Request,
+	person aauth.PersonTokenClaims,
+	scopes []string,
+) (budgets.Value, bool, error) {
+	if config == nil || config.initialOffer == nil {
+		return budgets.Value{}, false, nil
+	}
+	policyRequest, finish, err := cloneScopePolicyRequest(request)
+	if err != nil {
+		return budgets.Value{}, false, err
+	}
+	offered, err := config.initialOffer(ctx, BudgetInitialOfferRequest{
+		Request: policyRequest,
+		Person:  PersonIdentity{Issuer: person.Issuer, Subject: person.Subject},
+		PersonContext: PersonContext{
+			MissionS256: person.MissionS256,
+			Tenant:      person.Tenant,
+		},
+		Scope: append([]string(nil), scopes...),
+	})
+	finishErr := finish()
+	if err != nil {
+		return budgets.Value{}, false, &budgetOfferPolicyError{cause: err}
+	}
+	if finishErr != nil {
+		return budgets.Value{}, false, finishErr
+	}
+	if err := budgets.ValidateDeclaredValue(config.units, offered); err != nil {
+		return budgets.Value{}, false, &budgetOfferPolicyError{cause: fmt.Errorf("Resource initial Budget offer policy: %w", err)}
+	}
+	return offered, true, nil
 }
 
 func (config *budgetConfig) offerFor(

@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -20,7 +21,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-func TestBudgetDirectThreePartyFixedPriceJourney(t *testing.T) {
+func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
@@ -77,7 +78,7 @@ func TestBudgetDirectThreePartyFixedPriceJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	personTokens := newMemoryPersonTokenStore()
-	personIDs := []string{"budget-person-token", "budget-auth-token"}
+	personIDs := []string{"budget-person-token", "budget-reactive-auth-token", "budget-proactive-auth-token"}
 	personPolicyCalls := 0
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
@@ -121,9 +122,10 @@ func TestBudgetDirectThreePartyFixedPriceJourney(t *testing.T) {
 	var protectedCalls atomic.Int64
 	var retainedLineage resource.BudgetLineage
 	var refreshIDs atomic.Int64
+	var resourceIDs atomic.Int64
 	resourceServer, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{
 		Issuer: resourceID, SigningKey: resourceKey, KeyResolver: resolver, Clock: clock,
-		NewID:             func() string { return "budget-resource-token" },
+		NewID:             func() string { return fmt.Sprintf("budget-resource-token-%d", resourceIDs.Add(1)) },
 		ScopeDescriptions: map[string]string{scope: "Read records"},
 		RequiredScopes:    func(*http.Request) []string { return []string{scope} },
 		ResolvePerson: func(_ context.Context, identity resource.PersonIdentity, personContext resource.PersonContext) error {
@@ -135,6 +137,14 @@ func TestBudgetDirectThreePartyFixedPriceJourney(t *testing.T) {
 		},
 		Budget: &resource.BudgetConfig{
 			Units: []budgets.UnitDeclaration{declaration},
+			InitialOffer: func(_ context.Context, request resource.BudgetInitialOfferRequest) (budgets.Value, error) {
+				if request.Request == nil || request.Request.URL.Path != "/records/reactive" ||
+					request.Person != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) ||
+					request.PersonContext.Tenant != "tenant-1" || !slices.Equal(request.Scope, []string{scope}) {
+					return budgets.Value{}, errors.New("unexpected reactive Resource Budget context")
+				}
+				return resourceOffer, nil
+			},
 			RetainLineage: func(_ context.Context, lineage resource.BudgetLineage) error {
 				retainedLineage = lineage
 				return nil
@@ -200,6 +210,48 @@ func TestBudgetDirectThreePartyFixedPriceJourney(t *testing.T) {
 	if !ok {
 		t.Fatal("Budget person-token request did not complete")
 	}
+	reactiveRequest, err := http.NewRequest(http.MethodGet, resourceID+"/records/reactive", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reactiveResult, err := client.Begin(ctx, clientagent.InitialCall{Request: reactiveRequest, PersonToken: personToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reactiveRequirement, ok := reactiveResult.AuthorizationRequired()
+	if !ok {
+		t.Fatalf("reactive first call = %#v, want auth-token requirement", reactiveResult)
+	}
+	reactiveClaims, reactiveOffer, consumed, err := budgets.VerifyResourceToken(
+		ctx, reactiveRequirement.ResourceToken, resolver, clock,
+	)
+	if err != nil || !integrationSameBudget(reactiveOffer, resourceOffer) || len(consumed) != 0 {
+		t.Fatalf("reactive Resource Budget = %#v consumed=%#v err=%v", reactiveOffer, consumed, err)
+	}
+	if retainedLineage.ResourceToken != (aauth.TokenReference{Issuer: reactiveClaims.Issuer, JTI: reactiveClaims.JTI}) ||
+		retainedLineage.PresentedJTI == "" || protectedCalls.Load() != 0 {
+		t.Fatalf("reactive retained lineage = %#v; protected calls = %d", retainedLineage, protectedCalls.Load())
+	}
+	reactiveAuthToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: reactiveRequirement.ResourceToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, reactiveGrant, err := budgets.VerifyAuthToken(ctx, reactiveAuthToken, resolver, clock)
+	if err != nil || !integrationSameBudget(reactiveGrant, personGrant) {
+		t.Fatalf("reactive Auth Budget = %#v err=%v", reactiveGrant, err)
+	}
+	reactiveCall := integrationBudgetCall(t, ctx, client, resourceID, reactiveAuthToken)
+	reactiveResponse, reactiveOK := reactiveCall.result.Response()
+	if reactiveCall.err != nil || !reactiveOK || reactiveResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("reactive Budget call = result %#v, error %v", reactiveCall.result, reactiveCall.err)
+	}
+	if feedback := integrationBudgetFeedback(t, reactiveCall.result); feedback.Remaining() != 250_000 {
+		t.Fatalf("reactive remaining = %d, want 250000", feedback.Remaining())
+	}
+	reactiveResponse.Body.Close()
+
 	resourceToken, err := client.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
 		Scopes: []string{scope}, Budget: &requested,
@@ -275,11 +327,11 @@ func TestBudgetDirectThreePartyFixedPriceJourney(t *testing.T) {
 		}
 	}
 	if statuses[http.StatusNoContent] != 1 || statuses[http.StatusUnauthorized] != 1 ||
-		protectedCalls.Load() != 2 || personPolicyCalls != 1 {
+		protectedCalls.Load() != 3 || personPolicyCalls != 2 {
 		t.Fatalf("Budget consequences: statuses=%v Protected=%d policy=%d", statuses, protectedCalls.Load(), personPolicyCalls)
 	}
-	if got := ledger.personTotal(personServerID, "person-123", resourceID); got != 350_000 {
-		t.Fatalf("person Budget consumption = %d, want 350000", got)
+	if got := ledger.personTotal(personServerID, "person-123", resourceID); got != 500_000 {
+		t.Fatalf("person Budget consumption = %d, want 500000", got)
 	}
 }
 

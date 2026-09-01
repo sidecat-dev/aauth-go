@@ -594,7 +594,20 @@ func (server *Server) servePersonTokenChallenge(
 		server.serveHeldChallenge(response, request, proof, claims, scopes)
 		return
 	}
-	resourceToken, err := server.issueResourceToken(proof.VerifiedAt(), proof.PublicKey(), claims, scopes)
+	var budgetOffer *budgets.Value
+	if server.budget != nil {
+		offer, present, err := server.budget.initialOfferFor(request.Context(), request, claims, scopes)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if present {
+			budgetOffer = &offer
+		}
+	}
+	resourceToken, err := server.issueAuthorizationResourceToken(
+		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, nil, nil, budgetOffer,
+	)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return

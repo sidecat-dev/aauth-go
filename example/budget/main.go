@@ -1,6 +1,7 @@
-// The budget example runs two declared MCP operations through one direct R3
-// grant and one fixed-price Budget. An over-remainder call preserves the R3
-// reference in its fresh Resource-token challenge and is never retried.
+// The budget example first acquires a fixed Budget reactively from an ordinary
+// Person-token call, then runs two declared MCP operations through a proactive
+// direct R3 Budget grant. An over-remainder call preserves the R3 reference in
+// its fresh Resource-token challenge and is never retried.
 package main
 
 import (
@@ -33,6 +34,7 @@ const (
 	agentID         = "aauth:budget-reader@agents.example"
 	personServerID  = "https://person.example"
 	resourceID      = "https://resource.example"
+	scope           = "records.read"
 )
 
 func main() {
@@ -165,7 +167,9 @@ func run(output io.Writer) error {
 			case 1:
 				return "person-token-1"
 			case 2:
-				return "auth-token-1"
+				return "reactive-auth-token-1"
+			case 3:
+				return "r3-auth-token-1"
 			default:
 				return "unexpected-person-token"
 			}
@@ -175,6 +179,16 @@ func run(output io.Writer) error {
 				return personserver.Person{}, errors.New("budget example: unexpected person binding")
 			}
 			return personserver.Person{Subject: "person-123", Tenant: "tenant-1", Lifetime: time.Hour}, nil
+		},
+		Authorize: func(_ context.Context, request personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
+			if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
+				request.Tenant != "tenant-1" || len(request.Scopes) != 1 || request.Scopes[0] != scope ||
+				request.Budget == nil || !sameBudget(*request.Budget, resourceOffer) {
+				return personserver.AuthorizationDecision{}, errors.New("budget example: unexpected reactive Budget context")
+			}
+			return personserver.AuthorizationDecision{
+				Scopes: []string{scope}, Lifetime: 30 * time.Minute, Budget: &personGrant,
+			}, nil
 		},
 		Budget: &personserver.BudgetConfig{ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
 			if resource != resourceID {
@@ -211,10 +225,26 @@ func run(output io.Writer) error {
 
 	budgetStore := newMemoryBudgetStore()
 	var protectedCalls atomic.Int64
+	var resourceIDSequence atomic.Int64
 	protectedResource, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{
 		Issuer: resourceID, SigningKey: resourceKey, KeyResolver: resolver, Clock: clock,
-		NewID:          func() string { return "resource-token-1" },
-		RequiredScopes: func(*http.Request) []string { return nil },
+		NewID: func() string {
+			switch resourceIDSequence.Add(1) {
+			case 1:
+				return "reactive-resource-token-1"
+			case 2:
+				return "r3-resource-token-1"
+			default:
+				return "unexpected-resource-token"
+			}
+		},
+		ScopeDescriptions: map[string]string{scope: "Read records"},
+		RequiredScopes: func(request *http.Request) []string {
+			if request.URL.Path == "/records/reactive" {
+				return []string{scope}
+			}
+			return nil
+		},
 		ResolvePerson: func(_ context.Context, identity resource.PersonIdentity, personContext resource.PersonContext) error {
 			if identity != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) ||
 				personContext.Tenant != "tenant-1" {
@@ -238,7 +268,15 @@ func run(output io.Writer) error {
 			}},
 		},
 		Budget: &resource.BudgetConfig{
-			Units:         []budgets.UnitDeclaration{unitDeclaration},
+			Units: []budgets.UnitDeclaration{unitDeclaration},
+			InitialOffer: func(_ context.Context, request resource.BudgetInitialOfferRequest) (budgets.Value, error) {
+				if request.Request == nil || request.Request.URL.Path != "/records/reactive" ||
+					request.Person != (resource.PersonIdentity{Issuer: personServerID, Subject: "person-123"}) ||
+					request.PersonContext.Tenant != "tenant-1" || len(request.Scope) != 1 || request.Scope[0] != scope {
+					return budgets.Value{}, errors.New("budget example: unexpected initial Budget context")
+				}
+				return resourceOffer, nil
+			},
 			RetainLineage: lineage.Retain,
 			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
 				if len(request.Scope) != 0 || !sameBudget(request.Requested, requested) {
@@ -251,6 +289,8 @@ func run(output io.Writer) error {
 					return 0, errors.New("budget example: unexpected signed Budget denomination")
 				}
 				switch request.Request.URL.Path {
+				case "/records/reactive":
+					return 100_000, nil
 				case "/records/current":
 					return 150_000, nil
 				case "/records/export":
@@ -319,6 +359,47 @@ func run(output io.Writer) error {
 	if !ok {
 		return errors.New("budget example: Person Server unexpectedly required interaction")
 	}
+	reactiveRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/reactive", nil)
+	if err != nil {
+		return err
+	}
+	reactiveResult, err := reader.Begin(ctx, clientagent.InitialCall{Request: reactiveRequest, PersonToken: personToken})
+	if err != nil {
+		return err
+	}
+	reactiveRequirement, ok := reactiveResult.AuthorizationRequired()
+	if !ok {
+		return errors.New("budget example: initial Person-token call returned no Budget authorization requirement")
+	}
+	_, reactiveOffer, _, err := budgets.VerifyResourceToken(ctx, reactiveRequirement.ResourceToken, resolver, clock)
+	if err != nil || !sameBudget(reactiveOffer, resourceOffer) {
+		return errors.New("budget example: reactive Resource token carried the wrong offer")
+	}
+	reactiveAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: reactiveRequirement.ResourceToken,
+	})
+	if err != nil {
+		return err
+	}
+	_, reactiveGrant, err := budgets.VerifyAuthToken(ctx, reactiveAuthToken, resolver, clock)
+	if err != nil || !sameBudget(reactiveGrant, personGrant) {
+		return errors.New("budget example: reactive Auth token carried the wrong grant")
+	}
+	reactiveCall, err := budgetCall(ctx, reader, "/records/reactive", reactiveAuthToken)
+	if err != nil {
+		return err
+	}
+	reactiveResponse, ok := reactiveCall.Response()
+	if !ok || reactiveResponse.StatusCode != http.StatusNoContent {
+		return errors.New("budget example: reactive Budget call returned no application response")
+	}
+	reactiveResponse.Body.Close()
+	reactiveFeedback, ok := reactiveCall.Feedback()
+	if !ok || reactiveFeedback.Remaining() != 300_000 || protectedCalls.Load() != 1 {
+		return errors.New("budget example: reactive Budget call returned unexpected feedback")
+	}
+	reactiveProtectedCalls := protectedCalls.Load()
+
 	resourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
 		R3Operations: &requestedOperations, Budget: &requested,
@@ -409,10 +490,17 @@ func run(output io.Writer) error {
 		!sameBudget(freshOffer, resourceOffer) || len(consumed) != 0 {
 		return errors.New("budget example: fresh Resource token did not preserve retained Person-token lineage")
 	}
-	if protectedCalls.Load() != 1 {
+	r3ProtectedCalls := protectedCalls.Load() - reactiveProtectedCalls
+	if r3ProtectedCalls != 1 {
 		return errors.New("budget example: Agent retried the refused consequence")
 	}
 
+	if _, err := fmt.Fprintf(output,
+		"AAuth Core reactive Budget success: first Person-token call returned a %d offer; Person Server granted %d; charged %d; remaining %d\n",
+		reactiveOffer.Amount(), reactiveGrant.Amount(), 100_000, reactiveFeedback.Remaining(),
+	); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintf(output,
 		"AAuth R3 Budget success: operations records.current and records.export; Resource offered %d; Person Server granted %d; charged %d; remaining %d\n",
 		offered.Amount(), granted.Amount(), firstCost, firstFeedback.Remaining(),
@@ -421,7 +509,7 @@ func run(output io.Writer) error {
 	}
 	_, err = fmt.Fprintf(output,
 		"AAuth R3 Budget refusal: %s; required %d; remaining %d; R3 reference preserved; protected calls %d\n",
-		reason, required, secondFeedback.Remaining(), protectedCalls.Load(),
+		reason, required, secondFeedback.Remaining(), r3ProtectedCalls,
 	)
 	return err
 }

@@ -512,7 +512,23 @@ func (client *Client) verifyResourceTokenContext(
 	person aauth.PersonTokenClaims,
 	requestedScopes []string,
 ) (aauth.ResourceTokenClaims, error) {
-	claims, err := aauth.VerifyResourceToken(ctx, compact, client.keyResolver, client.clock)
+	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, err
+	}
+	carriesBudget, err := budgets.TokenCarriesClaims(compact)
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, err
+	}
+	if carriesR3 {
+		return aauth.ResourceTokenClaims{}, errors.New("R3 first-call resource tokens are not supported by the Core Begin flow")
+	}
+	var claims aauth.ResourceTokenClaims
+	if carriesBudget {
+		claims, _, _, err = budgets.VerifyResourceToken(ctx, compact, client.keyResolver, client.clock)
+	} else {
+		claims, err = aauth.VerifyResourceToken(ctx, compact, client.keyResolver, client.clock)
+	}
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, err
 	}
