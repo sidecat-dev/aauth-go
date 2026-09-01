@@ -230,7 +230,7 @@ func (client *Client) RestorePendingExchange(ctx context.Context, snapshot Pendi
 	if claims.PersonServer != snapshot.PersonServer || claims.AgentJKT != thumbprint {
 		return PendingExchange{}, fail(operation, errors.New("Resource token does not match current Person Server and Agent key"))
 	}
-	if claims.Interaction != nil || claims.Account != nil || claims.MissionS256 != "" {
+	if claims.Interaction != nil || claims.Account != nil {
 		return PendingExchange{}, fail(operation, errors.New("Resource token is outside the direct pending-exchange profile"))
 	}
 	metadata, err := client.personServerMetadata(ctx, snapshot.PersonServer)

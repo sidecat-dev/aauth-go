@@ -97,18 +97,23 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Missing: parent-mediated composition and durable adapters.
 
 - [ ] **Deferred three-party consent and clarification — Partial**
-  - Flow: Agent → PS → pending interaction → one host question → explicit
-    Agent poll → one signed answer or terminal cancellation → host decision →
-    explicit poll → Auth token → protected call.
+  - Flow: Agent → PS → pending interaction, optionally bound to one mission →
+    one host question → explicit Agent poll → one signed answer or terminal
+    cancellation → host decision → explicit poll → Auth token → protected
+    call. Missionless and mission-bound requests use the same Agent methods.
   - Start with: `Client.BeginExchange`, `PollExchange`,
     `AnswerClarification`, `CancelClarification`, `PendingExchange.Snapshot`,
-    `RestorePendingExchange`, `personserver.DeferredAuthorizationStore`, and
-    `personserver.AuthorizationClarificationStore`.
+    `RestorePendingExchange`, `personserver.DeferredAuthorizationStore`,
+    `personserver.MissionDeferredAuthorizationStore`, and the two focused
+    clarification store extensions.
   - Evidence: [`integration/deferred_ps_authorization_test.go`](integration/deferred_ps_authorization_test.go),
     [`integration/clarification_three_party_test.go`](integration/clarification_three_party_test.go),
+    [`personserver/mission_deferred_authorization_test.go`](personserver/mission_deferred_authorization_test.go),
     and `go run ./example/psconsent`.
-  - Missing: durable adapters, AS relay, mission composition, `claims`,
-    `payment`, and `updated_request`. The safe limit is one question because
+  - Boundary: omitted capabilities on a mission-bound request use the exact
+    values retained at mission approval; an explicit empty array remains
+    empty. Durable adapters, AS relay, `claims`, `payment`, and
+    `updated_request` remain missing. The safe limit is one question because
     Core gives an answer no round identifier; see `AAG-F095` in
     [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
@@ -121,8 +126,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Evidence: [`integration/mission_three_party_test.go`](integration/mission_three_party_test.go),
     [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go),
     `go run ./example/mission`, and `go run ./example/fourparty`.
-  - Missing: deferred mission actions and composition with clarification,
-    delegation, call chaining, held delivery, or revocation.
+  - Missing: deferred mission proposal, update, or completion; delegation;
+    call chaining; held delivery; and revocation.
 
 - [ ] **Parent-mediated sub-agents and one Resource call chain — Partial**
   - Flow: parent → PS on behalf of one child → credential bound to the child

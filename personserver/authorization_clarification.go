@@ -169,16 +169,23 @@ func (server *Server) RequestAuthorizationClarification(
 	default:
 		return ErrPendingAuthorizationConflict
 	}
-	canonical, err := clarifications.RequestPendingAuthorizationClarification(
-		ctx,
-		value.record.ID,
-		AuthorizationClarificationRequest{
-			Question: request.Question,
-			Options:  append([]string(nil), request.Options...),
-			Lifetime: request.Lifetime,
-		},
-		now,
-	)
+	proposed := AuthorizationClarificationRequest{
+		Question: request.Question,
+		Options:  append([]string(nil), request.Options...),
+		Lifetime: request.Lifetime,
+	}
+	var canonical AuthorizationClarificationRound
+	if value.missionRecord != nil {
+		missionClarifications, missionOK := server.authorizationInteractions.(MissionAuthorizationClarificationStore)
+		if !missionOK {
+			return errors.New("personserver: mission authorization clarification store is not configured")
+		}
+		canonical, err = missionClarifications.RequestMissionPendingAuthorizationClarification(
+			ctx, cloneMissionRecordForTransition(*value.missionRecord), value.record.ID, proposed, now,
+		)
+	} else {
+		canonical, err = clarifications.RequestPendingAuthorizationClarification(ctx, value.record.ID, proposed, now)
+	}
 	if err != nil {
 		return err
 	}
@@ -200,7 +207,7 @@ func (server *Server) handlePendingAuthorizationClarificationAnswer(response htt
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("authorization clarification is not configured"))
 		return
 	}
-	_, agent, proof, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
+	_, agent, _, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -228,9 +235,27 @@ func (server *Server) handlePendingAuthorizationClarificationAnswer(response htt
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
 		return
 	}
-	if err := clarifications.AnswerPendingAuthorizationClarification(
-		request.Context(), id, identity, input.ClarificationResponse, proof.VerifiedAt(),
-	); err != nil {
+	now := server.clock.Now().UTC()
+	mission, err := server.pendingAuthorizationMission(request.Context(), id, identity, now)
+	if err != nil {
+		writePendingAuthorizationMutationProblem(response, err)
+		return
+	}
+	if mission != nil {
+		missionClarifications, ok := server.authorizationInteractions.(MissionAuthorizationClarificationStore)
+		if !ok {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission authorization clarification is not configured"))
+			return
+		}
+		err = missionClarifications.AnswerMissionPendingAuthorizationClarification(
+			request.Context(), cloneMissionRecordForTransition(*mission), id, identity, input.ClarificationResponse, now,
+		)
+	} else {
+		err = clarifications.AnswerPendingAuthorizationClarification(
+			request.Context(), id, identity, input.ClarificationResponse, now,
+		)
+	}
+	if err != nil {
 		writePendingAuthorizationMutationProblem(response, err)
 		return
 	}
@@ -252,7 +277,7 @@ func (server *Server) handlePendingAuthorizationCancellation(response http.Respo
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("authorization cancellation requires a bodyless DELETE"))
 		return
 	}
-	_, agent, proof, err := server.verifyAgentRequest(request, nil)
+	_, agent, _, err := server.verifyAgentRequest(request, nil)
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -267,9 +292,25 @@ func (server *Server) handlePendingAuthorizationCancellation(response http.Respo
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
 		return
 	}
-	if err := clarifications.CancelPendingAuthorizationClarification(
-		request.Context(), id, identity, proof.VerifiedAt(),
-	); err != nil {
+	now := server.clock.Now().UTC()
+	mission, err := server.pendingAuthorizationMission(request.Context(), id, identity, now)
+	if err != nil {
+		writePendingAuthorizationMutationProblem(response, err)
+		return
+	}
+	if mission != nil {
+		missionClarifications, ok := server.authorizationInteractions.(MissionAuthorizationClarificationStore)
+		if !ok {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission authorization clarification is not configured"))
+			return
+		}
+		err = missionClarifications.CancelMissionPendingAuthorizationClarification(
+			request.Context(), cloneMissionRecordForTransition(*mission), id, identity, now,
+		)
+	} else {
+		err = clarifications.CancelPendingAuthorizationClarification(request.Context(), id, identity, now)
+	}
+	if err != nil {
 		writePendingAuthorizationMutationProblem(response, err)
 		return
 	}
@@ -277,7 +318,38 @@ func (server *Server) handlePendingAuthorizationCancellation(response http.Respo
 	response.WriteHeader(http.StatusNoContent)
 }
 
+func (server *Server) pendingAuthorizationMission(
+	ctx context.Context,
+	id string,
+	identity AuthorizationPollIdentity,
+	at time.Time,
+) (*MissionRecord, error) {
+	if server.missionAuthorizationInteractions == nil {
+		return nil, nil
+	}
+	snapshot, err := server.authorizationInteractions.LoadPendingAuthorization(ctx, id, at)
+	if err != nil {
+		return nil, err
+	}
+	if !pendingAuthorizationIdentityMatches(snapshot.Record, identity) {
+		return nil, ErrPendingAuthorizationNotFound
+	}
+	if snapshot.Record.MissionS256 == "" {
+		return nil, nil
+	}
+	mission, err := server.loadActiveMission(ctx, snapshot.Record.MissionS256, identity.Agent, at)
+	if err != nil {
+		return nil, err
+	}
+	return &mission, nil
+}
+
 func writePendingAuthorizationMutationProblem(response http.ResponseWriter, err error) {
+	var terminated *MissionTerminatedError
+	if errors.As(err, &terminated) || errors.Is(err, ErrMissionNotFound) {
+		writeMissionActionProblem(response, err)
+		return
+	}
 	switch {
 	case errors.Is(err, ErrPendingAuthorizationNotFound), errors.Is(err, ErrPendingAuthorizationGone):
 		writeProblem(response, http.StatusGone, "invalid_code", err)

@@ -128,7 +128,10 @@ type PSAuthorizationConfig struct {
 	// consent after the complete three-party request has been verified.
 	RequireAuthorizationInteraction func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
 	// AuthorizationInteractions durably retains the authorization-specific
-	// pending request and its exact terminal result.
+	// pending request and its exact terminal result. With Missions, a nonnil
+	// value supports only missionless deferred requests. Leave it nil and supply
+	// DeferredAuthorizationStore plus MissionDeferredAuthorizationStore through
+	// Tokens to enable both missionless and mission-bound requests atomically.
 	AuthorizationInteractions DeferredAuthorizationStore
 	// Revocation optionally retains issued auth-token routing and enables one
 	// explicit Resource revocation attempt.
@@ -257,45 +260,46 @@ type TokenStore interface {
 
 // Server is an AAuth Person Server.
 type Server struct {
-	issuer                          string
-	signingKey                      jose.SigningKey
-	keyResolver                     signaturekey.KeyResolver
-	clock                           aauth.Clock
-	newID                           func() string
-	httpClient                      *http.Client
-	maximumResourceTokenLifetime    time.Duration
-	accessServerEndpoint            func(context.Context, string) (string, error)
-	tokens                          TokenStore
-	deferredTokens                  DeferredTokenStore
-	missionDeferredTokens           MissionDeferredTokenStore
-	bindPerson                      func(context.Context, PersonTokenRequest) (Person, error)
-	requirePersonTokenInteraction   func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
-	missions                        MissionStore
-	missionApprove                  func(context.Context, MissionApprovalRequest) (MissionDecision, error)
-	missionAcceptUpdate             func(context.Context, MissionUpdatePolicyRequest) error
-	missionConfirmPersonCompletion  func(context.Context, MissionCompletionPolicyRequest) error
-	consent                         func(context.Context, AuthorizationRequest) error
-	r3                              *r3Config
-	authorizationMode               authorizationMode
-	authorize                       func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
-	resolveBudgetResourceUnits      func(context.Context, string) ([]budgets.UnitDeclaration, error)
-	bindChainedPerson               func(context.Context, PersonTokenRequest) (Person, error)
-	authorizeChained                func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
-	requireAuthorizationInteraction func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
-	authorizationInteractions       DeferredAuthorizationStore
-	issuedAuthTokens                IssuedAuthTokenStore
-	revocationHTTPClient            *http.Client
-	revocationAdmit                 signaturekey.EgressAdmitter
-	permissionPolicy                func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
-	permissions                     PermissionStore
-	missionPermissions              MissionPermissionStore
-	missionAudits                   MissionAuditStore
-	interactionQuestionPolicy       func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
-	interactionQuestionStore        InteractionQuestionStore
-	missionInteractionQuestions     MissionInteractionQuestionStore
-	interactionRelayPolicy          func(context.Context, InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error)
-	interactionRelayStore           InteractionRelayStore
-	missionInteractionRelays        MissionInteractionRelayStore
+	issuer                           string
+	signingKey                       jose.SigningKey
+	keyResolver                      signaturekey.KeyResolver
+	clock                            aauth.Clock
+	newID                            func() string
+	httpClient                       *http.Client
+	maximumResourceTokenLifetime     time.Duration
+	accessServerEndpoint             func(context.Context, string) (string, error)
+	tokens                           TokenStore
+	deferredTokens                   DeferredTokenStore
+	missionDeferredTokens            MissionDeferredTokenStore
+	bindPerson                       func(context.Context, PersonTokenRequest) (Person, error)
+	requirePersonTokenInteraction    func(context.Context, PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error)
+	missions                         MissionStore
+	missionApprove                   func(context.Context, MissionApprovalRequest) (MissionDecision, error)
+	missionAcceptUpdate              func(context.Context, MissionUpdatePolicyRequest) error
+	missionConfirmPersonCompletion   func(context.Context, MissionCompletionPolicyRequest) error
+	consent                          func(context.Context, AuthorizationRequest) error
+	r3                               *r3Config
+	authorizationMode                authorizationMode
+	authorize                        func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	resolveBudgetResourceUnits       func(context.Context, string) ([]budgets.UnitDeclaration, error)
+	bindChainedPerson                func(context.Context, PersonTokenRequest) (Person, error)
+	authorizeChained                 func(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
+	requireAuthorizationInteraction  func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
+	authorizationInteractions        DeferredAuthorizationStore
+	missionAuthorizationInteractions MissionDeferredAuthorizationStore
+	issuedAuthTokens                 IssuedAuthTokenStore
+	revocationHTTPClient             *http.Client
+	revocationAdmit                  signaturekey.EgressAdmitter
+	permissionPolicy                 func(context.Context, PermissionPolicyRequest) (PermissionPolicyResult, error)
+	permissions                      PermissionStore
+	missionPermissions               MissionPermissionStore
+	missionAudits                    MissionAuditStore
+	interactionQuestionPolicy        func(context.Context, InteractionQuestionPolicyRequest) (InteractionQuestionPolicyResult, error)
+	interactionQuestionStore         InteractionQuestionStore
+	missionInteractionQuestions      MissionInteractionQuestionStore
+	interactionRelayPolicy           func(context.Context, InteractionRelayPolicyRequest) (InteractionRelayPendingPolicy, error)
+	interactionRelayStore            InteractionRelayStore
+	missionInteractionRelays         MissionInteractionRelayStore
 }
 
 type authorizationMode uint8
@@ -368,7 +372,10 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 // immediate Core authorization, R3 supplies immediate class authorization,
 // and a paired interaction policy and store may supply the deferred Core path.
 func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
-	if (config.RequireAuthorizationInteraction == nil) != (config.AuthorizationInteractions == nil) {
+	if config.RequireAuthorizationInteraction == nil && config.AuthorizationInteractions != nil {
+		return nil, errors.New("personserver: authorization interaction store requires a policy")
+	}
+	if config.RequireAuthorizationInteraction != nil && config.Missions == nil && config.AuthorizationInteractions == nil {
 		return nil, errors.New("personserver: authorization interaction policy and store must be configured together")
 	}
 	if config.R3 != nil && config.RequireAuthorizationInteraction != nil {
@@ -419,7 +426,19 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		server.authorizeChained = config.CallChaining.Authorize
 	}
 	server.requireAuthorizationInteraction = config.RequireAuthorizationInteraction
-	server.authorizationInteractions = config.AuthorizationInteractions
+	if config.RequireAuthorizationInteraction != nil && config.Missions != nil && config.AuthorizationInteractions == nil {
+		missionInteractions, ok := config.Tokens.(interface {
+			DeferredAuthorizationStore
+			MissionDeferredAuthorizationStore
+		})
+		if !ok {
+			return nil, errors.New("personserver: missions with authorization interaction require Tokens to implement DeferredAuthorizationStore and MissionDeferredAuthorizationStore")
+		}
+		server.missionAuthorizationInteractions = missionInteractions
+		server.authorizationInteractions = missionInteractions
+	} else {
+		server.authorizationInteractions = config.AuthorizationInteractions
+	}
 	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
 		return nil, err
 	}
@@ -1017,6 +1036,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 		missionRecord = &loadedMission
+		if input.Capabilities == nil {
+			capabilities = append([]string(nil), loadedMission.Capabilities...)
+		}
 	}
 	authorizationRequest := AuthorizationRequest{
 		Agent: agent.Subject, Resource: resourceToken.Issuer,
@@ -1059,10 +1081,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: Budget authorization interaction is not implemented"))
 					return
 				}
-				if authorizationRequest.Mission != nil {
-					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission-bound authorization interaction is not implemented"))
-					return
-				}
 				if delegated {
 					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: delegated authorization interaction is not implemented"))
 					return
@@ -1071,7 +1089,11 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 					writeProblem(response, http.StatusForbidden, "user_unreachable", errors.New("Agent did not declare interaction capability"))
 					return
 				}
-				if err := server.beginAuthorizationInteraction(response, request, authorizationRequest, agent, resourceToken, policy); err != nil {
+				if err := server.beginAuthorizationInteraction(response, request, authorizationRequest, agent, resourceToken, missionRecord, policy); err != nil {
+					if missionRecord != nil {
+						writeMissionActionProblem(response, err)
+						return
+					}
 					writeProblem(response, http.StatusInternalServerError, "server_error", err)
 				}
 				return

@@ -403,6 +403,14 @@ token retention, poll, and terminal consume in the mission lifecycle boundary.
 The host handle exposes a copied exact mission view; the correlation code is
 still not approval authority.
 
+Deferred direct authorization follows the same composition rule without
+creating a second Agent workflow. `BeginExchange`, optional clarification, and
+`PollExchange` are unchanged. The ordinary authorization store owns the
+purpose-specific pending state; `MissionDeferredAuthorizationStore` adds only
+the mission-aware transitions that must share the mission backend transaction.
+The host handle exposes the exact active mission, while Agent snapshots retain
+the already-signed Resource token rather than duplicating mission content.
+
 For R3, the Person Server independently fetches the exact Resource artifact
 after local token and person-lineage checks. In direct three-party class
 authorization, one typed policy receives Core context plus the exact document,

@@ -55,6 +55,27 @@ func TestExchangeInteractionImmediateResultMatchesExchange(t *testing.T) {
 	}
 }
 
+func TestExchangeInteractionPreservesExplicitEmptyCapabilities(t *testing.T) {
+	harness := newExchangeInteractionHarness(t)
+	harness.initial = func(request *http.Request) (*http.Response, error) {
+		return problemResponse(request, &aauth.ProblemError{
+			Status: http.StatusForbidden, Code: "user_unreachable", Detail: "no declared interaction capability",
+		}), nil
+	}
+	client := harness.client(t)
+	_, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		Capabilities: []string{},
+	})
+	var problem *aauth.ProblemError
+	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "user_unreachable" {
+		t.Fatalf("explicit empty capabilities = %T %v", err, err)
+	}
+	if !harness.capabilitiesPresent || len(harness.capabilities) != 0 {
+		t.Fatalf("encoded capabilities = %#v, present=%t", harness.capabilities, harness.capabilitiesPresent)
+	}
+}
+
 func TestExchangeInteractionInitialPendingIsVerifiedAndDoesNotPoll(t *testing.T) {
 	harness := newExchangeInteractionHarness(t)
 	harness.initial = func(request *http.Request) (*http.Response, error) {
@@ -363,6 +384,109 @@ func TestPendingExchangeSnapshotRestoresExactClarificationWithANewClient(t *test
 	}
 	if got := question.Options(); len(got) != 2 || got[0] != "explain" || got[1] != "cancel" {
 		t.Fatalf("restored options = %#v", got)
+	}
+}
+
+func TestRestorePendingExchangeRestoresMissionBoundResourceContext(t *testing.T) {
+	harness := newExchangeInteractionHarness(t)
+	missionS256 := aauth.MissionS256([]byte("approved pending exchange mission"))
+	harness.resourceClaims.MissionS256 = missionS256
+	harness.resourceClaims.Tenant = "tenant-7"
+	var err error
+	harness.resourceToken, err = aauth.MintResourceToken(harness.protocol.resourceKey, harness.resourceClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.initial = func(request *http.Request) (*http.Response, error) {
+		return validExchangePendingResponse(request, "/pending/mission-exchange", "0", "pending"), nil
+	}
+	harness.poll = []func(*http.Request) (*http.Response, error){func(request *http.Request) (*http.Response, error) {
+		return harness.authTokenResponse(request, func(claims *aauth.AuthTokenClaims) {
+			claims.MissionS256 = missionS256
+			claims.Tenant = harness.resourceClaims.Tenant
+		}), nil
+	}}
+	client := harness.client(t)
+	pending := beginExchangeInteraction(t, client, harness)
+	snapshot, err := pending.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored agent.PendingExchangeSnapshot
+	if err := json.Unmarshal(encoded, &stored); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := client.RestorePendingExchange(context.Background(), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredSnapshot, err := restored.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ResourceToken != harness.resourceToken || restoredSnapshot.ResourceToken != harness.resourceToken {
+		t.Fatal("mission restore did not preserve the exact Resource token")
+	}
+	completed, err := client.PollExchange(context.Background(), restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authToken, ok := completed.Token()
+	if !ok {
+		t.Fatal("restored mission exchange did not return an Auth token")
+	}
+	authClaims, err := aauth.VerifyAuthToken(context.Background(), authToken, harness.protocol.resolver, harness.protocol.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authClaims.MissionS256 != missionS256 || authClaims.Tenant != harness.resourceClaims.Tenant {
+		t.Fatalf("restored mission claims = %#v", authClaims)
+	}
+}
+
+func TestRestorePendingExchangeStillRejectsUnrelatedResourceProfiles(t *testing.T) {
+	harness := newExchangeInteractionHarness(t)
+	harness.initial = func(request *http.Request) (*http.Response, error) {
+		return validExchangePendingResponse(request, "/pending/exchange-1", "0", "pending"), nil
+	}
+	client := harness.client(t)
+	pending := beginExchangeInteraction(t, client, harness)
+	snapshot, err := pending.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		change func(*aauth.ResourceTokenClaims)
+	}{
+		{name: "interaction", change: func(claims *aauth.ResourceTokenClaims) {
+			claims.Interaction = &aauth.ResourceInteraction{URL: exchangeInteractionURL, Code: exchangeInteractionCode}
+		}},
+		{name: "account", change: func(claims *aauth.ResourceTokenClaims) {
+			account := "account-123"
+			claims.Account = &account
+		}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			claims := harness.resourceClaims
+			test.change(&claims)
+			resourceToken, err := aauth.MintResourceToken(harness.protocol.resourceKey, claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := snapshot
+			changed.ResourceToken = resourceToken
+			if _, err := client.RestorePendingExchange(context.Background(), changed); err == nil ||
+				!strings.Contains(err.Error(), "outside the direct pending-exchange profile") {
+				t.Fatalf("RestorePendingExchange error = %v", err)
+			}
+		})
 	}
 }
 

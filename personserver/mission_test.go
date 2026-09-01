@@ -69,7 +69,8 @@ func TestMissionApprovalRetainsExactBlobAndIssuesBoundPersonTokens(t *testing.T)
 		t.Fatal(err)
 	}
 	if record.Agent != protocol.agentID || record.State != MissionActive || string(record.ExactJSON) != string(mission.ExactJSON) ||
-		!record.ApprovedAt.Equal(protocol.now) || !record.ExpiresAt.Equal(protocol.now.Add(12*time.Minute)) {
+		!record.ApprovedAt.Equal(protocol.now) || !record.ExpiresAt.Equal(protocol.now.Add(12*time.Minute)) ||
+		!slices.Equal(record.Capabilities, []string{"interaction"}) {
 		t.Fatalf("retained mission = %#v", record)
 	}
 	if len(protocol.approvals) != 1 || protocol.approvals[0].Agent != protocol.agentID ||
@@ -547,14 +548,19 @@ func TestMemoryMissionStoreCopiesUpdateAndCompletionRecords(t *testing.T) {
 	}
 	record := MissionRecord{
 		S256: mission.S256, Agent: mission.Blob.Agent, ExactJSON: mission.ExactJSON,
-		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: *mission.Blob.ExpiresAt, State: MissionActive,
+		ApprovedAt: mission.Blob.ApprovedAt, ExpiresAt: *mission.Blob.ExpiresAt,
+		Capabilities: []string{"interaction"}, State: MissionActive,
 	}
 	if err := store.CommitMission(context.Background(), record, nil); err != nil {
 		t.Fatal(err)
 	}
+	record.Capabilities[0] = "mutated"
 	expected, err := store.LoadMissionForAgent(context.Background(), record.Agent, record.S256, now)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(expected.Capabilities, []string{"interaction"}) {
+		t.Fatalf("retained mission capabilities = %#v", expected.Capabilities)
 	}
 	update, err := aauth.EncodeMissionUpdate(aauth.MissionUpdate{Action: "update", Description: "Refined scope"})
 	if err != nil {
@@ -946,6 +952,7 @@ func (store *memoryMissionStore) requireActiveMissionLocked(expected MissionReco
 
 func cloneMissionRecord(record MissionRecord) MissionRecord {
 	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.Capabilities = append([]string(nil), record.Capabilities...)
 	record.AcceptedUpdates = append([]MissionUpdateRecord(nil), record.AcceptedUpdates...)
 	for index := range record.AcceptedUpdates {
 		record.AcceptedUpdates[index].Document = cloneTestMissionUpdateDocument(record.AcceptedUpdates[index].Document)

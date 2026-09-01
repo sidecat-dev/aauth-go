@@ -204,14 +204,6 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 			return ExchangeResult{}, fail(operation, errors.New("Budget exchange interaction is not implemented"))
 		}
 		resourceClaims := verifiedResource.claims
-		if resourceClaims.MissionS256 != "" {
-			if err := validateUnsupportedMissionContinuation(response); err != nil {
-				return ExchangeResult{}, fail(operation, err)
-			}
-			return ExchangeResult{}, fail(operation, &MissionContinuationUnsupportedError{
-				Phase: "auth-token exchange", Operation: "BeginExchange",
-			})
-		}
 		if input.SubagentToken != "" {
 			return ExchangeResult{}, fail(operation, &SubagentInteractionUnsupportedError{Operation: "auth-token exchange"})
 		}
@@ -222,8 +214,9 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
-		pending.interactionCapable = slices.Contains(input.Capabilities, "interaction")
-		pending.clarificationCapable = slices.Contains(input.Capabilities, "clarification")
+		missionCapabilityFallback := resourceClaims.MissionS256 != "" && input.Capabilities == nil
+		pending.interactionCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "interaction")
+		pending.clarificationCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "clarification")
 		if err := validatePendingExchangeRequirement(pending); err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
@@ -444,14 +437,20 @@ func (client *Client) exchangeRequest(
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
 	}
+	var capabilities *[]string
+	if input.Capabilities != nil {
+		values := make([]string, len(input.Capabilities))
+		copy(values, input.Capabilities)
+		capabilities = &values
+	}
 	body, err := json.Marshal(struct {
-		ResourceToken string   `json:"resource_token"`
-		SubagentToken string   `json:"subagent_token,omitempty"`
-		UpstreamToken string   `json:"upstream_token,omitempty"`
-		Capabilities  []string `json:"capabilities,omitempty"`
+		ResourceToken string    `json:"resource_token"`
+		SubagentToken string    `json:"subagent_token,omitempty"`
+		UpstreamToken string    `json:"upstream_token,omitempty"`
+		Capabilities  *[]string `json:"capabilities,omitempty"`
 	}{
 		ResourceToken: input.ResourceToken, SubagentToken: input.SubagentToken,
-		UpstreamToken: input.UpstreamToken, Capabilities: input.Capabilities,
+		UpstreamToken: input.UpstreamToken, Capabilities: capabilities,
 	})
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err

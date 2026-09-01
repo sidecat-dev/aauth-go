@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -37,13 +38,16 @@ const (
 )
 
 // MissionRecord is the Person Server's retained approved mission. ExactJSON
-// is the byte sequence named by S256 and returned to the Agent.
+// is the byte sequence named by S256 and returned to the Agent. Capabilities
+// are the approval-time request fallback; they are retained state but are not
+// part of the signed mission blob.
 type MissionRecord struct {
 	S256              string
 	Agent             string
 	ExactJSON         []byte
 	ApprovedAt        time.Time
 	ExpiresAt         time.Time
+	Capabilities      []string
 	State             MissionState
 	TerminationReason string
 	AcceptedUpdates   []MissionUpdateRecord
@@ -70,6 +74,7 @@ func (record MissionRecord) Equal(other MissionRecord) bool {
 	if record.S256 != other.S256 || record.Agent != other.Agent ||
 		!bytes.Equal(record.ExactJSON, other.ExactJSON) ||
 		!record.ApprovedAt.Equal(other.ApprovedAt) || !record.ExpiresAt.Equal(other.ExpiresAt) ||
+		!slices.Equal(record.Capabilities, other.Capabilities) ||
 		record.State != other.State || record.TerminationReason != other.TerminationReason ||
 		len(record.AcceptedUpdates) != len(other.AcceptedUpdates) ||
 		(record.Completion == nil) != (other.Completion == nil) {
@@ -165,8 +170,9 @@ type MissionCompletionPolicyRequest struct {
 	AgentAdditionalClaims map[string]json.RawMessage
 }
 
-// MissionDecision is the exact approved content and momentary capabilities
-// selected by mission approval policy.
+// MissionDecision is the exact approved content and request capabilities
+// selected by mission approval policy. Capabilities are retained for the
+// Core-defined fallback when a later mission-bound request omits them.
 type MissionDecision struct {
 	Description       string
 	ApprovedTools     []aauth.MissionTool
@@ -234,7 +240,7 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 	}
 	record := MissionRecord{
 		S256: mission.S256, Agent: agent.Subject, ExactJSON: append([]byte(nil), mission.ExactJSON...),
-		ApprovedAt: approvedAt, State: MissionActive,
+		ApprovedAt: approvedAt, Capabilities: append([]string(nil), decision.Capabilities...), State: MissionActive,
 	}
 	if decision.ExpiresAt != nil {
 		record.ExpiresAt = decision.ExpiresAt.UTC()
@@ -537,6 +543,11 @@ func validateMissionRecord(record MissionRecord) (aauth.ApprovedMission, error) 
 	if record.State != MissionActive && record.State != MissionTerminated {
 		return aauth.ApprovedMission{}, errors.New("personserver: retained mission state is invalid")
 	}
+	if len(record.Capabilities) > 0 {
+		if _, err := aauth.FormatCapabilities(record.Capabilities); err != nil {
+			return aauth.ApprovedMission{}, fmt.Errorf("personserver: retained mission capabilities: %w", err)
+		}
+	}
 	if record.State == MissionActive && record.TerminationReason != "" {
 		return aauth.ApprovedMission{}, errors.New("personserver: active mission has a termination reason")
 	}
@@ -668,6 +679,7 @@ func cloneMissionUpdateRecords(records []MissionUpdateRecord) []MissionUpdateRec
 
 func cloneMissionRecordForTransition(record MissionRecord) MissionRecord {
 	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.Capabilities = append([]string(nil), record.Capabilities...)
 	record.AcceptedUpdates = cloneMissionUpdateRecords(record.AcceptedUpdates)
 	if record.Completion != nil {
 		completion := *record.Completion

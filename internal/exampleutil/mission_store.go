@@ -434,6 +434,7 @@ func (store *missionStore) requireActiveForAudit(expected personserver.MissionRe
 
 func cloneMissionRecord(record personserver.MissionRecord) personserver.MissionRecord {
 	record.ExactJSON = append([]byte(nil), record.ExactJSON...)
+	record.Capabilities = append([]string(nil), record.Capabilities...)
 	record.AcceptedUpdates = append([]personserver.MissionUpdateRecord(nil), record.AcceptedUpdates...)
 	for index := range record.AcceptedUpdates {
 		record.AcceptedUpdates[index].Document = cloneUpdateDocument(record.AcceptedUpdates[index].Document)

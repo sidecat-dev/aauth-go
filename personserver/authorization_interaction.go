@@ -93,6 +93,8 @@ type PendingAuthorizationRecord struct {
 	Resource               string
 	Subject                string
 	Tenant                 string
+	MissionS256            string
+	MissionExpiresAt       time.Time
 	Scopes                 []string
 	Confirmation           jose.JWK
 	AgentExpiresAt         time.Time
@@ -219,6 +221,26 @@ type DeferredAuthorizationStore interface {
 	ConsumePendingAuthorizationResult(context.Context, string, AuthorizationPollRecord) error
 }
 
+// MissionDeferredAuthorizationStore adds mission-aware transitions to a
+// DeferredAuthorizationStore. A configured implementation is also the
+// MissionStore supplied through PSAuthorizationConfig.Tokens, so each method
+// runs in the same backend transaction as mission state. Creation, host
+// decisions, and clarification transitions compare the complete expected
+// mission and reject a stale host view. Approval atomically retains the
+// issued-token record. Poll and consume use expected only for its Agent and
+// S256: they atomically require that same owned mission to remain active and
+// unexpired, but MUST ignore accepted-update differences because Core keeps
+// mission_s256 and already-issued tokens valid across updates.
+type MissionDeferredAuthorizationStore interface {
+	CreateMissionPendingAuthorization(context.Context, MissionRecord, PendingAuthorizationRecord, time.Time) error
+	ApproveMissionPendingAuthorization(context.Context, MissionRecord, string, AuthorizationApproval, IssuedAuthTokenRecord, time.Time) (AuthorizationApproval, error)
+	DenyMissionPendingAuthorization(context.Context, MissionRecord, string, time.Time) error
+	AbandonMissionPendingAuthorization(context.Context, MissionRecord, string, time.Time) error
+	FailMissionPendingAuthorization(context.Context, MissionRecord, string, time.Time) error
+	PollMissionPendingAuthorization(context.Context, MissionRecord, string, AuthorizationPollIdentity, time.Time) (AuthorizationPollRecord, error)
+	ConsumeMissionPendingAuthorizationResult(context.Context, MissionRecord, string, AuthorizationPollRecord, time.Time) error
+}
+
 // AuthorizationClarificationStore is the optional clarification extension to
 // DeferredAuthorizationStore. Keeping it separate means an application that
 // supports ordinary interaction is not required to implement chat state. A
@@ -250,11 +272,23 @@ type AuthorizationClarificationStore interface {
 	CancelPendingAuthorizationClarification(context.Context, string, AuthorizationPollIdentity, time.Time) error
 }
 
+// MissionAuthorizationClarificationStore is the optional clarification
+// extension for a mission-bound deferred authorization. It preserves the same
+// focused question, answer, and cancellation API while checking the exact
+// active mission in the transaction that changes the dialogue.
+type MissionAuthorizationClarificationStore interface {
+	RequestMissionPendingAuthorizationClarification(context.Context, MissionRecord, string, AuthorizationClarificationRequest, time.Time) (AuthorizationClarificationRound, error)
+	AnswerMissionPendingAuthorizationClarification(context.Context, MissionRecord, string, AuthorizationPollIdentity, string, time.Time) error
+	CancelMissionPendingAuthorizationClarification(context.Context, MissionRecord, string, AuthorizationPollIdentity, time.Time) error
+}
+
 // AuthorizationInteraction is a correlated auth-token request. It is not
 // proof that a host authenticated the person and carries no decision authority.
 type AuthorizationInteraction struct {
 	kind           uint8
 	record         PendingAuthorizationRecord
+	mission        *MissionContext
+	missionRecord  *MissionRecord
 	clarifications []AuthorizationClarificationRound
 	cancelledAt    time.Time
 }
@@ -275,6 +309,15 @@ func (value AuthorizationInteraction) Subject() string { return value.record.Sub
 
 // Tenant returns the verified tenant context, if any.
 func (value AuthorizationInteraction) Tenant() string { return value.record.Tenant }
+
+// Mission returns a caller-owned exact mission context for a mission-bound
+// interaction. The bool is false for a missionless interaction.
+func (value AuthorizationInteraction) Mission() (MissionContext, bool) {
+	if value.kind != authorizationInteractionCorrelated || value.mission == nil {
+		return MissionContext{}, false
+	}
+	return *cloneMissionContext(value.mission), true
+}
 
 // RequestedScopes returns an independent copy of the exact ordered request.
 func (value AuthorizationInteraction) RequestedScopes() []string {
@@ -341,6 +384,13 @@ func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error
 			return err
 		}
 	}
+	if record.MissionS256 != "" {
+		if err := aauth.ValidateMissionS256(record.MissionS256); err != nil {
+			return err
+		}
+	} else if !record.MissionExpiresAt.IsZero() {
+		return errors.New("personserver: missionless pending authorization has a mission expiry")
+	}
 	return nil
 }
 
@@ -350,6 +400,7 @@ func (server *Server) beginAuthorizationInteraction(
 	authorization AuthorizationRequest,
 	agent aauth.AgentTokenClaims,
 	resourceToken aauth.ResourceTokenClaims,
+	missionRecord *MissionRecord,
 	policy AuthorizationInteractionPolicy,
 ) error {
 	if server.authorizationInteractions == nil {
@@ -370,6 +421,9 @@ func (server *Server) beginAuthorizationInteraction(
 	}
 	if resourceTokenExpiresAt.Before(expiresAt) {
 		expiresAt = resourceTokenExpiresAt
+	}
+	if missionRecord != nil && !missionRecord.ExpiresAt.IsZero() && missionRecord.ExpiresAt.Before(expiresAt) {
+		expiresAt = missionRecord.ExpiresAt
 	}
 	if !expiresAt.After(createdAt) {
 		return ErrPendingAuthorizationExpired
@@ -395,11 +449,16 @@ func (server *Server) beginAuthorizationInteraction(
 		if err != nil {
 			return err
 		}
+		var missionExpiresAt time.Time
+		if missionRecord != nil {
+			missionExpiresAt = missionRecord.ExpiresAt
+		}
 		record := PendingAuthorizationRecord{
 			ID: id, CodeSHA256: digest, PersonServer: server.issuer,
 			AgentProvider: agent.Issuer, Agent: authorization.Agent, Resource: authorization.Resource,
-			Subject: authorization.Subject, Tenant: authorization.Tenant,
-			Scopes: append([]string(nil), authorization.Scopes...), Confirmation: agent.Confirmation.JWK,
+			Subject: authorization.Subject, Tenant: authorization.Tenant, MissionS256: resourceToken.MissionS256,
+			MissionExpiresAt: missionExpiresAt,
+			Scopes:           append([]string(nil), authorization.Scopes...), Confirmation: agent.Confirmation.JWK,
 			AgentExpiresAt: agentExpiresAt, ResourceTokenExpiresAt: resourceTokenExpiresAt,
 			AgentAdditionalClaims: cloneClaims(authorization.AgentAdditionalClaims),
 			Capabilities:          append([]string(nil), authorization.Capabilities...),
@@ -408,11 +467,23 @@ func (server *Server) beginAuthorizationInteraction(
 		if err := validatePendingAuthorizationRecord(record); err != nil {
 			return err
 		}
-		if err := server.authorizationInteractions.CreatePendingAuthorization(request.Context(), record); err != nil {
-			if errors.Is(err, ErrPendingAuthorizationConflict) {
+		var createErr error
+		if missionRecord != nil {
+			if server.missionAuthorizationInteractions == nil || missionRecord.S256 != record.MissionS256 ||
+				authorization.Mission == nil || authorization.Mission.S256 != record.MissionS256 {
+				return ErrPendingAuthorizationConflict
+			}
+			createErr = server.missionAuthorizationInteractions.CreateMissionPendingAuthorization(
+				request.Context(), cloneMissionRecordForTransition(*missionRecord), record, server.clock.Now().UTC(),
+			)
+		} else {
+			createErr = server.authorizationInteractions.CreatePendingAuthorization(request.Context(), record)
+		}
+		if createErr != nil {
+			if errors.Is(createErr, ErrPendingAuthorizationConflict) {
 				continue
 			}
-			return err
+			return createErr
 		}
 		response.Header().Set("Location", "/token/pending/"+id)
 		response.Header().Set("Retry-After", strconv.FormatInt(int64(policy.RetryAfter/time.Second), 10))
@@ -442,8 +513,9 @@ func (server *Server) ConsumeAuthorizationInteractionCode(ctx context.Context, r
 		presentation.CodeSHA256 = digest
 		presentation.SyntacticallyValid = true
 	}
+	now := server.clock.Now().UTC()
 	record, err := server.authorizationInteractions.ConsumeAuthorizationInteractionCode(
-		ctx, server.issuer, reference, presentation, server.clock.Now().UTC(),
+		ctx, server.issuer, reference, presentation, now,
 	)
 	if err != nil {
 		return AuthorizationInteraction{}, err
@@ -457,7 +529,7 @@ func (server *Server) ConsumeAuthorizationInteractionCode(ctx context.Context, r
 	if record.ID != reference || record.PersonServer != server.issuer || record.CodeSHA256 != presentation.CodeSHA256 {
 		return AuthorizationInteraction{}, ErrPendingAuthorizationConflict
 	}
-	return authorizationInteractionFromRecord(record), nil
+	return server.authorizationInteractionFromRecord(ctx, record, now)
 }
 
 // ResumeAuthorizationInteraction reconstructs a host handle from durable state.
@@ -471,7 +543,8 @@ func (server *Server) ResumeAuthorizationInteraction(ctx context.Context, refere
 	if reference == "" {
 		return AuthorizationInteraction{}, errors.New("personserver: authorization interaction reference is required")
 	}
-	snapshot, err := server.authorizationInteractions.LoadPendingAuthorization(ctx, reference, server.clock.Now().UTC())
+	now := server.clock.Now().UTC()
+	snapshot, err := server.authorizationInteractions.LoadPendingAuthorization(ctx, reference, now)
 	if err != nil {
 		return AuthorizationInteraction{}, err
 	}
@@ -484,9 +557,9 @@ func (server *Server) ResumeAuthorizationInteraction(ctx context.Context, refere
 	switch snapshot.State {
 	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollApproved, AuthorizationPollDenied,
 		AuthorizationPollAbandoned, AuthorizationPollServerError:
-		return authorizationInteractionFromSnapshot(snapshot), nil
+		return server.authorizationInteractionFromSnapshot(ctx, snapshot, now)
 	case AuthorizationPollCancelled:
-		return authorizationInteractionFromSnapshot(snapshot), nil
+		return server.authorizationInteractionFromSnapshot(ctx, snapshot, now)
 	case AuthorizationPollExpired:
 		return AuthorizationInteraction{}, ErrPendingAuthorizationExpired
 	case AuthorizationPollGone:
@@ -538,6 +611,9 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	if value.record.AgentExpiresAt.Before(expiresAt) {
 		expiresAt = value.record.AgentExpiresAt
 	}
+	if !value.record.MissionExpiresAt.IsZero() && value.record.MissionExpiresAt.Before(expiresAt) {
+		expiresAt = value.record.MissionExpiresAt
+	}
 	if !expiresAt.After(now) {
 		return ErrPendingAuthorizationExpired
 	}
@@ -545,15 +621,28 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 		Issuer: server.issuer, DWK: aauth.PersonDiscoveryDocument, Audience: value.record.Resource,
 		JTI: server.newID(), PersonServer: server.issuer, Subject: value.record.Subject,
 		Confirmation: aauth.Confirmation{JWK: value.record.Confirmation},
-		IssuedAt:     now.Unix(), ExpiresAt: expiresAt.Unix(), Scope: strings.Join(granted, " "), Tenant: value.record.Tenant,
+		IssuedAt:     now.Unix(), ExpiresAt: expiresAt.Unix(), Scope: strings.Join(granted, " "),
+		MissionS256: value.record.MissionS256, Tenant: value.record.Tenant,
 	}
 	compact, err := aauth.MintAuthToken(server.signingKey, claims)
 	if err != nil {
 		return err
 	}
-	canonical, err := server.authorizationInteractions.ApprovePendingAuthorization(ctx, value.record.ID, AuthorizationApproval{
+	approval := AuthorizationApproval{
 		Decision: decision, Token: compact, ExpiresIn: claims.ExpiresAt - claims.IssuedAt, DecidedAt: now,
-	})
+	}
+	var canonical AuthorizationApproval
+	if value.missionRecord != nil {
+		issued, recordErr := issuedAuthTokenRecord(compact, claims)
+		if recordErr != nil {
+			return recordErr
+		}
+		canonical, err = server.missionAuthorizationInteractions.ApproveMissionPendingAuthorization(
+			ctx, cloneMissionRecordForTransition(*value.missionRecord), value.record.ID, approval, issued, server.clock.Now().UTC(),
+		)
+	} else {
+		canonical, err = server.authorizationInteractions.ApprovePendingAuthorization(ctx, value.record.ID, approval)
+	}
 	if err != nil {
 		return err
 	}
@@ -608,6 +697,12 @@ func (server *Server) DenyAuthorizationInteraction(ctx context.Context, value Au
 	if !now.Before(value.record.ExpiresAt) {
 		return ErrPendingAuthorizationExpired
 	}
+	if value.missionRecord != nil {
+		now = server.clock.Now().UTC()
+		return server.missionAuthorizationInteractions.DenyMissionPendingAuthorization(
+			ctx, cloneMissionRecordForTransition(*value.missionRecord), value.record.ID, now,
+		)
+	}
 	return server.authorizationInteractions.DenyPendingAuthorization(ctx, value.record.ID, now)
 }
 
@@ -625,6 +720,12 @@ func (server *Server) AbandonAuthorizationInteraction(ctx context.Context, value
 	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollInteracting:
+		if value.missionRecord != nil {
+			now = server.clock.Now().UTC()
+			return server.missionAuthorizationInteractions.AbandonMissionPendingAuthorization(
+				ctx, cloneMissionRecordForTransition(*value.missionRecord), value.record.ID, now,
+			)
+		}
 		return server.authorizationInteractions.AbandonPendingAuthorization(ctx, value.record.ID, now)
 	case AuthorizationPollExpired:
 		return ErrPendingAuthorizationExpired
@@ -647,6 +748,12 @@ func (server *Server) FailAuthorizationInteraction(ctx context.Context, value Au
 	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollWaiting, AuthorizationPollInteracting:
+		if value.missionRecord != nil {
+			now = server.clock.Now().UTC()
+			return server.missionAuthorizationInteractions.FailMissionPendingAuthorization(
+				ctx, cloneMissionRecordForTransition(*value.missionRecord), value.record.ID, now,
+			)
+		}
 		return server.authorizationInteractions.FailPendingAuthorization(ctx, value.record.ID, now)
 	case AuthorizationPollExpired:
 		return ErrPendingAuthorizationExpired
@@ -655,15 +762,47 @@ func (server *Server) FailAuthorizationInteraction(ctx context.Context, value Au
 	}
 }
 
-func authorizationInteractionFromRecord(record PendingAuthorizationRecord) AuthorizationInteraction {
-	return AuthorizationInteraction{kind: authorizationInteractionCorrelated, record: clonePendingAuthorizationRecord(record)}
+func (server *Server) authorizationInteractionFromRecord(
+	ctx context.Context,
+	record PendingAuthorizationRecord,
+	at time.Time,
+) (AuthorizationInteraction, error) {
+	value := AuthorizationInteraction{kind: authorizationInteractionCorrelated, record: clonePendingAuthorizationRecord(record)}
+	if record.MissionS256 == "" {
+		return value, nil
+	}
+	if server.missionAuthorizationInteractions == nil {
+		return AuthorizationInteraction{}, ErrPendingAuthorizationConflict
+	}
+	mission, err := server.loadActiveMission(ctx, record.MissionS256, record.Agent, at)
+	if err != nil {
+		return AuthorizationInteraction{}, err
+	}
+	if !record.MissionExpiresAt.Equal(mission.ExpiresAt) {
+		return AuthorizationInteraction{}, ErrMissionConflict
+	}
+	missionContext, err := missionContextFromRecord(mission)
+	if err != nil {
+		return AuthorizationInteraction{}, err
+	}
+	value.mission = missionContext
+	clone := cloneMissionRecordForTransition(mission)
+	value.missionRecord = &clone
+	return value, nil
 }
 
-func authorizationInteractionFromSnapshot(snapshot PendingAuthorizationSnapshot) AuthorizationInteraction {
-	return AuthorizationInteraction{
-		kind: authorizationInteractionCorrelated, record: clonePendingAuthorizationRecord(snapshot.Record),
-		clarifications: cloneAuthorizationClarifications(snapshot.Clarifications), cancelledAt: snapshot.CancelledAt,
+func (server *Server) authorizationInteractionFromSnapshot(
+	ctx context.Context,
+	snapshot PendingAuthorizationSnapshot,
+	at time.Time,
+) (AuthorizationInteraction, error) {
+	value, err := server.authorizationInteractionFromRecord(ctx, snapshot.Record, at)
+	if err != nil {
+		return AuthorizationInteraction{}, err
 	}
+	value.clarifications = cloneAuthorizationClarifications(snapshot.Clarifications)
+	value.cancelledAt = snapshot.CancelledAt
+	return value, nil
 }
 
 func (server *Server) validateAuthorizationInteraction(ctx context.Context, value AuthorizationInteraction) error {
@@ -678,6 +817,16 @@ func (server *Server) validateAuthorizationInteraction(ctx context.Context, valu
 	}
 	if err := validatePendingAuthorizationRecord(value.record); err != nil {
 		return errors.New("personserver: correlated authorization interaction is invalid")
+	}
+	if (value.record.MissionS256 == "") != (value.mission == nil) ||
+		(value.record.MissionS256 == "") != (value.missionRecord == nil) {
+		return errors.New("personserver: authorization interaction mission state is invalid")
+	}
+	if value.missionRecord != nil &&
+		(value.missionRecord.S256 != value.record.MissionS256 || value.missionRecord.Agent != value.record.Agent ||
+			value.mission.S256 != value.record.MissionS256 ||
+			!value.missionRecord.ExpiresAt.Equal(value.record.MissionExpiresAt)) {
+		return errors.New("personserver: authorization interaction mission state is invalid")
 	}
 	return nil
 }
@@ -695,6 +844,15 @@ func (server *Server) loadAuthorizationInteraction(ctx context.Context, value Au
 	}
 	if !pendingAuthorizationRecordsEqual(snapshot.Record, value.record) {
 		return PendingAuthorizationSnapshot{}, ErrPendingAuthorizationConflict
+	}
+	if value.missionRecord != nil {
+		current, err := server.loadActiveMission(ctx, value.missionRecord.S256, value.missionRecord.Agent, now)
+		if err != nil {
+			return PendingAuthorizationSnapshot{}, err
+		}
+		if !value.missionRecord.Equal(current) {
+			return PendingAuthorizationSnapshot{}, ErrMissionConflict
+		}
 	}
 	return snapshot, nil
 }
@@ -743,6 +901,7 @@ func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bo
 		left.Subject == right.Subject && left.Tenant == right.Tenant && reflect.DeepEqual(left.Scopes, right.Scopes) &&
 		left.Confirmation.Equal(right.Confirmation) && left.AgentExpiresAt.Equal(right.AgentExpiresAt) &&
 		left.ResourceTokenExpiresAt.Equal(right.ResourceTokenExpiresAt) &&
+		left.MissionS256 == right.MissionS256 && left.MissionExpiresAt.Equal(right.MissionExpiresAt) &&
 		reflect.DeepEqual(left.AgentAdditionalClaims, right.AgentAdditionalClaims) &&
 		reflect.DeepEqual(left.Capabilities, right.Capabilities) && left.CreatedAt.Equal(right.CreatedAt) &&
 		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetryAfter == right.RetryAfter
@@ -771,7 +930,7 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("authorization polling requires a bodyless GET"))
 		return
 	}
-	_, agent, proof, err := server.verifyAgentRequest(request, nil)
+	_, agent, _, err := server.verifyAgentRequest(request, nil)
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -786,8 +945,38 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
 		return
 	}
-	result, err := server.authorizationInteractions.PollPendingAuthorization(request.Context(), id, identity, proof.VerifiedAt())
+	now := server.clock.Now().UTC()
+	var mission *MissionRecord
+	var result AuthorizationPollRecord
+	if server.missionAuthorizationInteractions != nil {
+		snapshot, snapshotErr := server.authorizationInteractions.LoadPendingAuthorization(request.Context(), id, now)
+		if snapshotErr == nil && snapshot.Record.MissionS256 != "" {
+			if !pendingAuthorizationIdentityMatches(snapshot.Record, identity) {
+				writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
+				return
+			}
+			loaded, loadErr := server.loadActiveMission(request.Context(), snapshot.Record.MissionS256, identity.Agent, now)
+			if loadErr != nil {
+				writeMissionActionProblem(response, loadErr)
+				return
+			}
+			mission = &loaded
+			result, err = server.missionAuthorizationInteractions.PollMissionPendingAuthorization(
+				request.Context(), cloneMissionRecordForTransition(loaded), id, identity, now,
+			)
+		} else if snapshotErr != nil {
+			err = snapshotErr
+		} else {
+			result, err = server.authorizationInteractions.PollPendingAuthorization(request.Context(), id, identity, now)
+		}
+	} else {
+		result, err = server.authorizationInteractions.PollPendingAuthorization(request.Context(), id, identity, now)
+	}
 	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return
+		}
 		switch {
 		case errors.Is(err, ErrPendingAuthorizationNotFound), errors.Is(err, ErrPendingAuthorizationGone):
 			writeProblem(response, http.StatusGone, "invalid_code", err)
@@ -806,13 +995,13 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 	case AuthorizationPollInteracting:
 		server.writePendingAuthorization(response, request.URL.Path, result.RetryAfter, "interacting")
 	case AuthorizationPollClarifying:
-		server.writePendingAuthorizationClarification(response, request.URL.Path, result, proof.VerifiedAt())
+		server.writePendingAuthorizationClarification(response, request.URL.Path, result, now)
 	case AuthorizationPollApproved:
 		claims, err := server.validateApprovedAuthorization(request.Context(), result)
 		if err != nil {
 			var tokenFailure *aauth.TokenValidationError
 			if errors.As(err, &tokenFailure) && tokenFailure.Code == aauth.TokenValidationExpired {
-				if server.consumePendingAuthorizationResult(response, request, id, result) {
+				if server.consumePendingAuthorizationResult(response, request, id, result, mission) {
 					writeProblem(response, http.StatusRequestTimeout, "expired", err)
 				}
 				return
@@ -829,7 +1018,7 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
-		if !server.consumePendingAuthorizationResult(response, request, id, result) {
+		if !server.consumePendingAuthorizationResult(response, request, id, result, mission) {
 			return
 		}
 		writePrivateJSON(response, http.StatusOK, struct {
@@ -837,22 +1026,22 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 			ExpiresIn int64  `json:"expires_in"`
 		}{AuthToken: result.Token, ExpiresIn: result.ExpiresIn})
 	case AuthorizationPollDenied:
-		if !server.consumePendingAuthorizationResult(response, request, id, result) {
+		if !server.consumePendingAuthorizationResult(response, request, id, result, mission) {
 			return
 		}
 		writeProblem(response, http.StatusForbidden, "denied", errors.New("authorization interaction was denied"))
 	case AuthorizationPollAbandoned:
-		if !server.consumePendingAuthorizationResult(response, request, id, result) {
+		if !server.consumePendingAuthorizationResult(response, request, id, result, mission) {
 			return
 		}
 		writeProblem(response, http.StatusForbidden, "abandoned", errors.New("authorization interaction was abandoned"))
 	case AuthorizationPollServerError:
-		if !server.consumePendingAuthorizationResult(response, request, id, result) {
+		if !server.consumePendingAuthorizationResult(response, request, id, result, mission) {
 			return
 		}
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization interaction failed"))
 	case AuthorizationPollExpired:
-		if !server.consumePendingAuthorizationResult(response, request, id, result) {
+		if !server.consumePendingAuthorizationResult(response, request, id, result, mission) {
 			return
 		}
 		writeProblem(response, http.StatusRequestTimeout, "expired", ErrPendingAuthorizationExpired)
@@ -919,7 +1108,8 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 		return aauth.AuthTokenClaims{}, err
 	}
 	if result.DecidedAt.Before(result.Pending.CreatedAt) || !result.DecidedAt.Before(result.Pending.ExpiresAt) ||
-		!result.DecidedAt.Before(result.Pending.AgentExpiresAt) {
+		!result.DecidedAt.Before(result.Pending.AgentExpiresAt) ||
+		(!result.Pending.MissionExpiresAt.IsZero() && !result.DecidedAt.Before(result.Pending.MissionExpiresAt)) {
 		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token has an invalid decision time")
 	}
 	claims, err := aauth.VerifyAuthToken(ctx, result.Token, server.keyResolver, server.clock)
@@ -937,17 +1127,38 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 	if result.Pending.AgentExpiresAt.Before(expiresAt) {
 		expiresAt = result.Pending.AgentExpiresAt
 	}
+	if !result.Pending.MissionExpiresAt.IsZero() && result.Pending.MissionExpiresAt.Before(expiresAt) {
+		expiresAt = result.Pending.MissionExpiresAt
+	}
 	if claims.Tenant != result.Pending.Tenant || claims.Scope != strings.Join(granted, " ") ||
 		claims.IssuedAt != result.DecidedAt.Unix() || claims.ExpiresAt != expiresAt.Unix() ||
-		result.ExpiresIn != claims.ExpiresAt-claims.IssuedAt || claims.MissionS256 != "" || claims.Account != nil ||
+		result.ExpiresIn != claims.ExpiresAt-claims.IssuedAt || claims.MissionS256 != result.Pending.MissionS256 || claims.Account != nil ||
 		len(claims.AdditionalClaims) != 0 {
 		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token does not match the retained authorization")
 	}
 	return claims, nil
 }
 
-func (server *Server) consumePendingAuthorizationResult(response http.ResponseWriter, request *http.Request, id string, result AuthorizationPollRecord) bool {
-	if err := server.authorizationInteractions.ConsumePendingAuthorizationResult(request.Context(), id, result); err != nil {
+func (server *Server) consumePendingAuthorizationResult(
+	response http.ResponseWriter,
+	request *http.Request,
+	id string,
+	result AuthorizationPollRecord,
+	mission *MissionRecord,
+) bool {
+	var err error
+	if mission != nil {
+		err = server.missionAuthorizationInteractions.ConsumeMissionPendingAuthorizationResult(
+			request.Context(), cloneMissionRecordForTransition(*mission), id, result, server.clock.Now().UTC(),
+		)
+	} else {
+		err = server.authorizationInteractions.ConsumePendingAuthorizationResult(request.Context(), id, result)
+	}
+	if err != nil {
+		if mission != nil {
+			writeMissionActionProblem(response, err)
+			return false
+		}
 		if errors.Is(err, ErrPendingAuthorizationNotFound) || errors.Is(err, ErrPendingAuthorizationGone) {
 			writeProblem(response, http.StatusGone, "invalid_code", err)
 		} else {
@@ -956,6 +1167,12 @@ func (server *Server) consumePendingAuthorizationResult(response http.ResponseWr
 		return false
 	}
 	return true
+}
+
+func pendingAuthorizationIdentityMatches(record PendingAuthorizationRecord, identity AuthorizationPollIdentity) bool {
+	thumbprint, err := record.Confirmation.Thumbprint()
+	return err == nil && record.PersonServer == identity.PersonServer && record.AgentProvider == identity.AgentProvider &&
+		record.Agent == identity.Agent && thumbprint == identity.ConfirmationThumbprint
 }
 
 func (server *Server) writePendingAuthorization(response http.ResponseWriter, location string, retryAfter time.Duration, status string) {

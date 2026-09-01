@@ -327,10 +327,6 @@ func TestMissionSpecificContinuationsReturnTypedErrors(t *testing.T) {
 			_, err := client.Exchange(context.Background(), input)
 			return err
 		}},
-		{name: "BeginExchange", call: func(client *agent.Client, input agent.ExchangeRequest) error {
-			_, err := client.BeginExchange(context.Background(), input)
-			return err
-		}},
 	} {
 		operation := operation
 		t.Run(operation.name, func(t *testing.T) {
@@ -349,6 +345,29 @@ func TestMissionSpecificContinuationsReturnTypedErrors(t *testing.T) {
 			})
 			assertMissionContinuationError(t, err, "auth-token exchange", operation.name)
 		})
+	}
+}
+
+func TestMissionBeginExchangeReturnsVerifiedPending(t *testing.T) {
+	harness := newExchangeInteractionHarness(t)
+	harness.resourceClaims.MissionS256 = aauth.MissionS256([]byte("approved mission"))
+	var err error
+	harness.resourceToken, err = aauth.MintResourceToken(harness.protocol.resourceKey, harness.resourceClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.initial = func(request *http.Request) (*http.Response, error) {
+		return missionPendingResponse(request), nil
+	}
+	result, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok || pending.Location() != harness.protocol.personServerID+"/pending/mission" {
+		t.Fatalf("mission pending = %#v, %t", pending, ok)
 	}
 }
 

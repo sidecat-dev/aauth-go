@@ -75,6 +75,11 @@ proves a retained host question, a typed Agent view, a signed answer,
 serialized continuation and value recomposition, explicit approval and
 polling, one protected call, and a typed wrong-Agent refusal. No library step
 polls or retries automatically.
+The [mission-bound deferred authorization journey](personserver/mission_deferred_authorization_test.go)
+uses those same Agent calls while the Person Server exposes the exact active
+mission only to host policy, binds the decision and issued token to that
+snapshot, permits later accepted updates as Core requires, and refuses delivery
+after mission termination.
 The [missionless Permission journey](integration/permission_missionless_test.go)
 proves a signed local-action request, Person Server recomposition around the
 retained request, explicit host grant and denial, one caller-driven poll, one
@@ -203,8 +208,8 @@ with application-selected Agent Provider routes, plus the source-described
 self-hosted profile. Platform-attestation and durable-key replacement remain
 open. Clarification
 currently covers one direct three-party question, answer, and cancellation
-during host-authenticated consent. Updated requests, Access Server relay,
-mission-bound clarification, and other general deferred paths remain open, as
+during host-authenticated consent, with or without a mission. Updated requests,
+Access Server relay, and other general deferred paths remain open, as
 do the remaining mission log and control
 surfaces, and several delegation and revocation variants also remain open.
 Permission covers top-level missionless and mission-bound actions with

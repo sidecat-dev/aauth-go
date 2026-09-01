@@ -201,6 +201,7 @@ func TestMissionCompositionRejectsDeferredAuthorizationBeforeAuthorizationOrRete
 
 	response := signedCompositionRequest(t, protocol.server, protocol.personServerID+"/token", map[string]any{
 		"resource_token": resourceToken,
+		"capabilities":   []string{"interaction"},
 	}, protocol.agentKey, protocol.agentToken, protocol.clock)
 
 	assertCompositionProblem(t, response, http.StatusInternalServerError, "server_error")

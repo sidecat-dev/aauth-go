@@ -1090,6 +1090,32 @@ contract.
 `agent` claim that current Resource tokens do not carry; choosing a replacement
 binding here would hide the source problem recorded as `AAG-F008`.
 
+### A mission adds context, not another continuation API
+
+The direct deferred authorization path uses the same Agent begin, answer or
+cancel, snapshot or restore, and poll methods whether the Resource token names
+a mission or not. The signed Resource token already carries `mission_s256`, so
+serializing that exact token is sufficient to reconstruct the verified
+continuation; a second mission field in the Agent snapshot would create two
+sources of truth.
+
+At the Person Server, the host sees a copied exact active mission through the
+ordinary authorization handle. Mission-aware store methods compare that
+snapshot in the transaction that creates or changes pending state. Approval
+also retains the issued token in that transaction. A later accepted update
+does not invalidate the token or prevent its delivery: Core keeps
+`mission_s256` stable specifically so the Agent can continue while the log
+catches up. Termination still prevents poll or terminal consume. An update
+before the host decides makes that host handle stale; resuming exposes the new
+context before a decision is made.
+
+Core permits omitted request capabilities to fall back to the capabilities
+captured when the mission was approved. `MissionRecord` retains those exact
+values, and the Person Server uses them only when the request member is
+absent. An explicitly supplied empty array is preserved as an explicit refresh
+to no capabilities. The Agent's Go request keeps that distinction: a nil slice
+omits the member, while a nonnil empty slice emits `[]`.
+
 ## Permission decisions stay specific to the Permission Endpoint
 
 **Sources:** AAuth Core, `Permission Endpoint`, `Permission Response`, and
