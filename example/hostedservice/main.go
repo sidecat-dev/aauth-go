@@ -15,6 +15,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -135,7 +136,29 @@ func run(output io.Writer) error {
 	if err := callHostedConnector(ctx, bootstrap.client, operationSet, requestedBudget, mission, roles.connector); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; exhausted call refused before dispatch; replacement grant resumed connector work once"); err != nil {
+	if err := bootstrap.client.CompleteMission(ctx, clientagent.MissionCompletionRequest{
+		PersonServer: personServerID, MissionS256: mission.Mission().S256,
+		Summary: "Recovered connector query completed",
+	}); err != nil {
+		return err
+	}
+	missionPersonToken, ok := mission.PersonToken(hostedResourceID)
+	if !ok {
+		return errors.New("hosted-service example: completed mission lost its Person token")
+	}
+	lateResourceToken, err := bootstrap.client.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: hostedResourceID, PersonToken: missionPersonToken,
+		R3Operations: &operationSet, Budget: &requestedBudget,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := bootstrap.client.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: lateResourceToken,
+	}); err == nil {
+		return errors.New("hosted-service example: completed mission authorized more connector work")
+	}
+	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; exhausted call recovered; person-accepted mission completion retained"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(output, "5. OAuth service credential remained inside the connector application"); err != nil {

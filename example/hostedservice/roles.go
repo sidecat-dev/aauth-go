@@ -68,6 +68,13 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 				DeferProposal: func(context.Context, personserver.MissionApprovalRequest) (personserver.MissionProposalPendingPolicy, bool, error) {
 					return personserver.MissionProposalPendingPolicy{Lifetime: 5 * time.Minute}, true, nil
 				},
+				ConfirmPersonAcceptedCompletion: func(_ context.Context, request personserver.MissionCompletionPolicyRequest) error {
+					if request.Mission.Blob.Description != "Review and approve the hosted records query." ||
+						request.Document.Completion.Summary != "Recovered connector query completed" {
+						return errors.New("hosted-service example: unexpected mission completion")
+					}
+					return nil
+				},
 			},
 			Permission: &personserver.PermissionConfig{
 				Policy: func(_ context.Context, request personserver.PermissionPolicyRequest) (personserver.PermissionPolicyResult, error) {

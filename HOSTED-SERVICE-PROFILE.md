@@ -60,9 +60,10 @@ go run ./example/hostedservice
 That example proves the features can share one configured environment. It
 charges one MCP connector call, verifies that an exhausted-Budget step-up is
 returned before a second connector dispatch, exchanges the replacement token,
-and resumes one connector call under the fresh grant. The focused examples
-below provide deeper evidence for individual paths, including exact refresh
-replay:
+resumes one connector call under the fresh grant, and retains the person's
+acceptance of mission completion before terminating that mission. A later
+mission-bound exchange is refused. The focused examples below provide deeper
+evidence for individual paths, including exact refresh replay:
 
 ```sh
 go run ./example/bootstrap
