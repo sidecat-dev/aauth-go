@@ -96,6 +96,7 @@ polls, or choose business policy. The host must:
 - authenticate people and administrators before invoking review or enrollment
   transition methods;
 - supply durable, transactionally correct store adapters;
+- run each applicable role-local `storetest` suite against those adapters;
 - keep private keys and third-party credentials out of Agent-visible values;
 - use short Agent-token lifetimes appropriate to the delay between revocation
   and expiry;

@@ -77,7 +77,9 @@ path lets the AP explicitly target a configured PS or a known direct
 Agent-identity Resource. Each recipient retains the exact `(iss, jti)` marker
 through its own role-local store and checks it after token and proof
 verification but before policy or application dispatch. No shared revocation
-lifecycle or automatic Resource registry joins those roles.
+lifecycle or automatic Resource registry joins those roles. Each package's
+`storetest.RunAgentTokenRevocation` checks the same source operation through
+that role-local interface.
 
 The current Events slice adds the `events` value package plus explicit
 `agentprovider`, `resource`, and `agent` role surfaces for public and protected

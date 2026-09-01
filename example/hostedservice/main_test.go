@@ -3,6 +3,11 @@ package main
 import (
 	"bytes"
 	"testing"
+
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	personstoretest "gitlab.com/sidecat-dev/aauth-go/personserver/storetest"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	resourcestoretest "gitlab.com/sidecat-dev/aauth-go/resource/storetest"
 )
 
 func TestRunCompletesHostedServiceLaunchProfile(t *testing.T) {
@@ -19,4 +24,21 @@ func TestRunCompletesHostedServiceLaunchProfile(t *testing.T) {
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
+}
+
+func TestAgentTokenRevocationStoreContracts(t *testing.T) {
+	t.Run("Person Server", func(t *testing.T) {
+		personstoretest.RunAgentTokenRevocation(t, personstoretest.AgentTokenRevocationContract{
+			New: func(testing.TB) personserver.AgentTokenRevocationStore {
+				return newAgentTokenRevocationStore()
+			},
+		})
+	})
+	t.Run("Resource", func(t *testing.T) {
+		resourcestoretest.RunAgentTokenRevocation(t, resourcestoretest.AgentTokenRevocationContract{
+			New: func(testing.TB) resource.AgentTokenRevocationStore {
+				return newAgentTokenRevocationStore()
+			},
+		})
+	})
 }
