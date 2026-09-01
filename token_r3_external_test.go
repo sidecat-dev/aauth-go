@@ -104,8 +104,8 @@ func TestR3BudgetTokenAPIsVerifyBothCompanionsTogether(t *testing.T) {
 	partialResource := signCoreTokenPayload(t, resourceKey, aauth.ResourceTokenType, rawMembers(resourceMembers))
 	if _, _, _, _, err := r3.VerifyBudgetResourceToken(
 		context.Background(), tokenMCPRegistry, partialResource, resolver, clock,
-	); err == nil {
-		t.Fatal("combined verifier accepted an R3 Resource token without budget")
+	); err == nil || !budgets.IsTokenClaimError(err) {
+		t.Fatalf("combined verifier error = %v, want Budget token-claim error", err)
 	}
 	resourceMembers = compactClaimMap(t, resourceCompact)
 	resourceMembers["Budget"] = resourceMembers["budget"]
@@ -113,11 +113,11 @@ func TestR3BudgetTokenAPIsVerifyBothCompanionsTogether(t *testing.T) {
 	caseVariantResource := signCoreTokenPayload(t, resourceKey, aauth.ResourceTokenType, rawMembers(resourceMembers))
 	if _, _, _, _, err := r3.VerifyBudgetResourceToken(
 		context.Background(), tokenMCPRegistry, caseVariantResource, resolver, clock,
-	); err == nil {
-		t.Fatal("combined verifier accepted a noncanonical Budget claim")
+	); err == nil || !budgets.IsTokenClaimError(err) {
+		t.Fatalf("combined verifier error = %v, want Budget token-claim error", err)
 	}
 
-	authCompact, err := r3.MintDirectBudgetAuthToken(
+	authCompact, err := r3.MintBudgetAuthToken(
 		tokenMCPRegistry,
 		personKey,
 		aauth.AuthTokenClaims{
@@ -135,7 +135,7 @@ func TestR3BudgetTokenAPIsVerifyBothCompanionsTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authClaims, authReference, authOperations, gotGrant, err := r3.VerifyDirectBudgetAuthToken(
+	authClaims, authReference, authOperations, gotGrant, err := r3.VerifyBudgetAuthToken(
 		context.Background(), tokenMCPRegistry, authCompact, resolver, clock,
 	)
 	if err != nil {
@@ -155,7 +155,7 @@ func TestR3BudgetTokenAPIsVerifyBothCompanionsTogether(t *testing.T) {
 	authMembers := compactClaimMap(t, authCompact)
 	authMembers["budget_consumed"] = json.RawMessage(`[]`)
 	invalidAuth := signCoreTokenPayload(t, personKey, aauth.AuthTokenType, rawMembers(authMembers))
-	if _, _, _, _, err := r3.VerifyDirectBudgetAuthToken(
+	if _, _, _, _, err := r3.VerifyBudgetAuthToken(
 		context.Background(), tokenMCPRegistry, invalidAuth, resolver, clock,
 	); err == nil {
 		t.Fatal("combined verifier accepted budget_consumed in an Auth token")

@@ -84,7 +84,7 @@ func (server *Server) issueDirectR3AuthorizationToken(
 			verified.reference, verified.exactArtifact, decision.Grant,
 		)
 	} else {
-		compact, err = r3.MintDirectBudgetAuthToken(
+		compact, err = r3.MintBudgetAuthToken(
 			server.r3.registry, server.signingKey, claims,
 			verified.reference, verified.exactArtifact, decision.Grant, *grantedBudget,
 		)

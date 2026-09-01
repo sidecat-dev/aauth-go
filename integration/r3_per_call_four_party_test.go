@@ -190,6 +190,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 	}
 
 	resourceTokenIDs := 0
+	displayAccount := account
 	newResource := func() *resource.Server {
 		server, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
 			Issuer: resourceID, AccessServer: accessServerID,
@@ -219,7 +220,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 				Registry:    registry,
 				Definitions: newIntegrationR3DefinitionRegistry(t),
 				Vocabularies: integrationR3ResourceVocabularies(
-					t, resourceID, []string{"records.delete"}, account, &classDisplay,
+					t, resourceID, []string{"records.delete"}, &displayAccount, &classDisplay,
 				),
 				Documents: documents,
 				HTTP: resource.R3HTTPAdapter{

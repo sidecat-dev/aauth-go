@@ -50,8 +50,9 @@ type FederatedAuthorizationConfig struct {
 	// R3 optionally enables registered R3 authorization on this HTTP Resource.
 	R3 *R3Config
 	// Budget optionally enables proactive four-party Budget offers and
-	// fixed-price enforcement for metered protected routes. It does not compose
-	// with R3, held delivery, or mission-bound Budget authorization.
+	// fixed-price enforcement for metered protected routes. A paired R3 config
+	// permits class-document operation authorization under the same fixed grant.
+	// Budget does not compose with held or reactive delivery.
 	Budget *BudgetConfig
 	// HeldInvocations enables Resource-held auth-token delivery. The host store
 	// is a trusted persistence and authorization boundary; see
@@ -353,9 +354,6 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, error) {
 	if err := aauth.ValidateServerIdentifier(config.AccessServer); err != nil {
 		return nil, fmt.Errorf("aauth: resource access server: %w", err)
-	}
-	if config.Budget != nil && config.R3 != nil {
-		return nil, errors.New("aauth: four-party R3 and Budget authorization is not implemented")
 	}
 	if config.Budget != nil && config.HeldInvocations != nil {
 		return nil, errors.New("aauth: Resource-held Budget authorization is not implemented")

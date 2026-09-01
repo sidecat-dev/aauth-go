@@ -195,8 +195,8 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		return aauth.ResourceTokenClaims{}, nil, nil, err
 	}
 	if carriesR3 && carriesBudget {
-		if server.authorizationMode != authorizationModePersonServer || server.r3 == nil {
-			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: combined R3 and Budget resource token requires direct R3 authorization")
+		if server.r3 == nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("personserver: combined R3 and Budget resource token requires R3 authorization")
 		}
 		claims, reference, offer, consumed, err := r3.VerifyBudgetResourceToken(
 			ctx, server.r3.registry, compact, server.keyResolver, clock,
@@ -234,6 +234,32 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		return aauth.ResourceTokenClaims{}, nil, nil, err
 	}
 	return claims, &verifiedR3{reference: reference}, nil, nil
+}
+
+func (server *Server) verifyR3BudgetAccessResult(
+	ctx context.Context,
+	compact string,
+	verified *verifiedR3,
+) (aauth.AuthTokenClaims, budgets.Value, error) {
+	if verified == nil || verified.kind != r3.ArtifactDocument {
+		return aauth.AuthTokenClaims{}, budgets.Value{}, errors.New("personserver: class R3 context is required for a Budget result")
+	}
+	claims, reference, operations, grant, err := r3.VerifyBudgetAuthToken(
+		ctx, server.r3.registry, compact, server.keyResolver, server.clock,
+	)
+	if err != nil {
+		return aauth.AuthTokenClaims{}, budgets.Value{}, err
+	}
+	if reference != verified.reference {
+		return aauth.AuthTokenClaims{}, budgets.Value{}, errors.New("personserver: Access Server changed the R3 document reference")
+	}
+	if err := r3.ValidateDocumentAccount(verified.document, claims.Account); err != nil {
+		return aauth.AuthTokenClaims{}, budgets.Value{}, fmt.Errorf("personserver: Access Server R3 account: %w", err)
+	}
+	if _, err := r3.NewGrant(operations.GrantedOperations(), verified.document); err != nil {
+		return aauth.AuthTokenClaims{}, budgets.Value{}, fmt.Errorf("personserver: Access Server R3 Budget authorization: %w", err)
+	}
+	return claims, grant, nil
 }
 
 func (server *Server) fetchR3Artifact(

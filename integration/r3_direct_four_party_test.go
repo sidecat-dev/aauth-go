@@ -16,6 +16,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/accessserver"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
@@ -28,12 +29,17 @@ func TestR3DirectFourPartyJourney(t *testing.T) {
 		vocabulary := vocabulary
 		t.Run(vocabulary.name, func(t *testing.T) {
 			t.Parallel()
-			testR3DirectFourPartyJourney(t, vocabulary)
+			testR3DirectFourPartyJourney(t, vocabulary, false)
 		})
 	}
 }
 
-func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabulary) {
+func TestR3BudgetFourPartyJourney(t *testing.T) {
+	t.Parallel()
+	testR3DirectFourPartyJourney(t, integrationR3Vocabularies()[0], true)
+}
+
+func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabulary, withBudget bool) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
@@ -97,6 +103,49 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 		"Record contents",
 		"Exported copies cannot be recalled",
 	)
+	var accountInput *string
+	if !withBudget {
+		accountInput = &account
+	}
+	var requestedBudget, resourceOffer, personCeiling, accessGrant budgets.Value
+	var budgetDeclaration budgets.UnitDeclaration
+	var budgetLedger *integrationBudgetStore
+	var resourceBudget *resource.BudgetConfig
+	if withBudget {
+		unit, err := budgets.NewUnit("USD", 6)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requestedBudget = integrationBudgetValue(t, 800_000, unit)
+		resourceOffer = integrationBudgetValue(t, 600_000, unit)
+		personCeiling = integrationBudgetValue(t, 450_000, unit)
+		accessGrant = integrationBudgetValue(t, 300_000, unit)
+		budgetDeclaration, err = budgets.NewBoundedUnitDeclaration(unit, 1_000_000, "US dollars at micro-dollar precision")
+		if err != nil {
+			t.Fatal(err)
+		}
+		budgetLedger = newIntegrationBudgetStore()
+		resourceBudget = &resource.BudgetConfig{
+			Units: []budgets.UnitDeclaration{budgetDeclaration},
+			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
+				if !integrationSameBudget(request.Requested, requestedBudget) {
+					return budgets.Value{}, errors.New("unexpected R3 Budget request")
+				}
+				return resourceOffer, nil
+			},
+			RetainLineage: func(context.Context, resource.BudgetLineage) error { return nil },
+			Cost: func(_ context.Context, request resource.BudgetCostRequest) (int64, error) {
+				if !integrationSameBudget(request.Grant, accessGrant) {
+					return 0, errors.New("unexpected R3 Budget grant")
+				}
+				return 125_000, nil
+			},
+			Store: budgetLedger,
+			Challenge: func(context.Context, resource.BudgetChallengeRequest) (string, error) {
+				return "", errors.New("R3 Budget step-up is outside this journey")
+			},
+		}
+	}
 	protectedCalls := 0
 	protectedResource, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
 		Issuer: resourceID, AccessServer: accessServerID,
@@ -126,7 +175,7 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 			Registry:    registry,
 			Definitions: newIntegrationR3DefinitionRegistry(t),
 			Vocabularies: integrationR3ResourceVocabularies(
-				t, resourceID, []string{"records.read", "records.export"}, account, &display,
+				t, resourceID, []string{"records.read", "records.export"}, accountInput, &display,
 			),
 			Documents: documents,
 			HTTP: resource.R3HTTPAdapter{OperationForRequest: func(request *http.Request) (r3.Operation, bool, error) {
@@ -143,12 +192,15 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			protectedCalls++
 			principal, ok := resource.AuthPrincipalFromContext(request.Context())
-			if !ok || principal.Account == nil || *principal.Account != account || !slices.Equal(principal.Scope, expectedPrincipalScopes) {
+			accountMatches := withBudget && principal.Account == nil ||
+				!withBudget && principal.Account != nil && *principal.Account == account
+			if !ok || !accountMatches || !slices.Equal(principal.Scope, expectedPrincipalScopes) {
 				t.Fatalf("R3 principal = %#v, %t", principal, ok)
 			}
 			response.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(response, `{"ok":true}`)
 		}),
+		Budget: resourceBudget,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +209,15 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 
 	issuances := &integrationR3IssuanceStore{}
 	authTokenIDs := 0
+	var accessBudget *accessserver.BudgetConfig
+	if withBudget {
+		accessBudget = &accessserver.BudgetConfig{ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
+			if resource != resourceID {
+				return nil, errors.New("unexpected Resource metadata request")
+			}
+			return []budgets.UnitDeclaration{budgetDeclaration}, nil
+		}}
+	}
 	access, err := accessserver.New(accessserver.Config{
 		Issuer: accessServerID, SigningKey: accessKey, KeyResolver: resolver,
 		Clock: clock, NewID: func() string {
@@ -183,7 +244,8 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 			},
 			AuthorizeDocument: func(_ context.Context, request accessserver.AuthorizationRequest, _ r3.Reference, document r3.Document) (accessserver.R3DocumentDecision, error) {
 				if !vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) ||
-					!slices.Equal(request.Scopes, requiredScopes) {
+					!slices.Equal(request.Scopes, requiredScopes) || withBudget &&
+					(request.Budget == nil || !integrationSameBudget(*request.Budget, personCeiling)) {
 					return accessserver.R3DocumentDecision{}, errors.New("unexpected R3 policy input")
 				}
 				granted, err := r3.NewGrantedOperations(vocabulary.registration, read)
@@ -202,16 +264,35 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 					Scopes:        append([]string(nil), request.Scopes...),
 					Lifetime:      30 * time.Minute,
 					Authorization: &authorization,
+					Budget:        cloneIntegrationBudget(withBudget, accessGrant),
 				}, nil
 			},
 			Issuances: issuances,
 		},
+		Budget: accessBudget,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	personTokens := newMemoryPersonTokenStore()
 	consentCalls := 0
+	var personBudget *personserver.FederatedBudgetConfig
+	if withBudget {
+		personBudget = &personserver.FederatedBudgetConfig{
+			ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
+				if resource != resourceID {
+					return nil, errors.New("unexpected Resource metadata request")
+				}
+				return []budgets.UnitDeclaration{budgetDeclaration}, nil
+			},
+			Ceiling: func(_ context.Context, request personserver.AuthorizationRequest) (*budgets.Value, error) {
+				if request.Budget == nil || !integrationSameBudget(*request.Budget, resourceOffer) {
+					return nil, errors.New("unexpected R3 Budget offer")
+				}
+				return &personCeiling, nil
+			},
+		}
+	}
 	people, err := personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, NewID: func() string { return "r3-person-token" },
@@ -242,13 +323,15 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 			ConsentDocument: func(_ context.Context, request personserver.AuthorizationRequest, _ r3.Reference, document r3.Document) error {
 				consentCalls++
 				gotDisplay, hasDisplay := document.Display()
-				if request.Account == nil || *request.Account != account || !slices.Equal(request.Scopes, requiredScopes) ||
+				if !equalIntegrationStringPointers(request.Account, accountInput) || !slices.Equal(request.Scopes, requiredScopes) ||
+					withBudget && (request.Budget == nil || !integrationSameBudget(*request.Budget, resourceOffer)) ||
 					!vocabulary.operationSetsEqual(t, document.OperationSet(), requestedOperations) || !hasDisplay || gotDisplay.Summary() != display.Summary() {
 					return errors.New("unexpected R3 consent input")
 				}
 				return nil
 			},
 		},
+		Budget: personBudget,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +373,8 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 	}
 	resourceToken, err := agent.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: resourceID, PersonToken: personToken,
-		Account: &account, R3Operations: &requestedOperations,
+		Account: accountInput, R3Operations: &requestedOperations,
+		Budget: cloneIntegrationBudget(withBudget, requestedBudget),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -301,18 +385,59 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 	if err != nil {
 		t.Fatal(err)
 	}
-	authClaims, _, _, err := r3.VerifyDirectAuthToken(ctx, registry, authToken, resolver, clock)
+	var authClaims aauth.AuthTokenClaims
+	if withBudget {
+		var grant budgets.Value
+		authClaims, _, _, grant, err = r3.VerifyBudgetAuthToken(ctx, registry, authToken, resolver, clock)
+		if err == nil && !integrationSameBudget(grant, accessGrant) {
+			err = errors.New("unexpected Access Server R3 Budget grant")
+		}
+	} else {
+		authClaims, _, _, err = r3.VerifyDirectAuthToken(ctx, registry, authToken, resolver, clock)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
+	if withBudget {
+		ungranted, _ := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/export", nil)
+		if _, err := agent.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: ungranted, AuthToken: authToken}); err == nil {
+			t.Fatal("ungranted R3 Budget operation reached the Resource")
+		}
+		if total := budgetLedger.personTotal(personServerID, "person-123", resourceID); total != 0 || protectedCalls != 0 {
+			t.Fatalf("ungranted R3 Budget operation charged/dispatched = %d/%d", total, protectedCalls)
+		}
+	}
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/read", nil)
-	response, err := agent.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken})
+	var response *http.Response
+	if withBudget {
+		result, callErr := agent.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: request, AuthToken: authToken})
+		err = callErr
+		response, _ = result.Response()
+		if feedback, ok := result.Feedback(); callErr == nil && (!ok || feedback.Remaining() != 175_000) {
+			err = errors.New("unexpected R3 Budget feedback")
+		}
+	} else {
+		response, err = agent.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken})
+	}
 	if err != nil {
 		t.Fatal(err)
+	}
+	if response == nil {
+		t.Fatal("granted R3 call returned no response")
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || protectedCalls != 1 {
 		t.Fatalf("granted call = %d, protected calls %d", response.StatusCode, protectedCalls)
+	}
+	if withBudget {
+		if total := budgetLedger.personTotal(personServerID, "person-123", resourceID); total != 125_000 {
+			t.Fatalf("R3 Budget charge = %d, want 125000", total)
+		}
+		records := issuances.recordsCopy()
+		if len(records) != 1 || records[0].AuthTokenReference != (aauth.TokenReference{Issuer: authClaims.Issuer, JTI: authClaims.JTI}) {
+			t.Fatalf("R3 Budget issuance audit = %#v", records)
+		}
+		return
 	}
 	request, _ = http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/export", nil)
 	if _, err := agent.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken}); err == nil {
@@ -369,6 +494,13 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 	if err := issuances.Commit(ctx, changedIssuance); !errors.Is(err, r3.ErrIssuanceConflict) {
 		t.Fatalf("changed issuance repeat = %v", err)
 	}
+}
+
+func cloneIntegrationBudget(enabled bool, value budgets.Value) *budgets.Value {
+	if !enabled {
+		return nil
+	}
+	return &value
 }
 
 type integrationR3DocumentStore struct {

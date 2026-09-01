@@ -40,6 +40,11 @@ func invalidTokenClaims(err error) error {
 	return &tokenClaimError{cause: err}
 }
 
+// TokenClaimError marks an error found after Core token verification while
+// consuming Budget companion claims. Endpoints use it to return the
+// registered invalid_budget response for composed token profiles too.
+func TokenClaimError(err error) error { return invalidTokenClaims(err) }
+
 // ConsumptionRecord reports metered consumption against one prior Auth token.
 type ConsumptionRecord struct {
 	jti      string

@@ -428,7 +428,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, authReference, _, granted, err := r3.VerifyDirectBudgetAuthToken(
+	_, authReference, _, granted, err := r3.VerifyBudgetAuthToken(
 		ctx, registry, authToken, resolver, clock,
 	)
 	if err != nil {
@@ -502,7 +502,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, reauthorizedReference, _, reauthorizedGrant, err := r3.VerifyDirectBudgetAuthToken(
+	_, reauthorizedReference, _, reauthorizedGrant, err := r3.VerifyBudgetAuthToken(
 		ctx, registry, reauthorizedToken, resolver, clock,
 	)
 	if err != nil || reauthorizedReference != initialReference || !sameBudget(reauthorizedGrant, personGrant) {

@@ -522,7 +522,7 @@ func (client *Client) verifiedExchangeResponse(
 	}
 	var err error
 	if resource.r3Reference != nil && resource.budget != nil {
-		claims, authReference, _, granted, verifyErr := r3.VerifyDirectBudgetAuthToken(
+		claims, authReference, _, granted, verifyErr := r3.VerifyBudgetAuthToken(
 			ctx, client.r3.Registry, output.AuthToken, client.keyResolver, client.clock,
 		)
 		if verifyErr != nil {

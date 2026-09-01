@@ -66,7 +66,7 @@ func VerifyBudgetResourceToken(
 		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, err
 	}
 	if err := validateBudgetResourceClaims(claims.AdditionalClaims); err != nil {
-		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, err
+		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, budgets.TokenClaimError(err)
 	}
 	reference, err := referenceFromClaims(claims.AdditionalClaims)
 	if err != nil {
@@ -74,19 +74,19 @@ func VerifyBudgetResourceToken(
 	}
 	offer, err := budgets.ParseValueJSON(claims.AdditionalClaims[budgetClaim])
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, fmt.Errorf("r3: Budget resource-token offer: %w", err)
+		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, budgets.TokenClaimError(fmt.Errorf("r3: Budget resource-token offer: %w", err))
 	}
 	consumed, err := parseBudgetConsumption(claims.AdditionalClaims[budgetConsumedClaim])
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, err
+		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, budgets.TokenClaimError(err)
 	}
 	removeClaims(&claims.AdditionalClaims, r3URIClaim, r3S256Claim, budgetClaim, budgetConsumedClaim)
 	return claims, reference, offer, consumed, nil
 }
 
-// MintDirectBudgetAuthToken mints one direct three-party Auth token containing
+// MintBudgetAuthToken mints one Auth token containing
 // a proven R3 class grant and an independently narrowed fixed Budget grant.
-func MintDirectBudgetAuthToken(
+func MintBudgetAuthToken(
 	registry Registry,
 	key jose.SigningKey,
 	claims aauth.AuthTokenClaims,
@@ -97,17 +97,17 @@ func MintDirectBudgetAuthToken(
 ) (string, error) {
 	document, err := registry.ParseReferencedDocument(reference, exactDocument)
 	if err != nil {
-		return "", fmt.Errorf("r3: direct Budget auth-token document: %w", err)
+		return "", fmt.Errorf("r3: Budget auth-token document: %w", err)
 	}
 	if err := ValidateDocumentAccount(document, claims.Account); err != nil {
-		return "", fmt.Errorf("r3: direct Budget auth-token account: %w", err)
+		return "", fmt.Errorf("r3: Budget auth-token account: %w", err)
 	}
 	grantJSON, err := json.Marshal(operationGrant)
 	if err != nil {
-		return "", fmt.Errorf("r3: direct Budget auth-token operation grant: %w", err)
+		return "", fmt.Errorf("r3: Budget auth-token operation grant: %w", err)
 	}
 	if _, err := registry.ParseGrant(grantJSON, document); err != nil {
-		return "", fmt.Errorf("r3: direct Budget auth-token grant does not match referenced document: %w", err)
+		return "", fmt.Errorf("r3: Budget auth-token grant does not match referenced document: %w", err)
 	}
 	additional, err := prepareBudgetAuthClaims(claims, reference, grantJSON, budgetGrant)
 	if err != nil {
@@ -117,9 +117,9 @@ func MintDirectBudgetAuthToken(
 	return aauth.MintAuthTokenCore(key, claims)
 }
 
-// VerifyDirectBudgetAuthToken verifies Core trust and consumes one direct R3
-// class grant and one fixed Budget grant from the same Auth token.
-func VerifyDirectBudgetAuthToken(
+// VerifyBudgetAuthToken verifies Core trust and consumes one R3 class grant
+// and one fixed Budget grant from the same Auth token.
+func VerifyBudgetAuthToken(
 	ctx context.Context,
 	registry Registry,
 	compact string,
@@ -254,7 +254,7 @@ func validateBudgetAuthClaims(additional map[string]json.RawMessage) error {
 	if err := rejectFoldedClaims(aauth.AuthTokenType, additional, "budget_consumed belongs only in a Resource token", budgetConsumedClaim); err != nil {
 		return err
 	}
-	return rejectFoldedClaims(aauth.AuthTokenType, additional, "direct R3 does not permit r3_per_call", r3PerCallClaim)
+	return rejectFoldedClaims(aauth.AuthTokenType, additional, "the class-R3 Budget profile does not permit r3_per_call", r3PerCallClaim)
 }
 
 func parseBudgetConsumption(raw json.RawMessage) ([]budgets.ConsumptionRecord, error) {

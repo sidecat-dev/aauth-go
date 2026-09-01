@@ -106,7 +106,7 @@ func TestNewFederatedAuthorizationRejectsIncompleteConfiguration(t *testing.T) {
 	}
 }
 
-func TestFederatedBudgetRejectsUnimplementedCompositions(t *testing.T) {
+func TestFederatedBudgetRejectsUnsupportedDeliveryCompositions(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
@@ -114,9 +114,6 @@ func TestFederatedBudgetRejectsUnimplementedCompositions(t *testing.T) {
 		change func(*FederatedAuthorizationConfig)
 		want   string
 	}{
-		{name: "R3", change: func(config *FederatedAuthorizationConfig) {
-			config.R3 = &R3Config{}
-		}, want: "four-party R3 and Budget"},
 		{name: "held invocation", change: func(config *FederatedAuthorizationConfig) {
 			config.HeldInvocations = newHeldMemoryStore()
 		}, want: "Resource-held Budget"},

@@ -197,7 +197,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	var r3Reference *r3.Reference
 	if carriesR3 {
 		var reference r3.Reference
-		claims, reference, _, grant, err = r3.VerifyDirectBudgetAuthToken(
+		claims, reference, _, grant, err = r3.VerifyBudgetAuthToken(
 			ctx, client.r3.Registry, call.AuthToken, client.keyResolver, client.clock,
 		)
 		if err == nil {

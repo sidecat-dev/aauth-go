@@ -456,21 +456,23 @@ Start definition work with `r3.NewDefinitionRegistry`,
   - Missing: direct three-party per-call authorization and composition with
     missions, sub-agents, call chaining, or deferral.
 
-- [x] **Direct MCP class authorization with a fixed Budget — Implemented**
+- [x] **Class authorization with a fixed Budget — Implemented in both topologies**
   - Flow: Agent requests exact MCP operations and a Budget → Resource retains
     one R3 document and Budget lineage → PS independently verifies both and
-    narrows the operation set and amount → Resource verifies both companions,
-    checks the operation, atomically charges, then dispatches → an over-cap
-    call returns a typed step-up with the same R3 reference and no dispatch.
+    narrows the amount → direct PS or independent AS narrows the operation set
+    and amount → Resource verifies both companions, checks the operation,
+    atomically charges, then dispatches → an over-cap direct call returns a
+    typed step-up with the same R3 reference and no dispatch.
   - Start with: `r3.MintBudgetResourceToken`,
-    `r3.MintDirectBudgetAuthToken`, the ordinary direct-R3 configurations, and
+    `r3.MintBudgetAuthToken`, the ordinary R3 configurations, and
     the ordinary fixed-price Budget configurations and Agent calls.
   - Evidence: [`integration/r3_budget_three_party_test.go`](integration/r3_budget_three_party_test.go),
+    [`integration/r3_direct_four_party_test.go`](integration/r3_direct_four_party_test.go),
     [`token_r3_external_test.go`](token_r3_external_test.go), and
     `go run ./example/budget`.
-  - Boundary: direct three-party class authorization only. R3-only and
-    Budget-only verifiers continue to reject mixed tokens. Per-call,
-    four-party, mission, delegation, call-chain, account, and variable-price
+  - Boundary: class authorization only. R3-only and Budget-only verifiers
+    continue to reject mixed tokens. Per-call, held or reactive federation,
+    mission plus R3, delegation, call-chain, account, and variable-price
     combinations remain unsupported.
 
 - [x] **Federated four-party class authorization — Implemented for MCP and OpenAPI**
@@ -478,6 +480,10 @@ Start definition work with `r3.NewDefinitionRegistry`,
     fetch it independently → PS consents → AS narrows and audits the grant →
     Agent receives the Auth token → Resource enforces Core scope and R3
     operations.
+  - Fixed-Budget variant: the PS and AS independently fetch the same retained
+    class document, independently narrow the Resource offer, and the AS retains
+    mandatory R3 issuance facts before returning one combined token. The
+    Resource validates the operation before charging or dispatch.
   - Start with: `resource.NewFederatedAuthorization`,
     `personserver.R3Config.ConsentDocument`,
     `accessserver.R3Config.AuthorizeDocument`, and `accessserver.R3DocumentDecision`.
@@ -691,7 +697,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     releases no token.
   - Boundary: a PS omission means the Resource offer at the AS as the source
     requires. A successful AS response must still carry an explicit signed
-    Budget. R3, deferred interaction, delegation, call chaining, consumption
+    Budget. Per-call R3 plus Budget, deferred interaction, delegation, call chaining, consumption
     history, variable cost, streaming, and usage queries remain excluded.
 
 ### Not implemented

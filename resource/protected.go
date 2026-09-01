@@ -353,7 +353,7 @@ func (server *Server) verifyPreparedR3BudgetAuthRequest(
 	compact string,
 ) (signaturekey.VerifiedRequest, aauth.AuthTokenClaims, r3.Reference, r3.AuthTokenOperations, budgets.Value, error) {
 	verificationClock := aauth.ClockFunc(func() time.Time { return prepared.VerifiedAt() })
-	claims, reference, operations, grant, err := r3.VerifyDirectBudgetAuthToken(
+	claims, reference, operations, grant, err := r3.VerifyBudgetAuthToken(
 		request.Context(), server.r3.registry, compact, server.keyResolver, verificationClock,
 	)
 	if err != nil {

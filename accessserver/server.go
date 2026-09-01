@@ -327,6 +327,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		decision = Decision{
 			Scopes:   append([]string(nil), documentDecision.Scopes...),
 			Lifetime: documentDecision.Lifetime,
+			Budget:   cloneBudgetValue(documentDecision.Budget),
 		}
 		r3Authorization = documentDecision.Authorization
 		err = documentErr
@@ -375,6 +376,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 		r3Authorization = &proven
+		if grantedBudget != nil && len(proven.PerCallOperations().Operations()) != 0 {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("accessserver: fixed Budget cannot grant per-call R3 operations"))
+			return
+		}
 	}
 	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
 	if credentialExpiresAt.Before(expiresAt) {
@@ -403,10 +408,21 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if r3Context != nil {
 		switch r3Context.kind {
 		case r3.ArtifactDocument:
-			authToken, err = r3.MintAuthToken(
-				server.r3.registry, server.signingKey, claims,
-				r3Context.reference, r3Context.exact, *r3Authorization,
-			)
+			if grantedBudget == nil {
+				authToken, err = r3.MintAuthToken(
+					server.r3.registry, server.signingKey, claims,
+					r3Context.reference, r3Context.exact, *r3Authorization,
+				)
+			} else {
+				var operationGrant r3.Grant
+				operationGrant, err = r3.NewGrant(r3Authorization.GrantedOperations(), r3Context.document)
+				if err == nil {
+					authToken, err = r3.MintBudgetAuthToken(
+						server.r3.registry, server.signingKey, claims,
+						r3Context.reference, r3Context.exact, operationGrant, *grantedBudget,
+					)
+				}
+			}
 		case r3.ArtifactProposal:
 			authToken, err = r3.MintPerCallAuthToken(
 				server.r3.registry, server.signingKey, claims,

@@ -60,6 +60,9 @@ type R3DocumentDecision struct {
 	Scopes        []string
 	Lifetime      time.Duration
 	Authorization *r3.Authorization
+	// Budget is required when AuthorizationRequest.Budget is present and may
+	// only lower its amount without changing unit or decimals.
+	Budget *budgets.Value
 }
 
 // R3ProposalDecision is the Core scope and lifetime decision for one exact
@@ -154,7 +157,19 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		return aauth.ResourceTokenClaims{}, nil, nil, err
 	}
 	if carriesR3 && carriesBudget {
-		return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: combined R3 and Budget resource tokens are not implemented")
+		if server.r3 == nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: R3 Budget resource token is not supported")
+		}
+		claims, reference, offer, consumed, err := r3.VerifyBudgetResourceToken(
+			ctx, server.r3.registry, compact, server.keyResolver, clock,
+		)
+		if err != nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, err
+		}
+		if len(consumed) != 0 {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: Budget consumption records require retained grant resolution")
+		}
+		return claims, &verifiedR3{reference: reference}, &offer, nil
 	}
 	if carriesBudget {
 		claims, offer, consumed, err := budgets.VerifyResourceToken(ctx, compact, server.keyResolver, clock)

@@ -1277,7 +1277,15 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	var authToken aauth.AuthTokenClaims
-	if r3Context != nil {
+	if r3Context != nil && budgetOffer != nil {
+		var grant budgets.Value
+		authToken, grant, err = server.verifyR3BudgetAccessResult(
+			request.Context(), accessOutput.AuthToken, r3Context,
+		)
+		if err == nil {
+			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
+		}
+	} else if r3Context != nil {
 		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
 	} else if budgetOffer != nil {
 		var grant budgets.Value

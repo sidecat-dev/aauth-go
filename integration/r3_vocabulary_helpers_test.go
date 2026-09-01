@@ -158,7 +158,7 @@ func integrationR3ResourceVocabularies(
 	t *testing.T,
 	resourceID string,
 	operationNames []string,
-	account string,
+	account *string,
 	display *r3.Display,
 ) []resource.R3VocabularyConfig {
 	t.Helper()
@@ -170,7 +170,7 @@ func integrationR3ResourceVocabularies(
 		result = append(result, resource.R3VocabularyConfig{
 			Definition: definition,
 			DisplayForOperations: func(_ context.Context, operations r3.OperationSet, gotAccount *string) (*r3.Display, error) {
-				if !vocabulary.operationSetsEqual(t, operations, expected) || gotAccount == nil || *gotAccount != account {
+				if !vocabulary.operationSetsEqual(t, operations, expected) || !equalIntegrationStringPointers(gotAccount, account) {
 					return nil, errors.New("unexpected R3 display input")
 				}
 				return display, nil
@@ -178,6 +178,13 @@ func integrationR3ResourceVocabularies(
 		})
 	}
 	return result
+}
+
+func equalIntegrationStringPointers(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func integrationMCPDefinition(t *testing.T, endpoint string, names []string) r3.AuthoritativeSnapshot {
