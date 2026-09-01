@@ -31,6 +31,17 @@ Specifications:
 
 ## Repository deployment profiles
 
+- [x] **Local Agent composition — Implemented**
+  - Flow: self-hosted Agent Provider metadata and JWKS → self-issued Agent
+    token naming a local Person Server → typed permission for one local action
+    → direct Agent-identity Resource call with the same token and proof key.
+  - Start with: [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md) and
+    `go run ./example/selfhosted`.
+  - Boundary: this proves ordinary signed HTTP exchanges among the exported
+    roles. Its in-memory stores and logical transport do not prove restart
+    recovery, operating-system key custody, TLS deployment, or execution of an
+    approved action.
+
 - [x] **Hosted-service launch composition — Implemented**
   - Flow: durable-key enrollment → delegated Agent-token refresh → local
     permission → separately host-reviewed mission approval → MCP operation and
@@ -564,13 +575,15 @@ below is explicitly a repository profile.
 - [x] **Self-hosted Agent issuance and use — Implemented source profile**
   - Flow: user-controlled Agent origin → ordinary AP metadata and JWKS → Agent
     self-issues a current token with the same signing and confirmation key →
-    ordinary Agent client → protected Resource call. Reissuance creates another
-    short-lived token; there is no separate refresh endpoint.
+    ordinary Agent client → local Person Server permission → protected direct
+    Resource call. Reissuance creates another short-lived token; there is no
+    separate refresh endpoint.
   - Start with: `agentprovider.NewSelfHostedAgent`,
     `SelfHostedAgent.Issue`, `SelfHostedAgent.Handler`, `agent.New`, and
     `resource.NewAgentIdentity`.
   - Evidence: [`integration/bootstrap_self_hosted_test.go`](integration/bootstrap_self_hosted_test.go)
-    and `go run ./example/selfhosted`.
+    and `go run ./example/selfhosted`. The local composition boundary is in
+    [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md).
   - Source note: Core's functional sections explicitly support this profile,
     while one later rationale paragraph says APs must always be distinct.
     `AAG-F104` records the contradiction.

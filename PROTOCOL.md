@@ -491,9 +491,12 @@ source operation rather than one cross-role lifecycle object.
 ```mermaid
 sequenceDiagram
     participant A as Self-hosted Agent and AP
+    participant PS as Local Person Server
     participant R as Resource
     A->>A: Publish ordinary AP metadata and JWKS
     A->>A: Self-issue Agent token with the same confirmation key
+    A->>PS: Signed local-action permission request
+    PS-->>A: Typed permission grant
     A->>R: Ordinary signed Agent-token request
     R->>A: Resolve AP metadata/JWKS and verify the request
     R-->>A: Protected response
@@ -506,7 +509,10 @@ ordinary Agent Provider metadata/JWKS handler, and `Issue` is ordinary current
 Agent-token issuance with that same key as `cnf.jwk`. There is no enrollment or
 refresh endpoint, no alternate token form, and no verifier exception. Core's
 functional sections and Bootstrap define this profile; Core's later
-distinct-AP rationale contradicts them (`AAG-F104`).
+distinct-AP rationale contradicts them (`AAG-F104`). The repository's local
+composition additionally uses the token's `person_server` with the ordinary
+Permission Endpoint before a direct Agent-identity Resource call; see
+[LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md).
 
 ### Mission-bound interoperability profile
 

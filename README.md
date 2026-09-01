@@ -23,7 +23,16 @@ go run gitlab.com/sidecat-dev/aauth-go/example/threeparty@latest
 ```
 
 It carries an Agent through a Person Server to one protected Resource call.
-For a composed local-Agent and hosted-service profile, run:
+For a self-hosted Agent with a local permission boundary and direct Resource
+access, run:
+
+```sh
+go run gitlab.com/sidecat-dev/aauth-go/example/selfhosted@latest
+```
+
+The exact application boundary is in
+[LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md). For a composed local-Agent
+and hosted-service profile, run:
 
 ```sh
 go run gitlab.com/sidecat-dev/aauth-go/example/hostedservice@latest
@@ -42,7 +51,8 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | Direct Agent or Person identity | [`example/agentidentity`](example/agentidentity) |
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
-| Hosted enrollment, refresh, and self-hosting | [`example/bootstrap`](example/bootstrap), [`example/selfhosted`](example/selfhosted) |
+| Self-hosted local Agent | [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md), [`example/selfhosted`](example/selfhosted) |
+| Hosted enrollment and refresh | [`example/bootstrap`](example/bootstrap) |
 | Local permission or a mission lifecycle | [`example/permission`](example/permission), [`example/mission`](example/mission) |
 | Person questions, relays, or consent clarification | [`example/interactionquestion`](example/interactionquestion), [`example/interactionrelay`](example/interactionrelay), [`example/psconsent`](example/psconsent) |
 | R3 operations and fixed hard-cap Budgets | [`example/r3threeparty`](example/r3threeparty), [`example/budget`](example/budget) |
@@ -108,6 +118,8 @@ Do not infer support from an exported type. Use:
 
 - [CONFORMANCE.md](CONFORMANCE.md) for supported behavior and exclusions;
 - [JOURNEYS.md](JOURNEYS.md) for caller-visible flows and evidence; and
+- [LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md) for the self-hosted local
+  permission and direct-Resource composition;
 - [HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md) for the deliberately
   narrower first hosted deployment.
 
@@ -120,6 +132,7 @@ Do not infer support from an exported type. Use:
 | [SPECIFICATIONS.md](SPECIFICATIONS.md) | Exact editor-source commits, digests, and R3 vocabulary baselines |
 | [CONFORMANCE.md](CONFORMANCE.md) | Implemented, partial, and absent behavior with executable evidence |
 | [JOURNEYS.md](JOURNEYS.md) | Runnable role-to-role paths |
+| [LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md) | Smallest useful self-hosted local deployment |
 | [INTERPRETATIONS.md](INTERPRETATIONS.md) | Deliberate choices where the source does not determine one implementation |
 | [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) | Reproducible questions and inconsistencies found during implementation |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Source-grounded change and verification workflow |

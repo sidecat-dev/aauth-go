@@ -1,7 +1,8 @@
 // The self-hosted example publishes ordinary Agent Provider metadata and JWKS,
-// self-issues a short-lived Agent token, and uses the same key for one signed
-// Resource call. Bootstrap defines no separate refresh ceremony for this
-// profile; the Agent self-issues another token when needed.
+// self-issues a short-lived Agent token, obtains one local-action permission
+// from the token's Person Server, and uses the same key for one signed Resource
+// call. Bootstrap defines no separate refresh ceremony for this profile; the
+// Agent self-issues another token when needed.
 package main
 
 import (
@@ -21,15 +22,18 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
+	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 const (
-	agentOrigin = "https://agent.example"
-	agentID     = "aauth:local@agent.example"
-	resourceID  = "https://resource.example"
+	agentOrigin    = "https://agent.example"
+	agentID        = "aauth:local@agent.example"
+	personServerID = "https://person.example"
+	resourceID     = "https://resource.example"
 )
 
 func main() {
@@ -49,6 +53,10 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	personKey, err := newSigningKey("local-person-server-key")
+	if err != nil {
+		return err
+	}
 	selfHosted, err := agentprovider.NewSelfHostedAgent(agentprovider.SelfHostedAgentConfig{
 		Issuer: agentOrigin, Agent: agentID, SigningKey: key, Clock: clock,
 		NewID: func() string { return "self-hosted-agent-token" },
@@ -65,10 +73,38 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	compact, err := selfHosted.Issue(agentprovider.SelfHostedAgentTokenRequest{Lifetime: time.Hour})
+	compact, err := selfHosted.Issue(agentprovider.SelfHostedAgentTokenRequest{
+		PersonServer: personServerID, Lifetime: time.Hour,
+	})
 	if err != nil {
 		return err
 	}
+	localStore := exampleutil.NewMissionPermissionStore()
+	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver, Clock: clock,
+		NewID: func() string { return "unused-local-token" }, Tokens: localStore,
+		BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
+			return personserver.Person{Subject: "local-person", Lifetime: time.Minute}, nil
+		},
+		Authorize: func(context.Context, personserver.AuthorizationRequest) (personserver.AuthorizationDecision, error) {
+			return personserver.AuthorizationDecision{Scopes: []string{"unused"}, Lifetime: time.Minute}, nil
+		},
+		Permission: &personserver.PermissionConfig{
+			Store: localStore,
+			Policy: func(_ context.Context, request personserver.PermissionPolicyRequest) (personserver.PermissionPolicyResult, error) {
+				if request.Agent != agentID || request.Mission != nil || request.Action != "workspace.inspect" {
+					return personserver.PermissionPolicyResult{}, errors.New("self-hosted example: unexpected local permission")
+				}
+				return personserver.PermissionPolicyResult{Immediate: &personserver.PermissionDecision{
+					Permission: aauth.PermissionGranted,
+				}}, nil
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	network.Handle(personServerID, people.Handler())
 	protected, err := resource.NewAgentIdentity(resource.AgentIdentityConfig{
 		Issuer: resourceID, KeyResolver: resolver, Clock: clock,
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -89,6 +125,20 @@ func run(output io.Writer) error {
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
 	})
 	if err != nil {
+		return err
+	}
+	permission, err := client.RequestPermission(ctx, clientagent.PermissionRequest{
+		PersonServer: personServerID, Action: "workspace.inspect",
+		Description: "Inspect the local workspace without changing it.",
+	})
+	if err != nil {
+		return err
+	}
+	decision, ok := permission.Decision()
+	if !ok || decision.Permission() != aauth.PermissionGranted {
+		return errors.New("self-hosted example: local permission was not granted")
+	}
+	if _, err := fmt.Fprintln(output, "AAuth local permission granted: workspace.inspect"); err != nil {
 		return err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records", nil)
