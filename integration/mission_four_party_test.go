@@ -17,17 +17,18 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/accessserver"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-// TestMissionBoundImmediateFourPartyJourney covers Core sections
+// TestMissionBoundImmediateFourPartyBudgetJourney covers Core sections
 // "Resource Token Verification", "PS-AS Federation", and "Mission Log" at
-// the exact pinned source revision. The PS alone evaluates the retained
-// mission and ordered accepted updates; the AS receives and preserves only
-// mission_s256.
-func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
+// the exact pinned source revision plus the fixed-price Budgets profile. The
+// PS alone evaluates the retained mission and ordered accepted updates; the AS
+// receives only mission_s256 plus ordinary authorization and Budget context.
+func TestMissionBoundImmediateFourPartyBudgetJourney(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -42,6 +43,20 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 		scope           = "records.read"
 	)
 	missionExpiry := now.Add(4 * time.Minute)
+	unit, err := budgets.NewUnit("USD", 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestedBudget := integrationBudgetValue(t, 800_000, unit)
+	resourceOffer := integrationBudgetValue(t, 600_000, unit)
+	personCeiling := integrationBudgetValue(t, 450_000, unit)
+	accessGrant := integrationBudgetValue(t, 300_000, unit)
+	declaration, err := budgets.NewBoundedUnitDeclaration(
+		unit, 1_000_000, "US dollars at micro-dollar precision",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	providerKey := newSigningKey(t, "mission-four-party-ap")
 	agentKey := newSigningKey(t, "mission-four-party-agent")
@@ -136,7 +151,9 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 			},
 			Consent: func(_ context.Context, request personserver.AuthorizationRequest) error {
 				if request.Agent != agentID || request.Resource != resourceID || request.Subject != "person-123" ||
-					request.Mission == nil || !slices.Equal(request.Scopes, []string{scope}) {
+					request.Mission == nil || request.Budget == nil ||
+					!integrationSameBudget(*request.Budget, resourceOffer) ||
+					!slices.Equal(request.Scopes, []string{scope}) {
 					return errors.New("unexpected mission authorization context")
 				}
 				if request.Mission.Blob.Description == "# Read the four-party report" {
@@ -150,6 +167,21 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 				}
 				consentMissions = append(consentMissions, cloneFourPartyMissionContext(*request.Mission))
 				return nil
+			},
+			Budget: &personserver.FederatedBudgetConfig{
+				ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
+					if resource != resourceID {
+						return nil, errors.New("unexpected Resource metadata request")
+					}
+					return []budgets.UnitDeclaration{declaration}, nil
+				},
+				Ceiling: func(_ context.Context, request personserver.AuthorizationRequest) (*budgets.Value, error) {
+					if request.Mission == nil || request.Budget == nil ||
+						!integrationSameBudget(*request.Budget, resourceOffer) {
+						return nil, errors.New("unexpected mission Budget ceiling context")
+					}
+					return &personCeiling, nil
+				},
 			},
 		})
 		if err != nil {
@@ -178,7 +210,8 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 			accessPolicyCalls++
 			if request.PersonServer != personServerID || request.Resource != resourceID ||
 				request.Subject != "person-123" || request.Tenant != "tenant-1" ||
-				request.Agent.Identifier != agentID || request.MissionS256 == "" ||
+				request.Agent.Identifier != agentID || request.MissionS256 == "" || request.Budget == nil ||
+				!integrationSameBudget(*request.Budget, personCeiling) ||
 				!slices.Equal(request.Scopes, []string{scope}) {
 				return accessserver.Decision{}, errors.New("unexpected access policy context")
 			}
@@ -188,13 +221,25 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 				}
 				terminateAtAccessServer = ""
 			}
-			return accessserver.Decision{Scopes: []string{scope}, Lifetime: 30 * time.Minute}, nil
+			return accessserver.Decision{
+				Scopes: []string{scope}, Lifetime: 30 * time.Minute, Budget: &accessGrant,
+			}, nil
+		},
+		Budget: &accessserver.BudgetConfig{
+			ResolveResourceUnits: func(_ context.Context, resource string) ([]budgets.UnitDeclaration, error) {
+				if resource != resourceID {
+					return nil, errors.New("unexpected Resource metadata request")
+				}
+				return []budgets.UnitDeclaration{declaration}, nil
+			},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	var retainedLineages sync.Map
+	budgetLedger := newIntegrationBudgetStore()
 	var resolvedMission string
 	var protectedMission string
 	protectedResource, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
@@ -213,6 +258,29 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 			}
 			resolvedMission = personContext.MissionS256
 			return nil
+		},
+		Budget: &resource.BudgetConfig{
+			Units: []budgets.UnitDeclaration{declaration},
+			Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
+				if request.PersonContext.MissionS256 == "" || !integrationSameBudget(request.Requested, requestedBudget) {
+					return budgets.Value{}, errors.New("unexpected mission Budget offer context")
+				}
+				return resourceOffer, nil
+			},
+			RetainLineage: func(_ context.Context, lineage resource.BudgetLineage) error {
+				retainedLineages.Store(lineage.ResourceToken, lineage)
+				return nil
+			},
+			Cost: func(_ context.Context, request resource.BudgetCostRequest) (int64, error) {
+				if request.Principal.MissionS256 == "" || !integrationSameBudget(request.Grant, accessGrant) {
+					return 0, errors.New("unexpected mission Budget cost context")
+				}
+				return 125_000, nil
+			},
+			Store: budgetLedger,
+			Challenge: func(context.Context, resource.BudgetChallengeRequest) (string, error) {
+				return "", errors.New("Budget step-up is outside this journey")
+			},
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			principal, ok := resource.AuthPrincipalFromContext(request.Context())
@@ -247,9 +315,13 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			claims, err := aauth.VerifyResourceToken(request.Context(), input.ResourceToken, resolver, clock)
+			claims, offer, _, err := budgets.VerifyResourceToken(request.Context(), input.ResourceToken, resolver, clock)
 			if err != nil {
 				t.Error(err)
+				return
+			}
+			if !integrationSameBudget(offer, resourceOffer) {
+				t.Errorf("PS-to-AS Resource-token Budget = %#v, want %#v", offer, resourceOffer)
 				return
 			}
 			accessWireMissions = append(accessWireMissions, claims.MissionS256)
@@ -290,14 +362,17 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	resourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
-		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope},
+		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope}, Budget: &requestedBudget,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resourceClaims, err := aauth.VerifyResourceToken(ctx, resourceToken, resolver, clock)
+	resourceClaims, verifiedOffer, _, err := budgets.VerifyResourceToken(ctx, resourceToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !integrationSameBudget(verifiedOffer, resourceOffer) {
+		t.Fatalf("Resource Budget offer = %#v, want %#v", verifiedOffer, resourceOffer)
 	}
 
 	for name, changedMission := range map[string]string{
@@ -306,7 +381,7 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 		tampered := resourceClaims
 		tampered.JTI = "mission-four-party-" + name + "-resource"
 		tampered.MissionS256 = changedMission
-		compact, err := aauth.MintResourceToken(resourceKey, tampered)
+		compact, err := budgets.MintResourceToken(resourceKey, tampered, resourceOffer, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -351,9 +426,12 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 		t.Fatal(result.err)
 	}
 	authToken := result.token
-	authClaims, err := aauth.VerifyAuthToken(ctx, authToken, resolver, clock)
+	authClaims, verifiedGrant, err := budgets.VerifyAuthToken(ctx, authToken, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !integrationSameBudget(verifiedGrant, accessGrant) {
+		t.Fatalf("Access Server Budget grant = %#v, want %#v", verifiedGrant, accessGrant)
 	}
 	if accessPolicyCalls != 1 || !slices.Equal(accessWireMissions, []string{mission.S256}) {
 		t.Fatalf("Access Server observations = policy:%d missions:%v", accessPolicyCalls, accessWireMissions)
@@ -393,15 +471,29 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 	}
 
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records", nil)
-	response, err := reader.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken})
+	call, err := reader.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: request, AuthToken: authToken})
 	if err != nil {
 		t.Fatal(err)
 	}
+	response, ok := call.Response()
+	if !ok {
+		t.Fatal("mission Budget call returned a step-up")
+	}
 	body, _ := io.ReadAll(response.Body)
 	response.Body.Close()
+	cost, hasCost := call.Cost()
+	feedback, hasFeedback := call.Feedback()
 	if response.StatusCode != http.StatusOK || string(body) != "mission accepted" ||
-		resolvedMission != mission.S256 || protectedMission != mission.S256 {
-		t.Fatalf("protected result = %d %q, resolved=%q, principal=%q", response.StatusCode, body, resolvedMission, protectedMission)
+		resolvedMission != mission.S256 || protectedMission != mission.S256 || !hasCost || !hasFeedback ||
+		cost != 125_000 || feedback.Remaining() != 175_000 {
+		t.Fatalf("protected result = %d %q, resolved=%q, principal=%q, cost=%d/%t remaining=%d/%t",
+			response.StatusCode, body, resolvedMission, protectedMission, cost, hasCost, feedback.Remaining(), hasFeedback)
+	}
+	lineageValue, retained := retainedLineages.Load(aauth.TokenReference{Issuer: resourceID, JTI: resourceClaims.JTI})
+	lineage, lineageOK := lineageValue.(resource.BudgetLineage)
+	if !retained || !lineageOK || lineage.PersonContext.MissionS256 != mission.S256 ||
+		!integrationSameBudget(lineage.Offer, resourceOffer) {
+		t.Fatalf("retained mission Budget lineage = present:%t value:%#v", retained && lineageOK, lineageValue)
 	}
 
 	// Recompose the Person Server around the same retained mission and token
@@ -445,7 +537,7 @@ func TestMissionBoundImmediateFourPartyJourney(t *testing.T) {
 		t.Fatal("race mission approval omitted its person token")
 	}
 	raceResourceToken, err := reader.Authorize(ctx, clientagent.AuthorizeRequest{
-		Resource: resourceID, PersonToken: racePersonToken, Scopes: []string{scope},
+		Resource: resourceID, PersonToken: racePersonToken, Scopes: []string{scope}, Budget: &requestedBudget,
 	})
 	if err != nil {
 		t.Fatal(err)

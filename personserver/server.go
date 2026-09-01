@@ -987,10 +987,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: Budget does not compose with delegation or call chaining"))
 		return
 	}
-	if budgetOffer != nil && server.authorizationMode == authorizationModeFederated && resourceToken.MissionS256 != "" {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: four-party mission-bound Budget authorization is not implemented"))
-		return
-	}
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()
 	resourceTokenIssuedAt := time.Unix(resourceToken.IssuedAt, 0).UTC()
 	if resourceTokenExpiresAt.Sub(resourceTokenIssuedAt) > server.maximumResourceTokenLifetime {

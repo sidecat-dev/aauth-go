@@ -163,8 +163,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
 - [ ] **Mission-governed authorization — Partial**
   - Flow: Agent → PS mission proposal → immediate approval or retained pending
     URL → store-derived host queue and separately authenticated decision → one
-    Agent poll → optional ordered updates → three- or four-party authorization
-    → protected call → person-accepted completion.
+    Agent poll → optional ordered updates → three- or four-party authorization,
+    optionally with a fixed Budget → protected call → person-accepted completion.
   - Start with: `Client.ProposeMission` for immediate-only deployments;
     `Client.BeginMission`, `PollMissionProposal`,
     `PendingMissionProposal.Snapshot`, `RestorePendingMissionProposal`,
@@ -684,6 +684,11 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     [`accessserver/budget_test.go`](accessserver/budget_test.go), and
     [`personserver/federated_budget_test.go`](personserver/federated_budget_test.go);
     run `go run ./example/budgetfourparty` for the public-API composition.
+  - Mission variant: the PS evaluates the exact active mission and accepted
+    updates, while the AS receives only `mission_s256` plus ordinary
+    authorization and Budget context. The Resource charges the grant under the
+    same mission digest. A mission change or termination during AS work
+    releases no token.
   - Boundary: a PS omission means the Resource offer at the AS as the source
     requires. A successful AS response must still carry an explicit signed
     Budget. R3, deferred interaction, delegation, call chaining, consumption
@@ -698,11 +703,13 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
   `budgets.NewConsumptionRecord` and token helpers cover the carrier, while the
   direct PS refuses nonempty history until retained prior-grant resolution
   exists. There is no usage endpoint or counter-response journey.
-- [x] **Direct Core mission-bound fixed Budget — Implemented**
+- [x] **Mission-bound fixed Budget — Implemented in both authorization topologies**
   - Flow: host-reviewed mission and mission Person token → proactive Resource
     Budget offer → PS policy receives the exact active mission and narrows the
-    offer → mission-bound Auth token → atomic charge carrying `mission_s256`.
-  - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go).
+    offer → direct PS grant or independent AS grant → atomic charge carrying
+    `mission_s256`.
+  - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go)
+    and [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go).
   - Boundary: completing the mission prevents another exchange before policy.
     Direct class-document R3 uses `MissionR3IssuanceStore` to commit mission
     comparison, Auth-token retention, and R3 audit facts atomically.
