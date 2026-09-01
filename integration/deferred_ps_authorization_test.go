@@ -326,6 +326,12 @@ func TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition(t *testing.T) {
 func TestDeferredPSAuthorizationStoreClarificationContract(t *testing.T) {
 	t.Parallel()
 
+	storetest.RunDeferredAuthorization(t, storetest.DeferredAuthorizationContract{
+		New: func(testing.TB) personserver.DeferredAuthorizationStore {
+			return newIntegrationDeferredAuthorizationStore()
+		},
+	})
+
 	storetest.RunClarification(t, storetest.Contract{
 		New: func(testing.TB) storetest.ClarificationStore {
 			return newIntegrationDeferredAuthorizationStore()

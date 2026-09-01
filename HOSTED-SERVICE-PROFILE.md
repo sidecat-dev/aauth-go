@@ -116,6 +116,7 @@ polls, or choose business policy. The host must:
 - supply durable, transactionally correct store adapters;
 - run each applicable role-local `storetest` suite against those adapters,
   including `personserver/storetest.RunDeferredToken`,
+  `personserver/storetest.RunDeferredAuthorization`,
   `resource/storetest.RunR3Document`,
   `r3/storetest.RunIssuance`, and `resource/storetest.RunBudget` for the
   operation-and-Budget path;

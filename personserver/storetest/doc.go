@@ -11,8 +11,19 @@
 //		})
 //	}
 //
-// An application that implements deferred authorization with clarification can
-// run the clarification contract against its real store adapter:
+// An application that implements ordinary deferred Auth-token consent can run
+// the base contract without implementing clarification:
+//
+//	func TestDeferredAuthorizationStore(t *testing.T) {
+//		storetest.RunDeferredAuthorization(t, storetest.DeferredAuthorizationContract{
+//			New: func(testing.TB) personserver.DeferredAuthorizationStore {
+//				return newApplicationStore()
+//			},
+//		})
+//	}
+//
+// An application that also implements clarification runs its separate
+// extension contract against the same adapter type:
 //
 //	func TestClarificationStore(t *testing.T) {
 //		storetest.RunClarification(t, storetest.Contract{
