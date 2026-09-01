@@ -609,7 +609,9 @@ into the charge record; Person Server policy receives the active mission, and
 mission-token retention compares that lifecycle atomically. A completed or
 expired mission prevents another exchange before policy. Mission-plus-R3 stays
 disabled until its separate R3 issuance audit can share that same atomic
-mission transition.
+mission transition. Direct class-document R3 uses
+`MissionR3IssuanceStore` to commit the mission comparison, Auth-token record,
+and mandatory R3 issuance facts together before release.
 
 An insufficient or exhausted request consumes nothing. Its `401` carries a
 host-asserted replacement Resource token selected from retained Person-token

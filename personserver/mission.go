@@ -15,6 +15,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 // ErrMissionNotFound reports that an owner-scoped MissionStore lookup cannot
@@ -128,6 +129,20 @@ type MissionStore interface {
 	CompleteMission(ctx context.Context, expected MissionRecord, acceptedAt time.Time, document aauth.MissionCompletionDocument) (MissionRecord, error)
 	CommitMissionPersonToken(ctx context.Context, expected MissionRecord, decidedAt time.Time, token PersonTokenRecord) error
 	CommitMissionAuthToken(ctx context.Context, expected MissionRecord, decidedAt time.Time, token IssuedAuthTokenRecord) error
+}
+
+// MissionR3IssuanceStore atomically compares one active mission and retains
+// both the mission-bound Auth-token record and the mandatory R3 issuance audit
+// facts before the token becomes observable.
+type MissionR3IssuanceStore interface {
+	MissionStore
+	CommitMissionR3AuthToken(
+		ctx context.Context,
+		expected MissionRecord,
+		decidedAt time.Time,
+		token IssuedAuthTokenRecord,
+		issuance r3.IssuanceRecord,
+	) error
 }
 
 // MissionConfig enables the Agent-facing mission endpoint. Approve applies

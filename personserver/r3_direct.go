@@ -18,11 +18,21 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	resourceToken aauth.ResourceTokenClaims,
 	authorizationRequest AuthorizationRequest,
 	verified *verifiedR3,
+	missionRecord *MissionRecord,
 ) {
 	if server == nil || server.r3 == nil || server.r3.authorizeDocument == nil || server.r3.issuances == nil ||
 		verified == nil || verified.kind != r3.ArtifactDocument || len(verified.exactArtifact) == 0 {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: direct R3 issuance context is incomplete"))
 		return
+	}
+	var missionR3Store MissionR3IssuanceStore
+	if missionRecord != nil {
+		var ok bool
+		missionR3Store, ok = server.missions.(MissionR3IssuanceStore)
+		if !ok {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission-bound direct R3 requires an atomic mission R3 issuance store"))
+			return
+		}
 	}
 	decision, err := server.r3.authorizeDocument(
 		request.Context(), cloneAuthorizationRequest(authorizationRequest),
@@ -52,6 +62,9 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	if credentialAgentExpiresAt.Before(expiresAt) {
 		expiresAt = credentialAgentExpiresAt
 	}
+	if missionRecord != nil && !missionRecord.ExpiresAt.IsZero() && missionRecord.ExpiresAt.Before(expiresAt) {
+		expiresAt = missionRecord.ExpiresAt
+	}
 	if !expiresAt.After(issuedAt) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: direct R3 decision has no usable lifetime"))
 		return
@@ -62,7 +75,7 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		Subject: resourceToken.Subject, Confirmation: aauth.Confirmation{JWK: credentialAgent.Confirmation.JWK},
 		IssuedAt: issuedAt.Unix(), ExpiresAt: expiresAt.Unix(),
 		Scope: strings.Join(grantedScopes, " "), Account: cloneAuthorizationAccount(resourceToken.Account),
-		Tenant: resourceToken.Tenant,
+		MissionS256: resourceToken.MissionS256, Tenant: resourceToken.Tenant,
 	}
 	var compact string
 	if grantedBudget == nil {
@@ -94,11 +107,12 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		PresentedJTI: resourceToken.PresentedJTI, AgentJKT: resourceToken.AgentJKT,
 		Agent: requestingAgent.Subject,
 	}
-	if err := server.r3.issuances.Commit(request.Context(), issuance); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
+	if missionRecord != nil {
+		err = missionR3Store.CommitMissionR3AuthToken(request.Context(), *missionRecord, issuedAt, issuedRecord, issuance)
+	} else if err = server.r3.issuances.Commit(request.Context(), issuance); err == nil {
+		err = server.commitIssuedAuthToken(request.Context(), issuedRecord)
 	}
-	if err := server.commitIssuedAuthToken(request.Context(), issuedRecord); err != nil {
+	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
@@ -131,16 +145,12 @@ func validateDirectR3Decision(decision DirectR3Decision, requested []string) ([]
 func directR3UnsupportedCombination(
 	delegated bool,
 	upstream *verifiedUpstreamToken,
-	missionBound bool,
 ) error {
 	if delegated {
 		return errors.New("personserver: direct R3 sub-agent authorization is not implemented")
 	}
 	if upstream != nil {
 		return errors.New("personserver: direct R3 call chaining is not implemented")
-	}
-	if missionBound {
-		return errors.New("personserver: direct R3 mission authorization is not implemented")
 	}
 	return nil
 }

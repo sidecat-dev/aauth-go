@@ -375,7 +375,7 @@ func TestDirectR3AuthorizationRejectsProposalBeforePolicyOrCommit(t *testing.T) 
 	}
 }
 
-func TestDirectR3AuthorizationRejectsMissionBeforePolicyOrCommit(t *testing.T) {
+func TestDirectR3MissionRequiresAtomicStoreBeforePolicyOrCommit(t *testing.T) {
 	t.Parallel()
 
 	protocol := newDirectR3TestProtocol(t)
@@ -411,7 +411,7 @@ func TestDirectR3AuthorizationRejectsMissionBeforePolicyOrCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := protocol.exchange(t, server, protocol.resourceToken, nil)
-	assertDirectR3FailureWithoutToken(t, response, http.StatusBadRequest, "invalid_request")
+	assertDirectR3FailureWithoutToken(t, response, http.StatusInternalServerError, "server_error")
 	records, attempts := protocol.issuances.snapshot()
 	if protocol.fetchCalls != 0 || protocol.r3PolicyCalls != 0 || protocol.corePolicyCalls != 0 ||
 		attempts != 0 || len(records) != 0 || len(protocol.sequence) != 0 {
@@ -427,19 +427,17 @@ func TestDirectR3UnsupportedCombinationNamesDelegationBoundaries(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		name         string
-		delegated    bool
-		upstream     *verifiedUpstreamToken
-		missionBound bool
-		wantDetail   string
+		name       string
+		delegated  bool
+		upstream   *verifiedUpstreamToken
+		wantDetail string
 	}{
 		{name: "class-only", wantDetail: ""},
 		{name: "sub-agent", delegated: true, wantDetail: "sub-agent"},
 		{name: "call chain", upstream: &verifiedUpstreamToken{}, wantDetail: "call chaining"},
-		{name: "mission", missionBound: true, wantDetail: "mission"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := directR3UnsupportedCombination(test.delegated, test.upstream, test.missionBound)
+			err := directR3UnsupportedCombination(test.delegated, test.upstream)
 			if test.wantDetail == "" {
 				if err != nil {
 					t.Fatalf("class-only combination: %v", err)

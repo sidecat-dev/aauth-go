@@ -934,9 +934,15 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if server.authorizationMode == authorizationModePersonServer && r3Context != nil {
-		if err := directR3UnsupportedCombination(delegated, upstream, resourceToken.MissionS256 != ""); err != nil {
+		if err := directR3UnsupportedCombination(delegated, upstream); err != nil {
 			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 			return
+		}
+		if resourceToken.MissionS256 != "" {
+			if _, ok := server.missions.(MissionR3IssuanceStore); !ok {
+				writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission-bound direct R3 requires an atomic mission R3 issuance store"))
+				return
+			}
 		}
 	}
 	if budgetOffer != nil && (delegated || upstream != nil) {
@@ -1081,7 +1087,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 			server.issueDirectR3AuthorizationToken(
 				response, request, agent, credentialAgent, resourceToken,
-				authorizationRequest, r3Context,
+				authorizationRequest, r3Context, missionRecord,
 			)
 			return
 		}

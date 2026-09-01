@@ -125,13 +125,14 @@ func run(output io.Writer) error {
 	if _, err := fmt.Fprintln(output, "2. missionless local permission granted"); err != nil {
 		return err
 	}
-	if err := approveMission(ctx, now, bootstrap.client, roles.people); err != nil {
+	mission, err := approveMission(ctx, now, bootstrap.client, roles.people)
+	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(output, "3. approval-only mission reviewed and delivered"); err != nil {
+	if _, err := fmt.Fprintln(output, "3. reviewed mission supplied the connector Person token and approved tool"); err != nil {
 		return err
 	}
-	if err := callHostedConnector(ctx, bootstrap.client, operationSet, requestedBudget, roles.connector); err != nil {
+	if err := callHostedConnector(ctx, bootstrap.client, operationSet, requestedBudget, mission, roles.connector); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(output, "4. MCP operation authorized; exhausted call refused before dispatch; replacement grant resumed connector work once"); err != nil {

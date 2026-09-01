@@ -43,8 +43,9 @@ type R3Config struct {
 // DirectR3Config enables immediate class-document R3 authorization on a
 // three-party Person Server. It is separate from federated R3 consent because
 // this Person Server selects the grant, signs the Auth token, and retains the
-// issuance itself. It does not compose with deferred authorization, per-call
-// proposals, missions, sub-agents, or call chaining.
+// issuance itself. Mission-bound issuance additionally requires the configured
+// MissionStore to implement MissionR3IssuanceStore. It does not compose with
+// deferred authorization, per-call proposals, sub-agents, or call chaining.
 type DirectR3Config struct {
 	// Registry is the required immutable allowlist used to parse fetched R3
 	// documents and construct operation-bearing Auth-token claims.

@@ -12,6 +12,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 // NewMissionStore returns the concurrency-safe in-memory Person Server store
@@ -32,6 +33,7 @@ func newMissionStore() *missionStore {
 		missions:    make(map[string]personserver.MissionRecord),
 		tokens:      make(map[string]personserver.PersonTokenRecord),
 		auth:        make(map[string]personserver.IssuedAuthTokenRecord),
+		r3Issuances: make(map[aauth.TokenReference]r3.IssuanceRecord),
 		audits:      make(map[string][]personserver.MissionAuditRecord),
 		permissions: make(map[string]personserver.PermissionRecord),
 		proposals:   make(map[string]personserver.MissionProposalSnapshot),
@@ -43,6 +45,7 @@ type missionStore struct {
 	missions    map[string]personserver.MissionRecord
 	tokens      map[string]personserver.PersonTokenRecord
 	auth        map[string]personserver.IssuedAuthTokenRecord
+	r3Issuances map[aauth.TokenReference]r3.IssuanceRecord
 	audits      map[string][]personserver.MissionAuditRecord
 	permissions map[string]personserver.PermissionRecord
 	proposals   map[string]personserver.MissionProposalSnapshot
@@ -51,6 +54,7 @@ type missionStore struct {
 var _ personserver.MissionAuditStore = (*missionStore)(nil)
 var _ personserver.MissionPermissionStore = (*missionStore)(nil)
 var _ personserver.MissionProposalStore = (*missionStore)(nil)
+var _ personserver.MissionR3IssuanceStore = (*missionStore)(nil)
 
 func (store *missionStore) CreateMissionProposal(
 	_ context.Context,
@@ -405,6 +409,35 @@ func (store *missionStore) CommitMissionAuthToken(
 		return errors.New("example mission store: auth-token record already exists")
 	}
 	store.auth[key] = token
+	return nil
+}
+
+func (store *missionStore) CommitMissionR3AuthToken(
+	_ context.Context,
+	expected personserver.MissionRecord,
+	at time.Time,
+	token personserver.IssuedAuthTokenRecord,
+	issuance r3.IssuanceRecord,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.requireActive(expected, at); err != nil {
+		return err
+	}
+	if token.MissionS256 != expected.S256 || issuance.AuthTokenReference != token.Reference ||
+		issuance.Resource != token.Resource || !issuance.IssuedAt.Equal(token.IssuedAt) ||
+		issuance.PersonServer != token.Reference.Issuer || issuance.Agent != expected.Agent {
+		return personserver.ErrMissionConflict
+	}
+	key := token.Reference.Issuer + "\x00" + token.Reference.JTI
+	if _, exists := store.auth[key]; exists {
+		return errors.New("example mission store: auth-token record already exists")
+	}
+	if _, exists := store.r3Issuances[issuance.AuthTokenReference]; exists {
+		return r3.ErrIssuanceConflict
+	}
+	store.auth[key] = token
+	store.r3Issuances[issuance.AuthTokenReference] = issuance.Clone()
 	return nil
 }
 

@@ -15,7 +15,7 @@ Agent's ability to obtain new credentials?
 | --- | --- | --- |
 | Agent | User-controlled machine | Holds its private proof key and makes explicit protocol calls. |
 | Agent Provider | Local or hosted account service | Enrolls the durable key, assigns the Agent identifier, and issues short-lived Agent tokens. |
-| Person Server | Hosted account service | Binds the Agent to the person, records approval-only missions, decides local-action permission, and issues Person or three-party Auth tokens. |
+| Person Server | Hosted account service | Binds the Agent to the person, reviews missions, decides local-action permission, and issues mission-bound Person or three-party Auth tokens. |
 | Resource | Hosted connector or API | Keeps service credentials private, publishes bounded operations, enforces grants and hard Budget caps, and executes approved calls. |
 | Access Server | Hosted authorization service | Issues four-party Auth tokens when Resource policy is independent from the Person Server. |
 
@@ -138,7 +138,7 @@ process restarts:
 - [ ] one MCP or OpenAPI operation grant;
 - [ ] one fixed-price Budget charge, over-cap refusal before dispatch, and
       explicit replacement-grant recovery;
-- [ ] one approval-only mission when the product exposes missions;
+- [ ] one reviewed mission that supplies authority used by the protected call;
 - [ ] host suspension or revocation followed by refused refresh; and
 - [ ] expiry or explicit revocation at every recipient the deployment promises
       will invalidate a previously issued credential.

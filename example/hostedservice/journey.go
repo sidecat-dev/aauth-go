@@ -48,36 +48,43 @@ func approveMission(
 	now time.Time,
 	client *clientagent.Client,
 	people *personserver.Server,
-) error {
+) (clientagent.MissionResult, error) {
 	result, err := client.BeginMission(ctx, clientagent.MissionRequest{
 		PersonServer: personServerID,
-		Proposal:     aauth.MissionProposal{Description: "Review and approve the hosted records query."},
+		Proposal: aauth.MissionProposal{
+			Description: "Review and approve the hosted records query.",
+			Tools:       []aauth.MissionTool{{Name: "records.current", Description: "Read the current hosted record"}},
+			Resources:   []string{hostedResourceID},
+		},
 	})
 	if err != nil {
-		return err
+		return clientagent.MissionResult{}, err
 	}
 	pending, ok := result.Pending()
 	if !ok {
-		return errors.New("hosted-service example: mission did not enter host review")
+		return clientagent.MissionResult{}, errors.New("hosted-service example: mission did not enter host review")
 	}
 	reviews, err := people.PendingMissionProposals(ctx, 10)
 	if err != nil || len(reviews) != 1 {
-		return errors.Join(errors.New("hosted-service example: expected one pending mission review"), err)
+		return clientagent.MissionResult{}, errors.Join(errors.New("hosted-service example: expected one pending mission review"), err)
 	}
 	expiresAt := now.Add(20 * time.Minute)
 	if err := people.ApproveMissionProposal(ctx, reviews[0], personserver.MissionDecision{
-		Description: reviews[0].Proposal().Description, ExpiresAt: &expiresAt,
+		Description:   reviews[0].Proposal().Description,
+		ApprovedTools: reviews[0].Proposal().Tools, ApprovedResources: reviews[0].Proposal().Resources,
+		ExpiresAt: &expiresAt,
 	}); err != nil {
-		return err
+		return clientagent.MissionResult{}, err
 	}
 	completed, err := client.PollMissionProposal(ctx, pending)
 	if err != nil {
-		return err
+		return clientagent.MissionResult{}, err
 	}
-	if _, ok := completed.Approval(); !ok {
-		return errors.New("hosted-service example: approved mission was not delivered")
+	mission, ok := completed.Approval()
+	if !ok {
+		return clientagent.MissionResult{}, errors.New("hosted-service example: approved mission was not delivered")
 	}
-	return nil
+	return mission, nil
 }
 
 func callHostedConnector(
@@ -85,17 +92,15 @@ func callHostedConnector(
 	client *clientagent.Client,
 	operations r3.OperationSet,
 	requestedBudget budgets.Value,
+	mission clientagent.MissionResult,
 	connector *connectorApplication,
 ) error {
-	personResult, err := client.PersonToken(ctx, clientagent.PersonTokenRequest{
-		PersonServer: personServerID, Resource: hostedResourceID,
-	})
-	if err != nil {
-		return err
+	if !mission.ApprovesTool("records.current") {
+		return errors.New("hosted-service example: mission did not approve the connector tool")
 	}
-	personToken, ok := personResult.Token()
+	personToken, ok := mission.PersonToken(hostedResourceID)
 	if !ok {
-		return errors.New("hosted-service example: person token unexpectedly deferred")
+		return errors.New("hosted-service example: mission omitted the connector Person token")
 	}
 	resourceToken, err := client.Authorize(ctx, clientagent.AuthorizeRequest{
 		Resource: hostedResourceID, PersonToken: personToken,

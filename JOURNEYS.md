@@ -660,9 +660,9 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     offer → mission-bound Auth token → atomic charge carrying `mission_s256`.
   - Evidence: [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go).
   - Boundary: completing the mission prevents another exchange before policy.
-    Mission-plus-R3 remains disabled until mission comparison, R3 issuance
-    audit, and Auth-token retention can commit atomically.
-- [ ] **Delegation, call chaining, mission-bound R3, and account-bound Budgets — Not implemented.**
+    Direct class-document R3 uses `MissionR3IssuanceStore` to commit mission
+    comparison, Auth-token retention, and R3 audit facts atomically.
+- [ ] **Delegation, call chaining, per-call mission R3, and account-bound Budgets — Not implemented.**
   The Agent, PS, and Resource fail closed rather than carrying a Budget through
   these remaining compositions.
 
