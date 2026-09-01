@@ -156,6 +156,9 @@ func (store *memorySessionStore) Deny(_ context.Context, reference string, _ tim
 	if !ok {
 		return resource.ErrPendingSessionNotFound
 	}
+	if pending.state == resource.SessionPollDenied {
+		return nil
+	}
 	if pending.state != resource.SessionPollInteracting {
 		return resource.ErrPendingSessionConflict
 	}
@@ -169,6 +172,12 @@ func (store *memorySessionStore) Invalidate(_ context.Context, reference string,
 	pending, ok := store.pending[reference]
 	if !ok {
 		return resource.ErrPendingSessionNotFound
+	}
+	if pending.state == resource.SessionPollGone {
+		return nil
+	}
+	if pending.state != resource.SessionPollPending && pending.state != resource.SessionPollInteracting {
+		return resource.ErrPendingSessionConflict
 	}
 	pending.state = resource.SessionPollGone
 	return nil

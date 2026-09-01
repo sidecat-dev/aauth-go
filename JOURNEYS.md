@@ -75,7 +75,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Start with: `resource.NewResourceManaged`,
     `Client.BeginResourceSession`, `PollResourceSession`,
     `RestoreResourceSession`, and `DoWithResourceSession`.
-  - Evidence: [`integration/resource_managed_session_test.go`](integration/resource_managed_session_test.go)
+  - Evidence: [`resource/storetest/session.go`](resource/storetest/session.go),
+    [`integration/resource_managed_session_test.go`](integration/resource_managed_session_test.go),
     and `go run ./example/resourcesession`.
 
 - [x] **Immediate four-party federation — Implemented**

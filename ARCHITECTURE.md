@@ -580,6 +580,9 @@ Examples include:
 An interface states only the atomicity, idempotency, lookup, and retention
 properties required by that state machine. It does not prescribe a database,
 file format, encryption system, process model, or universal record envelope.
+The public `*/storetest` packages turn the applicable interface contracts into
+executable adapter checks; they complement rather than replace backend restart,
+transaction-failure, and operational tests.
 
 `MissionProposalStore` is used only when deferred mission review is enabled.
 It extends the existing mission store with exact proposal retention, a bounded

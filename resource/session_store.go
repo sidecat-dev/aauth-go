@@ -47,7 +47,11 @@ type SessionApproval struct {
 }
 
 // SessionStore owns opaque token generation or wrapping and its Resource-local
-// authorization state. Create retains the record before returning the token.
+// authorization state. Create copies and retains the record before returning a
+// nonempty token and an independent record copy. One token must never identify
+// two different retained records. Load returns an independent copy,
+// ErrSessionNotFound for an unknown token, and ErrSessionExpired at or after
+// the retained expiry.
 type SessionStore interface {
 	Create(context.Context, SessionRecord) (SessionApproval, error)
 	Load(context.Context, string, time.Time) (SessionRecord, error)
@@ -110,10 +114,15 @@ type SessionPollRecord struct {
 //     attempt bound, single use, and expiry.
 //   - Approve transitions only an interacting record: it preserves every
 //     terminal state, atomically refuses expiry, or creates and retains the
-//     exact session before approved polling.
+//     exact session before approved polling. An exact repeat after approval
+//     returns the retained approval; changed state returns
+//     ErrPendingSessionConflict.
 //   - Poll authenticates the stable Agent identity on every read.
 //   - ConsumeResult compares the exact terminal result and changes it to gone
 //     immediately before HTTP delivery, as Core requires.
+//   - An exact Deny replay succeeds. Invalidate may cancel only pending or
+//     interacting state, exact gone replay succeeds, and an approved, denied,
+//     or expired terminal decision returns ErrPendingSessionConflict.
 //
 // All mutable slices and maps crossing this boundary are independent copies.
 type DeferredSessionStore interface {
