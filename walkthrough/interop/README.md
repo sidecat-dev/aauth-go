@@ -15,11 +15,9 @@ The qualified walkthrough proves one deliberately small boundary:
 It does not exercise person identity, authorization, an Access Server, R3, or
 the five-surface interoperability demo profile.
 
-The same module also contains the next, not-yet-qualified interoperability
-path: the official TypeScript `@aauth/agent` package obtains Person and Auth
-tokens from a Go Person Server and creates one durable note at a Go Resource.
-The instructions below describe that path without claiming it has crossed the
-live boundary yet.
+The same module also proves the reverse direction: the official TypeScript
+`@aauth/agent` package obtains Person and Auth tokens from a Go Person Server
+and creates one durable note at a Go Resource.
 
 ## Build
 
@@ -132,9 +130,24 @@ node call.mjs \
 Success names the Agent, the Go-established person, the retained note, and a
 consequence count of one. Repeating the same request key and text returns the
 same note with `replayed: true`; changing the text under that key is refused.
-The Go role keys are currently process-scoped, so this path proves independent
-wire interoperability and a durable application consequence, not role restart
-recovery.
+The Go role keys are currently process-scoped. A restart can issue fresh
+tokens and recover the durable application consequence, but it does not retain
+or continue outstanding role credentials across that restart.
+
+### External authorization qualification
+
+On 2026-09-01, repository revision
+`8283d98718220973100c197818e512a42be179c1` pinned the standalone walkthrough
+to AAuth Go revision `32eab26ea255e99d97b5b407b3b1f9f76163c954` and the
+official `@aauth/agent` 3.0.2 package from
+[`aauth-dev/packages-js`](https://github.com/aauth-dev/packages-js) revision
+`7bd31a502904272267812e2cd26c231d0f950555`. A laptop TypeScript Agent called
+the separately hosted Go Person Server and Resource over public TLS, completed
+the Person-token → Resource-token → Auth-token exchange, and created one note.
+The same key returned the exact retained note, changed input was refused, and
+the same key recovered the note after the Go service restarted. The durable
+store contained one consequence throughout. The temporary TLS origins and
+host processes were removed after qualification.
 
 ## Verify the local construction
 

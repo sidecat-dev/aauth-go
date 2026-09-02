@@ -855,6 +855,23 @@ sentences.
     surface. It is not bidirectional and does not exercise person identity,
     authorization, an Access Server, R3, or the five profile surfaces.
 
+- [x] **Official TypeScript Agent at Go authorization roles — Implemented and qualified**
+  - Flow: official `@aauth/agent` → Go Person Server for a directed Person
+    token → Go Resource for a Resource token → Go Person Server for an Auth
+    token → Go Resource for one durable protected note.
+  - Start with: [`walkthrough/interop`](walkthrough/interop), including its
+    pinned `typescript-agent` module.
+  - Qualification: repository revision
+    `8283d98718220973100c197818e512a42be179c1` used AAuth Go
+    `32eab26ea255e99d97b5b407b3b1f9f76163c954` and
+    [`aauth-dev/packages-js`](https://github.com/aauth-dev/packages-js)
+    `7bd31a502904272267812e2cd26c231d0f950555` over public TLS. Same-key
+    replay, changed-input conflict, service restart, and post-restart recovery
+    all left one durable note.
+  - Boundary: this proves one independent Agent implementation against Go PS
+    and Resource roles. It does not prove an independent PS or AS, R3, or all
+    five demo-profile surfaces.
+
 - [ ] **Independent five-surface profile interoperability — Not implemented**
   - Existing internal Surfaces 1–5 have not crossed an independent role
     boundary. The next proof should compose the smallest available live PS,

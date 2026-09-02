@@ -33,9 +33,9 @@ authenticated account linking, mission approval, MCP authorization, a fixed
 Budget, restart recovery, and revocation, use
 [`walkthrough/hosted`](walkthrough/hosted).
 
-For a generated AAuth Go Agent making a real signed identity call to the AAuth
-project's independently implemented TypeScript Resource, use
-[`walkthrough/interop`](walkthrough/interop).
+For qualified interoperability in both directions—Go Agent to the AAuth
+project's TypeScript Resource, and official TypeScript Agent to Go Person
+Server and Resource roles—use [`walkthrough/interop`](walkthrough/interop).
 
 For a self-hosted Agent with a local permission boundary, direct local access,
 an explicit hosted account-link interaction, and one account-bound hosted
@@ -74,7 +74,7 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | Direct Agent or Person identity | [`example/agentidentity`](example/agentidentity) |
 | Separate local TLS processes, durable state, restart, and revocation | [`walkthrough/local`](walkthrough/local) |
 | Separate laptop and hosted-service TLS processes with mission, MCP, Budget, restart, and revocation | [`walkthrough/hosted`](walkthrough/hosted) |
-| AAuth Go Agent calling an independently implemented live Resource | [`walkthrough/interop`](walkthrough/interop) |
+| Go/TypeScript interoperability in both directions | [`walkthrough/interop`](walkthrough/interop) |
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
 | Account-bound four-party fixed Budget through an Access Server | [`example/budgetfourparty`](example/budgetfourparty) |
