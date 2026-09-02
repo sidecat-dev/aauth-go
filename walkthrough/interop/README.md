@@ -149,6 +149,13 @@ the same key recovered the note after the Go service restarted. The durable
 store contained one consequence throughout. The temporary TLS origins and
 host processes were removed after qualification.
 
+The run also exposed
+[`aauth-dev/packages-js` issue #24](https://github.com/aauth-dev/packages-js/issues/24):
+the official Agent does not yet honor arbitrary Resource-declared additional
+signature components on its initial request. This walkthrough keeps the replay
+key inside the signed JSON body, where `content-digest` binds it together with
+the note, rather than weakening replay identity to fit that limitation.
+
 ## Verify the local construction
 
 ```sh
