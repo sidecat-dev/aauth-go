@@ -44,3 +44,11 @@ build:
     - cd walkthrough/local && go build ./...
     - cd ../../walkthrough/hosted && go build ./...
     - cd ../interop && go build ./...
+
+typescript-interop:
+  stage: verify
+  image: node:22
+  script:
+    - cd walkthrough/interop/typescript-agent
+    - npm ci --ignore-scripts
+    - npm test

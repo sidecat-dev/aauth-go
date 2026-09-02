@@ -66,6 +66,73 @@ func TestInitializeWritesProviderDocumentsAndPrivateAgentState(t *testing.T) {
 	}
 }
 
+func TestInitCanBindTheIndependentAgentToAPersonServer(t *testing.T) {
+	stateDir := t.TempDir()
+	issuer := "https://interop.example"
+	personServer := "https://person.example"
+	var output strings.Builder
+
+	if err := runInteropCLI([]string{
+		"init", "--state", stateDir, "--issuer", issuer,
+		"--person-server", personServer,
+	}, &output); err != nil {
+		t.Fatal(err)
+	}
+
+	private, err := loadInteropPrivate(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := aauth.VerifyAgentToken(context.Background(), private.AgentToken, signaturekey.StaticKeyResolver{
+		{Issuer: issuer, DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: private.ProviderKey.ID()}: private.ProviderKey.PublicJWK(),
+	}, aauth.ClockFunc(time.Now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.PersonServer != personServer {
+		t.Fatalf("Agent token Person Server = %q, want %q", claims.PersonServer, personServer)
+	}
+}
+
+func TestAgentConfigExportsOnlyTheIndependentAgentsCredential(t *testing.T) {
+	stateDir := t.TempDir()
+	issuer := "https://interop.example"
+	personServer := "https://person.example"
+	if _, err := initializeInteropForAuthorization(stateDir, issuer, personServer, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var output strings.Builder
+	if err := runInteropCLI([]string{"agent-config", "--state", stateDir}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Agent        string            `json:"agent"`
+		AgentToken   string            `json:"agent_token"`
+		PersonServer string            `json:"person_server"`
+		SigningKey   map[string]string `json:"signing_key"`
+	}
+	if err := json.Unmarshal([]byte(output.String()), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.Agent != "aauth:go-interop@interop.example" || config.AgentToken == "" || config.PersonServer != personServer {
+		t.Fatalf("Agent config identity = %#v", config)
+	}
+	for key, want := range map[string]string{
+		"alg": "Ed25519", "crv": "Ed25519", "kid": "agent-key-1", "kty": "OKP",
+	} {
+		if config.SigningKey[key] != want {
+			t.Fatalf("signing key %s = %q, want %q", key, config.SigningKey[key], want)
+		}
+	}
+	if config.SigningKey["d"] == "" || config.SigningKey["x"] == "" {
+		t.Fatalf("signing key omitted private or public material: %#v", config.SigningKey)
+	}
+	if strings.Contains(output.String(), "provider_private_key") {
+		t.Fatalf("Agent config disclosed provider private key: %s", output.String())
+	}
+}
+
 func TestCallTargetSignsAgentIdentityRequestAndChecksResponse(t *testing.T) {
 	stateDir := t.TempDir()
 	issuer := "https://interop.example"

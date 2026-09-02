@@ -10,11 +10,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -33,17 +36,27 @@ type initializedInterop struct {
 type interopPrivateFile struct {
 	Issuer             string `json:"issuer"`
 	Agent              string `json:"agent"`
+	PersonServer       string `json:"person_server,omitempty"`
 	ProviderPrivateKey string `json:"provider_private_key"`
 	AgentPrivateKey    string `json:"agent_private_key"`
 	AgentToken         string `json:"agent_token"`
 }
 
 type interopPrivate struct {
-	Issuer      string
-	Agent       string
-	ProviderKey jose.SigningKey
-	AgentKey    jose.SigningKey
-	AgentToken  string
+	Issuer       string
+	Agent        string
+	PersonServer string
+	ProviderKey  jose.SigningKey
+	AgentKey     jose.SigningKey
+	AgentPrivate ed25519.PrivateKey
+	AgentToken   string
+}
+
+type interopAgentConfig struct {
+	Agent        string            `json:"agent"`
+	AgentToken   string            `json:"agent_token"`
+	PersonServer string            `json:"person_server"`
+	SigningKey   map[string]string `json:"signing_key"`
 }
 
 type interopCallResult struct {
@@ -62,7 +75,7 @@ func main() {
 
 func runInteropCLI(arguments []string, output io.Writer) error {
 	if len(arguments) == 0 {
-		return errors.New("usage: aauth-interop init --state DIR --issuer URL | call --state DIR --target URL")
+		return errors.New("usage: aauth-interop init --state DIR --issuer URL [--person-server URL] | agent-config --state DIR | serve --state DIR --listen ADDRESS --origin URL --agent-issuer URL --agent ID | call --state DIR --target URL")
 	}
 	switch arguments[0] {
 	case "init":
@@ -70,14 +83,48 @@ func runInteropCLI(arguments []string, output io.Writer) error {
 		flags.SetOutput(io.Discard)
 		stateDir := flags.String("state", "", "state directory")
 		issuer := flags.String("issuer", "", "public Agent Provider issuer")
+		personServer := flags.String("person-server", "", "Person Server bound into the Agent token")
 		if err := flags.Parse(arguments[1:]); err != nil || flags.NArg() != 0 || *stateDir == "" || *issuer == "" {
 			return errors.New("init requires --state DIR --issuer URL")
 		}
-		initialized, err := initializeInterop(*stateDir, *issuer, time.Now())
+		initialized, err := initializeInteropForAuthorization(*stateDir, *issuer, *personServer, time.Now())
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(output).Encode(initialized)
+	case "agent-config":
+		flags := flag.NewFlagSet("agent-config", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		stateDir := flags.String("state", "", "state directory")
+		if err := flags.Parse(arguments[1:]); err != nil || flags.NArg() != 0 || *stateDir == "" {
+			return errors.New("agent-config requires --state DIR")
+		}
+		config, err := loadInteropAgentConfig(*stateDir)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(config)
+	case "serve":
+		flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		stateDir := flags.String("state", "", "service state directory")
+		listen := flags.String("listen", "", "loopback address behind the TLS proxy")
+		origin := flags.String("origin", "", "public Person Server and Resource origin")
+		agentIssuer := flags.String("agent-issuer", "", "admitted independent Agent Provider issuer")
+		agentID := flags.String("agent", "", "admitted independent Agent identifier")
+		if err := flags.Parse(arguments[1:]); err != nil || flags.NArg() != 0 ||
+			*stateDir == "" || *listen == "" || *origin == "" || *agentIssuer == "" || *agentID == "" {
+			return errors.New("serve requires --state DIR --listen ADDRESS --origin URL --agent-issuer URL --agent ID")
+		}
+		listener, err := net.Listen("tcp", *listen)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		return serveInteropAuthorization(ctx, listener, interopAuthorizationRunConfig{
+			Origin: *origin, AgentIssuer: *agentIssuer, Agent: *agentID, StateDir: *stateDir,
+		})
 	case "call":
 		flags := flag.NewFlagSet("call", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
@@ -97,6 +144,10 @@ func runInteropCLI(arguments []string, output io.Writer) error {
 }
 
 func initializeInterop(stateDir, issuer string, now time.Time) (initializedInterop, error) {
+	return initializeInteropForAuthorization(stateDir, issuer, "", now)
+}
+
+func initializeInteropForAuthorization(stateDir, issuer, personServer string, now time.Time) (initializedInterop, error) {
 	issuer = strings.TrimSuffix(issuer, "/")
 	parsed, err := parseHTTPSURL(issuer)
 	if err != nil {
@@ -104,6 +155,12 @@ func initializeInterop(stateDir, issuer string, now time.Time) (initializedInter
 	}
 	if err := aauth.ValidateServerIdentifier(issuer); err != nil {
 		return initializedInterop{}, fmt.Errorf("issuer: %w", err)
+	}
+	if personServer != "" {
+		personServer = strings.TrimSuffix(personServer, "/")
+		if err := aauth.ValidateServerIdentifier(personServer); err != nil {
+			return initializedInterop{}, fmt.Errorf("Person Server: %w", err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "private.json")); err == nil {
 		return initializedInterop{}, errors.New("state is already initialized")
@@ -140,14 +197,15 @@ func initializeInterop(stateDir, issuer string, now time.Time) (initializedInter
 	}
 	now = now.UTC().Truncate(time.Second)
 	agentToken, err := aauth.MintAgentToken(issuer, providerKey, aauth.AgentTokenRequest{
-		Agent: agentID, PublicKey: agentKey.PublicJWK(), Lifetime: 10 * time.Minute,
+		Agent: agentID, PersonServer: personServer,
+		PublicKey: agentKey.PublicJWK(), Lifetime: 10 * time.Minute,
 	}, now, jti)
 	if err != nil {
 		return initializedInterop{}, err
 	}
 
 	private := interopPrivateFile{
-		Issuer: issuer, Agent: agentID,
+		Issuer: issuer, Agent: agentID, PersonServer: personServer,
 		ProviderPrivateKey: base64.RawURLEncoding.EncodeToString(providerPrivate),
 		AgentPrivateKey:    base64.RawURLEncoding.EncodeToString(agentPrivate),
 		AgentToken:         agentToken,
@@ -200,8 +258,29 @@ func loadInteropPrivate(stateDir string) (interopPrivate, error) {
 		return interopPrivate{}, errors.New("private state is incomplete")
 	}
 	return interopPrivate{
-		Issuer: retained.Issuer, Agent: retained.Agent, ProviderKey: providerKey,
-		AgentKey: agentKey, AgentToken: retained.AgentToken,
+		Issuer: retained.Issuer, Agent: retained.Agent, PersonServer: retained.PersonServer,
+		ProviderKey: providerKey, AgentKey: agentKey, AgentPrivate: agentPrivate,
+		AgentToken: retained.AgentToken,
+	}, nil
+}
+
+func loadInteropAgentConfig(stateDir string) (interopAgentConfig, error) {
+	private, err := loadInteropPrivate(stateDir)
+	if err != nil {
+		return interopAgentConfig{}, err
+	}
+	if private.PersonServer == "" {
+		return interopAgentConfig{}, errors.New("Agent token is not bound to a Person Server")
+	}
+	privateKey := private.AgentPrivate
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	return interopAgentConfig{
+		Agent: private.Agent, AgentToken: private.AgentToken, PersonServer: private.PersonServer,
+		SigningKey: map[string]string{
+			"alg": "Ed25519", "crv": "Ed25519", "kid": private.AgentKey.ID(), "kty": "OKP",
+			"d": base64.RawURLEncoding.EncodeToString(privateKey.Seed()),
+			"x": base64.RawURLEncoding.EncodeToString(publicKey),
+		},
 	}, nil
 }
 

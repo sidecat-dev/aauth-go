@@ -1,0 +1,11 @@
+{
+  "name": "aauth-go-typescript-agent-interop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@aauth/agent": "3.0.2"
+  }
+}
