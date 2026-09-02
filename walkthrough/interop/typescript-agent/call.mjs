@@ -18,8 +18,8 @@ export async function runAgentCall(config, resource, requestKey, text, createFet
   })
   const response = await aauthFetch(resource, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'idempotency-key': requestKey },
-    body: JSON.stringify({ text }),
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ request_key: requestKey, text }),
   })
   const body = await response.json()
   if (response.status !== 200 && response.status !== 201) {

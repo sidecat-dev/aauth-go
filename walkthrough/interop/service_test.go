@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,25 +53,25 @@ func TestAuthorizationServiceRunsBehindALoopbackTLSProxy(t *testing.T) {
 
 func TestProtectedNoteHandlerCreatesAndReplaysOneBoundedWrite(t *testing.T) {
 	store := newInteropNoteStore(t.TempDir() + "/notes.json")
-	call := func(key, body string) *httptest.ResponseRecorder {
+	call := func(key, text string) *httptest.ResponseRecorder {
+		body := `{"request_key":` + strconv.Quote(key) + `,"text":` + strconv.Quote(text) + `}`
 		request := httptest.NewRequest(http.MethodPost, "https://service.example/notes", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Idempotency-Key", key)
 		response := httptest.NewRecorder()
 		serveInteropNote(response, request, store, "interop-person")
 		return response
 	}
 
-	first := call("write-1", `{"text":"hello from TypeScript"}`)
+	first := call("write-1", "hello from TypeScript")
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first note = %d: %s", first.Code, first.Body.String())
 	}
-	replay := call("write-1", `{"text":"hello from TypeScript"}`)
+	replay := call("write-1", "hello from TypeScript")
 	if replay.Code != http.StatusOK || !strings.Contains(replay.Body.String(), `"replayed":true`) ||
 		!strings.Contains(replay.Body.String(), `"consequence_count":1`) {
 		t.Fatalf("replayed note = %d: %s", replay.Code, replay.Body.String())
 	}
-	conflict := call("write-1", `{"text":"changed"}`)
+	conflict := call("write-1", "changed")
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("changed replay = %d: %s", conflict.Code, conflict.Body.String())
 	}
@@ -77,15 +79,14 @@ func TestProtectedNoteHandlerCreatesAndReplaysOneBoundedWrite(t *testing.T) {
 
 func TestProtectedNoteHandlerRejectsUnboundedOrAmbiguousInput(t *testing.T) {
 	store := newInteropNoteStore(t.TempDir() + "/notes.json")
-	for name, input := range map[string][2]string{
-		"oversized request key": {strings.Repeat("k", 129), `{"text":"hello"}`},
-		"oversized note":        {"write-1", `{"text":"` + strings.Repeat("x", 4097) + `"}`},
-		"trailing JSON":         {"write-1", `{"text":"hello"} {}`},
+	for name, body := range map[string]string{
+		"oversized request key": `{"request_key":"` + strings.Repeat("k", 129) + `","text":"hello"}`,
+		"oversized note":        `{"request_key":"write-1","text":"` + strings.Repeat("x", 4097) + `"}`,
+		"trailing JSON":         `{"request_key":"write-1","text":"hello"} {}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, "https://service.example/notes", strings.NewReader(input[1]))
+			request := httptest.NewRequest(http.MethodPost, "https://service.example/notes", strings.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("Idempotency-Key", input[0])
 			response := httptest.NewRecorder()
 			serveInteropNote(response, request, store, "interop-person")
 			if response.Code != http.StatusBadRequest {
@@ -138,7 +139,8 @@ func TestAuthorizationServicePublishesCollocatedRoleMetadataAndKeySet(t *testing
 		t.Fatalf("Person Server metadata = %#v", person)
 	}
 	resource := readInteropServiceJSON(t, service.Handler(), "/.well-known/aauth-resource.json")
-	if resource["issuer"] != origin {
+	components, _ := resource["additional_signature_components"].([]any)
+	if resource["issuer"] != origin || !reflect.DeepEqual(components, []any{"content-type", "content-digest"}) {
 		t.Fatalf("Resource metadata = %#v", resource)
 	}
 	keys := readInteropServiceJSON(t, service.Handler(), "/.well-known/jwks.json")

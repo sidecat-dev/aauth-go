@@ -100,7 +100,7 @@ func newInteropAuthorizationService(config interopAuthorizationServiceConfig) (*
 		Issuer: config.Origin, SigningKey: resourceKey, KeyResolver: config.Resolver,
 		Clock: config.Clock, NewID: newID,
 		ScopeDescriptions:             map[string]string{interopWriteScope: "Create one interoperability note"},
-		AdditionalSignatureComponents: []string{"content-type", "content-digest", "idempotency-key"},
+		AdditionalSignatureComponents: []string{"content-type", "content-digest"},
 		MaxSignedBodyBytes:            interopMaxResponseBytes,
 		RequiredScopes:                func(*http.Request) []string { return []string{interopWriteScope} },
 		ResolvePerson: func(_ context.Context, identity resource.PersonIdentity, _ resource.PersonContext) error {
@@ -137,17 +137,14 @@ func serveInteropNote(response http.ResponseWriter, request *http.Request, store
 		writeInteropServiceJSON(response, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	requestKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	if !validInteropRequestKey(requestKey) {
-		writeInteropServiceJSON(response, http.StatusBadRequest, map[string]string{"error": "idempotency_key_required"})
-		return
-	}
 	var input struct {
-		Text string `json:"text"`
+		RequestKey string `json:"request_key"`
+		Text       string `json:"text"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(request.Body, interopMaxResponseBytes+1))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.Text) == "" || len(input.Text) > 4096 {
+	if err := decoder.Decode(&input); err != nil || !validInteropRequestKey(input.RequestKey) ||
+		strings.TrimSpace(input.Text) == "" || len(input.Text) > 4096 {
 		writeInteropServiceJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_note"})
 		return
 	}
@@ -156,7 +153,7 @@ func serveInteropNote(response http.ResponseWriter, request *http.Request, store
 		writeInteropServiceJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_note"})
 		return
 	}
-	result, err := store.Create(requestKey, input.Text, person)
+	result, err := store.Create(input.RequestKey, input.Text, person)
 	if errors.Is(err, errInteropNoteConflict) {
 		writeInteropServiceJSON(response, http.StatusConflict, map[string]string{"error": "idempotency_conflict"})
 		return

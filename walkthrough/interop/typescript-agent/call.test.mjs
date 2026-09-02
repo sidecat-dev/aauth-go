@@ -26,9 +26,8 @@ test('the independent Agent sends one bounded protected note and validates the r
 
   assert.equal(received.target, 'https://service.example/notes')
   assert.equal(received.init.method, 'POST')
-  assert.equal(received.init.headers['idempotency-key'], 'write-1')
   assert.equal(received.init.headers['content-type'], 'application/json')
-  assert.equal(received.init.body, '{"text":"hello"}')
+  assert.equal(received.init.body, '{"request_key":"write-1","text":"hello"}')
   assert.deepEqual(result, {
     agent: 'aauth:go-interop@interop.example',
     note_id: 'note-1', person: 'interop-person', replayed: false, consequence_count: 1,
