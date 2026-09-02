@@ -55,6 +55,9 @@ func (server *Server) serveProtected(response http.ResponseWriter, request *http
 		case aauth.AuthTokenType:
 			server.serveAuthTokenProtected(response, request, prepared, compact)
 			return
+		case aauth.AgentTokenType:
+			server.serveAgentTokenPersonChallenge(response, request, prepared, compact)
+			return
 		case aauth.PersonTokenType:
 			server.servePersonTokenChallenge(response, request, prepared, compact)
 			return
@@ -63,6 +66,34 @@ func (server *Server) serveProtected(response http.ResponseWriter, request *http
 	writeCredentialProblem(response, "invalid_token", &requestTokenError{
 		cause: fmt.Errorf("aauth: protected request token typ %q is not valid for %s access", header.Type, server.accessMode),
 	})
+}
+
+func (server *Server) serveAgentTokenPersonChallenge(
+	response http.ResponseWriter,
+	request *http.Request,
+	prepared signaturekey.PreparedRequest,
+	compact string,
+) {
+	_, claims, err := server.verifyPreparedAgentRequest(request, prepared, compact)
+	if err != nil {
+		writeCredentialProblem(response, "invalid_token", err)
+		return
+	}
+	if server.agentTokenRevocations != nil {
+		revoked, err := server.agentTokenRevocations.IsRevoked(request.Context(), aauth.TokenReference{
+			Issuer: claims.Issuer,
+			JTI:    claims.JTI,
+		})
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("check Agent-token revocation: %w", err))
+			return
+		}
+		if revoked {
+			writeCredentialProblem(response, "invalid_token", &requestTokenError{cause: ErrAgentTokenRevoked})
+			return
+		}
+	}
+	server.writeCredentialRequirement(response)
 }
 
 func hasAAuthRequestProof(request *http.Request) bool {

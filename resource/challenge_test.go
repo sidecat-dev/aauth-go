@@ -16,6 +16,62 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
+func TestAuthTokenResourceChallengesAValidAgentProofForPersonIdentity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 1, 19, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	providerKey := testSigningKey(t, "provider-key", 28)
+	agentKey := testSigningKey(t, "agent-key", 29)
+	resourceKey := testSigningKey(t, "resource-key", 30)
+	const provider = "https://provider.example"
+	const agentID = "aauth:interop@provider.example"
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: provider, DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
+	}
+	protected := 0
+	server, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: resourceIssuer, SigningKey: resourceKey, KeyResolver: resolver,
+		Clock: clock, NewID: func() string { return "unused-resource-token" },
+		ScopeDescriptions:             map[string]string{"records.write": "Write records"},
+		AdditionalSignatureComponents: []string{"content-type", "content-digest"},
+		MaxSignedBodyBytes:            64 << 10,
+		RequiredScopes:                func(*http.Request) []string { return []string{"records.write"} },
+		ResolvePerson:                 func(context.Context, PersonIdentity, PersonContext) error { return nil },
+		Protected: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			protected++
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentToken, err := aauth.MintAgentToken(provider, providerKey, aauth.AgentTokenRequest{
+		Agent: agentID, PersonServer: personIssuer, PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+	}, now, "agent-token-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := signedRequest(t, clock, agentKey, agentToken, http.MethodPost, resourceIssuer+"/records", `{"record":"one"}`)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized ||
+		aauth.ParsePersonTokenRequirement(response.Header().Values("AAuth-Requirement")) != nil ||
+		response.Header().Get("Signature-Error") != "" || protected != 0 {
+		t.Fatalf("valid Agent proof challenge = %d headers=%v body=%s protected=%d",
+			response.Code, response.Header(), response.Body.String(), protected)
+	}
+
+	wrongKey := testSigningKey(t, "wrong-agent-key", 27)
+	invalid := signedRequest(t, clock, wrongKey, agentToken, http.MethodPost, resourceIssuer+"/records", `{"record":"one"}`)
+	invalidResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(invalidResponse, invalid)
+	assertSignatureError(t, invalidResponse, signaturekey.ErrorInvalidSignature)
+	if invalidResponse.Header().Get("AAuth-Requirement") != "" || protected != 0 {
+		t.Fatalf("invalid Agent proof challenged or executed: headers=%v protected=%d", invalidResponse.Header(), protected)
+	}
+}
+
 func TestAuthTokenRequirementChallengesValidPersonTokenWithoutApplicationConsequence(t *testing.T) {
 	t.Parallel()
 
