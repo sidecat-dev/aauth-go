@@ -75,6 +75,26 @@ func TestProtectedNoteHandlerCreatesAndReplaysOneBoundedWrite(t *testing.T) {
 	}
 }
 
+func TestProtectedNoteHandlerRejectsUnboundedOrAmbiguousInput(t *testing.T) {
+	store := newInteropNoteStore(t.TempDir() + "/notes.json")
+	for name, input := range map[string][2]string{
+		"oversized request key": {strings.Repeat("k", 129), `{"text":"hello"}`},
+		"oversized note":        {"write-1", `{"text":"` + strings.Repeat("x", 4097) + `"}`},
+		"trailing JSON":         {"write-1", `{"text":"hello"} {}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "https://service.example/notes", strings.NewReader(input[1]))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", input[0])
+			response := httptest.NewRecorder()
+			serveInteropNote(response, request, store, "interop-person")
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("unbounded input = %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestNoteStoreRetainsOneIdempotentProtectedConsequence(t *testing.T) {
 	path := t.TempDir() + "/notes.json"
 	store := newInteropNoteStore(path)

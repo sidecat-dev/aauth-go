@@ -138,7 +138,7 @@ func serveInteropNote(response http.ResponseWriter, request *http.Request, store
 		return
 	}
 	requestKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	if requestKey == "" {
+	if !validInteropRequestKey(requestKey) {
 		writeInteropServiceJSON(response, http.StatusBadRequest, map[string]string{"error": "idempotency_key_required"})
 		return
 	}
@@ -147,7 +147,12 @@ func serveInteropNote(response http.ResponseWriter, request *http.Request, store
 	}
 	decoder := json.NewDecoder(io.LimitReader(request.Body, interopMaxResponseBytes+1))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.Text) == "" {
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.Text) == "" || len(input.Text) > 4096 {
+		writeInteropServiceJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_note"})
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		writeInteropServiceJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_note"})
 		return
 	}
@@ -165,6 +170,18 @@ func serveInteropNote(response http.ResponseWriter, request *http.Request, store
 		status = http.StatusOK
 	}
 	writeInteropServiceJSON(response, status, result)
+}
+
+func validInteropRequestKey(value string) bool {
+	if len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for index := range len(value) {
+		if value[index] < '!' || value[index] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func newInteropTokenStore() *interopTokenStore {
