@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	agentLocalPattern  = regexp.MustCompile(`^[a-z0-9._+\-]+$`)
+	agentLocalPattern  = regexp.MustCompile(`^[A-Za-z0-9._+\-]+$`)
 	domainLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
