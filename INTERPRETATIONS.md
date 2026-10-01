@@ -1326,8 +1326,9 @@ is further ahead of the verifier clock than the validity window, and leaves a
 
 `PrepareRequest` reuses its existing validity window (`SignatureWindow`,
 default `DefaultSignatureWindow`, 60 seconds) for both directions. A `created`
-exactly one window ahead or behind is accepted; one nanosecond further ahead is
-`clock_skew`, further behind is `invalid_signature`. The window and expiry
+exactly one window ahead or behind is accepted; one second further ahead is
+`clock_skew`, one second further behind is `invalid_signature`. `created` is a
+whole number of seconds, and the tests step by one second. The window and expiry
 semantics are unchanged. The source does not fix the window length; this
 choice is the library's existing one.
 
