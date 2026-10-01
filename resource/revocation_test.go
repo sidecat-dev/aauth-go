@@ -566,7 +566,7 @@ func TestAuthTokenStatusStoreReferenceFixtureLinearizesConcurrentObserveAndRevok
 	}()
 	go func() {
 		<-start
-		revokeResult <- store.Revoke(context.Background(), reference)
+		revokeResult <- store.Revoke(context.Background(), aauth.RevocationRequest{Reference: reference, ExpiresAt: time.Unix(2000000000, 0)})
 	}()
 	close(start)
 
