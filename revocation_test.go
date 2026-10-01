@@ -98,17 +98,31 @@ func TestReadRevocationResponseBounds(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body))}
 	}
-	if err := aauth.ReadRevocationResponse(response("application/json", `{"downstream":[{"recipient":"r","error":"revocation_unsupported"},{"recipient":"s"}]}`), 1024); err != nil {
-		t.Fatalf("valid report = %v", err)
+	for name, body := range map[string]string{
+		"downstream report":          `{"downstream":[{"recipient":"r","error":"revocation_unsupported"},{"recipient":"s"}]}`,
+		"empty object":               `{}`,
+		"case-distinct extension":    `{"Downstream":[]}`,
+		"known and distinct members": `{"downstream":[],"Downstream":{"vendor":true}}`,
+		"unknown extension member":   `{"vendor":{"x":1}}`,
+	} {
+		if err := aauth.ReadRevocationResponse(response("application/json", body), 1024); err != nil {
+			t.Fatalf("%s = %v", name, err)
+		}
 	}
 	for name, bad := range map[string]*http.Response{
 		"oversize":          response("application/json", `{"x":"`+strings.Repeat("a", 64)+`"}`),
-		"case variant":      response("application/json", `{"downstream":[],"Downstream":[]}`),
+		"top-level null":    response("application/json", `null`),
+		"null downstream":   response("application/json", `{"downstream":null}`),
+		"duplicate member":  response("application/json", `{"downstream":[],"downstream":[]}`),
 		"entry no receiver": response("application/json", `{"downstream":[{"error":"revocation_unsupported"}]}`),
 		"null entry":        response("application/json", `{"downstream":[null]}`),
 		"bad media type":    response("application/json;;", `{}`),
 	} {
-		if err := aauth.ReadRevocationResponse(bad, 32); !errors.Is(err, aauth.ErrRevocationUnavailable) {
+		limit := int64(1024)
+		if name == "oversize" {
+			limit = 32
+		}
+		if err := aauth.ReadRevocationResponse(bad, limit); !errors.Is(err, aauth.ErrRevocationUnavailable) {
 			t.Fatalf("%s = %v", name, err)
 		}
 	}

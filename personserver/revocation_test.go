@@ -320,6 +320,9 @@ func TestRevokeIssuedAuthTokenPreservesLocalAndRemoteOutcomes(t *testing.T) {
 		}{
 			"empty":      {"", "", false},
 			"object":     {"application/json", `{}`, false},
+			"extension":  {"application/json", `{"Downstream":{"vendor":true}}`, false},
+			"null":       {"application/json", `null`, true},
+			"null list":  {"application/json", `{"downstream":null}`, true},
 			"text":       {"text/plain", `ok`, true},
 			"json array": {"application/json", `[]`, true},
 			"no type":    {"", `{}`, true},

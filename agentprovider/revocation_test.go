@@ -195,17 +195,20 @@ func TestRevocationClientReadsMalformed200AsUnavailable(t *testing.T) {
 		body        string
 		wantErr     bool
 	}{
-		"no body":                {"", "", false},
-		"empty object":           {"application/json", `{}`, false},
-		"downstream report":      {"application/json; charset=utf-8", `{"downstream":[{"recipient":"https://r.example","error":"revocation_unavailable"}]}`, false},
-		"not json":               {"application/json", `ok`, true},
-		"array":                  {"application/json", `[]`, true},
-		"wrong media type":       {"text/plain", `{}`, true},
-		"missing media type":     {"", `{}`, true},
-		"duplicate member":       {"application/json", `{"downstream":[],"downstream":[]}`, true},
-		"trailing value":         {"application/json", `{} {}`, true},
-		"downstream not array":   {"application/json", `{"downstream":"x"}`, true},
-		"unknown downstream err": {"application/json", `{"downstream":[{"recipient":"https://r.example","error":"nope"}]}`, true},
+		"no body":                 {"", "", false},
+		"empty object":            {"application/json", `{}`, false},
+		"downstream report":       {"application/json; charset=utf-8", `{"downstream":[{"recipient":"https://r.example","error":"revocation_unavailable"}]}`, false},
+		"case-distinct extension": {"application/json", `{"Downstream":{"vendor":true}}`, false},
+		"top-level null":          {"application/json", `null`, true},
+		"null downstream":         {"application/json", `{"downstream":null}`, true},
+		"not json":                {"application/json", `ok`, true},
+		"array":                   {"application/json", `[]`, true},
+		"wrong media type":        {"text/plain", `{}`, true},
+		"missing media type":      {"", `{}`, true},
+		"duplicate member":        {"application/json", `{"downstream":[],"downstream":[]}`, true},
+		"trailing value":          {"application/json", `{} {}`, true},
+		"downstream not array":    {"application/json", `{"downstream":"x"}`, true},
+		"unknown downstream err":  {"application/json", `{"downstream":[{"recipient":"https://r.example","error":"nope"}]}`, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			client, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
