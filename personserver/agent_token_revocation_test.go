@@ -42,7 +42,7 @@ func TestAgentTokenRevocationEndpointRequiresIssuerProofAndExactReference(t *tes
 		},
 		{
 			name: "reference issuer differs from signer", body: `{"iss":"https://other.example","jti":"agent-token-1"}`,
-			sign: true, signingKey: providerKey, wantStatus: http.StatusForbidden, wantCode: "access_denied",
+			sign: true, signingKey: providerKey, wantStatus: http.StatusForbidden, wantCode: "unsupported_iss",
 		},
 	}
 	for _, test := range tests {

@@ -299,7 +299,7 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 	)
 	mismatchResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(mismatchResponse, mismatched)
-	if mismatchResponse.Code != http.StatusForbidden || mismatchResponse.Header().Get("Signature-Error") != "" {
+	if mismatchResponse.Code != http.StatusForbidden || mismatchResponse.Header().Get("Signature-Error") != "" || !strings.Contains(mismatchResponse.Body.String(), `"error":"unsupported_iss"`) {
 		t.Fatalf("issuer mismatch = %d %s headers=%v", mismatchResponse.Code, mismatchResponse.Body.String(), mismatchResponse.Header())
 	}
 
