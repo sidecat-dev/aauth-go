@@ -939,10 +939,14 @@ the token issuer in this three-party path.
 
 ### Refusal after revocation
 
-A revoked token still has a valid signature and request proof. Because Core
-does not define the protected-use response, this implementation provisionally
-returns `403 access_denied` rather than a misleading `401 Signature-Error`.
-This check stops a request only when the store reports revocation before host
+A revoked token still has a valid signature and request proof. Protocol -11
+(AAuth 28e8258f, Presenting a Revoked Token) answers a revoked token in
+`Signature-Key` with `401` and `Signature-Error: error=revoked_jwt`. A revoked
+Auth token also carries `AAuth-Requirement: requirement=person-token`, never
+`auth-token`. A token carried as a request parameter would use
+`revoked_<parameter>_token`; that is not adopted, so request-body tokens such
+as a sub-agent token get no revocation lookup. An Auth-token identity conflict
+stays `403 access_denied`. This check stops a request only when the store reports revocation before host
 callbacks; it does not cancel an already-admitted in-flight request.
 
 ### Refused revocation caller uses `unsupported_iss`
