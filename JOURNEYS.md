@@ -259,8 +259,16 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`personserver/storetest/issued_auth_token.go`](personserver/storetest/issued_auth_token.go),
     [`resource/storetest/auth_token_status.go`](resource/storetest/auth_token_status.go),
     and `go run ./example/revocation`.
+  - Revoked tokens: a revoked Agent or Auth token is refused `401` with
+    `Signature-Error: error=revoked_jwt` before any host callback.
+  - Rate-limited feedback: when a recipient answers `429` `rate_limited` with
+    one valid `Retry-After`, `agentprovider.RevocationClient` and
+    `personserver.Server.RevokeIssuedAuthToken` return `*aauth.RateLimitedError`
+    (use `errors.As`; `RetryAfter` is the recipient's delay and the caller
+    chooses any later attempt). The library never retries.
   - Missing: automatic Agent-token fan-out, Auth-token four-party
-    propagation, `rate_limited`, deferred `202`, `revoked_jwt`, mission cascade, and session revocation.
+    propagation, recipient entry or rate enforcement, deferred `202` polling,
+    mission cascade, automatic retry, and session revocation.
 
 - [x] **Missionless local-action permission — Implemented**
   - Flow: Agent → PS with one signed local-action request → immediate decision

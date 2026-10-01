@@ -94,8 +94,11 @@ and its `403 unsupported_iss` mapping follow this text: the `{jti, exp}` body,
 the issuer taken only from the verified signature, mandatory `content-type`
 and `content-digest` coverage, `(iss, jti)` state recorded whether or not the
 token was seen, and the Errors table entries already adopted in
-`INTERPRETATIONS.md`. Cascade, polling of a `202` and `rate_limited`
-are not adopted (`revoked_jwt` is adopted by the overlays above). The `200` Body rule is adopted for the AP and PS
+`INTERPRETATIONS.md`. The `429` `rate_limited` response is adopted for client
+feedback only: the AP and PS revocation clients return additive
+`aauth.RateLimitedError` with the recipient's `Retry-After`; recipient entry or
+rate enforcement is not implemented. Cascade and polling of a `202` are not
+adopted (`revoked_jwt` is adopted by the overlays above). The `200` Body rule is adopted for the AP and PS
 clients only (`aauth.ReadRevocationResponse`): no body is a recorded revocation;
 a present body that is not `application/json`, one JSON object with an optional
 array `downstream`, is `aauth.ErrRevocationUnavailable`. A valid `downstream`

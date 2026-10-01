@@ -2,9 +2,12 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,12 +18,22 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-// rateLimitingRecipient serves a real server's metadata and keys but answers
-// every revocation POST with a rate_limited problem and one Retry-After.
+// rateLimitingRecipient serves a real server's metadata and keys over a socket
+// but answers every revocation POST with a rate_limited problem and one
+// Retry-After. It records what the client sent. It does not verify the HTTP
+// message signature: the client's signature headers are only inspected for
+// presence, so this test proves received-response handling, not acceptance.
 type rateLimitingRecipient struct {
+	mu         sync.Mutex
 	next       http.Handler
-	posts      int
 	retryAfter string
+	posts      []receivedRevocation
+}
+
+type receivedRevocation struct {
+	contentType  string
+	hasSignature bool
+	body         map[string]any
 }
 
 func (recipient *rateLimitingRecipient) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -28,29 +41,70 @@ func (recipient *rateLimitingRecipient) ServeHTTP(response http.ResponseWriter, 
 		recipient.next.ServeHTTP(response, request)
 		return
 	}
-	recipient.posts++
-	_, _ = io.Copy(io.Discard, request.Body)
+	raw, _ := io.ReadAll(request.Body)
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+	recipient.mu.Lock()
+	recipient.posts = append(recipient.posts, receivedRevocation{
+		contentType: request.Header.Get("Content-Type"),
+		hasSignature: request.Header.Get("Signature") != "" &&
+			request.Header.Get("Signature-Input") != "" && request.Header.Get("Content-Digest") != "",
+		body: body,
+	})
+	recipient.mu.Unlock()
 	response.Header().Set("Content-Type", "application/problem+json")
 	response.Header().Set("Retry-After", recipient.retryAfter)
 	response.WriteHeader(http.StatusTooManyRequests)
 	_, _ = io.WriteString(response, `{"status":429,"error":"rate_limited"}`)
 }
 
-func TestRevocationClientsReturnRateLimitedFeedbackOverSignedExchange(t *testing.T) {
+func (recipient *rateLimitingRecipient) onlyPost(t *testing.T, jti string) {
+	t.Helper()
+	recipient.mu.Lock()
+	defer recipient.mu.Unlock()
+	if len(recipient.posts) != 1 {
+		t.Fatalf("recipient received %d revocation POSTs, want 1", len(recipient.posts))
+	}
+	post := recipient.posts[0]
+	if post.contentType != "application/json" || !post.hasSignature || post.body["jti"] != jti {
+		t.Fatalf("recipient received %+v, want a signed application/json body with jti %q", post, jti)
+	}
+}
+
+// startRecipient starts a TLS server whose handler is installed after the
+// issuer URL, which is the server URL, is known.
+func startRecipient(t *testing.T) (*httptest.Server, func(*rateLimitingRecipient)) {
+	t.Helper()
+	var mu sync.Mutex
+	var handler http.Handler
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		mu.Lock()
+		current := handler
+		mu.Unlock()
+		current.ServeHTTP(response, request)
+	}))
+	t.Cleanup(server.Close)
+	return server, func(recipient *rateLimitingRecipient) {
+		mu.Lock()
+		handler = recipient
+		mu.Unlock()
+	}
+}
+
+func TestRevocationClientsReturnRateLimitedFeedbackOverHTTP(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	const (
-		agentProviderID = "https://ap-rate-limit.example"
-		personServerID  = "https://ps-rate-limit.example"
-		resourceID      = "https://resource-rate-limit.example"
-	)
+	const agentProviderID = "https://ap-rate-limit.example"
+	personServerURL, installPersonServer := startRecipient(t)
+	resourceURL, installResource := startRecipient(t)
+	personServerID, resourceID := personServerURL.URL, resourceURL.URL
 	providerKey := newSigningKey(t, "rate-limit-ap")
 	personKey := newSigningKey(t, "rate-limit-ps")
 	resourceKey := newSigningKey(t, "rate-limit-resource")
-	network := newLogicalTransport()
-	httpClient := &http.Client{Transport: network}
+	// Both test servers share httptest's certificate, so one client trusts both.
+	httpClient := personServerURL.Client()
 	admit := func(context.Context, string) error { return nil }
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: httpClient, Clock: clock, Admit: admit,
@@ -65,7 +119,6 @@ func TestRevocationClientsReturnRateLimitedFeedbackOverSignedExchange(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	network.Handle(agentProviderID, provider.Handler())
 
 	// Agent-token revocation at a Person Server.
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
@@ -86,7 +139,7 @@ func TestRevocationClientsReturnRateLimitedFeedbackOverSignedExchange(t *testing
 		t.Fatal(err)
 	}
 	psRecipient := &rateLimitingRecipient{next: people.Handler(), retryAfter: "45"}
-	network.Handle(personServerID, psRecipient)
+	installPersonServer(psRecipient)
 	revoker, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
 		Provider: provider, HTTPClient: httpClient, Admit: admit,
 	})
@@ -101,9 +154,10 @@ func TestRevocationClientsReturnRateLimitedFeedbackOverSignedExchange(t *testing
 	var limited *aauth.RateLimitedError
 	var problem *aauth.ProblemError
 	if !errors.As(err, &limited) || !errors.As(err, &problem) || limited.RetryAfter != 45*time.Second ||
-		limited.Problem != problem || problem.Code != "rate_limited" || psRecipient.posts != 1 {
-		t.Fatalf("Agent Provider revoke = %v typed=%+v posts=%d", err, limited, psRecipient.posts)
+		limited.Problem != problem || problem.Status != http.StatusTooManyRequests || problem.Code != "rate_limited" {
+		t.Fatalf("Agent Provider revoke = %v typed=%+v", err, limited)
 	}
+	psRecipient.onlyPost(t, "rate-limited-agent-token")
 
 	// Auth-token revocation at a Resource.
 	issued := newMemoryIssuedAuthTokenStore()
@@ -136,7 +190,7 @@ func TestRevocationClientsReturnRateLimitedFeedbackOverSignedExchange(t *testing
 		t.Fatal(err)
 	}
 	resourceRecipient := &rateLimitingRecipient{next: protectedResource.Handler(), retryAfter: "Thu, 01 Oct 2026 12:03:00 GMT"}
-	network.Handle(resourceID, resourceRecipient)
+	installResource(resourceRecipient)
 	authReference := aauth.TokenReference{Issuer: personServerID, JTI: "rate-limited-auth-token"}
 	if err := issued.CommitIssuedAuthToken(ctx, personserver.IssuedAuthTokenRecord{
 		Reference: authReference, Resource: resourceID, CompactSHA256: [32]byte{7},
@@ -147,7 +201,8 @@ func TestRevocationClientsReturnRateLimitedFeedbackOverSignedExchange(t *testing
 	err = issuer.RevokeIssuedAuthToken(ctx, authReference)
 	limited, problem = nil, nil
 	if !errors.As(err, &limited) || !errors.As(err, &problem) || limited.RetryAfter != 3*time.Minute ||
-		limited.Problem != problem || problem.Code != "rate_limited" || resourceRecipient.posts != 1 {
-		t.Fatalf("Person Server revoke = %v typed=%+v posts=%d", err, limited, resourceRecipient.posts)
+		limited.Problem != problem || problem.Status != http.StatusTooManyRequests || problem.Code != "rate_limited" {
+		t.Fatalf("Person Server revoke = %v typed=%+v", err, limited)
 	}
+	resourceRecipient.onlyPost(t, "rate-limited-auth-token")
 }
