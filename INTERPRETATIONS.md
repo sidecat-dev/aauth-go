@@ -954,7 +954,7 @@ configured. The body no longer names an issuer, so there is no body-issuer
 mismatch refusal. The refusal after revocation above is
 a different, protected-use response and is unchanged.
 
-### No pre-use tombstone
+### Pre-use revocation is recorded
 
 Protocol -11 requires the recipient to record whether the token was seen, not
 to answer `404`. `RevocationRequest` carries a `TokenReference` plus the

@@ -53,6 +53,22 @@ identifiers compare exactly without case folding. The overlay is a list, not a
 table row, because the baseline manifest check requires exactly one table row
 per source file.
 
+## Targeted additional source: Protocol -11 revocation request
+
+This is one targeted source, not a repin. The manifest above and every other
+Protocol clause remain at their stated revisions. Only the revocation request
+and its `403 unsupported_iss` mapping follow this text: the `{jti, exp}` body,
+the issuer taken only from the verified signature, mandatory `content-type`
+and `content-digest` coverage, `(iss, jti)` state recorded whether or not the
+token was seen, and the Errors table entries already adopted in
+`INTERPRETATIONS.md`. Cascade, polling of a `202`, `rate_limited`,
+`revoked_jwt` and the malformed-`200` rule are not adopted.
+
+- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Section: the `## Token Revocation` heading at line 2666, `### Revocation Request` (lines 2670-2700) and the Errors table in `### Revocation Response` (lines 2701-2746).
+- SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
 [AAuth Explorer at `e6d7913`](https://github.com/aauth-dev/explorer/commit/e6d79137cda1a6a650d4394a37095393e1cc62ba)
 is a non-normative diagnostic implementation, not an editor source. It is
 tracked by Git commit rather than inserted into the source manifest.
