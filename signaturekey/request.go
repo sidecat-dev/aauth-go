@@ -378,8 +378,11 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	}
 	createdAt := time.Unix(created, 0)
 	age := verifiedAt.Sub(createdAt)
-	if age < -window || age > window {
-		return prepared, newError(ErrorInvalidSignature, errors.New("aauth: signature created time is outside the validity window"))
+	if age < -window {
+		return prepared, newError(ErrorClockSkew, errors.New("aauth: signature created time is ahead of the validity window"))
+	}
+	if age > window {
+		return prepared, newError(ErrorInvalidSignature, errors.New("aauth: signature created time is older than the validity window"))
 	}
 	if expires != nil && !time.Unix(*expires, 0).After(verifiedAt) {
 		return prepared, newError(ErrorInvalidSignature, errors.New("aauth: signature expires time is in the past"))
