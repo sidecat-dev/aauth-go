@@ -36,7 +36,7 @@ func TestAgentIdentifierAndOneLevelRelationship(t *testing.T) {
 	}
 	for _, relation := range [][2]string{
 		{"agent@agents.example", ""},
-		{"aauth:Planner@agents.example", ""},
+		{"aauth:Plan ner@agents.example", ""},
 		{"aauth:planner+child@agents.example", ""},
 		{"aauth:planner+child+grandchild@agents.example", "aauth:planner+child@agents.example"},
 		{"aauth:planner+child@other.example", "aauth:planner@agents.example"},
@@ -44,6 +44,29 @@ func TestAgentIdentifierAndOneLevelRelationship(t *testing.T) {
 		if err := auth.ValidateAgentRelationship(relation[0], relation[1]); err == nil {
 			t.Errorf("ValidateAgentRelationship(%q, %q) succeeded", relation[0], relation[1])
 		}
+	}
+}
+
+func TestAgentIdentifierLocalPartAcceptsUppercaseAndComparesExactly(t *testing.T) {
+	t.Parallel()
+
+	for _, identifier := range []string{
+		"aauth:Planner@agents.example", "aauth:PLANNER.7f3C@agents.example",
+	} {
+		if err := auth.ValidateAgentIdentifier(identifier); err != nil {
+			t.Errorf("ValidateAgentIdentifier(%q) = %v", identifier, err)
+		}
+	}
+	if err := auth.ValidateAgentRelationship(
+		"aauth:Planner+Search1@agents.example", "aauth:Planner@agents.example",
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Parent and sub-agent local parts compare exactly; no case folding.
+	if err := auth.ValidateAgentRelationship(
+		"aauth:planner+search@agents.example", "aauth:Planner@agents.example",
+	); err == nil {
+		t.Fatal("sub-agent of a differently cased parent succeeded")
 	}
 }
 
