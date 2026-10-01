@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -148,6 +149,11 @@ func (client *RevocationClient) revokeAgentToken(
 	}
 	if mediaType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type")); parseErr == nil && mediaType == "application/problem+json" {
 		if problem, decodeErr := aauth.DecodeProblemResponse(response); decodeErr == nil {
+			if problem.Status == http.StatusTooManyRequests && problem.Code == "rate_limited" {
+				if delay, ok := httpapi.ParseRetryAfter(response.Header.Values("Retry-After"), client.provider.clock.Now()); ok {
+					return &aauth.RateLimitedError{Problem: problem, RetryAfter: delay}
+				}
+			}
 			return problem
 		}
 	}

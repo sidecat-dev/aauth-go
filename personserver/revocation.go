@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -182,6 +183,11 @@ func (server *Server) RevokeIssuedAuthTokenWithHeaders(
 	if mediaType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type")); parseErr == nil && mediaType == "application/problem+json" {
 		problem, decodeErr := aauth.DecodeProblemResponse(response)
 		if decodeErr == nil {
+			if problem.Status == http.StatusTooManyRequests && problem.Code == "rate_limited" {
+				if delay, ok := httpapi.ParseRetryAfter(response.Header.Values("Retry-After"), server.clock.Now()); ok {
+					return &aauth.RateLimitedError{Problem: problem, RetryAfter: delay}
+				}
+			}
 			return problem
 		}
 	}
