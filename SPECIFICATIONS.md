@@ -25,9 +25,13 @@ This is one targeted source, not a repin. The manifest above and the rest of
 the library remain at their stated revisions. Only the signature `created`
 classification in `signaturekey.PrepareRequest` follows this text.
 
-| Document | Repository commit | Section | SHA-256 |
-| --- | --- | --- | --- |
-| HTTP Signature Keys | [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6) | the `### clock_skew` section (heading at line 1104, section lines 1104-1114) of [`draft-hardt-httpbis-signature-key.md`](https://github.com/dickhardt/signature-key/blob/69f5ba2647be848feed043fb6d8b0790e43cd0b6/draft-hardt-httpbis-signature-key.md) | `b2b43db67a1aa5249d1166589834d44f81e97ea2e6375a07b475115efa196b7d` |
+- Document: HTTP Signature Keys, editor source `draft-hardt-httpbis-signature-key.md`.
+- Repository commit: [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6).
+- Section: the `### clock_skew` heading at line 1104; the section is lines 1104-1114.
+- SHA-256 of the whole file at that commit: `b2b43db67a1aa5249d1166589834d44f81e97ea2e6375a07b475115efa196b7d`.
+
+The overlay is a list, not a table row, because the baseline manifest check
+requires exactly one table row per source file.
 
 Not implemented from this revision: `clock_skew` for a JWT `iat` ahead of the
 verifier clock (the jkt-jwt and Core token paths), and `revoked_jwt`.
