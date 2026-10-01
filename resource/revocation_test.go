@@ -99,13 +99,10 @@ func TestPSAuthTokenCanBeObservedRevokedAndThenRefused(t *testing.T) {
 	refused := signedRequest(t, clock, agentKey, authToken, http.MethodGet, resourceIssuer+"/records", "")
 	refusedResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(refusedResponse, refused)
-	if refusedResponse.Code != http.StatusForbidden || resolveCalls != 2 || protectedCalls != 2 {
-		t.Fatalf("revoked use = %d %s; resolve=%d protected=%d", refusedResponse.Code, refusedResponse.Body.String(), resolveCalls, protectedCalls)
+	if resolveCalls != 2 || protectedCalls != 2 {
+		t.Fatalf("revoked use reached callbacks; resolve=%d protected=%d", resolveCalls, protectedCalls)
 	}
-	problem, err := aauth.DecodeProblemResponse(refusedResponse.Result())
-	if err != nil || problem.Code != "access_denied" {
-		t.Fatalf("revoked problem = %#v, %v", problem, err)
-	}
+	assertRevokedAuthTokenResponse(t, refusedResponse)
 
 	unknown := signedRevocationRequest(t, clock, personKey, personIssuer, "unknown-auth-token")
 	unknownResponse := httptest.NewRecorder()
@@ -121,8 +118,9 @@ func TestPSAuthTokenCanBeObservedRevokedAndThenRefused(t *testing.T) {
 	firstUse := signedRequest(t, clock, agentKey, previouslyUnknown, http.MethodGet, resourceIssuer+"/records/new", "")
 	firstUseResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(firstUseResponse, firstUse)
-	if firstUseResponse.Code != http.StatusForbidden || protectedCalls != 2 {
-		t.Fatalf("first use after pre-use revoke = %d %s; protected=%d", firstUseResponse.Code, firstUseResponse.Body.String(), protectedCalls)
+	assertRevokedAuthTokenResponse(t, firstUseResponse)
+	if protectedCalls != 2 {
+		t.Fatalf("first use after pre-use revoke reached protected handler; protected=%d", protectedCalls)
 	}
 }
 
@@ -217,9 +215,7 @@ func TestRevocationKeysTheSameJTIByIssuer(t *testing.T) {
 	if revoked.Code != http.StatusOK {
 		t.Fatalf("first issuer revoke = %d %s", revoked.Code, revoked.Body.String())
 	}
-	if response := use(first, "/first-again"); response.Code != http.StatusForbidden {
-		t.Fatalf("revoked first issuer use = %d %s", response.Code, response.Body.String())
-	}
+	assertRevokedAuthTokenResponse(t, use(first, "/first-again"))
 	if response := use(second, "/second-again"); response.Code != http.StatusNoContent {
 		t.Fatalf("active second issuer use = %d %s", response.Code, response.Body.String())
 	}
@@ -527,8 +523,9 @@ func TestAuthTokenStatusMutationCanBeRetriedAfterAnUncertainStoreError(t *testin
 	refusedBeforeRetry := signedRequest(t, clock, agentKey, compact, http.MethodGet, resourceIssuer+"/records", "")
 	refusedBeforeRetryResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(refusedBeforeRetryResponse, refusedBeforeRetry)
-	if refusedBeforeRetryResponse.Code != http.StatusForbidden || requiredCalls != 1 || resolveCalls != 1 || protectedCalls != 1 {
-		t.Fatalf("use after uncertain revoke = %d %s; callbacks=%d/%d/%d", refusedBeforeRetryResponse.Code, refusedBeforeRetryResponse.Body.String(), requiredCalls, resolveCalls, protectedCalls)
+	assertRevokedAuthTokenResponse(t, refusedBeforeRetryResponse)
+	if requiredCalls != 1 || resolveCalls != 1 || protectedCalls != 1 {
+		t.Fatalf("use after uncertain revoke reached callbacks=%d/%d/%d", requiredCalls, resolveCalls, protectedCalls)
 	}
 	secondRevoke := signedRevocationRequest(t, clock, personKey, reference.Issuer, reference.JTI)
 	secondRevokeResponse := httptest.NewRecorder()
@@ -539,8 +536,9 @@ func TestAuthTokenStatusMutationCanBeRetriedAfterAnUncertainStoreError(t *testin
 	refusedUse := signedRequest(t, clock, agentKey, compact, http.MethodGet, resourceIssuer+"/records", "")
 	refusedUseResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(refusedUseResponse, refusedUse)
-	if refusedUseResponse.Code != http.StatusForbidden || requiredCalls != 1 || resolveCalls != 1 || protectedCalls != 1 {
-		t.Fatalf("use after revoke retry = %d %s; callbacks=%d/%d/%d", refusedUseResponse.Code, refusedUseResponse.Body.String(), requiredCalls, resolveCalls, protectedCalls)
+	assertRevokedAuthTokenResponse(t, refusedUseResponse)
+	if requiredCalls != 1 || resolveCalls != 1 || protectedCalls != 1 {
+		t.Fatalf("use after revoke retry reached callbacks=%d/%d/%d", requiredCalls, resolveCalls, protectedCalls)
 	}
 }
 
@@ -769,3 +767,18 @@ func (store *testAuthTokenStatusStore) record(reference aauth.TokenReference) (O
 }
 
 var _ AuthTokenStatusStore = (*testAuthTokenStatusStore)(nil)
+
+// assertRevokedAuthTokenResponse pins the Protocol revoked-token response:
+// 401, Signature-Error revoked_jwt, and a person-token requirement.
+func assertRevokedAuthTokenResponse(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked Auth-token status = %d %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Signature-Error"); !strings.Contains(got, "error=revoked_jwt") && !strings.Contains(got, "revoked_jwt") {
+		t.Fatalf("Signature-Error = %q", got)
+	}
+	if got := response.Header().Get("AAuth-Requirement"); got != "requirement=person-token" {
+		t.Fatalf("AAuth-Requirement = %q", got)
+	}
+}

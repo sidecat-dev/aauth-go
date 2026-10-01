@@ -34,7 +34,40 @@ The overlay is a list, not a table row, because the baseline manifest check
 requires exactly one table row per source file.
 
 Not implemented from this revision: `clock_skew` for a JWT `iat` ahead of the
-verifier clock (the jkt-jwt and Core token paths), and `revoked_jwt`.
+verifier clock (the jkt-jwt and Core token paths).
+
+## Targeted additional source: Signature-Key `revoked_jwt`
+
+This is one targeted source, not a repin. Only the `revoked_jwt` code and its
+use for a withdrawn JWT carried in `Signature-Key` follow this text:
+`signaturekey.ErrorRevokedJWT`, returned by a Resource or Person Server only
+where its own revocation store gives it notice.
+
+- Document: HTTP Signature Keys, editor source `draft-hardt-httpbis-signature-key.md`.
+- Repository commit: [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6).
+- Section: the `### revoked_jwt` heading at line 1092; the section is lines 1092-1102. The registry row is line 1462.
+- SHA-256 of the whole file at that commit: `b2b43db67a1aa5249d1166589834d44f81e97ea2e6375a07b475115efa196b7d`.
+
+The overlay is a list, not a table row, because the baseline manifest check
+requires exactly one table row per source file.
+
+## Targeted additional source: Protocol -11 presenting a revoked token
+
+This is one targeted source, not a repin. Only the first bullet of the section
+follows this text: a revoked Agent or Auth token carried in `Signature-Key` is
+`401` with `Signature-Error: error=revoked_jwt`, and a Resource refusing a
+revoked Auth token also sends `AAuth-Requirement: requirement=person-token`
+and never `requirement=auth-token`. A token carried as a request parameter
+(`revoked_<parameter>_token`, the pending-request `revoked` state) is not
+adopted, and no global parameter-token remapping, cascade or recovery is added.
+
+- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Section: the `### Presenting a Revoked Token` heading at line 2760; the section is lines 2760-2767.
+- SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
+The overlay is a list, not a table row, because the baseline manifest check
+requires exactly one table row per source file.
 
 ## Targeted additional source: Protocol -11 agent identifier local part
 
@@ -61,8 +94,8 @@ and its `403 unsupported_iss` mapping follow this text: the `{jti, exp}` body,
 the issuer taken only from the verified signature, mandatory `content-type`
 and `content-digest` coverage, `(iss, jti)` state recorded whether or not the
 token was seen, and the Errors table entries already adopted in
-`INTERPRETATIONS.md`. Cascade, polling of a `202`, `rate_limited`,
-`revoked_jwt` are not adopted. The `200` Body rule is adopted for the AP and PS
+`INTERPRETATIONS.md`. Cascade, polling of a `202` and `rate_limited`
+are not adopted (`revoked_jwt` is adopted by the overlays above). The `200` Body rule is adopted for the AP and PS
 clients only (`aauth.ReadRevocationResponse`): no body is a recorded revocation;
 a present body that is not `application/json`, one JSON object with an optional
 array `downstream`, is `aauth.ErrRevocationUnavailable`. A valid `downstream`

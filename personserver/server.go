@@ -1592,6 +1592,10 @@ func (server *Server) verifyOptionalSubagentToken(
 func (server *Server) writeSubagentTokenProblem(response http.ResponseWriter, err error) {
 	var tokenFailure *requestTokenError
 	if errors.As(err, &tokenFailure) {
+		if errors.Is(tokenFailure.cause, ErrAgentTokenRevoked) {
+			writeProblem(response, http.StatusUnauthorized, "invalid_agent_token", signaturekey.NewError(signaturekey.ErrorRevokedJWT, tokenFailure.cause))
+			return
+		}
 		writeEndpointTokenProblem(response, tokenFailure.cause, "invalid_agent_token", "expired_agent_token")
 		return
 	}
@@ -1681,6 +1685,10 @@ func writeAgentTokenProblem(response http.ResponseWriter, err error) {
 	}
 	var tokenFailure *requestTokenError
 	if errors.As(err, &tokenFailure) {
+		if errors.Is(tokenFailure.cause, ErrAgentTokenRevoked) {
+			writeProblem(response, http.StatusUnauthorized, "invalid_agent_token", signaturekey.NewError(signaturekey.ErrorRevokedJWT, tokenFailure.cause))
+			return
+		}
 		writeEndpointTokenProblem(response, tokenFailure.cause, "invalid_agent_token", "expired_agent_token")
 		return
 	}

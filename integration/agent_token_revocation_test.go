@@ -122,8 +122,8 @@ func TestAgentProviderRevokesAgentTokenAtPersonServerAcrossRecomposition(t *test
 	_, err = agent.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID,
 	})
-	var problem *aauth.ProblemError
-	if !errors.As(err, &problem) || problem.Code != "invalid_agent_token" {
+	var signatureFailure *signaturekey.Error
+	if !errors.As(err, &signatureFailure) || signatureFailure.Code != signaturekey.ErrorRevokedJWT {
 		t.Fatalf("revoked Agent-token request = %v", err)
 	}
 	if policyCalls != 1 {

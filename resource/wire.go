@@ -32,7 +32,11 @@ func writeCredentialProblem(response http.ResponseWriter, code string, err error
 		writeProblem(response, http.StatusUnauthorized, code, err)
 		return
 	}
-	writeProblem(response, http.StatusUnauthorized, code, signaturekey.NormalizeError(tokenFailure.cause, signaturekey.ErrorInvalidJWT))
+	cause := tokenFailure.cause
+	if errors.Is(cause, ErrAgentTokenRevoked) {
+		cause = signaturekey.NewError(signaturekey.ErrorRevokedJWT, cause)
+	}
+	writeProblem(response, http.StatusUnauthorized, code, signaturekey.NormalizeError(cause, signaturekey.ErrorInvalidJWT))
 }
 
 func writeAuthorizationProblem(response http.ResponseWriter, err error) {

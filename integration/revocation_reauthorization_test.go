@@ -215,10 +215,10 @@ func TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecompositi
 		oldRequest, _ := http.NewRequest(http.MethodGet, resourceID+path, nil)
 		oldResponse, oldErr := reader.Do(ctx, clientagent.Call{Request: oldRequest, AuthToken: firstAuthToken})
 		var clientFailure *clientagent.Error
-		var problem *aauth.ProblemError
-		if oldResponse != nil || !errors.As(oldErr, &clientFailure) || !errors.As(oldErr, &problem) ||
-			problem.Status != http.StatusForbidden || problem.Code != "access_denied" {
-			t.Fatalf("revoked use response=%#v error=%v client=%#v problem=%#v", oldResponse, oldErr, clientFailure, problem)
+		var signatureFailure *signaturekey.Error
+		if oldResponse != nil || !errors.As(oldErr, &clientFailure) || !errors.As(oldErr, &signatureFailure) ||
+			signatureFailure.Code != signaturekey.ErrorRevokedJWT {
+			t.Fatalf("revoked use response=%#v error=%v client=%#v signature=%#v", oldResponse, oldErr, clientFailure, signatureFailure)
 		}
 		if requiredScopeCalls != 1 || resolveCalls != 1 || protectedCalls != 1 {
 			t.Fatalf("revoked use reached host callbacks: required=%d resolve=%d protected=%d", requiredScopeCalls, resolveCalls, protectedCalls)

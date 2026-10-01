@@ -1002,7 +1002,13 @@ It also reserves every `401` for a `Signature-Error`, although the revoked
 token and request proof may both verify. The implementation returns
 `403 access_denied` before route policy or application callbacks.
 
-**Question:** What status and machine-readable error should a Resource return
+**Status:** Resolved by Protocol -11 (28e8258) `Presenting a Revoked Token`:
+`401` with `Signature-Error: error=revoked_jwt` and, for an Auth token,
+`AAuth-Requirement: requirement=person-token`. This repository now returns that
+response before route policy or application callbacks; the `403` text above
+records the earlier behavior.
+
+**Question (answered):** What status and machine-readable error should a Resource return
 when a valid proof presents a revoked auth token?
 
 **Placement:** Include in the same new focused Core revocation follow-up.

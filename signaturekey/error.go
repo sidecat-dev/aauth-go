@@ -26,6 +26,7 @@ const (
 	ErrorClockSkew            ErrorCode = "clock_skew"
 	ErrorIssuerMissing        ErrorCode = "issuer_missing"
 	ErrorIssuerMismatch       ErrorCode = "issuer_mismatch"
+	ErrorRevokedJWT           ErrorCode = "revoked_jwt"
 )
 
 // Error preserves a machine-readable failure while keeping its diagnostic

@@ -282,7 +282,10 @@ func (server *Server) serveAuthTokenProtected(
 	}
 	if err := server.observeAuthToken(request.Context(), compact, claims); err != nil {
 		switch {
-		case errors.Is(err, ErrAuthTokenRevoked), errors.Is(err, ErrAuthTokenConflict):
+		case errors.Is(err, ErrAuthTokenRevoked):
+			response.Header().Set("AAuth-Requirement", aauth.FormatPersonTokenRequirement())
+			writeProblem(response, http.StatusUnauthorized, "invalid_token", signaturekey.NewError(signaturekey.ErrorRevokedJWT, err))
+		case errors.Is(err, ErrAuthTokenConflict):
 			writeProblem(response, http.StatusForbidden, "access_denied", err)
 		default:
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)

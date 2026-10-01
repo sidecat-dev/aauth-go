@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +47,24 @@ func TestDirectAgentResourceRevocationRequiresIssuingProviderAndRetainsMarker(t 
 	}
 	if revoked, err := store.IsRevoked(context.Background(), reference); err != nil || !revoked {
 		t.Fatalf("retained revocation = %t, %v", revoked, err)
+	}
+
+	// A later use of the revoked Agent token is 401 revoked_jwt.
+	agentKey := testSigningKey(t, "direct-revoked-use-agent", 0xa5)
+	agentToken, err := aauth.MintAgentToken("https://provider.example", providerKey, aauth.AgentTokenRequest{
+		Agent: "aauth:local@provider.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+	}, now, "agent-token-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	use := httptest.NewRequest(http.MethodGet, resourceIssuer+"/records", nil)
+	if err := signaturekey.SignJWTRequest(use, agentKey, agentToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	useResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(useResponse, use)
+	if useResponse.Code != http.StatusUnauthorized || !strings.Contains(useResponse.Header().Get("Signature-Error"), "revoked_jwt") {
+		t.Fatalf("revoked Agent-token use = %d %q %s", useResponse.Code, useResponse.Header().Get("Signature-Error"), useResponse.Body.String())
 	}
 
 	// A body iss is ignored; the revocation is recorded under the verified signer.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +172,44 @@ func TestAgentTokenRevocationStoreFailureIsServerErrorBeforePolicy(t *testing.T)
 	}
 	if response.Code != http.StatusInternalServerError || problem.Code != "server_error" || policyCalls != 0 {
 		t.Fatalf("response=%d %q policy_calls=%d", response.Code, problem.Code, policyCalls)
+	}
+}
+
+func TestRevokedAgentTokenIsRefusedWithRevokedJWTBeforePolicy(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	providerKey := personServerTestKey(t, "revoked-use-provider-key")
+	agentKey := personServerTestKey(t, "revoked-use-agent-key")
+	store := &testAgentTokenRevocationStore{revoked: true}
+	policyCalls := 0
+	server := newAgentRevocationTestServerWithPolicy(t, clock, providerKey, store, func(context.Context, PersonTokenRequest) (Person, error) {
+		policyCalls++
+		return Person{Subject: "person-123", Lifetime: time.Minute}, nil
+	})
+	agentToken, err := aauth.MintAgentToken("https://provider.example", providerKey, aauth.AgentTokenRequest{
+		Agent: "aauth:agent@provider.example", PersonServer: "https://person.example",
+		PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+	}, now, "agent-token-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://person.example/person", bytes.NewBufferString(`{"resource":"https://resource.example"}`))
+	request.Header.Set("Content-Type", "application/json")
+	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	var problem struct {
+		Code string `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&problem); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusUnauthorized || problem.Code != "invalid_agent_token" ||
+		!strings.Contains(response.Header().Get("Signature-Error"), "revoked_jwt") || policyCalls != 0 {
+		t.Fatalf("response=%d %q Signature-Error=%q policy_calls=%d", response.Code, problem.Code, response.Header().Get("Signature-Error"), policyCalls)
 	}
 }
 
