@@ -4,17 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestCleanExternalModuleCanSignAndVerifyARequest(t *testing.T) {
-	_, sourceFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate signaturekey source")
-	}
-	moduleRoot := filepath.Dir(filepath.Dir(sourceFile))
+	moduleRoot := externalModuleRoot(t)
 	externalModule := t.TempDir()
 
 	goMod := "module example.com/signaturekey-consumer\n\n" +

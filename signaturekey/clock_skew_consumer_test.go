@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,11 +11,7 @@ import (
 // A clean external module that imports only public packages observes the
 // clock_skew classification and the exact Signature-Error value.
 func TestCleanExternalModuleObservesClockSkew(t *testing.T) {
-	_, sourceFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate signaturekey source")
-	}
-	moduleRoot := filepath.Dir(filepath.Dir(sourceFile))
+	moduleRoot := externalModuleRoot(t)
 	externalModule := t.TempDir()
 
 	goMod := "module example.com/clockskew-consumer\n\n" +

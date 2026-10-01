@@ -1319,7 +1319,7 @@ or whether Login intends a different signed request object.
 
 ## Signature `created` ahead of the window is `clock_skew`
 
-Source: Signature-Key `69f5ba2`, section `clock_skew` (lines 1101-1111, see
+Source: Signature-Key `69f5ba2`, section `clock_skew` (heading `### clock_skew` at line 1104, section lines 1104-1114, see
 `SPECIFICATIONS.md`). The text applies `clock_skew` when a signature `created`
 is further ahead of the verifier clock than the validity window, and leaves a
 `created` older than the window as `invalid_signature`.
