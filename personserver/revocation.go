@@ -170,8 +170,7 @@ func (server *Server) RevokeIssuedAuthTokenWithHeaders(
 	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusOK:
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxRequestBytes))
-		return nil
+		return aauth.ReadRevocationResponse(response, maxRequestBytes)
 	case http.StatusUnauthorized:
 		if response.Header.Get("Signature-Error") != "" {
 			failure, decodeErr := signaturekey.DecodeErrorResponse(response)

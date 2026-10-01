@@ -182,3 +182,56 @@ func revocationJSONResponse(request *http.Request, body string) *http.Response {
 		Body:   io.NopCloser(strings.NewReader(body)), Request: request,
 	}
 }
+
+func TestRevocationClientReadsMalformed200AsUnavailable(t *testing.T) {
+	t.Parallel()
+	provider := newRevocationTestProvider(t)
+	reference := aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: "https://ap.example", JTI: "token-1"},
+		ExpiresAt: time.Unix(2000000000, 0),
+	}
+	for name, test := range map[string]struct {
+		contentType string
+		body        string
+		wantErr     bool
+	}{
+		"no body":                {"", "", false},
+		"empty object":           {"application/json", `{}`, false},
+		"downstream report":      {"application/json; charset=utf-8", `{"downstream":[{"recipient":"https://r.example","error":"revocation_unavailable"}]}`, false},
+		"not json":               {"application/json", `ok`, true},
+		"array":                  {"application/json", `[]`, true},
+		"wrong media type":       {"text/plain", `{}`, true},
+		"missing media type":     {"", `{}`, true},
+		"duplicate member":       {"application/json", `{"downstream":[],"downstream":[]}`, true},
+		"trailing value":         {"application/json", `{} {}`, true},
+		"downstream not array":   {"application/json", `{"downstream":"x"}`, true},
+		"unknown downstream err": {"application/json", `{"downstream":[{"recipient":"https://r.example","error":"nope"}]}`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
+				Provider: provider,
+				HTTPClient: &http.Client{Transport: revocationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodGet {
+						return revocationJSONResponse(request, `{"issuer":"https://resource.example","revocation_endpoint":"https://resource.example/revoke"}`), nil
+					}
+					response := &http.Response{
+						StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+						Body: io.NopCloser(strings.NewReader(test.body)), Request: request,
+					}
+					if test.contentType != "" {
+						response.Header.Set("Content-Type", test.contentType)
+					}
+					return response, nil
+				})},
+				Admit: func(context.Context, string) error { return nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.RevokeAgentTokenAtResource(context.Background(), "https://resource.example", reference)
+			if test.wantErr != errors.Is(err, aauth.ErrRevocationUnavailable) || (!test.wantErr && err != nil) {
+				t.Fatalf("200 %q (%s) = %v; wantErr=%v", test.body, test.contentType, err, test.wantErr)
+			}
+		})
+	}
+}

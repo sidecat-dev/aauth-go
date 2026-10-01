@@ -1,6 +1,9 @@
 package aauth_test
 
 import (
+	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +85,31 @@ func TestRevocationRequestCodec(t *testing.T) {
 	} {
 		if _, err := aauth.EncodeRevocationRequest(invalid); err == nil {
 			t.Fatalf("%s encoded", name)
+		}
+	}
+}
+
+func TestReadRevocationResponseBounds(t *testing.T) {
+	t.Parallel()
+	response := func(contentType, body string) *http.Response {
+		header := make(http.Header)
+		if contentType != "" {
+			header.Set("Content-Type", contentType)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body))}
+	}
+	if err := aauth.ReadRevocationResponse(response("application/json", `{"downstream":[{"recipient":"r","error":"revocation_unsupported"},{"recipient":"s"}]}`), 1024); err != nil {
+		t.Fatalf("valid report = %v", err)
+	}
+	for name, bad := range map[string]*http.Response{
+		"oversize":          response("application/json", `{"x":"`+strings.Repeat("a", 64)+`"}`),
+		"case variant":      response("application/json", `{"downstream":[],"Downstream":[]}`),
+		"entry no receiver": response("application/json", `{"downstream":[{"error":"revocation_unsupported"}]}`),
+		"null entry":        response("application/json", `{"downstream":[null]}`),
+		"bad media type":    response("application/json;;", `{}`),
+	} {
+		if err := aauth.ReadRevocationResponse(bad, 32); !errors.Is(err, aauth.ErrRevocationUnavailable) {
+			t.Fatalf("%s = %v", name, err)
 		}
 	}
 }

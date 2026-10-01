@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
@@ -103,4 +105,58 @@ func DecodeRevocationRequest(body io.Reader, maxBytes int64, issuer string) (Rev
 		return RevocationRequest{}, err
 	}
 	return request, nil
+}
+
+// ErrRevocationUnavailable is the caller's reading of a revocation 200 whose
+// body is present but is not the Protocol -11 response object. The caller MAY
+// revoke again later.
+var ErrRevocationUnavailable = errors.New("aauth: revocation_unavailable")
+
+// ReadRevocationResponse reads the body of a revocation 200 of at most maxBytes.
+// An absent body means the revocation was recorded with nothing reported. A
+// present body MUST be application/json and one JSON object whose optional
+// downstream member is an array of objects; anything else is
+// ErrRevocationUnavailable. A downstream report is validated and not returned:
+// a PS answering an AP reports nothing, and the callers here ignore it.
+func ReadRevocationResponse(response *http.Response, maxBytes int64) error {
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return fmt.Errorf("%w: read response: %v", ErrRevocationUnavailable, err)
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	unavailable := func(reason string) error { return fmt.Errorf("%w: %s", ErrRevocationUnavailable, reason) }
+	if int64(len(raw)) > maxBytes {
+		return unavailable("response is too large")
+	}
+	if mediaType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type")); parseErr != nil || mediaType != "application/json" {
+		return unavailable("response is not application/json")
+	}
+	var report struct {
+		Downstream []map[string]any `json:"downstream"`
+	}
+	if err := jsonstrict.RejectAmbiguousNames(raw); err != nil {
+		return unavailable(err.Error())
+	}
+	if err := jsonstrict.RejectCaseVariants(raw, &report); err != nil {
+		return unavailable(err.Error())
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&report); err != nil {
+		return unavailable("response is not a JSON object with an array downstream member")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return unavailable("response must contain exactly one JSON value")
+	}
+	for _, entry := range report.Downstream {
+		if recipient, ok := entry["recipient"].(string); !ok || recipient == "" {
+			return unavailable("downstream entry has no recipient")
+		}
+		if code, present := entry["error"]; present && code != "revocation_unsupported" && code != "revocation_unavailable" {
+			return unavailable("downstream entry has an unknown error")
+		}
+	}
+	return nil
 }

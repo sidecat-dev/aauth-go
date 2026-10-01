@@ -305,6 +305,44 @@ func TestRevokeIssuedAuthTokenPreservesLocalAndRemoteOutcomes(t *testing.T) {
 			t.Fatalf("remote unknown made %d requests", calls)
 		}
 	})
+
+	t.Run("malformed nonempty 200 is revocation_unavailable", func(t *testing.T) {
+		issued := newTestIssuedAuthTokenStore()
+		if err := issued.CommitIssuedAuthToken(context.Background(), IssuedAuthTokenRecord{
+			Reference: reference, Resource: resourceID,
+			CompactSHA256: [32]byte{1}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for name, answer := range map[string]struct {
+			contentType, body string
+			wantErr           bool
+		}{
+			"empty":      {"", "", false},
+			"object":     {"application/json", `{}`, false},
+			"text":       {"text/plain", `ok`, true},
+			"json array": {"application/json", `[]`, true},
+			"no type":    {"", `{}`, true},
+			"bad syntax": {"application/json", `{`, true},
+		} {
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				header := make(http.Header)
+				body := answer.body
+				if request.Method == http.MethodGet {
+					raw, _ := json.Marshal(map[string]string{"issuer": resourceID, "revocation_endpoint": resourceID + "/revoke"})
+					header.Set("Content-Type", "application/json")
+					body = string(raw)
+				} else if answer.contentType != "" {
+					header.Set("Content-Type", answer.contentType)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Request: request, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			err := newServer(t, issued, client).RevokeIssuedAuthToken(context.Background(), reference)
+			if answer.wantErr != errors.Is(err, aauth.ErrRevocationUnavailable) || (!answer.wantErr && err != nil) {
+				t.Fatalf("%s: 200 %q = %v", name, answer.body, err)
+			}
+		}
+	})
 }
 
 func TestRevokeIssuedAuthTokenRejectsUnsafeResourceMetadataBeforePOST(t *testing.T) {

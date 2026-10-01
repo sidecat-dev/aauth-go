@@ -62,7 +62,11 @@ the issuer taken only from the verified signature, mandatory `content-type`
 and `content-digest` coverage, `(iss, jti)` state recorded whether or not the
 token was seen, and the Errors table entries already adopted in
 `INTERPRETATIONS.md`. Cascade, polling of a `202`, `rate_limited`,
-`revoked_jwt` and the malformed-`200` rule are not adopted.
+`revoked_jwt` are not adopted. The `200` Body rule is adopted for the AP and PS
+clients only (`aauth.ReadRevocationResponse`): no body is a recorded revocation;
+a present body that is not `application/json`, one JSON object with an optional
+array `downstream`, is `aauth.ErrRevocationUnavailable`. A valid `downstream`
+report is validated and not returned.
 
 - Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
 - Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).

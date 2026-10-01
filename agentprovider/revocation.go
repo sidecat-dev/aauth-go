@@ -139,8 +139,7 @@ func (client *RevocationClient) revokeAgentToken(
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumRevocationResponseBytes))
-		return nil
+		return aauth.ReadRevocationResponse(response, maximumRevocationResponseBytes)
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		if failure, decodeErr := signaturekey.DecodeErrorResponse(response); decodeErr == nil {
