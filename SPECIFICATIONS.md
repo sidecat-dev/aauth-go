@@ -19,6 +19,19 @@ All seven files match the retained local source mirror used for review.
 | AAuth Interoperability Demo Profile | [AAuth `a99d353`](https://github.com/dickhardt/AAuth/commit/a99d353cf18aee81d0c5445bac070164fb3b8bc5) | [`interop-demo-profile.md`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/interop-demo-profile.md) | `ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195` |
 | HTTP Signature Keys | [Signature-Key `0ff751b`](https://github.com/dickhardt/signature-key/commit/0ff751b571e7fe51336bcc1e526954a202317cc0) | [`draft-hardt-httpbis-signature-key.md`](https://github.com/dickhardt/signature-key/blob/0ff751b571e7fe51336bcc1e526954a202317cc0/draft-hardt-httpbis-signature-key.md) | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` |
 
+## Targeted additional source: Signature-Key `clock_skew`
+
+This is one targeted source, not a repin. The manifest above and the rest of
+the library remain at their stated revisions. Only the signature `created`
+classification in `signaturekey.PrepareRequest` follows this text.
+
+| Document | Repository commit | Section | SHA-256 |
+| --- | --- | --- | --- |
+| HTTP Signature Keys | [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6) | `clock_skew`, lines 1101-1111 of [`draft-hardt-httpbis-signature-key.md`](https://github.com/dickhardt/signature-key/blob/69f5ba2647be848feed043fb6d8b0790e43cd0b6/draft-hardt-httpbis-signature-key.md) | `b2b43db67a1aa5249d1166589834d44f81e97ea2e6375a07b475115efa196b7d` |
+
+Not implemented from this revision: `clock_skew` for a JWT `iat` ahead of the
+verifier clock (the jkt-jwt and Core token paths), and `revoked_jwt`.
+
 [AAuth Explorer at `e6d7913`](https://github.com/aauth-dev/explorer/commit/e6d79137cda1a6a650d4394a37095393e1cc62ba)
 is a non-normative diagnostic implementation, not an editor source. It is
 tracked by Git commit rather than inserted into the source manifest.

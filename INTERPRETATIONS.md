@@ -1316,3 +1316,21 @@ therefore does not mint placeholder person claims, omit required claims, or
 define a login-only Resource-token dialect. `AAG-F103` asks whether the flow
 must first obtain a Person token through an additional browser-correlated step
 or whether Login intends a different signed request object.
+
+## Signature `created` ahead of the window is `clock_skew`
+
+Source: Signature-Key `69f5ba2`, section `clock_skew` (lines 1101-1111, see
+`SPECIFICATIONS.md`). The text applies `clock_skew` when a signature `created`
+is further ahead of the verifier clock than the validity window, and leaves a
+`created` older than the window as `invalid_signature`.
+
+`PrepareRequest` reuses its existing validity window (`SignatureWindow`,
+default `DefaultSignatureWindow`, 60 seconds) for both directions. A `created`
+exactly one window ahead or behind is accepted; one nanosecond further ahead is
+`clock_skew`, further behind is `invalid_signature`. The window and expiry
+semantics are unchanged. The source does not fix the window length; this
+choice is the library's existing one.
+
+JWT `iat` skew is not covered. The jkt-jwt future-`iat` check and Core
+`validateTimes` need a decision on whether they share the signature window, so
+they keep their current classification.
