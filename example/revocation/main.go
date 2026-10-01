@@ -242,11 +242,11 @@ func run(output io.Writer) error {
 	if response != nil {
 		response.Body.Close()
 	}
-	var problem *aauth.ProblemError
-	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "access_denied" {
+	var signatureFailure *signaturekey.Error
+	if !errors.As(err, &signatureFailure) || signatureFailure.Code != signaturekey.ErrorRevokedJWT {
 		return fmt.Errorf("revoked token returned %v", err)
 	}
-	fmt.Fprintf(output, "%s refused: %d %s\n", firstClaims.JTI, problem.Status, problem.Code)
+	fmt.Fprintf(output, "%s refused: 401 %s\n", firstClaims.JTI, signatureFailure.Code)
 
 	secondToken, secondClaims, err := authorize()
 	if err != nil {
@@ -296,7 +296,7 @@ func run(output io.Writer) error {
 	_, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID,
 	})
-	if !errors.As(err, &problem) || problem.Code != "invalid_agent_token" {
+	if !errors.As(err, &signatureFailure) || signatureFailure.Code != signaturekey.ErrorRevokedJWT {
 		return fmt.Errorf("revoked Agent token returned %v", err)
 	}
 	directRequest, _ = http.NewRequestWithContext(ctx, http.MethodGet, directResourceID+"/status", nil)
