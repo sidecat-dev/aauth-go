@@ -350,3 +350,66 @@ func TestPersonIdentityResourceKeepsPersonServerInIdentity(t *testing.T) {
 		})
 	}
 }
+
+// Source: HTTP Signature Keys (signature-key 69f5ba2) section clock_skew. The
+// Resource answers a signature whose created time is ahead of its validity
+// window with Signature-Error clock_skew, an older one with invalid_signature,
+// and neither reaches the application.
+func TestAgentIdentityResourceDistinguishesClockSkewFromStaleSignature(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 30, 18, 0, 0, 0, time.UTC)
+	providerKey := testSigningKey(t, "skew-provider", 41)
+	agentKey := testSigningKey(t, "skew-agent", 42)
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://ap.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
+	}
+	token, err := aauth.MintAgentToken("https://ap.example", providerKey, aauth.AgentTokenRequest{
+		Agent: "aauth:reader@ap.example", PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+	}, now, "skew-agent-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := 0
+	server, err := NewAgentIdentity(AgentIdentityConfig{
+		Issuer: resourceIssuer, KeyResolver: resolver,
+		Clock:     aauth.ClockFunc(func() time.Time { return now }),
+		Protected: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called++ }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		offset time.Duration
+		want   signaturekey.ErrorCode
+	}{
+		{name: "window edge ahead", offset: signaturekey.DefaultSignatureWindow},
+		{name: "past the window ahead", offset: signaturekey.DefaultSignatureWindow + time.Second, want: signaturekey.ErrorClockSkew},
+		{name: "older than the window", offset: -signaturekey.DefaultSignatureWindow - time.Second, want: signaturekey.ErrorInvalidSignature},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := called
+			senderClock := aauth.ClockFunc(func() time.Time { return now.Add(test.offset) })
+			request := httptest.NewRequest(http.MethodGet, resourceIssuer+"/records", nil)
+			if err := signaturekey.SignJWTRequest(request, agentKey, token, senderClock); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if test.want == "" {
+				if response.Code != http.StatusOK || called != before+1 {
+					t.Fatalf("in-window request = %d body=%s called=%d", response.Code, response.Body.String(), called)
+				}
+				return
+			}
+			assertSignatureError(t, response, test.want)
+			if called != before {
+				t.Fatal("application ran after a rejected proof")
+			}
+			if want := "error=" + string(test.want); response.Header().Get("Signature-Error") != want {
+				t.Fatalf("Signature-Error header = %q, want %q", response.Header().Get("Signature-Error"), want)
+			}
+		})
+	}
+}

@@ -23,6 +23,7 @@ const (
 	ErrorUnknownKey           ErrorCode = "unknown_key"
 	ErrorInvalidJWT           ErrorCode = "invalid_jwt"
 	ErrorExpiredJWT           ErrorCode = "expired_jwt"
+	ErrorClockSkew            ErrorCode = "clock_skew"
 	ErrorIssuerMissing        ErrorCode = "issuer_missing"
 	ErrorIssuerMismatch       ErrorCode = "issuer_mismatch"
 )
