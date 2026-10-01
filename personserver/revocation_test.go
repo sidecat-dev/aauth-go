@@ -82,12 +82,10 @@ func TestRevokeAuthTokenUsesRetainedResourceAndOneSignedRequest(t *testing.T) {
 					t.Errorf("revoke proof issuer=%q document=%q present=%t proof=%#v err=%v", issuer, document, ok, proof, verifyErr)
 				}
 			}
-			var input struct {
-				Issuer string `json:"iss"`
-				JTI    string `json:"jti"`
-			}
-			if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.Issuer != personID || input.JTI != record.Reference.JTI {
-				t.Errorf("revoke body = %#v, %v", input, err)
+			body, _ := io.ReadAll(request.Body)
+			wantBody := fmt.Sprintf(`{"jti":%q,"exp":%d}`, record.Reference.JTI, record.ExpiresAt.Unix())
+			if string(body) != wantBody {
+				t.Errorf("revoke body = %s, want %s", body, wantBody)
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK, Status: "200 OK", Request: request,
