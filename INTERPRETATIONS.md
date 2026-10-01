@@ -983,6 +983,30 @@ duration in the protocol library.
 `resource/agent_token_revocation_test.go`, and
 `integration/agent_token_revocation_test.go`.
 
+### A rate-limited revocation is reported, not retried
+
+Protocol -11 (AAuth 28e8258f, Token Revocation) lets a recipient answer `429`
+`rate_limited` with a required `Retry-After`; this differs from the polling
+`slow_down` code. The AP and PS revocation clients make one exchange. When it
+returns that problem with exactly one valid `Retry-After` (non-negative
+delay-seconds, or an HTTP-date whose delay is representable), the error is a
+`*aauth.RateLimitedError` whose `Problem` is the decoded `*aauth.ProblemError`
+and whose `RetryAfter` is the delay. Zero is valid: it is either a supplied `0`
+or a date that is not in the future. A missing, empty, repeated or malformed
+header, or an unrepresentable date, leaves the plain `*aauth.ProblemError`; the
+library supplies no default delay and never retries. `errors.As` finds both
+types. Agent polling is a separate path and is unchanged.
+
+This reports what the recipient said. It does not bound or rate-limit the
+revocations a host accepts; that remains a host policy this library does not
+implement.
+
+**Executable examples:**
+`integration/revocation_rate_limited_test.go:TestRevocationClientsReturnRateLimitedFeedbackOverSignedExchange`,
+`agentprovider/revocation_ratelimited_test.go`,
+`personserver/revocation_ratelimited_test.go`, and
+`internal/httpapi/retryafter_test.go`.
+
 ## Budget fields follow their declared RFC 9651 Dictionary shape
 
 **Source:** AAuth Budgets, `AAuth-Budget Response Header` and “The `reason`
