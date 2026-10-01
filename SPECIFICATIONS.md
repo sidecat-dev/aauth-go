@@ -36,6 +36,23 @@ requires exactly one table row per source file.
 Not implemented from this revision: `clock_skew` for a JWT `iat` ahead of the
 verifier clock (the jkt-jwt and Core token paths), and `revoked_jwt`.
 
+## Targeted additional source: Protocol -11 agent identifier local part
+
+This is one targeted source, not a repin. The manifest above and the rest of
+the library, including every other Protocol clause, remain at their stated
+revisions. Only the `local` part grammar and exact-comparison rule in
+`ValidateAgentIdentifier` and `ValidateAgentRelationship` follow this text.
+
+- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Section: the `## Agent Identifiers` heading at line 486; the section is lines 486-507. Document History line 3213 records the change (issue #164).
+- SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
+The `local` part accepts `A-Za-z`, digits, `-`, `_`, `+` and `.`, and agent
+identifiers compare exactly without case folding. The overlay is a list, not a
+table row, because the baseline manifest check requires exactly one table row
+per source file.
+
 [AAuth Explorer at `e6d7913`](https://github.com/aauth-dev/explorer/commit/e6d79137cda1a6a650d4394a37095393e1cc62ba)
 is a non-normative diagnostic implementation, not an editor source. It is
 tracked by Git commit rather than inserted into the source manifest.
