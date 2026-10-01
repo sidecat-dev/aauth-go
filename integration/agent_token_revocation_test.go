@@ -49,7 +49,10 @@ func TestAgentProviderRevokesAgentTokenAtPersonServerAcrossRecomposition(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	reference := aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
+	reference := aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0),
+	}
 
 	network := newLogicalTransport()
 	httpClient := &http.Client{Transport: network}
@@ -158,7 +161,10 @@ func TestAgentProviderRevokesAgentTokenAtDirectResourceAcrossRecomposition(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	reference := aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
+	reference := aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0),
+	}
 
 	network := newLogicalTransport()
 	httpClient := &http.Client{Transport: network}
