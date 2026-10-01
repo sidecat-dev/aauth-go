@@ -251,7 +251,8 @@ func newRevocationStore(path string) *revocationStore {
 	}}}
 }
 
-func (store *revocationStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *revocationStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
+	reference := request.Reference
 	return store.file.update(func(state *revocationState) error {
 		state.References[reference.Issuer+"\x00"+reference.JTI] = reference
 		return nil

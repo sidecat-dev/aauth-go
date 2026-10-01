@@ -24,10 +24,6 @@ var ErrIssuedAuthTokenNotFound = errors.New("personserver: issued auth token not
 // different retained issuance record.
 var ErrIssuedAuthTokenConflict = errors.New("personserver: issued auth token conflicts with retained state")
 
-// ErrRevocationNotRecognized reports a Resource's 404 response for an auth
-// token the Resource has not observed.
-var ErrRevocationNotRecognized = errors.New("personserver: resource did not recognize the auth token")
-
 // IssuedAuthTokenRecord retains the exact compact-token digest, routing, and
 // lifetime of one auth token before it is returned to the Agent. MissionStore
 // uses it for both Person-Server-issued and federated mission-bound tokens.
@@ -145,7 +141,7 @@ func (server *Server) RevokeIssuedAuthTokenWithHeaders(
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(reference)
+	body, err := aauth.EncodeRevocationRequest(aauth.RevocationRequest{Reference: reference, ExpiresAt: record.ExpiresAt})
 	if err != nil {
 		return fmt.Errorf("personserver: encode revocation request: %w", err)
 	}
@@ -177,9 +173,6 @@ func (server *Server) RevokeIssuedAuthTokenWithHeaders(
 	case http.StatusOK:
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxRequestBytes))
 		return nil
-	case http.StatusNotFound:
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxRequestBytes))
-		return ErrRevocationNotRecognized
 	case http.StatusUnauthorized:
 		if response.Header.Get("Signature-Error") != "" {
 			failure, decodeErr := signaturekey.DecodeErrorResponse(response)

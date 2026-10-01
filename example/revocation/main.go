@@ -267,7 +267,10 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	agentReference := aauth.TokenReference{Issuer: agentClaims.Issuer, JTI: agentClaims.JTI}
+	agentReference := aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: agentClaims.Issuer, JTI: agentClaims.JTI},
+		ExpiresAt: time.Unix(agentClaims.ExpiresAt, 0).UTC(),
+	}
 	if err := revoker.RevokeAgentToken(ctx, personServerID, agentReference); err != nil {
 		return err
 	}

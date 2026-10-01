@@ -90,10 +90,10 @@ func newAgentTokenRevocationStore() *agentTokenRevocationStore {
 	return &agentTokenRevocationStore{revoked: make(map[aauth.TokenReference]struct{})}
 }
 
-func (store *agentTokenRevocationStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *agentTokenRevocationStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.revoked[reference] = struct{}{}
+	store.revoked[request.Reference] = struct{}{}
 	return nil
 }
 
@@ -115,6 +115,9 @@ func (store *authTokenStatusStore) Observe(_ context.Context, record resource.Ob
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	reference := record.Reference
+	if _, ok := store.records[reference]; !ok && store.revoked[reference] {
+		return resource.ErrAuthTokenRevoked
+	}
 	if retained, ok := store.records[reference]; ok {
 		if retained != record {
 			return resource.ErrAuthTokenConflict
@@ -128,13 +131,10 @@ func (store *authTokenStatusStore) Observe(_ context.Context, record resource.Ob
 	return nil
 }
 
-func (store *authTokenStatusStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *authTokenStatusStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if _, ok := store.records[reference]; !ok {
-		return resource.ErrAuthTokenNotFound
-	}
-	store.revoked[reference] = true
+	store.revoked[request.Reference] = true
 	return nil
 }
 

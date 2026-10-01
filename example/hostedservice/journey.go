@@ -211,7 +211,10 @@ func (journey revocationJourney) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	reference := aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
+	reference := aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+	}
 	revoker, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
 		Provider: journey.provider, HTTPClient: journey.httpClient, Admit: journey.network.Admit,
 	})

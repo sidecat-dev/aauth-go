@@ -29,8 +29,16 @@ func RunAuthTokenStatus(t *testing.T, contract AuthTokenStatusContract) {
 	ctx := context.Background()
 	record := observedAuthToken("https://person.example", "auth-token-1", 1)
 
-	if err := store.Revoke(ctx, record.Reference); !errors.Is(err, resource.ErrAuthTokenNotFound) {
-		t.Fatalf("initial Revoke = %v", err)
+	// A revocation for a reference never observed is recorded, not refused.
+	unseen := observedAuthToken("https://person.example", "auth-token-unseen", 9)
+	if err := store.Revoke(ctx, revocationFor(unseen)); err != nil {
+		t.Fatalf("Revoke of an unseen reference = %v", err)
+	}
+	if err := store.Revoke(ctx, revocationFor(unseen)); err != nil {
+		t.Fatalf("exact unseen Revoke replay = %v", err)
+	}
+	if err := store.Observe(ctx, unseen); !errors.Is(err, resource.ErrAuthTokenRevoked) {
+		t.Fatalf("Observe after unseen Revoke = %v", err)
 	}
 	if err := store.Observe(ctx, record); err != nil {
 		t.Fatalf("first Observe = %v", err)
@@ -51,10 +59,10 @@ func RunAuthTokenStatus(t *testing.T, contract AuthTokenStatusContract) {
 	if err := store.Observe(ctx, otherIssuer); err != nil {
 		t.Fatalf("same JTI under another issuer = %v", err)
 	}
-	if err := store.Revoke(ctx, record.Reference); err != nil {
+	if err := store.Revoke(ctx, revocationFor(record)); err != nil {
 		t.Fatalf("Revoke = %v", err)
 	}
-	if err := store.Revoke(ctx, record.Reference); err != nil {
+	if err := store.Revoke(ctx, revocationFor(record)); err != nil {
 		t.Fatalf("exact Revoke replay = %v", err)
 	}
 	if err := store.Observe(ctx, record); !errors.Is(err, resource.ErrAuthTokenRevoked) {
@@ -88,7 +96,7 @@ func runConcurrentAuthTokenStatus(t *testing.T, contract AuthTokenStatusContract
 				errorsByCall[index] = store.Observe(ctx, record)
 				return
 			}
-			errorsByCall[index] = store.Revoke(ctx, record.Reference)
+			errorsByCall[index] = store.Revoke(ctx, revocationFor(record))
 		}(index)
 	}
 	wait.Wait()
@@ -106,9 +114,13 @@ func runConcurrentAuthTokenStatus(t *testing.T, contract AuthTokenStatusContract
 	if err := store.Observe(ctx, record); !errors.Is(err, resource.ErrAuthTokenRevoked) {
 		t.Fatalf("terminal Observe = %v", err)
 	}
-	if err := store.Revoke(ctx, record.Reference); err != nil {
+	if err := store.Revoke(ctx, revocationFor(record)); err != nil {
 		t.Fatalf("terminal Revoke replay = %v", err)
 	}
+}
+
+func revocationFor(record resource.ObservedAuthToken) aauth.RevocationRequest {
+	return aauth.RevocationRequest{Reference: record.Reference, ExpiresAt: record.ExpiresAt}
 }
 
 func newAuthTokenStatusStore(t *testing.T, contract AuthTokenStatusContract) resource.AuthTokenStatusStore {

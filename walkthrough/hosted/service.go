@@ -199,7 +199,10 @@ func serveCommand(arguments []string) error {
 			writeHostedJSON(response, http.StatusInternalServerError, map[string]string{"error": "revocation_client_unavailable"})
 			return
 		}
-		reference := aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
+		reference := aauth.RevocationRequest{
+			Reference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
+			ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+		}
 		if err := revoker.RevokeAgentToken(request.Context(), hostedPersonOrigin(config.Origin), reference); err != nil {
 			writeHostedJSON(response, http.StatusBadGateway, map[string]string{"error": "person_revocation_failed"})
 			return

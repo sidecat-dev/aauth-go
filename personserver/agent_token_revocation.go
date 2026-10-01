@@ -16,11 +16,11 @@ var ErrAgentTokenRevoked = errors.New("personserver: Agent token revoked")
 // AgentTokenRevocationStore retains Agent-token references revoked by their
 // issuer. Revoke must be idempotent. IsRevoked and Revoke for one reference
 // must be linearizable. A non-sentinel Revoke error may be indeterminate, so an
-// exact retry must be safe. Because the wire request does not carry token
-// expiry, a host retains a marker until it can independently prove no matching
-// Agent token can remain valid.
+// exact retry must be safe. A marker is retained through the request's
+// ExpiresAt, and a repeat with a later ExpiresAt extends it; it may be removed
+// afterward.
 type AgentTokenRevocationStore interface {
-	Revoke(context.Context, aauth.TokenReference) error
+	Revoke(context.Context, aauth.RevocationRequest) error
 	IsRevoked(context.Context, aauth.TokenReference) (bool, error)
 }
 
@@ -48,20 +48,12 @@ func (server *Server) handleAgentTokenRevocation(response http.ResponseWriter, r
 		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("agent provider proof signer does not match its issuer"))
 		return
 	}
-	var reference aauth.TokenReference
-	if err := decodeJSON(request.Body, &reference); err != nil {
+	input, err := aauth.DecodeRevocationRequest(request.Body, maxRequestBytes, issuer)
+	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	if err := aauth.ValidateTokenReference(reference); err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
-		return
-	}
-	if reference.Issuer != issuer {
-		writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("revocation caller is not the token issuer"))
-		return
-	}
-	if err := server.agentTokenRevocations.Revoke(request.Context(), reference); err != nil {
+	if err := server.agentTokenRevocations.Revoke(request.Context(), input); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}

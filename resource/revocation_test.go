@@ -110,7 +110,7 @@ func TestPSAuthTokenCanBeObservedRevokedAndThenRefused(t *testing.T) {
 	unknown := signedRevocationRequest(t, clock, personKey, personIssuer, "unknown-auth-token")
 	unknownResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(unknownResponse, unknown)
-	if unknownResponse.Code != http.StatusNotFound {
+	if unknownResponse.Code != http.StatusOK {
 		t.Fatalf("unknown revoke = %d %s", unknownResponse.Code, unknownResponse.Body.String())
 	}
 	previouslyUnknown := mintAuthToken(t, personKey, agentKey.PublicJWK(), now, aauth.AuthTokenClaims{
@@ -121,8 +121,8 @@ func TestPSAuthTokenCanBeObservedRevokedAndThenRefused(t *testing.T) {
 	firstUse := signedRequest(t, clock, agentKey, previouslyUnknown, http.MethodGet, resourceIssuer+"/records/new", "")
 	firstUseResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(firstUseResponse, firstUse)
-	if firstUseResponse.Code != http.StatusNoContent || resolveCalls != 3 || protectedCalls != 3 {
-		t.Fatalf("use after pre-use 404 = %d %s; resolve=%d protected=%d", firstUseResponse.Code, firstUseResponse.Body.String(), resolveCalls, protectedCalls)
+	if firstUseResponse.Code != http.StatusForbidden || protectedCalls != 2 {
+		t.Fatalf("first use after pre-use revoke = %d %s; protected=%d", firstUseResponse.Code, firstUseResponse.Body.String(), protectedCalls)
 	}
 }
 
@@ -268,7 +268,7 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 		}
 	}
 
-	unsignedBody, _ := json.Marshal(reference)
+	unsignedBody, _ := json.Marshal(map[string]any{"jti": reference.JTI, "exp": clock.Now().Add(time.Hour).Unix()})
 	unsigned := httptest.NewRequest(http.MethodPost, resourceIssuer+"/revoke", bytes.NewReader(unsignedBody))
 	unsigned.Header.Set("Content-Type", "application/json")
 	assertSignatureFailure("unsigned", unsigned)
@@ -280,7 +280,7 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 		t, clock, personKey, personIssuer, aauth.PersonDiscoveryDocument, reference,
 		map[string]string{"X-Revocation-Context": "audit-1"}, []string{"x-revocation-context"},
 	)
-	changed, _ := json.Marshal(aauth.TokenReference{Issuer: personIssuer, JTI: "another-token"})
+	changed, _ := json.Marshal(map[string]any{"jti": "another-token", "exp": clock.Now().Add(time.Hour).Unix()})
 	tampered.Body = io.NopCloser(bytes.NewReader(changed))
 	tampered.ContentLength = int64(len(changed))
 	tampered.GetBody = nil
@@ -292,15 +292,23 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 	)
 	assertSignatureFailure("wrong server role", wrongRole)
 
-	mismatched := signedRevocationRequestWith(
-		t, clock, personKey, personIssuer, aauth.PersonDiscoveryDocument,
-		aauth.TokenReference{Issuer: "https://other-person.example", JTI: reference.JTI},
-		map[string]string{"X-Revocation-Context": "audit-1"}, []string{"x-revocation-context"},
-	)
-	mismatchResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(mismatchResponse, mismatched)
-	if mismatchResponse.Code != http.StatusForbidden || mismatchResponse.Header().Get("Signature-Error") != "" || !strings.Contains(mismatchResponse.Body.String(), `"error":"unsupported_iss"`) {
-		t.Fatalf("issuer mismatch = %d %s headers=%v", mismatchResponse.Code, mismatchResponse.Body.String(), mismatchResponse.Header())
+	for name, body := range map[string]string{
+		"missing exp":     `{"jti":"` + reference.JTI + `"}`,
+		"string exp":      `{"jti":"` + reference.JTI + `","exp":"soon"}`,
+		"zero exp":        `{"jti":"` + reference.JTI + `","exp":0}`,
+		"fractional exp":  `{"jti":"` + reference.JTI + `","exp":1.5}`,
+		"duplicate jti":   `{"jti":"a","jti":"b","exp":2000000000}`,
+		"trailing value":  `{"jti":"a","exp":2000000000} {}`,
+		"non-object body": `["a"]`,
+		"empty body":      ``,
+	} {
+		request := signedRevocationBody(t, clock, personKey, personIssuer, aauth.PersonDiscoveryDocument,
+			[]byte(body), map[string]string{"X-Revocation-Context": "audit-1"}, []string{"x-revocation-context"})
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"error":"invalid_request"`) {
+			t.Fatalf("%s = %d %s", name, response.Code, response.Body.String())
+		}
 	}
 
 	missingJTI := signedRevocationRequestWith(
@@ -336,6 +344,42 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 	server.Handler().ServeHTTP(validResponse, valid)
 	if validResponse.Code != http.StatusOK || statuses.revokeCount() != 2 {
 		t.Fatalf("valid revoke = %d %s; calls=%d", validResponse.Code, validResponse.Body.String(), statuses.revokeCount())
+	}
+	wantExp := time.Unix(clock.Now().Add(time.Hour).Unix(), 0)
+	if got := statuses.lastRevocation; got.Reference != reference || !got.ExpiresAt.Equal(wantExp) {
+		t.Fatalf("store received %#v, want %v exp %v", got, reference, wantExp)
+	}
+
+	// A body iss is an ignored extension member: the issuer is the verified signer.
+	withIss := signedRevocationBody(t, clock, personKey, personIssuer, aauth.PersonDiscoveryDocument,
+		[]byte(`{"iss":"https://other-person.example","jti":"`+reference.JTI+`","exp":2000000000}`),
+		map[string]string{"X-Revocation-Context": "audit-1"}, []string{"x-revocation-context"})
+	withIssResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(withIssResponse, withIss)
+	if withIssResponse.Code != http.StatusOK || statuses.lastRevocation.Reference != reference {
+		t.Fatalf("body iss = %d %s; stored %#v", withIssResponse.Code, withIssResponse.Body.String(), statuses.lastRevocation)
+	}
+
+	// Signature coverage of content-type and content-digest is mandatory.
+	for _, omitted := range []string{"content-type", "content-digest"} {
+		request := httptest.NewRequest(http.MethodPost, resourceIssuer+"/revoke", strings.NewReader(`{"jti":"`+reference.JTI+`","exp":2000000000}`))
+		request.Header.Set("Content-Type", "application/json")
+		var components []string
+		for _, component := range []string{"content-type", "content-digest", "x-revocation-context"} {
+			if component != omitted {
+				components = append(components, component)
+			}
+		}
+		request.Header.Set("X-Revocation-Context", "audit-1")
+		if err := signaturekey.SignJWKSURIRequestWithOptions(request, personKey, personIssuer, aauth.PersonDiscoveryDocument, clock,
+			signaturekey.SignOptions{AdditionalComponents: components}); err != nil {
+			t.Fatalf("sign without %s: %v", omitted, err)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("Signature-Error") == "" {
+			t.Fatalf("coverage without %s = %d %s", omitted, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -608,10 +652,24 @@ func signedRevocationRequestWith(
 	additional []string,
 ) *http.Request {
 	t.Helper()
-	body, err := json.Marshal(reference)
+	body, err := json.Marshal(map[string]any{"jti": reference.JTI, "exp": clock.Now().Add(time.Hour).Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return signedRevocationBody(t, clock, key, signer, document, body, headers, additional)
+}
+
+func signedRevocationBody(
+	t *testing.T,
+	clock aauth.Clock,
+	key jose.SigningKey,
+	signer string,
+	document string,
+	body []byte,
+	headers map[string]string,
+	additional []string,
+) *http.Request {
+	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, resourceIssuer+"/revoke", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	for name, value := range headers {
@@ -635,6 +693,7 @@ type testAuthTokenStatusStore struct {
 	observeAfterMutationError error
 	revokeAfterMutationError  error
 	revokeCalls               int
+	lastRevocation            aauth.RevocationRequest
 }
 
 func newTestAuthTokenStatusStore() *testAuthTokenStatusStore {
@@ -651,6 +710,9 @@ func (store *testAuthTokenStatusStore) Observe(_ context.Context, record Observe
 		return store.observeError
 	}
 	reference := record.Reference
+	if _, ok := store.records[reference]; !ok && store.revoked[reference] {
+		return ErrAuthTokenRevoked
+	}
 	if retained, ok := store.records[reference]; ok {
 		if retained != record {
 			return ErrAuthTokenConflict
@@ -669,17 +731,16 @@ func (store *testAuthTokenStatusStore) Observe(_ context.Context, record Observe
 	return nil
 }
 
-func (store *testAuthTokenStatusStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *testAuthTokenStatusStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
+	reference := request.Reference
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.revokeCalls++
 	if store.revokeError != nil {
 		return store.revokeError
 	}
-	if _, ok := store.records[reference]; !ok {
-		return ErrAuthTokenNotFound
-	}
 	store.revoked[reference] = true
+	store.lastRevocation = request
 	if store.revokeAfterMutationError != nil {
 		err := store.revokeAfterMutationError
 		store.revokeAfterMutationError = nil

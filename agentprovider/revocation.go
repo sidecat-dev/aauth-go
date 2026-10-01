@@ -56,16 +56,16 @@ func NewRevocationClient(config RevocationClientConfig) (*RevocationClient, erro
 
 // RevokeAgentToken asks the identified Person Server to refuse every later
 // request authenticated by reference.
-func (client *RevocationClient) RevokeAgentToken(ctx context.Context, personServer string, reference aauth.TokenReference) error {
-	return client.revokeAgentToken(ctx, personServer, reference, nil, revocationTarget{
+func (client *RevocationClient) RevokeAgentToken(ctx context.Context, personServer string, request aauth.RevocationRequest) error {
+	return client.revokeAgentToken(ctx, personServer, request, nil, revocationTarget{
 		label: "Person Server", metadataPath: "/.well-known/aauth-person.json",
 	})
 }
 
 // RevokeAgentTokenAtResource asks a Resource that accepts direct Agent
 // identity to refuse every later request authenticated by reference.
-func (client *RevocationClient) RevokeAgentTokenAtResource(ctx context.Context, resource string, reference aauth.TokenReference) error {
-	return client.RevokeAgentTokenAtResourceWithHeaders(ctx, resource, reference, nil)
+func (client *RevocationClient) RevokeAgentTokenAtResource(ctx context.Context, resource string, request aauth.RevocationRequest) error {
+	return client.RevokeAgentTokenAtResourceWithHeaders(ctx, resource, request, nil)
 }
 
 // RevokeAgentTokenAtResourceWithHeaders supplies values for additional
@@ -73,10 +73,10 @@ func (client *RevocationClient) RevokeAgentTokenAtResource(ctx context.Context, 
 func (client *RevocationClient) RevokeAgentTokenAtResourceWithHeaders(
 	ctx context.Context,
 	resource string,
-	reference aauth.TokenReference,
+	request aauth.RevocationRequest,
 	header http.Header,
 ) error {
-	return client.revokeAgentToken(ctx, resource, reference, header, revocationTarget{
+	return client.revokeAgentToken(ctx, resource, request, header, revocationTarget{
 		label: "Resource", metadataPath: "/.well-known/aauth-resource.json",
 	})
 }
@@ -84,7 +84,7 @@ func (client *RevocationClient) RevokeAgentTokenAtResourceWithHeaders(
 func (client *RevocationClient) revokeAgentToken(
 	ctx context.Context,
 	server string,
-	reference aauth.TokenReference,
+	revocation aauth.RevocationRequest,
 	header http.Header,
 	target revocationTarget,
 ) error {
@@ -97,17 +97,17 @@ func (client *RevocationClient) revokeAgentToken(
 	if err := aauth.ValidateServerIdentifier(server); err != nil {
 		return fmt.Errorf("aauth: %s: %w", target.label, err)
 	}
-	if err := aauth.ValidateTokenReference(reference); err != nil {
+	if err := aauth.ValidateRevocationRequest(revocation); err != nil {
 		return err
 	}
-	if reference.Issuer != client.provider.issuer {
+	if revocation.Reference.Issuer != client.provider.issuer {
 		return errors.New("aauth: Agent-token reference was not issued by this provider")
 	}
 	profile, err := client.revocationProfile(ctx, server, target)
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(reference)
+	body, err := aauth.EncodeRevocationRequest(revocation)
 	if err != nil {
 		return fmt.Errorf("aauth: encode Agent-token revocation: %w", err)
 	}

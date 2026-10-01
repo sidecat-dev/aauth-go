@@ -238,11 +238,11 @@ func newIntegrationAgentTokenRevocationStore() *integrationAgentTokenRevocationS
 
 func (store *integrationAgentTokenRevocationStore) Revoke(
 	_ context.Context,
-	reference aauth.TokenReference,
+	request aauth.RevocationRequest,
 ) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.revoked[reference] = struct{}{}
+	store.revoked[request.Reference] = struct{}{}
 	return nil
 }
 

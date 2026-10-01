@@ -181,7 +181,7 @@ type testAgentTokenRevocationStore struct {
 	lookupErr error
 }
 
-func (store *testAgentTokenRevocationStore) Revoke(context.Context, aauth.TokenReference) error {
+func (store *testAgentTokenRevocationStore) Revoke(context.Context, aauth.RevocationRequest) error {
 	store.revokes++
 	if store.revokeErr != nil {
 		return store.revokeErr

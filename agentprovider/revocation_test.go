@@ -33,8 +33,9 @@ func TestRevocationClientRejectsForeignReferenceBeforeNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.RevokeAgentToken(context.Background(), "https://ps.example", aauth.TokenReference{
-		Issuer: "https://other.example", JTI: "token-1",
+	err = client.RevokeAgentToken(context.Background(), "https://ps.example", aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: "https://other.example", JTI: "token-1"},
+		ExpiresAt: time.Unix(2000000000, 0),
 	})
 	if err == nil || !strings.Contains(err.Error(), "not issued by this provider") || networkCalls != 0 {
 		t.Fatalf("RevokeAgentToken() = %v; network_calls=%d", err, networkCalls)
@@ -60,8 +61,9 @@ func TestRevocationClientRefusesPersonServerWithoutEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.RevokeAgentToken(context.Background(), "https://ps.example", aauth.TokenReference{
-		Issuer: "https://ap.example", JTI: "token-1",
+	err = client.RevokeAgentToken(context.Background(), "https://ps.example", aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: "https://ap.example", JTI: "token-1"},
+		ExpiresAt: time.Unix(2000000000, 0),
 	})
 	if err == nil || !strings.Contains(err.Error(), "revocation_endpoint") {
 		t.Fatalf("RevokeAgentToken() = %v", err)
@@ -80,6 +82,9 @@ func TestRevocationClientCoversResourceAdvertisedHeaders(t *testing.T) {
 				return revocationJSONResponse(request, `{"issuer":"https://resource.example","revocation_endpoint":"https://resource.example/revoke","additional_signature_components":["x-tenant"]}`), nil
 			case "https://resource.example/revoke":
 				postCalls++
+				if body, _ := io.ReadAll(request.Body); string(body) != `{"jti":"token-1","exp":2000000000}` {
+					t.Fatalf("revocation body = %s", body)
+				}
 				if request.Header.Get("X-Tenant") != "tenant-1" || !strings.Contains(request.Header.Get("Signature-Input"), `"x-tenant"`) {
 					t.Fatalf("revocation headers = %v", request.Header)
 				}
@@ -96,7 +101,10 @@ func TestRevocationClientCoversResourceAdvertisedHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reference := aauth.TokenReference{Issuer: "https://ap.example", JTI: "token-1"}
+	reference := aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: "https://ap.example", JTI: "token-1"},
+		ExpiresAt: time.Unix(2000000000, 0),
+	}
 	err = client.RevokeAgentTokenAtResource(context.Background(), "https://resource.example", reference)
 	var failure *signaturekey.Error
 	if !errors.As(err, &failure) || failure.Code != signaturekey.ErrorInvalidInput ||
@@ -139,8 +147,9 @@ func TestRevocationClientDoesNotFollowResourceRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.RevokeAgentTokenAtResource(context.Background(), "https://resource.example", aauth.TokenReference{
-		Issuer: "https://ap.example", JTI: "token-1",
+	err = client.RevokeAgentTokenAtResource(context.Background(), "https://resource.example", aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: "https://ap.example", JTI: "token-1"},
+		ExpiresAt: time.Unix(2000000000, 0),
 	})
 	if err == nil || !strings.Contains(err.Error(), "302 Found") || requests != 2 {
 		t.Fatalf("redirect result = %v; requests=%d", err, requests)

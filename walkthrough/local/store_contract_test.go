@@ -53,7 +53,7 @@ func TestWalkthroughStoresSurviveReopen(t *testing.T) {
 
 	reference := aauth.TokenReference{Issuer: agentOrigin, JTI: "agent-token-1"}
 	revocationsPath := filepath.Join(stateDir, "revocations.json")
-	if err := newRevocationStore(revocationsPath).Revoke(context.Background(), reference); err != nil {
+	if err := newRevocationStore(revocationsPath).Revoke(context.Background(), aauth.RevocationRequest{Reference: reference, ExpiresAt: time.Unix(4_102_444_800, 0).UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	if revoked, err := newRevocationStore(revocationsPath).IsRevoked(context.Background(), reference); err != nil || !revoked {

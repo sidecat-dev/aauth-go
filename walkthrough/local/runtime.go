@@ -214,14 +214,15 @@ func (runtime *agentRuntime) handleRevoke(response http.ResponseWriter, request 
 		writeControlError(response, err)
 		return
 	}
-	if err := client.RevokeAgentToken(request.Context(), personOrigin, runtime.credential.Reference); err != nil {
+	revocation := aauth.RevocationRequest{Reference: runtime.credential.Reference, ExpiresAt: runtime.credential.ExpiresAt}
+	if err := client.RevokeAgentToken(request.Context(), personOrigin, revocation); err != nil {
 		writeControlError(response, err)
 		return
 	}
 	revocationHeaders := make(http.Header)
 	revocationHeaders.Set("Idempotency-Key", "revoke-"+runtime.credential.Reference.JTI)
 	if err := client.RevokeAgentTokenAtResourceWithHeaders(
-		request.Context(), resourceOrigin, runtime.credential.Reference, revocationHeaders,
+		request.Context(), resourceOrigin, revocation, revocationHeaders,
 	); err != nil {
 		writeControlError(response, err)
 		return

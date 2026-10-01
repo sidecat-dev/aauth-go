@@ -128,14 +128,14 @@ func referenceKey(reference aauth.TokenReference) string {
 	return tokenKey(reference.Issuer, reference.JTI)
 }
 
-func (store *hostedProtocolStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *hostedProtocolStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	state, err := store.load()
 	if err != nil {
 		return err
 	}
-	state.RevokedAgents[referenceKey(reference)] = true
+	state.RevokedAgents[referenceKey(request.Reference)] = true
 	return store.save(state)
 }
 

@@ -48,14 +48,21 @@ func TestDirectAgentResourceRevocationRequiresIssuingProviderAndRetainsMarker(t 
 		t.Fatalf("retained revocation = %t, %v", revoked, err)
 	}
 
-	wrongIssuer := signedRevocationRequestWith(
+	// A body iss is ignored; the revocation is recorded under the verified signer.
+	bodyIssuer := signedRevocationBody(
 		t, clock, providerKey, "https://provider.example", aauth.AgentDiscoveryDocument,
-		aauth.TokenReference{Issuer: "https://other.example", JTI: "agent-token-2"}, nil, nil,
+		[]byte(`{"iss":"https://other.example","jti":"agent-token-2","exp":2000000000}`), nil, nil,
 	)
 	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, wrongIssuer)
-	if response.Code != http.StatusForbidden || store.revokeCalls != 1 {
-		t.Fatalf("wrong issuer = %d %s; revokes=%d", response.Code, response.Body.String(), store.revokeCalls)
+	server.Handler().ServeHTTP(response, bodyIssuer)
+	if response.Code != http.StatusOK || store.revokeCalls != 2 {
+		t.Fatalf("body issuer = %d %s; revokes=%d", response.Code, response.Body.String(), store.revokeCalls)
+	}
+	if revoked, _ := store.IsRevoked(context.Background(), aauth.TokenReference{Issuer: "https://provider.example", JTI: "agent-token-2"}); !revoked {
+		t.Fatal("revocation was not recorded under the signer")
+	}
+	if revoked, _ := store.IsRevoked(context.Background(), aauth.TokenReference{Issuer: "https://other.example", JTI: "agent-token-2"}); revoked {
+		t.Fatal("body iss was honored")
 	}
 
 	wrongRole := signedRevocationRequestWith(
@@ -64,7 +71,7 @@ func TestDirectAgentResourceRevocationRequiresIssuingProviderAndRetainsMarker(t 
 	)
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, wrongRole)
-	if response.Code != http.StatusForbidden || store.revokeCalls != 1 {
+	if response.Code != http.StatusForbidden || store.revokeCalls != 2 {
 		t.Fatalf("unconfigured token role = %d %s; revokes=%d", response.Code, response.Body.String(), store.revokeCalls)
 	}
 }
@@ -123,7 +130,8 @@ func newAgentTokenRevocationTestStore() *agentTokenRevocationTestStore {
 	return &agentTokenRevocationTestStore{revoked: make(map[aauth.TokenReference]struct{})}
 }
 
-func (store *agentTokenRevocationTestStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *agentTokenRevocationTestStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
+	reference := request.Reference
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.revokeCalls++

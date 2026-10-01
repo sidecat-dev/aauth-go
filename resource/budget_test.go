@@ -1064,7 +1064,9 @@ func (store *countingBudgetAuthTokenStore) Observe(context.Context, ObservedAuth
 	return nil
 }
 
-func (*countingBudgetAuthTokenStore) Revoke(context.Context, aauth.TokenReference) error { return nil }
+func (*countingBudgetAuthTokenStore) Revoke(context.Context, aauth.RevocationRequest) error {
+	return nil
+}
 
 func (store *countingBudgetAuthTokenStore) observeCount() int {
 	store.mu.Lock()

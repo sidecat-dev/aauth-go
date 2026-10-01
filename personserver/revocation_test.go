@@ -273,7 +273,7 @@ func TestRevokeIssuedAuthTokenPreservesLocalAndRemoteOutcomes(t *testing.T) {
 		}
 	})
 
-	t.Run("remote unknown remains distinct", func(t *testing.T) {
+	t.Run("remote 404 is a failure not a recorded revocation", func(t *testing.T) {
 		issued := newTestIssuedAuthTokenStore()
 		if err := issued.CommitIssuedAuthToken(context.Background(), IssuedAuthTokenRecord{
 			Reference: reference, Resource: resourceID,
@@ -300,8 +300,8 @@ func TestRevokeIssuedAuthTokenPreservesLocalAndRemoteOutcomes(t *testing.T) {
 			}, nil
 		})}
 		server := newServer(t, issued, client)
-		if err := server.RevokeIssuedAuthToken(context.Background(), reference); !errors.Is(err, ErrRevocationNotRecognized) {
-			t.Fatalf("remote unknown = %v", err)
+		if err := server.RevokeIssuedAuthToken(context.Background(), reference); err == nil || !strings.Contains(err.Error(), "404") {
+			t.Fatalf("remote 404 = %v", err)
 		}
 		if calls != 2 {
 			t.Fatalf("remote unknown made %d requests", calls)

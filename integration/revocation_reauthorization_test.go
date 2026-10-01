@@ -263,6 +263,9 @@ func (store *memoryAuthTokenStatusStore) Observe(_ context.Context, record resou
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	reference := record.Reference
+	if _, ok := store.records[reference]; !ok && store.revoked[reference] {
+		return resource.ErrAuthTokenRevoked
+	}
 	if retained, ok := store.records[reference]; ok {
 		if retained != record {
 			return resource.ErrAuthTokenConflict
@@ -276,13 +279,10 @@ func (store *memoryAuthTokenStatusStore) Observe(_ context.Context, record resou
 	return nil
 }
 
-func (store *memoryAuthTokenStatusStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *memoryAuthTokenStatusStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if _, ok := store.records[reference]; !ok {
-		return resource.ErrAuthTokenNotFound
-	}
-	store.revoked[reference] = true
+	store.revoked[request.Reference] = true
 	return nil
 }
 

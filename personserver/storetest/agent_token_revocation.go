@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
@@ -31,10 +32,11 @@ func RunAgentTokenRevocation(t *testing.T, contract AgentTokenRevocationContract
 	if revoked, err := store.IsRevoked(ctx, reference); err != nil || revoked {
 		t.Fatalf("initial IsRevoked = %t, %v", revoked, err)
 	}
-	if err := store.Revoke(ctx, reference); err != nil {
+	request := aauth.RevocationRequest{Reference: reference, ExpiresAt: time.Date(2026, 9, 1, 19, 0, 0, 0, time.UTC)}
+	if err := store.Revoke(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Revoke(ctx, reference); err != nil {
+	if err := store.Revoke(ctx, request); err != nil {
 		t.Fatalf("exact Revoke replay = %v", err)
 	}
 	if revoked, err := store.IsRevoked(ctx, reference); err != nil || !revoked {
@@ -53,7 +55,7 @@ func RunAgentTokenRevocation(t *testing.T, contract AgentTokenRevocationContract
 		go func(index int) {
 			defer wait.Done()
 			if index%2 == 0 {
-				errorsByCall[index] = raceStore.Revoke(ctx, raceReference)
+				errorsByCall[index] = raceStore.Revoke(ctx, aauth.RevocationRequest{Reference: raceReference, ExpiresAt: request.ExpiresAt})
 				return
 			}
 			_, errorsByCall[index] = raceStore.IsRevoked(ctx, raceReference)

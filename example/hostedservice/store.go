@@ -185,10 +185,10 @@ func newAgentTokenRevocationStore() *agentTokenRevocationStore {
 	return &agentTokenRevocationStore{revoked: make(map[aauth.TokenReference]struct{})}
 }
 
-func (store *agentTokenRevocationStore) Revoke(_ context.Context, reference aauth.TokenReference) error {
+func (store *agentTokenRevocationStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.revoked[reference] = struct{}{}
+	store.revoked[request.Reference] = struct{}{}
 	return nil
 }
 
