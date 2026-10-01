@@ -2,9 +2,11 @@ package integration_test
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -97,14 +99,34 @@ func TestRevocationClientsReturnRateLimitedFeedbackOverHTTP(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	const agentProviderID = "https://ap-rate-limit.example"
-	personServerURL, installPersonServer := startRecipient(t)
-	resourceURL, installResource := startRecipient(t)
-	personServerID, resourceID := personServerURL.URL, resourceURL.URL
+	const (
+		personServerID = "https://ps-rate-limit.example"
+		resourceID     = "https://resource-rate-limit.example"
+	)
+	personServerSocket, installPersonServer := startRecipient(t)
+	resourceSocket, installResource := startRecipient(t)
 	providerKey := newSigningKey(t, "rate-limit-ap")
 	personKey := newSigningKey(t, "rate-limit-ps")
 	resourceKey := newSigningKey(t, "rate-limit-resource")
-	// Both test servers share httptest's certificate, so one client trusts both.
-	httpClient := personServerURL.Client()
+	// AAuth server identifiers are https hosts without a port, so the client
+	// dials each identifier's host to its loopback TLS test server. The test
+	// certificate is not valid for these names, so verification is skipped; the
+	// exchange is still real HTTP over a socket.
+	dial := map[string]string{
+		"ps-rate-limit.example:443":       personServerSocket.Listener.Addr().String(),
+		"resource-rate-limit.example:443": resourceSocket.Listener.Addr().String(),
+	}
+	httpClient := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			target, ok := dial[address]
+			if !ok {
+				return nil, errors.New("unexpected dial " + address)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, target)
+		},
+	}}
+	t.Cleanup(httpClient.CloseIdleConnections)
 	admit := func(context.Context, string) error { return nil }
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: httpClient, Clock: clock, Admit: admit,
