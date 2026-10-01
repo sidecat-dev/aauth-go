@@ -945,6 +945,16 @@ returns `403 access_denied` rather than a misleading `401 Signature-Error`.
 This check stops a request only when the store reports revocation before host
 callbacks; it does not cancel an already-admitted in-flight request.
 
+### Refused revocation caller uses `unsupported_iss`
+
+Protocol -11 (AAuth 28e8258f, Token Revocation, Errors table) answers `403
+unsupported_iss` when the recipient does not accept revocations from the
+caller. The PS and Resource revocation endpoints return it when the verified
+caller differs from the reference issuer and, at the Resource, when the
+matching status store is not configured. The refusal after revocation above is
+a different, protected-use response and is unchanged. The request body still
+carries `iss`; the spec's `{jti, exp}` body is not yet implemented.
+
 ### No pre-use tombstone
 
 The Resource returns `404` when it has not yet observed `(iss, jti)`; it does

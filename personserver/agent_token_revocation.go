@@ -58,7 +58,7 @@ func (server *Server) handleAgentTokenRevocation(response http.ResponseWriter, r
 		return
 	}
 	if reference.Issuer != issuer {
-		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("revocation caller is not the token issuer"))
+		writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("revocation caller is not the token issuer"))
 		return
 	}
 	if err := server.agentTokenRevocations.Revoke(request.Context(), reference); err != nil {

@@ -109,21 +109,21 @@ func (server *Server) serveRevocation(response http.ResponseWriter, request *htt
 		return
 	}
 	if input.Issuer != issuer {
-		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("revocation caller is not the token issuer"))
+		writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("revocation caller is not the token issuer"))
 		return
 	}
 	var notFound error
 	switch document {
 	case aauth.PersonDiscoveryDocument:
 		if server.authTokenStatuses == nil {
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("Auth-token revocation is not configured"))
+			writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("Auth-token revocation is not configured"))
 			return
 		}
 		err = server.authTokenStatuses.Revoke(request.Context(), input)
 		notFound = ErrAuthTokenNotFound
 	case aauth.AgentDiscoveryDocument:
 		if server.agentTokenRevocations == nil {
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("Agent-token revocation is not configured"))
+			writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("Agent-token revocation is not configured"))
 			return
 		}
 		err = server.agentTokenRevocations.Revoke(request.Context(), input)
