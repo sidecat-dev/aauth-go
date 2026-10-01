@@ -949,16 +949,20 @@ callbacks; it does not cancel an already-admitted in-flight request.
 
 Protocol -11 (AAuth 28e8258f, Token Revocation, Errors table) answers `403
 unsupported_iss` when the recipient does not accept revocations from the
-caller. The PS and Resource revocation endpoints return it when the verified
-caller differs from the reference issuer and, at the Resource, when the
-matching status store is not configured. The refusal after revocation above is
-a different, protected-use response and is unchanged. The request body still
-carries `iss`; the spec's `{jti, exp}` body is not yet implemented.
+caller. The Resource returns it when the matching status store is not
+configured. The body no longer names an issuer, so there is no body-issuer
+mismatch refusal. The refusal after revocation above is
+a different, protected-use response and is unchanged.
 
 ### No pre-use tombstone
 
-The Resource returns `404` when it has not yet observed `(iss, jti)`; it does
-not invent a pre-use tombstone from an underspecified request.
+Protocol -11 requires the recipient to record whether the token was seen, not
+to answer `404`. `RevocationRequest` carries a `TokenReference` plus the
+issuer-stated expiration, and the Resource records an unseen `(iss, jti)` and
+answers `200`; the store refuses the token at its first use. The wire body is
+`{jti, exp}`; the issuer comes only from the verified signature and a body
+`iss` is ignored. Token kinds without a configured store still receive
+`403 unsupported_iss`.
 
 The Person Server and a direct Agent-identity Resource cannot make the same
 choice for Agent tokens: Core says that an AP revocation makes subsequent use

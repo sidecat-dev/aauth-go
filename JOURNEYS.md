@@ -259,8 +259,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`personserver/storetest/issued_auth_token.go`](personserver/storetest/issued_auth_token.go),
     [`resource/storetest/auth_token_status.go`](resource/storetest/auth_token_status.go),
     and `go run ./example/revocation`.
-  - Missing: automatic Agent-token fan-out, Auth-token pre-use and four-party
-    propagation, mission cascade, and session revocation.
+  - Missing: automatic Agent-token fan-out, Auth-token four-party
+    propagation, `rate_limited`, deferred `202`, `revoked_jwt`, mission cascade, and session revocation.
 
 - [x] **Missionless local-action permission — Implemented**
   - Flow: Agent → PS with one signed local-action request → immediate decision

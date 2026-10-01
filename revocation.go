@@ -17,7 +17,7 @@ type TokenReference struct {
 	JTI    string `json:"jti"`
 }
 
-// ValidateTokenReference validates the Core token-revocation request shape.
+// ValidateTokenReference validates a token's issuer and JTI identity; the wire request is RevocationRequest.
 func ValidateTokenReference(reference TokenReference) error {
 	if err := ValidateServerIdentifier(reference.Issuer); err != nil {
 		return fmt.Errorf("aauth: token reference issuer: %w", err)

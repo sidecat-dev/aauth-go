@@ -1009,6 +1009,10 @@ when a valid proof presents a revoked auth token?
 
 ### AAG-F037 — Core does not define the lifetime or race semantics of a pre-use tombstone
 
+**Status:** Protocol -11 (28e8258f) now specifies a `{jti, exp}` body and the
+record-whether-seen rule, which this repository implements; the text below
+records the pre-Protocol-11 gap.
+
 **Source:** AAuth Core, `Token Revocation`.
 
 The `(iss, jti)` request can identify a pre-use tombstone, but the Resource has
