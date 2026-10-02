@@ -153,6 +153,44 @@ func TestServerIssuesAndRetainsDirectedPersonToken(t *testing.T) {
 		t.Fatalf("expired agent token changed retained records; commits = %d", commits)
 	}
 
+	// A Signature-Key agent token issued beyond the HTTP signature window is a
+	// header-token skew: 401 Signature-Error clock_skew, with no retained record.
+	signFutureAgentRequest := func(issuedAt time.Time, jti string) *httptest.ResponseRecorder {
+		t.Helper()
+		futureAgentToken, err := aauth.MintAgentToken(
+			"https://provider.example", providerKey,
+			aauth.AgentTokenRequest{
+				Agent: "aauth:planner@provider.example", PersonServer: "https://person.example",
+				PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+			},
+			issuedAt, jti,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "https://person.example/person", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		if err := signPersonServerTestRequest(request, agentKey, futureAgentToken, clock); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	response = signFutureAgentRequest(now.Add(90*time.Second), "future-agent-token")
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("future header agent token status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if decoded, err := signaturekey.DecodeErrorResponse(response.Result()); err != nil || decoded.Code != signaturekey.ErrorClockSkew {
+		t.Fatalf("future header agent token Signature-Error = %#v, %v", decoded, err)
+	}
+	if _, commits, _ = store.observation(); commits != 1 {
+		t.Fatalf("future agent token changed retained records; commits = %d", commits)
+	}
+	if response = signFutureAgentRequest(now.Add(60*time.Second), "edge-agent-token"); response.Code != http.StatusOK {
+		t.Fatalf("agent token at the default window edge: status = %d, body = %s", response.Code, response.Body.String())
+	}
+
 	for name, unsupportedBody := range map[string]string{
 		"mission":       `{"resource":"https://resource.example","mission_s256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
 		"upstream":      `{"resource":"https://resource.example","upstream_token":"token"}`,
@@ -495,6 +533,39 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	assertPersonServerProblem(t, response, "expired_resource_token")
 	if accessCalls != 1 {
 		t.Fatalf("expired resource token reached Access Server; calls = %d", accessCalls)
+	}
+
+	// A body resource token issued beyond the window behind a current HTTP proof
+	// is a parameter-token skew: 400 clock_skew, never a Signature-Error.
+	futureResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+		Audience: "https://access.example", JTI: "future-resource-token", AgentJKT: agentJKT,
+		IssuedAt: now.Add(90 * time.Second).Unix(), ExpiresAt: now.Add(6 * time.Minute).Unix(),
+		Scope: "records.read", PersonServer: "https://person.example", Subject: "person-123",
+		PresentedJTI: "person-token-1", Tenant: "tenant-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	futureBody, err := json.Marshal(struct {
+		ResourceToken string `json:"resource_token"`
+	}{ResourceToken: futureResourceToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(futureBody))
+	request.Header.Set("Content-Type", "application/json")
+	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if got := response.Header().Get("Signature-Error"); got != "" {
+		t.Fatalf("parameter token skew Signature-Error = %q", got)
+	}
+	assertPersonServerProblem(t, response, "clock_skew")
+	if accessCalls != 1 {
+		t.Fatalf("future resource token reached Access Server; calls = %d", accessCalls)
 	}
 
 	callTokenEndpoint := func() *httptest.ResponseRecorder {

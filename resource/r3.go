@@ -365,6 +365,9 @@ func (server *Server) verifyPreparedR3AuthRequest(
 		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, r3.Reference{}, r3.AuthTokenOperations{}, &requestTokenError{cause: err}
 	}
 	proof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err == nil {
+		err = proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
+	}
 	return proof, claims, reference, operations, err
 }
 

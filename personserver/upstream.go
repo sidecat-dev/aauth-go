@@ -9,6 +9,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 var (
@@ -36,7 +37,7 @@ func (server *Server) verifyOptionalUpstreamToken(
 	ctx context.Context,
 	raw json.RawMessage,
 	intermediary aauth.AgentTokenClaims,
-	verifiedAt time.Time,
+	proof signaturekey.VerifiedRequest,
 ) (*verifiedUpstreamToken, error) {
 	if raw == nil {
 		return nil, nil
@@ -52,9 +53,12 @@ func (server *Server) verifyOptionalUpstreamToken(
 	if err := json.Unmarshal(raw, &compact); err != nil || compact == "" {
 		return nil, errUpstreamTokenSyntax
 	}
-	verificationClock := aauth.ClockFunc(func() time.Time { return verifiedAt })
+	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
 	claims, err := aauth.VerifyAuthToken(ctx, compact, server.keyResolver, verificationClock)
 	if err != nil {
+		return nil, &upstreamTokenFailure{cause: err}
+	}
+	if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
 		return nil, &upstreamTokenFailure{cause: err}
 	}
 	if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != server.issuer ||
@@ -127,6 +131,9 @@ func (server *Server) writeUpstreamTokenProblem(response http.ResponseWriter, er
 	}
 	var tokenFailure *upstreamTokenFailure
 	if errors.As(err, &tokenFailure) {
+		if writeParameterClockSkew(response, tokenFailure.cause) {
+			return
+		}
 		writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", tokenFailure.cause)
 		return
 	}

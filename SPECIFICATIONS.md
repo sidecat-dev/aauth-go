@@ -23,7 +23,8 @@ All seven files match the retained local source mirror used for review.
 
 This is one targeted source, not a repin. The manifest above and the rest of
 the library remain at their stated revisions. Only the signature `created`
-classification in `signaturekey.PrepareRequest` follows this text.
+classification in `signaturekey.PrepareRequest` and the `Signature-Error:
+error=clock_skew` answer for a header JWT `iat` follow this text.
 
 - Document: HTTP Signature Keys, editor source `draft-hardt-httpbis-signature-key.md`.
 - Repository commit: [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6).
@@ -33,8 +34,7 @@ classification in `signaturekey.PrepareRequest` follows this text.
 The overlay is a list, not a table row, because the baseline manifest check
 requires exactly one table row per source file.
 
-Not implemented from this revision: `clock_skew` for a JWT `iat` ahead of the
-verifier clock (the jkt-jwt and Core token paths).
+The JWT `iat` rule itself follows the Protocol -11 overlay below.
 
 ## Targeted additional source: Signature-Key `revoked_jwt`
 
@@ -108,6 +108,31 @@ report is validated and not returned.
 - Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
 - Section: the `## Token Revocation` heading at line 2666, `### Revocation Request` (lines 2670-2700) and the Errors table in `### Revocation Response` (lines 2701-2746).
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
+## Targeted additional source: Protocol -11 JWT `iat` and `clock_skew`
+
+This is one targeted source, not a repin. The manifest above and every other
+Protocol clause remain at their stated revisions. Only the JWT `iat` rule and
+its `clock_skew` answers follow this text. General token verification no longer
+refuses a future `iat`; `exp` and `nbf` checks are unchanged and no universal
+JWT leeway is added. A verifier that has a prepared signed request refuses a
+JWT whose `iat` is later than the request's captured time plus its effective
+signature window (`signaturekey.PreparedRequest.CheckIssuedAt`, 60 seconds by
+default). The token in the `Signature-Key` header is answered `401` with
+`Signature-Error: error=clock_skew`; a token carried as a request parameter
+(the Resource, upstream and sub-agent tokens at the PS and AS token endpoints)
+is answered `400` with body error `clock_skew` and no `Signature-Error`. A
+verifier with no request, such as a response-token consumer, applies no
+future-`iat` refusal. The Events subscribe-token and event-token checks are
+unchanged; both still refuse a future `iat`.
+
+- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Section: the `### Common JWT Verification` heading at line 2311 (lines 2311-2322) and the `clock_skew` row at line 2597 of `### Token Endpoint Error Codes`.
+- SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
+The overlay is a list, not a table row, because the baseline manifest check
+requires exactly one table row per source file.
 
 [AAuth Explorer at `e6d7913`](https://github.com/aauth-dev/explorer/commit/e6d79137cda1a6a650d4394a37095393e1cc62ba)
 is a non-normative diagnostic implementation, not an editor source. It is

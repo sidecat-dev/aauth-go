@@ -131,6 +131,7 @@ func TestCallChainingRetainedBindingMustBeComplete(t *testing.T) {
 func TestCallChainingRejectsUnacceptableUpstreamBeforePolicyOrRetention(t *testing.T) {
 	tests := []struct {
 		name  string
+		code  string
 		token func(*testing.T, *callChainingProtocol) string
 	}{
 		{
@@ -184,10 +185,12 @@ func TestCallChainingRejectsUnacceptableUpstreamBeforePolicyOrRetention(t *testi
 			},
 		},
 		{
+			// Beyond the default 60-second request window: a parameter-token skew.
 			name: "future issued at",
+			code: "clock_skew",
 			token: func(t *testing.T, protocol *callChainingProtocol) string {
 				claims := protocol.upstreamClaims
-				claims.IssuedAt = protocol.now.Add(time.Minute).Unix()
+				claims.IssuedAt = protocol.now.Add(90 * time.Second).Unix()
 				claims.ExpiresAt = protocol.now.Add(10 * time.Minute).Unix()
 				return mintCallChainingAuthToken(t, protocol.personServerKey, claims)
 			},
@@ -207,7 +210,14 @@ func TestCallChainingRejectsUnacceptableUpstreamBeforePolicyOrRetention(t *testi
 			protocol := newCallChainingProtocol(t)
 			server := protocol.newServer(t, protocol.config())
 			response := protocol.personRequest(t, server, test.token(t, protocol), "")
-			assertCallChainingProblem(t, response, http.StatusBadRequest, "invalid_upstream_token")
+			code := test.code
+			if code == "" {
+				code = "invalid_upstream_token"
+			}
+			if got := response.Header().Get("Signature-Error"); got != "" {
+				t.Fatalf("upstream token Signature-Error = %q", got)
+			}
+			assertCallChainingProblem(t, response, http.StatusBadRequest, code)
 			_, commits, loads := protocol.store.observation()
 			if protocol.chainBindCalls != 0 || protocol.chainAuthorizeCalls != 0 ||
 				protocol.ordinaryBindCalls != 0 || protocol.ordinaryAuthorizeCalls != 0 ||

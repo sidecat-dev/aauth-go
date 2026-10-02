@@ -265,7 +265,8 @@ func TestJKTJWTRejectsExpiredAndFutureAssertions(t *testing.T) {
 		want      signaturekey.ErrorCode
 	}{
 		{name: "expired", issuedAt: now.Add(-2 * time.Hour), expiresAt: now.Add(-time.Hour), want: signaturekey.ErrorExpiredJWT},
-		{name: "future issued", issuedAt: now.Add(time.Minute), expiresAt: now.Add(time.Hour), want: signaturekey.ErrorInvalidJWT},
+		{name: "future issued at the window edge", issuedAt: now.Add(signaturekey.DefaultSignatureWindow), expiresAt: now.Add(time.Hour)},
+		{name: "future issued beyond the window", issuedAt: now.Add(signaturekey.DefaultSignatureWindow + time.Second), expiresAt: now.Add(time.Hour), want: signaturekey.ErrorClockSkew},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -274,6 +275,12 @@ func TestJKTJWTRejectsExpiredAndFutureAssertions(t *testing.T) {
 			compact := mintTestJKTJWT(t, durable, ephemeral.PublicJWK(), test.issuedAt, test.expiresAt, "refresh-"+test.name)
 			prepared := prepareTestJKTJWTRequest(t, compact, ephemeral, now)
 			_, _, err := prepared.VerifyJKTJWT()
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("VerifyJKTJWT() rejected an assertion issued within the request window: %v", err)
+				}
+				return
+			}
 			var failure *signaturekey.Error
 			if !errors.As(err, &failure) || failure.Code != test.want {
 				t.Fatalf("VerifyJKTJWT() error = %#v, want %s", err, test.want)

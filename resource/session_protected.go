@@ -167,6 +167,9 @@ func (server *ResourceManagedServer) verifyResourceManagedAgentRequest(
 		return signaturekey.VerifiedRequest{}, aauth.AgentTokenClaims{}, &requestTokenError{cause: err}
 	}
 	proof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err == nil {
+		err = proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
+	}
 	if err != nil {
 		return signaturekey.VerifiedRequest{}, aauth.AgentTokenClaims{}, &requestTokenError{cause: err}
 	}

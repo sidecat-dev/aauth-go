@@ -391,6 +391,9 @@ func (server *Server) verifyPreparedR3BudgetAuthRequest(
 		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, r3.Reference{}, r3.AuthTokenOperations{}, budgets.Value{}, &requestTokenError{cause: err}
 	}
 	verifiedProof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err == nil {
+		err = verifiedProof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
+	}
 	return verifiedProof, claims, reference, operations, grant, err
 }
 
@@ -405,6 +408,9 @@ func (server *Server) verifyPreparedBudgetAuthRequest(
 		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, budgets.Value{}, &requestTokenError{cause: err}
 	}
 	verifiedProof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err == nil {
+		err = verifiedProof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
+	}
 	return verifiedProof, claims, grant, err
 }
 
@@ -682,6 +688,9 @@ func (server *Server) verifyPreparedPersonRequest(
 		return signaturekey.VerifiedRequest{}, aauth.PersonTokenClaims{}, &requestTokenError{cause: err}
 	}
 	verifiedProof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err == nil {
+		err = verifiedProof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
+	}
 	return verifiedProof, claims, err
 }
 
@@ -696,6 +705,9 @@ func (server *Server) verifyPreparedAgentRequest(
 		return signaturekey.VerifiedRequest{}, aauth.AgentTokenClaims{}, &requestTokenError{cause: err}
 	}
 	verifiedProof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err == nil {
+		err = verifiedProof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
+	}
 	return verifiedProof, claims, err
 }
 
@@ -710,6 +722,9 @@ func (server *Server) verifyPreparedAuthRequest(
 		return signaturekey.VerifiedRequest{}, aauth.AuthTokenClaims{}, &requestTokenError{cause: err}
 	}
 	verifiedProof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err == nil {
+		err = verifiedProof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
+	}
 	return verifiedProof, claims, err
 }
 

@@ -195,8 +195,8 @@ func (prepared PreparedRequest) VerifyJKTJWT() (VerifiedRequest, JKTJWTDelegatio
 	if !expiresAt.After(issuedAt) {
 		return VerifiedRequest{}, delegation, newError(ErrorInvalidJWT, errors.New("aauth: jkt-jwt expiry is not after its issued time"))
 	}
-	if issuedAt.After(prepared.verifiedAt) {
-		return VerifiedRequest{}, delegation, newError(ErrorInvalidJWT, errors.New("aauth: jkt-jwt issued time is in the future"))
+	if err := prepared.CheckIssuedAt(issuedAt); err != nil {
+		return VerifiedRequest{}, delegation, err
 	}
 	if !expiresAt.After(prepared.verifiedAt) {
 		return VerifiedRequest{}, delegation, newError(ErrorExpiredJWT, errors.New("aauth: jkt-jwt has expired"))

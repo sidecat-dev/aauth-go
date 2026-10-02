@@ -641,6 +641,97 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertAccessProblem(t, callTokenEndpoint(agentToken, expiredResourceToken), "expired_resource_token")
+
+	t.Run("parameter token issuance skew", func(t *testing.T) {
+		mintAgent := func(issuedAt time.Time, jti string) string {
+			t.Helper()
+			token, err := aauth.MintAgentToken(
+				"https://ap.example", apKey,
+				aauth.AgentTokenRequest{
+					Agent: "aauth:planner@ap.example", PersonServer: "https://ps.example",
+					PublicKey: agentKey.PublicJWK(), Lifetime: time.Hour,
+				},
+				issuedAt, jti,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return token
+		}
+		mintResource := func(issuedAt time.Time, jti string) string {
+			t.Helper()
+			token, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+				Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+				Audience: "https://as.example", JTI: jti, AgentJKT: agentJKT,
+				IssuedAt: issuedAt.Unix(), ExpiresAt: issuedAt.Add(5 * time.Minute).Unix(),
+				Scope: "records.read", PersonServer: "https://ps.example", Subject: "directed-person-1",
+				PresentedJTI: "person-token-1", Tenant: "example-tenant",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return token
+		}
+		assertBodyClockSkew := func(t *testing.T, response *httptest.ResponseRecorder) {
+			t.Helper()
+			if got := response.Header().Get("Signature-Error"); got != "" {
+				t.Fatalf("parameter token skew Signature-Error = %q", got)
+			}
+			assertAccessProblem(t, response, "clock_skew")
+		}
+
+		// The person server's HTTP proof is current; only the parameter token is early.
+		beforeAuthorize := authorizeCalls
+		assertBodyClockSkew(t, callTokenEndpoint(mintAgent(now.Add(90*time.Second), "future-agent-token"), resourceToken))
+		assertBodyClockSkew(t, callTokenEndpoint(agentToken, mintResource(now.Add(90*time.Second), "future-resource-token")))
+		if authorizeCalls != beforeAuthorize {
+			t.Fatal("parameter token skew reached authorization policy")
+		}
+		for name, response := range map[string]*httptest.ResponseRecorder{
+			"agent_token":    callTokenEndpoint(mintAgent(now.Add(60*time.Second), "edge-agent-token"), resourceToken),
+			"resource_token": callTokenEndpoint(agentToken, mintResource(now.Add(60*time.Second), "edge-resource-token")),
+		} {
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s issued at the default window edge: status = %d, body = %s", name, response.Code, response.Body.String())
+			}
+		}
+
+		subagentJKT, err := subagentKey.PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		subagentResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+			Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+			Audience: "https://as.example", JTI: "skew-subagent-resource-token", AgentJKT: subagentJKT,
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(), Scope: "records.read",
+			PersonServer: "https://ps.example", Subject: "directed-person-1", PresentedJTI: "person-token-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		futureSubagentToken, err := aauth.MintAgentToken(
+			"https://ap.example", apKey,
+			aauth.AgentTokenRequest{
+				Agent: "aauth:planner+search@ap.example", ParentAgent: "aauth:planner@ap.example",
+				PersonServer: "https://ps.example", PublicKey: subagentKey.PublicJWK(), Lifetime: 12 * time.Minute,
+			},
+			now.Add(90*time.Second), "future-subagent-token",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertBodyClockSkew(t, callTokenEndpointWith(map[string]any{
+			"resource_token": subagentResourceToken,
+			"agent_token":    agentToken,
+			"subagent_token": futureSubagentToken,
+		}))
+
+		// Signature, expiry and confirmation failures keep their existing parameter codes.
+		forged := mintAgent(now.Add(90*time.Second), "forged-future-agent-token")
+		forged = forged[:len(forged)-4] + "AAAA"
+		assertAccessProblem(t, callTokenEndpoint(forged, resourceToken), "invalid_agent_token")
+		assertAccessProblem(t, callTokenEndpoint(expiredAgentToken, resourceToken), "expired_agent_token")
+	})
 }
 
 func TestServerMetadataAndJWKSRemainCacheable(t *testing.T) {

@@ -443,6 +443,37 @@ func TestServerRejectsInvalidSubagentBeforePersonPolicyOrRetention(t *testing.T)
 	}
 }
 
+func TestServerRefusesFutureSubagentTokenAsParameterClockSkew(t *testing.T) {
+	t.Parallel()
+
+	p := newSubagentPersonServerProtocol(t)
+	server, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: "https://ps.example", SigningKey: p.personKey, KeyResolver: p.resolver,
+		Clock: p.clock, NewID: func() string { return "unused" }, Tokens: p.store,
+		BindPerson: p.policyPerson,
+		Authorize:  p.policyAuthorization,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	futureChild, err := aauth.MintAgentToken("https://ap.example", p.providerKey, aauth.AgentTokenRequest{
+		Agent: "aauth:planner+search@ap.example", ParentAgent: "aauth:planner@ap.example",
+		PersonServer: "https://ps.example", PublicKey: p.childKey.PublicJWK(), Lifetime: 10 * time.Minute,
+	}, p.now.Add(90*time.Second), "future-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := p.personRequest(t, server, futureChild)
+	if got := response.Header().Get("Signature-Error"); got != "" {
+		t.Fatalf("parameter token skew Signature-Error = %q", got)
+	}
+	assertSubagentProblem(t, response, http.StatusBadRequest, "clock_skew")
+	_, commits, loads := p.store.observation()
+	if p.bindCalls != 0 || commits != 0 || loads != 0 {
+		t.Fatalf("future sub-agent token reached policy or store: bind=%d commits=%d loads=%d", p.bindCalls, commits, loads)
+	}
+}
+
 func TestServerVerifiesDirectSubagentProofBeforeTopologyRefusal(t *testing.T) {
 	t.Parallel()
 

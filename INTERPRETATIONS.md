@@ -1374,6 +1374,19 @@ whole number of seconds, and the tests step by one second. The window and expiry
 semantics are unchanged. The source does not fix the window length; this
 choice is the library's existing one.
 
-JWT `iat` skew is not covered. The jkt-jwt future-`iat` check and Core
-`validateTimes` need a decision on whether they share the signature window, so
-they keep their current classification.
+JWT `iat` skew uses the same window, and the policy belongs to the request
+rather than to general token verification. Core `validateTimes` no longer
+refuses a future `iat`; `exp`, `nbf` and the positive-lifetime rule are
+unchanged, and no leeway is added. A verifier holding a prepared or verified
+signed request calls `CheckIssuedAt`, which answers `clock_skew` for an `iat`
+later than the request's captured time plus its effective `SignatureWindow`.
+`VerifyJKTJWT` uses this check in place of its former `invalid_jwt` refusal.
+The `Signature-Key` header token is answered `401` with
+`Signature-Error: error=clock_skew`; a token carried as a request parameter is
+answered `400` with body error `clock_skew` (see the Protocol -11 JWT `iat`
+section of `SPECIFICATIONS.md`). A verifier with no request applies no
+future-`iat` refusal.
+
+Events is excluded. Subscribe-token and event-token validation keep their own
+`validateTimes` in `events/token.go`, which still refuses any future `iat`;
+neither was changed.

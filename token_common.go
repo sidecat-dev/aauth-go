@@ -376,9 +376,6 @@ func validateTimes(issuedAt, expiresAt, notBefore int64, now time.Time) error {
 	if now.IsZero() {
 		return nil
 	}
-	if issuedAt > now.Unix() {
-		return errors.New("iat is in the future")
-	}
 	if expiresAt <= now.Unix() {
 		return &TokenValidationError{Code: TokenValidationExpired, Cause: errors.New("token is expired")}
 	}

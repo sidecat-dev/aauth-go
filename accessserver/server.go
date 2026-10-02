@@ -185,6 +185,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
 	agentClaims, err := aauth.VerifyAgentToken(request.Context(), input.AgentToken, server.keyResolver, verificationClock)
+	if err == nil {
+		err = proof.CheckIssuedAt(time.Unix(agentClaims.IssuedAt, 0))
+	}
 	if err != nil {
 		writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
 		return
@@ -192,6 +195,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	resourceClaims, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
+	if err == nil {
+		err = proof.CheckIssuedAt(time.Unix(resourceClaims.IssuedAt, 0))
+	}
 	if err != nil {
 		if budgets.IsTokenClaimError(err) {
 			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
@@ -214,6 +220,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 		verified, err := aauth.VerifyAgentToken(request.Context(), compact, server.keyResolver, verificationClock)
+		if err == nil {
+			err = proof.CheckIssuedAt(time.Unix(verified.IssuedAt, 0))
+		}
 		if err != nil {
 			writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
 			return
@@ -535,7 +544,15 @@ func writeProblem(response http.ResponseWriter, status int, code string, cause e
 	httpapi.WriteProblem(response, status, code, cause)
 }
 
+// writeTokenProblem reports request-parameter token failures. A parameter
+// token issued beyond the request's signature window is HTTP 400 clock_skew;
+// it never uses the 401 Signature-Error path.
 func writeTokenProblem(response http.ResponseWriter, err error, invalidCode, expiredCode string) {
+	var skew *signaturekey.Error
+	if errors.As(err, &skew) && skew.Code == signaturekey.ErrorClockSkew {
+		writeProblem(response, http.StatusBadRequest, string(signaturekey.ErrorClockSkew), err)
+		return
+	}
 	var tokenFailure *aauth.TokenValidationError
 	if errors.As(err, &tokenFailure) && tokenFailure.Code == aauth.TokenValidationExpired {
 		writeProblem(response, http.StatusBadRequest, expiredCode, err)

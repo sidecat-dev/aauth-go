@@ -752,7 +752,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		}
 	}
 	upstream, err := server.verifyOptionalUpstreamToken(
-		request.Context(), input.UpstreamToken, agent, proof.VerifiedAt(),
+		request.Context(), input.UpstreamToken, agent, proof,
 	)
 	if err != nil {
 		server.writeUpstreamTokenProblem(response, err)
@@ -768,7 +768,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	}
 	if upstream == nil {
 		_, credentialAgent, delegated, err = server.verifyOptionalSubagentToken(
-			request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+			request.Context(), input.SubagentToken, agent, proof,
 		)
 		if err != nil {
 			server.writeSubagentTokenProblem(response, err)
@@ -913,7 +913,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	upstream, err := server.verifyOptionalUpstreamToken(
-		request.Context(), input.UpstreamToken, agent, proof.VerifiedAt(),
+		request.Context(), input.UpstreamToken, agent, proof,
 	)
 	if err != nil {
 		server.writeUpstreamTokenProblem(response, err)
@@ -930,7 +930,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	if upstream == nil {
 		subagentToken, credentialAgent, delegated, err = server.verifyOptionalSubagentToken(
-			request.Context(), input.SubagentToken, agent, proof.VerifiedAt(),
+			request.Context(), input.SubagentToken, agent, proof,
 		)
 		if err != nil {
 			server.writeSubagentTokenProblem(response, err)
@@ -941,6 +941,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	resourceToken, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
+	if err == nil {
+		err = proof.CheckIssuedAt(time.Unix(resourceToken.IssuedAt, 0))
+	}
 	if err != nil {
 		if budgets.IsTokenClaimError(err) {
 			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
@@ -1566,7 +1569,7 @@ func (server *Server) verifyOptionalSubagentToken(
 	ctx context.Context,
 	raw json.RawMessage,
 	parent aauth.AgentTokenClaims,
-	verifiedAt time.Time,
+	proof signaturekey.VerifiedRequest,
 ) (string, aauth.AgentTokenClaims, bool, error) {
 	if raw == nil {
 		return "", parent, false, nil
@@ -1575,9 +1578,12 @@ func (server *Server) verifyOptionalSubagentToken(
 	if err := json.Unmarshal(raw, &compact); err != nil || compact == "" {
 		return "", aauth.AgentTokenClaims{}, false, errSubagentTokenSyntax
 	}
-	verificationClock := aauth.ClockFunc(func() time.Time { return verifiedAt })
+	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
 	child, err := aauth.VerifyAgentToken(ctx, compact, server.keyResolver, verificationClock)
 	if err != nil {
+		return "", aauth.AgentTokenClaims{}, false, &requestTokenError{cause: err}
+	}
+	if err := proof.CheckIssuedAt(time.Unix(child.IssuedAt, 0)); err != nil {
 		return "", aauth.AgentTokenClaims{}, false, &requestTokenError{cause: err}
 	}
 	if child.ParentAgent == "" || child.ParentAgent != parent.Subject {
@@ -1634,6 +1640,9 @@ func (server *Server) verifyAgentProof(request *http.Request, requiredComponents
 	}
 	proof, err := prepared.Verify(agent.Confirmation.JWK)
 	if err != nil {
+		return "", agent, signaturekey.VerifiedRequest{}, err
+	}
+	if err := proof.CheckIssuedAt(time.Unix(agent.IssuedAt, 0)); err != nil {
 		return "", agent, signaturekey.VerifiedRequest{}, err
 	}
 	if server.agentTokenRevocations != nil {
@@ -1697,12 +1706,27 @@ func writeAgentTokenProblem(response http.ResponseWriter, err error) {
 }
 
 func writeEndpointTokenProblem(response http.ResponseWriter, err error, invalidCode, expiredCode string) {
+	if writeParameterClockSkew(response, err) {
+		return
+	}
 	var tokenFailure *aauth.TokenValidationError
 	if errors.As(err, &tokenFailure) && tokenFailure.Code == aauth.TokenValidationExpired {
 		writeProblem(response, http.StatusBadRequest, expiredCode, err)
 		return
 	}
 	writeProblem(response, http.StatusBadRequest, invalidCode, err)
+}
+
+// writeParameterClockSkew reports a request-parameter token issued beyond the
+// request's signature window as HTTP 400 clock_skew. Only Signature-Key
+// tokens and HTTP signature time use the 401 Signature-Error path.
+func writeParameterClockSkew(response http.ResponseWriter, err error) bool {
+	var failure *signaturekey.Error
+	if !errors.As(err, &failure) || failure.Code != signaturekey.ErrorClockSkew {
+		return false
+	}
+	writeProblem(response, http.StatusBadRequest, string(signaturekey.ErrorClockSkew), err)
+	return true
 }
 
 func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Request) {

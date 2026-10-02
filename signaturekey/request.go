@@ -55,6 +55,7 @@ type PreparedRequest struct {
 	components  []string
 	created     time.Time
 	verifiedAt  time.Time
+	window      time.Duration
 	method      string
 	authority   string
 	path        string
@@ -70,6 +71,7 @@ type VerifiedRequest struct {
 	components []string
 	created    time.Time
 	verifiedAt time.Time
+	window     time.Duration
 	method     string
 	authority  string
 	path       string
@@ -448,6 +450,7 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		components:  append([]string(nil), components...),
 		created:     createdAt,
 		verifiedAt:  verifiedAt,
+		window:      window,
 		method:      request.Method,
 		authority:   authority,
 		path:        path,
@@ -474,6 +477,17 @@ func (prepared PreparedRequest) Created() time.Time { return prepared.created }
 
 // VerifiedAt returns the single trusted instant captured during preparation.
 func (prepared PreparedRequest) VerifiedAt() time.Time { return prepared.verifiedAt }
+
+// SignatureWindow returns the effective signature validity window applied
+// during preparation.
+func (prepared PreparedRequest) SignatureWindow() time.Duration { return prepared.window }
+
+// CheckIssuedAt judges a request-carried JWT iat against the captured
+// verification time and effective signature window. An iat further ahead than
+// the window is clock_skew.
+func (prepared PreparedRequest) CheckIssuedAt(issuedAt time.Time) error {
+	return checkIssuedAt(issuedAt, prepared.verifiedAt, prepared.window)
+}
 
 // Verify verifies the prepared HTTP Message Signature with the selected key.
 func (prepared PreparedRequest) Verify(key jose.JWK) (VerifiedRequest, error) {
@@ -513,6 +527,7 @@ func (prepared PreparedRequest) Verify(key jose.JWK) (VerifiedRequest, error) {
 		components: append([]string(nil), prepared.components...),
 		created:    prepared.created,
 		verifiedAt: prepared.verifiedAt,
+		window:     prepared.window,
 		method:     prepared.method,
 		authority:  prepared.authority,
 		path:       prepared.path,
@@ -569,6 +584,27 @@ func (verified VerifiedRequest) VerifiedAt() time.Time { return verified.verifie
 func (verified VerifiedRequest) Method() string        { return verified.method }
 func (verified VerifiedRequest) Authority() string     { return verified.authority }
 func (verified VerifiedRequest) Path() string          { return verified.path }
+
+// SignatureWindow returns the effective signature validity window applied
+// when the request was prepared.
+func (verified VerifiedRequest) SignatureWindow() time.Duration { return verified.window }
+
+// CheckIssuedAt judges a request-carried JWT iat against the captured
+// verification time and effective signature window. An iat further ahead than
+// the window is clock_skew.
+func (verified VerifiedRequest) CheckIssuedAt(issuedAt time.Time) error {
+	return checkIssuedAt(issuedAt, verified.verifiedAt, verified.window)
+}
+
+func checkIssuedAt(issuedAt, verifiedAt time.Time, window time.Duration) error {
+	if verifiedAt.IsZero() {
+		return errors.New("aauth: request was not prepared")
+	}
+	if issuedAt.After(verifiedAt.Add(window)) {
+		return newError(ErrorClockSkew, errors.New("aauth: JWT iat is ahead of the request validity window"))
+	}
+	return nil
+}
 
 // ExactBody returns the independently copied request body authenticated by a
 // covered Content-Digest. It is empty when the body is empty or not covered.
