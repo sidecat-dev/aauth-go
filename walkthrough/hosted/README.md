@@ -91,7 +91,7 @@ Revoke the enrollment and issued Agent token, then try a new request:
 ./aauth-hosted act --state "$agent_state" --request-key hosted-write-2
 ```
 
-The second command refuses `invalid_agent_token` before connector dispatch.
+The second command refuses `revoked_jwt` before connector dispatch.
 
 ## Verify
 

@@ -188,7 +188,7 @@ func TestHostedWalkthroughRevokesBeforeTheNextConnectorDispatch(t *testing.T) {
 	hostedRun(t, command, "revoke", "--state", agentState)
 
 	output, err := hostedRunFail(command, "act", "--state", agentState, "--request-key", "hosted-write-2")
-	if err == nil || !strings.Contains(output, "invalid_agent_token") {
+	if err == nil || !strings.Contains(output, "revoked_jwt") {
 		t.Fatalf("post-revocation action = %v, %q", err, output)
 	}
 	statusOutput := hostedRun(t, command, "host-status", "--state", agentState)

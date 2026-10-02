@@ -64,7 +64,7 @@ Revoke the active Agent token and try a new action:
 ./aauth-local act --state "$state_dir" --request-key local-write-2
 ```
 
-The second command exits unsuccessfully with `invalid_agent_token`. Confirm
+The second command exits unsuccessfully with `revoked_jwt`. Confirm
 that the service still retained only one consequence:
 
 ```sh

@@ -85,8 +85,8 @@ func TestLocalWalkthroughSurvivesRestartAndRevocation(t *testing.T) {
 	if err == nil {
 		t.Fatalf("post-revocation action succeeded: %s", output)
 	}
-	if !strings.Contains(output, "invalid_agent_token") {
-		t.Fatalf("post-revocation refusal = %q, want invalid_agent_token", output)
+	if !strings.Contains(output, "revoked_jwt") {
+		t.Fatalf("post-revocation refusal = %q, want revoked_jwt", output)
 	}
 
 	status := runActionCommand(t, command, "status", "--state", stateDir)
