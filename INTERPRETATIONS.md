@@ -151,7 +151,7 @@ intentional empty payload and bytes injected after signing without inventing a
 wire field. The same profile requires both `content-type` and
 `content-digest` when registration parameters or an event payload are present;
 that body-binding requirement is an implementation hardening recorded as
-`AAG-F084`, not a claim that the current Events text already requires it.
+`AAG-F084` (since withdrawn), not a claim that the current Events text already requires it.
 
 ## Mission-bound Resource and federated Auth tokens inherit upstream expiry ceilings
 
@@ -1029,7 +1029,7 @@ declaration. From that point, the Person Server preserves the exact unit and
 scale and may only lower the amount. The library defines no conversion
 algorithm: an optional Resource offer policy owns any request-to-offer
 conversion. This is not a claim that cross-denomination output is a
-protocol-verifiable numeric lowering; that source question is `AAG-F088`.
+protocol-verifiable numeric lowering; that source question is `AAG-F088` (since withdrawn).
 
 ## A metered route treats a missing signed Budget as no grant
 
@@ -1123,7 +1123,7 @@ The Agent starts a conservative local answer window when it finishes
 validating the response and refuses an answer at or after that local deadline.
 The Person Server independently enforces the canonical retained deadline.
 This implementation choice does not claim the two clocks or instants are
-identical; `AAG-F093` asks the editors to define the binding.
+identical; `AAG-F093` (since withdrawn) asked the editors to define the binding.
 
 While an answered round remains latest and no later question is active, an
 exact answer replay is idempotent and a changed replay conflicts. Once another
@@ -1142,7 +1142,7 @@ contract.
 
 `updated_request` remains unsupported. Its current equality rule requires an
 `agent` claim that current Resource tokens do not carry; choosing a replacement
-binding here would hide the source problem recorded as `AAG-F008`.
+binding here would hide the source problem recorded as `AAG-F008` (since resolved).
 
 ### A mission adds context, not another continuation API
 
@@ -1181,7 +1181,7 @@ instead shows terminal denial as `403 denied`. This implementation keeps the
 endpoint-specific representation for both immediate and deferred host
 decisions. The Agent also accepts a generic `403 denied` while polling so it
 can interoperate with a server that follows the generic state machine. It does
-not treat any other `403` problem as a permission decision. `AAG-F096` asks the
+not treat any other `403` problem as a permission decision. `AAG-F096` (since withdrawn) asked the
 editors to choose one terminal wire representation.
 
 The executing profiles are top-level and either missionless or associated with
@@ -1213,12 +1213,12 @@ action means.
 The source defines no stable identity for the initial POST. A transport error,
 malformed success, or non-retryable server failure after handoff therefore
 returns `PermissionSubmissionUncertainError` and is never retried
-automatically (`AAG-F098`). A definite `4xx` rejection remains an ordinary
+automatically (`AAG-F098`, since withdrawn). A definite `4xx` rejection remains an ordinary
 failure; `429` and `503` remain caller-owned responses under the source's
 explicit backoff rules. Once a terminal poll response is consumed, the source
 requires later polls to return `410`; the implementation follows that rule and
 therefore inherits the lost-terminal-response gap already recorded as
-`AAG-F004`.
+`AAG-F004` (since withdrawn).
 
 ## Audit is one exact post-action append, not action execution
 
@@ -1246,9 +1246,9 @@ against the other event classes in Core's complete mission log.
 acknowledges the append; an optional representation is ignored. It does not
 retry, poll, or hide the call in background work. A transport failure or server
 failure after handoff is an uncertain outcome because the record may already
-exist (`AAG-F003`). The source's simultaneous `201` contract and
+exist (`AAG-F003`, since withdrawn). The source's simultaneous `201` contract and
 “fire-and-forget” guidance leave the meaning of “SHOULD NOT block” unclear;
-`AAG-F100` asks whether it describes application control flow or the HTTP
+`AAG-F100` (since withdrawn) asked whether it describes application control flow or the HTTP
 exchange itself.
 
 ## Interaction questions are a focused exact-document path
@@ -1282,7 +1282,7 @@ retrieval surface.
 `AskPersonQuestion` makes one request and never retries. A valid immediate
 answer returns its exact bytes; a valid `202` returns a verified pending handle.
 A transport failure or malformed initial result remains uncertain because the
-question may already have reached the person. `AAG-F101` records the missing
+question may already have reached the person. `AAG-F101` (since withdrawn) recorded the missing
 uncertain-initial-submission identity. Once the pending URL is received, the
 ordinary deferred state machine applies, including its separate lost-terminal
 response gap.
@@ -1317,7 +1317,7 @@ and a terminal response when engagement, timeout, or no-progress occurs, but it
 does not assign a terminal HTTP status or body. This implementation uses `200`
 with `{"status":"interacting"}` for engagement and
 `{"status":"pending"}` for timeout or no progress. These reuse only Core's
-defined status values and are explicitly local profile choices (`AAG-F102`).
+defined status values and are explicitly local profile choices (`AAG-F102`, since withdrawn).
 The Resource's original pending URL remains authoritative for whether the
 underlying operation completed.
 
@@ -1355,7 +1355,7 @@ Resource-token POST.
 This is not a choice between two equivalent Go compositions: the first
 required message cannot satisfy the current token grammar. The implementation
 therefore does not mint placeholder person claims, omit required claims, or
-define a login-only Resource-token dialect. `AAG-F103` asks whether the flow
+define a login-only Resource-token dialect. `AAG-F103` (since resolved) asked whether the flow
 must first obtain a Person token through an additional browser-correlated step
 or whether Login intends a different signed request object.
 

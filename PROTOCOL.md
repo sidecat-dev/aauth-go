@@ -246,8 +246,8 @@ already-retained Mission and token records remain expired history and are not
 disclosed through the pending URL.
 Terminal polling is otherwise one-shot: the store records delivery before
 returning the winning result, and later polls receive `410`. Core defines no
-stable identity for recovering a lost initial `202` (`AAG-F012`) or terminal
-response (`AAG-F004`). This approval-only profile does not implement mission
+stable identity for recovering a lost initial `202` (`AAG-F012`, since withdrawn) or terminal
+response (`AAG-F004`, since withdrawn). This approval-only profile does not implement mission
 clarification. It also requires the original proposal key until decision;
 `AAG-F105` records the unresolved renewal boundary.
 
@@ -391,7 +391,7 @@ relay was accepted, its pending URL reports only relay progress. The Resource's
 original pending URL remains authoritative for completing the underlying
 operation. Core names `pending` and `interacting` but does not define the
 terminal success response shape; this implementation uses `200` with the same
-one-member status document and records that choice as `AAG-F102`.
+one-member status document and records that choice as `AAG-F102` (since withdrawn).
 
 ### Clarification during three-party consent
 
@@ -426,7 +426,9 @@ Each clarification answer, cancellation, or poll sends one request. No method
 continues to another step on the caller's behalf. This profile deliberately
 defers `updated_request`:
 the current editor text requires equality of a Resource-token `agent` claim
-that current Resource tokens do not contain (`AAG-F008`).
+that current Resource tokens do not contain (`AAG-F008`, since resolved
+upstream in 28e8258 Core, "Updated Request"; lifting this deferral is a
+separate implementation change).
 
 ### Hosted Agent bootstrap profiles
 
@@ -613,7 +615,7 @@ selects one declared unit and amount rather than the library guessing among
 currencies. For a same-denomination proactive offer, the Resource may only
 lower the amount. It may instead select another denomination from its own
 `budget_units`; that establishes the Resource's new offer, while its ordering
-against the Agent request remains unresolved by `AAG-F088`. In both paths the
+against the Agent request remains unresolved by `AAG-F088` (since withdrawn). In both paths the
 Person Server preserves the Resource-selected unit and scale and may only
 lower the amount; its Auth token is the signed cap. After all ordinary
 authorization checks, the Resource atomically charges the exact known cost
@@ -669,9 +671,9 @@ remain in [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 | --- | --- |
 | Core lists Resource-token `scope`, while companion authorization may replace it | Treat `scope` as optional or replaceable; enforce co-present constraints independently |
 | R3 permits same-URI replacement but also treats URI plus hash as a permanent refetchable record (`AAG-F005`) | Published document URIs are immutable; new bytes receive a new URI and referenced bytes remain available |
-| R3 lets a broader document merely cover a request, so the AS may not know the exact requested operations (`AAG-F014`, `AAG-F014a`) | Issue an exact-request document and constrain every AS grant to its operation set |
+| R3 lets a broader document merely cover a request, so the AS may not know the exact requested operations (`AAG-F014` and `AAG-F014a`, both since withdrawn) | Issue an exact-request document and constrain every AS grant to its operation set |
 | Events gives two strengths for expired-token refusal | Apply `MUST NOT` |
-| Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`) | Use an exact token, signed-content-type, and payload fingerprint; retain `eid` as routing context |
+| Events uses subscription `eid` as a delivery deduplication key (`AAG-F058`, since resolved) | Use an exact token, signed-content-type, and payload fingerprint; retain `eid` as routing context |
 | Signature-Key labels `cached` an open design | Keep it opt-in and visibly provisional |
 | Bootstrap defines hosted key patterns but no portable wire or replay rule | Keep routes application-selected and document explicit AP-owned exact-result profiles rather than adding metadata fields or a generic Bootstrap package |
 | Core and Bootstrap define self-hosting, while one Core rationale paragraph forbids a self-signed Agent token (`AAG-F104`) | Implement the functional self-hosted profile without verifier exceptions and ask the editors to reconcile the rationale |

@@ -384,7 +384,7 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   Person Server, but a current Resource token requires person-derived `sub` and
   `presented_jti`. The user has not yet authenticated and no Person-token step
   appears in the flow, so the repository does not invent a login-only token
-  profile. See `AAG-F103`.
+  profile. See `AAG-F103` (since resolved).
 - [ ] **General deferred composition — Not implemented.** Existing pending
   paths do not yet compose AS deferral, mission deferral, correlated
   multi-round clarification, updated requests, claims, and payment through one
