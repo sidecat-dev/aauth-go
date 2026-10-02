@@ -1117,6 +1117,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		authorizationRequest.Upstream = upstream.policyClaims()
 	}
 	if server.authorizationMode == authorizationModePersonServer {
+		// Person Server authorization closes when the retained Person token
+		// expires, and the Auth token it issues never outlives that token.
+		if !proof.VerifiedAt().Before(record.ExpiresAt) {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: retained person token expired before authorization"))
+			return
+		}
 		if r3Context != nil {
 			if r3Context.kind != r3.ArtifactDocument {
 				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: direct R3 supports class documents only"))
@@ -1124,7 +1130,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 			server.issueDirectR3AuthorizationToken(
 				response, request, agent, credentialAgent, resourceToken,
-				authorizationRequest, r3Context, missionRecord,
+				authorizationRequest, r3Context, missionRecord, record.ExpiresAt,
 			)
 			return
 		}
@@ -1145,7 +1151,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 					return
 				}
 				if err := server.beginAuthorizationInteraction(
-					response, request, authorizationRequest, agent, credentialAgent, resourceToken, missionRecord, policy,
+					response, request, authorizationRequest, agent, credentialAgent, resourceToken, missionRecord, policy, record.ExpiresAt,
 				); err != nil {
 					if missionRecord != nil {
 						writeMissionActionProblem(response, err)
@@ -1173,7 +1179,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 		server.issuePSAuthorizationToken(
 			response, request, agent, credentialAgent, resourceToken,
-			authorizationRequest, missionRecord, authorize,
+			authorizationRequest, missionRecord, authorize, record.ExpiresAt,
 		)
 		return
 	}
@@ -1410,6 +1416,7 @@ func (server *Server) issuePSAuthorizationToken(
 	authorizationRequest AuthorizationRequest,
 	missionRecord *MissionRecord,
 	authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error),
+	personTokenExpiresAt time.Time,
 ) {
 	policyRequest := cloneAuthorizationRequest(authorizationRequest)
 	decision, err := authorize(request.Context(), policyRequest)
@@ -1436,7 +1443,13 @@ func (server *Server) issuePSAuthorizationToken(
 		}
 		missionRecord = &current
 	}
+	if !server.authorizationInputsCurrent(response, resourceToken, personTokenExpiresAt, issuedAt) {
+		return
+	}
 	expiresAt := issuedAt.Add(decision.Lifetime)
+	if personTokenExpiresAt.Before(expiresAt) {
+		expiresAt = personTokenExpiresAt
+	}
 	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0)
 	if requestingAgentExpiresAt.Before(expiresAt) {
 		expiresAt = requestingAgentExpiresAt
@@ -1861,6 +1874,27 @@ func clonePersonTokenRequest(request PersonTokenRequest) PersonTokenRequest {
 		request.Upstream = &upstream
 	}
 	return request
+}
+
+// authorizationInputsCurrent checks, at the issuance instant sampled after an
+// authorization policy returns, that the Resource token and the retained
+// Person token are still current. A slow policy must not issue from tokens
+// that expired while it ran.
+func (server *Server) authorizationInputsCurrent(
+	response http.ResponseWriter,
+	resourceToken aauth.ResourceTokenClaims,
+	personTokenExpiresAt time.Time,
+	now time.Time,
+) bool {
+	if !now.Before(time.Unix(resourceToken.ExpiresAt, 0)) {
+		writeProblem(response, http.StatusBadRequest, "expired_resource_token", errors.New("personserver: resource token expired during authorization"))
+		return false
+	}
+	if !now.Before(personTokenExpiresAt) {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: retained person token expired during authorization"))
+		return false
+	}
+	return true
 }
 
 func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationRequest {

@@ -288,7 +288,7 @@ func newBudgetAuthorizationProtocol(t *testing.T) *budgetAuthorizationProtocol {
 	if err := protocol.store.Commit(context.Background(), directPersonTokenRecord(
 		"budget-person-token", "https://person.example", "https://resource.example", "person-123", "tenant-1",
 		"https://provider.example", "aauth:planner@provider.example", protocol.agentKey.PublicJWK(),
-		now.Add(20*time.Minute), now.Add(25*time.Minute),
+		now.Add(40*time.Minute), now.Add(45*time.Minute),
 	)); err != nil {
 		t.Fatal(err)
 	}

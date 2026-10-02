@@ -358,6 +358,7 @@ func newClarificationFixture(t *testing.T, contract Contract, name string) clari
 		SubagentConfirmation:   childSigningKey.PublicJWK(),
 		SubagentExpiresAt:      now.Add(90 * time.Minute),
 		ResourceTokenExpiresAt: now.Add(2 * time.Hour),
+		PersonTokenExpiresAt:   now.Add(2 * time.Hour),
 		SubagentAdditionalClaims: map[string]json.RawMessage{
 			"workload": json.RawMessage(`"worker"`),
 		},

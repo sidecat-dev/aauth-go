@@ -850,6 +850,7 @@ func TestValidatePendingAuthorizationRecordRequiresSeparateParentAndChildBinding
 		Confirmation: p.parentKey.PublicJWK(), AgentExpiresAt: p.now.Add(40 * time.Minute),
 		SubagentConfirmation: p.childKey.PublicJWK(), SubagentExpiresAt: p.now.Add(10 * time.Minute),
 		ResourceTokenExpiresAt:   p.now.Add(5 * time.Minute),
+		PersonTokenExpiresAt:     p.now.Add(5 * time.Minute),
 		SubagentAdditionalClaims: cloneClaims(p.childAdditionalClaims),
 		CreatedAt:                p.now, ExpiresAt: p.now.Add(time.Minute),
 	}

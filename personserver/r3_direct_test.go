@@ -664,7 +664,7 @@ func newDirectR3TestProtocol(t *testing.T) *directR3TestProtocol {
 	if err := protocol.tokens.Commit(context.Background(), directPersonTokenRecord(
 		protocol.personTokenJTI, protocol.personServerID, protocol.resourceID,
 		protocol.subject, protocol.tenant, protocol.providerID, protocol.agentID,
-		protocol.agentKey.PublicJWK(), protocol.now.Add(20*time.Minute), protocol.now.Add(25*time.Minute),
+		protocol.agentKey.PublicJWK(), protocol.now.Add(40*time.Minute), protocol.now.Add(45*time.Minute),
 	)); err != nil {
 		t.Fatal(err)
 	}

@@ -184,6 +184,7 @@ func TestDeferredAuthorizationInteractionLifecycleAcrossRecomposition(t *testing
 		!pending.Confirmation.Equal(protocol.agentKey.PublicJWK()) ||
 		!pending.AgentExpiresAt.Equal(protocol.now.Add(30*time.Minute)) ||
 		!pending.ResourceTokenExpiresAt.Equal(protocol.now.Add(5*time.Minute)) ||
+		!pending.PersonTokenExpiresAt.Equal(protocol.now.Add(20*time.Minute)) ||
 		!pending.CreatedAt.Equal(protocol.now) || !pending.ExpiresAt.Equal(protocol.now.Add(4*time.Minute)) ||
 		pending.RetryAfter != 3*time.Second ||
 		string(pending.AgentAdditionalClaims["platform_attestation"]) != `{"level":"example"}` {

@@ -84,6 +84,8 @@ type AuthorizationInteractionPolicy struct {
 // PendingAuthorizationRecord is the immutable verified authorization context
 // retained before the Person Server exposes an interaction. CodeSHA256 is the
 // normalized code digest; the plaintext correlation code is never retained.
+// PersonTokenExpiresAt is the verified expiry of the Person token presented to
+// the Person Server; the approved Auth token never outlives it.
 type PendingAuthorizationRecord struct {
 	ID                       string
 	CodeSHA256               [32]byte
@@ -102,6 +104,7 @@ type PendingAuthorizationRecord struct {
 	SubagentConfirmation     jose.JWK
 	SubagentExpiresAt        time.Time
 	ResourceTokenExpiresAt   time.Time
+	PersonTokenExpiresAt     time.Time
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
 	Capabilities             []string
@@ -378,9 +381,10 @@ func validateAuthorizationInteractionPolicy(policy AuthorizationInteractionPolic
 func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error {
 	if record.ID == "" || record.CodeSHA256 == ([32]byte{}) || record.PersonServer == "" ||
 		record.AgentProvider == "" || record.Agent == "" || record.Resource == "" || record.Subject == "" ||
-		record.AgentExpiresAt.IsZero() || record.ResourceTokenExpiresAt.IsZero() || record.CreatedAt.IsZero() ||
-		!record.ExpiresAt.After(record.CreatedAt) || record.AgentExpiresAt.Before(record.ExpiresAt) ||
-		record.ResourceTokenExpiresAt.Before(record.ExpiresAt) || record.RetryAfter < 0 || record.RetryAfter%time.Second != 0 {
+		record.AgentExpiresAt.IsZero() || record.ResourceTokenExpiresAt.IsZero() || record.PersonTokenExpiresAt.IsZero() ||
+		record.CreatedAt.IsZero() || !record.ExpiresAt.After(record.CreatedAt) || record.AgentExpiresAt.Before(record.ExpiresAt) ||
+		record.ResourceTokenExpiresAt.Before(record.ExpiresAt) || record.PersonTokenExpiresAt.Before(record.ExpiresAt) ||
+		record.RetryAfter < 0 || record.RetryAfter%time.Second != 0 {
 		return errors.New("personserver: pending authorization record is invalid")
 	}
 	if err := aauth.ValidateServerIdentifier(record.PersonServer); err != nil {
@@ -445,6 +449,7 @@ func (server *Server) beginAuthorizationInteraction(
 	resourceToken aauth.ResourceTokenClaims,
 	missionRecord *MissionRecord,
 	policy AuthorizationInteractionPolicy,
+	personTokenExpiresAt time.Time,
 ) error {
 	if server.authorizationInteractions == nil {
 		return errors.New("personserver: deferred authorization store is required")
@@ -454,6 +459,10 @@ func (server *Server) beginAuthorizationInteraction(
 	}
 	createdAt := server.clock.Now().UTC()
 	expiresAt := createdAt.Add(policy.Lifetime)
+	// Approval must finish while the retained Person token is current.
+	if personTokenExpiresAt.Before(expiresAt) {
+		expiresAt = personTokenExpiresAt
+	}
 	if !expiresAt.After(createdAt) {
 		return ErrPendingAuthorizationExpired
 	}
@@ -507,6 +516,7 @@ func (server *Server) beginAuthorizationInteraction(
 			MissionExpiresAt: missionExpiresAt,
 			Scopes:           append([]string(nil), authorization.Scopes...), Confirmation: agent.Confirmation.JWK,
 			AgentExpiresAt: agentExpiresAt, ResourceTokenExpiresAt: resourceTokenExpiresAt,
+			PersonTokenExpiresAt:  personTokenExpiresAt.UTC(),
 			AgentAdditionalClaims: cloneClaims(authorization.AgentAdditionalClaims),
 			Capabilities:          append([]string(nil), authorization.Capabilities...),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
@@ -661,7 +671,12 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 		(!value.record.SubagentExpiresAt.IsZero() && !now.Before(value.record.SubagentExpiresAt)) {
 		return ErrPendingAuthorizationExpired
 	}
+	// The pending deadline bounds only when approval may happen; it does not
+	// shorten the Auth token, which stays inside its predecessor tokens.
 	expiresAt := now.Add(decision.Lifetime)
+	if value.record.PersonTokenExpiresAt.Before(expiresAt) {
+		expiresAt = value.record.PersonTokenExpiresAt
+	}
 	if value.record.AgentExpiresAt.Before(expiresAt) {
 		expiresAt = value.record.AgentExpiresAt
 	}
@@ -965,6 +980,7 @@ func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bo
 		optionalAuthorizationJWKEqual(left.SubagentConfirmation, right.SubagentConfirmation) &&
 		left.SubagentExpiresAt.Equal(right.SubagentExpiresAt) &&
 		left.ResourceTokenExpiresAt.Equal(right.ResourceTokenExpiresAt) &&
+		left.PersonTokenExpiresAt.Equal(right.PersonTokenExpiresAt) &&
 		left.MissionS256 == right.MissionS256 && left.MissionExpiresAt.Equal(right.MissionExpiresAt) &&
 		reflect.DeepEqual(left.AgentAdditionalClaims, right.AgentAdditionalClaims) &&
 		reflect.DeepEqual(left.SubagentAdditionalClaims, right.SubagentAdditionalClaims) &&
@@ -998,7 +1014,7 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
 		return
 	}
-	if request.Body != nil && request.Body != http.NoBody {
+	if !requestBodyIsEmpty(request) {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("authorization polling requires a bodyless GET"))
 		return
 	}
@@ -1180,7 +1196,7 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 		return aauth.AuthTokenClaims{}, err
 	}
 	if result.DecidedAt.Before(result.Pending.CreatedAt) || !result.DecidedAt.Before(result.Pending.ExpiresAt) ||
-		!result.DecidedAt.Before(result.Pending.AgentExpiresAt) ||
+		!result.DecidedAt.Before(result.Pending.AgentExpiresAt) || !result.DecidedAt.Before(result.Pending.PersonTokenExpiresAt) ||
 		(!result.Pending.SubagentExpiresAt.IsZero() && !result.DecidedAt.Before(result.Pending.SubagentExpiresAt)) ||
 		(!result.Pending.MissionExpiresAt.IsZero() && !result.DecidedAt.Before(result.Pending.MissionExpiresAt)) {
 		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token has an invalid decision time")
@@ -1201,6 +1217,9 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 		return aauth.AuthTokenClaims{}, err
 	}
 	expiresAt := result.DecidedAt.Add(result.Decision.Lifetime)
+	if result.Pending.PersonTokenExpiresAt.Before(expiresAt) {
+		expiresAt = result.Pending.PersonTokenExpiresAt
+	}
 	if result.Pending.AgentExpiresAt.Before(expiresAt) {
 		expiresAt = result.Pending.AgentExpiresAt
 	}

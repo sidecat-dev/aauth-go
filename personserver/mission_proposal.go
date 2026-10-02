@@ -475,7 +475,7 @@ func missionApprovalsSemanticallyEqual(left, right MissionProposalApproval) bool
 }
 
 func (server *Server) handlePendingMissionProposal(response http.ResponseWriter, request *http.Request) {
-	if request.Body != nil && request.Body != http.NoBody {
+	if !requestBodyIsEmpty(request) {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission proposal polling requires a bodyless GET"))
 		return
 	}

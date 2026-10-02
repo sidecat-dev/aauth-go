@@ -541,6 +541,16 @@ fresh values for any other advertised header fields through
 **Executable example:**
 `integration/resource_managed_session_test.go:TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition`.
 
+Person Server continuation GETs and authorization cancellation DELETEs test
+whether request content is empty, not whether Go represents the body as
+`http.NoBody`. In particular, an empty HTTP/2 request can carry a non-nil empty
+reader. The check reads at most one byte and rejects payloads and read errors;
+route-specific credential and continuation validation remains unchanged.
+`personserver/permission_http2_test.go` exercises a real HTTP/2 permission poll,
+payload rejection, and one-shot consumption. The sibling handler checks in
+`personserver/bodyless_request_test.go` verify empty-reader handling and
+credential rejection, not complete transport journeys for those routes.
+
 ## Hosted Bootstrap key patterns share one explicit Agent Provider profile
 
 **Source:** AAuth Bootstrap, `Per-Platform Key Handling`, `Refresh Patterns`,
@@ -1219,6 +1229,22 @@ explicit backoff rules. Once a terminal poll response is consumed, the source
 requires later polls to return `410`; the implementation follows that rule and
 therefore inherits the lost-terminal-response gap already recorded as
 `AAG-F004` (since withdrawn).
+
+The Agent can persist a `PendingPermissionSnapshot` and restore it with a
+fresh client. Restoration checks the current Agent token, the retained issuer,
+Agent, Person Server, proof key, and pending URL against current permission
+endpoint metadata. Token renewal with the same identity and key is supported;
+key rotation remains refused. The snapshot is application-owned continuation
+state, not signed evidence of the original response, so its storage must
+preserve confidentiality and integrity. Restoration does not repeat the POST,
+poll, or execute the action. The source's Permission and Pending URL Security
+rules are unchanged; this is an application persistence API.
+
+`PollPermission` reports `PermissionPollNotStartedError` when validation,
+metadata discovery, or signing fails before its GET reaches the HTTP client.
+The caller can retain and retry that same continuation. After HTTP handoff,
+an error may mean a terminal result was consumed; it carries no such retry
+guarantee. This distinction does not permit replaying the initial POST.
 
 ## Audit is one exact post-action append, not action execution
 

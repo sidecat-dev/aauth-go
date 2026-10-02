@@ -273,7 +273,7 @@ func (server *Server) handlePendingAuthorizationCancellation(response http.Respo
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("authorization clarification is not configured"))
 		return
 	}
-	if request.Body != nil && request.Body != http.NoBody {
+	if !requestBodyIsEmpty(request) {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("authorization cancellation requires a bodyless DELETE"))
 		return
 	}

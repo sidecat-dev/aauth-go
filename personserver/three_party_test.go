@@ -122,7 +122,7 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 	if err := store.Commit(context.Background(), directPersonTokenRecord(
 		"three-party-person-token", personID, resourceID, "person-123", "tenant-1",
 		providerID, "aauth:planner@provider.example", agentKey.PublicJWK(),
-		now.Add(20*time.Minute), now.Add(25*time.Minute),
+		now.Add(40*time.Minute), now.Add(45*time.Minute),
 	)); err != nil {
 		t.Fatal(err)
 	}

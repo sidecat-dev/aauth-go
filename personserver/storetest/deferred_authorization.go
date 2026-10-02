@@ -295,6 +295,7 @@ func deferredAuthorizationRecord(t testing.TB, id, code string) personserver.Pen
 		SubagentConfirmation:     deferredAuthorizationJWKFor(t, "child", 2),
 		SubagentExpiresAt:        deferredAuthorizationNow.Add(90 * time.Minute),
 		ResourceTokenExpiresAt:   deferredAuthorizationNow.Add(2 * time.Hour),
+		PersonTokenExpiresAt:     deferredAuthorizationNow.Add(2 * time.Hour),
 		AgentAdditionalClaims:    map[string]json.RawMessage{"platform": json.RawMessage(`"orchestrator"`)},
 		SubagentAdditionalClaims: map[string]json.RawMessage{"workload": json.RawMessage(`"worker"`)},
 		Capabilities:             []string{"interaction"}, CreatedAt: deferredAuthorizationNow,

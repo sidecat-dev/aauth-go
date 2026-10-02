@@ -19,6 +19,7 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	authorizationRequest AuthorizationRequest,
 	verified *verifiedR3,
 	missionRecord *MissionRecord,
+	personTokenExpiresAt time.Time,
 ) {
 	if server == nil || server.r3 == nil || server.r3.authorizeDocument == nil || server.r3.issuances == nil ||
 		verified == nil || verified.kind != r3.ArtifactDocument || len(verified.exactArtifact) == 0 {
@@ -52,11 +53,18 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	now := server.clock.Now().UTC()
+	if !server.authorizationInputsCurrent(response, resourceToken, personTokenExpiresAt, now) {
+		return
+	}
 	// JWT NumericDate carries whole seconds. Use that same instant for the
 	// issuance record so the atomic mission store never receives two different
 	// representations of one issuance time from a real sub-second clock.
-	issuedAt := server.clock.Now().UTC().Truncate(time.Second)
+	issuedAt := now.Truncate(time.Second)
 	expiresAt := issuedAt.Add(decision.Lifetime)
+	if personTokenExpiresAt.Before(expiresAt) {
+		expiresAt = personTokenExpiresAt
+	}
 	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0)
 	if requestingAgentExpiresAt.Before(expiresAt) {
 		expiresAt = requestingAgentExpiresAt

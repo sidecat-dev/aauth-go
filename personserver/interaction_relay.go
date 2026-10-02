@@ -397,7 +397,7 @@ func (server *Server) handlePendingInteractionRelay(response http.ResponseWriter
 		writeProblem(response, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("interaction relay polling requires GET"))
 		return
 	}
-	if request.Body != nil && request.Body != http.NoBody {
+	if !requestBodyIsEmpty(request) {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("interaction relay polling requires a bodyless GET"))
 		return
 	}

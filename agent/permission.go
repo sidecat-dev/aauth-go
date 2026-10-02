@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -133,6 +134,84 @@ func (pending PendingPermission) Location() string { return pending.location }
 // RetryAfter returns the server's current polling interval hint.
 func (pending PendingPermission) RetryAfter() time.Duration { return pending.retryAfter }
 
+// PendingPermissionSnapshot is the JSON-serializable state needed to resume a
+// permission poll. Applications must protect its confidentiality and integrity;
+// restoration validates its bindings but cannot prove its storage provenance.
+type PendingPermissionSnapshot struct {
+	PersonServer  string `json:"person_server"`
+	Location      string `json:"location"`
+	RetryAfter    int64  `json:"retry_after_seconds"`
+	AgentProvider string `json:"agent_provider"`
+	Agent         string `json:"agent"`
+	AgentJKT      string `json:"agent_jkt"`
+}
+
+// Snapshot returns caller-owned persistence state for a verified continuation.
+func (pending PendingPermission) Snapshot() (PendingPermissionSnapshot, error) {
+	if pending.kind != pendingPermissionVerified {
+		return PendingPermissionSnapshot{}, errors.New("aauth agent: verified pending permission is required")
+	}
+	if pending.retryAfter < 0 || pending.retryAfter%time.Second != 0 {
+		return PendingPermissionSnapshot{}, errors.New("aauth agent: pending permission retry interval must be whole nonnegative seconds")
+	}
+	return PendingPermissionSnapshot{
+		PersonServer: pending.personServer, Location: pending.location,
+		RetryAfter:    int64(pending.retryAfter / time.Second),
+		AgentProvider: pending.agentProvider, Agent: pending.agent, AgentJKT: pending.agentJKT,
+	}, nil
+}
+
+// RestorePendingPermission validates retained state against the current Agent
+// token, proof key, and Person Server metadata. It may perform read-only
+// discovery, but never polls or repeats the initial permission request. A renewed
+// Agent token is accepted when its issuer, identity, Person Server and key match.
+func (client *Client) RestorePendingPermission(ctx context.Context, snapshot PendingPermissionSnapshot) (PendingPermission, error) {
+	const operation = "restore pending permission"
+	if client == nil {
+		return PendingPermission{}, fail(operation, errors.New("client is required"))
+	}
+	if ctx == nil {
+		return PendingPermission{}, fail(operation, errors.New("context is required"))
+	}
+	if err := ctx.Err(); err != nil {
+		return PendingPermission{}, fail(operation, err)
+	}
+	if snapshot.RetryAfter < 0 || snapshot.RetryAfter > int64(math.MaxInt64/time.Second) {
+		return PendingPermission{}, fail(operation, errors.New("snapshot retry interval is invalid"))
+	}
+	current, err := aauth.VerifyAgentToken(ctx, client.agentToken, client.keyResolver, client.clock)
+	if err != nil {
+		return PendingPermission{}, fail(operation, fmt.Errorf("verify current Agent token: %w", err))
+	}
+	if current.Subject != client.identifier || !current.Confirmation.JWK.Equal(client.signingKey.PublicJWK()) {
+		return PendingPermission{}, fail(operation, errors.New("current Agent token does not match client identity and key"))
+	}
+	target, err := url.Parse(snapshot.Location)
+	if err != nil || target.String() != snapshot.Location || target.User != nil || target.Fragment != "" {
+		return PendingPermission{}, fail(operation, errors.New("snapshot pending Location is invalid"))
+	}
+	origin, err := httpOrigin(target)
+	if err != nil {
+		return PendingPermission{}, fail(operation, err)
+	}
+	pending := PendingPermission{
+		kind: pendingPermissionVerified, personServer: snapshot.PersonServer,
+		location: snapshot.Location, origin: origin, retryAfter: time.Duration(snapshot.RetryAfter) * time.Second,
+		agentProvider: snapshot.AgentProvider, agent: snapshot.Agent, agentJKT: snapshot.AgentJKT,
+	}
+	if err := client.validatePendingPermission(ctx, pending); err != nil {
+		return PendingPermission{}, fail(operation, err)
+	}
+	_, currentOrigin, err := client.discoverPermissionEndpoint(ctx, pending.personServer)
+	if err != nil {
+		return PendingPermission{}, fail(operation, err)
+	}
+	if currentOrigin != pending.origin {
+		return PendingPermission{}, fail(operation, errors.New("pending permission origin does not match current Person Server metadata"))
+	}
+	return pending, nil
+}
+
 // PermissionSubmissionUncertainError reports an unverifiable result after the
 // initial permission POST was handed to the HTTP client. The Person Server may
 // have accepted it, so callers must not automatically submit the action again.
@@ -215,30 +294,56 @@ func permissionSubmissionOutcomeUncertain(status int) bool {
 	return status >= http.StatusOK && status < http.StatusMultipleChoices || status >= http.StatusInternalServerError
 }
 
+// PermissionPollNotStartedError reports failure before a permission GET was
+// handed to the HTTP client. Read-only discovery may have occurred, but the
+// pending result was not consumed by this call. The caller may retry the same
+// continuation after addressing the cause; it must not repeat the initial POST.
+type PermissionPollNotStartedError struct {
+	cause error
+}
+
+func (failure *PermissionPollNotStartedError) Error() string {
+	if failure == nil || failure.cause == nil {
+		return "aauth agent: permission poll was not started"
+	}
+	return "aauth agent: permission poll was not started: " + failure.cause.Error()
+}
+
+func (failure *PermissionPollNotStartedError) Unwrap() error {
+	if failure == nil {
+		return nil
+	}
+	return failure.cause
+}
+
 // PollPermission performs exactly one signed, bodyless GET for a verified
 // pending permission. It never sleeps, loops, resubmits the original POST, or
-// performs the requested action.
+// performs the requested action. PermissionPollNotStartedError distinguishes
+// failures before HTTP handoff from failures that may have consumed the result.
 func (client *Client) PollPermission(ctx context.Context, pending PendingPermission) (PermissionResult, error) {
 	const operation = "poll permission"
+	notStarted := func(err error) (PermissionResult, error) {
+		return PermissionResult{}, fail(operation, &PermissionPollNotStartedError{cause: err})
+	}
 	if client == nil {
-		return PermissionResult{}, fail(operation, errors.New("client is required"))
+		return notStarted(errors.New("client is required"))
 	}
 	if err := client.validatePendingPermission(ctx, pending); err != nil {
-		return PermissionResult{}, fail(operation, err)
+		return notStarted(err)
 	}
 	_, currentOrigin, err := client.discoverPermissionEndpoint(ctx, pending.personServer)
 	if err != nil {
-		return PermissionResult{}, fail(operation, err)
+		return notStarted(err)
 	}
 	if currentOrigin != pending.origin {
-		return PermissionResult{}, fail(operation, errors.New("pending permission origin does not match current Person Server metadata"))
+		return notStarted(errors.New("pending permission origin does not match current Person Server metadata"))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.location, nil)
 	if err != nil {
-		return PermissionResult{}, fail(operation, err)
+		return notStarted(err)
 	}
 	if err := signaturekey.SignJWTRequest(request, client.signingKey, client.agentToken, client.clock); err != nil {
-		return PermissionResult{}, fail(operation, err)
+		return notStarted(err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {

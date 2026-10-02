@@ -587,7 +587,7 @@ func (server *Server) handlePendingPermission(response http.ResponseWriter, requ
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPermissionNotFound)
 		return
 	}
-	if request.Body != nil && request.Body != http.NoBody {
+	if !requestBodyIsEmpty(request) {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("permission polling requires a bodyless GET"))
 		return
 	}
