@@ -195,7 +195,7 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	preUpdateAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: preUpdateResourceToken,
+		PersonServer: personServerID, ResourceToken: preUpdateResourceToken, PresentedToken: initialPersonToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -260,15 +260,17 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = reader.Exchange(ctx, clientagent.ExchangeRequest{
-			PersonServer: personServerID, ResourceToken: compact,
+			PersonServer: personServerID, ResourceToken: compact, PresentedToken: initialPersonToken,
 		})
-		var problem *aauth.ProblemError
-		if !errors.As(err, &problem) || problem.Code != "invalid_resource_token" {
-			t.Fatalf("%s mission binding error = %#v, %v", name, problem, err)
+		// The Agent compares the Resource token with the token it presented
+		// and refuses before any request leaves; the Person Server's own
+		// refusal is proven at its token endpoint.
+		if !errors.Is(err, aauth.ErrPresentedTokenMismatch) {
+			t.Fatalf("%s mission binding error = %v", name, err)
 		}
 	}
 	postUpdateAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: preUpdateResourceToken,
+		PersonServer: personServerID, ResourceToken: preUpdateResourceToken, PresentedToken: initialPersonToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -364,7 +366,7 @@ func TestMissionBoundImmediateThreePartyJourney(t *testing.T) {
 		t.Fatalf("post-completion update error = %#v, %v", problem, err)
 	}
 	_, err = reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: preUpdateResourceToken,
+		PersonServer: personServerID, ResourceToken: preUpdateResourceToken, PresentedToken: initialPersonToken,
 	})
 	if !errors.As(err, &problem) || problem.Code != "mission_terminated" ||
 		problem.MissionStatus != "terminated" || problem.TerminationReason != "completed" {

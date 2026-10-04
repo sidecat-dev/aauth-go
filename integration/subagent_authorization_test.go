@@ -381,7 +381,7 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated, 
 	var authToken string
 	if deferred {
 		result, err := parent.BeginExchange(ctx, clientagent.ExchangeRequest{
-			PersonServer: personServerID, ResourceToken: resourceToken, SubagentToken: childToken,
+			PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken, SubagentToken: childToken,
 			Capabilities: []string{"interaction"},
 		})
 		if err != nil {
@@ -450,7 +450,7 @@ func runCurrentCoreParentMediatedSubagentAuthorization(t *testing.T, federated, 
 		}
 	} else {
 		authToken, err = parent.Exchange(ctx, clientagent.ExchangeRequest{
-			PersonServer: personServerID, ResourceToken: resourceToken, SubagentToken: childToken,
+			PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken, SubagentToken: childToken,
 		})
 		if err != nil {
 			t.Fatal(err)

@@ -272,7 +272,10 @@ func TestMissionBoundAuthorizationRechecksMissionAfterPolicy(t *testing.T) {
 				test.change(protocol, mission)
 				return AuthorizationDecision{Scopes: request.Scopes, Lifetime: time.Minute}, nil
 			}
-			body, _ := json.Marshal(map[string]string{"resource_token": resourceToken})
+			presentedToken := testPresentedPersonToken(
+				t, protocol.personKey, resourceToken, protocol.agentKey.PublicJWK(), protocol.now, personRecord.ExpiresAt,
+			)
+			body := testTokenRequestBody(t, resourceToken, presentedToken)
 			request := httptest.NewRequest(http.MethodPost, protocol.personServerID+"/token", bytes.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
 			if err := signPersonServerTestRequest(request, protocol.agentKey, protocol.agentToken, protocol.clock); err != nil {

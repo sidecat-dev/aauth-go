@@ -169,7 +169,7 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 		t.Fatalf("three-party resource token = %#v", resourceClaims)
 	}
 	authToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)

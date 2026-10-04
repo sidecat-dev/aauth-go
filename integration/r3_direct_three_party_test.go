@@ -268,7 +268,7 @@ func TestR3DirectThreePartyClassAuthorization(t *testing.T) {
 
 	transport.SubstituteNextR3DocumentDigest()
 	if _, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	}); err == nil {
 		t.Fatal("direct Person Server accepted a substituted R3 document")
 	}
@@ -277,7 +277,7 @@ func TestR3DirectThreePartyClassAuthorization(t *testing.T) {
 	}
 
 	authToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)

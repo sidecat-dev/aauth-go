@@ -445,7 +445,7 @@ func (client *Client) verifyBudgetCallAuthorization(
 	}
 	if challenge.Issuer != resource || challenge.DWK != aauth.ResourceDiscoveryDocument ||
 		challenge.Audience != current.PersonServer || challenge.PersonServer != current.PersonServer ||
-		challenge.Subject != current.Subject || challenge.AgentJKT != thumbprint || challenge.PresentedJTI == "" ||
+		challenge.Subject != current.Subject || challenge.AgentJKT != thumbprint || challenge.PresentedJTI != current.JTI ||
 		challenge.MissionS256 != current.MissionS256 || challenge.Tenant != current.Tenant ||
 		!equalStringPointers(challenge.Account, current.Account) ||
 		!sameScopeSet(strings.Fields(challenge.Scope), strings.Fields(current.Scope)) ||

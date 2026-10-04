@@ -8,6 +8,7 @@ package personserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,8 +122,13 @@ type PSAuthorizationConfig struct {
 	R3 *DirectR3Config
 	// CallChaining explicitly enables one immediate PS-authorized downstream
 	// hop. Existing policies never receive an upstream authorization unless this
-	// separate policy pair is configured.
+	// separate policy pair is configured. It requires an issued auth-token
+	// store, which identifies the calling Agent of an upstream token.
 	CallChaining *CallChainingConfig
+	// IssuedTokens retains auth-token issuance records without enabling
+	// revocation. When Revocation is configured its IssuedTokens store is used
+	// and this field is ignored.
+	IssuedTokens IssuedAuthTokenStore
 	// RequireAuthorizationInteraction optionally selects host-authenticated
 	// consent after the complete three-party request has been verified.
 	RequireAuthorizationInteraction func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
@@ -426,6 +432,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		(config.CallChaining.BindPerson == nil || config.CallChaining.Authorize == nil) {
 		return nil, errors.New("personserver: call chaining requires person-binding and authorization policies")
 	}
+	if config.CallChaining != nil && config.Revocation == nil && config.IssuedTokens == nil {
+		return nil, errors.New("personserver: call chaining requires an issued auth-token store")
+	}
 	server, err := newServer(serverConfig{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
@@ -472,6 +481,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	}
 	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
 		return nil, err
+	}
+	if config.Revocation == nil {
+		server.issuedAuthTokens = config.IssuedTokens
 	}
 	return server, nil
 }
@@ -860,20 +872,25 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	var input struct {
-		ResourceToken string          `json:"resource_token"`
-		UpstreamToken json.RawMessage `json:"upstream_token"`
-		SubagentToken json.RawMessage `json:"subagent_token"`
-		Justification json.RawMessage `json:"justification"`
-		LoginHint     json.RawMessage `json:"login_hint"`
-		Tenant        json.RawMessage `json:"tenant"`
-		DomainHint    json.RawMessage `json:"domain_hint"`
-		Prompt        json.RawMessage `json:"prompt"`
-		Platform      json.RawMessage `json:"platform"`
-		Device        json.RawMessage `json:"device"`
-		Capabilities  json.RawMessage `json:"capabilities"`
+		ResourceToken  string          `json:"resource_token"`
+		PresentedToken string          `json:"presented_token"`
+		UpstreamToken  json.RawMessage `json:"upstream_token"`
+		SubagentToken  json.RawMessage `json:"subagent_token"`
+		Justification  json.RawMessage `json:"justification"`
+		LoginHint      json.RawMessage `json:"login_hint"`
+		Tenant         json.RawMessage `json:"tenant"`
+		DomainHint     json.RawMessage `json:"domain_hint"`
+		Prompt         json.RawMessage `json:"prompt"`
+		Platform       json.RawMessage `json:"platform"`
+		Device         json.RawMessage `json:"device"`
+		Capabilities   json.RawMessage `json:"capabilities"`
 	}
 	if err := decodeJSON(request.Body, &input); err != nil || input.ResourceToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	if input.PresentedToken == "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: presented_token is required"))
 		return
 	}
 	if input.UpstreamToken == nil {
@@ -1012,38 +1029,83 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token has no authorization claim"))
 		return
 	}
-	record, err := server.tokens.Load(request.Context(), server.issuer, resourceToken.PresentedJTI)
-	if errors.Is(err, ErrPersonTokenNotFound) {
-		writeProblem(response, http.StatusBadRequest, "unknown_person_token", err)
-		return
+	presented, err := aauth.VerifyPresentedToken(
+		request.Context(), input.PresentedToken, resourceToken, server.keyResolver, verificationClock,
+	)
+	if err == nil {
+		err = proof.CheckIssuedAt(presentedTokenIssuedAt(presented))
 	}
 	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		writePresentedTokenProblem(response, err)
 		return
 	}
-	if err := validatePersonTokenRecord(record); err != nil ||
-		record.JTI != resourceToken.PresentedJTI ||
-		record.PersonServer != resourceToken.PersonServer ||
-		record.Resource != resourceToken.Issuer ||
-		record.Subject != resourceToken.Subject ||
-		record.MissionS256 != resourceToken.MissionS256 ||
-		record.Tenant != resourceToken.Tenant ||
-		record.AgentProvider != credentialAgent.Issuer ||
-		record.Agent != credentialAgent.Subject ||
-		record.ParentAgent != credentialAgent.ParentAgent ||
-		!record.Confirmation.Equal(credentialAgent.Confirmation.JWK) ||
-		resourceTokenExpiresAt.After(record.RetainUntil) ||
-		!record.RetainUntil.After(proof.VerifiedAt()) {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained person token"))
-		return
+	// A verified presented token is accepted on its own. A retained person
+	// token record, where one exists, still has to agree with the request, and
+	// it is the only record that can tie a call chain to its upstream token.
+	var record PersonTokenRecord
+	retained := false
+	if presented.Person != nil {
+		record, err = server.tokens.Load(request.Context(), server.issuer, presented.JTI)
+		if err != nil && !errors.Is(err, ErrPersonTokenNotFound) {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		retained = err == nil
 	}
-	issuedAfterPersonToken := resourceToken.IssuedAt >= record.ExpiresAt.Unix()
-	if issuedAfterPersonToken && r3Context == nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token was issued after the retained person token expired"))
-		return
+	if retained {
+		if err := validatePersonTokenRecord(record); err != nil ||
+			record.JTI != resourceToken.PresentedJTI ||
+			record.PersonServer != resourceToken.PersonServer ||
+			record.Resource != resourceToken.Issuer ||
+			record.Subject != resourceToken.Subject ||
+			record.MissionS256 != resourceToken.MissionS256 ||
+			record.Tenant != resourceToken.Tenant ||
+			record.AgentProvider != credentialAgent.Issuer ||
+			record.Agent != credentialAgent.Subject ||
+			record.ParentAgent != credentialAgent.ParentAgent ||
+			!record.Confirmation.Equal(credentialAgent.Confirmation.JWK) ||
+			resourceTokenExpiresAt.After(record.RetainUntil) ||
+			!record.RetainUntil.After(proof.VerifiedAt()) {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained person token"))
+			return
+		}
+		if !upstream.matchesRecord(record) {
+			server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
+			return
+		}
 	}
-	if !upstream.matchesRecord(record) {
-		server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
+	// On step-up the presented token is an auth token this Person Server
+	// issued, and its issuance record carries the tie. A record that is no
+	// longer retained says nothing about the chain, so a request without an
+	// upstream token is then accepted on the verified token alone.
+	issuedTie := false
+	if !retained && presented.Auth != nil && presented.Issuer == server.issuer &&
+		server.authorizeChained != nil && server.issuedAuthTokens != nil {
+		issued, err := server.issuedAuthTokens.LoadIssuedAuthToken(
+			request.Context(), aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI},
+		)
+		if err != nil && !errors.Is(err, ErrIssuedAuthTokenNotFound) {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if err == nil {
+			if validateIssuedAuthTokenRecord(issued) != nil ||
+				issued.CompactSHA256 != sha256.Sum256([]byte(input.PresentedToken)) ||
+				issued.Resource != resourceToken.Issuer {
+				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained auth token"))
+				return
+			}
+			if !upstream.matchesIssuedRecord(issued) {
+				server.writeUpstreamTokenProblem(response, errors.New("personserver: upstream token does not match the retained call chain"))
+				return
+			}
+			issuedTie = true
+		}
+	}
+	if upstream != nil && !retained && !issuedTie {
+		// Without a retained record of the presented token nothing ties it to
+		// the upstream token, so the chain is unidentified.
+		server.writeUpstreamTokenProblem(response, errors.New("personserver: no retained record ties the presented token to the upstream token"))
 		return
 	}
 	if budgetOffer != nil {
@@ -1068,10 +1130,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			} else {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
-			return
-		}
-		if issuedAfterPersonToken && r3Context.kind != r3.ArtifactProposal {
-			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("only a per-call proposal may reuse retained person identity after the person token expires"))
 			return
 		}
 	}
@@ -1117,12 +1175,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		authorizationRequest.Upstream = upstream.policyClaims()
 	}
 	if server.authorizationMode == authorizationModePersonServer {
-		// Person Server authorization closes when the retained Person token
-		// expires, and the Auth token it issues never outlives that token.
-		if !proof.VerifiedAt().Before(record.ExpiresAt) {
-			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: retained person token expired before authorization"))
-			return
-		}
+		// Person Server authorization closes when the presented token expires,
+		// and the Auth token it issues never outlives that token.
 		if r3Context != nil {
 			if r3Context.kind != r3.ArtifactDocument {
 				writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: direct R3 supports class documents only"))
@@ -1130,7 +1184,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 			server.issueDirectR3AuthorizationToken(
 				response, request, agent, credentialAgent, resourceToken,
-				authorizationRequest, r3Context, missionRecord, record.ExpiresAt,
+				authorizationRequest, r3Context, missionRecord, presented.ExpiresAt,
 			)
 			return
 		}
@@ -1151,7 +1205,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 					return
 				}
 				if err := server.beginAuthorizationInteraction(
-					response, request, authorizationRequest, agent, credentialAgent, resourceToken, missionRecord, policy, record.ExpiresAt,
+					response, request, authorizationRequest, agent, credentialAgent, resourceToken, missionRecord, policy, presented.ExpiresAt,
 				); err != nil {
 					if missionRecord != nil {
 						writeMissionActionProblem(response, err)
@@ -1179,7 +1233,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 		server.issuePSAuthorizationToken(
 			response, request, agent, credentialAgent, resourceToken,
-			authorizationRequest, missionRecord, authorize, record.ExpiresAt,
+			authorizationRequest, missionRecord, authorize, presented.ExpiresAt, upstream,
 		)
 		return
 	}
@@ -1218,20 +1272,21 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	endpoint, err := server.accessServerEndpoint(request.Context(), resourceToken.Audience)
 	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		writeAccessServerUnreachable(response, err)
 		return
 	}
 	if err := validateAccessServerEndpoint(endpoint); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		writeAccessServerUnreachable(response, err)
 		return
 	}
 	accessInput, err := json.Marshal(struct {
-		ResourceToken string         `json:"resource_token"`
-		AgentToken    string         `json:"agent_token"`
-		SubagentToken string         `json:"subagent_token,omitempty"`
-		Budget        *budgets.Value `json:"budget,omitempty"`
+		ResourceToken  string         `json:"resource_token"`
+		PresentedToken string         `json:"presented_token"`
+		AgentToken     string         `json:"agent_token"`
+		SubagentToken  string         `json:"subagent_token,omitempty"`
+		Budget         *budgets.Value `json:"budget,omitempty"`
 	}{
-		ResourceToken: input.ResourceToken, AgentToken: agentToken,
+		ResourceToken: input.ResourceToken, PresentedToken: input.PresentedToken, AgentToken: agentToken,
 		SubagentToken: subagentToken, Budget: personBudgetCeiling,
 	})
 	if err != nil {
@@ -1256,7 +1311,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	accessResponse, err := server.httpClient.Do(accessRequest)
 	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		writeAccessServerUnreachable(response, err)
 		return
 	}
 	defer accessResponse.Body.Close()
@@ -1265,12 +1320,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(accessResponse.Body, maxRequestBytes))
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access server refused the token exchange"))
+		writeAccessServerUnreachable(response, errors.New("access server returned no well-formed terminal error"))
 		return
 	}
 	accessBody, err := io.ReadAll(io.LimitReader(accessResponse.Body, maxRequestBytes+1))
 	if err != nil || len(accessBody) > maxRequestBytes {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server response is unavailable"))
+		writeAccessServerUnreachable(response, errors.New("access-server response is unavailable"))
 		return
 	}
 	var accessOutput struct {
@@ -1278,7 +1333,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		ExpiresIn int64  `json:"expires_in"`
 	}
 	if err := decodeJSON(bytes.NewReader(accessBody), &accessOutput); err != nil || accessOutput.AuthToken == "" {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server response is invalid"))
+		writeAccessServerUnreachable(response, errors.New("access-server response is invalid"))
 		return
 	}
 	var authToken aauth.AuthTokenClaims
@@ -1313,16 +1368,17 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		writeAccessServerUnreachable(response, err)
 		return
 	}
 	if authToken.Issuer != resourceToken.Audience ||
 		authToken.DWK != aauth.AccessDiscoveryDocument ||
 		authToken.ExpiresAt > agent.ExpiresAt ||
 		authToken.ExpiresAt > credentialAgent.ExpiresAt ||
+		authToken.ExpiresAt > presented.ExpiresAt.Unix() ||
 		authToken.MissionS256 != resourceToken.MissionS256 ||
 		authToken.Tenant != resourceToken.Tenant || !equalStringPointers(authToken.Account, resourceToken.Account) {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server auth token changed the authorized context"))
+		writeAccessServerUnreachable(response, errors.New("access-server auth token changed the authorized context"))
 		return
 	}
 	if err := aauth.ValidateCurrentAuthTokenContext(
@@ -1333,7 +1389,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			RequestKey: credentialAgent.Confirmation.JWK,
 		},
 	); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		writeAccessServerUnreachable(response, err)
 		return
 	}
 	var grantedScopes []string
@@ -1345,7 +1401,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	validScopeGrant := len(scopes) == 0 && len(grantedScopes) == 0 ||
 		len(scopes) > 0 && len(grantedScopes) > 0 && scopeSubset(grantedScopes, scopes)
 	if err != nil || !validScopeGrant {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server auth token grants an unrequested scope"))
+		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
 		return
 	}
 	if missionRecord != nil {
@@ -1354,7 +1410,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 		if !missionRecord.ExpiresAt.IsZero() && authToken.ExpiresAt > missionRecord.ExpiresAt.Unix() {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("access-server auth token outlives the mission-bound authorization"))
+			writeAccessServerUnreachable(response, errors.New("access-server auth token outlives the mission-bound authorization"))
 			return
 		}
 		issuedRecord, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
@@ -1417,6 +1473,7 @@ func (server *Server) issuePSAuthorizationToken(
 	missionRecord *MissionRecord,
 	authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error),
 	personTokenExpiresAt time.Time,
+	upstream *verifiedUpstreamToken,
 ) {
 	policyRequest := cloneAuthorizationRequest(authorizationRequest)
 	decision, err := authorize(request.Context(), policyRequest)
@@ -1485,6 +1542,9 @@ func (server *Server) issuePSAuthorizationToken(
 		return
 	}
 	issuedRecord, err := issuedAuthTokenRecord(compact, claims)
+	if err == nil {
+		err = issuedRecord.bindRecipient(credentialAgent, upstream)
+	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -1565,8 +1625,41 @@ func validateFederatedBudgetGrant(
 	return nil
 }
 
+// writeAccessServerUnreachable reports that no verifiable auth token could be
+// obtained from the Access Server: it was unreachable, answered without a
+// well-formed terminal error, or delivered a token that fails verification.
+func writeAccessServerUnreachable(response http.ResponseWriter, err error) {
+	writeProblem(response, http.StatusBadGateway, "as_unreachable", err)
+}
+
+func presentedTokenIssuedAt(presented aauth.PresentedToken) time.Time {
+	if presented.Auth != nil {
+		return time.Unix(presented.Auth.IssuedAt, 0)
+	}
+	if presented.Person != nil {
+		return time.Unix(presented.Person.IssuedAt, 0)
+	}
+	return time.Time{}
+}
+
+func writePresentedTokenProblem(response http.ResponseWriter, err error) {
+	if writeParameterClockSkew(response, err) {
+		return
+	}
+	switch {
+	case errors.Is(err, aauth.ErrExpiredPresentedToken):
+		writeProblem(response, http.StatusBadRequest, "expired_presented_token", err)
+	case errors.Is(err, aauth.ErrPresentedTokenMismatch):
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+	default:
+		writeProblem(response, http.StatusBadRequest, "invalid_presented_token", err)
+	}
+}
+
 func relayAccessServerProblem(response http.ResponseWriter, accessResponse *http.Response) bool {
-	if accessResponse.StatusCode < http.StatusBadRequest || accessResponse.StatusCode >= http.StatusInternalServerError ||
+	// A 401 answers the Person Server's own request signature. It says nothing
+	// about the Agent's request and is not relayed.
+	if accessResponse.StatusCode < http.StatusBadRequest || accessResponse.StatusCode > 599 ||
 		accessResponse.StatusCode == http.StatusUnauthorized {
 		return false
 	}
@@ -1891,7 +1984,7 @@ func (server *Server) authorizationInputsCurrent(
 		return false
 	}
 	if !now.Before(personTokenExpiresAt) {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: retained person token expired during authorization"))
+		writeProblem(response, http.StatusBadRequest, "expired_presented_token", errors.New("personserver: presented token expired during authorization"))
 		return false
 	}
 	return true

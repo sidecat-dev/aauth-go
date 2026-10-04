@@ -131,7 +131,7 @@ func callHostedResource(
 		return err
 	}
 	authToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: hostedPersonID, ResourceToken: resourceToken,
+		PersonServer: hostedPersonID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		return err

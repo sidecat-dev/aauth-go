@@ -354,7 +354,7 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proposalClaims.PresentedJTI != "person-token-1" || proposalClaims.JTI != "proposal-resource-token" {
+	if proposalClaims.PresentedJTI != "class-auth-token" || proposalClaims.JTI != "proposal-resource-token" {
 		t.Fatalf("proposal Resource claims = %#v", proposalClaims)
 	}
 	proposalRecord, err := proposals.Load(context.Background(), proposalReference.URI())
@@ -470,11 +470,21 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 	if claims, _ := retries.observation(proposalReference); claims != 0 {
 		t.Fatalf("explicit empty r3_per_call crossed Claim %d times", claims)
 	}
+	// A proposal token that names no presented token can no longer be minted,
+	// so that refusal is proved at the mint rather than at the retained record.
+	// A different nonempty presented_jti is not refused on retry: the class
+	// record cannot hold the class Auth token's jti.
+	missingPresentedClaims := proposalClaims
+	missingPresentedClaims.PresentedJTI = ""
+	if _, _, err := r3.MintProposalResourceToken(
+		registry, resourceKey, missingPresentedClaims, proposalReference.URI(), proposalRecord.ExactJSON,
+	); err == nil {
+		t.Fatal("proposal token without presented_jti was minted")
+	}
 	for _, scenario := range []struct {
 		name   string
 		change func(*aauth.ResourceTokenClaims)
 	}{
-		{name: "presented person token", change: func(claims *aauth.ResourceTokenClaims) { claims.PresentedJTI = "other-person-token" }},
 		{name: "proposal token id", change: func(claims *aauth.ResourceTokenClaims) { claims.JTI = "other-proposal-token" }},
 		{name: "issued at", change: func(claims *aauth.ResourceTokenClaims) { claims.IssuedAt++ }},
 		{name: "expires at", change: func(claims *aauth.ResourceTokenClaims) { claims.ExpiresAt++ }},

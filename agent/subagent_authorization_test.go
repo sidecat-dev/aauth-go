@@ -44,9 +44,10 @@ func TestParentMediatedSubagentUsesExactChildTokenAndVerifiesChildBoundResults(t
 
 	resourceToken := harness.resourceToken(t, harness.childKey.PublicJWK())
 	authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer:  harness.protocol.personServerID,
-		ResourceToken: resourceToken,
-		SubagentToken: harness.childToken,
+		PersonServer:   harness.protocol.personServerID,
+		ResourceToken:  resourceToken,
+		PresentedToken: personToken,
+		SubagentToken:  harness.childToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +59,8 @@ func TestParentMediatedSubagentUsesExactChildTokenAndVerifiesChildBoundResults(t
 	if !authClaims.Confirmation.JWK.Equal(harness.childKey.PublicJWK()) {
 		t.Fatalf("auth-token key = %#v, want child key", authClaims.Confirmation.JWK)
 	}
-	if harness.exchangeBody.ResourceToken != resourceToken || harness.exchangeBody.SubagentToken != harness.childToken {
+	if harness.exchangeBody.ResourceToken != resourceToken || harness.exchangeBody.SubagentToken != harness.childToken ||
+		harness.exchangeBody.PresentedToken != personToken {
 		t.Fatalf("auth-token body = %#v", harness.exchangeBody)
 	}
 	if harness.parentProofs != 2 {
@@ -115,9 +117,10 @@ func TestParentMediatedSubagentRefusesInvalidRelationshipsBeforeNetwork(t *testi
 						})
 					} else {
 						_, err = client.Exchange(context.Background(), agent.ExchangeRequest{
-							PersonServer:  harness.protocol.personServerID,
-							ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
-							SubagentToken: token,
+							PersonServer:   harness.protocol.personServerID,
+							ResourceToken:  harness.resourceToken(t, harness.childKey.PublicJWK()),
+							PresentedToken: harness.presentedToken(t),
+							SubagentToken:  token,
 						})
 					}
 					if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -204,9 +207,10 @@ func TestParentMediatedSubagentRejectsWrongTokenBindings(t *testing.T) {
 		harness := newSubagentClientHarness(t)
 		harness.authConfirmation = harness.protocol.agentKey.PublicJWK()
 		_, err := harness.client(t).Exchange(context.Background(), agent.ExchangeRequest{
-			PersonServer:  harness.protocol.personServerID,
-			ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
-			SubagentToken: harness.childToken,
+			PersonServer:   harness.protocol.personServerID,
+			ResourceToken:  harness.resourceToken(t, harness.childKey.PublicJWK()),
+			PresentedToken: harness.presentedToken(t),
+			SubagentToken:  harness.childToken,
 		})
 		if err == nil || !strings.Contains(err.Error(), "confirmation") {
 			t.Fatalf("Exchange error = %v", err)
@@ -255,9 +259,10 @@ func TestParentMediatedSubagentUsesEarlierAgentExpiryCeiling(t *testing.T) {
 					})
 				} else {
 					_, err = client.Exchange(context.Background(), agent.ExchangeRequest{
-						PersonServer:  harness.protocol.personServerID,
-						ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
-						SubagentToken: harness.childToken,
+						PersonServer:   harness.protocol.personServerID,
+						ResourceToken:  harness.resourceToken(t, harness.childKey.PublicJWK()),
+						PresentedToken: harness.presentedToken(t),
+						SubagentToken:  harness.childToken,
 					})
 				}
 				if err == nil || !strings.Contains(err.Error(), "lifetime exceeds") || !strings.Contains(err.Error(), wantSource) {
@@ -292,10 +297,11 @@ func TestParentMediatedSubagentExchangeReturnsPendingInteraction(t *testing.T) {
 	harness := newSubagentClientHarness(t)
 	harness.exchangePending = true
 	result, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer:  harness.protocol.personServerID,
-		ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
-		SubagentToken: harness.childToken,
-		Capabilities:  []string{"interaction"},
+		PersonServer:   harness.protocol.personServerID,
+		ResourceToken:  harness.resourceToken(t, harness.childKey.PublicJWK()),
+		PresentedToken: harness.presentedToken(t),
+		SubagentToken:  harness.childToken,
+		Capabilities:   []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -312,10 +318,11 @@ func TestParentMediatedSubagentExchangeConvenienceNamesPendingAPI(t *testing.T) 
 	harness := newSubagentClientHarness(t)
 	harness.exchangePending = true
 	_, err := harness.client(t).Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer:  harness.protocol.personServerID,
-		ResourceToken: harness.resourceToken(t, harness.childKey.PublicJWK()),
-		SubagentToken: harness.childToken,
-		Capabilities:  []string{"interaction"},
+		PersonServer:   harness.protocol.personServerID,
+		ResourceToken:  harness.resourceToken(t, harness.childKey.PublicJWK()),
+		PresentedToken: harness.presentedToken(t),
+		SubagentToken:  harness.childToken,
+		Capabilities:   []string{"interaction"},
 	})
 	var pendingRequired *agent.SubagentPendingExchangeRequiredError
 	if !errors.As(err, &pendingRequired) || pendingRequired.Operation != "Exchange" ||
@@ -347,9 +354,10 @@ type subagentClientHarness struct {
 		SubagentToken string `json:"subagent_token"`
 	}
 	exchangeBody struct {
-		ResourceToken string   `json:"resource_token"`
-		SubagentToken string   `json:"subagent_token"`
-		Capabilities  []string `json:"capabilities,omitempty"`
+		ResourceToken  string   `json:"resource_token"`
+		PresentedToken string   `json:"presented_token"`
+		SubagentToken  string   `json:"subagent_token"`
+		Capabilities   []string `json:"capabilities,omitempty"`
 	}
 }
 
@@ -436,6 +444,14 @@ func (harness *subagentClientHarness) resourceToken(t *testing.T, confirmation j
 		t.Fatal(err)
 	}
 	return compact
+}
+
+// presentedToken mints the person token the harness resource token names.
+func (harness *subagentClientHarness) presentedToken(t *testing.T) string {
+	t.Helper()
+	return harness.protocol.presentedPersonToken(t, aauth.ResourceTokenClaims{
+		Issuer: harness.protocol.resourceID, Subject: "person-123", PresentedJTI: "subagent-person-token",
+	}, harness.childKey.PublicJWK())
 }
 
 func (harness *subagentClientHarness) roundTrip(request *http.Request) (*http.Response, error) {

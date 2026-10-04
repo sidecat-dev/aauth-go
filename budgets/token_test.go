@@ -65,13 +65,16 @@ func TestBudgetResourceTokenCompanionRoundTripsAndConsumesItsClaims(t *testing.T
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	resourceKey := budgetTestKey(t, "resource-key", 1)
 	offer := budgetTestValue(t, 5_000_000, "USD", 6)
-	first, _ := NewConsumptionRecord("auth-token-1", 2_000_000)
-	second, _ := NewConsumptionRecord("auth-token-2", 431_200)
+	record, _ := NewConsumptionRecord("auth-token-1", 2_000_000)
 	future := json.RawMessage(`{"retained":true}`)
 	claims := budgetResourceClaims(now)
 	claims.AdditionalClaims = map[string]json.RawMessage{"future": future}
+	if _, err := MintResourceToken(resourceKey, claims, offer, &record); err == nil {
+		t.Fatal("minted a consumption record for a token other than the presented one")
+	}
+	claims.PresentedJTI = "auth-token-1"
 
-	compact, err := MintResourceToken(resourceKey, claims, offer, []ConsumptionRecord{first, second})
+	compact, err := MintResourceToken(resourceKey, claims, offer, &record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +92,7 @@ func TestBudgetResourceTokenCompanionRoundTripsAndConsumesItsClaims(t *testing.T
 	if verified.JTI != claims.JTI || gotOffer.Amount() != offer.Amount() || !gotOffer.Unit().Equal(offer.Unit()) {
 		t.Fatalf("verified Resource token = %#v, %#v", verified, gotOffer)
 	}
-	if len(consumed) != 2 || consumed[0].JTI() != first.JTI() || consumed[1].Consumed() != second.Consumed() {
+	if consumed == nil || consumed.JTI() != record.JTI() || consumed.Consumed() != record.Consumed() {
 		t.Fatalf("consumed = %#v", consumed)
 	}
 	if _, present := verified.AdditionalClaims["budget"]; present {
@@ -163,10 +166,12 @@ func TestBudgetTokenVerificationRejectsMalformedPartialAndMixedCompanions(t *tes
 		{name: "unknown budget member", additional: rawClaims("budget", `{"amount":1,"unit":"USD","decimals":6,"future":true}`)},
 		{name: "nested case variant", additional: rawClaims("budget", `{"Amount":1,"unit":"USD","decimals":6}`)},
 		{name: "case variant budget claim", additional: rawClaims("Budget", valid)},
-		{name: "consumption without budget", additional: rawClaims("budget_consumed", `[]`)},
-		{name: "case variant consumption", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("Budget_Consumed", `[]`))},
+		{name: "consumption without budget", additional: rawClaims("budget_consumed", `{"jti":"person-token-1","consumed":1}`)},
+		{name: "case variant consumption", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("Budget_Consumed", `{"jti":"person-token-1","consumed":1}`))},
 		{name: "null consumption", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("budget_consumed", `null`))},
-		{name: "malformed consumption", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("budget_consumed", `[{"jti":"x"}]`))},
+		{name: "malformed consumption", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("budget_consumed", `{"jti":"person-token-1"}`))},
+		{name: "consumption array", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("budget_consumed", `[{"jti":"person-token-1","consumed":1}]`))},
+		{name: "consumption for another token", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("budget_consumed", `{"jti":"auth-token-0","consumed":1}`))},
 		{name: "mixed R3 reference", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("r3_uri", `"https://resource.example/r3/x"`))},
 		{name: "mixed R3 case variant", additional: mergeRawClaims(rawClaims("budget", valid), rawClaims("R3_Granted", `{}`))},
 	} {
@@ -193,8 +198,8 @@ func TestBudgetAuthTokenRejectsConsumptionAndMixedR3Claims(t *testing.T) {
 	valid := `{"amount":1,"unit":"USD","decimals":6}`
 
 	for _, additional := range []map[string]json.RawMessage{
-		mergeRawClaims(rawClaims("budget", valid), rawClaims("budget_consumed", `[]`)),
-		mergeRawClaims(rawClaims("budget", valid), rawClaims("Budget_Consumed", `[]`)),
+		mergeRawClaims(rawClaims("budget", valid), rawClaims("budget_consumed", `{"jti":"auth-token-0","consumed":1}`)),
+		mergeRawClaims(rawClaims("budget", valid), rawClaims("Budget_Consumed", `{"jti":"auth-token-0","consumed":1}`)),
 		mergeRawClaims(rawClaims("budget", valid), rawClaims("r3_granted", `{}`)),
 		rawClaims("Budget", valid),
 	} {
@@ -312,8 +317,8 @@ func TestBudgetVerificationPreservesIndependentImmutableResults(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	resourceKey := budgetTestKey(t, "resource-key", 10)
 	offer := budgetTestValue(t, 100, "calls", 0)
-	record, _ := NewConsumptionRecord("prior", 20)
-	compact, err := MintResourceToken(resourceKey, budgetResourceClaims(now), offer, []ConsumptionRecord{record})
+	record, _ := NewConsumptionRecord("person-token-1", 20)
+	compact, err := MintResourceToken(resourceKey, budgetResourceClaims(now), offer, &record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,18 +326,18 @@ func TestBudgetVerificationPreservesIndependentImmutableResults(t *testing.T) {
 		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
 	}
 	clock := aauth.ClockFunc(func() time.Time { return now })
-	firstClaims, _, firstRecords, err := VerifyResourceToken(context.Background(), compact, resolver, clock)
+	firstClaims, _, firstRecord, err := VerifyResourceToken(context.Background(), compact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstClaims.AdditionalClaims = map[string]json.RawMessage{"changed": json.RawMessage(`true`)}
-	firstRecords[0] = ConsumptionRecord{}
-	secondClaims, _, secondRecords, err := VerifyResourceToken(context.Background(), compact, resolver, clock)
+	*firstRecord = ConsumptionRecord{}
+	secondClaims, _, secondRecord, err := VerifyResourceToken(context.Background(), compact, resolver, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, changed := secondClaims.AdditionalClaims["changed"]; changed || len(secondRecords) != 1 || secondRecords[0].JTI() != "prior" {
-		t.Fatalf("second verification inherited mutations: %#v, %#v", secondClaims, secondRecords)
+	if _, changed := secondClaims.AdditionalClaims["changed"]; changed || secondRecord == nil || secondRecord.JTI() != "person-token-1" {
+		t.Fatalf("second verification inherited mutations: %#v, %#v", secondClaims, secondRecord)
 	}
 }
 

@@ -416,8 +416,6 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 	if !ok {
 		t.Fatalf("person-token result = %#v", personResult)
 	}
-	personClaims := tokenClaims(t, personToken)
-	personTokenJTI := claimString(t, personClaims, "jti")
 
 	accountValue := account
 	classResourceToken, err := agent.Authorize(ctx, clientagent.AuthorizeRequest{
@@ -428,7 +426,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 		t.Fatal(err)
 	}
 	classAuthToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: classResourceToken,
+		PersonServer: personServerID, ResourceToken: classResourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		psCalls, asCalls := observations.classCounts()
@@ -493,7 +491,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 	// bytes live in the host stores, not in the old Server value.
 	installResource()
 	baselineAuthToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: baselineAuthorizationA.ResourceToken(),
+		PersonServer: personServerID, ResourceToken: baselineAuthorizationA.ResourceToken(), PresentedToken: classAuthToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -501,7 +499,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 	requireR3PerCallProposalExchange(
 		t, vocabulary, registry, proposals, observations, traffic, issuances,
 		baselineAuthorizationA.Reference(), baselineAuthToken,
-		deleteRecord, account, personTokenJTI, agentID,
+		deleteRecord, account, classClaims.JTI, agentID,
 	)
 	requireR3PerCallCompletionToken(t, vocabulary, ctx, registry, resolver, clock, baselineAuthToken, baselineAuthorizationA.Reference(), deleteRecord, account, tenant)
 
@@ -601,7 +599,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 
 	installResource()
 	heldAuthToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: pendingA.ResourceToken(),
+		PersonServer: personServerID, ResourceToken: pendingA.ResourceToken(), PresentedToken: classAuthToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -609,7 +607,7 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 	requireR3PerCallProposalExchange(
 		t, vocabulary, registry, proposals, observations, traffic, issuances,
 		pendingA.Reference(), heldAuthToken,
-		deleteRecord, account, personTokenJTI, agentID,
+		deleteRecord, account, classClaims.JTI, agentID,
 	)
 	requireR3PerCallCompletionToken(t, vocabulary, ctx, registry, resolver, clock, heldAuthToken, pendingA.Reference(), deleteRecord, account, tenant)
 

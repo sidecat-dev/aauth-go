@@ -780,7 +780,7 @@ Core requires a PS to reject a token request signed by an agent whose agent toke
 
 **Upstream evidence:** 28e8258 Core, "Call Chaining"; "Auth Token Request"; "Upstream Token Verification"; related: https://github.com/dickhardt/AAuth/issues/221
 
-**Remaining:** Each presentation is verified independently, and nothing ties the auth-token request's `upstream_token` to the one the downstream person token was issued from, although the PS now records that token's `(iss, jti)`.
+**Remaining:** Core still gives no comparison rule. This library holds the auth-token request to the exact upstream token recorded for its presented token: the retained Person-token record, or on an auth-typed step-up the issuance record of the presented auth token. A request that names an upstream token with no such record is refused; a request without one whose record is no longer retained is accepted on the verified presented token alone.
 
 **Source:** AAuth Core, `Call Chaining`, `Person Token Endpoint`, `Auth Token Request`, `Upstream Token Verification`, and `Revocation Cascade` ("Records").
 

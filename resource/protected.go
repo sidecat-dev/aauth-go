@@ -513,7 +513,7 @@ func (server *Server) enforceFixedBudget(
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
-	if err := server.validateBudgetChallenge(request.Context(), challengeToken, principal, r3Reference); err != nil {
+	if err := server.validateBudgetChallenge(request.Context(), challengeToken, claims.JTI, principal, r3Reference); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
@@ -533,6 +533,7 @@ func (server *Server) enforceFixedBudget(
 func (server *Server) validateBudgetChallenge(
 	ctx context.Context,
 	compact string,
+	presentedJTI string,
 	principal AuthPrincipal,
 	expectedR3Reference *r3.Reference,
 ) error {
@@ -563,7 +564,7 @@ func (server *Server) validateBudgetChallenge(
 	}
 	if claims.Issuer != server.issuer || claims.DWK != aauth.ResourceDiscoveryDocument ||
 		claims.Audience != principal.PersonServer || claims.PersonServer != principal.PersonServer ||
-		claims.Subject != principal.Subject || claims.AgentJKT != thumbprint || claims.PresentedJTI == "" ||
+		claims.Subject != principal.Subject || claims.AgentJKT != thumbprint || claims.PresentedJTI != presentedJTI ||
 		claims.MissionS256 != principal.MissionS256 || claims.Tenant != principal.Tenant ||
 		!sameBudgetAccount(claims.Account, principal.Account) {
 		return errors.New("fresh Resource token does not preserve the protected Budget context")

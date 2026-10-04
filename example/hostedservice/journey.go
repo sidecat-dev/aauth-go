@@ -111,7 +111,7 @@ func callHostedConnector(
 		return err
 	}
 	authToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		return err
@@ -160,7 +160,7 @@ func callHostedConnector(
 		return errors.New("hosted-service example: exhausted Budget refusal was inconsistent")
 	}
 	reauthorizedToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: authorization.ResourceToken(),
+		PersonServer: personServerID, ResourceToken: authorization.ResourceToken(), PresentedToken: authToken,
 	})
 	if err != nil {
 		return err

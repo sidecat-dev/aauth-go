@@ -407,7 +407,7 @@ func (client *Client) verifyR3ProposalRequirement(
 	}
 	if claims.Issuer != resource || claims.Audience != classClaims.Issuer ||
 		claims.PersonServer != classClaims.PersonServer || claims.Subject != classClaims.Subject ||
-		claims.AgentJKT != thumbprint {
+		claims.AgentJKT != thumbprint || claims.PresentedJTI != classClaims.JTI {
 		return r3ProposalContext{}, errors.New("proposal Resource-token identity does not match the class authorization")
 	}
 	if !sameScopeSet(strings.Fields(claims.Scope), strings.Fields(classClaims.Scope)) ||

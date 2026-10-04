@@ -174,7 +174,7 @@ func main() {
 		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope},
 	}))
 	authToken := must(reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	}))
 	request := must(http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/42", nil))
 	response := must(reader.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken}))

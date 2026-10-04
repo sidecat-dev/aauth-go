@@ -196,7 +196,7 @@ func composeRoles(input roleInputs) (composedRoles, error) {
 						Issuer: hostedResourceID, DWK: aauth.ResourceDiscoveryDocument,
 						Audience: retained.Person.Issuer, JTI: "resource-token-step-up-1",
 						PersonServer: retained.Person.Issuer, Subject: retained.Person.Subject,
-						PresentedJTI: retained.PresentedJTI, AgentJKT: retained.AgentJKT,
+						PresentedJTI: challenge.Token.JTI, AgentJKT: retained.AgentJKT,
 						IssuedAt: now.Unix(), ExpiresAt: retained.ExpiresAt,
 						Account:     cloneOptionalString(retained.Account),
 						MissionS256: retained.PersonContext.MissionS256,

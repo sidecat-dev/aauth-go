@@ -227,7 +227,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 					Audience:     personServerID,
 					JTI:          "budget-refresh-" + time.Unix(refreshIDs.Add(1), 0).Format("150405"),
 					PersonServer: personServerID, Subject: retainedLineage.Person.Subject,
-					PresentedJTI: retainedLineage.PresentedJTI, AgentJKT: thumbprint,
+					PresentedJTI: challenge.Token.JTI, AgentJKT: thumbprint,
 					IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 					Scope: scope, Tenant: retainedLineage.PersonContext.Tenant,
 					Account: cloneIntegrationString(challenge.Principal.Account),
@@ -278,7 +278,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	reactiveClaims, reactiveOffer, consumed, err := budgets.VerifyResourceToken(
 		ctx, reactiveRequirement.ResourceToken, resolver, clock,
 	)
-	if err != nil || !integrationSameBudget(reactiveOffer, resourceOffer) || len(consumed) != 0 {
+	if err != nil || !integrationSameBudget(reactiveOffer, resourceOffer) || consumed != nil {
 		t.Fatalf("reactive Resource Budget = %#v consumed=%#v err=%v", reactiveOffer, consumed, err)
 	}
 	if retainedLineage.ResourceToken != (aauth.TokenReference{Issuer: reactiveClaims.Issuer, JTI: reactiveClaims.JTI}) ||
@@ -286,7 +286,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 		t.Fatalf("reactive retained lineage = %#v; protected calls = %d", retainedLineage, protectedCalls.Load())
 	}
 	reactiveAuthToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: reactiveRequirement.ResourceToken,
+		PersonServer: personServerID, ResourceToken: reactiveRequirement.ResourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -314,7 +314,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 	}
 	initialClaims, offered, consumed, err := budgets.VerifyResourceToken(ctx, resourceToken, resolver, clock)
 	if err != nil || initialClaims.Account == nil || *initialClaims.Account != account ||
-		!integrationSameBudget(offered, resourceOffer) || len(consumed) != 0 {
+		!integrationSameBudget(offered, resourceOffer) || consumed != nil {
 		t.Fatalf("Resource Budget = %#v consumed=%#v err=%v", offered, consumed, err)
 	}
 	if retainedLineage.ResourceToken != (aauth.TokenReference{Issuer: initialClaims.Issuer, JTI: initialClaims.JTI}) ||
@@ -322,7 +322,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 		t.Fatalf("retained Budget lineage = %#v", retainedLineage)
 	}
 	authToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +383,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 		}
 	}
 	reauthorizedToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: stepUp.ResourceToken(),
+		PersonServer: personServerID, ResourceToken: stepUp.ResourceToken(), PresentedToken: authToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 		t.Fatalf("mission Resource Budget = claims %#v offer %#v err=%v", missionResourceClaims, missionOffer, err)
 	}
 	missionAuthToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: missionResourceToken,
+		PersonServer: personServerID, ResourceToken: missionResourceToken, PresentedToken: missionPersonToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +467,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 		t.Fatal(err)
 	}
 	if _, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: missionResourceToken,
+		PersonServer: personServerID, ResourceToken: missionResourceToken, PresentedToken: missionPersonToken,
 	}); err == nil || !strings.Contains(err.Error(), "mission") {
 		t.Fatalf("terminated mission Budget exchange error = %v", err)
 	}

@@ -256,7 +256,7 @@ func run(output io.Writer) error {
 		return fmt.Errorf("obtain Resource token: %w", err)
 	}
 	authToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		return fmt.Errorf("exchange at Person Server: %w", err)

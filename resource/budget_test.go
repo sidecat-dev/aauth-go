@@ -533,6 +533,28 @@ func TestBudgetRefusalRejectsAValidlySignedChallengeForAnotherContext(t *testing
 	}
 }
 
+func TestBudgetRefusalRejectsAChallengeNamingTheRetainedPersonToken(t *testing.T) {
+	t.Parallel()
+
+	protectedCalls := 0
+	protocol := newBudgetResourceProtocol(t, 200_000, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		protectedCalls++
+	}))
+	protocol.config.Budget.Challenge = func(_ context.Context, request BudgetChallengeRequest) (string, error) {
+		return protocol.challengeToken(t, request, func(claims *aauth.ResourceTokenClaims, _ *budgets.Value) {
+			claims.PresentedJTI = "retained-person-token"
+		})
+	}
+	authToken := protocol.authToken(t, "person-jti-challenge-auth-token", budgetValue(t, 100_000, protocol.unit))
+	response := protocol.call(t, protocol.server(t), authToken)
+	if response.Code != http.StatusInternalServerError || protectedCalls != 0 {
+		t.Fatalf("person-token challenge status=%d Protected=%d body=%s", response.Code, protectedCalls, response.Body.String())
+	}
+	if response.Header().Get("AAuth-Requirement") != "" || response.Header().Get("AAuth-Budget") != "" {
+		t.Fatalf("person-token challenge exposed headers: requirement=%q budget=%q", response.Header().Get("AAuth-Requirement"), response.Header().Get("AAuth-Budget"))
+	}
+}
+
 func TestBudgetStoreBindsAnAuthTokenReferenceToOneGrantAndContext(t *testing.T) {
 	t.Parallel()
 
@@ -893,7 +915,7 @@ func (protocol *budgetResourceProtocol) challengeToken(
 		Issuer: resourceIssuer, DWK: aauth.ResourceDiscoveryDocument,
 		Audience: request.Principal.PersonServer, JTI: "replacement-" + request.Token.JTI,
 		PersonServer: request.Principal.PersonServer, Subject: request.Principal.Subject,
-		PresentedJTI: "retained-person-token", AgentJKT: thumbprint,
+		PresentedJTI: request.Token.JTI, AgentJKT: thumbprint,
 		IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
 		Scope:       strings.Join(request.Principal.Scope, " "),
 		Account:     cloneBudgetAccount(request.Principal.Account),

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +39,7 @@ func TestCallChainingPSAuthorizationSurvivesServerRecomposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	protocol.personTokens = map[string]string{personClaims.JTI: personOutput.PersonToken}
 	if personClaims.Issuer != protocol.personServerID ||
 		personClaims.Audience != protocol.resourceTwoID ||
 		personClaims.Subject != protocol.downstreamSubject ||
@@ -270,6 +272,7 @@ func TestCallChainingKeepsOriginalAndIntermediaryProofKeysDistinct(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
+		protocol.present(resourceToken, protocol.personTokens[personClaims.JTI])
 		response := protocol.tokenRequest(t, server, resourceToken, protocol.upstreamToken, "")
 		assertCallChainingProblem(t, response, http.StatusBadRequest, "invalid_resource_token")
 		_, commits, loads := protocol.store.observation()
@@ -310,9 +313,13 @@ func TestCallChainingRetainedUpstreamRejectsSubstitutionAndByteRewrite(t *testin
 			personResponse := protocol.personRequest(t, server, protocol.upstreamToken, "")
 			personClaims := decodeCallChainingPersonToken(t, protocol, personResponse)
 			resourceToken := protocol.resourceToken(t, personClaims, protocol.personServerID, "payments.charge", nil)
+			// The substitute has an issuance record of its own, so its caller
+			// is identified and only the retained tie refuses it.
+			substitute := test.token(t, protocol)
+			protocol.identifyUpstream(t, substitute)
 
 			beforeRecord, beforeCommits, beforeLoads := protocol.store.observation()
-			response := protocol.tokenRequest(t, server, resourceToken, test.token(t, protocol), "")
+			response := protocol.tokenRequest(t, server, resourceToken, substitute, "")
 			assertCallChainingProblem(t, response, http.StatusBadRequest, "invalid_upstream_token")
 			afterRecord, afterCommits, afterLoads := protocol.store.observation()
 			if protocol.chainBindCalls != 1 || protocol.chainAuthorizeCalls != 0 ||
@@ -378,6 +385,29 @@ func TestCallChainingRetainedBindingRejectsOmissionAndInjection(t *testing.T) {
 				protocol.ordinaryBindCalls, protocol.ordinaryAuthorizeCalls,
 				protocol.chainBindCalls, protocol.chainAuthorizeCalls, commits,
 			)
+		}
+	})
+}
+
+// The exact call-chain tie lives in the retained record of the presented
+// token. A chained token request whose presented person token has no such
+// record leaves the calling chain unidentified and is refused, never accepted
+// on the upstream token alone.
+func TestCallChainingRefusesUpstreamWithoutRetainedPersonToken(t *testing.T) {
+	t.Run("person token record no longer retained", func(t *testing.T) {
+		protocol := newCallChainingProtocol(t)
+		server := protocol.newServer(t, protocol.config())
+		personClaims := decodeCallChainingPersonToken(
+			t, protocol, protocol.personRequest(t, server, protocol.upstreamToken, ""),
+		)
+		resourceToken := protocol.resourceToken(t, personClaims, protocol.personServerID, "payments.charge", nil)
+		protocol.store.mu.Lock()
+		protocol.store.records = make(map[string]PersonTokenRecord)
+		protocol.store.mu.Unlock()
+		response := protocol.tokenRequest(t, server, resourceToken, protocol.upstreamToken, "")
+		assertCallChainingProblem(t, response, http.StatusBadRequest, "invalid_upstream_token")
+		if protocol.chainAuthorizeCalls != 0 {
+			t.Fatalf("unidentified chain reached policy %d times", protocol.chainAuthorizeCalls)
 		}
 	})
 }
@@ -550,12 +580,18 @@ type callChainingProtocol struct {
 
 	resolver           signaturekey.KeyResolver
 	store              *memoryTokenStore
+	issued             *testIssuedAuthTokenStore
 	resourceOneIDToken string
 	upstreamToken      string
 	upstreamClaims     aauth.AuthTokenClaims
 
 	downstreamSubject string
 	nextID            int
+
+	// personTokens holds each issued person token by identifier, and
+	// presentedTokens the token an agent presents with each resource token.
+	personTokens    map[string]string
+	presentedTokens map[string]string
 
 	ordinaryBindCalls      int
 	ordinaryAuthorizeCalls int
@@ -577,6 +613,7 @@ func newCallChainingProtocol(t *testing.T) *callChainingProtocol {
 		accessServerID:    "https://access.example",
 		downstreamSubject: "person-for-resource-two",
 		store:             newMemoryTokenStore(),
+		issued:            newTestIssuedAuthTokenStore(),
 	}
 	protocol.clock = aauth.ClockFunc(func() time.Time { return protocol.now })
 	protocol.personServerKey = personServerTestKey(t, "call-chain-person")
@@ -626,7 +663,52 @@ func newCallChainingProtocol(t *testing.T) *callChainingProtocol {
 	if protocol.upstreamClaims.Confirmation.JWK.Equal(protocol.resourceOneProofKey.PublicJWK()) {
 		t.Fatal("test setup accidentally reused the intermediary proof key as the upstream confirmation key")
 	}
+	protocol.identifyUpstream(t, protocol.upstreamToken)
 	return protocol
+}
+
+const (
+	callChainOriginalAgentProvider = "https://original-agent.example"
+	callChainOriginalAgent         = "aauth:original@original-agent.example"
+	callChainOriginalAgentTokenJTI = "original-agent-token"
+)
+
+// identifyUpstream retains the issuance record this Person Server would hold
+// for an upstream auth token it issued to the original calling Agent. It
+// replaces any record already held for the same reference.
+func (protocol *callChainingProtocol) identifyUpstream(t *testing.T, compact string) IssuedAuthTokenRecord {
+	t.Helper()
+	claims, err := aauth.VerifyAuthToken(context.Background(), compact, protocol.resolver, protocol.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := issuedAuthTokenRecord(compact, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.AgentProvider = callChainOriginalAgentProvider
+	record.Agent = callChainOriginalAgent
+	record.AgentTokenJTI = callChainOriginalAgentTokenJTI
+	record.AgentJKT, err = claims.Confirmation.JWK.Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateIssuedAuthTokenRecord(record); err != nil {
+		t.Fatal(err)
+	}
+	protocol.issued.mu.Lock()
+	protocol.issued.records[record.Reference] = record
+	protocol.issued.mu.Unlock()
+	return record
+}
+
+func (protocol *callChainingProtocol) issuedRecord(t *testing.T, reference aauth.TokenReference) IssuedAuthTokenRecord {
+	t.Helper()
+	record, err := protocol.issued.LoadIssuedAuthToken(context.Background(), reference)
+	if err != nil {
+		t.Fatalf("issued record %#v: %v", reference, err)
+	}
+	return record
 }
 
 func (protocol *callChainingProtocol) config() PSAuthorizationConfig {
@@ -635,13 +717,17 @@ func (protocol *callChainingProtocol) config() PSAuthorizationConfig {
 		KeyResolver: protocol.resolver, Clock: protocol.clock,
 		NewID: func() string {
 			protocol.nextID++
-			if protocol.nextID == 1 {
+			switch protocol.nextID {
+			case 1:
 				return "downstream-person-token"
+			case 2:
+				return "downstream-auth-token"
 			}
-			return "downstream-auth-token"
+			return fmt.Sprintf("downstream-auth-token-%d", protocol.nextID)
 		},
 		MaximumResourceTokenLifetime: 5 * time.Minute,
 		Tokens:                       protocol.store,
+		IssuedTokens:                 protocol.issued,
 		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) {
 			protocol.ordinaryBindCalls++
 			return Person{Subject: "ordinary-person", Lifetime: time.Minute}, nil
@@ -757,10 +843,14 @@ func (protocol *callChainingProtocol) tokenRequestWithCredential(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-		UpstreamToken string `json:"upstream_token,omitempty"`
-		SubagentToken string `json:"subagent_token,omitempty"`
-	}{ResourceToken: resourceToken, UpstreamToken: upstream, SubagentToken: subagent})
+		ResourceToken  string `json:"resource_token"`
+		PresentedToken string `json:"presented_token,omitempty"`
+		UpstreamToken  string `json:"upstream_token,omitempty"`
+		SubagentToken  string `json:"subagent_token,omitempty"`
+	}{
+		ResourceToken: resourceToken, PresentedToken: protocol.presentedTokens[resourceToken],
+		UpstreamToken: upstream, SubagentToken: subagent,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,10 +873,14 @@ func (protocol *callChainingProtocol) tokenRequestWithCapabilities(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(struct {
-		ResourceToken string   `json:"resource_token"`
-		UpstreamToken string   `json:"upstream_token"`
-		Capabilities  []string `json:"capabilities"`
-	}{ResourceToken: resourceToken, UpstreamToken: upstream, Capabilities: capabilities})
+		ResourceToken  string   `json:"resource_token"`
+		PresentedToken string   `json:"presented_token,omitempty"`
+		UpstreamToken  string   `json:"upstream_token"`
+		Capabilities   []string `json:"capabilities"`
+	}{
+		ResourceToken: resourceToken, PresentedToken: protocol.presentedTokens[resourceToken],
+		UpstreamToken: upstream, Capabilities: capabilities,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +916,17 @@ func (protocol *callChainingProtocol) resourceToken(
 	if err != nil {
 		t.Fatal(err)
 	}
+	protocol.present(compact, protocol.personTokens[person.JTI])
 	return compact
+}
+
+// present records the token the agent sends as presented_token with a
+// resource token.
+func (protocol *callChainingProtocol) present(resourceToken, presented string) {
+	if protocol.presentedTokens == nil {
+		protocol.presentedTokens = make(map[string]string)
+	}
+	protocol.presentedTokens[resourceToken] = presented
 }
 
 func (protocol *callChainingProtocol) childAgentToken(t *testing.T) string {
@@ -872,6 +976,10 @@ func decodeCallChainingPersonToken(t *testing.T, protocol *callChainingProtocol,
 	if err != nil {
 		t.Fatal(err)
 	}
+	if protocol.personTokens == nil {
+		protocol.personTokens = make(map[string]string)
+	}
+	protocol.personTokens[claims.JTI] = output.PersonToken
 	return claims
 }
 

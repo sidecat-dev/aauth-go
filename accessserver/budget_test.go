@@ -213,10 +213,14 @@ func TestAccessServerBudgetEndpointReturnsInvalidBudgetForMalformedPSCeiling(t *
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(struct {
-		ResourceToken string          `json:"resource_token"`
-		AgentToken    string          `json:"agent_token"`
-		Budget        json.RawMessage `json:"budget"`
-	}{ResourceToken: resourceToken, AgentToken: agentToken, Budget: json.RawMessage(`null`)})
+		ResourceToken  string          `json:"resource_token"`
+		AgentToken     string          `json:"agent_token"`
+		PresentedToken string          `json:"presented_token"`
+		Budget         json.RawMessage `json:"budget"`
+	}{
+		ResourceToken: resourceToken, AgentToken: agentToken, Budget: json.RawMessage(`null`),
+		PresentedToken: accessServerPresentedToken(t, personKey, now, resourceToken, agentKey),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

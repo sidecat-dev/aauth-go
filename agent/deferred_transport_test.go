@@ -29,7 +29,7 @@ func TestExchangePendingLocationUsesEffectiveHTTPOrigin(t *testing.T) {
 			h.initial = func(r *http.Request) (*http.Response, error) {
 				return validExchangePendingResponse(r, test.location, "0", "pending"), nil
 			}
-			result, err := h.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken, Capabilities: []string{"interaction"}})
+			result, err := h.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken, PresentedToken: h.presentedToken, Capabilities: []string{"interaction"}})
 			if test.wantError {
 				if err == nil {
 					t.Fatal("accepted wrong origin")
@@ -59,7 +59,7 @@ func TestExchangeRetryResponseOwnershipAndHTTPDate(t *testing.T) {
 			clockCallsAtResponse = clock.calls
 			return retryResponse(r, http.StatusServiceUnavailable, retryAt.Format(http.TimeFormat), body), nil
 		}
-		result, err := h.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken})
+		result, err := h.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken, PresentedToken: h.presentedToken})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,7 +88,7 @@ func TestExchangeRetryResponseOwnershipAndHTTPDate(t *testing.T) {
 		h.initial = func(r *http.Request) (*http.Response, error) {
 			return retryResponse(r, http.StatusServiceUnavailable, "tomorrow", body), nil
 		}
-		result, err := h.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken})
+		result, err := h.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken, PresentedToken: h.presentedToken})
 		if err == nil {
 			t.Fatal("accepted invalid initial Retry-After")
 		}
@@ -246,7 +246,7 @@ func TestExchangeConsumedResponseBodiesAreClosed(t *testing.T) {
 			return response, nil
 		}
 		if _, err := h.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken, Capabilities: []string{"interaction"},
+			PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken, PresentedToken: h.presentedToken, Capabilities: []string{"interaction"},
 		}); err == nil {
 			t.Fatal("accepted malformed pending body")
 		}

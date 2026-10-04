@@ -33,6 +33,7 @@ func TestFederatedR3MCPClassFetchesBeforeConsentAndVerifiesAccessServerResult(t 
 		{Issuer: "https://provider.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}:    providerKey.PublicJWK(),
 		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
 		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}:       accessKey.PublicJWK(),
+		{Issuer: "https://person.example", DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personKey.ID()}:       personKey.PublicJWK(),
 	}
 	agentToken, err := aauth.MintAgentToken(
 		"https://provider.example", providerKey,
@@ -70,6 +71,7 @@ func TestFederatedR3MCPClassFetchesBeforeConsentAndVerifiesAccessServerResult(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	presentedToken := testPresentedPersonToken(t, personKey, resourceToken, agentKey.PublicJWK(), now, now.Add(30*time.Minute))
 	grantedOperations, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
 	grant, _ := r3.NewGrant(grantedOperations, document)
 	perCallOperations, _ := r3.NewGrantedOperations(mcp.Vocabulary(), export)
@@ -121,13 +123,14 @@ func TestFederatedR3MCPClassFetchesBeforeConsentAndVerifiesAccessServerResult(t 
 		case "https://api.access.example/token":
 			sequence = append(sequence, "access-server")
 			var input struct {
-				ResourceToken string `json:"resource_token"`
-				AgentToken    string `json:"agent_token"`
+				ResourceToken  string `json:"resource_token"`
+				PresentedToken string `json:"presented_token"`
+				AgentToken     string `json:"agent_token"`
 			}
 			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 				t.Fatal(err)
 			}
-			if input.ResourceToken != resourceToken || input.AgentToken != agentToken {
+			if input.ResourceToken != resourceToken || input.PresentedToken != presentedToken || input.AgentToken != agentToken {
 				t.Fatalf("Access Server input changed exact tokens")
 			}
 			return &http.Response{
@@ -188,9 +191,7 @@ func TestFederatedR3MCPClassFetchesBeforeConsentAndVerifiesAccessServerResult(t 
 		t.Fatal(err)
 	}
 	call := func() *httptest.ResponseRecorder {
-		body, _ := json.Marshal(struct {
-			ResourceToken string `json:"resource_token"`
-		}{ResourceToken: resourceToken})
+		body := testTokenRequestBody(t, resourceToken, presentedToken)
 		request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -288,7 +289,8 @@ func TestFederatedR3MCPClassFetchesBeforeConsentAndVerifiesAccessServerResult(t 
 			}{AuthToken: invalid.token, ExpiresIn: 1800})
 			sequence = nil
 			response := call()
-			if response.Code != http.StatusInternalServerError || bytes.Contains(response.Body.Bytes(), []byte(invalid.token)) {
+			if response.Code != http.StatusBadGateway || !bytes.Contains(response.Body.Bytes(), []byte(`"as_unreachable"`)) ||
+				bytes.Contains(response.Body.Bytes(), []byte(invalid.token)) {
 				t.Fatalf("invalid AS result = %d %s", response.Code, response.Body.String())
 			}
 		})

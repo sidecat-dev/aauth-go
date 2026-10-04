@@ -83,9 +83,9 @@ func TestFederatedMissionAuthorizationRefusesChangedMissionDigestBeforeCommit(t 
 			})
 			response := fixture.exchange(t, httptest.NewRecorder())
 			assertMissionFederationDidNotRelease(t, response, fixture.authToken)
-			if response.Code != http.StatusInternalServerError {
-				t.Fatalf("changed mission digest status = %d, want %d; body=%s",
-					response.Code, http.StatusInternalServerError, response.Body.String())
+			if response.Code != http.StatusBadGateway || !bytes.Contains(response.Body.Bytes(), []byte(`"as_unreachable"`)) {
+				t.Fatalf("changed mission digest status = %d, want %d as_unreachable; body=%s",
+					response.Code, http.StatusBadGateway, response.Body.String())
 			}
 			if attempts, committed, _ := fixture.store.observation(); attempts != 0 || committed {
 				t.Fatalf("changed mission digest reached mission commit: attempts:%d committed:%t", attempts, committed)
@@ -228,6 +228,7 @@ type missionFederationFixture struct {
 	authJTI        string
 	authToken      string
 	resourceToken  string
+	presentedToken string
 }
 
 func newMissionFederationFixture(t *testing.T, times missionFederationTimes) *missionFederationFixture {
@@ -338,17 +339,18 @@ func newMissionFederationFixture(t *testing.T, times missionFederationTimes) *mi
 	return &missionFederationFixture{
 		protocol: protocol, store: store, server: server, mission: mission, times: times,
 		accessServerID: accessServerID, authJTI: authJTI, authToken: authToken, resourceToken: resourceToken,
+		// The Person token outlives the Access Server token so the Mission
+		// bound, not the presented-token bound, decides these cases.
+		presentedToken: testPresentedPersonToken(
+			t, protocol.personKey, resourceToken, protocol.agentKey.PublicJWK(), times.now,
+			laterTime(personRecord.ExpiresAt, times.authExpiresAt),
+		),
 	}
 }
 
 func (fixture *missionFederationFixture) exchange(t *testing.T, recorder http.ResponseWriter) *httptest.ResponseRecorder {
 	t.Helper()
-	body, err := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-	}{ResourceToken: fixture.resourceToken})
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := testTokenRequestBody(t, fixture.resourceToken, fixture.presentedToken)
 	request := httptest.NewRequest(http.MethodPost, fixture.protocol.personServerID+"/token", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(
@@ -438,4 +440,11 @@ func assertMissionFederationDidNotRelease(t *testing.T, response *httptest.Respo
 	if _, exists := output["auth_token"]; exists {
 		t.Fatalf("failed federated exchange returned auth_token: %s", response.Body.String())
 	}
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }

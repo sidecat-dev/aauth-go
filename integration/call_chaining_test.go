@@ -137,7 +137,7 @@ func TestCurrentCoreImmediateTwoResourceCallChain(t *testing.T) {
 
 	personServerConfig := personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personServerKey, KeyResolver: keyResolver,
-		Clock: clock, Tokens: personTokens,
+		Clock: clock, Tokens: personTokens, IssuedTokens: newMemoryIssuedAuthTokenStore(),
 		NewID: func() string {
 			issuedTokenSequence++
 			return fmt.Sprintf("call-chain-person-server-token-%d", issuedTokenSequence)
@@ -363,7 +363,7 @@ func TestCurrentCoreImmediateTwoResourceCallChain(t *testing.T) {
 			}
 
 			downstreamAuthToken, err = relay.Exchange(request.Context(), clientagent.ExchangeRequest{
-				ResourceToken: downstreamResourceToken, UpstreamToken: compact,
+				ResourceToken: downstreamResourceToken, PresentedToken: downstreamPersonToken, UpstreamToken: compact,
 			})
 			if err != nil {
 				t.Errorf("Resource 1 obtain downstream auth token: %v", err)
@@ -488,7 +488,7 @@ func TestCurrentCoreImmediateTwoResourceCallChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	upstreamAuthToken, err = reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: upstreamResourceToken,
+		PersonServer: personServerID, ResourceToken: upstreamResourceToken, PresentedToken: upstreamPersonToken,
 	})
 	if err != nil {
 		t.Fatal(err)

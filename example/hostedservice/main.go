@@ -201,7 +201,7 @@ func runProfileForAccountObserved(
 		return err
 	}
 	if _, err := bootstrap.client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: lateResourceToken,
+		PersonServer: personServerID, ResourceToken: lateResourceToken, PresentedToken: missionPersonToken,
 	}); err == nil {
 		return errors.New("hosted-service example: completed mission authorized more connector work")
 	}

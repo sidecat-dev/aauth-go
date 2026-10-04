@@ -152,19 +152,24 @@ type AuthorizeRequest struct {
 	Header http.Header
 }
 
-// ExchangeRequest carries one exact resource token and optional request-body
-// capabilities to its Person Server. A top-level parent sets SubagentToken
+// ExchangeRequest carries one exact resource token, the token the Agent
+// presented to the Resource when it received that resource token, and optional
+// request-body capabilities to its Person Server. PresentedToken is the person
+// token of a first exchange or the current auth token of a step-up or per-call
+// exchange; its jti must be the resource token's presented_jti. A top-level
+// parent sets SubagentToken
 // when the resource token is bound to that child. A Resource acting as an
 // Agent instead sets UpstreamToken; that verified token selects the Person
 // Server, so PersonServer may be empty or must name the same server. Exchange
 // remains immediate-only; BeginExchange exposes a verified pending
 // continuation only for a direct top-level request.
 type ExchangeRequest struct {
-	PersonServer  string
-	ResourceToken string
-	SubagentToken string
-	UpstreamToken string
-	Capabilities  []string
+	PersonServer   string
+	ResourceToken  string
+	PresentedToken string
+	SubagentToken  string
+	UpstreamToken  string
+	Capabilities   []string
 }
 
 // New constructs a bounded Agent and verifies that its configured token

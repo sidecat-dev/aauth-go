@@ -26,13 +26,13 @@ func TestExchangeInteractionImmediateResultMatchesExchange(t *testing.T) {
 	client := harness.client(t)
 
 	want, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestExchangeInteractionPreservesExplicitEmptyCapabilities(t *testing.T) {
 	}
 	client := harness.client(t)
 	_, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		Capabilities: []string{},
 	})
 	var problem *aauth.ProblemError
@@ -83,9 +83,10 @@ func TestExchangeInteractionInitialPendingIsVerifiedAndDoesNotPoll(t *testing.T)
 	}
 	client := harness.client(t)
 	result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer:  harness.protocol.personServerID,
-		ResourceToken: harness.resourceToken,
-		Capabilities:  []string{"interaction", "future-capability"},
+		PersonServer:   harness.protocol.personServerID,
+		ResourceToken:  harness.resourceToken,
+		PresentedToken: harness.presentedToken,
+		Capabilities:   []string{"interaction", "future-capability"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +148,7 @@ func TestExchangeInteractionGenericPendingRequirementsAndFallbacks(t *testing.T)
 			}}
 			client := harness.client(t)
 			result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 				Capabilities: test.capabilities,
 			})
 			if err != nil {
@@ -212,7 +213,7 @@ func TestExchangeInteractionValidatesOnlyTheActiveRequirementBody(t *testing.T) 
 				return response, nil
 			}
 			if _, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 			}); err == nil {
 				t.Fatal("BeginExchange accepted an invalid requirement body")
 			}
@@ -230,7 +231,7 @@ func TestExchangeInteractionValidatesOnlyTheActiveRequirementBody(t *testing.T) 
 			return response, nil
 		}
 		result, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -255,7 +256,7 @@ func TestExchangeClarificationRetainsTypedQuestionAndCopiesOptions(t *testing.T)
 		), nil
 	}
 	result, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		Capabilities: []string{"clarification"},
 	})
 	if err != nil {
@@ -295,7 +296,7 @@ func TestExchangeClarificationRetainsTypedQuestionAndCopiesOptions(t *testing.T)
 		), nil
 	}
 	result, err = harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		Capabilities: []string{"clarification"},
 	})
 	if err != nil {
@@ -397,6 +398,9 @@ func TestRestorePendingExchangeRestoresMissionBoundResourceContext(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	harness.presentedToken = harness.protocol.presentedPersonToken(
+		t, harness.resourceClaims, harness.protocol.agentKey.PublicJWK(),
+	)
 	harness.initial = func(request *http.Request) (*http.Response, error) {
 		return validExchangePendingResponse(request, "/pending/mission-exchange", "0", "pending"), nil
 	}
@@ -624,7 +628,7 @@ func TestExchangeClarificationRequiresDeclaredCapabilityOnBeginAndPoll(t *testin
 			return validExchangeClarificationResponse(request, `{"status":"pending","clarification":"Why?"}`), nil
 		}
 		if _, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		}); err == nil || !strings.Contains(err.Error(), "declared clarification capability") {
 			t.Fatalf("BeginExchange error = %v", err)
 		}
@@ -645,7 +649,7 @@ func TestExchangeClarificationRequiresDeclaredCapabilityOnBeginAndPoll(t *testin
 		}}
 		client := harness.client(t)
 		result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -802,7 +806,7 @@ func TestCancelClarificationRequiresAnActiveClarificationBeforeNetwork(t *testin
 	}
 	client := harness.client(t)
 	result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		Capabilities: []string{"clarification"},
 	})
 	if err != nil {
@@ -967,7 +971,7 @@ func TestExchangeInteractionResolvesPendingAgainstTokenEndpointOrigin(t *testing
 	}
 	client := harness.client(t)
 	result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		Capabilities: []string{"interaction"},
 	})
 	if err != nil {
@@ -1027,7 +1031,7 @@ func TestExchangeInteractionRequiresDeclaredValidCapability(t *testing.T) {
 		}
 		client := harness.client(t)
 		if _, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		}); err == nil {
 			t.Fatal("BeginExchange accepted interaction without capability")
 		}
@@ -1043,7 +1047,7 @@ func TestExchangeInteractionRequiresDeclaredValidCapability(t *testing.T) {
 		}
 		client := harness.client(t)
 		if _, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 			Capabilities: []string{"interaction"},
 		}); err == nil {
 			t.Fatal("Exchange accepted a pending response")
@@ -1059,7 +1063,7 @@ func TestExchangeInteractionRequiresDeclaredValidCapability(t *testing.T) {
 			harness := newExchangeInteractionHarness(t)
 			client := harness.client(t)
 			if _, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 				Capabilities: capabilities,
 			}); err == nil {
 				t.Fatal("BeginExchange accepted malformed capabilities")
@@ -1162,7 +1166,7 @@ func TestExchangeInteractionRejectsMalformedPendingResponses(t *testing.T) {
 			}
 			client := harness.client(t)
 			if _, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 				Capabilities: []string{"interaction"},
 			}); err == nil {
 				t.Fatal("BeginExchange accepted malformed pending response")
@@ -1435,7 +1439,7 @@ func TestExchangeInteractionCancellationMakesNoUnintendedRequest(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if _, err := client.BeginExchange(ctx, agent.ExchangeRequest{
-			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 			Capabilities: []string{"interaction"},
 		}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("BeginExchange error = %v", err)
@@ -1470,7 +1474,7 @@ func TestExchangeInteractionCancellationMakesNoUnintendedRequest(t *testing.T) {
 		}
 		client := harness.client(t)
 		if _, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+			PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 			Capabilities: []string{"interaction"},
 		}); err == nil || !strings.Contains(err.Error(), "transport failed") {
 			t.Fatalf("BeginExchange error = %v", err)
@@ -1527,6 +1531,7 @@ type exchangeInteractionHarness struct {
 	t                   *testing.T
 	protocol            *testProtocol
 	resourceToken       string
+	presentedToken      string
 	resourceClaims      aauth.ResourceTokenClaims
 	initial             func(*http.Request) (*http.Response, error)
 	poll                []func(*http.Request) (*http.Response, error)
@@ -1558,7 +1563,12 @@ func newExchangeInteractionHarness(t *testing.T) *exchangeInteractionHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &exchangeInteractionHarness{t: t, protocol: protocol, resourceToken: compact, resourceClaims: claims}
+	presented := requestImmediatePersonToken(t, protocol.newClient(t), agent.PersonTokenRequest{
+		PersonServer: protocol.personServerID, Resource: protocol.resourceID,
+	})
+	return &exchangeInteractionHarness{
+		t: t, protocol: protocol, resourceToken: compact, presentedToken: presented, resourceClaims: claims,
+	}
 }
 
 func (harness *exchangeInteractionHarness) client(t *testing.T) *agent.Client {
@@ -1586,12 +1596,16 @@ func (harness *exchangeInteractionHarness) roundTrip(request *http.Request) (*ht
 			harness.t.Fatal(err)
 		}
 		var body struct {
-			ResourceToken string    `json:"resource_token"`
-			Capabilities  *[]string `json:"capabilities"`
+			ResourceToken  string    `json:"resource_token"`
+			PresentedToken string    `json:"presented_token"`
+			Capabilities   *[]string `json:"capabilities"`
 		}
 		decodeRequest(harness.t, request, &body)
 		if body.ResourceToken != harness.resourceToken {
 			harness.t.Fatal("exchange changed the resource token bytes")
+		}
+		if body.PresentedToken != harness.presentedToken {
+			harness.t.Fatal("exchange changed the presented token bytes")
 		}
 		harness.capabilitiesPresent = body.Capabilities != nil
 		if body.Capabilities != nil {
@@ -1659,7 +1673,7 @@ func (harness *exchangeInteractionHarness) authTokenResponse(
 func beginExchangeInteraction(t *testing.T, client *agent.Client, harness *exchangeInteractionHarness) agent.PendingExchange {
 	t.Helper()
 	result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		Capabilities: []string{"interaction"},
 	})
 	if err != nil {
@@ -1675,7 +1689,7 @@ func beginExchangeInteraction(t *testing.T, client *agent.Client, harness *excha
 func beginExchangeClarification(t *testing.T, client *agent.Client, harness *exchangeInteractionHarness) agent.PendingExchange {
 	t.Helper()
 	result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 		Capabilities: []string{"clarification"},
 	})
 	if err != nil {

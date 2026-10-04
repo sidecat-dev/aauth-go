@@ -221,7 +221,7 @@ func TestCurrentCoreThreePartyClarificationAcrossRecomposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	begin, err := reader.BeginExchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		Capabilities: []string{"interaction", "clarification"},
 	})
 	if err != nil {

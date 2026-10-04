@@ -462,11 +462,13 @@ func TestDeferredAuthorizationRequiresInteractionCapabilityBeforeCreatingState(t
 	}
 
 	for _, body := range []string{
-		`{"resource_token":"TOKEN","capabilities":null}`,
-		`{"resource_token":"TOKEN","capabilities":["interaction","interaction"]}`,
-		`{"resource_token":"TOKEN","capabilities":["not a token"]}`,
+		`{"resource_token":"TOKEN","presented_token":"PRESENTED","capabilities":null}`,
+		`{"resource_token":"TOKEN","presented_token":"PRESENTED","capabilities":["interaction","interaction"]}`,
+		`{"resource_token":"TOKEN","presented_token":"PRESENTED","capabilities":["not a token"]}`,
 	} {
-		response := protocol.exchangeBody(t, server, strings.Replace(body, "TOKEN", protocol.resourceToken, 1))
+		body = strings.Replace(body, "TOKEN", protocol.resourceToken, 1)
+		body = strings.Replace(body, "PRESENTED", protocol.presentedToken(t), 1)
+		response := protocol.exchangeBody(t, server, body)
 		assertAuthorizationInteractionProblem(t, response, http.StatusBadRequest, "invalid_request")
 	}
 }
@@ -1051,16 +1053,19 @@ func TestDeferredAuthorizationServerValidatesCanonicalApprovalBeforeSuccess(t *t
 }
 
 type authorizationInteractionProtocol struct {
-	t                   *testing.T
-	now                 time.Time
-	clock               aauth.Clock
-	providerKey         jose.SigningKey
-	personKey           jose.SigningKey
-	resourceKey         jose.SigningKey
-	agentKey            jose.SigningKey
-	resolver            signaturekey.KeyResolver
-	agentToken          string
-	resourceToken       string
+	t             *testing.T
+	now           time.Time
+	clock         aauth.Clock
+	providerKey   jose.SigningKey
+	personKey     jose.SigningKey
+	resourceKey   jose.SigningKey
+	agentKey      jose.SigningKey
+	resolver      signaturekey.KeyResolver
+	agentToken    string
+	resourceToken string
+	// presentedExpiresAt, when set, replaces the default expiry of the presented
+	// Person token.
+	presentedExpiresAt  time.Time
 	providerID          string
 	personServerID      string
 	resourceID          string
@@ -1188,7 +1193,7 @@ func (p *authorizationInteractionProtocol) newServer(t *testing.T, store Deferre
 
 func (p *authorizationInteractionProtocol) exchange(t *testing.T, server *Server, capabilities []string) *httptest.ResponseRecorder {
 	t.Helper()
-	body := map[string]any{"resource_token": p.resourceToken}
+	body := map[string]any{"resource_token": p.resourceToken, "presented_token": p.presentedToken(t)}
 	if capabilities != nil {
 		body["capabilities"] = capabilities
 	}
@@ -1197,6 +1202,17 @@ func (p *authorizationInteractionProtocol) exchange(t *testing.T, server *Server
 		t.Fatal(err)
 	}
 	return p.exchangeBody(t, server, string(encoded))
+}
+
+// presentedToken mints the Person token the retained record describes, bound
+// to the protocol's resource token and valid until the record expires.
+func (p *authorizationInteractionProtocol) presentedToken(t *testing.T) string {
+	t.Helper()
+	expiresAt := p.now.Add(20 * time.Minute)
+	if !p.presentedExpiresAt.IsZero() {
+		expiresAt = p.presentedExpiresAt
+	}
+	return testPresentedPersonToken(t, p.personKey, p.resourceToken, p.agentKey.PublicJWK(), p.now, expiresAt)
 }
 
 func (p *authorizationInteractionProtocol) exchangeBody(t *testing.T, server *Server, body string) *httptest.ResponseRecorder {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -127,8 +128,9 @@ func (p *subagentPersonServerProtocol) tokenRequestWithCapabilities(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 	requestBody := map[string]any{
-		"resource_token": resourceToken,
-		"subagent_token": childToken,
+		"resource_token":  resourceToken,
+		"presented_token": p.presentedToken(t, resourceToken),
+		"subagent_token":  childToken,
 	}
 	if len(capabilities) > 0 {
 		requestBody["capabilities"] = capabilities
@@ -145,6 +147,31 @@ func (p *subagentPersonServerProtocol) tokenRequestWithCapabilities(
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	return response
+}
+
+// presentedToken mints the Person token the request presents, bound to
+// whichever of the parent or child keys the resource token names.
+func (p *subagentPersonServerProtocol) presentedToken(t *testing.T, resourceToken string) string {
+	t.Helper()
+	parts := strings.Split(resourceToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("resource token has %d parts", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		AgentJKT string `json:"agent_jkt"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	agent := p.childKey.PublicJWK()
+	if jkt, err := p.parentKey.PublicJWK().Thumbprint(); err == nil && jkt == claims.AgentJKT {
+		agent = p.parentKey.PublicJWK()
+	}
+	return testPresentedPersonToken(t, p.personKey, resourceToken, agent, p.now, p.now.Add(10*time.Minute))
 }
 
 func (p *subagentPersonServerProtocol) resourceToken(t *testing.T, audience, presentedJTI string, key jose.JWK) string {
@@ -684,7 +711,7 @@ func TestFederatedServerForwardsExactSubagentAndValidatesChildBoundResult(t *tes
 		wantStatus int
 	}{
 		{name: "child-bound result", resultKey: func(p *subagentPersonServerProtocol) jose.JWK { return p.childKey.PublicJWK() }, wantStatus: http.StatusOK},
-		{name: "parent-bound result", resultKey: func(p *subagentPersonServerProtocol) jose.JWK { return p.parentKey.PublicJWK() }, wantStatus: http.StatusInternalServerError},
+		{name: "parent-bound result", resultKey: func(p *subagentPersonServerProtocol) jose.JWK { return p.parentKey.PublicJWK() }, wantStatus: http.StatusBadGateway},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -703,14 +730,15 @@ func TestFederatedServerForwardsExactSubagentAndValidatesChildBoundResult(t *tes
 			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				forwarded++
 				var input struct {
-					ResourceToken string `json:"resource_token"`
-					AgentToken    string `json:"agent_token"`
-					SubagentToken string `json:"subagent_token"`
+					ResourceToken  string `json:"resource_token"`
+					PresentedToken string `json:"presented_token"`
+					AgentToken     string `json:"agent_token"`
+					SubagentToken  string `json:"subagent_token"`
 				}
 				if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 					t.Fatal(err)
 				}
-				if input.ResourceToken != resourceToken || input.AgentToken != p.parentToken || input.SubagentToken != p.childToken {
+				if input.ResourceToken != resourceToken || input.PresentedToken == "" || input.AgentToken != p.parentToken || input.SubagentToken != p.childToken {
 					t.Fatalf("federated input = %#v", input)
 				}
 				authToken, err := aauth.MintAuthToken(p.accessKey, aauth.AuthTokenClaims{

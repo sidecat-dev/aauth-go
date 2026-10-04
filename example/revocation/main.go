@@ -184,7 +184,7 @@ func run(output io.Writer) error {
 			return "", aauth.AuthTokenClaims{}, err
 		}
 		authToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-			PersonServer: personServerID, ResourceToken: resourceToken,
+			PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		})
 		if err != nil {
 			return "", aauth.AuthTokenClaims{}, err

@@ -105,6 +105,9 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		return
 	}
 	issuedRecord, err := issuedAuthTokenRecord(compact, claims)
+	if err == nil {
+		err = issuedRecord.bindRecipient(credentialAgent, nil)
+	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return

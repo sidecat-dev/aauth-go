@@ -15,6 +15,7 @@ import (
 var (
 	errUpstreamTokenSyntax      = errors.New("personserver: upstream_token must be a non-empty compact token string")
 	errUpstreamTokenUnsupported = errors.New("personserver: upstream_token is not supported by this authorization configuration")
+	errUpstreamCallerRevoked    = errors.New("personserver: the Agent token of the upstream token's calling Agent is revoked")
 )
 
 type verifiedUpstreamToken struct {
@@ -27,6 +28,12 @@ type upstreamTokenFailure struct{ cause error }
 
 func (failure *upstreamTokenFailure) Error() string { return failure.cause.Error() }
 func (failure *upstreamTokenFailure) Unwrap() error { return failure.cause }
+
+// upstreamStoreError reports a fault in this Person Server's own records.
+type upstreamStoreError struct{ cause error }
+
+func (failure *upstreamStoreError) Error() string { return failure.cause.Error() }
+func (failure *upstreamStoreError) Unwrap() error { return failure.cause }
 
 type unsupportedCallChainError struct{ cause error }
 
@@ -71,14 +78,61 @@ func (server *Server) verifyOptionalUpstreamToken(
 	if claims.MissionS256 != "" || claims.Account != nil {
 		return nil, &unsupportedCallChainError{cause: errors.New("personserver: mission- or account-bound call chaining is not implemented")}
 	}
-	return &verifiedUpstreamToken{
+	upstream := &verifiedUpstreamToken{
 		claims: cloneAuthTokenClaims(claims),
 		reference: aauth.TokenReference{
 			Issuer: claims.Issuer,
 			JTI:    claims.JTI,
 		},
 		digest: sha256.Sum256([]byte(compact)),
-	}, nil
+	}
+	if err := server.identifyUpstreamCaller(ctx, upstream); err != nil {
+		return nil, err
+	}
+	return upstream, nil
+}
+
+// identifyUpstreamCaller finds the Agent this Person Server issued the upstream
+// auth token to, from the issuance record of that exact token, and refuses a
+// caller whose Agent token has been revoked. The token's signature does not
+// identify the caller, and neither do the intermediary's Agent token or the
+// upstream token's own jti.
+func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *verifiedUpstreamToken) error {
+	if server.issuedAuthTokens == nil {
+		return &upstreamTokenFailure{cause: errors.New("personserver: no issuance record identifies the upstream token's calling Agent")}
+	}
+	record, err := server.issuedAuthTokens.LoadIssuedAuthToken(ctx, upstream.reference)
+	if errors.Is(err, ErrIssuedAuthTokenNotFound) {
+		return &upstreamTokenFailure{cause: errors.New("personserver: no issuance record identifies the upstream token's calling Agent")}
+	}
+	if err != nil {
+		return &upstreamStoreError{cause: err}
+	}
+	thumbprint, err := upstream.claims.Confirmation.JWK.Thumbprint()
+	if err != nil {
+		return &upstreamTokenFailure{cause: err}
+	}
+	if validateIssuedAuthTokenRecord(record) != nil ||
+		record.Reference != upstream.reference ||
+		record.CompactSHA256 != upstream.digest ||
+		record.Resource != upstream.claims.Audience ||
+		!record.identifiesRecipient() ||
+		record.AgentJKT != thumbprint {
+		return &upstreamTokenFailure{cause: errors.New("personserver: the upstream token's issuance record does not identify its calling Agent")}
+	}
+	if server.agentTokenRevocations != nil {
+		revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{
+			Issuer: record.AgentProvider,
+			JTI:    record.AgentTokenJTI,
+		})
+		if err != nil {
+			return &upstreamStoreError{cause: err}
+		}
+		if revoked {
+			return errUpstreamCallerRevoked
+		}
+	}
+	return nil
 }
 
 func (upstream *verifiedUpstreamToken) policyClaims() *aauth.AuthTokenClaims {
@@ -98,6 +152,15 @@ func (upstream *verifiedUpstreamToken) bindRecord(record *PersonTokenRecord) {
 }
 
 func (upstream *verifiedUpstreamToken) matchesRecord(record PersonTokenRecord) bool {
+	if upstream == nil {
+		return record.UpstreamTokenReference == (aauth.TokenReference{}) && record.UpstreamTokenSHA256 == ([32]byte{})
+	}
+	return record.UpstreamTokenReference == upstream.reference && record.UpstreamTokenSHA256 == upstream.digest
+}
+
+// matchesIssuedRecord reports whether an issued auth-token record names
+// exactly this upstream token, or none when the request carries none.
+func (upstream *verifiedUpstreamToken) matchesIssuedRecord(record IssuedAuthTokenRecord) bool {
 	if upstream == nil {
 		return record.UpstreamTokenReference == (aauth.TokenReference{}) && record.UpstreamTokenSHA256 == ([32]byte{})
 	}
@@ -127,6 +190,15 @@ func (server *Server) writeUpstreamTokenProblem(response http.ResponseWriter, er
 	var unsupported *unsupportedCallChainError
 	if errors.As(err, &unsupported) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", unsupported.cause)
+		return
+	}
+	var storeFailure *upstreamStoreError
+	if errors.As(err, &storeFailure) {
+		writeProblem(response, http.StatusInternalServerError, "server_error", storeFailure.cause)
+		return
+	}
+	if errors.Is(err, errUpstreamCallerRevoked) {
+		writeProblem(response, http.StatusBadRequest, "revoked_upstream_token", err)
 		return
 	}
 	var tokenFailure *upstreamTokenFailure

@@ -341,7 +341,12 @@ func (server *Server) validateR3Retry(
 	if err != nil {
 		return r3.Proposal{}, aauth.ResourceTokenClaims{}, retainedR3State(err)
 	}
-	if retained.PresentedJTI != classClaims.PresentedJTI ||
+	// The proposal token's presented_jti is the jti of the class Auth token the
+	// agent presented. The class record is written before that token exists and
+	// cannot hold its jti, so no equality with the class record is checked
+	// here. The retry is tied to its class record by ClassReference and by the
+	// context claims below, not by token lineage.
+	if retained.PresentedJTI == "" ||
 		retained.PersonServer != classClaims.PersonServer || retained.Subject != classClaims.Subject ||
 		retained.AgentJKT != classClaims.AgentJKT || retained.Tenant != classClaims.Tenant ||
 		retained.MissionS256 != classClaims.MissionS256 || !equalOptionalString(retained.Account, classClaims.Account) {
@@ -599,7 +604,7 @@ func (server *Server) r3ProposalClaims(
 		AgentJKT: fingerprint, IssuedAt: verifiedAt.Unix(), ExpiresAt: expiresAt.Unix(),
 		Scope: classClaims.Scope, Account: cloneAuthorizationAccount(classClaims.Account),
 		PersonServer: retained.PersonServer, Subject: retained.Subject,
-		PresentedJTI: retained.PresentedJTI, MissionS256: classClaims.MissionS256,
+		PresentedJTI: classClaims.JTI, MissionS256: classClaims.MissionS256,
 		Tenant: classClaims.Tenant,
 	}, expiresAt, nil
 }

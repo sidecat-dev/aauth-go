@@ -149,7 +149,7 @@ func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T)
 		t.Fatalf("authorize input/output = %#v / %t", authorizeInput, gotResourceToken == resourceToken)
 	}
 	gotAuthToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: "https://person.example", ResourceToken: gotResourceToken,
+		PersonServer: "https://person.example", ResourceToken: gotResourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)

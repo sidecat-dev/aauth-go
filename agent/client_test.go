@@ -58,8 +58,9 @@ func TestClientCompletesImmediateCoreCallsWithJWTProofs(t *testing.T) {
 		t.Fatal(err)
 	}
 	authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer:  protocol.personServerID,
-		ResourceToken: resourceToken,
+		PersonServer:   protocol.personServerID,
+		ResourceToken:  resourceToken,
+		PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +115,7 @@ func TestClientAcceptsIndependentResourceAndAuthTokenLifetimes(t *testing.T) {
 		t.Fatalf("resource-token exp = %d", resourceClaims.ExpiresAt)
 	}
 	authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +443,7 @@ func TestClientUsesEndpointsDiscoveredFromRoleMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +588,7 @@ func TestClientRejectsReturnedTokensOutsideThePrecedingContext(t *testing.T) {
 		}
 		protocol.authSubject = "other-person"
 		_, err = client.Exchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+			PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		})
 		if err == nil || !strings.Contains(err.Error(), "auth-token sub") {
 			t.Fatalf("Exchange error = %v", err)
@@ -609,7 +610,7 @@ func TestClientRejectsReturnedTokensOutsideThePrecedingContext(t *testing.T) {
 		protocol.authDiscoveryDocument = aauth.PersonDiscoveryDocument
 		protocol.authPersonServer = protocol.accessServerID
 		_, err = client.Exchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+			PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		})
 		if err == nil || !strings.Contains(err.Error(), "auth-token ps") {
 			t.Fatalf("Exchange error = %v", err)
@@ -633,7 +634,7 @@ func TestClientRejectsReturnedTokensOutsideThePrecedingContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-			PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+			PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		})
 		if err != nil || authToken == "" {
 			t.Fatalf("Exchange = %q, %v", authToken, err)
@@ -936,7 +937,7 @@ func (protocol *testProtocol) issueAuthToken(t *testing.T, client *agent.Client)
 		t.Fatal(err)
 	}
 	authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -955,6 +956,24 @@ func requestImmediatePersonToken(t *testing.T, client *agent.Client, request age
 		t.Fatalf("PersonToken result = %#v, want immediate token", result)
 	}
 	return token
+}
+
+// presentedPersonToken mints the person token a hand-built resource token
+// names, bound to the given agent key.
+func (protocol *testProtocol) presentedPersonToken(
+	t *testing.T, resource aauth.ResourceTokenClaims, confirmation jose.JWK,
+) string {
+	t.Helper()
+	compact, err := aauth.MintPersonToken(protocol.personServerKey, aauth.PersonTokenClaims{
+		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument, Audience: resource.Issuer,
+		Subject: resource.Subject, Confirmation: aauth.Confirmation{JWK: confirmation},
+		JTI: resource.PresentedJTI, IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
+		MissionS256: resource.MissionS256, Tenant: resource.Tenant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compact
 }
 
 func (protocol *testProtocol) newClientWithHTTPClient(t *testing.T, httpClient *http.Client) *agent.Client {
@@ -1109,11 +1128,15 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 			protocol.t.Fatal(err)
 		}
 		var input struct {
-			ResourceToken string `json:"resource_token"`
+			ResourceToken  string `json:"resource_token"`
+			PresentedToken string `json:"presented_token"`
 		}
 		decodeRequest(protocol.t, request, &input)
 		if input.ResourceToken == "" {
 			protocol.t.Fatal("token exchange did not present the resource token")
+		}
+		if input.PresentedToken == "" {
+			protocol.t.Fatal("token exchange did not carry the presented token")
 		}
 		authDiscoveryDocument := protocol.authDiscoveryDocument
 		if authDiscoveryDocument == "" {

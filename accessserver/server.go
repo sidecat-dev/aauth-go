@@ -169,14 +169,19 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 
 	var input struct {
-		ResourceToken string          `json:"resource_token"`
-		AgentToken    string          `json:"agent_token"`
-		SubagentToken json.RawMessage `json:"subagent_token"`
-		UpstreamToken json.RawMessage `json:"upstream_token"`
-		Budget        json.RawMessage `json:"budget"`
+		ResourceToken  string          `json:"resource_token"`
+		AgentToken     string          `json:"agent_token"`
+		PresentedToken string          `json:"presented_token"`
+		SubagentToken  json.RawMessage `json:"subagent_token"`
+		UpstreamToken  json.RawMessage `json:"upstream_token"`
+		Budget         json.RawMessage `json:"budget"`
 	}
 	if err := decodeJSON(request.Body, &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	if input.PresentedToken == "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: presented_token is required"))
 		return
 	}
 	if input.UpstreamToken != nil {
@@ -250,6 +255,24 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token interaction requires the deferred flow"))
 		return
 	}
+	agentJKT, err := confirmation.Thumbprint()
+	if err != nil || agentJKT != resourceClaims.AgentJKT {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the authorized agent key"))
+		return
+	}
+	// The resource token names the token the agent presented by jti alone. The
+	// Access Server verifies that token itself: its signature, its binding to
+	// the resource token, and its expiry, which bounds the token issued here.
+	presented, err := aauth.VerifyPresentedToken(
+		request.Context(), input.PresentedToken, resourceClaims, server.keyResolver, verificationClock,
+	)
+	if err == nil {
+		err = proof.CheckIssuedAt(presentedTokenIssuedAt(presented))
+	}
+	if err != nil {
+		writePresentedTokenProblem(response, err)
+		return
+	}
 	var budgetCeiling *budgets.Value
 	if budgetOffer != nil {
 		if err := server.budget.validateOffer(request.Context(), resourceClaims.Issuer, *budgetOffer); err != nil {
@@ -270,11 +293,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	budgetCeiling, err = selectBudgetCeiling(budgetOffer, personBudgetCeiling)
 	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
-		return
-	}
-	agentJKT, err := confirmation.Thumbprint()
-	if err != nil || agentJKT != resourceClaims.AgentJKT {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not name the authorized agent key"))
 		return
 	}
 	var requestedScopes []string
@@ -389,6 +407,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	expiresAt := proof.VerifiedAt().Add(decision.Lifetime)
 	if credentialExpiresAt.Before(expiresAt) {
 		expiresAt = credentialExpiresAt
+	}
+	if presented.ExpiresAt.Before(expiresAt) {
+		expiresAt = presented.ExpiresAt
 	}
 	// The Person Server owns mission validation and does not disclose mission
 	// content or its accepted-update history to the Access Server. Core requires
@@ -547,6 +568,32 @@ func writeProblem(response http.ResponseWriter, status int, code string, cause e
 // writeTokenProblem reports request-parameter token failures. A parameter
 // token issued beyond the request's signature window is HTTP 400 clock_skew;
 // it never uses the 401 Signature-Error path.
+func presentedTokenIssuedAt(presented aauth.PresentedToken) time.Time {
+	switch {
+	case presented.Auth != nil:
+		return time.Unix(presented.Auth.IssuedAt, 0)
+	case presented.Person != nil:
+		return time.Unix(presented.Person.IssuedAt, 0)
+	}
+	return time.Time{}
+}
+
+func writePresentedTokenProblem(response http.ResponseWriter, err error) {
+	var skew *signaturekey.Error
+	if errors.As(err, &skew) && skew.Code == signaturekey.ErrorClockSkew {
+		writeProblem(response, http.StatusBadRequest, string(signaturekey.ErrorClockSkew), err)
+		return
+	}
+	switch {
+	case errors.Is(err, aauth.ErrExpiredPresentedToken):
+		writeProblem(response, http.StatusBadRequest, "expired_presented_token", err)
+	case errors.Is(err, aauth.ErrPresentedTokenMismatch):
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+	default:
+		writeProblem(response, http.StatusBadRequest, "invalid_presented_token", err)
+	}
+}
+
 func writeTokenProblem(response http.ResponseWriter, err error, invalidCode, expiredCode string) {
 	var skew *signaturekey.Error
 	if errors.As(err, &skew) && skew.Code == signaturekey.ErrorClockSkew {

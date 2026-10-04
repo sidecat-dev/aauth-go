@@ -322,7 +322,7 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	authToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatalf("exchange: %v; Person Server response=%d %s; PS metadata=%d consent=%d ceiling=%d; Access Server response=%d %s; request=%s",
@@ -371,7 +371,7 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	accessRequestBody = ""
 	accessPolicyRequest = accessserver.AuthorizationRequest{}
 	if _, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	}); err != nil {
 		t.Fatalf("exchange with omitted Person Server ceiling: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 
 	accessMetadataWrongScale.Store(true)
 	_, err = agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	var invalidBudget *aauth.ProblemError
 	if !errors.As(err, &invalidBudget) || invalidBudget.Status != http.StatusBadRequest || invalidBudget.Code != "invalid_budget" {
@@ -394,7 +394,7 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	accessMetadataWrongScale.Store(false)
 	accessMetadataFailure.Store(true)
 	_, err = agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	var serverFailure *aauth.ProblemError
 	if !errors.As(err, &serverFailure) || serverFailure.Status != http.StatusInternalServerError || serverFailure.Code != "server_error" {

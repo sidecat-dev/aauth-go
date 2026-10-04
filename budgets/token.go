@@ -116,13 +116,46 @@ func (record *ConsumptionRecord) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MintResourceToken adds one validated Budget offer and optional recent
-// consumption records to Core Resource-token claims.
+// ValidateConsumptionRecord checks an optional Resource-token consumption
+// record. A record names the Auth token presented on the request the Resource
+// token answers, which the token carries as presented_jti.
+func ValidateConsumptionRecord(consumed *ConsumptionRecord, presentedJTI string) error {
+	if consumed == nil {
+		return nil
+	}
+	if err := consumed.validate(); err != nil {
+		return err
+	}
+	if consumed.jti != presentedJTI {
+		return errors.New("budgets: Resource-token budget_consumed jti must equal presented_jti")
+	}
+	return nil
+}
+
+// ParseConsumptionRecordJSON parses the optional budget_consumed claim, a
+// single consumption record for the presented Auth token. A nil claim is absent.
+func ParseConsumptionRecordJSON(raw json.RawMessage, presentedJTI string) (*ConsumptionRecord, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var consumed ConsumptionRecord
+	if err := json.Unmarshal(raw, &consumed); err != nil {
+		return nil, fmt.Errorf("budgets: Resource-token budget_consumed: %w", err)
+	}
+	if err := ValidateConsumptionRecord(&consumed, presentedJTI); err != nil {
+		return nil, err
+	}
+	return &consumed, nil
+}
+
+// MintResourceToken adds one validated Budget offer to Core Resource-token
+// claims. The optional consumption record reports what the Auth token presented
+// on the answered request has consumed, so its jti is the token's presented_jti.
 func MintResourceToken(
 	key jose.SigningKey,
 	claims aauth.ResourceTokenClaims,
 	offer Value,
-	consumed []ConsumptionRecord,
+	consumed *ConsumptionRecord,
 ) (string, error) {
 	if err := validateBudgetScope(aauth.ResourceTokenType, claims.Scope); err != nil {
 		return "", err
@@ -130,8 +163,8 @@ func MintResourceToken(
 	if err := offer.validate(); err != nil {
 		return "", fmt.Errorf("budgets: Resource-token offer: %w", err)
 	}
-	if len(consumed) > 20 {
-		return "", errors.New("budgets: Resource token must not issue more than 20 consumption records")
+	if err := ValidateConsumptionRecord(consumed, claims.PresentedJTI); err != nil {
+		return "", err
 	}
 	prepared, err := prepareClaims(aauth.ResourceTokenType, claims.AdditionalClaims)
 	if err != nil {
@@ -142,10 +175,10 @@ func MintResourceToken(
 		return "", err
 	}
 	prepared[budgetClaim] = budgetJSON
-	if len(consumed) != 0 {
-		consumedJSON, err := json.Marshal(consumed)
+	if consumed != nil {
+		consumedJSON, err := json.Marshal(*consumed)
 		if err != nil {
-			return "", fmt.Errorf("budgets: Resource-token consumption records: %w", err)
+			return "", fmt.Errorf("budgets: Resource-token consumption record: %w", err)
 		}
 		prepared[budgetConsumedClaim] = consumedJSON
 	}
@@ -160,7 +193,7 @@ func VerifyResourceToken(
 	compact string,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
-) (aauth.ResourceTokenClaims, Value, []ConsumptionRecord, error) {
+) (aauth.ResourceTokenClaims, Value, *ConsumptionRecord, error) {
 	claims, err := aauth.VerifyResourceTokenCore(ctx, compact, resolver, clock)
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, Value{}, nil, err
@@ -175,14 +208,9 @@ func VerifyResourceToken(
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(fmt.Errorf("budgets: Resource-token budget: %w", err))
 	}
-	var consumed []ConsumptionRecord
-	if raw, present := claims.AdditionalClaims[budgetConsumedClaim]; present {
-		if string(raw) == "null" {
-			return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(errors.New("budgets: Resource-token budget_consumed must be an array"))
-		}
-		if err := json.Unmarshal(raw, &consumed); err != nil {
-			return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(fmt.Errorf("budgets: Resource-token budget_consumed: %w", err))
-		}
+	consumed, err := ParseConsumptionRecordJSON(claims.AdditionalClaims[budgetConsumedClaim], claims.PresentedJTI)
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, Value{}, nil, invalidTokenClaims(err)
 	}
 	removeClaims(&claims.AdditionalClaims, budgetClaim, budgetConsumedClaim)
 	return claims, offer, consumed, nil

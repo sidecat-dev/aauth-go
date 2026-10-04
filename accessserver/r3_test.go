@@ -145,7 +145,10 @@ func TestR3MCPClassIssuesOnlyAfterIndependentFetchPolicyAndAtomicAudit(t *testin
 		t.Fatal(err)
 	}
 	call := func() *httptest.ResponseRecorder {
-		body, _ := json.Marshal(map[string]string{"resource_token": resourceToken, "agent_token": agentToken})
+		body, _ := json.Marshal(map[string]string{
+			"resource_token": resourceToken, "agent_token": agentToken,
+			"presented_token": accessServerPresentedToken(t, personKey, now, resourceToken, agentKey),
+		})
 		request := httptest.NewRequest(http.MethodPost, "https://access.example/token", bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		if err := signaturekey.SignJWKSURIRequestWithOptions(

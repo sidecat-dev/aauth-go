@@ -86,7 +86,7 @@ func main() {
 	personServerTokenID := 0
 	people := must(personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personServerKey, KeyResolver: resolver,
-		Clock: clock, Tokens: personTokens,
+		Clock: clock, Tokens: personTokens, IssuedTokens: newMemoryIssuedTokenStore(),
 		NewID: func() string {
 			personServerTokenID++
 			return fmt.Sprintf("person-server-token-%d", personServerTokenID)
@@ -227,7 +227,7 @@ func main() {
 		Resource: resourceOneID, PersonToken: personToken, Scopes: []string{resourceOneScope},
 	}))
 	authToken := must(originalAgent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	}))
 	request := must(http.NewRequestWithContext(ctx, http.MethodPost, resourceOneID+"/orders/42/fulfill", nil))
 	response := must(originalAgent.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken}))
@@ -258,7 +258,7 @@ func callInventory(ctx context.Context, relay *clientagent.Client, upstreamToken
 		return "", err
 	}
 	authToken, err := relay.Exchange(ctx, clientagent.ExchangeRequest{
-		ResourceToken: resourceToken, UpstreamToken: upstreamToken,
+		ResourceToken: resourceToken, PresentedToken: personToken, UpstreamToken: upstreamToken,
 	})
 	if err != nil {
 		return "", err
@@ -335,6 +335,37 @@ func (store *memoryTokenStore) Load(_ context.Context, issuer, tokenID string) (
 	record, ok := store.records[issuer+"\x00"+tokenID]
 	if !ok {
 		return personserver.PersonTokenRecord{}, personserver.ErrPersonTokenNotFound
+	}
+	return record, nil
+}
+
+// The Person Server identifies the calling Agent of an upstream token from the
+// record it kept when it issued that token.
+type memoryIssuedTokenStore struct {
+	mu      sync.Mutex
+	records map[aauth.TokenReference]personserver.IssuedAuthTokenRecord
+}
+
+func newMemoryIssuedTokenStore() *memoryIssuedTokenStore {
+	return &memoryIssuedTokenStore{records: make(map[aauth.TokenReference]personserver.IssuedAuthTokenRecord)}
+}
+
+func (store *memoryIssuedTokenStore) CommitIssuedAuthToken(_ context.Context, record personserver.IssuedAuthTokenRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if retained, exists := store.records[record.Reference]; exists && retained != record {
+		return personserver.ErrIssuedAuthTokenConflict
+	}
+	store.records[record.Reference] = record
+	return nil
+}
+
+func (store *memoryIssuedTokenStore) LoadIssuedAuthToken(_ context.Context, reference aauth.TokenReference) (personserver.IssuedAuthTokenRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, ok := store.records[reference]
+	if !ok {
+		return personserver.IssuedAuthTokenRecord{}, personserver.ErrIssuedAuthTokenNotFound
 	}
 	return record, nil
 }

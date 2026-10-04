@@ -168,6 +168,7 @@ func TestRetryR3CallRefusesPersonServerRoleCompletionAtCollocatedIssuerBeforeNet
 		t, "collocated-proposal", "", func(claims *aauth.ResourceTokenClaims) {
 			claims.Audience = fixture.protocol.personServerID
 			claims.Scope = "records.read"
+			claims.PresentedJTI = "collocated-access-role-class-token"
 		},
 	)
 	personRoleCompletion, err := r3.MintPerCallAuthToken(fixture.registry, fixture.protocol.personServerKey, aauth.AuthTokenClaims{
@@ -236,6 +237,15 @@ func TestBeginR3CallRefusesProposalReferenceAndContextSubstitution(t *testing.T)
 			token: func(t *testing.T, fixture agentR3StepUpFixture) string {
 				compact, _, _ := fixture.proposalResourceTokenWith(t, "proposal-other-as", "", func(claims *aauth.ResourceTokenClaims) {
 					claims.Audience = "https://other-as.example"
+				})
+				return compact
+			},
+		},
+		{
+			name: "proposal names another presented token",
+			token: func(t *testing.T, fixture agentR3StepUpFixture) string {
+				compact, _, _ := fixture.proposalResourceTokenWith(t, "proposal-other-presented", "", func(claims *aauth.ResourceTokenClaims) {
+					claims.PresentedJTI = "person-token-1"
 				})
 				return compact
 			},
@@ -524,6 +534,7 @@ func TestBeginR3CallReturnsRetryThatPreservesExactOriginalRequest(t *testing.T) 
 	proposalToken, proposalReference, exactProposal := fixture.proposalResourceTokenWith(
 		t, "proposal-token-401", "", func(claims *aauth.ResourceTokenClaims) {
 			claims.MissionS256 = missionS256
+			claims.PresentedJTI = "raw-class-auth-token"
 		},
 	)
 	completionToken := fixture.perCallAuthTokenWith(
@@ -797,7 +808,7 @@ func (fixture agentR3StepUpFixture) proposalResourceTokenWith(
 	claims := aauth.ResourceTokenClaims{
 		Issuer: fixture.protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
 		Audience: fixture.protocol.accessServerID, JTI: jti,
-		PersonServer: fixture.protocol.personServerID, Subject: "person-123", PresentedJTI: "person-token-1",
+		PersonServer: fixture.protocol.personServerID, Subject: "person-123", PresentedJTI: "class-auth-token-1",
 		AgentJKT: thumbprint, IssuedAt: fixture.protocol.now.Unix(), ExpiresAt: fixture.protocol.now.Add(5 * time.Minute).Unix(),
 		Scope: "records.read records.audit", Tenant: "tenant-1",
 	}
@@ -944,7 +955,7 @@ func (fixture agentR3StepUpFixture) rawProposalResourceToken(
 	claims := aauth.ResourceTokenClaims{
 		Issuer: fixture.protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
 		Audience: fixture.protocol.accessServerID, JTI: jti,
-		PersonServer: fixture.protocol.personServerID, Subject: "person-123", PresentedJTI: "person-token-1",
+		PersonServer: fixture.protocol.personServerID, Subject: "person-123", PresentedJTI: "class-auth-token-1",
 		AgentJKT: thumbprint, IssuedAt: fixture.protocol.now.Unix(), ExpiresAt: fixture.protocol.now.Add(5 * time.Minute).Unix(),
 		Scope: "records.read", Tenant: "tenant-1",
 		AdditionalClaims: map[string]json.RawMessage{

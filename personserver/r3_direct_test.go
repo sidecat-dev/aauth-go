@@ -772,7 +772,13 @@ func (protocol *directR3TestProtocol) exchange(
 	additional map[string]any,
 ) *httptest.ResponseRecorder {
 	t.Helper()
-	body := map[string]any{"resource_token": resourceToken}
+	body := map[string]any{
+		"resource_token": resourceToken,
+		"presented_token": testPresentedPersonToken(
+			t, protocol.personKey, resourceToken, protocol.agentKey.PublicJWK(),
+			protocol.now, protocol.now.Add(40*time.Minute),
+		),
+	}
 	for name, value := range additional {
 		body[name] = value
 	}

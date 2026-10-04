@@ -166,8 +166,8 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		if err != nil {
 			return aauth.ResourceTokenClaims{}, nil, nil, err
 		}
-		if len(consumed) != 0 {
-			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: Budget consumption records require retained grant resolution")
+		if consumed != nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: a Budget consumption record requires retained grant resolution")
 		}
 		return claims, &verifiedR3{reference: reference}, &offer, nil
 	}
@@ -176,8 +176,8 @@ func (server *Server) verifyResourceTokenForAuthorization(
 		if err != nil {
 			return aauth.ResourceTokenClaims{}, nil, nil, err
 		}
-		if len(consumed) != 0 {
-			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: Budget consumption records require retained grant resolution")
+		if consumed != nil {
+			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: a Budget consumption record requires retained grant resolution")
 		}
 		return claims, nil, &offer, nil
 	}

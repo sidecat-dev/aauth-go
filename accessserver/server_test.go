@@ -134,6 +134,11 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 
 	personServerProofKey := psKey
 	callTokenEndpointWith := func(input map[string]any) *httptest.ResponseRecorder {
+		if _, present := input["presented_token"]; !present {
+			if resourceToken, ok := input["resource_token"].(string); ok {
+				input["presented_token"] = accessServerPresentedToken(t, personServerProofKey, now, resourceToken, agentKey, subagentKey)
+			}
+		}
 		body, err := json.Marshal(input)
 		if err != nil {
 			t.Fatal(err)
@@ -762,6 +767,53 @@ func TestServerMetadataAndJWKSRemainCacheable(t *testing.T) {
 			t.Fatalf("%s Cache-Control = %q", path, got)
 		}
 	}
+}
+
+// accessServerPresentedToken mints the person token the agent presented to the
+// resource, bound to the claims the given resource token carries. The token
+// that names an unparseable or unusable resource token still gets a well-formed
+// presented token so the request reaches the check under test.
+func accessServerPresentedToken(t *testing.T, personKey jose.SigningKey, now time.Time, resourceToken string, agentKeys ...jose.SigningKey) string {
+	t.Helper()
+	var claims struct {
+		Issuer       string `json:"iss"`
+		PersonServer string `json:"ps"`
+		Subject      string `json:"sub"`
+		PresentedJTI string `json:"presented_jti"`
+		AgentJKT     string `json:"agent_jkt"`
+		MissionS256  string `json:"mission_s256"`
+		Tenant       string `json:"tenant"`
+	}
+	if parsed, err := jose.ParseCompact(resourceToken); err == nil {
+		_ = json.Unmarshal(parsed.Payload(), &claims)
+	}
+	agentKey := agentKeys[0]
+	for _, candidate := range agentKeys {
+		if jkt, err := candidate.PublicJWK().Thumbprint(); err == nil && jkt == claims.AgentJKT {
+			agentKey = candidate
+		}
+	}
+	mint := func(claims aauth.PersonTokenClaims) (string, error) {
+		claims.DWK = aauth.PersonDiscoveryDocument
+		claims.Confirmation = aauth.Confirmation{JWK: agentKey.PublicJWK()}
+		claims.IssuedAt = now.Add(-time.Minute).Unix()
+		claims.ExpiresAt = now.Add(59 * time.Minute).Unix()
+		return aauth.MintPersonToken(personKey, claims)
+	}
+	compact, err := mint(aauth.PersonTokenClaims{
+		Issuer: claims.PersonServer, Audience: claims.Issuer, Subject: claims.Subject,
+		JTI: claims.PresentedJTI, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
+	})
+	if err != nil {
+		compact, err = mint(aauth.PersonTokenClaims{
+			Issuer: "https://ps.example", Audience: "https://resource.example",
+			Subject: "person-123", JTI: "person-token-1",
+		})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compact
 }
 
 func assertAccessProblem(t *testing.T, response *httptest.ResponseRecorder, code string) {

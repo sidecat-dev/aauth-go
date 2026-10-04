@@ -171,7 +171,7 @@ func TestDeferredMissionProposalContinuesThroughProtectedResource(t *testing.T) 
 		t.Fatal(err)
 	}
 	authToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -149,7 +149,7 @@ func TestDirectPSRejectsBudgetHistoryWithoutRetainedGrantResolution(t *testing.T
 
 	protocol := newBudgetAuthorizationProtocol(t)
 	offer := protocol.value(t, 5_000_000, "USD", 6)
-	prior, err := budgets.NewConsumptionRecord("prior-auth-token", 431_200)
+	prior, err := budgets.NewConsumptionRecord("budget-person-token", 431_200)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestDirectPSRejectsBudgetHistoryWithoutRetainedGrantResolution(t *testing.T
 		protocol.resourceKey,
 		protocol.resourceClaims(t, "budget-history-resource-token"),
 		offer,
-		[]budgets.ConsumptionRecord{prior},
+		&prior,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -382,12 +382,10 @@ func (protocol *budgetAuthorizationProtocol) serverWithBudgetResolver(
 
 func (protocol *budgetAuthorizationProtocol) exchange(t *testing.T, server *Server, resourceToken string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, err := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-	}{ResourceToken: resourceToken})
-	if err != nil {
-		t.Fatal(err)
-	}
+	presentedToken := testPresentedPersonToken(
+		t, protocol.personKey, resourceToken, protocol.agentKey.PublicJWK(), protocol.now, protocol.now.Add(40*time.Minute),
+	)
+	body := testTokenRequestBody(t, resourceToken, presentedToken)
 	request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(request, protocol.agentKey, protocol.agentToken, protocol.clock); err != nil {

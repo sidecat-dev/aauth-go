@@ -464,6 +464,14 @@ func (client *Client) finishExchangeRequest(
 		}
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource token does not match person server and signing key")
 	}
+	if input.PresentedToken == "" {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("presented token is required")
+	}
+	if _, err := aauth.VerifyPresentedToken(
+		ctx, input.PresentedToken, resourceClaims, client.keyResolver, client.clock,
+	); err != nil {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, err
+	}
 	metadata, err := client.personServerMetadata(ctx, input.PersonServer)
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
@@ -475,13 +483,14 @@ func (client *Client) finishExchangeRequest(
 		capabilities = &values
 	}
 	body, err := json.Marshal(struct {
-		ResourceToken string    `json:"resource_token"`
-		SubagentToken string    `json:"subagent_token,omitempty"`
-		UpstreamToken string    `json:"upstream_token,omitempty"`
-		Capabilities  *[]string `json:"capabilities,omitempty"`
+		ResourceToken  string    `json:"resource_token"`
+		PresentedToken string    `json:"presented_token"`
+		SubagentToken  string    `json:"subagent_token,omitempty"`
+		UpstreamToken  string    `json:"upstream_token,omitempty"`
+		Capabilities   *[]string `json:"capabilities,omitempty"`
 	}{
-		ResourceToken: input.ResourceToken, SubagentToken: input.SubagentToken,
-		UpstreamToken: input.UpstreamToken, Capabilities: capabilities,
+		ResourceToken: input.ResourceToken, PresentedToken: input.PresentedToken,
+		SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken, Capabilities: capabilities,
 	})
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err

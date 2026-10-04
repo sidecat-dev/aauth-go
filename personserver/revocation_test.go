@@ -644,6 +644,7 @@ type testIssuedAuthTokenStore struct {
 	records     map[aauth.TokenReference]IssuedAuthTokenRecord
 	commitError error
 	commitCalls int
+	loadError   error
 }
 
 func newTestIssuedAuthTokenStore() *testIssuedAuthTokenStore {
@@ -667,6 +668,9 @@ func (store *testIssuedAuthTokenStore) CommitIssuedAuthToken(_ context.Context, 
 func (store *testIssuedAuthTokenStore) LoadIssuedAuthToken(_ context.Context, reference aauth.TokenReference) (IssuedAuthTokenRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if store.loadError != nil {
+		return IssuedAuthTokenRecord{}, store.loadError
+	}
 	record, ok := store.records[reference]
 	if !ok {
 		return IssuedAuthTokenRecord{}, ErrIssuedAuthTokenNotFound

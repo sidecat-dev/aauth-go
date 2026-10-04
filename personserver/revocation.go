@@ -27,6 +27,14 @@ var ErrIssuedAuthTokenConflict = errors.New("personserver: issued auth token con
 // IssuedAuthTokenRecord retains the exact compact-token digest, routing, and
 // lifetime of one auth token before it is returned to the Agent. MissionStore
 // uses it for both Person-Server-issued and federated mission-bound tokens.
+//
+// AgentProvider, Agent, AgentTokenJTI and AgentJKT name the Agent the token was
+// issued to and the Agent token it signed the request with. They are all set
+// or all empty. Call chaining identifies the calling Agent of an upstream auth
+// token from them; a record without them identifies no caller.
+//
+// UpstreamTokenReference and UpstreamTokenSHA256 name the exact upstream auth
+// token of a chained issuance. They are both set or both empty.
 type IssuedAuthTokenRecord struct {
 	Reference     aauth.TokenReference
 	Resource      string
@@ -34,6 +42,14 @@ type IssuedAuthTokenRecord struct {
 	CompactSHA256 [32]byte
 	IssuedAt      time.Time
 	ExpiresAt     time.Time
+
+	AgentProvider string
+	Agent         string
+	AgentTokenJTI string
+	AgentJKT      string
+
+	UpstreamTokenReference aauth.TokenReference
+	UpstreamTokenSHA256    [32]byte
 }
 
 // IssuedAuthTokenStore retains three-party auth-token issuance records.
@@ -94,6 +110,28 @@ func issuedAuthTokenRecord(compact string, claims aauth.AuthTokenClaims) (Issued
 		return IssuedAuthTokenRecord{}, err
 	}
 	return record, nil
+}
+
+// bindRecipient retains the Agent an auth token is issued to and the upstream
+// token of a chained issuance.
+func (record *IssuedAuthTokenRecord) bindRecipient(agent aauth.AgentTokenClaims, upstream *verifiedUpstreamToken) error {
+	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	if err != nil {
+		return fmt.Errorf("personserver: issued auth-token recipient key: %w", err)
+	}
+	record.AgentProvider = agent.Issuer
+	record.Agent = agent.Subject
+	record.AgentTokenJTI = agent.JTI
+	record.AgentJKT = thumbprint
+	if upstream != nil {
+		record.UpstreamTokenReference = upstream.reference
+		record.UpstreamTokenSHA256 = upstream.digest
+	}
+	return validateIssuedAuthTokenRecord(*record)
+}
+
+func (record IssuedAuthTokenRecord) identifiesRecipient() bool {
+	return record.AgentProvider != "" && record.Agent != "" && record.AgentTokenJTI != "" && record.AgentJKT != ""
 }
 
 func (server *Server) commitIssuedAuthToken(ctx context.Context, record IssuedAuthTokenRecord) error {
@@ -288,6 +326,25 @@ func validateIssuedAuthTokenRecord(record IssuedAuthTokenRecord) error {
 	}
 	if record.CompactSHA256 == ([32]byte{}) || record.IssuedAt.IsZero() || !record.ExpiresAt.After(record.IssuedAt) {
 		return errors.New("personserver: issued auth-token record is invalid")
+	}
+	if record.AgentProvider != "" || record.Agent != "" || record.AgentTokenJTI != "" || record.AgentJKT != "" {
+		if !record.identifiesRecipient() {
+			return errors.New("personserver: issued auth-token recipient is incomplete")
+		}
+		if err := aauth.ValidateTokenReference(aauth.TokenReference{
+			Issuer: record.AgentProvider, JTI: record.AgentTokenJTI,
+		}); err != nil {
+			return fmt.Errorf("personserver: issued auth-token recipient: %w", err)
+		}
+	}
+	emptyReference := record.UpstreamTokenReference == (aauth.TokenReference{})
+	if emptyReference != (record.UpstreamTokenSHA256 == ([32]byte{})) {
+		return errors.New("personserver: issued auth-token upstream binding is incomplete")
+	}
+	if !emptyReference {
+		if err := aauth.ValidateTokenReference(record.UpstreamTokenReference); err != nil {
+			return errors.New("personserver: issued auth-token upstream reference is invalid")
+		}
 	}
 	return nil
 }

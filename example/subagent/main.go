@@ -130,7 +130,7 @@ func main() {
 		Resource: resourceID, PersonToken: personToken, Scopes: []string{scope},
 	}))
 	authToken := must(parent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken, SubagentToken: childToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken, SubagentToken: childToken,
 	}))
 	request := must(http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/42", nil))
 	response := must(child.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken}))

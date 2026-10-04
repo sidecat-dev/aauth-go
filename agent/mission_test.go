@@ -339,8 +339,12 @@ func TestMissionExchangeContinuationReturnsTypedError(t *testing.T) {
 			harness.initial = func(request *http.Request) (*http.Response, error) {
 				return missionPendingResponse(request), nil
 			}
+			harness.presentedToken = harness.protocol.presentedPersonToken(
+				t, harness.resourceClaims, harness.protocol.agentKey.PublicJWK(),
+			)
 			err = operation.call(harness.client(t), agent.ExchangeRequest{
 				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+				PresentedToken: harness.presentedToken,
 			})
 			assertMissionContinuationError(t, err, "auth-token exchange", operation.name)
 		})
@@ -358,8 +362,11 @@ func TestMissionBeginExchangeReturnsVerifiedPending(t *testing.T) {
 	harness.initial = func(request *http.Request) (*http.Response, error) {
 		return missionPendingResponse(request), nil
 	}
+	harness.presentedToken = harness.protocol.presentedPersonToken(
+		t, harness.resourceClaims, harness.protocol.agentKey.PublicJWK(),
+	)
 	result, err := harness.client(t).BeginExchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
+		PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken, PresentedToken: harness.presentedToken,
 	})
 	if err != nil {
 		t.Fatal(err)

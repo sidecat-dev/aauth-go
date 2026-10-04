@@ -21,6 +21,7 @@ func TestMissionDeferredAuthorizationCarriesExactContextThroughClarificationAppr
 
 	begin, err := fixture.reader.BeginExchange(context.Background(), clientagent.ExchangeRequest{
 		PersonServer: fixture.protocol.personServerID, ResourceToken: fixture.protocol.resourceToken,
+		PresentedToken: fixture.presentedToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +119,8 @@ func TestMissionDeferredAuthorizationExplicitEmptyCapabilitiesDoNotUseMissionFal
 	fixture := newMissionDeferredAuthorizationFixture(t)
 	_, err := fixture.reader.BeginExchange(context.Background(), clientagent.ExchangeRequest{
 		PersonServer: fixture.protocol.personServerID, ResourceToken: fixture.protocol.resourceToken,
-		Capabilities: []string{},
+		PresentedToken: fixture.presentedToken,
+		Capabilities:   []string{},
 	})
 	var problem *aauth.ProblemError
 	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "user_unreachable" {
@@ -339,7 +341,8 @@ func TestMissionDeferredAuthorizationRefusesTerminalDeliveryAfterTermination(t *
 	fixture := newMissionDeferredAuthorizationFixture(t)
 	begin, err := fixture.reader.BeginExchange(context.Background(), clientagent.ExchangeRequest{
 		PersonServer: fixture.protocol.personServerID, ResourceToken: fixture.protocol.resourceToken,
-		Capabilities: []string{"interaction"},
+		PresentedToken: fixture.presentedToken,
+		Capabilities:   []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -385,7 +388,8 @@ func TestMissionDeferredAuthorizationDeliversApprovedTokenAfterMissionUpdate(t *
 	fixture := newMissionDeferredAuthorizationFixture(t)
 	begin, err := fixture.reader.BeginExchange(context.Background(), clientagent.ExchangeRequest{
 		PersonServer: fixture.protocol.personServerID, ResourceToken: fixture.protocol.resourceToken,
-		Capabilities: []string{"interaction"},
+		PresentedToken: fixture.presentedToken,
+		Capabilities:   []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -524,7 +528,8 @@ func approveMissionDeferredAuthorization(
 	t.Helper()
 	begin, err := fixture.reader.BeginExchange(context.Background(), clientagent.ExchangeRequest{
 		PersonServer: fixture.protocol.personServerID, ResourceToken: fixture.protocol.resourceToken,
-		Capabilities: []string{"interaction"},
+		PresentedToken: fixture.presentedToken,
+		Capabilities:   []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -622,6 +627,8 @@ type missionDeferredAuthorizationFixture struct {
 	server   *Server
 	reader   *clientagent.Client
 	mission  MissionRecord
+	// presentedToken is the Person token the retained record describes.
+	presentedToken string
 }
 
 func newMissionDeferredAuthorizationFixture(t *testing.T) missionDeferredAuthorizationFixture {
@@ -706,6 +713,9 @@ func newMissionDeferredAuthorizationFixture(t *testing.T) missionDeferredAuthori
 	}
 	return missionDeferredAuthorizationFixture{
 		protocol: protocol, store: store, server: server, reader: reader, mission: cloneMissionRecord(mission),
+		presentedToken: testPresentedPersonToken(
+			t, protocol.personKey, protocol.resourceToken, protocol.agentKey.PublicJWK(), protocol.now, expiresAt,
+		),
 	}
 }
 

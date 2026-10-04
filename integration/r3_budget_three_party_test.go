@@ -190,7 +190,7 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 							Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument,
 							Audience: personServerID, JTI: "connector-step-up-resource-token",
 							PersonServer: lineage.Person.Issuer, Subject: lineage.Person.Subject,
-							PresentedJTI: lineage.PresentedJTI, AgentJKT: lineage.AgentJKT,
+							PresentedJTI: request.Token.JTI, AgentJKT: lineage.AgentJKT,
 							IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 						}, request.R3Reference.URI(), record.ExactJSON, offeredBudget, nil,
 					))
@@ -283,7 +283,7 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	authToken, err := client.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)

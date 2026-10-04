@@ -320,7 +320,7 @@ func run(output io.Writer) error {
 					Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument,
 					Audience: personServerID, JTI: "resource-token-2",
 					PersonServer: personServerID, Subject: retained.Subject,
-					PresentedJTI: retained.JTI, AgentJKT: agentThumbprint,
+					PresentedJTI: challenge.Token.JTI, AgentJKT: agentThumbprint,
 					IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 					Tenant: retained.Tenant,
 				}, challenge.R3Reference.URI(), document.ExactJSON, resourceOffer, nil)
@@ -378,7 +378,7 @@ func run(output io.Writer) error {
 		return errors.New("budget example: reactive Resource token carried the wrong offer")
 	}
 	reactiveAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: reactiveRequirement.ResourceToken,
+		PersonServer: personServerID, ResourceToken: reactiveRequirement.ResourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		return err
@@ -423,12 +423,12 @@ func run(output io.Writer) error {
 		return errors.New("budget example: retained lineage does not name the released Resource token")
 	}
 	authToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		return err
 	}
-	_, authReference, _, granted, err := r3.VerifyBudgetAuthToken(
+	authClaims, authReference, _, granted, err := r3.VerifyBudgetAuthToken(
 		ctx, registry, authToken, resolver, clock,
 	)
 	if err != nil {
@@ -488,16 +488,16 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if freshClaims.PresentedJTI != retainedLineage.JTI || freshReference != initialReference ||
-		!sameBudget(freshOffer, resourceOffer) || len(consumed) != 0 {
-		return errors.New("budget example: fresh Resource token did not preserve retained Person-token lineage")
+	if freshClaims.PresentedJTI != authClaims.JTI || freshReference != initialReference ||
+		!sameBudget(freshOffer, resourceOffer) || consumed != nil {
+		return errors.New("budget example: fresh Resource token did not name the refused Auth token")
 	}
 	r3ProtectedCalls := protectedCalls.Load() - reactiveProtectedCalls
 	if r3ProtectedCalls != 1 {
 		return errors.New("budget example: Agent retried the refused consequence")
 	}
 	reauthorizedToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: authorization.ResourceToken(),
+		PersonServer: personServerID, ResourceToken: authorization.ResourceToken(), PresentedToken: authToken,
 	})
 	if err != nil {
 		return err

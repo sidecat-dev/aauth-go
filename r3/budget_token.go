@@ -27,7 +27,7 @@ func MintBudgetResourceToken(
 	documentURI string,
 	exactDocument []byte,
 	offer budgets.Value,
-	consumed []budgets.ConsumptionRecord,
+	consumed *budgets.ConsumptionRecord,
 ) (string, Reference, error) {
 	document, err := registry.ParseDocument(exactDocument)
 	if err != nil {
@@ -60,7 +60,7 @@ func VerifyBudgetResourceToken(
 	compact string,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
-) (aauth.ResourceTokenClaims, Reference, budgets.Value, []budgets.ConsumptionRecord, error) {
+) (aauth.ResourceTokenClaims, Reference, budgets.Value, *budgets.ConsumptionRecord, error) {
 	claims, err := aauth.VerifyResourceTokenCore(ctx, compact, resolver, clock)
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, err
@@ -76,7 +76,7 @@ func VerifyBudgetResourceToken(
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, budgets.TokenClaimError(fmt.Errorf("r3: Budget resource-token offer: %w", err))
 	}
-	consumed, err := parseBudgetConsumption(claims.AdditionalClaims[budgetConsumedClaim])
+	consumed, err := budgets.ParseConsumptionRecordJSON(claims.AdditionalClaims[budgetConsumedClaim], claims.PresentedJTI)
 	if err != nil {
 		return aauth.ResourceTokenClaims{}, Reference{}, budgets.Value{}, nil, budgets.TokenClaimError(err)
 	}
@@ -164,10 +164,10 @@ func prepareBudgetResourceClaims(
 	claims aauth.ResourceTokenClaims,
 	reference Reference,
 	offer budgets.Value,
-	consumed []budgets.ConsumptionRecord,
+	consumed *budgets.ConsumptionRecord,
 ) (map[string]json.RawMessage, error) {
-	if len(consumed) > 20 {
-		return nil, errors.New("r3: Budget Resource token must not issue more than 20 consumption records")
+	if err := budgets.ValidateConsumptionRecord(consumed, claims.PresentedJTI); err != nil {
+		return nil, err
 	}
 	prepared := cloneClaims(claims.AdditionalClaims)
 	if err := rejectClaimCollisions(aauth.ResourceTokenType, prepared, r3URIClaim, r3S256Claim, budgetClaim, budgetConsumedClaim); err != nil {
@@ -190,10 +190,10 @@ func prepareBudgetResourceClaims(
 		return nil, fmt.Errorf("r3: Budget Resource-token offer: %w", err)
 	}
 	prepared[budgetClaim] = budgetJSON
-	if len(consumed) != 0 {
-		consumedJSON, err := json.Marshal(consumed)
+	if consumed != nil {
+		consumedJSON, err := json.Marshal(*consumed)
 		if err != nil {
-			return nil, fmt.Errorf("r3: Budget Resource-token consumption records: %w", err)
+			return nil, fmt.Errorf("r3: Budget Resource-token consumption record: %w", err)
 		}
 		prepared[budgetConsumedClaim] = consumedJSON
 	}
@@ -255,18 +255,4 @@ func validateBudgetAuthClaims(additional map[string]json.RawMessage) error {
 		return err
 	}
 	return rejectFoldedClaims(aauth.AuthTokenType, additional, "the class-R3 Budget profile does not permit r3_per_call", r3PerCallClaim)
-}
-
-func parseBudgetConsumption(raw json.RawMessage) ([]budgets.ConsumptionRecord, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	if string(raw) == "null" {
-		return nil, errors.New("r3: Budget Resource-token budget_consumed must be an array")
-	}
-	var consumed []budgets.ConsumptionRecord
-	if err := json.Unmarshal(raw, &consumed); err != nil {
-		return nil, fmt.Errorf("r3: Budget Resource-token budget_consumed: %w", err)
-	}
-	return consumed, nil
 }

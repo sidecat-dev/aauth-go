@@ -179,7 +179,7 @@ func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {
 		t.Fatal(err)
 	}
 	authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		ResourceToken: resourceToken, UpstreamToken: upstreamToken,
+		ResourceToken: resourceToken, PresentedToken: personToken, UpstreamToken: upstreamToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -360,9 +360,16 @@ func TestCallChainingRejectsPendingInteractionWithTypedError(t *testing.T) {
 				if mintErr != nil {
 					t.Fatal(mintErr)
 				}
+				resourceClaims, verifyErr := aauth.VerifyResourceToken(
+					context.Background(), resourceToken, protocol.resolver, protocol.clock,
+				)
+				if verifyErr != nil {
+					t.Fatal(verifyErr)
+				}
 				_, err = client.BeginExchange(context.Background(), agent.ExchangeRequest{
 					ResourceToken: resourceToken, UpstreamToken: upstreamToken,
-					Capabilities: []string{"interaction"},
+					PresentedToken: protocol.presentedPersonToken(t, resourceClaims, protocol.agentKey.PublicJWK()),
+					Capabilities:   []string{"interaction"},
 				})
 			}
 			var unsupported *agent.CallChainingInteractionUnsupportedError

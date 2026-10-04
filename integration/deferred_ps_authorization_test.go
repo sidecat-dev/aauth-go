@@ -198,7 +198,7 @@ func TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition(t *testing.T) {
 	}
 
 	begin, err := reader.BeginExchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		Capabilities: []string{"interaction"},
 	})
 	if err != nil {

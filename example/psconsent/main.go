@@ -171,7 +171,7 @@ func run(output io.Writer) error {
 		return fmt.Errorf("obtain resource token: %w", err)
 	}
 	exchange, err := reader.BeginExchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		Capabilities: []string{"interaction", "clarification"},
 	})
 	if err != nil {

@@ -380,7 +380,7 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 		t.Fatal(err)
 	}
 	authToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +454,7 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 		t.Fatal(err)
 	}
 	mixedAuthToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: mixedResourceToken,
+		PersonServer: personServerID, ResourceToken: mixedResourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)

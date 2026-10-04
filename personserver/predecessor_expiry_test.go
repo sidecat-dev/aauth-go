@@ -48,7 +48,7 @@ func TestPSAuthorizationAuthTokenStaysInsidePersonAndResourceTokens(t *testing.T
 		},
 		{
 			name: "expired Person token closes authorization before policy", personExpires: time.Minute,
-			resourceExpiry: 5 * time.Minute, arrive: time.Minute, wantProblem: "invalid_resource_token",
+			resourceExpiry: 5 * time.Minute, arrive: time.Minute, wantProblem: "expired_presented_token",
 		},
 		{
 			name: "slow policy issues at its return instant", personExpires: time.Minute,
@@ -58,7 +58,7 @@ func TestPSAuthorizationAuthTokenStaysInsidePersonAndResourceTokens(t *testing.T
 		{
 			name: "slow policy outlasting Person token issues nothing", personExpires: time.Minute,
 			resourceExpiry: 5 * time.Minute, policyReturns: time.Minute, wantPolicy: true,
-			wantProblem: "invalid_resource_token",
+			wantProblem: "expired_presented_token",
 		},
 		{
 			name: "slow policy outlasting Resource token issues nothing", personExpires: 20 * time.Minute,
@@ -143,12 +143,10 @@ func TestPSAuthorizationAuthTokenStaysInsidePersonAndResourceTokens(t *testing.T
 			}
 
 			setClock(start.Add(test.arrive))
-			body, err := json.Marshal(struct {
-				ResourceToken string `json:"resource_token"`
-			}{ResourceToken: resourceToken})
-			if err != nil {
-				t.Fatal(err)
-			}
+			presentedToken := testPresentedPersonToken(
+				t, personKey, resourceToken, agentKey.PublicJWK(), start, start.Add(test.personExpires),
+			)
+			body := testTokenRequestBody(t, resourceToken, presentedToken)
 			request := httptest.NewRequest(http.MethodPost, personID+"/token", bytes.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
 			if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -201,6 +199,8 @@ func TestDeferredAuthorizationAuthTokenStaysInsideRetainedPersonToken(t *testing
 	protocol := newAuthorizationInteractionProtocol(t)
 	start := protocol.now
 	personExpiresAt := start.Add(60 * time.Second)
+	// The presented Person token expires with the retained record it names.
+	protocol.presentedExpiresAt = personExpiresAt
 	store := newMemoryDeferredAuthorizationStore()
 	newServer := func() *Server {
 		t.Helper()

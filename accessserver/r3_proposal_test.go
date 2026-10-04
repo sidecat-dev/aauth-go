@@ -173,7 +173,10 @@ func TestR3MCPProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 		t.Fatal(err)
 	}
 	call := func() *httptest.ResponseRecorder {
-		body, err := json.Marshal(map[string]string{"resource_token": resourceToken, "agent_token": agentToken})
+		body, err := json.Marshal(map[string]string{
+			"resource_token": resourceToken, "agent_token": agentToken,
+			"presented_token": accessServerPresentedToken(t, personKey, now, resourceToken, agentKey),
+		})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -286,8 +286,9 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	}
 
 	authToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer:  personServerID,
-		ResourceToken: resourceToken,
+		PersonServer:   personServerID,
+		ResourceToken:  resourceToken,
+		PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +382,7 @@ func TestCurrentCoreFourParty(t *testing.T) {
 		t.Fatal(err)
 	}
 	accountAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: accountResourceToken,
+		PersonServer: personServerID, ResourceToken: accountResourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -487,7 +488,7 @@ func TestCurrentCoreFourParty(t *testing.T) {
 		t.Fatalf("held invocation executed before authorization; calls = %d", heldCalls)
 	}
 	heldAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: pending.ResourceToken(),
+		PersonServer: personServerID, ResourceToken: pending.ResourceToken(), PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)

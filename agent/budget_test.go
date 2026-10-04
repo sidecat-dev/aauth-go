@@ -89,10 +89,14 @@ func TestAgentCompletesAndVerifiesAProactiveBudgetExchange(t *testing.T) {
 			}), nil
 		case protocol.authTokenEndpoint:
 			var input struct {
-				ResourceToken string   `json:"resource_token"`
-				Capabilities  []string `json:"capabilities"`
+				ResourceToken  string   `json:"resource_token"`
+				PresentedToken string   `json:"presented_token"`
+				Capabilities   []string `json:"capabilities"`
 			}
 			decodeRequest(t, request, &input)
+			if input.PresentedToken != personToken {
+				t.Fatal("exchange changed the presented token bytes")
+			}
 			capabilities = append([]string(nil), input.Capabilities...)
 			resourceClaims, resourceBudget, _, verifyErr := budgets.VerifyResourceToken(
 				context.Background(), input.ResourceToken, protocol.resolver, protocol.clock,
@@ -132,7 +136,7 @@ func TestAgentCompletesAndVerifiesAProactiveBudgetExchange(t *testing.T) {
 		t.Fatalf("verified offer = %#v, %v", gotOffer, err)
 	}
 	authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -155,16 +159,18 @@ func TestAgentRefusesAnAuthTokenThatBroadensTheResourceBudget(t *testing.T) {
 	offered := budgetValue(t, 400_000, unit)
 	broadened := budgetValue(t, 400_001, unit)
 	thumbprint, _ := protocol.agentKey.PublicJWK().Thumbprint()
-	resourceToken, err := budgets.MintResourceToken(protocol.resourceKey, aauth.ResourceTokenClaims{
+	resourceClaims := aauth.ResourceTokenClaims{
 		Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
 		Audience: protocol.personServerID, JTI: "budget-resource-broadened",
 		PersonServer: protocol.personServerID, Subject: "person-123", PresentedJTI: "person-token-1",
 		AgentJKT: thumbprint, IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
 		Scope: "records.read",
-	}, offered, nil)
+	}
+	resourceToken, err := budgets.MintResourceToken(protocol.resourceKey, resourceClaims, offered, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	personToken := protocol.presentedPersonToken(t, resourceClaims, protocol.agentKey.PublicJWK())
 	requests := 0
 	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		requests++
@@ -191,7 +197,7 @@ func TestAgentRefusesAnAuthTokenThatBroadensTheResourceBudget(t *testing.T) {
 	})})
 
 	if _, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	}); err == nil || !strings.Contains(err.Error(), "narrow") {
 		t.Fatalf("Exchange error = %v, want Budget narrowing refusal", err)
 	}
@@ -292,7 +298,7 @@ func TestAgentDoBudgetReturnsTypedAuthorizationRequirementWithoutRetry(t *testin
 	challenge, err := budgets.MintResourceToken(protocol.resourceKey, aauth.ResourceTokenClaims{
 		Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
 		Audience: protocol.personServerID, JTI: "budget-step-up-resource",
-		PersonServer: protocol.personServerID, Subject: "person-123", PresentedJTI: "person-token-2",
+		PersonServer: protocol.personServerID, Subject: "person-123", PresentedJTI: "budget-auth-step-up",
 		AgentJKT: thumbprint,
 		IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
 		Scope: "records.read",

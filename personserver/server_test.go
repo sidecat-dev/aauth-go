@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -333,11 +334,14 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	presentedToken := testPresentedPersonToken(
+		t, personServerKey, resourceToken, agentKey.PublicJWK(), now, now.Add(20*time.Minute),
+	)
 	authToken, err := aauth.MintAuthToken(accessServerKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-token-1",
 		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
-		IssuedAt:     now.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix(),
+		IssuedAt:     now.Unix(), ExpiresAt: now.Add(15 * time.Minute).Unix(),
 		Subject: "person-123", Scope: "records.read", PersonServer: "https://person.example",
 		Tenant: "tenant-1",
 	})
@@ -347,7 +351,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	accessResponse, err := json.Marshal(struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
-	}{AuthToken: authToken, ExpiresIn: 1800})
+	}{AuthToken: authToken, ExpiresIn: 900})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,13 +378,14 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 			t.Fatal(err)
 		}
 		var input struct {
-			ResourceToken string `json:"resource_token"`
-			AgentToken    string `json:"agent_token"`
+			ResourceToken  string `json:"resource_token"`
+			PresentedToken string `json:"presented_token"`
+			AgentToken     string `json:"agent_token"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 			t.Fatal(err)
 		}
-		if input.ResourceToken != resourceToken || input.AgentToken != agentToken {
+		if input.ResourceToken != resourceToken || input.PresentedToken != presentedToken || input.AgentToken != agentToken {
 			t.Fatalf("access-server input = %#v", input)
 		}
 		if deny {
@@ -436,12 +441,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-	}{ResourceToken: resourceToken})
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := testTokenRequestBody(t, resourceToken, presentedToken)
 	request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -459,7 +459,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&output); err != nil {
 		t.Fatal(err)
 	}
-	if output.AuthToken != authToken || output.ExpiresIn != 1800 || accessCalls != 1 {
+	if output.AuthToken != authToken || output.ExpiresIn != 900 || accessCalls != 1 {
 		t.Fatalf("access response = %#v; calls = %d", output, accessCalls)
 	}
 	if consented.Agent != "aauth:planner@provider.example" ||
@@ -489,7 +489,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 		"capabilities":   []string{"interaction"},
 	} {
 		t.Run("known unsupported token request "+name, func(t *testing.T) {
-			requestBody, err := json.Marshal(map[string]any{"resource_token": resourceToken, name: value})
+			requestBody, err := json.Marshal(map[string]any{"resource_token": resourceToken, "presented_token": presentedToken, name: value})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -517,12 +517,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiredBody, err := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-	}{ResourceToken: expiredResourceToken})
-	if err != nil {
-		t.Fatal(err)
-	}
+	expiredBody := testTokenRequestBody(t, expiredResourceToken, presentedToken)
 	request = httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(expiredBody))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -547,12 +542,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	futureBody, err := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-	}{ResourceToken: futureResourceToken})
-	if err != nil {
-		t.Fatal(err)
-	}
+	futureBody := testTokenRequestBody(t, futureResourceToken, presentedToken)
 	request = httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(futureBody))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -621,6 +611,7 @@ func TestServerRefusesResourceTokenThatChangesRetainedPerson(t *testing.T) {
 	resolver := signaturekey.StaticKeyResolver{
 		{Issuer: "https://provider.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}:    providerKey.PublicJWK(),
 		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+		{Issuer: "https://person.example", DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personServerKey.ID()}: personServerKey.PublicJWK(),
 	}
 	agentToken, err := aauth.MintAgentToken(
 		"https://provider.example", providerKey,
@@ -674,9 +665,10 @@ func TestServerRefusesResourceTokenThatChangesRetainedPerson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := json.Marshal(struct {
-		ResourceToken string `json:"resource_token"`
-	}{ResourceToken: resourceToken})
+	presentedToken := testPresentedPersonToken(
+		t, personServerKey, resourceToken, agentKey.PublicJWK(), now, now.Add(20*time.Minute),
+	)
+	body := testTokenRequestBody(t, resourceToken, presentedToken)
 	request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -701,6 +693,7 @@ func TestServerRefusesUnusableResourceTokenBeforePolicy(t *testing.T) {
 	resolver := signaturekey.StaticKeyResolver{
 		{Issuer: "https://provider.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}:    providerKey.PublicJWK(),
 		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+		{Issuer: "https://person.example", DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personServerKey.ID()}: personServerKey.PublicJWK(),
 	}
 	agentToken, err := aauth.MintAgentToken(
 		"https://provider.example", providerKey,
@@ -797,12 +790,10 @@ func TestServerRefusesUnusableResourceTokenBeforePolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			body, err := json.Marshal(struct {
-				ResourceToken string `json:"resource_token"`
-			}{ResourceToken: resourceToken})
-			if err != nil {
-				t.Fatal(err)
-			}
+			presentedToken := testPresentedPersonToken(
+				t, personServerKey, resourceToken, agentKey.PublicJWK(), now, now.Add(test.personTokenLifetime),
+			)
+			body := testTokenRequestBody(t, resourceToken, presentedToken)
 			request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
 			if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -1089,4 +1080,57 @@ func optionalTestStringPointer(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+// testPresentedPersonToken mints the person token an agent presented to the
+// resource named by resourceToken, bound to the claims that resource token
+// echoes (resource, subject, tenant, mission, jti, Person Server). The token is
+// signed with key, which the test resolver has to resolve for the Person
+// Server, and is issued at now.
+func testPresentedPersonToken(
+	t *testing.T,
+	key jose.SigningKey,
+	resourceToken string,
+	agent jose.JWK,
+	now, expiresAt time.Time,
+) string {
+	t.Helper()
+	segments := strings.Split(resourceToken, ".")
+	if len(segments) != 3 {
+		t.Fatalf("resource token has %d segments", len(segments))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(segments[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resource aauth.ResourceTokenClaims
+	if err := json.Unmarshal(payload, &resource); err != nil {
+		t.Fatal(err)
+	}
+	presented, err := aauth.MintPersonToken(key, aauth.PersonTokenClaims{
+		Issuer: resource.PersonServer, DWK: aauth.PersonDiscoveryDocument,
+		Audience: resource.Issuer, Subject: resource.Subject,
+		Confirmation: aauth.Confirmation{JWK: agent},
+		JTI:          resource.PresentedJTI,
+		IssuedAt:     now.Unix(), ExpiresAt: expiresAt.Unix(),
+		MissionS256: resource.MissionS256, Tenant: resource.Tenant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return presented
+}
+
+// testTokenRequestBody is the Person Server token request body for
+// resourceToken and its presented token.
+func testTokenRequestBody(t *testing.T, resourceToken, presentedToken string) []byte {
+	t.Helper()
+	body, err := json.Marshal(struct {
+		ResourceToken  string `json:"resource_token"`
+		PresentedToken string `json:"presented_token"`
+	}{ResourceToken: resourceToken, PresentedToken: presentedToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }

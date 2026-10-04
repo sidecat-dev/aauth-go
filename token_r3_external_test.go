@@ -90,7 +90,7 @@ func TestR3BudgetTokenAPIsVerifyBothCompanionsTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resourceClaims.JTI != "r3-budget-resource-token" || gotReference != reference ||
-		gotOffer.Amount() != offer.Amount() || !gotOffer.Unit().Equal(offer.Unit()) || len(consumed) != 0 {
+		gotOffer.Amount() != offer.Amount() || !gotOffer.Unit().Equal(offer.Unit()) || consumed != nil {
 		t.Fatalf("verified Resource token = %#v, %#v, %#v, %#v", resourceClaims, gotReference, gotOffer, consumed)
 	}
 	if _, _, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock); err == nil {

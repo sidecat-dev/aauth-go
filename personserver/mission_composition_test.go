@@ -56,8 +56,9 @@ func TestMissionCompositionRejectsSubagentBeforePolicyOrRetention(t *testing.T) 
 					protocol.childKey.PublicJWK(), mission.S256, protocol.now,
 				)
 				response = signedCompositionRequest(t, server, "https://ps.example/token", map[string]any{
-					"resource_token": resourceToken,
-					"subagent_token": protocol.childToken,
+					"resource_token":  resourceToken,
+					"presented_token": testPresentedPersonToken(t, protocol.personKey, resourceToken, protocol.childKey.PublicJWK(), protocol.now, protocol.now.Add(10*time.Minute)),
+					"subagent_token":  protocol.childToken,
 				}, protocol.parentKey, protocol.parentToken, protocol.clock)
 			}
 
@@ -106,8 +107,9 @@ func TestMissionCompositionRejectsCallChainBeforePolicyOrRetention(t *testing.T)
 					protocol.resourceOneProofKey.PublicJWK(), mission.S256, protocol.now,
 				)
 				response = signedCompositionRequest(t, server, protocol.personServerID+"/token", map[string]any{
-					"resource_token": resourceToken,
-					"upstream_token": protocol.upstreamToken,
+					"resource_token":  resourceToken,
+					"presented_token": testPresentedPersonToken(t, protocol.personServerKey, resourceToken, protocol.resourceOneProofKey.PublicJWK(), protocol.now, protocol.now.Add(10*time.Minute)),
+					"upstream_token":  protocol.upstreamToken,
 				}, protocol.resourceOneProofKey, protocol.resourceOneIDToken, protocol.clock)
 			}
 
@@ -200,8 +202,9 @@ func TestMissionCompositionRejectsDeferredAuthorizationBeforeAuthorizationOrRete
 	before := snapshotCompositionMissionStore(protocol.store)
 
 	response := signedCompositionRequest(t, protocol.server, protocol.personServerID+"/token", map[string]any{
-		"resource_token": resourceToken,
-		"capabilities":   []string{"interaction"},
+		"resource_token":  resourceToken,
+		"presented_token": personOutput.PersonToken,
+		"capabilities":    []string{"interaction"},
 	}, protocol.agentKey, protocol.agentToken, protocol.clock)
 
 	assertCompositionProblem(t, response, http.StatusInternalServerError, "server_error")

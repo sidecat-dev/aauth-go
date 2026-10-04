@@ -1095,6 +1095,29 @@ nonempty `presented_jti`; neither library claims to prove that the host selected
 the exact prior Person-token record. The Agent returns the verified step-up and
 performs no automatic exchange or retry.
 
+On a step-up, the fresh Resource token's `presented_jti` names the Auth token
+the Agent presented, and the Agent sends that Auth token as `presented_token`.
+The Agent refuses a step-up whose `presented_jti` is not the `jti` of the Auth
+token it presented. The Person-token record the host retains remains host
+state that neither library proves.
+
+## An R3 retry is tied to its class record by reference and context, not by token lineage
+
+**Source:** AAuth R3, per-call operation flow; AAuth Core, `Resource Token
+Structure`.
+
+A proposal Resource token's `presented_jti` is the `jti` of the class Auth
+token the Agent presented. The class record is written before that Auth token
+exists, so it cannot hold that `jti`, and the Resource compares no token
+identifier with the class record on retry. What the retry check does prove is
+that the retained proposal token carries a nonempty `presented_jti` and the
+same class reference, Person Server, subject, agent key, tenant, mission and
+account as the class record, inside the class validity interval. The Agent
+separately requires the proposal's `presented_jti` to equal the `jti` of the
+class Auth token it holds. The remaining distinction is Person-token lineage:
+nothing at the Resource ties the retry to the Person token the class
+authorization began from. No extra claim or store field was added for it.
+
 ## An ambiguous Budget call carries the full signed grant, never a retry
 
 **Source:** AAuth Budgets, `Ambiguous Failures` and `The Budget Is a Hard Cap`.

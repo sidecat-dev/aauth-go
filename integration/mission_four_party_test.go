@@ -487,11 +487,13 @@ func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 			t.Fatal(err)
 		}
 		released, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-			PersonServer: personServerID, ResourceToken: compact,
+			PersonServer: personServerID, ResourceToken: compact, PresentedToken: personToken,
 		})
-		var problem *aauth.ProblemError
-		if released != "" || !errors.As(err, &problem) || problem.Code != "invalid_resource_token" {
-			t.Fatalf("%s mission binding result = %q, problem=%#v, err=%v", name, released, problem, err)
+		// The Agent compares the Resource token with the token it presented
+		// and refuses before any request leaves; the Person Server's own
+		// refusal is proven at its token endpoint.
+		if released != "" || !errors.Is(err, aauth.ErrPresentedTokenMismatch) {
+			t.Fatalf("%s mission binding result = %q, err=%v", name, released, err)
 		}
 	}
 	if accessPolicyCalls != 0 {
@@ -505,7 +507,7 @@ func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 	exchangeDone := make(chan exchangeResult, 1)
 	go func() {
 		token, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-			PersonServer: personServerID, ResourceToken: resourceToken,
+			PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 		})
 		exchangeDone <- exchangeResult{token: token, err: err}
 	}()
@@ -620,7 +622,7 @@ func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 		t.Fatalf("mission completion context = %#v", acceptedCompletions)
 	}
 	released, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	var completedProblem *aauth.ProblemError
 	if released != "" || !errors.As(err, &completedProblem) || completedProblem.Code != "mission_terminated" ||
@@ -653,7 +655,7 @@ func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 	}
 	terminateAtAccessServer = raceMission.S256
 	released, err = reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: raceResourceToken,
+		PersonServer: personServerID, ResourceToken: raceResourceToken, PresentedToken: racePersonToken,
 	})
 	var problem *aauth.ProblemError
 	if released != "" || !errors.As(err, &problem) || problem.Code != "mission_terminated" ||

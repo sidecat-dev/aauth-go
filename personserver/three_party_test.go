@@ -152,12 +152,9 @@ func TestServerIssuesThreePartyAuthTokenWithoutAccessServer(t *testing.T) {
 
 	callTokenEndpoint := func(compact string) *httptest.ResponseRecorder {
 		t.Helper()
-		body, err := json.Marshal(struct {
-			ResourceToken string `json:"resource_token"`
-		}{ResourceToken: compact})
-		if err != nil {
-			t.Fatal(err)
-		}
+		body := testTokenRequestBody(t, compact, testPresentedPersonToken(
+			t, personKey, compact, agentKey.PublicJWK(), now, now.Add(40*time.Minute),
+		))
 		request := httptest.NewRequest(http.MethodPost, personID+"/token", bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
@@ -338,7 +335,11 @@ func TestFederatedServerUsesAccessRoleWhenAudienceEqualsIssuer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := json.Marshal(map[string]string{"resource_token": resourceToken})
+	// The Access Server token lives 30 minutes and may not outlive the
+	// presented Person token.
+	body := testTokenRequestBody(t, resourceToken, testPresentedPersonToken(
+		t, personKey, resourceToken, agentKey.PublicJWK(), now, now.Add(30*time.Minute),
+	))
 	request := httptest.NewRequest(http.MethodPost, personID+"/token", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {

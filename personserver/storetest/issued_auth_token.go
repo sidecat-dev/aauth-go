@@ -18,8 +18,9 @@ type IssuedAuthTokenContract struct {
 	New func(testing.TB) personserver.IssuedAuthTokenStore
 }
 
-// RunIssuedAuthToken checks issuer/JTI namespacing, exact replay, conflict
-// refusal, retained-state preservation, and concurrent linearization.
+// RunIssuedAuthToken checks issuer/JTI namespacing, exact round-trip and
+// replay of a record with every field set, conflict refusal for a change to
+// any one field, retained-state preservation, and concurrent linearization.
 func RunIssuedAuthToken(t *testing.T, contract IssuedAuthTokenContract) {
 	t.Helper()
 	if contract.New == nil {
@@ -42,14 +43,44 @@ func RunIssuedAuthToken(t *testing.T, contract IssuedAuthTokenContract) {
 	if err != nil || !reflect.DeepEqual(loaded, record) {
 		t.Fatalf("LoadIssuedAuthToken = %#v, %v", loaded, err)
 	}
-	conflicting := record
-	conflicting.Resource = "https://other-resource.example"
-	if err := store.CommitIssuedAuthToken(ctx, conflicting); !errors.Is(err, personserver.ErrIssuedAuthTokenConflict) {
-		t.Fatalf("conflicting CommitIssuedAuthToken = %v", err)
+	// Every retained field takes part in the conflict comparison, including
+	// the recipient Agent and the upstream token of a chained issuance.
+	for _, conflict := range []struct {
+		name   string
+		change func(*personserver.IssuedAuthTokenRecord)
+	}{
+		{"resource", func(record *personserver.IssuedAuthTokenRecord) { record.Resource = "https://other-resource.example" }},
+		{"mission", func(record *personserver.IssuedAuthTokenRecord) { record.MissionS256 = "other-mission-digest" }},
+		{"compact digest", func(record *personserver.IssuedAuthTokenRecord) { record.CompactSHA256[31] ^= 1 }},
+		{"issued at", func(record *personserver.IssuedAuthTokenRecord) { record.IssuedAt = record.IssuedAt.Add(time.Second) }},
+		{"expires at", func(record *personserver.IssuedAuthTokenRecord) { record.ExpiresAt = record.ExpiresAt.Add(time.Second) }},
+		{"agent provider", func(record *personserver.IssuedAuthTokenRecord) { record.AgentProvider = "https://other-agent.example" }},
+		{"agent", func(record *personserver.IssuedAuthTokenRecord) { record.Agent = "aauth:other@agent.example" }},
+		{"agent token jti", func(record *personserver.IssuedAuthTokenRecord) { record.AgentTokenJTI = "other-agent-token" }},
+		{"agent key thumbprint", func(record *personserver.IssuedAuthTokenRecord) { record.AgentJKT = "other-agent-key-thumbprint" }},
+		{"upstream issuer", func(record *personserver.IssuedAuthTokenRecord) {
+			record.UpstreamTokenReference.Issuer = "https://other-person.example"
+		}},
+		{"upstream jti", func(record *personserver.IssuedAuthTokenRecord) {
+			record.UpstreamTokenReference.JTI = "other-upstream-token"
+		}},
+		{"upstream digest", func(record *personserver.IssuedAuthTokenRecord) { record.UpstreamTokenSHA256[31] ^= 1 }},
+	} {
+		conflicting := record
+		conflict.change(&conflicting)
+		if reflect.DeepEqual(conflicting, record) {
+			t.Fatalf("%s conflict case leaves the record unchanged", conflict.name)
+		}
+		if err := store.CommitIssuedAuthToken(ctx, conflicting); !errors.Is(err, personserver.ErrIssuedAuthTokenConflict) {
+			t.Fatalf("CommitIssuedAuthToken with changed %s = %v", conflict.name, err)
+		}
+		loaded, err = store.LoadIssuedAuthToken(ctx, record.Reference)
+		if err != nil || !reflect.DeepEqual(loaded, record) {
+			t.Fatalf("LoadIssuedAuthToken after changed %s = %#v, %v", conflict.name, loaded, err)
+		}
 	}
-	loaded, err = store.LoadIssuedAuthToken(ctx, record.Reference)
-	if err != nil || !reflect.DeepEqual(loaded, record) {
-		t.Fatalf("LoadIssuedAuthToken after conflict = %#v, %v", loaded, err)
+	if err := store.CommitIssuedAuthToken(ctx, record); err != nil {
+		t.Fatalf("exact CommitIssuedAuthToken replay after conflicts = %v", err)
 	}
 
 	otherIssuer := issuedAuthTokenRecord("https://access.example", record.Reference.JTI, record.Resource, 2)
@@ -119,5 +150,9 @@ func issuedAuthTokenRecord(issuer, jti, resourceID string, marker byte) personse
 		Reference: aauth.TokenReference{Issuer: issuer, JTI: jti},
 		Resource:  resourceID, MissionS256: "mission-digest",
 		CompactSHA256: [32]byte{marker}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+		AgentProvider: "https://agent.example", Agent: "aauth:assistant@agent.example",
+		AgentTokenJTI: "agent-token-" + jti, AgentJKT: "agent-key-thumbprint",
+		UpstreamTokenReference: aauth.TokenReference{Issuer: issuer, JTI: "upstream-" + jti},
+		UpstreamTokenSHA256:    [32]byte{marker, 1},
 	}
 }

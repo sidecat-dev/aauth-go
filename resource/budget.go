@@ -46,8 +46,9 @@ type BudgetInitialOfferRequest struct {
 	Scope         []string
 }
 
-// BudgetLineage is the Resource-side record needed to construct a later
-// Budget step-up without recovering Person-token identity from an Auth token.
+// BudgetLineage is the Resource-side record of the initial Budget
+// authorization request. PresentedJTI is the jti of the token presented on
+// that request; a later step-up names the refused Auth token instead.
 // RetainLineage receives it after token minting and before token release. A
 // Account is the Resource-owned account selected on the authorization request.
 // A host with multiple live matching records must use its own policy or refuse
@@ -74,11 +75,11 @@ type BudgetCostRequest struct {
 	Grant     budgets.Value
 }
 
-// BudgetChallengeRequest asks the host to use its retained Person-token
-// lineage to mint a fresh Budget Resource token. The Resource verifies the
-// returned token's observable context before exposing it, but cannot prove
-// freshness or select presented_jti from the Auth token alone. The host must
-// not reconstruct or guess that identifier.
+// BudgetChallengeRequest asks the host to mint a fresh Budget Resource token
+// for a step-up. The agent presented the refused Auth token, so the fresh
+// token's presented_jti is Token.JTI. The Resource verifies that and the
+// returned token's other observable context before exposing it, but cannot
+// prove freshness.
 type BudgetChallengeRequest struct {
 	Token     aauth.TokenReference
 	Principal AuthPrincipal

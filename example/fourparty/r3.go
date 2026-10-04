@@ -211,7 +211,7 @@ func runR3Direct(output io.Writer) {
 		Account: &account, R3Operations: &requested,
 	}))
 	authToken := must(reader.Exchange(ctx, clientagent.ExchangeRequest{
-		PersonServer: personServerID, ResourceToken: resourceToken,
+		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
 	}))
 	request := must(http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/read", nil))
 	response := must(reader.Do(ctx, clientagent.Call{Request: request, AuthToken: authToken}))
