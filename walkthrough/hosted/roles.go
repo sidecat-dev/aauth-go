@@ -181,7 +181,7 @@ func composeHostedRoles(stateDir string, config hostConfig, accounts *accountFil
 				compact, reference, err := r3.MintBudgetResourceToken(registry, resourceKey, aauth.ResourceTokenClaims{
 					Issuer: resourceOrigin, DWK: aauth.ResourceDiscoveryDocument, Audience: lineage.Person.Issuer,
 					JTI: hostedRandomID(), PersonServer: lineage.Person.Issuer, Subject: lineage.Person.Subject,
-					PresentedJTI: lineage.PresentedJTI, AgentJKT: lineage.AgentJKT, IssuedAt: now.Unix(), ExpiresAt: lineage.ExpiresAt,
+					PresentedJTI: challenge.Token.JTI, AgentJKT: lineage.AgentJKT, IssuedAt: now.Unix(), ExpiresAt: lineage.ExpiresAt,
 					Account: cloneHostedString(lineage.Account), MissionS256: lineage.PersonContext.MissionS256, Tenant: lineage.PersonContext.Tenant,
 				}, challenge.R3Reference.URI(), document.ExactJSON, lineage.Offer, nil)
 				if err != nil {

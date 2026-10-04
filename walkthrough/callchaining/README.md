@@ -7,8 +7,8 @@ separate processes. An authorized `orders.fulfill` request produces one
 directed person, intermediary proof key, scope, expiry and action count.
 
 The external dependency is exactly
-`gitlab.com/sidecat-dev/aauth-go v0.0.0-20261001134626-970a03fb2122`, from
-[correction 970a03fb21229996de568e08642c04eb9347fcfc](https://gitlab.com/sidecat-dev/aauth-go/-/commit/970a03fb21229996de568e08642c04eb9347fcfc).
+`gitlab.com/sidecat-dev/aauth-go v0.0.0-20261004022946-1d27163e815d`, from
+[public commit 1d27163e815d9a6dd95eed2ba7293a1fc428682a](https://gitlab.com/sidecat-dev/aauth-go/-/commit/1d27163e815d9a6dd95eed2ba7293a1fc428682a).
 The module has no `replace` directive. Its parent checkout may be at another
 revision; it supplies the walkthrough source, not the library implementation.
 
@@ -122,10 +122,11 @@ hop. The library correction targets the following clauses in
 | Auth Token Structure `exp`, source line 1775; Call Chaining, line 1850 | Downstream Auth-token expiry is no later than the upstream expiry. |
 | Upstream Token Verification steps 1–3, lines 1832–1834; Call Chaining, lines 1852–1856 | Actual role exchange, distinct intermediary proof key, upstream PS routing and downstream directed subject. |
 
-The library's targeted correction leaves calling-agent identification and
-revocation under step 4, `revoked_upstream_token`, the `presented_token` expiry
-ceiling, upstream Person tokens, missions/accounts, federation, deferred
-chaining, repeated hops and cascade unadopted. This consumer does not claim
+The library identifies the calling Agent under step 4 from the Person Server's
+own issuance record of the upstream token, answers `revoked_upstream_token`
+when that Agent's token is revoked, and applies the `presented_token` expiry
+ceiling. Upstream Person tokens, missions/accounts, federation, deferred
+chaining, sub-agent chaining, repeated hops and cascade remain unadopted. This consumer does not claim
 full Protocol -11 conformance or interoperability with another implementation.
 
 Person-token bindings, discovery caches and Inventory's action counter belong

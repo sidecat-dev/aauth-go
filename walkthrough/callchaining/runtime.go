@@ -128,6 +128,7 @@ func roleHandler(state string, config configuration, role string, client *http.C
 		store := &tokenStore{records: make(map[string][]byte)}
 		people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 			Issuer: personOrigin, SigningKey: key, KeyResolver: keys, Clock: clock, NewID: randomID, Tokens: store,
+			IssuedTokens: &issuedTokenStore{records: make(map[aauth.TokenReference]personserver.IssuedAuthTokenRecord)},
 			BindPerson: func(_ context.Context, r personserver.PersonTokenRequest) (personserver.Person, error) {
 				if r.Agent != agentID || r.Resource != ordersOrigin || r.Upstream != nil || r.Subagent != "" || r.Mission != nil {
 					return personserver.Person{}, errors.New("unknown original person request")

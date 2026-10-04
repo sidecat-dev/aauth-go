@@ -45,7 +45,7 @@ func call(ctx context.Context, state string, config configuration) error {
 	if err != nil {
 		return err
 	}
-	auth, err := original.Exchange(ctx, clientagent.ExchangeRequest{PersonServer: personOrigin, ResourceToken: challenge})
+	auth, err := original.Exchange(ctx, clientagent.ExchangeRequest{PersonServer: personOrigin, ResourceToken: challenge, PresentedToken: person})
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func callInventory(ctx context.Context, relay *clientagent.Client, upstream stri
 	if err != nil {
 		return output, err
 	}
-	auth, err := relay.Exchange(ctx, clientagent.ExchangeRequest{ResourceToken: challenge, UpstreamToken: upstream})
+	auth, err := relay.Exchange(ctx, clientagent.ExchangeRequest{ResourceToken: challenge, PresentedToken: person, UpstreamToken: upstream})
 	if err != nil {
 		return output, err
 	}

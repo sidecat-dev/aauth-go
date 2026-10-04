@@ -204,7 +204,7 @@ func authorizeHostedAction(client *clientagent.Client, config agentConfig, opera
 		return actionCredential{}, err
 	}
 	authToken, err := client.Exchange(context.Background(), clientagent.ExchangeRequest{
-		PersonServer: personOrigin, ResourceToken: resourceToken,
+		PersonServer: personOrigin, ResourceToken: resourceToken, PresentedToken: personToken,
 	})
 	if err != nil {
 		return actionCredential{}, err

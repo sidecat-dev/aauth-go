@@ -23,7 +23,7 @@ func TestHostedWalkthroughUsesPublishedPublicModule(t *testing.T) {
 	if err := json.Unmarshal(output, &module); err != nil {
 		t.Fatal(err)
 	}
-	if module.Path != "gitlab.com/sidecat-dev/aauth-go" || module.Version != "v0.0.0-20261001134626-970a03fb2122" {
+	if module.Path != "gitlab.com/sidecat-dev/aauth-go" || module.Version != "v0.0.0-20261004011936-244bd0d8ccfb" {
 		t.Fatalf("library module = %s %s", module.Path, module.Version)
 	}
 	if module.Replace != nil {

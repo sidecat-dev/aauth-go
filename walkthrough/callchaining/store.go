@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
 
@@ -40,4 +41,32 @@ func (store *tokenStore) Load(_ context.Context, issuer, jti string) (personserv
 	var record personserver.PersonTokenRecord
 	err := json.Unmarshal(encoded, &record)
 	return record, err
+}
+
+// Issuance records belong to this one Person Server process as well. They
+// name the Agent each auth token was issued to, which is how the Person Server
+// identifies the caller when that token comes back as an upstream token.
+type issuedTokenStore struct {
+	mu      sync.Mutex
+	records map[aauth.TokenReference]personserver.IssuedAuthTokenRecord
+}
+
+func (store *issuedTokenStore) CommitIssuedAuthToken(_ context.Context, record personserver.IssuedAuthTokenRecord) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if retained, exists := store.records[record.Reference]; exists && retained != record {
+		return personserver.ErrIssuedAuthTokenConflict
+	}
+	store.records[record.Reference] = record
+	return nil
+}
+
+func (store *issuedTokenStore) LoadIssuedAuthToken(_ context.Context, reference aauth.TokenReference) (personserver.IssuedAuthTokenRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, ok := store.records[reference]
+	if !ok {
+		return personserver.IssuedAuthTokenRecord{}, personserver.ErrIssuedAuthTokenNotFound
+	}
+	return record, nil
 }
