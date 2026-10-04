@@ -75,7 +75,7 @@ dispatch, and Agent-token revocation. Its exact deployment boundary is in
 | Separate local TLS processes, durable state, restart, and revocation | [`walkthrough/local`](walkthrough/local) |
 | Separate laptop and hosted-service TLS processes with mission, MCP, Budget, restart, and revocation | [`walkthrough/hosted`](walkthrough/hosted) |
 | Go/TypeScript interoperability in both directions | [`walkthrough/interop`](walkthrough/interop) |
-| Two-resource call chain over separate loopback TLS processes, pinned to the published expiry correction | [`walkthrough/callchaining`](walkthrough/callchaining) |
+| Two-resource call chain over separate loopback TLS processes, built against the library commit pinned in its guide | [`walkthrough/callchaining`](walkthrough/callchaining) |
 | Three-party authorization | [`example/threeparty`](example/threeparty) |
 | Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
 | Account-bound four-party fixed Budget through an Access Server | [`example/budgetfourparty`](example/budgetfourparty) |

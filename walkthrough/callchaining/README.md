@@ -9,8 +9,10 @@ directed person, intermediary proof key, scope, expiry and action count.
 The external dependency is exactly
 `gitlab.com/sidecat-dev/aauth-go v0.0.0-20261004022946-1d27163e815d`, from
 [public commit 1d27163e815d9a6dd95eed2ba7293a1fc428682a](https://gitlab.com/sidecat-dev/aauth-go/-/commit/1d27163e815d9a6dd95eed2ba7293a1fc428682a).
-The module has no `replace` directive. Its parent checkout may be at another
-revision; it supplies the walkthrough source, not the library implementation.
+The module has no `replace` directive. Your checkout supplies this guide and
+its Go files; the build always links the pinned library commit above, which
+carries the token-expiry correction described under
+[Protocol and application boundaries](#protocol-and-application-boundaries).
 
 ## Build and initialize
 
@@ -24,7 +26,8 @@ state_dir="$(mktemp -d)"
 ./aauth-callchain init --state "$state_dir"
 ```
 
-`init` prints only public identity information. It generates a temporary CA,
+`init` prints only public identity information, including `intermediary_key`,
+the intermediary's proof-key thumbprint. It generates a temporary CA,
 24-hour hostname certificates, separate protocol keys and one-hour Agent
 tokens in the private state directory. It refuses to overwrite an initialized
 configuration. No system trust, DNS, hosts file or service configuration changes
@@ -52,8 +55,14 @@ In the same shell, start all four roles and retain their process IDs:
 ./aauth-callchain serve --state "$state_dir" --role inventory & inventory_pid=$!
 ```
 
-Once `status` reaches all four roles, run the unsigned control, inspect the
-zero action count, then authorize one call:
+A running role prints nothing. `status` asks each role for its counters and
+changes none of them. It exits nonzero with an error, and prints no partial
+result, until all four roles answer; exit `0` means all four are reachable, so
+repeat it until then. A role that cannot start, for example because its port is
+in use, exits with an error instead.
+
+Then run the unsigned control, inspect the zero action count, and authorize one
+call:
 
 ```sh
 ./aauth-callchain status --state "$state_dir"
@@ -63,12 +72,24 @@ zero action count, then authorize one call:
 ./aauth-callchain status --state "$state_dir"
 ```
 
+`init`, `status`, `call` and `probe` each print one JSON line. `status` reports `metadata_requests`,
+`jwks_requests` and `consequence_count` for each role, plus a top-level
+`consequence_count` copied from Inventory. That top-level value is "the count"
+below.
+
+A refusal is the expected result of a probe: `probe` exits `0` and reports
+`status: refused`, the HTTP status, and `signature_error`, the JSON field holding
+the response's `Signature-Error` header value (possibly empty). It exits
+nonzero only when it could not get that refusal. Read the JSON, not the exit
+code, to see what happened.
+
 The unsigned probe reports `refused` with HTTP `401`, and the count stays zero.
 The authorized call reports `completed`, `person-at-orders`,
-`person-at-inventory`, `inventory.reserve`, the intermediary key thumbprint
-printed by `init`, and `consequence_count: 1`. The downstream Person and Auth
-token expiries must not exceed `upstream_exp`. Metadata and JWKS request counts
-in `status` show that discovery crossed the TLS sockets.
+`person-at-inventory`, `inventory.reserve` and `consequence_count: 1`. Its
+`intermediary_key` must equal the `intermediary_key` printed by `init`; compare
+the two strings. `downstream_person_exp` and `downstream_auth_exp` must not
+exceed `upstream_exp`. Nonzero metadata and JWKS request counts in `status`
+show that discovery crossed the TLS sockets.
 
 The original Auth token lasts 20 seconds. Wait until the call's `upstream_exp`
 plus one second, or simply wait 21 seconds after the successful call, then
@@ -80,11 +101,15 @@ sleep 21
 ./aauth-callchain status --state "$state_dir"
 ```
 
-Orders reports HTTP `401` and `Signature-Error: error=expired_jwt`; Inventory's
-count stays one. Calling the expired probe too early returns a wait instruction
-and sends no application request.
+The probe reports HTTP `401` and `signature_error: error=expired_jwt` from
+Orders; the count stays one. Before sending, the probe command itself verifies
+that the retained credential has expired. That check discovers the Person
+Server's metadata and signing keys, so the Person Server's request counts rise
+even though no action occurs. Calling the expired probe too early exits nonzero
+with a wait instruction and sends no application request.
 
-Stop the processes before deleting their private state:
+Stop the processes before deleting their private state. Each role shuts down
+on the termination signal and prints nothing:
 
 ```sh
 kill "$agent_pid" "$person_pid" "$orders_pid" "$inventory_pid"
