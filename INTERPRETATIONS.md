@@ -338,7 +338,9 @@ record is invalid.
 ## Call-chain policy derives a new person context and independent grant
 
 **Source:** AAuth Core, `Person Token Endpoint`, `Directed Identifiers Across
-a Chain`, `Call Chaining`, and `Agent-Person Binding`.
+a Chain`, `Call Chaining`, and `Agent-Person Binding`; for the expiry ceiling
+only, AAuth Protocol -11 `Person Token Structure`, `Auth Token Structure`, and
+`Call Chaining`.
 
 `CallChaining.BindPerson` receives copy-safe verified upstream claims and maps
 the upstream directed subject to the person context used for Resource 2. It
@@ -348,16 +350,22 @@ This host policy is the missing person-directory boundary. The ordinary
 
 `CallChaining.Authorize` receives another independent copy and decides the
 downstream scope and lifetime. The scope need not be a subset of the upstream
-scope. The upstream token must be current at each Person Server request, but
-the downstream person or auth token is not capped by the upstream expiration;
-Core does not state such a derived-token ceiling.
+scope. The upstream token must be current at each Person Server request. Under
+the targeted Protocol -11 overlay in `SPECIFICATIONS.md`, the downstream person
+and auth tokens expire no later than the verified upstream token. The policy
+lifetime, the Agent-token bound, the presented-token bound and any mission
+bound still apply, so the shortest bound wins. The ceiling comes from the
+upstream claims already verified for the request; no separate expiry record is
+kept.
 
 The special person selection applies only when a Resource intermediary
 presents a verified upstream token. Requests without one keep the ordinary
 one-Agent/one-person binding.
 
-**Executable example:**
-`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`.
+**Executable examples:**
+`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`
+and
+`personserver/call_chaining_test.go:TestCallChainingKeepsShorterBoundsUnderUpstreamExpiry`.
 
 ## Unsupported valid call-chain branches fail as server errors
 

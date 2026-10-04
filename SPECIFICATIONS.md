@@ -138,6 +138,32 @@ requires exactly one table row per source file.
 is a non-normative diagnostic implementation, not an editor source. It is
 tracked by Git commit rather than inserted into the source manifest.
 
+## Targeted additional source: Protocol -11 call-chain expiry
+
+This is one targeted source, not a repin. The manifest above and every other
+Protocol clause remain at their stated revisions. Only these rules follow this
+text, and only on the supported call-chain path: one immediate, missionless,
+accountless hop whose `upstream_token` is an auth token issued by the same
+Person Server.
+
+- A person token issued with `upstream_token` does not outlive it: the
+  `upstream_token` part of the `exp` rule in `### Person Token Structure`.
+- An auth token issued on a request carrying `upstream_token` does not outlive
+  it: the `upstream_token` sentence of the `exp` rule in
+  `### Auth Token Structure`, and "Downstream access does not outlive it" in
+  `### Call Chaining`.
+
+- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Section: `### Person Token Structure` at line 856 (the `exp` rule at line 863), `### Auth Token Structure` at line 1768 (the `exp` rule at line 1775), and `### Call Chaining` at line 1846 (the paragraph at line 1850).
+- SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
+Not adopted by this entry: `expired_upstream_token`, so an upstream token that
+fails only `exp` still returns `invalid_upstream_token`; person tokens as
+upstream tokens; mission- or account-bound upstream tokens; AS-issued upstream
+tokens and federated downstream issuance; and repeated hops or cascade. This
+overlay does not claim full call chaining.
+
 ## Native R3 vocabulary baselines
 
 R3 names seven external description formats without citing exact revisions.

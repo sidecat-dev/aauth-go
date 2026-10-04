@@ -662,6 +662,12 @@ func (server *Server) preparePersonToken(
 	if mission != nil && !mission.ExpiresAt.IsZero() && mission.ExpiresAt.Before(expiresAt) {
 		expiresAt = mission.ExpiresAt
 	}
+	// A person token issued with upstream_token expires no later than it.
+	if upstream != nil {
+		if upstreamExpiry := time.Unix(upstream.claims.ExpiresAt, 0); upstreamExpiry.Before(expiresAt) {
+			expiresAt = upstreamExpiry
+		}
+	}
 	if !expiresAt.After(issuedAt) {
 		return "", PersonTokenRecord{}, errors.New("personserver: person binding has no usable lifetime")
 	}

@@ -1519,6 +1519,13 @@ func (server *Server) issuePSAuthorizationToken(
 		authorizationRequest.Mission.Blob.ExpiresAt.Before(expiresAt) {
 		expiresAt = *authorizationRequest.Mission.Blob.ExpiresAt
 	}
+	// An auth token issued on a request carrying upstream_token expires no
+	// later than that token.
+	if authorizationRequest.Upstream != nil {
+		if upstreamExpiresAt := time.Unix(authorizationRequest.Upstream.ExpiresAt, 0); upstreamExpiresAt.Before(expiresAt) {
+			expiresAt = upstreamExpiresAt
+		}
+	}
 	if !expiresAt.After(issuedAt) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization decision has no usable lifetime"))
 		return

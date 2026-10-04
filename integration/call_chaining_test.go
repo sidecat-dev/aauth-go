@@ -319,6 +319,13 @@ func TestCurrentCoreImmediateTwoResourceCallChain(t *testing.T) {
 				http.Error(response, "unexpected downstream person token", http.StatusBadGateway)
 				return
 			}
+			// Chain policy asks for 25 minutes; the person token stops at the
+			// 20-minute upstream token it was issued with.
+			if downstreamPerson.ExpiresAt != verifiedUpstream.ExpiresAt {
+				t.Errorf("downstream person token exp = %d, want upstream exp %d", downstreamPerson.ExpiresAt, verifiedUpstream.ExpiresAt)
+				http.Error(response, "downstream person token outlives upstream", http.StatusBadGateway)
+				return
+			}
 
 			// Recompose the Person Server after it has retained the downstream
 			// person token but before the matching auth-token request. The exchange
@@ -384,6 +391,14 @@ func TestCurrentCoreImmediateTwoResourceCallChain(t *testing.T) {
 				slices.Equal(strings.Fields(downstreamAuth.Scope), upstreamScope) {
 				t.Errorf("downstream auth token = %#v", downstreamAuth)
 				http.Error(response, "unexpected downstream auth token", http.StatusBadGateway)
+				return
+			}
+			// The shorter 15-minute auth policy is kept below the upstream expiry.
+			if downstreamAuth.ExpiresAt != downstreamAuth.IssuedAt+int64((15*time.Minute).Seconds()) ||
+				downstreamAuth.ExpiresAt > verifiedUpstream.ExpiresAt {
+				t.Errorf("downstream auth token iat = %d exp = %d, want 15 minutes within upstream exp %d",
+					downstreamAuth.IssuedAt, downstreamAuth.ExpiresAt, verifiedUpstream.ExpiresAt)
+				http.Error(response, "unexpected downstream auth token lifetime", http.StatusBadGateway)
 				return
 			}
 

@@ -47,8 +47,11 @@ func TestCallChainingPSAuthorizationSurvivesServerRecomposition(t *testing.T) {
 		!personClaims.Confirmation.JWK.Equal(protocol.resourceOneProofKey.PublicJWK()) {
 		t.Fatalf("downstream person token = %#v", personClaims)
 	}
-	if personOutput.ExpiresIn != int64((30*time.Minute)/time.Second) {
-		t.Fatalf("person expires_in = %d", personOutput.ExpiresIn)
+	// Policy allows 30 minutes, but downstream access does not outlive the
+	// 10-minute upstream authorization.
+	if personOutput.ExpiresIn != int64((10*time.Minute)/time.Second) ||
+		personClaims.ExpiresAt != protocol.upstreamClaims.ExpiresAt {
+		t.Fatalf("person expires_in = %d exp = %d, want upstream expiry %d", personOutput.ExpiresIn, personClaims.ExpiresAt, protocol.upstreamClaims.ExpiresAt)
 	}
 
 	record, commits, _ := protocol.store.observation()
@@ -88,10 +91,12 @@ func TestCallChainingPSAuthorizationSurvivesServerRecomposition(t *testing.T) {
 		!authClaims.Confirmation.JWK.Equal(protocol.resourceOneProofKey.PublicJWK()) {
 		t.Fatalf("downstream auth token = %#v", authClaims)
 	}
-	if authClaims.ExpiresAt <= protocol.upstreamClaims.ExpiresAt {
-		t.Fatalf("downstream expiry = %d, want independent policy lifetime after upstream expiry %d", authClaims.ExpiresAt, protocol.upstreamClaims.ExpiresAt)
+	// Policy allows 20 minutes; an Auth token issued on a request carrying
+	// an upstream token still expires no later than that token.
+	if authClaims.ExpiresAt != protocol.upstreamClaims.ExpiresAt {
+		t.Fatalf("downstream expiry = %d, want upstream expiry %d", authClaims.ExpiresAt, protocol.upstreamClaims.ExpiresAt)
 	}
-	if tokenOutput.ExpiresIn != int64((20*time.Minute)/time.Second) {
+	if tokenOutput.ExpiresIn != int64((10*time.Minute)/time.Second) {
 		t.Fatalf("auth expires_in = %d", tokenOutput.ExpiresIn)
 	}
 	if protocol.chainBindCalls != 1 || protocol.chainAuthorizeCalls != 1 ||
@@ -428,6 +433,105 @@ func TestCallChainingRequiresCurrentUpstreamAtBothPersonServerCalls(t *testing.T
 			"expired second presentation calls/state = chain %d/%d commits %d loads %d",
 			protocol.chainBindCalls, protocol.chainAuthorizeCalls, commits, loads,
 		)
+	}
+}
+
+func TestCallChainingKeepsShorterBoundsUnderUpstreamExpiry(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		personLifetime time.Duration
+		authLifetime   time.Duration
+		agentLifetime  time.Duration
+		wantPerson     time.Duration
+		wantAuth       time.Duration
+	}{
+		{
+			name:           "shorter policy",
+			personLifetime: 5 * time.Minute,
+			authLifetime:   3 * time.Minute,
+			agentLifetime:  time.Hour,
+			wantPerson:     5 * time.Minute,
+			wantAuth:       3 * time.Minute,
+		},
+		{
+			name:           "shorter intermediary Agent token",
+			personLifetime: 30 * time.Minute,
+			authLifetime:   20 * time.Minute,
+			agentLifetime:  2 * time.Minute,
+			wantPerson:     2 * time.Minute,
+			wantAuth:       2 * time.Minute,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			protocol := newCallChainingProtocol(t)
+			protocol.chainBind = func(PersonTokenRequest) (Person, error) {
+				return Person{Subject: protocol.downstreamSubject, Lifetime: test.personLifetime}, nil
+			}
+			protocol.chainAuthorize = func(AuthorizationRequest) (AuthorizationDecision, error) {
+				return AuthorizationDecision{Scopes: []string{"payments.charge"}, Lifetime: test.authLifetime}, nil
+			}
+			agentToken, err := aauth.MintAgentToken(protocol.resourceOneID, protocol.resourceOneIssuerKey, aauth.AgentTokenRequest{
+				Agent:        "aauth:resource-one@resource-one.example",
+				PersonServer: "https://intermediary-person.example",
+				PublicKey:    protocol.resourceOneProofKey.PublicJWK(),
+				Lifetime:     test.agentLifetime,
+			}, protocol.now, "resource-one-bounded-agent-token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := protocol.newServer(t, protocol.config())
+
+			personResponse := protocol.personRequestWithCredential(
+				t, server, protocol.upstreamToken, "", protocol.resourceOneProofKey, agentToken,
+			)
+			if personResponse.Code != http.StatusOK {
+				t.Fatalf("person response = %d %s", personResponse.Code, personResponse.Body.String())
+			}
+			var personOutput struct {
+				PersonToken string `json:"person_token"`
+				ExpiresIn   int64  `json:"expires_in"`
+			}
+			if err := json.NewDecoder(personResponse.Body).Decode(&personOutput); err != nil {
+				t.Fatal(err)
+			}
+			if personOutput.ExpiresIn != int64(test.wantPerson/time.Second) {
+				t.Fatalf("person expires_in = %d, want %d", personOutput.ExpiresIn, int64(test.wantPerson/time.Second))
+			}
+			personClaims, err := aauth.VerifyPersonToken(
+				context.Background(), personOutput.PersonToken, protocol.resolver, protocol.clock,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			protocol.personTokens = map[string]string{personClaims.JTI: personOutput.PersonToken}
+			resourceToken := protocol.resourceToken(t, personClaims, protocol.personServerID, "payments.charge", nil)
+			tokenResponse := protocol.tokenRequestWithCredential(
+				t, server, resourceToken, protocol.upstreamToken, "", protocol.resourceOneProofKey, agentToken,
+			)
+			if tokenResponse.Code != http.StatusOK {
+				t.Fatalf("token response = %d %s", tokenResponse.Code, tokenResponse.Body.String())
+			}
+			var tokenOutput struct {
+				AuthToken string `json:"auth_token"`
+				ExpiresIn int64  `json:"expires_in"`
+			}
+			if err := json.NewDecoder(tokenResponse.Body).Decode(&tokenOutput); err != nil {
+				t.Fatal(err)
+			}
+			if tokenOutput.ExpiresIn != int64(test.wantAuth/time.Second) {
+				t.Fatalf("auth expires_in = %d, want %d", tokenOutput.ExpiresIn, int64(test.wantAuth/time.Second))
+			}
+			authClaims, err := aauth.VerifyAuthToken(
+				context.Background(), tokenOutput.AuthToken, protocol.resolver, protocol.clock,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authClaims.ExpiresAt != protocol.now.Add(test.wantAuth).Unix() {
+				t.Fatalf("auth exp = %d, want %d", authClaims.ExpiresAt, protocol.now.Add(test.wantAuth).Unix())
+			}
+		})
 	}
 }
 
