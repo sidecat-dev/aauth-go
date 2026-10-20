@@ -231,7 +231,7 @@ func (client *Client) BeginR3Call(ctx context.Context, input R3Call) (R3CallResu
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		response.Body.Close()
-		return R3CallResult{}, fail(operation, responseFailure(response))
+		return R3CallResult{}, fail(operation, authTokenResponseFailure(response))
 	}
 	if response.StatusCode == http.StatusUnauthorized && len(response.Header.Values("AAuth-Requirement")) > 0 {
 		proposal, err := client.verifyR3ProposalRequirement(ctx, response, resource, classClaims, classReference, input.Operation)
@@ -521,7 +521,7 @@ func (client *Client) verifyR3ProposalAuthToken(
 func (client *Client) finishR3Response(operation string, response *http.Response) (*http.Response, error) {
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		response.Body.Close()
-		return nil, fail(operation, responseFailure(response))
+		return nil, fail(operation, authTokenResponseFailure(response))
 	}
 	if isProblemResponse(response) {
 		problem, isAAuth, err := inspectAAuthProblem(response)

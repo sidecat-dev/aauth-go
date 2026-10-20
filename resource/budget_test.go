@@ -506,8 +506,15 @@ func TestBudgetRefusalWithInvalidHostChallengeFailsClosed(t *testing.T) {
 	if response.Code != http.StatusInternalServerError || protectedCalls != 0 {
 		t.Fatalf("invalid challenge status=%d Protected=%d body=%s", response.Code, protectedCalls, response.Body.String())
 	}
-	if response.Header().Get("AAuth-Requirement") != "" || response.Header().Get("AAuth-Budget") != "" {
+	if response.Header().Get("AAuth-Requirement") != "" {
 		t.Fatalf("invalid challenge exposed headers: requirement=%q budget=%q", response.Header().Get("AAuth-Requirement"), response.Header().Get("AAuth-Budget"))
+	}
+	feedback, err := budgets.ParseFeedback(response.Header().Values("AAuth-Budget"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost, ok := feedback.Cost(); !ok || cost != 0 || feedback.Remaining() != 100_000 {
+		t.Fatalf("refusal feedback=%#v", feedback)
 	}
 }
 
@@ -528,8 +535,15 @@ func TestBudgetRefusalRejectsAValidlySignedChallengeForAnotherContext(t *testing
 	if response.Code != http.StatusInternalServerError || protectedCalls != 0 {
 		t.Fatalf("wrong-context challenge status=%d Protected=%d body=%s", response.Code, protectedCalls, response.Body.String())
 	}
-	if response.Header().Get("AAuth-Requirement") != "" || response.Header().Get("AAuth-Budget") != "" {
+	if response.Header().Get("AAuth-Requirement") != "" {
 		t.Fatalf("wrong-context challenge exposed headers: requirement=%q budget=%q", response.Header().Get("AAuth-Requirement"), response.Header().Get("AAuth-Budget"))
+	}
+	feedback, err := budgets.ParseFeedback(response.Header().Values("AAuth-Budget"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost, ok := feedback.Cost(); !ok || cost != 0 || feedback.Remaining() != 100_000 {
+		t.Fatalf("refusal feedback=%#v", feedback)
 	}
 }
 
@@ -550,8 +564,15 @@ func TestBudgetRefusalRejectsAChallengeNamingTheRetainedPersonToken(t *testing.T
 	if response.Code != http.StatusInternalServerError || protectedCalls != 0 {
 		t.Fatalf("person-token challenge status=%d Protected=%d body=%s", response.Code, protectedCalls, response.Body.String())
 	}
-	if response.Header().Get("AAuth-Requirement") != "" || response.Header().Get("AAuth-Budget") != "" {
+	if response.Header().Get("AAuth-Requirement") != "" {
 		t.Fatalf("person-token challenge exposed headers: requirement=%q budget=%q", response.Header().Get("AAuth-Requirement"), response.Header().Get("AAuth-Budget"))
+	}
+	feedback, err := budgets.ParseFeedback(response.Header().Values("AAuth-Budget"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost, ok := feedback.Cost(); !ok || cost != 0 || feedback.Remaining() != 100_000 {
+		t.Fatalf("refusal feedback=%#v", feedback)
 	}
 }
 

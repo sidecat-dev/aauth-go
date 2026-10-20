@@ -4,9 +4,11 @@ Findings from implementing the AAuth family of drafts, tracked against the
 current upstream editor sources. Source text and editor answers are
 authoritative.
 
-**Last reconciled:** 2026-10-01
+The findings below were reconciled on 2026-10-01 against these editor revisions.
+The implementation baseline and its targeted overlays are recorded separately
+in [SPECIFICATIONS.md](SPECIFICATIONS.md).
 
-| Source | Upstream commit |
+| Source | Revision used for these findings |
 | --- | --- |
 | AAuth (Core, R3, Events, Bootstrap, Budgets, interop profile) | [`dickhardt/AAuth` at `28e8258`](https://github.com/dickhardt/AAuth/tree/28e8258f8153a2a51a709c53ebc9618f941564e4) (`28e8258f8153a2a51a709c53ebc9618f941564e4`, 2026-09-28) |
 | HTTP Signature Keys | [`dickhardt/signature-key` at `69f5ba2`](https://github.com/dickhardt/signature-key/tree/69f5ba2647be848feed043fb6d8b0790e43cd0b6) (`69f5ba2647be848feed043fb6d8b0790e43cd0b6`, 2026-09-13) |
@@ -46,9 +48,34 @@ in the index at the end; their full text remains in this file's git history.
   wrong, delete its section and its tracking row, and add one line to the index
   at the end giving the fixing commit and section, or the reason.
 
+## Submission status
+
+The tracking table below identifies the findings covered by each submission.
+These checks record upstream discussion status, not a change to the source
+revision used for a finding.
+
+| Submission | Upstream status | Checked |
+| --- | --- | --- |
+| AAuth issues [#225](https://github.com/dickhardt/AAuth/issues/225)–[#254](https://github.com/dickhardt/AAuth/issues/254), filed 2026-10-01 | Open; no editor response | 2026-10-20 |
+| Signature-Key issues [#44](https://github.com/dickhardt/signature-key/issues/44) and [#45](https://github.com/dickhardt/signature-key/issues/45), filed 2026-10-01 | Open; no editor response | 2026-10-20 |
+| [Comment on #108: deferral expiry](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159708), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #108: key renewal before delivery](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159888), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #199: delegated token verification](https://github.com/dickhardt/AAuth/issues/199#issuecomment-5943160092), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #208: self-hosted providers](https://github.com/dickhardt/AAuth/issues/208#issuecomment-5943160270), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #215: person and tenant namespaces](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #221: upstream-token binding](https://github.com/dickhardt/AAuth/issues/221#issuecomment-5943160619), submitted 2026-10-01 | Issue author replied; no editor resolution | 2026-10-20 |
+| [Comment on #222: query binding](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827), submitted 2026-10-01 | No editor response | 2026-10-20 |
+
+Related discussions:
+
+| Discussion | Status | Checked |
+| --- | --- | --- |
+| [AAuth #255: OpenAPI operation identifiers](https://github.com/dickhardt/AAuth/issues/255) | Open; the editor favors a stable identifier; no draft change | 2026-10-20 |
+| [AAuth #261: denial reasons and alternatives](https://github.com/dickhardt/AAuth/issues/261) | Open; overlaps [#229](https://github.com/dickhardt/AAuth/issues/229) (AAG-F009, AAG-F070); no editor response | 2026-10-20 |
+
 ## Tracking
 
-Unresolved: 47 (P1: 6, P2: 27, P3: 14; 46 submitted). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 2 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -67,6 +94,7 @@ Unresolved: 47 (P1: 6, P2: 27, P3: 14; 46 submitted). Local implementation notes
 | AAG-F009 | Synchronous token-endpoint policy denial has no registered error | Core | missing-requirement | P2 | submitted | bb58b20 (2026-08-28) | 2026-10-01, GitHub | New issue [#229](https://github.com/dickhardt/AAuth/issues/229) |
 | AAG-F010a | Four-party tenant changes issuer namespace | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) |
 | AAG-F016 | The mandatory signature set does not bind a query | Core | missing-requirement | P2 | submitted | 92879d7 (2026-08-29) | 2026-10-01, GitHub | Comment on [#222](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827) |
+| AAG-F107 | Resource authority admission is not explicit | Core | missing-requirement | P2 | open | 2026-10-20 | Not submitted | — |
 | AAG-F017 | Authorization endpoint body is not required to be signed | Core, R3 | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#230](https://github.com/dickhardt/AAuth/issues/230) |
 | AAG-F025 | Application 202 in a deferred result is indistinguishable from "keep polling" | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#231](https://github.com/dickhardt/AAuth/issues/231) |
 | AAG-F026 | Body signature components from resource metadata conflict with bodyless polls | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#232](https://github.com/dickhardt/AAuth/issues/232) |
@@ -545,6 +573,53 @@ The organization behind the first person token is (PS-A, "acme") but behind its 
 **Related upstream issues:** [#210](https://github.com/dickhardt/AAuth/issues/210) Trust Posture still treats tenant as part of the person's identifier (open, dickhardt 2026-09-25; same sentence, different point).
 
 **Venue:** Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) (one comment together with AAG-F010), posted 2026-10-01. Earlier plan: Comment on [#215](https://github.com/dickhardt/AAuth/issues/215). Together with AAG-F010. [#210](https://github.com/dickhardt/AAuth/issues/210) concerns the same sentence but a different point.
+
+### AAG-F107 — Resource authority admission is not explicit
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-20
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-20.
+
+**Source:** Core `28e8258`, `Agent Token Verification` (537–543), `Auth Token
+Verification` (1802–1814), `Server Identifiers` (1946–1954), `Covered Components`
+(2202–2216), `Verification (Server)` (2240–2250), and `Why These Covered
+Components` (3518–3522). The file is byte-identical at `70d6737`.
+
+The verification procedure requires a proof over the request's `@authority`
+and `@path`; RFC 9421 derives these from the received request. Auth-token
+verification separately compares `aud` with the Resource's identifier. Neither
+step explicitly compares the request authority with that identifier. The
+rationale says authority coverage prevents cross-host replay, which depends
+on the receiving service admitting the target host.
+
+**Evidence:** With an otherwise valid credential and a request signed for
+`https://other.example/records`, Go `5636c1b` dispatched both Agent-identity and
+Auth-token requests when delivered with `Host: other.example`. The Auth token's
+audience correctly named the configured Resource. Changing Host, path or query
+after signing failed verification.
+
+The [authority regression](resource/authority_test.go) and
+[session regression](resource/session_authority_test.go) now check the configured
+authority before dispatch. This is a local routing safeguard,
+documented in [INTERPRETATIONS.md](INTERPRETATIONS.md#resource-handlers-admit-their-configured-authority),
+not evidence that the earlier behavior violated an explicit AAuth comparison.
+RFC 9110 Section 7.4 already constrains HTTP origin handling; the open question
+is how that responsibility maps to AAuth's Resource identifier and verification
+procedure, including when HTTP routing is supplied by the embedding application.
+
+**Question:** Must a Resource admit the signed request authority against its
+configured identifier before dispatch, or may it rely on an explicitly required
+HTTP routing check? Please specify any permitted aliases and the rejection
+behavior. The identifier has no path; path authorization remains a separate
+application decision. This question is distinct from AAG-F016's query coverage.
 
 ### AAG-F016 — The mandatory signature set does not bind a query
 

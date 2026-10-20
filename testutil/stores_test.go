@@ -10,8 +10,18 @@ import (
 	aptest "gitlab.com/sidecat-dev/aauth-go/agentprovider/storetest"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	pstest "gitlab.com/sidecat-dev/aauth-go/personserver/storetest"
+	"gitlab.com/sidecat-dev/aauth-go/resource"
+	resourcetest "gitlab.com/sidecat-dev/aauth-go/resource/storetest"
 	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
+
+func TestExportedAgentTokenRevocationStore(t *testing.T) {
+	resourcetest.RunAgentTokenRevocation(t, resourcetest.AgentTokenRevocationContract{
+		New: func(testing.TB) resource.AgentTokenRevocationStore {
+			return testutil.NewAgentTokenRevocationStore()
+		},
+	})
+}
 
 func TestExportedEnrollmentStore(t *testing.T) {
 	aptest.RunEnrollment(t, aptest.EnrollmentContract{New: func(_ testing.TB, clock aauth.Clock) agentprovider.EnrollmentStore {

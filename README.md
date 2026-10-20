@@ -1,95 +1,74 @@
 # AAuth for Go
 
-`aauth-go` implements the current AAuth editor-source family as ordinary Go
-packages. Applications compose the protocol roles they need and provide their
-own policy, keys, transport, clocks, and durable storage.
+`aauth-go` provides Go packages for AAuth. An **Agent** calls a **Resource**
+(API); an **Agent Provider** signs its identity token. A **Person Server**
+handles the person's identity and decisions; a separate **Access Server**
+issues grants in the four-party flow. See the [glossary](GLOSSARY.md) for
+abbreviations and token fields.
 
 This is an incomplete implementation, not an official conformance suite.
-[SPECIFICATIONS.md](SPECIFICATIONS.md) pins the exact source revisions;
-[CONFORMANCE.md](CONFORMANCE.md) states what executes today and what does not.
+[SPECIFICATIONS.md](SPECIFICATIONS.md) pins the editor sources;
+[CONFORMANCE.md](CONFORMANCE.md) lists supported behavior and limits.
 
-## Start here
+## Use it in your service
 
-The module requires Go 1.25 or later.
+Requires Go 1.25 or later:
 
 ```sh
 go get gitlab.com/sidecat-dev/aauth-go
 ```
 
-Run the smallest complete authorization journey:
+For an HTTP endpoint accepting Agent identity, start with
+`resource.NewAgentIdentity`. It verifies the token **and the request proof**
+before calling your application. [Use it in your service](USE-IN-YOUR-SERVICE.md)
+shows the short handler, trusted-key setup and constructor choices.
+For write endpoints, [require body coverage](USE-IN-YOUR-SERVICE.md#protect-request-bodies);
+the default proof does not cover body bytes.
 
-```sh
-go run gitlab.com/sidecat-dev/aauth-go/example/threeparty@latest
+The lower-level token check is:
+
+```go
+claims, err := aauth.VerifyAgentToken(context.Background(), token, keys, clock)
+if err != nil {
+	return err
+}
 ```
 
-It carries an Agent through a Person Server to one protected Resource call.
-For a standalone external module that runs an Agent and local service as
-separate TLS processes, persists their application state, restarts them, and
-then revokes the active Agent token, use
-[`walkthrough/local`](walkthrough/local).
+Here `token` is the received JWT, `keys` resolves trusted issuer keys, and
+`clock` supplies protocol time. `claims.Subject` is the verified Agent identifier.
+This call does not verify an HTTP request or
+decide access. The [tested example](example/verifyagent/main.go) supplies all
+three inputs and then demonstrates the complete Resource check.
 
-For a standalone laptop-to-hosted-service path with separate TLS processes,
-authenticated account linking, mission approval, MCP authorization, a fixed
-Budget, restart recovery, and revocation, use
-[`walkthrough/hosted`](walkthrough/hosted).
-
-For qualified interoperability in both directions—Go Agent to the AAuth
-project's TypeScript Resource, and official TypeScript Agent to Go Person
-Server and Resource roles—use [`walkthrough/interop`](walkthrough/interop).
-
-For a self-hosted Agent with a local permission boundary, direct local access,
-an explicit hosted account-link interaction, and one account-bound hosted
-Resource call, run:
+From a checkout, run it without a listener, network service or state directory:
 
 ```sh
-go run gitlab.com/sidecat-dev/aauth-go/example/selfhosted@latest
+go run ./example/verifyagent
 ```
 
-The exact application boundary is in
-[LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md). For a composed local-Agent
-and hosted-service profile, run:
-
-```sh
-go run gitlab.com/sidecat-dev/aauth-go/example/hostedservice@latest
+```text
+Token verified: aauth:reader@agents.example
+Request verified: aauth:reader@agents.example
 ```
 
-To use a self-hosted Agent identity and proof key against the same reviewed
-mission, R3, Budget, and connector path, run:
+## Choose a runnable path
 
-```sh
-go run gitlab.com/sidecat-dev/aauth-go/example/hostedservice@latest --self-hosted
-```
+| Need | Start with | Setup |
+| --- | --- | --- |
+| Direct Agent identity | [`example/agentidentity`](example/agentidentity) | In-process; no Person or Access Server |
+| Three-party or four-party authorization | [`example/threeparty`](example/threeparty), [`example/fourparty`](example/fourparty) | In-process role composition |
+| Self-hosted Agent or composed hosted-service profile | [`example/selfhosted`](example/selfhosted), [`example/hostedservice`](example/hostedservice) | In-process; see [local](LOCAL-AGENT-PROFILE.md) and [hosted](HOSTED-SERVICE-PROFILE.md) profile limits |
+| Permission, missions or interaction | [`example/permission`](example/permission), [`example/mission`](example/mission), [`example/psconsent`](example/psconsent) | In-process |
+| R3 operations, Budgets or Events | [`example/r3threeparty`](example/r3threeparty), [`example/budget`](example/budget), [`example/events`](example/events) | In-process; terms in the [glossary](GLOSSARY.md) |
+| Revocation and Person-token recovery | [`example/revocation`](example/revocation) | In-process |
+| Separate services, restart and retained state | [`walkthrough/local`](walkthrough/local), [`walkthrough/hosted`](walkthrough/hosted), [`walkthrough/callchaining`](walkthrough/callchaining) | Multiple TLS processes and state directories |
+| Historical Go/TypeScript qualifications (2026-09-01) | [`walkthrough/interop`](walkthrough/interop) | Live qualification needs public HTTPS and external services |
 
-That profile adds enrollment and refresh, local permission, host-reviewed
-mission approval, a Resource-validated account, an MCP operation under a fixed
-Budget, application-owned
-OAuth credential use, refusal of an exhausted Budget before a second connector
-dispatch, and Agent-token revocation. Its exact deployment boundary is in
-[HOSTED-SERVICE-PROFILE.md](HOSTED-SERVICE-PROFILE.md).
-
-## Choose a journey
-
-| Need | Start with |
-| --- | --- |
-| Direct Agent or Person identity | [`example/agentidentity`](example/agentidentity) |
-| Separate local TLS processes, durable state, restart, and revocation | [`walkthrough/local`](walkthrough/local) |
-| Separate laptop and hosted-service TLS processes with mission, MCP, Budget, restart, and revocation | [`walkthrough/hosted`](walkthrough/hosted) |
-| Go/TypeScript interoperability in both directions | [`walkthrough/interop`](walkthrough/interop) |
-| Two-resource call chain over separate loopback TLS processes, built against the library commit pinned in its guide | [`walkthrough/callchaining`](walkthrough/callchaining) |
-| Three-party authorization | [`example/threeparty`](example/threeparty) |
-| Four-party authorization through an Access Server | [`example/fourparty`](example/fourparty) |
-| Account-bound four-party fixed Budget through an Access Server | [`example/budgetfourparty`](example/budgetfourparty) |
-| Self-hosted local Agent linking to a hosted account | [`LOCAL-AGENT-PROFILE.md`](LOCAL-AGENT-PROFILE.md), [`example/selfhosted`](example/selfhosted) |
-| Hosted enrollment or a self-hosted Agent through the full hosted-service path | [`HOSTED-SERVICE-PROFILE.md`](HOSTED-SERVICE-PROFILE.md), [`example/hostedservice`](example/hostedservice) |
-| Local permission or a mission lifecycle | [`example/permission`](example/permission), [`example/mission`](example/mission) |
-| Person questions, relays, or consent clarification | [`example/interactionquestion`](example/interactionquestion), [`example/interactionrelay`](example/interactionrelay), [`example/psconsent`](example/psconsent) |
-| R3 operations and fixed hard-cap Budgets | [`example/r3threeparty`](example/r3threeparty), [`example/budget`](example/budget) |
-| Public or protected Event delivery | [`example/events`](example/events) |
-| Revocation and explicit re-authorization | [`example/revocation`](example/revocation) |
-| Parent-mediated or chained work | [`example/subagent`](example/subagent), [`example/callchaining`](example/callchaining) |
-
-[JOURNEYS.md](JOURNEYS.md) is the full role-to-role catalog. Each entry names
-the exported API, executable evidence, and missing continuations.
+[JOURNEYS.md](JOURNEYS.md) is the full catalog, including delegation, call
+chaining and the other examples. Standalone walkthroughs pin published module
+versions; they do not test the current checkout. See
+[versions and local development](USE-IN-YOUR-SERVICE.md#versions-and-local-development)
+to point a consumer module at your checkout.
 
 ## Package map
 
@@ -140,7 +119,21 @@ Notable exclusions include production store adapters, key custody, TLS and
 deployment infrastructure, platform attestation, general request-proof replay,
 several deferred and mission combinations, automatic revocation fan-out,
 complete Signature-Key schemes, variable or streaming Budgets, and independent
-person, authorization, and full-profile interoperability.
+Person Server, Access Server, and full-profile interoperability.
+The [interoperability walkthrough](walkthrough/interop#external-authorization-qualification)
+records a **2026-09-01** public-TLS run: TypeScript `@aauth/agent` 3.0.2
+(`packages-js` at `7bd31a5`) completed Person → Resource → Auth token issuance
+and a durable note write against Go `32eab26`. Its current JavaScript unit test
+stubs `fetch`; it does not call the Go roles. The walkthrough pins that older
+Go revision, so neither that test nor the historical run qualifies this checkout.
+
+After a Resource refuses an Auth token with `revoked_jwt` and a valid
+`person-token` requirement, Agent calls return
+`*agent.PersonTokenRequiredError`; `errors.As` also finds the original
+`*signaturekey.Error`. Automatic Person-token acquisition and retry are absent.
+The [revocation example](example/revocation) shows explicit recovery: obtain a
+fresh Person token, retry the original request with it, and satisfy the new
+Auth-token requirement returned by that Resource.
 
 Do not infer support from an exported type. Use:
 
@@ -153,18 +146,28 @@ Do not infer support from an exported type. Use:
 
 ## Documentation
 
+Start with the service guide. Use the reference pages when you need a supported
+boundary, a runnable flow, or an explanation of the protocol.
+
 | Document | Use it for |
 | --- | --- |
+| [USE-IN-YOUR-SERVICE.md](USE-IN-YOUR-SERVICE.md) | Minimal verification code, constructor choices and local development |
+| [GLOSSARY.md](GLOSSARY.md) | Roles, token fields and terms |
 | [PROTOCOL.md](PROTOCOL.md) | How the pinned specifications compose into roles, values, and journeys |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Package boundaries, state ownership, transport, policy, and proof seams |
-| [SPECIFICATIONS.md](SPECIFICATIONS.md) | Exact editor-source commits, digests, and R3 vocabulary baselines |
 | [CONFORMANCE.md](CONFORMANCE.md) | Implemented, partial, and absent behavior with executable evidence |
 | [JOURNEYS.md](JOURNEYS.md) | Runnable role-to-role paths |
 | [LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md) | Smallest useful self-hosted local deployment |
-| [INTERPRETATIONS.md](INTERPRETATIONS.md) | Deliberate choices where the source does not determine one implementation |
-| [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) | Reproducible questions and inconsistencies found during implementation |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Source-grounded change and verification workflow |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting and deployment responsibilities |
+
+For contributors changing protocol behavior:
+
+| Document | Use it for |
+| --- | --- |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Source-grounded change and verification workflow |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Package boundaries and state ownership |
+| [SPECIFICATIONS.md](SPECIFICATIONS.md) | Exact editor-source commits and digests |
+| [INTERPRETATIONS.md](INTERPRETATIONS.md) | Choices the source does not settle |
+| [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) | Submitted specification questions and their status; not required for first use |
 
 Package documentation is available through ordinary Go tooling, for example:
 

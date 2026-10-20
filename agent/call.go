@@ -640,7 +640,7 @@ func (client *Client) PollAuthToken(ctx context.Context, input AuthTokenPoll) (*
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		response.Body.Close()
-		return nil, fail(operation, responseFailure(response))
+		return nil, fail(operation, authTokenResponseFailure(response))
 	}
 	if response.StatusCode == http.StatusAccepted || response.StatusCode == http.StatusTooManyRequests ||
 		response.StatusCode == http.StatusServiceUnavailable {
@@ -663,6 +663,9 @@ func (client *Client) PollAuthToken(ctx context.Context, input AuthTokenPoll) (*
 // Do verifies an auth token for the exact request resource, signs that request,
 // and performs one HTTP call. It does not interpret ordinary application
 // responses, but preserves an AAuth problem response as a typed error.
+// A revoked Auth token accompanied by a person-token requirement returns
+// [PersonTokenRequiredError]; the caller must obtain a Person token and retry
+// the original request with it to satisfy that requirement.
 func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error) {
 	const operation = "do"
 	if client == nil {
@@ -736,7 +739,7 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		response.Body.Close()
-		return nil, fail(operation, responseFailure(response))
+		return nil, fail(operation, authTokenResponseFailure(response))
 	}
 	if isProblemResponse(response) {
 		problem, isAAuth, err := inspectAAuthProblem(response)

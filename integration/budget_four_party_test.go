@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -98,13 +99,14 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var authIDs atomic.Int64
 	var accessPolicyRequest accessserver.AuthorizationRequest
 	var accessMetadataChecks atomic.Int64
 	var accessMetadataWrongScale atomic.Bool
 	var accessMetadataFailure atomic.Bool
 	access, err := accessserver.New(accessserver.Config{
 		Issuer: accessServerID, SigningKey: accessKey, KeyResolver: resolver,
-		Clock: clock, NewID: func() string { return "budget-four-party-auth-token" },
+		Clock: clock, NewID: func() string { return fmt.Sprintf("budget-four-party-auth-token-%d", authIDs.Add(1)) },
 		TrustPersonServer: func(_ context.Context, issuer string) error {
 			if issuer != personServerID {
 				return errors.New("untrusted Person Server")
@@ -181,8 +183,18 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 				return 125_000, nil
 			},
 			Store: ledger,
-			Challenge: func(context.Context, resource.BudgetChallengeRequest) (string, error) {
-				return "", errors.New("Budget step-up is outside this journey")
+			Challenge: func(_ context.Context, challenge resource.BudgetChallengeRequest) (string, error) {
+				jkt, err := challenge.Principal.Confirmation.Thumbprint()
+				if err != nil {
+					return "", err
+				}
+				return budgets.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
+					Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument, Audience: accessServerID,
+					PersonServer: personServerID, Subject: challenge.Principal.Subject,
+					JTI: "budget-four-party-step-up", PresentedJTI: challenge.Token.JTI, AgentJKT: jkt,
+					Scope: scope, Account: challenge.Principal.Account,
+					IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
+				}, resourceOffer, nil)
 			},
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -362,6 +374,49 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	}
 	if protectedCalls.Load() != 1 {
 		t.Fatalf("protected calls = %d, want 1", protectedCalls.Load())
+	}
+
+	// Budgets at a99d353, Budget Exhaustion, preserves the Core four-party
+	// Resource-token audience (the Access Server) through a replacement grant.
+	second := integrationBudgetCall(t, ctx, agent, resourceID, authToken)
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	if response, ok := second.result.Response(); !ok || response.StatusCode != http.StatusNoContent {
+		t.Fatalf("second call=%#v", second.result)
+	} else {
+		response.Body.Close()
+	}
+	refusal := integrationBudgetCall(t, ctx, agent, resourceID, authToken)
+	if refusal.err != nil {
+		t.Fatal(refusal.err)
+	}
+	stepUp, ok := refusal.result.AuthorizationRequired()
+	if !ok {
+		t.Fatal("missing four-party step-up")
+	}
+	challenge, _, _, err := budgets.VerifyResourceToken(ctx, stepUp.ResourceToken(), resolver, clock)
+	if err != nil || challenge.Audience != accessServerID || challenge.PresentedJTI != verifiedClaims.JTI {
+		t.Fatalf("step-up=%#v error=%v", challenge, err)
+	}
+	if protectedCalls.Load() != 2 || integrationBudgetFeedback(t, refusal.result).Remaining() != 50_000 {
+		t.Fatal("refusal changed consumption or dispatched")
+	}
+	replacement, err := agent.Exchange(ctx, clientagent.ExchangeRequest{PersonServer: personServerID, ResourceToken: stepUp.ResourceToken(), PresentedToken: authToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried := integrationBudgetCall(t, ctx, agent, resourceID, replacement)
+	if retried.err != nil {
+		t.Fatal(retried.err)
+	}
+	if response, ok := retried.result.Response(); !ok || response.StatusCode != http.StatusNoContent {
+		t.Fatalf("retry=%#v", retried.result)
+	} else {
+		response.Body.Close()
+	}
+	if protectedCalls.Load() != 3 || integrationBudgetFeedback(t, retried.result).Remaining() != 175_000 {
+		t.Fatal("replacement grant was not independently metered")
 	}
 
 	// The Budgets draft makes the PS-to-AS member optional. If the Person

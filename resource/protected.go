@@ -253,12 +253,12 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token context does not match resource"))
 		return
 	}
-	if claims.Account != nil && server.validateAccount == nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
-		return
-	}
 	if !claims.Confirmation.JWK.Equal(proof.PublicKey()) {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request key does not match auth token"))
+		return
+	}
+	if claims.Account != nil && server.validateAccount == nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}
 	var scopes []string
@@ -273,12 +273,22 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token has no authorization claim"))
 		return
 	}
-	if server.budget != nil {
-		switch {
-		case budgetGrant == nil:
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("metered route requires a signed Budget grant"))
+	metered := server.budget != nil
+	if metered && server.budget.metered != nil {
+		policyRequest, finish, err := cloneScopePolicyRequest(request)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
+		metered = server.budget.metered(policyRequest)
+		if err := finish(); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	}
+	if metered && budgetGrant == nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("metered route requires a signed Budget grant"))
+		return
 	}
 	if err := server.observeAuthToken(request.Context(), compact, claims); err != nil {
 		switch {
@@ -291,6 +301,14 @@ func (server *Server) serveAuthTokenProtected(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 		return
+	}
+	// Balance observation requires a structurally valid, non-revoked credential.
+	// Route authorization can still refuse it without charging the request.
+	applicationResponse := response
+	var budgetResponse *budgetResponseWriter
+	if budgetGrant != nil {
+		budgetResponse = newBudgetResponseWriter(response, request.Context(), server.budget.store, claims, *budgetGrant)
+		response = budgetResponse
 	}
 	requiredScopes, err := server.authorizeScopes(request, scopes, authorization != nil)
 	if err != nil {
@@ -363,19 +381,23 @@ func (server *Server) serveAuthTokenProtected(
 		Confirmation:     claims.Confirmation.JWK,
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
-	if server.budget != nil {
+	if metered {
 		var reference *r3.Reference
 		if authorization != nil {
 			value := authorization.reference
 			reference = &value
 		}
-		if !server.enforceFixedBudget(response, request, claims, principal, *budgetGrant, reference) {
+		if !server.enforceFixedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference) {
 			return
 		}
+	} else if budgetResponse != nil {
+		// Sending Rules permits omitted feedback when the meter fails. This
+		// route needs no charge, so the application can still serve it.
+		_ = budgetResponse.setUnchargedFeedback()
 	}
 	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
 	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
-	server.protected.ServeHTTP(response, request.WithContext(protectedContext))
+	server.protected.ServeHTTP(applicationResponse, request.WithContext(protectedContext))
 }
 
 func (server *Server) verifyPreparedR3BudgetAuthRequest(
@@ -415,13 +437,16 @@ func (server *Server) verifyPreparedBudgetAuthRequest(
 }
 
 func (server *Server) enforceFixedBudget(
-	response http.ResponseWriter,
+	response *budgetResponseWriter,
 	request *http.Request,
 	claims aauth.AuthTokenClaims,
 	principal AuthPrincipal,
 	grant budgets.Value,
 	r3Reference *r3.Reference,
 ) bool {
+	// Pricing is part of metering. A pricing failure must not trigger a
+	// fallback balance observation or establish a ledger binding.
+	response.observationBlocked = true
 	policyRequest, finish, err := cloneScopePolicyRequest(request)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("prepare Resource Budget cost request: %w", err))
@@ -493,6 +518,8 @@ func (server *Server) enforceFixedBudget(
 		value := cost
 		required = &value
 	}
+	response.remaining = &result.Remaining
+	response.observationBlocked = false
 	feedback, err := budgets.NewRefusalFeedback(grant, result.Remaining, required)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -562,8 +589,12 @@ func (server *Server) validateBudgetChallenge(
 	if err != nil {
 		return err
 	}
+	expectedAudience := principal.PersonServer
+	if server.authorizationTopology == authorizationTopologyFederated {
+		expectedAudience = server.accessServer
+	}
 	if claims.Issuer != server.issuer || claims.DWK != aauth.ResourceDiscoveryDocument ||
-		claims.Audience != principal.PersonServer || claims.PersonServer != principal.PersonServer ||
+		claims.Audience != expectedAudience || claims.PersonServer != principal.PersonServer ||
 		claims.Subject != principal.Subject || claims.AgentJKT != thumbprint || claims.PresentedJTI != presentedJTI ||
 		claims.MissionS256 != principal.MissionS256 || claims.Tenant != principal.Tenant ||
 		!sameBudgetAccount(claims.Account, principal.Account) {

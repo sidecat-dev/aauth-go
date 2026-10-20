@@ -254,7 +254,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		closeResponse(response)
-		return BudgetCallResult{}, fail(operation, responseFailure(response))
+		return BudgetCallResult{}, fail(operation, authTokenResponseFailure(response))
 	}
 	cached, err := responseCarriesAge(response.Header.Values("Age"))
 	if err != nil {
@@ -444,7 +444,7 @@ func (client *Client) verifyBudgetCallAuthorization(
 		return BudgetAuthorization{}, err
 	}
 	if challenge.Issuer != resource || challenge.DWK != aauth.ResourceDiscoveryDocument ||
-		challenge.Audience != current.PersonServer || challenge.PersonServer != current.PersonServer ||
+		challenge.Audience != current.Issuer || challenge.PersonServer != current.PersonServer ||
 		challenge.Subject != current.Subject || challenge.AgentJKT != thumbprint || challenge.PresentedJTI != current.JTI ||
 		challenge.MissionS256 != current.MissionS256 || challenge.Tenant != current.Tenant ||
 		!equalStringPointers(challenge.Account, current.Account) ||

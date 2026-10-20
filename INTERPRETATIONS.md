@@ -448,6 +448,45 @@ This is a provisional extension, not a registered AAuth error. Clients must
 treat an unknown terminal `403` as denial. The name can change when the Core
 specification defines this result.
 
+## Resource handlers admit their configured authority
+
+**Source:** AAuth Core `a99d353` and `28e8258`, `Covered Components` and
+`Verification (Server)`; RFC 9421 Section 2.2.3;
+[RFC 9110 Sections 7.4 and 15.5.20](https://www.rfc-editor.org/rfc/rfc9110.html#name-421-misdirected-request).
+
+The draft requires coverage and verification of the received request's
+authority. It does not explicitly compare that authority with the Resource's
+configured identifier. Its cross-host replay rationale assumes correct HTTP
+routing. This check is a local routing safeguard, not a claim that the draft
+already specifies this comparison or its error response. AAG-F107 in
+[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) asks where that responsibility belongs.
+
+A valid signature binds the request's target host, but does not prove that the
+receiving handler serves that host. An Auth token's audience check is also
+insufficient: its audience can match the Resource while the signed request
+names another host.
+
+`resource.Server.Handler` and `resource.ResourceManagedServer.Handler` therefore
+admit only their configured Issuer's authority before routing or authentication.
+The check uses `Request.Host`, falling back to `URL.Host`, accepts DNS case differences and the default HTTPS port
+443, and ignores forwarding headers. A foreign authority receives HTTP 421
+with `no-store`, without `Signature-Error`: the request is misdirected, not
+necessarily incorrectly signed. This also makes foreign-host R3 document
+fetches return 421 before their document-access checks.
+
+The issuer has no path. Application routing and authorization decide which
+correctly signed paths it serves; changing a path after signing still fails
+signature verification. Reverse proxies must preserve the public authority
+and signed target. The Resource-managed session service applies the same check
+to initial authorization, session use, discovery and pending routes. Event
+services have their own endpoint binding checks.
+
+**Evidence:** `resource/authority_test.go:TestResourceBindsRequestAuthorityToIssuer`
+covers Agent identity, Person identity, PS-issued Auth tokens and AS-issued
+Auth tokens, including host/path mutations and forwarding-header controls.
+`resource/session_authority_test.go:TestResourceManagedRejectsForeignAuthorityBeforeSessionAccess`
+checks the session service before authorization policy, store access or dispatch.
+
 ## Query-bearing requests cover `@query`
 
 **Source:** AAuth Core, `Covered Components` and `Verification`; RFC 9421,
@@ -939,7 +978,7 @@ interaction code.
 and
 `integration/deferred_ps_authorization_test.go:TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition`.
 
-## Three choices for bounded three-party revocation
+## Bounded three-party revocation
 
 **Source:** AAuth Core, `Token Revocation`, `Keying Material`, `Covered
 Components`, `Authentication Errors`, and `Verification (Server)`.
@@ -966,6 +1005,28 @@ Auth token also carries `AAuth-Requirement: requirement=person-token`, never
 as a sub-agent token get no revocation lookup. An Auth-token identity conflict
 stays `403 access_denied`. This check stops a request only when the store reports revocation before host
 callbacks; it does not cancel an already-admitted in-flight request.
+
+The Agent returns `*agent.PersonTokenRequiredError` when an Auth-token
+call receives that `401 revoked_jwt` with a valid `person-token` requirement.
+This includes ordinary, Budget, pending-poll and R3 calls. The error preserves
+the original `*signaturekey.Error` through `errors.As`; the response body is
+closed and no automatic retry or exchange occurs. A missing, malformed or
+different requirement leaves the original signature error intact. The same
+hint on a call presenting an Agent or Person token does not acquire Auth-token
+recovery semantics.
+
+The referenced **Person Token Required** section (Protocol -11, lines
+615–624) calls for obtaining a Person token and retrying the original request
+with it. The client methods leave those steps explicit; returning the error
+does not complete the draft's Agent procedure. The example obtains a fresh
+Person token, retries the original GET, then exchanges the Resource token
+returned by that retry. It never exchanges a Resource token naming the revoked
+Auth token. This differs from **Re-authorization** after expiry or key rotation
+(lines 1289–1305).
+
+**Executable evidence:** `agent/reauthorization_test.go`,
+`agent/call_test.go:TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem`,
+and `integration/revocation_reauthorization_test.go`.
 
 ### Refused revocation caller uses `unsupported_iss`
 
@@ -996,7 +1057,7 @@ duration in the protocol library.
 
 **Executable examples:**
 `resource/revocation_test.go:TestRevocationEndpointRequiresBoundPersonServerProof`
-`integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`,
+`integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndPersonTokenRecoveryAcrossResourceRecomposition`,
 `personserver/agent_token_revocation_test.go`,
 `resource/agent_token_revocation_test.go`, and
 `integration/agent_token_revocation_test.go`.
@@ -1060,8 +1121,13 @@ token as no metering authorization and refuse the operation; they do not
 construct a synthetic zero-valued grant. In four-party Core, the distinct
 PS-to-AS omission rule is implemented exactly as written: the AS uses the
 verified Resource offer as the PS ceiling. It must still issue an explicit
-equal-or-lower Budget for metered protected use. An unmetered Resource remains
-unchanged.
+equal-or-lower Budget for metered protected use. `BudgetConfig.Metered` lets
+host routing policy distinguish priced operations from free ones. Its absence
+meters every protected route, preserving the existing default. A free route
+accepts an otherwise valid Core Auth token without consulting pricing or the
+Budget store; a Budget token receives zero-cost feedback, even when exhausted.
+This selector governs protected Auth-token use, not initial-offer policy.
+Evidence: `TestBudgetResourceSelectsMeteredRoutes`.
 
 ## Fixed-price calls charge atomically before application execution
 
@@ -1076,7 +1142,7 @@ are chargeable in this profile, as permitted by the Resource-owned failed-call
 policy. Variable-cost and streaming work require a later reservation and
 settlement profile.
 
-## A refused Budget request reports no current-request cost
+## Budget step-up refusals omit current-request cost
 
 **Source:** AAuth Budgets, `Budget Exhaustion` and `AAuth-Budget Response
 Header`.
@@ -1085,6 +1151,32 @@ The draft says an insufficient or exhausted request consumes nothing, while
 one example reports a nonzero `cost`. This implementation omits `cost` on both
 refusals. Exhaustion reports `remaining=0` and may report the denomination;
 insufficiency reports the remainder and may also report `required`.
+
+## Uncharged Resource errors report the actual Budget remainder
+
+**Source:** AAuth Budgets at `a99d353`, `Sending Rules` and `AAuth-Budget Response Header`.
+
+After verifying the Budget token, request proof, issuer role, Resource context,
+account/scope structure and revocation status, a Resource-generated route refusal
+carries `cost=0` and the current remainder when its meter is available. This differs from the step-up challenge above:
+an ordinary error is a completed request with no charge. Application failures
+after an atomic charge retain the charged cost.
+
+The Resource observes its own store through `Charge` with zero cost, which may
+establish the token binding but must not increase either consumption ledger.
+An exhausted result supplies a zero remainder. A failed or inconsistent meter
+result supplies no feedback; the implementation never substitutes the signed
+cap for an unknown balance. Invalid or revoked credentials never reach the
+Budget store. Pricing failures also omit feedback without observing the
+ledger; pricing is part of metering. No second observation follows a failed
+charge. A free route still dispatches when its zero-cost observation fails.
+The Agent continues to classify missing feedback as uncertain, even on a
+problem response, because that body does not establish consumption.
+Evidence: `TestBudgetScopeRefusalReportsUnchargedBalance`,
+`TestBudgetRefusalDoesNotInventBalance`, `TestBudgetFeedbackRequiresVerifiedRequestAndResourceContext`,
+`TestBudgetFeedbackRejectsInvalidCredentialBeforeMetering`,
+`TestBudgetCostPolicyFailureDoesNotObserveBalance`,
+`TestUnmeteredBudgetCallSurvivesMeterFailure` and `storetest.RunBudget`.
 
 ## The host selects retained lineage for a Budget step-up token
 
@@ -1101,7 +1193,13 @@ callback; the example no longer obtains this state from the Agent side. The
 Resource and Agent verify every context field they can observe, including a
 nonempty `presented_jti`; neither library claims to prove that the host selected
 the exact prior Person-token record. The Agent returns the verified step-up and
-performs no automatic exchange or retry.
+performs no automatic exchange or retry. For three-party access the fresh
+Resource token names the PS as audience; for four-party access it names the
+Resource's AS, matching the issuer of the refused Auth token. The independent
+`ps` claim still identifies the Person Server. Both role checks and the full
+four-party replacement exchange execute in `TestBudgetStepUpBindsAudienceToAuthTokenIssuer`,
+`TestFederatedBudgetStepUpRejectsWrongAudience` and
+`TestBudgetImmediateFourPartyFixedPriceJourney`.
 
 On a step-up, the fresh Resource token's `presented_jti` names the Auth token
 the Agent presented, and the Agent sends that Auth token as `presented_token`.
