@@ -58,9 +58,15 @@ does not grant person-authorized scopes. The runnable example allows only
 ## Protect request bodies
 
 The default proof covers method, authority, path and `Signature-Key`, plus
-the query when present. **It does not cover body bytes.** The handler above
-requires `content-digest` so a caller cannot omit body integrity on a POST.
-The caller must sign it too:
+the query and Authorization field when present. **Nonempty content also covers
+SHA-256 Content-Digest and Content-Type when present.** The signer computes the
+digest; verification checks the actual bytes before policy or dispatch.
+Missing coverage returns `401` with `Signature-Error: invalid_input` and
+`required_input`; changed bytes or a mismatched digest return `401` with
+`Signature-Error: invalid_signature`.
+
+The handler above additionally requires `content-digest` on *every* request,
+including empty ones. Its caller supplies that unconditional component:
 
 ```go
 func signAgentRequest(request *http.Request, key jose.SigningKey, token string, clock aauth.Clock) error {
@@ -70,17 +76,30 @@ func signAgentRequest(request *http.Request, key jose.SigningKey, token string, 
 }
 ```
 
-The signer computes the digest, including for an empty GET body, and restores
-the body for transport. The Resource rejects missing coverage and changed
-bytes before calling `app`. [The example tests](example/verifyagent/main_test.go)
-exercise both refusals and a valid POST. If `Content-Type` selects how your
-application interprets a body, require and sign `content-type` as well.
+The signer preserves the body for transport. To use only the nonempty-body
+default, omit `content-digest` from `AdditionalSignatureComponents` on the
+Resource and from `AdditionalComponents` on the signer. Empty requests then
+need no digest. Keep the explicit component if empty requests must also carry
+a signed digest: the signer computes the SHA-256 digest of zero bytes.
+This applies to empty GETs and POSTs alike; a missing required component is
+refused before your handler runs.
+
+[Resource tests](resource/body_coverage_test.go)
+refuse added, changed and removed content, and changed media types, before
+policy in all four token modes. [The example tests](example/verifyagent/main_test.go)
+also exercise the explicit empty-body requirement and a valid POST.
 
 Signed bodies are limited to 1 MiB by default. Set the Resource's
 `MaxSignedBodyBytes` and the signer's `SignOptions.MaxBodyBytes` for your
 service's limit. An oversized signed body currently returns `401 invalid_input`;
-discovery does not advertise the limit. Unsigned body reads need a separate
-application limit.
+discovery does not advertise the limit. `agent.Config.MaxSignedBodyBytes`
+sets the client limit. Streaming digest trailers are not implemented.
+
+This is a stricter library default, permitted by the draft's Resource component
+negotiation, rather than a universal protocol requirement. Callers that previously
+sent unsigned Resource bodies must now cover the digest and any Content-Type.
+Unconditional advertised components still apply to empty requests too.
+See the [recorded interpretation](INTERPRETATIONS.md#nonempty-request-content-is-covered-by-default).
 
 ## Add revocation and application policy
 
@@ -181,7 +200,12 @@ Core Auth tokens; when given a Budget token, they report zero cost and its
 current remainder. [Route tests](resource/budget_routes_test.go) execute both
 cases, exhausted grants, and refusal feedback. A failed meter can omit
 feedback; an unmetered route still runs when its meter fails. Handle
-`BudgetCallUncertainError` without automatically retrying.
+`BudgetCallUncertainError` without automatically retrying. A response without
+`AAuth-Budget` does not prove that a call was free. For an uncached `200` or
+`403` without that field, `BeginBudgetCall` returns that error and assumes
+the whole signed grant was spent
+([tests](agent/budget_call_test.go)). Use a Core token with `Do` for routes
+that do not support Budget feedback.
 
 **Custom Budget stores must support zero-cost observations.**
 `BudgetStore.Charge` must accept `Cost == 0` and return the current remainder
@@ -200,20 +224,107 @@ and at exhaustion, alongside binding and concurrent-cap enforcement.
 | Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
 | Budget + deferred Core consent | Immediate requests work, but selecting deferred consent for a Budget request returns `500 server_error`; [request-time limit test](personserver/budget_test.go). |
 | Reactive `Client.Begin` + mission Person token | Refused before sending; use proactive authorization. [Input tests](agent/call_test.go). |
+| One Agent identity + several Person Servers | Use an Agent token and `Client` for each PS; a client rejects tokens naming another PS. [Context tests](agent/client_test.go). |
 
-An Agent token names one PS. Use a token and `Client` for each PS when serving
-several; [Agent context tests](agent/client_test.go) reject Auth tokens naming
-a different PS.
+When combining Budget with a consent policy, inspect `AuthorizationRequest.Budget`.
+If it is non-nil, use the immediate `Authorize` policy to approve or deny the
+offer; do not select deferred consent. Interactive Budget consent is not
+implemented, and `AuthorizationInteraction` has no Budget offer to display.
 
-Stores belong to the role making the decision. `testutil` exports a few
-in-memory stores, not a complete mission application backend; the larger
-examples use internal fixtures. See [Resource](resource/storetest) and
-[Person Server](personserver/storetest) contracts before implementing persistence. Deferred permission and question inboxes currently
-need host indexes populated by their stores; mission proposals have a public
-pending queue. [Permission](personserver/permission_test.go),
-[question](personserver/interaction_endpoint_test.go), and
-[mission queue](personserver/mission_proposal_deferred_test.go) tests exercise
-those storage paths.
+Check the boolean from `MissionResult.PersonToken(resource)`. A false result
+means the approval contains no token for that exact Resource identifier.
+`PersonTokens()` returns a copy of all returned Resource-to-token mappings;
+use its keys when reporting the available Resources. [Mission tests](agent/mission_test.go)
+cover present and absent Resources and protect the retained mapping from mutation.
+
+## Use in-memory stores in examples and tests
+
+`testutil` provides concurrency-safe stores for examples, tests and local
+development. Its constructors and returned interfaces are public module APIs,
+with the same versioning expectations as the role packages. Pin a module
+revision: the pre-v1 APIs may change as the drafts evolve. The stores retain
+records for their lifetime and provide neither bounded retention nor restart
+persistence.
+
+| Constructor | State it owns |
+| --- | --- |
+| `NewMissionStore` | PS mission lifecycle, proposals, permissions, audit and R3 issuance |
+| `NewMissionInteractionQuestionStore` | The same mission state plus questions, sharing one transaction boundary |
+| `NewMissionInteractionRelayStore` | The same mission state plus interaction relays, sharing one transaction boundary |
+| `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |
+| `NewEnrollmentStore`, `NewAgentTokenRevocationStore` | AP enrollment or Resource revocation, respectively |
+| `NewDeferredAuthorizationStore` | PS consent and clarification, sharing one transaction boundary |
+| `NewBudgetStore` | Resource fixed-price token consumption and person totals |
+| `NewR3DocumentStore`, `NewR3IssuanceStore` | Resource documents or role-local issuance audit, respectively |
+| `NewIssuedAuthTokenStore`, `NewAuthTokenStatusStore` | PS-issued Auth tokens or Resource revocation status, respectively |
+
+The mission constructors expose their supported interfaces directly. Configure
+mission features with the same store instance; separate instances do not share
+state. The [mission](example/mission), [permission](example/permission),
+[question](example/interactionquestion) and [relay](example/interactionrelay)
+examples use these public constructors. An [external consumer test](testutil/external_examples_test.go)
+copies and runs these examples and the [consent](example/psconsent),
+[Budget](example/budget) and [revocation](example/revocation) examples outside
+the library module.
+
+Each constructor returns a separate store. Use one instance for each deciding
+role; the fixtures do not combine PS consent with mission lifecycle transactions.
+Declare consent-store fields as `personserver.DeferredAuthorizationStore`;
+`testutil.NewDeferredAuthorizationStore` returns that interface. The returned
+store also implements the optional `personserver.AuthorizationClarificationStore`
+extension, which the Person Server discovers when configured with the store.
+
+Durable adapters must satisfy the
+[Resource](resource/storetest) and [Person Server](personserver/storetest)
+contracts and the [R3 issuance contract](r3/storetest).
+
+## Find requests waiting for the person
+
+Use `Server.PendingPermissionReferences(ctx, limit)` or
+`Server.PendingInteractionQuestionReferences(ctx, limit)` to discover retained
+work, including after Server recomposition. Limits are 1–1000; results belong
+to this PS and are ordered by creation time, then reference. The public fixtures
+support both lists; production adapters opt in through `PermissionQueueStore`
+or `InteractionQuestionQueueStore` and should run the
+[pending queue contracts](personserver/storetest/pending.go).
+
+Authenticate the person in your application, then call `ResumePermission` or
+`ResumeInteractionQuestion` for each reference before displaying or deciding
+it. Lists span all people at this PS, and resume does not authenticate the viewer:
+**filter each resumed request by owner before showing it or allowing a decision.**
+Listing does not claim work. Expiry, another decision, or mission termination
+can invalidate a reference; a terminated mission's request may remain listed
+until its own deadline. The [permission](example/permission/main.go) and
+[question](example/interactionquestion/main.go) examples execute this host flow
+without extracting references from the Agent's poll URL. Mission proposals
+have a separate [pending queue](personserver/mission_proposal_deferred_test.go).
+
+## Diagnose a refused request
+
+Wrap the role handler directly with `diagnostics.Handler` to observe the original
+cause of an AAuth problem response:
+
+```go
+handler := diagnostics.Handler(service.Handler(), func(ctx context.Context, p diagnostics.Problem) {
+    // Use errors.Is/As on p.Cause; retain only selected, redacted log fields.
+    logger.LogAttrs(ctx, slog.LevelWarn, "AAuth request refused",
+        slog.Int("status", p.Status), slog.String("code", p.Code))
+})
+```
+
+The [runnable example](diagnostics/example_test.go) receives a local cause while
+the caller receives the protocol refusal. The callback runs synchronously after
+serialization and must handle concurrent requests. Causes can contain private
+host data; nothing logs them automatically. The wrapper preserves standard HTTP
+writer capabilities and `http.ResponseController`; custom writer interfaces are
+not preserved. It observes problems written by the role serializer, including
+`mission_terminated` with its typed cause. It does not observe:
+
+- `AAuth-Requirement` challenges, including Budget step-up, or successful polls;
+- application responses and router-generated errors;
+- retained held-invocation responses replayed by a Resource, including its
+  stored `server_error` fallback (the original cause is not retained);
+- errors returned directly from non-HTTP methods.
 
 ## Versions and local development
 

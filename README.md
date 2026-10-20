@@ -22,8 +22,8 @@ For an HTTP endpoint accepting Agent identity, start with
 `resource.NewAgentIdentity`. It verifies the token **and the request proof**
 before calling your application. [Use it in your service](USE-IN-YOUR-SERVICE.md)
 shows the short handler, trusted-key setup and constructor choices.
-For write endpoints, [require body coverage](USE-IN-YOUR-SERVICE.md#protect-request-bodies);
-the default proof does not cover body bytes.
+Nonempty request bodies are signed and verified by default, within a 1 MiB
+limit. See [body coverage and larger payloads](USE-IN-YOUR-SERVICE.md#protect-request-bodies).
 
 The lower-level token check is:
 

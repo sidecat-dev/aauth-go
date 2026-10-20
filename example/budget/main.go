@@ -27,6 +27,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -92,8 +93,8 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	documents := newR3DocumentStore()
-	issuances := newR3IssuanceStore()
+	documents := testutil.NewR3DocumentStore()
+	issuances := testutil.NewR3IssuanceStore()
 	agentKey, err := newSigningKey("budget-agent-key")
 	if err != nil {
 		return err
@@ -225,7 +226,7 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	budgetStore := newMemoryBudgetStore()
+	budgetStore := testutil.NewBudgetStore()
 	var protectedCalls atomic.Int64
 	var resourceIDSequence atomic.Int64
 	protectedResource, err := resource.NewPSAuthorization(resource.PSAuthorizationConfig{

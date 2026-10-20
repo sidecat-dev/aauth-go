@@ -893,7 +893,7 @@ func cloneMissionBlob(blob aauth.MissionBlob) aauth.MissionBlob {
 func writeMissionReferenceProblem(response http.ResponseWriter, err error) {
 	var terminated *MissionTerminatedError
 	if errors.As(err, &terminated) {
-		writeMissionTerminatedProblem(response, terminated.TerminationReason)
+		writeMissionTerminatedProblem(response, terminated.TerminationReason, err)
 		return
 	}
 	if errors.Is(err, ErrMissionNotFound) {
@@ -914,7 +914,7 @@ func writeMissionPolicyProblem(response http.ResponseWriter, denialCode string, 
 func writeMissionActionProblem(response http.ResponseWriter, err error) {
 	var terminated *MissionTerminatedError
 	if errors.As(err, &terminated) {
-		writeMissionTerminatedProblem(response, terminated.TerminationReason)
+		writeMissionTerminatedProblem(response, terminated.TerminationReason, err)
 		return
 	}
 	if errors.Is(err, ErrMissionNotFound) {
@@ -924,18 +924,9 @@ func writeMissionActionProblem(response http.ResponseWriter, err error) {
 	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
-func writeMissionTerminatedProblem(response http.ResponseWriter, reason string) {
+func writeMissionTerminatedProblem(response http.ResponseWriter, reason string, cause error) {
 	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Type", "application/problem+json")
-	response.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(response).Encode(struct {
-		Status            int    `json:"status"`
-		Code              string `json:"error"`
-		Detail            string `json:"detail"`
-		MissionStatus     string `json:"mission_status"`
-		TerminationReason string `json:"termination_reason,omitempty"`
-	}{
-		Status: http.StatusForbidden, Code: "mission_terminated", Detail: http.StatusText(http.StatusForbidden),
+	httpapi.WriteProblem(response, http.StatusForbidden, "mission_terminated", cause, httpapi.ProblemFields{
 		MissionStatus: "terminated", TerminationReason: reason,
 	})
 }

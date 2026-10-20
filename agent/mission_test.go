@@ -96,6 +96,11 @@ func TestClientProposesAndVerifiesMission(t *testing.T) {
 	if !ok || gotToken != personToken || missionCalls != 1 {
 		t.Fatalf("person token = %q, present=%t, calls=%d", gotToken, ok, missionCalls)
 	}
+	for _, resource := range []string{"", "https://other.example", protocol.resourceID + "/"} {
+		if token, ok := result.PersonToken(resource); ok || token != "" {
+			t.Errorf("PersonToken(%q) returned a token for an absent Resource", resource)
+		}
+	}
 	allTokens := result.PersonTokens()
 	delete(allTokens, protocol.resourceID)
 	if _, ok := result.PersonToken(protocol.resourceID); !ok {

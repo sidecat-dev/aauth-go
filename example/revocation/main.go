@@ -21,6 +21,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -71,7 +72,7 @@ func run(output io.Writer) error {
 		return err
 	}
 	personTokens := newPersonTokenStore()
-	issuedTokens := newIssuedAuthTokenStore()
+	issuedTokens := testutil.NewIssuedAuthTokenStore()
 	personAgentRevocations := newAgentTokenRevocationStore()
 	resourceAgentRevocations := newAgentTokenRevocationStore()
 	personIDs := []string{"person-token-1", "auth-token-1", "person-token-2", "auth-token-2"}
@@ -103,7 +104,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	statuses := newAuthTokenStatusStore()
+	statuses := testutil.NewAuthTokenStatusStore()
 	resourceIDs := []string{"resource-token-1", "resource-token-2"}
 	newResource := func() (*resource.Server, error) {
 		return resource.NewPSAuthorization(resource.PSAuthorizationConfig{

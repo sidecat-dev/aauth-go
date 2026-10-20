@@ -11,7 +11,6 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
-	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // BudgetCall supplies one fixed-price protected request and its Budget Auth
@@ -231,15 +230,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 			}
 		}()
 	}
-	signOptions := signaturekey.SignOptions{
-		AdditionalComponents: append([]string(nil), metadata.AdditionalSignatureComponents...),
-	}
-	if containsFold(metadata.AdditionalSignatureComponents, "content-digest") {
-		signOptions.MaxBodyBytes = client.maxSignedBodyBytes
-	}
-	if err := signaturekey.SignJWTRequestWithOptions(
-		request, client.signingKey, call.AuthToken, client.clock, signOptions,
-	); err != nil {
+	if err := client.signResourceRequest(request, call.AuthToken, metadata.AdditionalSignatureComponents); err != nil {
 		return BudgetCallResult{}, fail(operation, err)
 	}
 	handedOff = true

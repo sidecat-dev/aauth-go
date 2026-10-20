@@ -58,10 +58,15 @@ The [session authority regression](resource/session_authority_test.go) covers
 initial authorization, session use, discovery and pending routes before state
 access. A correctly signed path still needs application routing and access policy.
 
-The default request proof does not cover body bytes. The
-[service example](example/verifyagent/main.go) requires `content-digest`;
-[its tests](example/verifyagent/main_test.go) accept a covered POST and refuse
-missing coverage or changed bytes before application dispatch.
+The bounded request profile signs and requires `content-digest` on nonempty
+content, plus `content-type` when present. This is a [local default](INTERPRETATIONS.md#nonempty-request-content-is-covered-by-default),
+permitted by Resource component negotiation. [Signer tests](signaturekey/body_default_test.go)
+check actual bytes and limits; the [Resource matrix](resource/body_coverage_test.go)
+rejects missing coverage, altered bodies and media types before policy in all
+four token modes, including bodies with unspecified or unknown length.
+The [service example](example/verifyagent/main.go) additionally requires
+digests on empty requests; [its tests](example/verifyagent/main_test.go)
+exercise that explicit configuration.
 
 | Source area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |
@@ -190,6 +195,17 @@ No universal store or general replay guarantee is implied.
 fixture that passes [the public revocation contract](testutil/stores_test.go).
 It retains markers until discarded, without cleanup or restart persistence.
 
+The public `testutil` mission fixtures expose proposal, permission, audit and
+R3 issuance contracts; question and relay variants share their mission
+transaction boundary. Missionless permission, question and relay fixtures are
+also public. [Public contract tests](testutil/mission_api_test.go) exercise
+these constructors, and [external consumer tests](testutil/external_examples_test.go)
+copy and run eleven examples outside the module. Public consent/clarification,
+Budget, Resource R3 document, R3 issuance, PS-issued Auth-token and Resource
+Auth-token status fixtures pass their [role store contracts](testutil/authorization_stores_test.go).
+These constructors package in-memory behavior; they do not provide durable
+storage or combine separate role transaction boundaries.
+
 | Area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |
 | Person-token retention contract | Implemented | `TokenStore.Commit` precedes release. Exchange checks retained records when present; directly presented tokens may lack a record. Chained records retain upstream issuer/JTI and exact digest, requiring the same bytes at the second PS call. | [`personserver/server_test.go`](personserver/server_test.go), [`personserver/call_chaining_test.go`](personserver/call_chaining_test.go), [`integration/core_four_party_test.go`](integration/core_four_party_test.go), [`integration/call_chaining_test.go`](integration/call_chaining_test.go) |
@@ -197,6 +213,8 @@ It retains markers until discarded, without cleanup or restart persistence.
 | Mission update and completion retention contract | Implemented | `AppendMissionUpdate` orders exact accepted updates; `CompleteMission` retains one terminal winner. Both compare policy-time state, materialize expiry, and copy mutable data before publication. Covered by `RunMission`. | [`personserver/storetest/mission.go`](personserver/storetest/mission.go), [`personserver/mission_lifecycle_test.go`](personserver/mission_lifecycle_test.go), [`personserver/mission_test.go`](personserver/mission_test.go), [`integration/mission_three_party_test.go`](integration/mission_three_party_test.go), [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go), [`example/mission`](example/mission), [`example/fourparty`](example/fourparty) |
 | Deferred person-token contract | Implemented | Creation precedes `202`; code correlation and terminal consumption are atomic. `RunDeferredToken` checks unique creation, copy isolation, identity cloaking, expiry, invalidation, competing decisions, and one terminal consumer. | [`personserver/storetest/deferred_token.go`](personserver/storetest/deferred_token.go), [`personserver/person_interaction_test.go`](personserver/person_interaction_test.go), [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go), [`example/selfhosted/deferred_store_contract_test.go`](example/selfhosted/deferred_store_contract_test.go) |
 | Deferred PS-authorization contract | Implemented | Verified creation precedes `202`; three wrong codes close a waiting request. Equivalent approvals converge. Polls reauthenticate the original Agent/key and verify approved claims; one terminal result is consumed before later `410`. `RunDeferredAuthorization` includes parent/child separation; `RunClarification` covers the optional extension. | [`personserver/storetest/deferred_authorization.go`](personserver/storetest/deferred_authorization.go), [`personserver/authorization_interaction_test.go`](personserver/authorization_interaction_test.go), [`agent/exchange_interaction_test.go`](agent/exchange_interaction_test.go), [`integration/deferred_ps_authorization_test.go`](integration/deferred_ps_authorization_test.go), [`example/psconsent/store_contract_test.go`](example/psconsent/store_contract_test.go) |
+| Local problem diagnostics | Implemented (local API) | An opt-in handler wrapper passes problem status, code, request context and original error to the host after serialization. It preserves standard HTTP writer capabilities; it does not log private causes or observe ordinary application responses. | [`diagnostics/handler_test.go`](diagnostics/handler_test.go), [`diagnostics/example_test.go`](diagnostics/example_test.go), [`resource/diagnostics_test.go`](resource/diagnostics_test.go), [`personserver/diagnostics_test.go`](personserver/diagnostics_test.go), [`accessserver/diagnostics_test.go`](accessserver/diagnostics_test.go), [`agentprovider/diagnostics_test.go`](agentprovider/diagnostics_test.go) |
+| Host pending-reference queues | Implemented (local API) | Optional permission and question store interfaces list bounded, issuer-scoped pending snapshots with retained expiry, stable ordering and copied records. References confer no authority; resume and decision APIs recheck state. Both examples discover work after Server recomposition. | [`personserver/pending_references_test.go`](personserver/pending_references_test.go), [`personserver/storetest/pending.go`](personserver/storetest/pending.go), [`testutil/pending_test.go`](testutil/pending_test.go), [`example/permission/main_test.go`](example/permission/main_test.go), [`example/interactionquestion/main_test.go`](example/interactionquestion/main_test.go) |
 | Permission-store contracts | Implemented | `PermissionStore` retains decisions and pending requests before release, with Agent/key binding, cloaking, exact replay, conflict refusal, and one terminal consumer. `MissionPermissionStore` adds atomic active-mission comparison. Covered by `RunPermission` and `RunMissionPermission`. | [`personserver/permission_test.go`](personserver/permission_test.go), [`personserver/storetest/permission.go`](personserver/storetest/permission.go), [`personserver/storetest/mission_permission.go`](personserver/storetest/mission_permission.go), [`internal/exampleutil/permission_store_test.go`](internal/exampleutil/permission_store_test.go), [`integration/permission_missionless_test.go`](integration/permission_missionless_test.go), [`integration/permission_mission_test.go`](integration/permission_mission_test.go) |
 | Mission-audit store contract | Implemented | `MissionAuditStore` checks active mission identity and lifecycle while appending exact ordered entries. Accepted updates are allowed; expiry and completion refuse append. `RunAudit` checks additive members, copy isolation, and ownership. Cross-event log ordering is absent. | [`personserver/audit_test.go`](personserver/audit_test.go), [`personserver/storetest/audit.go`](personserver/storetest/audit.go), [`internal/exampleutil/mission_audit_store_test.go`](internal/exampleutil/mission_audit_store_test.go), [`integration/audit_mission_test.go`](integration/audit_mission_test.go) |
 | Interaction-question store contracts | Implemented | Question stores retain before `202`, cloak identity mismatch, expire pending work, converge one host resolution, and consume one terminal result. The mission variant shares lifecycle transactions. Covered by `RunInteractionQuestion` and `RunMissionInteractionQuestion`. | [`personserver/storetest/interaction_question.go`](personserver/storetest/interaction_question.go), [`personserver/storetest/mission_interaction_question.go`](personserver/storetest/mission_interaction_question.go), [`internal/exampleutil/interaction_question_store_test.go`](internal/exampleutil/interaction_question_store_test.go), [`integration/interaction_question_test.go`](integration/interaction_question_test.go) |

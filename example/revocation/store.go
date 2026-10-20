@@ -10,7 +10,6 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
-	"gitlab.com/sidecat-dev/aauth-go/resource"
 )
 
 type personTokenStore struct {
@@ -46,41 +45,6 @@ func (store *personTokenStore) Load(_ context.Context, issuer, jti string) (pers
 	return record, nil
 }
 
-type issuedAuthTokenStore struct {
-	mu      sync.Mutex
-	records map[aauth.TokenReference]personserver.IssuedAuthTokenRecord
-}
-
-func newIssuedAuthTokenStore() *issuedAuthTokenStore {
-	return &issuedAuthTokenStore{records: make(map[aauth.TokenReference]personserver.IssuedAuthTokenRecord)}
-}
-
-func (store *issuedAuthTokenStore) CommitIssuedAuthToken(_ context.Context, record personserver.IssuedAuthTokenRecord) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if retained, ok := store.records[record.Reference]; ok && retained != record {
-		return personserver.ErrIssuedAuthTokenConflict
-	}
-	store.records[record.Reference] = record
-	return nil
-}
-
-func (store *issuedAuthTokenStore) LoadIssuedAuthToken(_ context.Context, reference aauth.TokenReference) (personserver.IssuedAuthTokenRecord, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	record, ok := store.records[reference]
-	if !ok {
-		return personserver.IssuedAuthTokenRecord{}, personserver.ErrIssuedAuthTokenNotFound
-	}
-	return record, nil
-}
-
-type authTokenStatusStore struct {
-	mu      sync.Mutex
-	records map[aauth.TokenReference]resource.ObservedAuthToken
-	revoked map[aauth.TokenReference]bool
-}
-
 type agentTokenRevocationStore struct {
 	mu      sync.Mutex
 	revoked map[aauth.TokenReference]struct{}
@@ -102,40 +66,6 @@ func (store *agentTokenRevocationStore) IsRevoked(_ context.Context, reference a
 	defer store.mu.Unlock()
 	_, revoked := store.revoked[reference]
 	return revoked, nil
-}
-
-func newAuthTokenStatusStore() *authTokenStatusStore {
-	return &authTokenStatusStore{
-		records: make(map[aauth.TokenReference]resource.ObservedAuthToken),
-		revoked: make(map[aauth.TokenReference]bool),
-	}
-}
-
-func (store *authTokenStatusStore) Observe(_ context.Context, record resource.ObservedAuthToken) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	reference := record.Reference
-	if _, ok := store.records[reference]; !ok && store.revoked[reference] {
-		return resource.ErrAuthTokenRevoked
-	}
-	if retained, ok := store.records[reference]; ok {
-		if retained != record {
-			return resource.ErrAuthTokenConflict
-		}
-		if store.revoked[reference] {
-			return resource.ErrAuthTokenRevoked
-		}
-		return nil
-	}
-	store.records[reference] = record
-	return nil
-}
-
-func (store *authTokenStatusStore) Revoke(_ context.Context, request aauth.RevocationRequest) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	store.revoked[request.Reference] = true
-	return nil
 }
 
 type logicalTransport struct {
@@ -215,6 +145,4 @@ func (transport *loseOneRevocationResponseTransport) RoundTrip(request *http.Req
 }
 
 var _ personserver.TokenStore = (*personTokenStore)(nil)
-var _ personserver.IssuedAuthTokenStore = (*issuedAuthTokenStore)(nil)
 var _ personserver.AgentTokenRevocationStore = (*agentTokenRevocationStore)(nil)
-var _ resource.AuthTokenStatusStore = (*authTokenStatusStore)(nil)

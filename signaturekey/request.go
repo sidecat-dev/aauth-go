@@ -26,7 +26,8 @@ const DefaultSignatureWindow = 60 * time.Second
 
 const defaultMaxBodyBytes = 1 << 20
 
-// SignOptions controls optional RFC 9421 signature parameters.
+// SignOptions controls optional RFC 9421 signature parameters. Nonempty content
+// always adds content-digest and, when present, content-type coverage.
 type SignOptions struct {
 	ExpiresAt            time.Time
 	Nonce                string
@@ -35,7 +36,9 @@ type SignOptions struct {
 }
 
 // VerifyOptions declares the proof schemes and message components accepted by
-// one endpoint.
+// one endpoint. Nonempty content additionally requires content-digest and, when
+// present, content-type coverage. MaxBodyBytes bounds content verification and
+// defaults to 1 MiB.
 type VerifyOptions struct {
 	RequiredComponents     []string
 	RequireExactComponents bool
@@ -149,7 +152,9 @@ func SignJWKSURIRequestWithOptions(
 }
 
 // SignRequest signs one request with the exact supplied Signature-Key
-// credential.
+// credential. It reads nonempty content within MaxBodyBytes (default 1 MiB),
+// computes SHA-256 Content-Digest and covers it and any Content-Type. The caller
+// can still read the request body after signing succeeds or fails.
 func SignRequest(request *http.Request, key jose.SigningKey, credential Credential, clock Clock, options SignOptions) error {
 	if request == nil || request.URL == nil {
 		return errors.New("aauth: request URL is required")
@@ -191,19 +196,25 @@ func SignRequest(request *http.Request, key jose.SigningKey, credential Credenti
 	if len(additional) != len(options.AdditionalComponents) {
 		return errors.New("aauth: additional signature components contain a duplicate")
 	}
-	if contains(additional, "content-digest") {
-		var body []byte
-		if hasRequestBody(candidate) {
-			maxBodyBytes := options.MaxBodyBytes
-			if maxBodyBytes == 0 {
-				maxBodyBytes = defaultMaxBodyBytes
-			}
-			copied, err := copyRequestBodyForSigning(request, candidate, maxBodyBytes)
-			if err != nil {
-				return err
-			}
-			body = copied
+	var body []byte
+	if hasRequestBody(candidate) {
+		maxBodyBytes := options.MaxBodyBytes
+		if maxBodyBytes == 0 {
+			maxBodyBytes = defaultMaxBodyBytes
 		}
+		copied, err := copyRequestBodyForSigning(request, candidate, maxBodyBytes)
+		if err != nil {
+			return err
+		}
+		body = copied
+	}
+	if len(body) > 0 {
+		additional = uniqueLower(append(additional, "content-digest"))
+		if len(candidate.Header.Values("Content-Type")) > 0 {
+			additional = uniqueLower(append(additional, "content-type"))
+		}
+	}
+	if contains(additional, "content-digest") {
 		digest := sha256.Sum256(body)
 		candidate.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
 	}
@@ -324,6 +335,16 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		return prepared, newError(ErrorInvalidSignature, err)
 	}
 	required := append([]string{"@method", "@authority", "@path", "signature-key"}, options.RequiredComponents...)
+	hasContent, err := requestHasContent(request)
+	if err != nil {
+		return prepared, newError(ErrorInvalidSignature, err)
+	}
+	if hasContent {
+		required = append(required, "content-digest")
+		if len(request.Header.Values("Content-Type")) > 0 {
+			required = append(required, "content-type")
+		}
+	}
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
 		required = append(required, "@query")
 	}
@@ -869,7 +890,27 @@ func (failure *bodyLimitError) Error() string {
 }
 
 func hasRequestBody(request *http.Request) bool {
-	return request.Body != nil && request.Body != http.NoBody && request.ContentLength != 0
+	return request.Body != nil && request.Body != http.NoBody
+}
+
+// requestHasContent distinguishes empty transport readers from real content
+// without trusting ContentLength or consuming bytes needed by verification.
+func requestHasContent(request *http.Request) (bool, error) {
+	if !hasRequestBody(request) {
+		return false, nil
+	}
+	original := request.Body
+	prefix, err := io.ReadAll(io.LimitReader(original, 1))
+	if len(prefix) > 0 {
+		request.Body = &prefixedReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(prefix), original),
+			closer: original,
+		}
+	}
+	if err != nil {
+		return false, fmt.Errorf("aauth: read request content: %w", err)
+	}
+	return len(prefix) > 0, nil
 }
 
 func contains(values []string, target string) bool {

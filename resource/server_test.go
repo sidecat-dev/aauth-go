@@ -830,12 +830,12 @@ func TestProtectedSignatureRequirementsComeFromConfig(t *testing.T) {
 		return server
 	}
 
-	t.Run("body components are not implicit", func(t *testing.T) {
+	t.Run("body coverage is required by default", func(t *testing.T) {
 		server := newServer(nil, 0)
 		request := signedRequestWithoutBodyComponents(t, clock, agentKey, authToken, http.MethodPost, resourceIssuer+"/records", `{"query":"all"}`)
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
-		if response.Code != http.StatusNoContent {
+		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 		}
 	})

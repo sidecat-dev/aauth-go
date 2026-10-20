@@ -118,10 +118,11 @@ type PSAuthorizationConfig struct {
 // AgentIdentityConfig constructs a Resource that authorizes application
 // requests from the verified Agent identity. It issues no Resource token and
 // needs no Resource signing key, Access Server, scope catalog, or person
-// resolver. To require body integrity, include "content-digest" in
-// AdditionalSignatureComponents; the default request proof does not cover
-// body bytes. MaxSignedBodyBytes bounds digest verification (default 1 MiB),
-// not application reads of an uncovered body.
+// resolver. Nonempty content requires covered content-digest and, when present,
+// content-type; body verification precedes application dispatch.
+// MaxSignedBodyBytes bounds digest verification (default 1 MiB). Including
+// "content-digest" in AdditionalSignatureComponents also requires a digest on
+// empty requests.
 type AgentIdentityConfig struct {
 	Issuer                        string
 	KeyResolver                   signaturekey.KeyResolver

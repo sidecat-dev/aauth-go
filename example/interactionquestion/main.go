@@ -12,16 +12,15 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
-	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -79,7 +78,7 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	questionStore := exampleutil.NewMissionInteractionQuestionStore()
+	questionStore := testutil.NewMissionInteractionQuestionStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
 		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
@@ -95,7 +94,7 @@ func run(output io.Writer) error {
 	}, nil); err != nil {
 		return err
 	}
-	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+	config := personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, Tokens: questionStore, NewID: func() string { return "unused-person-token" },
 		BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
@@ -129,7 +128,8 @@ func run(output io.Writer) error {
 				}}, nil
 			},
 		},
-	})
+	}
+	people, err := personserver.NewPSAuthorization(config)
 	if err != nil {
 		return err
 	}
@@ -155,12 +155,25 @@ func run(output io.Writer) error {
 	if !ok {
 		return errors.New("Person Server did not return a pending question")
 	}
-	reference := strings.TrimPrefix(pending.Location(), personServerID+"/interaction/pending/")
-	handle, err := people.ResumeInteractionQuestion(ctx, reference)
+	// The host authenticates the person independently. A replacement server
+	// discovers retained work without knowing the Agent's poll URL.
+	host, err := personserver.NewPSAuthorization(config)
 	if err != nil {
 		return err
 	}
-	if err := people.AnswerInteractionQuestion(ctx, handle, "Take the northern route."); err != nil {
+	references, err := host.PendingInteractionQuestionReferences(ctx, 10)
+	if err != nil {
+		return err
+	}
+	if len(references) != 1 {
+		return errors.New("expected one pending question")
+	}
+	reference := references[0]
+	handle, err := host.ResumeInteractionQuestion(ctx, reference)
+	if err != nil {
+		return err
+	}
+	if err := host.AnswerInteractionQuestion(ctx, handle, "Take the northern route."); err != nil {
 		return err
 	}
 	result, err = operator.PollPersonQuestion(ctx, pending)
@@ -185,8 +198,15 @@ func run(output io.Writer) error {
 	if !ok {
 		return errors.New("Person Server did not return a pending mission question")
 	}
-	reference = strings.TrimPrefix(pending.Location(), personServerID+"/interaction/pending/")
-	handle, err = people.ResumeInteractionQuestion(ctx, reference)
+	references, err = host.PendingInteractionQuestionReferences(ctx, 10)
+	if err != nil {
+		return err
+	}
+	if len(references) != 1 {
+		return errors.New("expected one pending mission question")
+	}
+	reference = references[0]
+	handle, err = host.ResumeInteractionQuestion(ctx, reference)
 	if err != nil {
 		return err
 	}
@@ -194,7 +214,7 @@ func run(output io.Writer) error {
 	if !ok || missionContext.S256 != mission.S256 {
 		return errors.New("Person Server resumed the wrong question mission")
 	}
-	if err := people.AnswerInteractionQuestion(ctx, handle, "Continue the mission."); err != nil {
+	if err := host.AnswerInteractionQuestion(ctx, handle, "Continue the mission."); err != nil {
 		return err
 	}
 	result, err = operator.PollPersonQuestion(ctx, pending)

@@ -3,6 +3,7 @@ package signaturekey_test
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,11 +47,13 @@ func TestPrepareRequestStopsAtTheConfiguredRepresentationLimit(t *testing.T) {
 	request.ContentLength = -1
 
 	_, err = signaturekey.PrepareRequest(request, clock, signaturekey.VerifyOptions{
+		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeHWK},
 		RequiredComponents: []string{"content-type", "content-digest"},
 		MaxBodyBytes:       limit,
 	})
-	if err == nil {
-		t.Fatal("PrepareRequest accepted an oversized representation")
+	var failure *signaturekey.Error
+	if !errors.As(err, &failure) || failure.Code != signaturekey.ErrorInvalidInput {
+		t.Fatalf("PrepareRequest error = %v, want invalid_input for oversize content", err)
 	}
 	if reader.read > limit+1 {
 		t.Fatalf("PrepareRequest read %d bytes, want at most %d", reader.read, limit+1)
@@ -109,7 +112,7 @@ func TestSignRequestStopsAtTheConfiguredLimitWithoutMutatingTheRequest(t *testin
 	}
 }
 
-func TestBodyIsNotBufferedWhenTheEndpointDoesNotRequireContentDigest(t *testing.T) {
+func TestDefaultBodyCoverageUsesAnExplicitLargerBound(t *testing.T) {
 	t.Parallel()
 
 	key, err := jose.NewEd25519SigningKey(
@@ -129,14 +132,15 @@ func TestBodyIsNotBufferedWhenTheEndpointDoesNotRequireContentDigest(t *testing.
 	body := &countingReader{reader: bytes.NewReader(bytes.Repeat([]byte("x"), 2<<20))}
 	request := httptest.NewRequest(http.MethodPost, "https://resource.example/upload", body)
 	request.ContentLength = -1
-	if err := signaturekey.SignRequest(request, key, credential, clock, signaturekey.SignOptions{}); err != nil {
+	if err := signaturekey.SignRequest(request, key, credential, clock, signaturekey.SignOptions{MaxBodyBytes: 2 << 20}); err != nil {
 		t.Fatal(err)
 	}
-	if body.read != 0 || request.Header.Get("Content-Digest") != "" {
+	if body.read != 2<<20 || request.Header.Get("Content-Digest") == "" {
 		t.Fatalf("signer read %d bytes and emitted Content-Digest %q", body.read, request.Header.Get("Content-Digest"))
 	}
 	prepared, err := signaturekey.PrepareRequest(request, clock, signaturekey.VerifyOptions{
 		AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeHWK},
+		MaxBodyBytes:    2 << 20,
 	})
 	if err != nil {
 		t.Fatal(err)

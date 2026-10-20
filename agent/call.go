@@ -722,15 +722,7 @@ func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error)
 			return nil, fail(operation, err)
 		}
 	}
-	signOptions := signaturekey.SignOptions{
-		AdditionalComponents: append([]string(nil), metadata.AdditionalSignatureComponents...),
-	}
-	if containsFold(metadata.AdditionalSignatureComponents, "content-digest") {
-		signOptions.MaxBodyBytes = client.maxSignedBodyBytes
-	}
-	if err := signaturekey.SignJWTRequestWithOptions(
-		request, client.signingKey, call.AuthToken, client.clock, signOptions,
-	); err != nil {
+	if err := client.signResourceRequest(request, call.AuthToken, metadata.AdditionalSignatureComponents); err != nil {
 		return nil, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)

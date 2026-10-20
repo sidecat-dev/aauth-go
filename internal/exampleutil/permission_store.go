@@ -13,7 +13,7 @@ import (
 
 // NewPermissionStore returns a concurrency-safe in-memory Person Server
 // permission store for examples.
-func NewPermissionStore() personserver.PermissionStore {
+func NewPermissionStore() personserver.PermissionQueueStore {
 	return &permissionStore{records: make(map[string]personserver.PermissionRecord)}
 }
 

@@ -29,8 +29,7 @@ func TestRunVerifiesTokenAndRequest(t *testing.T) {
 }
 
 // Core Covered Components permits Resources to require content-digest in
-// addition to the mandatory target and credential fields. The service example
-// requires it so callers cannot omit body integrity on write operations.
+// addition to the mandatory target and credential fields.
 func TestServiceVerificationProtectsRequestBodies(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
@@ -73,7 +72,10 @@ func TestServiceVerificationProtectsRequestBodies(t *testing.T) {
 			if test.digest {
 				err = signAgentRequest(request, agentKey, token, clock)
 			} else {
+				body := request.Body
+				request.Body = http.NoBody
 				err = signaturekey.SignJWTRequest(request, agentKey, token, clock)
+				request.Body = body
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -93,6 +95,67 @@ func TestServiceVerificationProtectsRequestBodies(t *testing.T) {
 				t.Fatalf("verified body reached application %d times, want 1", calls)
 			}
 		})
+	}
+}
+
+// Core a99d353 Resource Metadata requires advertised additional components on
+// requests to the Resource, including requests with empty content.
+func TestServiceVerificationRequiresExplicitDigestOnEmptyRequests(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	providerKey, agentKey := signingKey("provider-key"), signingKey("agent-key")
+	token, err := aauth.MintAgentToken("https://agents.example", providerKey,
+		aauth.AgentTokenRequest{
+			Agent: "aauth:reader@agents.example", PublicKey: agentKey.PublicJWK(),
+			Lifetime: time.Hour,
+		}, now, "example-empty-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, digest := range []bool{false, true} {
+			name := method + "/missing digest"
+			if digest {
+				name = method + "/covered empty digest"
+			}
+			t.Run(name, func(t *testing.T) {
+				calls := 0
+				handler, err := agentResource(providerKeys(providerKey.PublicJWK()), clock,
+					http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						calls++
+						w.WriteHeader(http.StatusNoContent)
+					}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(method, "https://resource.example/notes", nil)
+				if digest {
+					err = signAgentRequest(request, agentKey, token, clock)
+				} else {
+					err = signaturekey.SignJWTRequest(request, agentKey, token, clock)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				if digest {
+					if response.Code != http.StatusNoContent || calls != 1 {
+						t.Fatalf("covered empty digest: status=%d calls=%d", response.Code, calls)
+					}
+				} else {
+					if response.Code != http.StatusUnauthorized || calls != 0 {
+						t.Fatalf("missing empty digest: status=%d calls=%d", response.Code, calls)
+					}
+					problem := response.Header().Get("Signature-Error")
+					for _, required := range []string{"invalid_input", "required_input", "content-digest"} {
+						if !strings.Contains(problem, required) {
+							t.Fatalf("Signature-Error = %q, missing %q", problem, required)
+						}
+					}
+				}
+			})
+		}
 	}
 }
 

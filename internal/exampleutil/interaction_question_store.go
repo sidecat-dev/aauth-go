@@ -10,7 +10,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
 
-func NewInteractionQuestionStore() personserver.InteractionQuestionStore {
+func NewInteractionQuestionStore() personserver.InteractionQuestionQueueStore {
 	return &interactionQuestionStore{records: make(map[string]personserver.InteractionQuestionRecord)}
 }
 
