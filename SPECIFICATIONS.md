@@ -59,7 +59,11 @@ follows this text: a revoked Agent or Auth token carried in `Signature-Key` is
 revoked Auth token also sends `AAuth-Requirement: requirement=person-token`
 and never `requirement=auth-token`. A token carried as a request parameter
 (`revoked_<parameter>_token`, the pending-request `revoked` state) is not
-adopted, and no global parameter-token remapping, cascade or recovery is added.
+adopted, and no global parameter-token remapping, cascade or automatic recovery
+is added. After presenting an Auth token, the Agent preserves a valid
+`person-token` requirement in `*agent.ReauthorizationRequiredError`, which
+unwraps to the original `*signaturekey.Error`. The caller decides whether to
+restart authorization.
 
 - Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
 - Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).

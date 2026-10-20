@@ -140,7 +140,16 @@ Notable exclusions include production store adapters, key custody, TLS and
 deployment infrastructure, platform attestation, general request-proof replay,
 several deferred and mission combinations, automatic revocation fan-out,
 complete Signature-Key schemes, variable or streaming Budgets, and independent
-person, authorization, and full-profile interoperability.
+Person Server, Access Server, and full-profile interoperability.
+The bounded independent Agent-to-Go authorization path is documented with
+its executable checks in [`walkthrough/interop`](walkthrough/interop).
+
+After a Resource refuses an Auth token with `revoked_jwt` and a valid
+`person-token` requirement, Agent calls return
+`*agent.ReauthorizationRequiredError`. Use `errors.As` to inspect it and
+explicitly restart authorization with a valid Person token; the original
+`*signaturekey.Error` remains available. The
+[`revocation example`](example/revocation) executes this recovery.
 
 Do not infer support from an exported type. Use:
 

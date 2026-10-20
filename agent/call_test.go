@@ -1242,6 +1242,21 @@ func TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem(t *testing.T) {
 		check    func(*testing.T, error)
 	}{
 		{
+			name: "revoked Auth token requires reauthorization",
+			response: func(_ *testing.T, request *http.Request, body *trackedBody) *http.Response {
+				header := make(http.Header)
+				header.Set("Signature-Error", "error=revoked_jwt")
+				header.Set("AAuth-Requirement", "requirement=person-token")
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized, Header: header,
+					Request: request, Body: body,
+				}
+			},
+			check: func(t *testing.T, err error) {
+				assertReauthorizationRequired(t, err)
+			},
+		},
+		{
 			name: "Signature-Error precedence",
 			response: func(t *testing.T, request *http.Request, body *trackedBody) *http.Response {
 				header, err := signaturekey.FormatError(signaturekey.Error{Code: signaturekey.ErrorExpiredJWT})

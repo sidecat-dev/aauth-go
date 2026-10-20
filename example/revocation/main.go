@@ -246,6 +246,10 @@ func run(output io.Writer) error {
 	if !errors.As(err, &signatureFailure) || signatureFailure.Code != signaturekey.ErrorRevokedJWT {
 		return fmt.Errorf("revoked token returned %v", err)
 	}
+	var recovery *clientagent.ReauthorizationRequiredError
+	if !errors.As(err, &recovery) || recovery.Requirement() != aauth.RequirementPersonToken {
+		return fmt.Errorf("revoked token omitted the reauthorization requirement: %v", err)
+	}
 	fmt.Fprintf(output, "%s refused: 401 %s\n", firstClaims.JTI, signatureFailure.Code)
 
 	secondToken, secondClaims, err := authorize()

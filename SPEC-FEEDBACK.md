@@ -6,6 +6,21 @@ authoritative.
 
 **Last reconciled:** 2026-10-01
 
+**Last upstream check:** 2026-10-20. All 80 GitHub issues and pull requests
+linked below were checked. The 32 issues submitted on October 1 (AAuth
+#225–#254 and Signature-Key #44–#45) remain open with no comments. The seven
+submitted comments on AAuth #108, #199, #208, #215, #221 and #222 have no
+subsequent editor response. The issue author replied on #221; that discussion
+does not resolve AAG-F050 or change the draft. None of these unresolved GitHub
+submissions is more than 30 days old. Previously recorded resolutions remain
+closed; no item changes status in this check.
+
+AAuth HEAD is `70d67375deb0bb002af7da0711fc58f6e8926e7e`; its six source
+files tracked here are byte-identical to `28e8258`. Signature-Key HEAD remains
+`69f5ba2`. The section coordinates and unresolved findings below therefore
+remain applicable. The newer exploratory Supervision document is outside this
+repository's source manifest. No follow-up was reposted.
+
 | Source | Upstream commit |
 | --- | --- |
 | AAuth (Core, R3, Events, Bootstrap, Budgets, interop profile) | [`dickhardt/AAuth` at `28e8258`](https://github.com/dickhardt/AAuth/tree/28e8258f8153a2a51a709c53ebc9618f941564e4) (`28e8258f8153a2a51a709c53ebc9618f941564e4`, 2026-09-28) |

@@ -967,6 +967,19 @@ as a sub-agent token get no revocation lookup. An Auth-token identity conflict
 stays `403 access_denied`. This check stops a request only when the store reports revocation before host
 callbacks; it does not cancel an already-admitted in-flight request.
 
+The Agent returns `*agent.ReauthorizationRequiredError` when an Auth-token
+call receives that `401 revoked_jwt` with a valid `person-token` requirement.
+This includes ordinary, Budget, pending-poll and R3 calls. The error preserves
+the original `*signaturekey.Error` through `errors.As`; the response body is
+closed and no automatic retry or exchange occurs. A missing, malformed or
+different requirement leaves the original signature error intact. The same
+hint on a call presenting an Agent or Person token does not acquire Auth-token
+recovery semantics.
+
+**Executable evidence:** `agent/reauthorization_test.go`,
+`agent/call_test.go:TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem`,
+and `integration/revocation_reauthorization_test.go`.
+
 ### Refused revocation caller uses `unsupported_iss`
 
 Protocol -11 (AAuth 28e8258f, Token Revocation, Errors table) answers `403

@@ -254,7 +254,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		closeResponse(response)
-		return BudgetCallResult{}, fail(operation, responseFailure(response))
+		return BudgetCallResult{}, fail(operation, authTokenResponseFailure(response))
 	}
 	cached, err := responseCarriesAge(response.Header.Values("Age"))
 	if err != nil {

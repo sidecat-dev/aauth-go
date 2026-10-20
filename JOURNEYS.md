@@ -250,17 +250,25 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   - Start with: `personserver.AuthTokenRevocationConfig`,
     `personserver.IssuedAuthTokenStore`,
     `personserver.Server.RevokeIssuedAuthToken`, and
-    `resource.AuthTokenStatusStore`; for Agent tokens, start with
+    `resource.AuthTokenStatusStore`; the calling Agent receives
+    `agent.ReauthorizationRequiredError` when a refused Auth token carries a
+    valid `person-token` requirement. For Agent tokens, start with
     `agentprovider.RevocationClient`,
     `personserver.AgentTokenRevocationStore`, and
     `resource.AgentTokenRevocationStore`.
   - Evidence: [`integration/revocation_reauthorization_test.go`](integration/revocation_reauthorization_test.go),
+    [`agent/reauthorization_test.go`](agent/reauthorization_test.go),
+    [`agent/call_test.go`](agent/call_test.go),
     [`integration/agent_token_revocation_test.go`](integration/agent_token_revocation_test.go),
     [`personserver/storetest/issued_auth_token.go`](personserver/storetest/issued_auth_token.go),
     [`resource/storetest/auth_token_status.go`](resource/storetest/auth_token_status.go),
     and `go run ./example/revocation`.
   - Revoked tokens: a revoked Agent or Auth token is refused `401` with
     `Signature-Error: error=revoked_jwt` before any host callback.
+    For Auth-token calls, `errors.As` finds both the reauthorization error
+    and the original `*signaturekey.Error`. Ordinary calls, Budget calls,
+    pending Auth-token polls and R3 calls preserve this requirement, close the
+    refused response and leave any new authorization to the caller.
   - Rate-limited feedback: when a recipient answers `429` `rate_limited` with
     one valid `Retry-After`, `agentprovider.RevocationClient` and
     `personserver.Server.RevokeIssuedAuthToken` return `*aauth.RateLimitedError`
@@ -379,12 +387,11 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   bounded stores retain approval, accepted updates, mission-bound permission,
   Audit, and completion, but there is no single ordered log across all required
   PS interactions or complete governance-policy history.
-- [ ] **Third-party login — Blocked by the current Core flow.** The Login Flow
-  tells the recipient to create a Resource token and post it directly to the
-  Person Server, but a current Resource token requires person-derived `sub` and
-  `presented_jti`. The user has not yet authenticated and no Person-token step
-  appears in the flow, so the repository does not invent a login-only token
-  profile. See `AAG-F103` (since resolved).
+- [ ] **Third-party login — Not implemented; removed upstream.** The baseline
+  Login Flow did not supply the person context required by a Resource token.
+  Protocol -11 removed Third-Party Login and `login_endpoint` rather than
+  defining a login-only token. See the resolved `AAG-F103` entry in
+  [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 - [ ] **General deferred composition — Not implemented.** Existing pending
   paths do not yet compose AS deferral, mission deferral, correlated
   multi-round clarification, updated requests, claims, and payment through one
@@ -508,7 +515,8 @@ Start definition work with `r3.NewDefinitionRegistry`,
   - Evidence: [`integration/r3_direct_three_party_test.go`](integration/r3_direct_three_party_test.go)
     and `go run ./example/r3threeparty`.
   - Missing: direct three-party per-call authorization and composition with
-    missions, sub-agents, call chaining, or deferral.
+    sub-agents, call chaining, or deferral. The fixed-Budget journey below
+    covers class authorization under an active mission.
 
 - [x] **Class authorization with a fixed Budget — Implemented in both topologies**
   - Flow: Agent requests exact MCP operations and a Budget → Resource retains

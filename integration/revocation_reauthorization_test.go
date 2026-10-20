@@ -220,6 +220,12 @@ func TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecompositi
 			signatureFailure.Code != signaturekey.ErrorRevokedJWT {
 			t.Fatalf("revoked use response=%#v error=%v client=%#v signature=%#v", oldResponse, oldErr, clientFailure, signatureFailure)
 		}
+		// Protocol -11, Presenting a Revoked Token: restart authorization
+		// with a Person token, rather than exchanging the revoked Auth token.
+		var recovery interface{ Requirement() aauth.Requirement }
+		if !errors.As(oldErr, &recovery) || recovery.Requirement() != aauth.RequirementPersonToken {
+			t.Fatalf("revoked use lost the person-token requirement: %v", oldErr)
+		}
 		if requiredScopeCalls != 1 || resolveCalls != 1 || protectedCalls != 1 {
 			t.Fatalf("revoked use reached host callbacks: required=%d resolve=%d protected=%d", requiredScopeCalls, resolveCalls, protectedCalls)
 		}
