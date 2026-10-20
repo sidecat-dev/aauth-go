@@ -48,6 +48,17 @@ choices where the sources do not determine behavior.
 
 ## AAuth Core
 
+`resource.Server` refuses a request authority different from its Issuer before
+routing or policy. The [authority matrix](resource/authority_test.go) covers
+Agent and Person identity plus PS- and AS-issued Auth tokens, DNS case and
+default-port normalization, forwarding headers, and host/path mutations.
+A correctly signed path still needs application routing and access policy.
+
+The default request proof does not cover body bytes. The
+[service example](example/verifyagent/main.go) requires `content-digest`;
+[its tests](example/verifyagent/main_test.go) accept a covered POST and refuse
+missing coverage or changed bytes before application dispatch.
+
 | Source area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |
 | Agent identifiers and token structure | Implemented | Validates top-level and one-level sub-agent identifiers (the `local` part accepts `A-Za-z`, and identifiers compare exactly, never case-folded, per Protocol -11 §5.2); mints and verifies an Ed25519 agent token bound to one Agent key and an optional Person Server. The Agent Provider package currently issues only top-level tokens. Additional claims remain available to Resource, PS, and AS policy. | [`core_token_api_external_test.go`](core_token_api_external_test.go), [`agentprovider/server_test.go`](agentprovider/server_test.go), [`agent/agent_identity_test.go`](agent/agent_identity_test.go) |
@@ -169,6 +180,10 @@ Store contracts check observable transitions in role-specific implementations.
 The shipped in-memory fixtures prove Server recomposition, not process restart.
 Applications must supply production adapters and backend-failure/restart tests.
 No universal store or general replay guarantee is implied.
+
+`testutil.NewAgentTokenRevocationStore` provides a Resource-owned in-memory
+fixture that passes [the public revocation contract](testutil/stores_test.go).
+It retains markers until discarded, without cleanup or restart persistence.
 
 | Area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |

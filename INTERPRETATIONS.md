@@ -448,6 +448,34 @@ This is a provisional extension, not a registered AAuth error. Clients must
 treat an unknown terminal `403` as denial. The name can change when the Core
 specification defines this result.
 
+## Resource request authority must match its issuer
+
+**Source:** AAuth Core `a99d353`, `Covered Components`; RFC 9421 Section 2.2.3;
+[RFC 9110 Sections 7.4 and 15.5.20](https://www.rfc-editor.org/rfc/rfc9110.html#name-421-misdirected-request).
+
+A valid signature binds the request's target host, but does not prove that the
+receiving handler serves that host. An Auth token's audience check is also
+insufficient: its audience can match the Resource while the signed request
+names another host.
+
+`resource.Server.Handler` therefore admits only its configured Issuer's
+authority before routing or authentication. It uses `Request.Host`, falling
+back to `URL.Host`, accepts DNS case differences and the default HTTPS port
+443, and ignores forwarding headers. A foreign authority receives HTTP 421
+with `no-store`, without `Signature-Error`: the request is misdirected, not
+necessarily incorrectly signed. This also makes foreign-host R3 document
+fetches return 421 before their document-access checks.
+
+The issuer has no path. Application routing and authorization decide which
+correctly signed paths it serves; changing a path after signing still fails
+signature verification. Reverse proxies must preserve the public authority
+and signed target. This rule applies to `resource.Server`, not a claim about
+every role or the separate session and Event services.
+
+**Evidence:** `resource/authority_test.go:TestResourceBindsRequestAuthorityToIssuer`
+covers Agent identity, Person identity, PS-issued Auth tokens and AS-issued
+Auth tokens, including host/path mutations and forwarding-header controls.
+
 ## Query-bearing requests cover `@query`
 
 **Source:** AAuth Core, `Covered Components` and `Verification`; RFC 9421,

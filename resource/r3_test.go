@@ -962,7 +962,7 @@ func TestMCPDirectDocumentFetchAllowsOnlyEntitledSignedPersonAndAccessServers(t 
 		{name: "unsigned", wantStatus: http.StatusUnauthorized, unsigned: true},
 		{name: "unrelated Access Server", key: otherKey, issuer: otherIssuer, document: aauth.AccessDiscoveryDocument, wantStatus: http.StatusNotFound, wantLoad: true},
 		{name: "right Person Server wrong role", key: personKey, issuer: personIssuer, document: aauth.AccessDiscoveryDocument, wantStatus: http.StatusNotFound, wantLoad: true},
-		{name: "alternate authority", key: accessKey, issuer: accessIssuer, document: aauth.AccessDiscoveryDocument, target: strings.Replace(reference.URI(), "resource.example", "alternate.example", 1), wantStatus: http.StatusNotFound},
+		{name: "alternate authority", key: accessKey, issuer: accessIssuer, document: aauth.AccessDiscoveryDocument, target: strings.Replace(reference.URI(), "resource.example", "alternate.example", 1), wantStatus: http.StatusMisdirectedRequest},
 		{name: "query-bearing target", key: accessKey, issuer: accessIssuer, document: aauth.AccessDiscoveryDocument, target: reference.URI() + "?probe=1", wantStatus: http.StatusNotFound},
 		{name: "HEAD target", key: accessKey, issuer: accessIssuer, document: aauth.AccessDiscoveryDocument, method: http.MethodHead, wantStatus: http.StatusNotFound},
 		{name: "POST target", key: accessKey, issuer: accessIssuer, document: aauth.AccessDiscoveryDocument, method: http.MethodPost, wantStatus: http.StatusNotFound},

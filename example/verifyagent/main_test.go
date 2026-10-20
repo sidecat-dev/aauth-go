@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +25,74 @@ func TestRunVerifiesTokenAndRequest(t *testing.T) {
 		"Request verified: aauth:reader@agents.example\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
+	}
+}
+
+// Core Covered Components permits Resources to require content-digest in
+// addition to the mandatory target and credential fields. The service example
+// requires it so callers cannot omit body integrity on write operations.
+func TestServiceVerificationProtectsRequestBodies(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	providerKey, agentKey := signingKey("provider-key"), signingKey("agent-key")
+	token, err := aauth.MintAgentToken("https://agents.example", providerKey,
+		aauth.AgentTokenRequest{
+			Agent: "aauth:reader@agents.example", PublicKey: agentKey.PublicJWK(),
+			Lifetime: time.Hour,
+		}, now, "example-body-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		digest  bool
+		replace bool
+		want    int
+	}{
+		{"covered body", true, false, http.StatusCreated},
+		{"missing body coverage", false, false, http.StatusUnauthorized},
+		{"uncovered body replaced", false, true, http.StatusUnauthorized},
+		{"covered body replaced", true, true, http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const original = `{"note":"approved"}`
+			calls := 0
+			handler, err := agentResource(providerKeys(providerKey.PublicJWK()), clock,
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					body, err := io.ReadAll(r.Body)
+					if err != nil || string(body) != original {
+						t.Errorf("application received body %q, error %v", body, err)
+					}
+					w.WriteHeader(http.StatusCreated)
+				}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "https://resource.example/notes", strings.NewReader(original))
+			if test.digest {
+				err = signAgentRequest(request, agentKey, token, clock)
+			} else {
+				err = signaturekey.SignJWTRequest(request, agentKey, token, clock)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.replace {
+				request.Body = io.NopCloser(strings.NewReader(`{"note":"tampered"}`))
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; application calls = %d", response.Code, test.want, calls)
+			}
+			if test.want == http.StatusUnauthorized && calls != 0 {
+				t.Fatalf("refused body reached application %d times", calls)
+			}
+			if test.want == http.StatusCreated && calls != 1 {
+				t.Fatalf("verified body reached application %d times, want 1", calls)
+			}
+		})
 	}
 }
 
@@ -87,7 +156,7 @@ func TestServiceVerificationRejectsInvalidCredentials(t *testing.T) {
 				compact = tampered
 			}
 			if mode != "missing proof" {
-				if err := signaturekey.SignJWTRequest(request, key, compact, clock); err != nil {
+				if err := signAgentRequest(request, key, compact, clock); err != nil {
 					t.Fatal(err)
 				}
 			}

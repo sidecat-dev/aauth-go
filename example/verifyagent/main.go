@@ -29,12 +29,19 @@ func providerKeys(key jose.JWK) signaturekey.StaticKeyResolver {
 func agentResource(keys signaturekey.KeyResolver, clock aauth.Clock, app http.Handler) (http.Handler, error) {
 	server, err := resource.NewAgentIdentity(resource.AgentIdentityConfig{
 		Issuer: "https://resource.example", KeyResolver: keys, Clock: clock,
-		Protected: app,
+		AdditionalSignatureComponents: []string{"content-digest"},
+		Protected:                     app,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return server.Handler(), nil
+}
+
+func signAgentRequest(request *http.Request, key jose.SigningKey, token string, clock aauth.Clock) error {
+	return signaturekey.SignJWTRequestWithOptions(request, key, token, clock, signaturekey.SignOptions{
+		AdditionalComponents: []string{"content-digest"},
+	})
 }
 
 func main() {
@@ -79,7 +86,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := signaturekey.SignJWTRequest(request, agentKey, token, clock); err != nil {
+	if err := signAgentRequest(request, agentKey, token, clock); err != nil {
 		return err
 	}
 	response := httptest.NewRecorder()

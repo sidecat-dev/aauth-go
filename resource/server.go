@@ -118,7 +118,10 @@ type PSAuthorizationConfig struct {
 // AgentIdentityConfig constructs a Resource that authorizes application
 // requests from the verified Agent identity. It issues no Resource token and
 // needs no Resource signing key, Access Server, scope catalog, or person
-// resolver.
+// resolver. To require body integrity, include "content-digest" in
+// AdditionalSignatureComponents; the default request proof does not cover
+// body bytes. MaxSignedBodyBytes bounds digest verification (default 1 MiB),
+// not application reads of an uncovered body.
 type AgentIdentityConfig struct {
 	Issuer                        string
 	KeyResolver                   signaturekey.KeyResolver
@@ -535,7 +538,8 @@ func validateAdditionalSignatureComponents(components []string) ([]string, error
 }
 
 // Handler returns the Resource's discovery, authorization, optional revocation,
-// and protected request surface.
+// and protected request surface. Requests for an authority other than the
+// configured Issuer receive HTTP 421 before routing or authentication.
 func (server *Server) Handler() http.Handler {
 	if server == nil || server.handler == nil {
 		return http.NotFoundHandler()
@@ -563,7 +567,38 @@ func (server *Server) newHandler() http.Handler {
 		mux.HandleFunc("/pending/", server.serveHeldNamespace)
 	}
 	mux.Handle("/", http.HandlerFunc(server.serveProtected))
-	return mux
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !server.matchesRequestAuthority(request) {
+			response.Header().Set("Cache-Control", "private, no-store, no-transform")
+			http.Error(response, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
+			return
+		}
+		mux.ServeHTTP(response, request)
+	})
+}
+
+func (server *Server) matchesRequestAuthority(request *http.Request) bool {
+	if request == nil || request.URL == nil {
+		return false
+	}
+	// Host supplies HTTP/1 Host or HTTP/2 :authority. URL.Host is the same
+	// fallback used by Signature-Key for requests constructed in process.
+	// Forwarded headers are not an authenticated source of request identity.
+	authority := request.Host
+	if authority == "" {
+		authority = request.URL.Host
+	}
+	// AAuth identifiers are ASCII. Unicode case folding must not create
+	// additional aliases for the configured DNS name.
+	for _, character := range authority {
+		if character > 127 {
+			return false
+		}
+	}
+	// Construction validates Issuer as https://host with no explicit port.
+	// DNS case and the default HTTPS port do not change that authority.
+	expected := strings.TrimPrefix(server.issuer, "https://")
+	return strings.EqualFold(authority, expected) || strings.EqualFold(authority, expected+":443")
 }
 
 func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Request) {

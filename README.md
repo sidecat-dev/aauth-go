@@ -22,6 +22,8 @@ For an HTTP endpoint accepting Agent identity, start with
 `resource.NewAgentIdentity`. It verifies the token **and the request proof**
 before calling your application. [Use it in your service](USE-IN-YOUR-SERVICE.md)
 shows the short handler, trusted-key setup and constructor choices.
+For write endpoints, [require body coverage](USE-IN-YOUR-SERVICE.md#protect-request-bodies);
+the default proof does not cover body bytes.
 
 The lower-level token check is:
 
@@ -144,20 +146,28 @@ Do not infer support from an exported type. Use:
 
 ## Documentation
 
+Start with the service guide. Use the reference pages when you need a supported
+boundary, a runnable flow, or an explanation of the protocol.
+
 | Document | Use it for |
 | --- | --- |
 | [USE-IN-YOUR-SERVICE.md](USE-IN-YOUR-SERVICE.md) | Minimal verification code, constructor choices and local development |
 | [GLOSSARY.md](GLOSSARY.md) | Roles, token fields and terms |
 | [PROTOCOL.md](PROTOCOL.md) | How the pinned specifications compose into roles, values, and journeys |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Package boundaries, state ownership, transport, policy, and proof seams |
-| [SPECIFICATIONS.md](SPECIFICATIONS.md) | Exact editor-source commits, digests, and R3 vocabulary baselines |
 | [CONFORMANCE.md](CONFORMANCE.md) | Implemented, partial, and absent behavior with executable evidence |
 | [JOURNEYS.md](JOURNEYS.md) | Runnable role-to-role paths |
 | [LOCAL-AGENT-PROFILE.md](LOCAL-AGENT-PROFILE.md) | Smallest useful self-hosted local deployment |
-| [INTERPRETATIONS.md](INTERPRETATIONS.md) | Deliberate choices where the source does not determine one implementation |
-| [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) | Reproducible questions and inconsistencies found during implementation |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Source-grounded change and verification workflow |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting and deployment responsibilities |
+
+For contributors changing protocol behavior:
+
+| Document | Use it for |
+| --- | --- |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Source-grounded change and verification workflow |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Package boundaries and state ownership |
+| [SPECIFICATIONS.md](SPECIFICATIONS.md) | Exact editor-source commits and digests |
+| [INTERPRETATIONS.md](INTERPRETATIONS.md) | Choices the source does not settle |
+| [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) | Submitted specification questions and their status; not required for first use |
 
 Package documentation is available through ordinary Go tooling, for example:
 
