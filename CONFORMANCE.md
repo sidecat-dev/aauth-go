@@ -229,6 +229,11 @@ storage or combine separate role transaction boundaries.
 
 ## Companion specifications
 
+**R3-FULL-COMPLIANCE — named gap.** The R3 rows below describe supported
+subsets, not complete draft compliance. Full R3 compliance is postponed;
+the existing implementations and their executable evidence remain supported
+within those boundaries.
+
 | Source area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |
 | R3 vocabularies, metadata, and access annotations | Partial | Grammar and set algebra cover seven vocabularies. Bounded native parsers produce immutable receipt-bearing snapshots; GraphQL introspection returns typed identity-unavailable refusal. MCP, OpenAPI, and AsyncAPI hints are advisory. Invalid Budget/access-mode combinations are rejected at publication and fall back to auth-token during Agent planning. [JOURNEYS](JOURNEYS.md#native-definition-ingestion) lists parser subsets. External acquisition, parser-resource limits, automatic planning, OData annotations, and complete format coverage are absent. | [`r3/definition_test.go`](r3/definition_test.go), [`r3/hints_test.go`](r3/hints_test.go), [`r3/vocabtest/definition_contract_test.go`](r3/vocabtest/definition_contract_test.go), [`r3/vocab/standard/registry_test.go`](r3/vocab/standard/registry_test.go), [`resource/r3_test.go`](resource/r3_test.go), [`integration/r3_vocabulary_helpers_test.go`](integration/r3_vocabulary_helpers_test.go) |

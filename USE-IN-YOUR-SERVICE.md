@@ -198,6 +198,12 @@ retirement after refresh.
 
 ## Compose authorization features
 
+The table below collects the current composition limits. Support for two
+features separately does not establish support for their combination; the
+linked tests identify the combinations that execute. Full R3 compliance
+remains the named **R3-FULL-COMPLIANCE** gap in
+[CONFORMANCE.md](CONFORMANCE.md#companion-specifications).
+
 A single Resource can serve free and priced routes. Set
 `BudgetConfig.Metered` to select priced routes; `nil` requires a Budget on
 every protected route. `Cost` runs only for metered calls. Free routes accept
@@ -251,6 +257,10 @@ revision: the pre-v1 APIs may change as the drafts evolve. The stores retain
 records for their lifetime and provide neither bounded retention nor restart
 persistence.
 
+There is no total record-count or memory cap. Long-running services must supply
+role-specific adapters with a retention and capacity policy; restarting a
+fixture discards its identities and decisions and is not a cleanup strategy.
+
 | Constructor | State it owns |
 | --- | --- |
 | `NewMissionStore` | PS mission lifecycle, proposals, permissions, audit and R3 issuance |
@@ -286,6 +296,12 @@ The public mission fixture exposes `LoadAuthToken` and `LoadR3Issuance` for
 the observation callbacks required by `RunMission` and `RunMissionR3Issuance`.
 Use the [public-constructor contract tests](testutil/mission_contracts_test.go)
 as the wiring example; they also run from an external module.
+
+`testutil.MissionStore` and its question/relay variants now include those two
+read-only observers. Custom implementations of these test-helper interfaces
+must add them. Production adapters should implement the role interfaces and
+provide their own storetest observation callbacks; the role interfaces did
+not gain these fixture methods.
 
 ## Find requests waiting for the person
 
