@@ -1,10 +1,11 @@
 package testutil_test
 
 import (
+	"testing"
+
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	pstest "gitlab.com/sidecat-dev/aauth-go/personserver/storetest"
 	"gitlab.com/sidecat-dev/aauth-go/testutil"
-	"testing"
 )
 
 func TestExportedPendingPermissionQueues(t *testing.T) {

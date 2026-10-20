@@ -195,9 +195,11 @@ R3 issuance contracts; question and relay variants share their mission
 transaction boundary. Missionless permission, question and relay fixtures are
 also public. [Public contract tests](testutil/mission_api_test.go) exercise
 these constructors, and [external consumer tests](testutil/external_examples_test.go)
-copy and run the eight examples that previously imported internal fixtures.
-This is packaging of existing in-memory behavior, not durable storage or a
-complete backend for consent, Budget and Resource R3 state.
+copy and run eleven examples outside the module. Public consent/clarification,
+Budget, Resource R3 document, R3 issuance, PS-issued Auth-token and Resource
+Auth-token status fixtures pass their [role store contracts](testutil/authorization_stores_test.go).
+These constructors package in-memory behavior; they do not provide durable
+storage or combine separate role transaction boundaries.
 
 | Area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |

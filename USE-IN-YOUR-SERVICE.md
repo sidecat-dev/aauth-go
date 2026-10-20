@@ -207,7 +207,12 @@ a different PS.
 
 ## Use in-memory stores in examples and tests
 
-`testutil` provides concurrency-safe fixtures with no restart persistence:
+`testutil` provides concurrency-safe stores for examples, tests and local
+development. Its constructors and returned interfaces are public module APIs,
+with the same versioning expectations as the role packages. Pin a module
+revision: the pre-v1 APIs may change as the drafts evolve. The stores retain
+records for their lifetime and provide neither bounded retention nor restart
+persistence.
 
 | Constructor | State it owns |
 | --- | --- |
@@ -216,18 +221,25 @@ a different PS.
 | `NewMissionInteractionRelayStore` | The same mission state plus interaction relays, sharing one transaction boundary |
 | `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |
 | `NewEnrollmentStore`, `NewAgentTokenRevocationStore` | AP enrollment or Resource revocation, respectively |
+| `NewDeferredAuthorizationStore` | PS consent and clarification, sharing one transaction boundary |
+| `NewBudgetStore` | Resource fixed-price token consumption and person totals |
+| `NewR3DocumentStore`, `NewR3IssuanceStore` | Resource documents or role-local issuance audit, respectively |
+| `NewIssuedAuthTokenStore`, `NewAuthTokenStatusStore` | PS-issued Auth tokens or Resource revocation status, respectively |
 
 The mission constructors expose their supported interfaces directly. Configure
 mission features with the same store instance; separate instances do not share
 state. The [mission](example/mission), [permission](example/permission),
 [question](example/interactionquestion) and [relay](example/interactionrelay)
 examples use these public constructors. An [external consumer test](testutil/external_examples_test.go)
-copies and runs all eight examples that previously used internal fixtures.
+copies and runs these examples and the [consent](example/psconsent),
+[Budget](example/budget) and [revocation](example/revocation) examples outside
+the library module.
 
-These fixtures do not form a complete application backend. Deferred consent,
-Budget and Resource R3 stores still need host adapters; see the
+Each constructor returns a separate store. Use one instance for each deciding
+role; the fixtures do not combine PS consent with mission lifecycle transactions.
+Durable adapters must satisfy the
 [Resource](resource/storetest) and [Person Server](personserver/storetest)
-contracts.
+contracts and the [R3 issuance contract](r3/storetest).
 
 ## Find requests waiting for the person
 
@@ -241,7 +253,9 @@ or `InteractionQuestionQueueStore` and should run the
 
 Authenticate the person in your application, then call `ResumePermission` or
 `ResumeInteractionQuestion` for each reference before displaying or deciding
-it. Listing does not claim work. Expiry, another decision, or mission termination
+it. Lists span all people at this PS, and resume does not authenticate the viewer:
+**filter each resumed request by owner before showing it or allowing a decision.**
+Listing does not claim work. Expiry, another decision, or mission termination
 can invalidate a reference; a terminated mission's request may remain listed
 until its own deadline. The [permission](example/permission/main.go) and
 [question](example/interactionquestion/main.go) examples execute this host flow
@@ -266,8 +280,14 @@ the caller receives the protocol refusal. The callback runs synchronously after
 serialization and must handle concurrent requests. Causes can contain private
 host data; nothing logs them automatically. The wrapper preserves standard HTTP
 writer capabilities and `http.ResponseController`; custom writer interfaces are
-not preserved. It observes role-generated problem responses, not ordinary
-application responses, router errors or errors from non-HTTP methods.
+not preserved. It observes problems written by the role serializer, including
+`mission_terminated` with its typed cause. It does not observe:
+
+- `AAuth-Requirement` challenges, including Budget step-up, or successful polls;
+- application responses and router-generated errors;
+- retained held-invocation responses replayed by a Resource, including its
+  stored `server_error` fallback (the original cause is not retained);
+- errors returned directly from non-HTTP methods.
 
 ## Versions and local development
 

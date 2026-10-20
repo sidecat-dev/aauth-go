@@ -35,6 +35,8 @@ type InteractionQuestionQueueStore interface {
 // The host must authenticate the person separately and call ResumePermission
 // before presenting or deciding a request. State may change after listing;
 // references confer no authority and do not imply that a mission remains active.
+// Results span all people at this PS. ResumePermission does not authenticate
+// the viewer; the host must filter the resumed requests by owner.
 func (server *Server) PendingPermissionReferences(ctx context.Context, limit int) ([]string, error) {
 	if err := validatePendingList(ctx, limit); err != nil {
 		return nil, err
@@ -71,6 +73,8 @@ func (server *Server) PendingPermissionReferences(ctx context.Context, limit int
 // The host authenticates the person separately and calls ResumeInteractionQuestion
 // before displaying or answering a question. References are not authority;
 // expiry, a concurrent answer or mission termination can make them unusable.
+// Results span all people at this PS. ResumeInteractionQuestion does not
+// authenticate the viewer; the host must filter the resumed requests by owner.
 func (server *Server) PendingInteractionQuestionReferences(ctx context.Context, limit int) ([]string, error) {
 	if err := validatePendingList(ctx, limit); err != nil {
 		return nil, err
