@@ -204,6 +204,42 @@ func TestAgentBeginBudgetCallIgnoresCachedBudgetFeedback(t *testing.T) {
 	}
 }
 
+func TestAgentBeginBudgetCallWithoutFeedbackRemainsUncertain(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			fixture := newBudgetCallFixture(t)
+			protocol := fixture.protocol
+			applicationCalls := 0
+			client := protocol.newClientWithHTTPClient(t, &http.Client{
+				Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+					if request.URL.Path == "/.well-known/aauth-resource.json" {
+						return fixture.metadata(request), nil
+					}
+					applicationCalls++
+					return jsonResponse(request, status, map[string]string{"result": "ordinary response"}), nil
+				}),
+			})
+			request, err := http.NewRequest(http.MethodGet, protocol.resourceID+"/records", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.BeginBudgetCall(context.Background(), agent.BudgetCall{
+				Request: request, AuthToken: fixture.authToken,
+			})
+			var uncertain *agent.BudgetCallUncertainError
+			if !errors.As(err, &uncertain) {
+				t.Fatalf("missing feedback error = %v, want BudgetCallUncertainError", err)
+			}
+			if assumed, ok := uncertain.AssumedCost(); !ok || !sameBudget(assumed, fixture.grant) {
+				t.Fatalf("assumed cost = %#v, %t, want the full signed grant", assumed, ok)
+			}
+			if applicationCalls != 1 {
+				t.Fatalf("application calls = %d, want one attempt without retry", applicationCalls)
+			}
+		})
+	}
+}
+
 type budgetCallFixture struct {
 	protocol  *testProtocol
 	unit      budgets.Unit

@@ -200,7 +200,12 @@ Core Auth tokens; when given a Budget token, they report zero cost and its
 current remainder. [Route tests](resource/budget_routes_test.go) execute both
 cases, exhausted grants, and refusal feedback. A failed meter can omit
 feedback; an unmetered route still runs when its meter fails. Handle
-`BudgetCallUncertainError` without automatically retrying.
+`BudgetCallUncertainError` without automatically retrying. A response without
+`AAuth-Budget` does not prove that a call was free. For an uncached `200` or
+`403` without that field, `BeginBudgetCall` returns that error and assumes
+the whole signed grant was spent
+([tests](agent/budget_call_test.go)). Use a Core token with `Do` for routes
+that do not support Budget feedback.
 
 **Custom Budget stores must support zero-cost observations.**
 `BudgetStore.Charge` must accept `Cost == 0` and return the current remainder
@@ -219,10 +224,18 @@ and at exhaustion, alongside binding and concurrent-cap enforcement.
 | Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
 | Budget + deferred Core consent | Immediate requests work, but selecting deferred consent for a Budget request returns `500 server_error`; [request-time limit test](personserver/budget_test.go). |
 | Reactive `Client.Begin` + mission Person token | Refused before sending; use proactive authorization. [Input tests](agent/call_test.go). |
+| One Agent identity + several Person Servers | Use an Agent token and `Client` for each PS; a client rejects tokens naming another PS. [Context tests](agent/client_test.go). |
 
-An Agent token names one PS. Use a token and `Client` for each PS when serving
-several; [Agent context tests](agent/client_test.go) reject Auth tokens naming
-a different PS.
+When combining Budget with a consent policy, inspect `AuthorizationRequest.Budget`.
+If it is non-nil, use the immediate `Authorize` policy to approve or deny the
+offer; do not select deferred consent. Interactive Budget consent is not
+implemented, and `AuthorizationInteraction` has no Budget offer to display.
+
+Check the boolean from `MissionResult.PersonToken(resource)`. A false result
+means the approval contains no token for that exact Resource identifier.
+`PersonTokens()` returns a copy of all returned Resource-to-token mappings;
+use its keys when reporting the available Resources. [Mission tests](agent/mission_test.go)
+cover present and absent Resources and protect the retained mapping from mutation.
 
 ## Use in-memory stores in examples and tests
 
