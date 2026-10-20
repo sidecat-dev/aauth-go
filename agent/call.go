@@ -664,7 +664,8 @@ func (client *Client) PollAuthToken(ctx context.Context, input AuthTokenPoll) (*
 // and performs one HTTP call. It does not interpret ordinary application
 // responses, but preserves an AAuth problem response as a typed error.
 // A revoked Auth token accompanied by a person-token requirement returns
-// ReauthorizationRequiredError; the caller chooses whether to reauthorize.
+// [PersonTokenRequiredError]; the caller must obtain a Person token and retry
+// the original request with it to satisfy that requirement.
 func (client *Client) Do(ctx context.Context, call Call) (*http.Response, error) {
 	const operation = "do"
 	if client == nil {

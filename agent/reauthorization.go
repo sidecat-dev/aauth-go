@@ -8,29 +8,34 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-// ReauthorizationRequiredError reports that a Resource refused an Auth token
-// with revoked_jwt and requested a Person token. The caller may explicitly
-// restart authorization with a valid Person token for that Resource. The
-// client does not retry the request or exchange the revoked token.
+// PersonTokenRequiredError reports that a Resource refused an Auth token
+// with revoked_jwt and requested a Person token. To satisfy the requirement,
+// the caller obtains a Person token for that Resource and retries the original
+// request with it. A Resource token naming the revoked Auth token cannot repair
+// the failure and must not be used for an exchange.
+//
+// This error preserves the requirement; the client does not obtain a Person
+// token or retry automatically. It does not implement the draft's separate
+// re-authorization procedure for expiry or key rotation.
 //
 // Unwrap preserves the Signature-Key error for errors.As.
-type ReauthorizationRequiredError struct {
+type PersonTokenRequiredError struct {
 	Cause error
 }
 
-func (failure *ReauthorizationRequiredError) Error() string {
-	return "aauth agent: revoked auth token requires reauthorization with a person token"
+func (failure *PersonTokenRequiredError) Error() string {
+	return "revoked_jwt: resource requires a person token"
 }
 
 // Requirement returns the Resource's validated person-token requirement.
-func (failure *ReauthorizationRequiredError) Requirement() aauth.Requirement {
+func (failure *PersonTokenRequiredError) Requirement() aauth.Requirement {
 	if failure == nil {
 		return ""
 	}
 	return aauth.RequirementPersonToken
 }
 
-func (failure *ReauthorizationRequiredError) Unwrap() error {
+func (failure *PersonTokenRequiredError) Unwrap() error {
 	if failure == nil {
 		return nil
 	}
@@ -45,7 +50,7 @@ func authTokenResponseFailure(response *http.Response) error {
 	if response.StatusCode == http.StatusUnauthorized &&
 		errors.As(failure, &signatureFailure) && signatureFailure.Code == signaturekey.ErrorRevokedJWT &&
 		aauth.ParsePersonTokenRequirement(response.Header.Values("AAuth-Requirement")) == nil {
-		return &ReauthorizationRequiredError{Cause: failure}
+		return &PersonTokenRequiredError{Cause: failure}
 	}
 	return failure
 }

@@ -61,9 +61,13 @@ and never `requirement=auth-token`. A token carried as a request parameter
 (`revoked_<parameter>_token`, the pending-request `revoked` state) is not
 adopted, and no global parameter-token remapping, cascade or automatic recovery
 is added. After presenting an Auth token, the Agent preserves a valid
-`person-token` requirement in `*agent.ReauthorizationRequiredError`, which
-unwraps to the original `*signaturekey.Error`. The caller decides whether to
-restart authorization.
+`person-token` requirement in `*agent.PersonTokenRequiredError`, which
+unwraps to the original `*signaturekey.Error`. The referenced **Person Token
+Required** section (lines 615–624) calls for obtaining a Person token for the
+Resource and retrying the original request with it. The Agent client does not
+automate those steps; the [revocation example](example/revocation) composes
+them explicitly. This is distinct from **Re-authorization** after expiry or key
+rotation (lines 1289–1305).
 
 - Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
 - Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).

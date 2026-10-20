@@ -246,12 +246,13 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     Agent-identity Resource retains it and refuses later requests before policy
     or application dispatch. Separately, PS retains issued-token routing →
     signed revocation → Resource marks the exact Auth token revoked → later use
-    fails → Agent explicitly performs a fresh authorization.
+    fails → caller obtains a fresh Person token → retries the original request
+    with it → exchanges the resulting Resource token for a new Auth token.
   - Start with: `personserver.AuthTokenRevocationConfig`,
     `personserver.IssuedAuthTokenStore`,
     `personserver.Server.RevokeIssuedAuthToken`, and
     `resource.AuthTokenStatusStore`; the calling Agent receives
-    `agent.ReauthorizationRequiredError` when a refused Auth token carries a
+    `agent.PersonTokenRequiredError` when a refused Auth token carries a
     valid `person-token` requirement. For Agent tokens, start with
     `agentprovider.RevocationClient`,
     `personserver.AgentTokenRevocationStore`, and
@@ -265,10 +266,12 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     and `go run ./example/revocation`.
   - Revoked tokens: a revoked Agent or Auth token is refused `401` with
     `Signature-Error: error=revoked_jwt` before any host callback.
-    For Auth-token calls, `errors.As` finds both the reauthorization error
+    For Auth-token calls, `errors.As` finds both the person-token requirement error
     and the original `*signaturekey.Error`. Ordinary calls, Budget calls,
     pending Auth-token polls and R3 calls preserve this requirement, close the
-    refused response and leave any new authorization to the caller.
+    refused response and leave recovery to the caller. The draft's Person Token
+    Required procedure is not automatic: the caller must obtain the Person
+    token and retry the original request with it.
   - Rate-limited feedback: when a recipient answers `429` `rate_limited` with
     one valid `Retry-After`, `agentprovider.RevocationClient` and
     `personserver.Server.RevokeIssuedAuthToken` return `*aauth.RateLimitedError`
@@ -515,8 +518,8 @@ Start definition work with `r3.NewDefinitionRegistry`,
   - Evidence: [`integration/r3_direct_three_party_test.go`](integration/r3_direct_three_party_test.go)
     and `go run ./example/r3threeparty`.
   - Missing: direct three-party per-call authorization and composition with
-    sub-agents, call chaining, or deferral. The fixed-Budget journey below
-    covers class authorization under an active mission.
+    sub-agents, call chaining, or deferral. See the separate mission variant
+    under class authorization with a fixed Budget below.
 
 - [x] **Class authorization with a fixed Budget — Implemented in both topologies**
   - Flow: Agent requests exact MCP operations and a Budget → Resource retains
@@ -532,6 +535,9 @@ Start definition work with `r3.NewDefinitionRegistry`,
     [`integration/r3_direct_four_party_test.go`](integration/r3_direct_four_party_test.go),
     [`token_r3_external_test.go`](token_r3_external_test.go), and
     `go run ./example/budget`.
+  - Mission evidence: `go run ./example/hostedservice` (three-party) and
+    [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go)
+    (four-party).
   - Mission variant: either topology may carry the same class grant and fixed
     Budget under an active mission. In federation, the AS commits its mandatory
     R3 audit before responding; the PS then atomically compares the unchanged
@@ -857,36 +863,39 @@ sentences.
     and `go run ./example/subagent`.
   - Missing: mission-bound composition and Access Server deferred mediation.
 
-- [x] **Agent identity at an independent Resource — Implemented and qualified**
+- [x] **Agent identity at an independent Resource — Historical qualification (2026-09-01)**
   - Flow: AAuth Go Agent Provider metadata and JWKS → Go-minted Agent token →
     Go-signed identity request → the AAuth project's live TypeScript `whoami`
     Resource → exact provider issuer and Agent identifier returned.
   - Start with: [`walkthrough/interop`](walkthrough/interop).
-  - Qualification: published AAuth Go source
+  - Qualification (2026-09-01): published AAuth Go source
     `00eb6f0a2a3000ff96a44b988059acea3c2babf0` called
     [`aauth-dev/whoami`](https://github.com/aauth-dev/whoami) revision
     `9f023d27ba51e0c11018e416b23140fbea14c9ff` over public HTTPS and received
     HTTP 200 with the exact generated identity.
-  - Boundary: this is one independently parsed and verified Core identity
-    surface. It is not bidirectional and does not exercise person identity,
-    authorization, an Access Server, R3, or the five profile surfaces.
+  - Boundary: this historical run is one independently parsed and verified
+    Core identity surface. It is not bidirectional and does not exercise person identity,
+    authorization, an Access Server, R3, or the five profile surfaces. It does
+    not qualify the current checkout.
 
-- [x] **Official TypeScript Agent at Go authorization roles — Implemented and qualified**
+- [x] **Official TypeScript Agent at Go authorization roles — Historical qualification (2026-09-01)**
   - Flow: official `@aauth/agent` → Go Person Server for a directed Person
     token → Go Resource for a Resource token → Go Person Server for an Auth
     token → Go Resource for one durable protected note.
   - Start with: [`walkthrough/interop`](walkthrough/interop), including its
     pinned `typescript-agent` module.
-  - Qualification: repository revision
+  - Qualification (2026-09-01): repository revision
     `8283d98718220973100c197818e512a42be179c1` used AAuth Go
     `32eab26ea255e99d97b5b407b3b1f9f76163c954` and
     [`aauth-dev/packages-js`](https://github.com/aauth-dev/packages-js)
     `7bd31a502904272267812e2cd26c231d0f950555` over public TLS. Same-key
     replay, changed-input conflict, service restart, and post-restart recovery
     all left one durable note.
-  - Boundary: this proves one independent Agent implementation against Go PS
-    and Resource roles. It does not prove an independent PS or AS, R3, or all
-    five demo-profile surfaces.
+  - Boundary: this historical run tested one independent Agent implementation
+    against Go PS and Resource roles. It does not prove an independent PS or AS, R3, or all
+    five demo-profile surfaces. It does not qualify the current checkout.
+    The standalone module retains its older Go pin; its JavaScript unit test
+    uses a stubbed `fetch` and does not call the Go roles.
 
 - [ ] **Independent five-surface profile interoperability — Not implemented**
   - Existing internal Surfaces 1–5 have not crossed an independent role

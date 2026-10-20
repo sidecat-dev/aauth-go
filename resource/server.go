@@ -1,11 +1,14 @@
 // Package resource implements direct Agent and Person identity access,
-// Resource-managed opaque sessions, and explicit PS-authorized or federated
-// auth-token access. It also implements direct Agent-token revocation,
-// immediate R3 class and per-call
-// documents and enforcement, exposes a verified auth token to a call-chain
-// intermediary, retains observed three-party revocation state, and supports
-// Resource-held delivery in the federated composition. A separate EventService
-// owns public Events registration and outbound delivery.
+// Resource-managed opaque sessions, and explicit Person-Server-authorized
+// or federated auth-token access.
+//
+// Start with [NewAgentIdentity] for Agent identity or [NewPersonIdentity] for
+// person identity without an authorization grant. Use [NewPSAuthorization]
+// when a Person Server issues Auth tokens directly, or
+// [NewFederatedAuthorization] when a separate Access Server issues them.
+// [NewResourceManaged] owns opaque sessions; [NewEventService] is a separate
+// subscription and delivery service. See USE-IN-YOUR-SERVICE.md for a short
+// handler example and CONFORMANCE.md for each constructor's supported limits.
 package resource
 
 import (

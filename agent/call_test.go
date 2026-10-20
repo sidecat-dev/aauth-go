@@ -1242,7 +1242,7 @@ func TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem(t *testing.T) {
 		check    func(*testing.T, error)
 	}{
 		{
-			name: "revoked Auth token requires reauthorization",
+			name: "revoked Auth token requires a Person token",
 			response: func(_ *testing.T, request *http.Request, body *trackedBody) *http.Response {
 				header := make(http.Header)
 				header.Set("Signature-Error", "error=revoked_jwt")
@@ -1253,7 +1253,7 @@ func TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem(t *testing.T) {
 				}
 			},
 			check: func(t *testing.T, err error) {
-				assertReauthorizationRequired(t, err)
+				assertPersonTokenRequired(t, err)
 			},
 		},
 		{

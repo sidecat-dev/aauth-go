@@ -4,33 +4,11 @@ Findings from implementing the AAuth family of drafts, tracked against the
 current upstream editor sources. Source text and editor answers are
 authoritative.
 
-**Last reconciled:** 2026-10-01
+The findings below were reconciled on 2026-10-01 against these editor revisions.
+The implementation baseline and its targeted overlays are recorded separately
+in [SPECIFICATIONS.md](SPECIFICATIONS.md).
 
-**Last upstream check:** 2026-10-20. All 82 GitHub issues and pull requests
-linked below were checked. The 32 issues submitted on October 1 (AAuth
-#225–#254 and Signature-Key #44–#45) remain open with no comments. The seven
-submitted comments on AAuth #108, #199, #208, #215, #221 and #222 have no
-subsequent editor response. The issue author replied on #221; that discussion
-does not resolve AAG-F050 or change the draft. None of these unresolved GitHub
-submissions is more than 30 days old. Previously recorded resolutions remain
-closed; no item changes status in this check.
-
-AAuth HEAD is `70d67375deb0bb002af7da0711fc58f6e8926e7e`; its six source
-files tracked here are byte-identical to `28e8258`. Signature-Key HEAD remains
-`69f5ba2`. The section coordinates and unresolved findings below therefore
-remain applicable. The newer exploratory Supervision document (739 lines,
-16 MUST occurrences) is outside this repository's source manifest and is not
-implemented. No follow-up was reposted.
-
-Two existing upstream discussions remain open without a draft change:
-[#255](https://github.com/dickhardt/AAuth/issues/255) questions OpenAPI
-`operationId` requirements; the editor's response still favors a stable
-identifier, so the adapter's current requirement remains in place.
-[#261](https://github.com/dickhardt/AAuth/issues/261) discusses denial reasons
-and acceptable alternatives, overlapping #229 (AAG-F009 and AAG-F070).
-These are monitoring notes, not new submissions or resolutions.
-
-| Source | Upstream commit |
+| Source | Revision used for these findings |
 | --- | --- |
 | AAuth (Core, R3, Events, Bootstrap, Budgets, interop profile) | [`dickhardt/AAuth` at `28e8258`](https://github.com/dickhardt/AAuth/tree/28e8258f8153a2a51a709c53ebc9618f941564e4) (`28e8258f8153a2a51a709c53ebc9618f941564e4`, 2026-09-28) |
 | HTTP Signature Keys | [`dickhardt/signature-key` at `69f5ba2`](https://github.com/dickhardt/signature-key/tree/69f5ba2647be848feed043fb6d8b0790e43cd0b6) (`69f5ba2647be848feed043fb6d8b0790e43cd0b6`, 2026-09-13) |
@@ -46,8 +24,6 @@ Status values:
 
 - **open:** still present upstream at the commits above, and we have not raised it
   ourselves.
-- **pending cross-check (aauth-rust):** a new finding awaiting corroboration in
-  both `aauth-go` and `aauth-rust`; it has not been filed upstream.
 - **submitted:** still present upstream, and we raised it ourselves in an upstream
   issue, comment, mailing-list post or Slack message; the item gives the date,
   channel and link or record.
@@ -64,9 +40,6 @@ in the index at the end; their full text remains in this file's git history.
 
 ## Keeping this file current
 
-- Cross-check each new draft finding in both `aauth-go` and `aauth-rust`
-  before submitting it upstream. Until that check is complete, record it as
-  **pending cross-check (aauth-rust)** with its source section and evidence.
 - When we submit an item, record the date, channel and link on the item
   (**Status:** and **Submitted:**) and in its row of the tracking table.
 - When upstream changes, update the commits above and recheck every unresolved
@@ -74,6 +47,31 @@ in the index at the end; their full text remains in this file's git history.
 - When an item is resolved upstream, rejected with a reason we accept, or found
   wrong, delete its section and its tracking row, and add one line to the index
   at the end giving the fixing commit and section, or the reason.
+
+## Submission status
+
+The tracking table below identifies the findings covered by each submission.
+These checks record upstream discussion status, not a change to the source
+revision used for a finding.
+
+| Submission | Upstream status | Checked |
+| --- | --- | --- |
+| AAuth issues [#225](https://github.com/dickhardt/AAuth/issues/225)–[#254](https://github.com/dickhardt/AAuth/issues/254), filed 2026-10-01 | Open; no editor response | 2026-10-20 |
+| Signature-Key issues [#44](https://github.com/dickhardt/signature-key/issues/44) and [#45](https://github.com/dickhardt/signature-key/issues/45), filed 2026-10-01 | Open; no editor response | 2026-10-20 |
+| [Comment on #108: deferral expiry](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159708), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #108: key renewal before delivery](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159888), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #199: delegated token verification](https://github.com/dickhardt/AAuth/issues/199#issuecomment-5943160092), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #208: self-hosted providers](https://github.com/dickhardt/AAuth/issues/208#issuecomment-5943160270), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #215: person and tenant namespaces](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #221: upstream-token binding](https://github.com/dickhardt/AAuth/issues/221#issuecomment-5943160619), submitted 2026-10-01 | Issue author replied; no editor resolution | 2026-10-20 |
+| [Comment on #222: query binding](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827), submitted 2026-10-01 | No editor response | 2026-10-20 |
+
+Related discussions:
+
+| Discussion | Status | Checked |
+| --- | --- | --- |
+| [AAuth #255: OpenAPI operation identifiers](https://github.com/dickhardt/AAuth/issues/255) | Open; the editor favors a stable identifier; no draft change | 2026-10-20 |
+| [AAuth #261: denial reasons and alternatives](https://github.com/dickhardt/AAuth/issues/261) | Open; overlaps [#229](https://github.com/dickhardt/AAuth/issues/229) (AAG-F009, AAG-F070); no editor response | 2026-10-20 |
 
 ## Tracking
 

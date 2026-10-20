@@ -939,7 +939,7 @@ interaction code.
 and
 `integration/deferred_ps_authorization_test.go:TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition`.
 
-## Three choices for bounded three-party revocation
+## Bounded three-party revocation
 
 **Source:** AAuth Core, `Token Revocation`, `Keying Material`, `Covered
 Components`, `Authentication Errors`, and `Verification (Server)`.
@@ -967,7 +967,7 @@ as a sub-agent token get no revocation lookup. An Auth-token identity conflict
 stays `403 access_denied`. This check stops a request only when the store reports revocation before host
 callbacks; it does not cancel an already-admitted in-flight request.
 
-The Agent returns `*agent.ReauthorizationRequiredError` when an Auth-token
+The Agent returns `*agent.PersonTokenRequiredError` when an Auth-token
 call receives that `401 revoked_jwt` with a valid `person-token` requirement.
 This includes ordinary, Budget, pending-poll and R3 calls. The error preserves
 the original `*signaturekey.Error` through `errors.As`; the response body is
@@ -975,6 +975,15 @@ closed and no automatic retry or exchange occurs. A missing, malformed or
 different requirement leaves the original signature error intact. The same
 hint on a call presenting an Agent or Person token does not acquire Auth-token
 recovery semantics.
+
+The referenced **Person Token Required** section (Protocol -11, lines
+615–624) calls for obtaining a Person token and retrying the original request
+with it. The client methods leave those steps explicit; returning the error
+does not complete the draft's Agent procedure. The example obtains a fresh
+Person token, retries the original GET, then exchanges the Resource token
+returned by that retry. It never exchanges a Resource token naming the revoked
+Auth token. This differs from **Re-authorization** after expiry or key rotation
+(lines 1289–1305).
 
 **Executable evidence:** `agent/reauthorization_test.go`,
 `agent/call_test.go:TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem`,
@@ -1009,7 +1018,7 @@ duration in the protocol library.
 
 **Executable examples:**
 `resource/revocation_test.go:TestRevocationEndpointRequiresBoundPersonServerProof`
-`integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`,
+`integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndPersonTokenRecoveryAcrossResourceRecomposition`,
 `personserver/agent_token_revocation_test.go`,
 `resource/agent_token_revocation_test.go`, and
 `integration/agent_token_revocation_test.go`.
