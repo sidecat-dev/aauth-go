@@ -15,6 +15,7 @@ import (
 type MissionStore interface {
 	personserver.MissionProposalStore
 	personserver.MissionPermissionStore
+	personserver.PermissionQueueStore
 	personserver.MissionAuditStore
 	personserver.MissionR3IssuanceStore
 }
@@ -29,6 +30,7 @@ func NewMissionStore() MissionStore {
 type MissionInteractionQuestionStore interface {
 	MissionStore
 	personserver.MissionInteractionQuestionStore
+	personserver.InteractionQuestionQueueStore
 }
 
 // NewMissionInteractionQuestionStore returns an empty, concurrency-safe
@@ -52,13 +54,13 @@ func NewMissionInteractionRelayStore() MissionInteractionRelayStore {
 
 // NewPermissionStore returns an empty, concurrency-safe in-memory store for
 // missionless permissions.
-func NewPermissionStore() personserver.PermissionStore {
+func NewPermissionStore() personserver.PermissionQueueStore {
 	return exampleutil.NewPermissionStore()
 }
 
 // NewInteractionQuestionStore returns an empty, concurrency-safe in-memory
 // store for missionless questions.
-func NewInteractionQuestionStore() personserver.InteractionQuestionStore {
+func NewInteractionQuestionStore() personserver.InteractionQuestionQueueStore {
 	return exampleutil.NewInteractionQuestionStore()
 }
 

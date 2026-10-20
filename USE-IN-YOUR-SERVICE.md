@@ -227,8 +227,26 @@ copies and runs all eight examples that previously used internal fixtures.
 These fixtures do not form a complete application backend. Deferred consent,
 Budget and Resource R3 stores still need host adapters; see the
 [Resource](resource/storetest) and [Person Server](personserver/storetest)
-contracts. Pending permission and question inboxes still need host indexes;
-mission proposals have a public [pending queue](personserver/mission_proposal_deferred_test.go).
+contracts.
+
+## Find requests waiting for the person
+
+Use `Server.PendingPermissionReferences(ctx, limit)` or
+`Server.PendingInteractionQuestionReferences(ctx, limit)` to discover retained
+work, including after Server recomposition. Limits are 1–1000; results belong
+to this PS and are ordered by creation time, then reference. The public fixtures
+support both lists; production adapters opt in through `PermissionQueueStore`
+or `InteractionQuestionQueueStore` and should run the
+[pending queue contracts](personserver/storetest/pending.go).
+
+Authenticate the person in your application, then call `ResumePermission` or
+`ResumeInteractionQuestion` for each reference before displaying or deciding
+it. Listing does not claim work. Expiry, another decision, or mission termination
+can invalidate a reference; a terminated mission's request may remain listed
+until its own deadline. The [permission](example/permission/main.go) and
+[question](example/interactionquestion/main.go) examples execute this host flow
+without extracting references from the Agent's poll URL. Mission proposals
+have a separate [pending queue](personserver/mission_proposal_deferred_test.go).
 
 ## Versions and local development
 
