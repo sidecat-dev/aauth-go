@@ -205,15 +205,30 @@ An Agent token names one PS. Use a token and `Client` for each PS when serving
 several; [Agent context tests](agent/client_test.go) reject Auth tokens naming
 a different PS.
 
-Stores belong to the role making the decision. `testutil` exports a few
-in-memory stores, not a complete mission application backend; the larger
-examples use internal fixtures. See [Resource](resource/storetest) and
-[Person Server](personserver/storetest) contracts before implementing persistence. Deferred permission and question inboxes currently
-need host indexes populated by their stores; mission proposals have a public
-pending queue. [Permission](personserver/permission_test.go),
-[question](personserver/interaction_endpoint_test.go), and
-[mission queue](personserver/mission_proposal_deferred_test.go) tests exercise
-those storage paths.
+## Use in-memory stores in examples and tests
+
+`testutil` provides concurrency-safe fixtures with no restart persistence:
+
+| Constructor | State it owns |
+| --- | --- |
+| `NewMissionStore` | PS mission lifecycle, proposals, permissions, audit and R3 issuance |
+| `NewMissionInteractionQuestionStore` | The same mission state plus questions, sharing one transaction boundary |
+| `NewMissionInteractionRelayStore` | The same mission state plus interaction relays, sharing one transaction boundary |
+| `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |
+| `NewEnrollmentStore`, `NewAgentTokenRevocationStore` | AP enrollment or Resource revocation, respectively |
+
+The mission constructors expose their supported interfaces directly. Configure
+mission features with the same store instance; separate instances do not share
+state. The [mission](example/mission), [permission](example/permission),
+[question](example/interactionquestion) and [relay](example/interactionrelay)
+examples use these public constructors. An [external consumer test](testutil/external_examples_test.go)
+copies and runs all eight examples that previously used internal fixtures.
+
+These fixtures do not form a complete application backend. Deferred consent,
+Budget and Resource R3 stores still need host adapters; see the
+[Resource](resource/storetest) and [Person Server](personserver/storetest)
+contracts. Pending permission and question inboxes still need host indexes;
+mission proposals have a public [pending queue](personserver/mission_proposal_deferred_test.go).
 
 ## Versions and local development
 

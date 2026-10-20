@@ -190,6 +190,15 @@ No universal store or general replay guarantee is implied.
 fixture that passes [the public revocation contract](testutil/stores_test.go).
 It retains markers until discarded, without cleanup or restart persistence.
 
+The public `testutil` mission fixtures expose proposal, permission, audit and
+R3 issuance contracts; question and relay variants share their mission
+transaction boundary. Missionless permission, question and relay fixtures are
+also public. [Public contract tests](testutil/mission_api_test.go) exercise
+these constructors, and [external consumer tests](testutil/external_examples_test.go)
+copy and run the eight examples that previously imported internal fixtures.
+This is packaging of existing in-memory behavior, not durable storage or a
+complete backend for consent, Budget and Resource R3 state.
+
 | Area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |
 | Person-token retention contract | Implemented | `TokenStore.Commit` precedes release. Exchange checks retained records when present; directly presented tokens may lack a record. Chained records retain upstream issuer/JTI and exact digest, requiring the same bytes at the second PS call. | [`personserver/server_test.go`](personserver/server_test.go), [`personserver/call_chaining_test.go`](personserver/call_chaining_test.go), [`integration/core_four_party_test.go`](integration/core_four_party_test.go), [`integration/call_chaining_test.go`](integration/call_chaining_test.go) |

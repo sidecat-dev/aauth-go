@@ -14,12 +14,12 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/accessserver"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
-	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 func runR3Direct(output io.Writer) {
@@ -158,7 +158,7 @@ func runR3Direct(output io.Writer) {
 		Issuer: personServerID, SigningKey: personKey,
 		KeyResolver: resolver, Clock: clock,
 		NewID:      func() string { return "r3-person-token-1" },
-		HTTPClient: httpClient, Tokens: exampleutil.NewMissionStore(),
+		HTTPClient: httpClient, Tokens: testutil.NewMissionStore(),
 		AccessServerEndpoint: func(_ context.Context, issuer string) (string, error) {
 			if issuer != accessServerID {
 				return "", errors.New("unknown Access Server")
