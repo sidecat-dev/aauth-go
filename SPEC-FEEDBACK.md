@@ -27,8 +27,6 @@ Status values:
 - **submitted:** still present upstream, and we raised it ourselves in an upstream
   issue, comment, mailing-list post or Slack message; the item gives the date,
   channel and link or record.
-- **pending cross-check (aauth-rust):** not submitted; awaiting joint review of
-  the Rust evidence and the proposed clarification.
 
 The editor taking a topic from our earlier public notes (round one, June 2026)
 is not a submission by us; such items are open.
@@ -77,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 1 pending cross-check). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 2 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -96,7 +94,7 @@ Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 1 pending cross-check). Loc
 | AAG-F009 | Synchronous token-endpoint policy denial has no registered error | Core | missing-requirement | P2 | submitted | bb58b20 (2026-08-28) | 2026-10-01, GitHub | New issue [#229](https://github.com/dickhardt/AAuth/issues/229) |
 | AAG-F010a | Four-party tenant changes issuer namespace | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) |
 | AAG-F016 | The mandatory signature set does not bind a query | Core | missing-requirement | P2 | submitted | 92879d7 (2026-08-29) | 2026-10-01, GitHub | Comment on [#222](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827) |
-| AAG-F107 | Resource authority admission is not explicit | Core | missing-requirement | P2 | pending cross-check (aauth-rust) | 2026-10-20 | Not submitted | — |
+| AAG-F107 | Resource authority admission is not explicit | Core | missing-requirement | P2 | open | 2026-10-20 | Not submitted | — |
 | AAG-F017 | Authorization endpoint body is not required to be signed | Core, R3 | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#230](https://github.com/dickhardt/AAuth/issues/230) |
 | AAG-F025 | Application 202 in a deferred result is indistinguishable from "keep polling" | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#231](https://github.com/dickhardt/AAuth/issues/231) |
 | AAG-F026 | Body signature components from resource metadata conflict with bodyless polls | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#232](https://github.com/dickhardt/AAuth/issues/232) |
@@ -578,7 +576,7 @@ The organization behind the first person token is (PS-A, "acme") but behind its 
 
 ### AAG-F107 — Resource authority admission is not explicit
 
-**Status:** pending cross-check (aauth-rust)
+**Status:** open
 
 **Targets:** missing-requirement
 
