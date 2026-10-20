@@ -169,6 +169,16 @@ current remainder. [Route tests](resource/budget_routes_test.go) execute both
 cases, exhausted grants, and refusal feedback. A failed meter can omit
 feedback; handle `BudgetCallUncertainError` without automatically retrying.
 
+**Custom Budget stores must support zero-cost observations.**
+`BudgetStore.Charge` must accept `Cost == 0` and return the current remainder
+without increasing token or person consumption. It may establish the token's
+grant/context binding; at exhaustion it may return `ErrBudgetExhausted` with
+both result fields zero. This changes the behavioral contract even though the
+Go interface is unchanged. Rerun
+[`resource/storetest.RunBudget`](resource/storetest/budget.go) against your
+adapter: it now checks zero-cost observations before spending, after spending,
+and at exhaustion, alongside binding and concurrent-cap enforcement.
+
 | Combination | Current boundary and executable evidence |
 | --- | --- |
 | Core + Budget, three or four parties | Immediate grants and replacement-grant step-up; [three-party](integration/budget_three_party_test.go) and [four-party](integration/budget_four_party_test.go) tests. |
@@ -198,9 +208,22 @@ example; no DNS or listener is needed. With a local TLS listener, keep that
 logical request host and route its connection to loopback through your test
 transport. Changing `Issuer` alone does not make a request to
 `127.0.0.1:8080` match it. The [local walkthrough](walkthrough/local) shows
-separate TLS processes and certificates at its declared module pin. Reverse
-proxies must preserve the public Host and signed path; forwarding headers do
-not override them.
+separate TLS processes and certificates at its declared module pin.
+
+**HTTP 421 behind a reverse proxy:** every request through
+`resource.Server.Handler`, including discovery, must match the configured
+`Issuer` authority. For a service reached as `https://resource.example`, set
+`Issuer` to that identifier and configure the proxy to forward
+`Host: resource.example`, even if its upstream connection goes to
+`127.0.0.1:8080`. Preserve the signed path and query too. `Forwarded` and
+`X-Forwarded-Host` do not override the check.
+
+Changing `Issuer` to a backend hostname alone cannot repair a Host rewrite
+after signing: the request proof also binds the caller's original authority.
+If you expose a different Resource identity, configure it consistently in
+the Resource, discovery, callers and Auth-token audiences; callers must sign
+that target. [Authority tests](resource/authority_test.go) exercise the
+receiving-host and signed-request checks.
 
 `go get gitlab.com/sidecat-dev/aauth-go` records a published version in your
 module. Review and commit `go.mod` and `go.sum`; these editor drafts and APIs
