@@ -727,7 +727,8 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     reason, validated feedback, and a host-selected replacement Resource token
     → Agent returns `BudgetAuthorization` → application explicitly exchanges
     that token, obtains a fresh narrowed grant, and retries once against the
-    new cap.
+    new cap. The replacement audience is the PS in three-party access and
+    the AS in four-party access.
   - Start with: `resource.BudgetConfig.RetainLineage`,
     `resource.BudgetConfig.Challenge`, `Client.BeginBudgetCall`, and
     `BudgetCallResult.AuthorizationRequired`, `BudgetCallResult.Feedback`,
@@ -735,6 +736,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
   - Evidence: [`agent/budget_call_test.go`](agent/budget_call_test.go),
     [`resource/budget_test.go`](resource/budget_test.go),
     [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go),
+    [`integration/budget_four_party_test.go`](integration/budget_four_party_test.go),
     and `go run ./example/budget`. The runnable combined challenge preserves
     its R3 reference across replacement exchange and retry.
   - Boundary: insufficiency's alternative same-token shrink-and-retry remains

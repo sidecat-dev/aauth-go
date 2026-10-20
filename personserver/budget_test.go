@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -415,4 +416,44 @@ func decodeBudgetAuthorizationOutput(t *testing.T, response *httptest.ResponseRe
 
 func sameBudgetValue(left, right budgets.Value) bool {
 	return left.Amount() == right.Amount() && left.Unit().Equal(right.Unit())
+}
+
+func TestBudgetAuthorizationInteractionIsARequestTimeLimit(t *testing.T) {
+	protocol := newBudgetAuthorizationProtocol(t)
+	offer := protocol.value(t, 5_000_000, "USD", 6)
+	declaration, err := budgets.NewBoundedUnitDeclaration(offer.Unit(), 10_000_000, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferred := false
+	authorized := 0
+	interactions := newMemoryDeferredAuthorizationStore()
+	server, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: "https://person.example", SigningKey: protocol.personKey, KeyResolver: protocol.resolver, Clock: protocol.clock,
+		NewID: func() string { return "budget-interaction-limit" }, Tokens: protocol.store,
+		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) { return Person{}, nil },
+		Authorize: func(context.Context, AuthorizationRequest) (AuthorizationDecision, error) {
+			authorized++
+			return AuthorizationDecision{Scopes: []string{"records.read"}, Lifetime: time.Minute, Budget: &offer}, nil
+		},
+		RequireAuthorizationInteraction: func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error) {
+			return AuthorizationInteractionPolicy{}, deferred, nil
+		},
+		AuthorizationInteractions: interactions,
+		Budget: &BudgetConfig{ResolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
+			return []budgets.UnitDeclaration{declaration}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	immediate := protocol.exchange(t, server, protocol.resourceToken(t, "immediate-budget-offer", &offer))
+	if immediate.Code != http.StatusOK {
+		t.Fatalf("immediate Budget response=%d %s", immediate.Code, immediate.Body.String())
+	}
+	deferred = true
+	response := protocol.exchange(t, server, protocol.resourceToken(t, "deferred-budget-offer", &offer))
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "auth_token") || authorized != 1 || len(interactions.pending) != 0 {
+		t.Fatalf("deferred Budget response=%d %s authorizations=%d pending=%d", response.Code, response.Body.String(), authorized, len(interactions.pending))
+	}
 }

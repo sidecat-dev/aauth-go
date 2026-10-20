@@ -123,7 +123,9 @@ type BudgetChargeResult struct {
 // neither and return ErrBudgetInsufficient/ErrBudgetExhausted with the current
 // remainder. A token reference already bound to different Grant or context
 // returns ErrBudgetConflict without changing state. Other errors must not
-// commit a charge.
+// commit a charge. A zero Cost observes the current remainder without spending;
+// it may establish the token binding. An exhausted zero-cost observation may
+// return ErrBudgetExhausted with Cost and Remaining both zero.
 type BudgetStore interface {
 	Charge(context.Context, BudgetCharge) (BudgetChargeResult, error)
 }
@@ -137,6 +139,11 @@ type BudgetStore interface {
 // lineage and mint a fresh Resource token for a hard-cap refusal; the library
 // verifies context but cannot independently prove freshness.
 type BudgetConfig struct {
+	// Metered selects protected routes that require a signed Budget grant.
+	// Nil meters every protected route. An unmetered route charges nothing.
+	// The callback receives an independent request copy after token and proof
+	// verification. It does not select initial authorization offers.
+	Metered       func(*http.Request) bool
 	Units         []budgets.UnitDeclaration
 	InitialOffer  func(context.Context, BudgetInitialOfferRequest) (budgets.Value, error)
 	Offer         func(context.Context, BudgetOfferRequest) (budgets.Value, error)
@@ -147,6 +154,7 @@ type BudgetConfig struct {
 }
 
 type budgetConfig struct {
+	metered      func(*http.Request) bool
 	units        []budgets.UnitDeclaration
 	byName       map[string]budgets.UnitDeclaration
 	initialOffer func(context.Context, BudgetInitialOfferRequest) (budgets.Value, error)
@@ -187,6 +195,7 @@ func validateBudgetConfig(config *BudgetConfig, topology authorizationTopology) 
 	validated := &budgetConfig{
 		units:        make([]budgets.UnitDeclaration, 0, len(config.Units)),
 		byName:       make(map[string]budgets.UnitDeclaration, len(config.Units)),
+		metered:      config.Metered,
 		initialOffer: config.InitialOffer, offer: config.Offer, retain: config.RetainLineage,
 		cost: config.Cost, store: config.Store, challenge: config.Challenge,
 	}

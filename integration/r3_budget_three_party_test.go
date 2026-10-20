@@ -290,10 +290,18 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 	}
 
 	deleteRequest, _ := http.NewRequestWithContext(ctx, http.MethodDelete, resourceID+"/messages/delete", nil)
-	_, err = client.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: deleteRequest, AuthToken: authToken})
-	var uncertain *clientagent.BudgetCallUncertainError
-	if !errors.As(err, &uncertain) {
-		t.Fatalf("ungranted operation error = %v", err)
+	refused, err := client.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: deleteRequest, AuthToken: authToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response, ok := refused.Response(); !ok || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("ungranted operation=%#v", refused)
+	} else {
+		response.Body.Close()
+	}
+	feedback := integrationBudgetFeedback(t, refused)
+	if cost, ok := feedback.Cost(); !ok || cost != 0 || feedback.Remaining() != grantedBudget.Amount() {
+		t.Fatalf("ungranted operation feedback=%#v", feedback)
 	}
 	if got := budgetStore.personTotal(personServerID, "person-123", resourceID); got != 0 || protectedCalls.Load() != 0 {
 		t.Fatalf("ungranted operation charged/dispatched = %d/%d", got, protectedCalls.Load())

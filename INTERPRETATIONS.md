@@ -1118,8 +1118,13 @@ token as no metering authorization and refuse the operation; they do not
 construct a synthetic zero-valued grant. In four-party Core, the distinct
 PS-to-AS omission rule is implemented exactly as written: the AS uses the
 verified Resource offer as the PS ceiling. It must still issue an explicit
-equal-or-lower Budget for metered protected use. An unmetered Resource remains
-unchanged.
+equal-or-lower Budget for metered protected use. `BudgetConfig.Metered` lets
+host routing policy distinguish priced operations from free ones. Its absence
+meters every protected route, preserving the existing default. A free route
+accepts an otherwise valid Core Auth token without consulting pricing or the
+Budget store; a Budget token receives zero-cost feedback, even when exhausted.
+This selector governs protected Auth-token use, not initial-offer policy.
+Evidence: `TestBudgetResourceSelectsMeteredRoutes`.
 
 ## Fixed-price calls charge atomically before application execution
 
@@ -1134,7 +1139,7 @@ are chargeable in this profile, as permitted by the Resource-owned failed-call
 policy. Variable-cost and streaming work require a later reservation and
 settlement profile.
 
-## A refused Budget request reports no current-request cost
+## Budget step-up refusals omit current-request cost
 
 **Source:** AAuth Budgets, `Budget Exhaustion` and `AAuth-Budget Response
 Header`.
@@ -1143,6 +1148,27 @@ The draft says an insufficient or exhausted request consumes nothing, while
 one example reports a nonzero `cost`. This implementation omits `cost` on both
 refusals. Exhaustion reports `remaining=0` and may report the denomination;
 insufficiency reports the remainder and may also report `required`.
+
+## Uncharged Resource errors report the actual Budget remainder
+
+**Source:** AAuth Budgets at `a99d353`, `Sending Rules` and `AAuth-Budget Response Header`.
+
+After verifying the Budget token, request proof, issuer role and Resource
+context, a Resource-generated error carries `cost=0` and the current remainder
+when its meter is available. This differs from the step-up challenge above:
+an ordinary error is a completed request with no charge. Application failures
+after an atomic charge retain the charged cost.
+
+The Resource observes its own store through `Charge` with zero cost, which may
+establish the token binding but must not increase either consumption ledger.
+An exhausted result supplies a zero remainder. A failed or inconsistent meter
+result supplies no feedback; the implementation never substitutes the signed
+cap for an unknown balance. No second observation follows a failed charge.
+The Agent continues to classify missing feedback as uncertain, even on a
+problem response, because that body does not establish consumption.
+Evidence: `TestBudgetScopeRefusalReportsUnchargedBalance`,
+`TestBudgetRefusalDoesNotInventBalance`, `TestBudgetFeedbackRequiresVerifiedRequestAndResourceContext`
+and `storetest.RunBudget`.
 
 ## The host selects retained lineage for a Budget step-up token
 
@@ -1159,7 +1185,13 @@ callback; the example no longer obtains this state from the Agent side. The
 Resource and Agent verify every context field they can observe, including a
 nonempty `presented_jti`; neither library claims to prove that the host selected
 the exact prior Person-token record. The Agent returns the verified step-up and
-performs no automatic exchange or retry.
+performs no automatic exchange or retry. For three-party access the fresh
+Resource token names the PS as audience; for four-party access it names the
+Resource's AS, matching the issuer of the refused Auth token. The independent
+`ps` claim still identifies the Person Server. Both role checks and the full
+four-party replacement exchange execute in `TestBudgetStepUpBindsAudienceToAuthTokenIssuer`,
+`TestFederatedBudgetStepUpRejectsWrongAudience` and
+`TestBudgetImmediateFourPartyFixedPriceJourney`.
 
 On a step-up, the fresh Resource token's `presented_jti` names the Auth token
 the Agent presented, and the Agent sends that Auth token as `presented_token`.

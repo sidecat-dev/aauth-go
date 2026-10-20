@@ -159,6 +159,38 @@ to that Resource's authorization request. These Core checks do not enforce
 R3 or Budget claims; the [role examples](JOURNEYS.md) show that composition.
 See the [glossary](GLOSSARY.md) for the token fields and companion terms.
 
+## Compose authorization features
+
+A single Resource can serve free and priced routes. Set
+`BudgetConfig.Metered` to select priced routes; `nil` requires a Budget on
+every protected route. `Cost` runs only for metered calls. Free routes accept
+Core Auth tokens; when given a Budget token, they report zero cost and its
+current remainder. [Route tests](resource/budget_routes_test.go) execute both
+cases, exhausted grants, and refusal feedback. A failed meter can omit
+feedback; handle `BudgetCallUncertainError` without automatically retrying.
+
+| Combination | Current boundary and executable evidence |
+| --- | --- |
+| Core + Budget, three or four parties | Immediate grants and replacement-grant step-up; [three-party](integration/budget_three_party_test.go) and [four-party](integration/budget_four_party_test.go) tests. |
+| R3 class + Budget | Immediate grants; denied operations report zero cost. [Three-party](integration/r3_budget_three_party_test.go) and [four-party](integration/r3_direct_four_party_test.go) tests. |
+| Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
+| Budget + deferred Core consent | Immediate requests work, but selecting deferred consent for a Budget request returns `500 server_error`; [request-time limit test](personserver/budget_test.go). |
+| Reactive `Client.Begin` + mission Person token | Refused before sending; use proactive authorization. [Input tests](agent/call_test.go). |
+
+An Agent token names one PS. Use a token and `Client` for each PS when serving
+several; [Agent context tests](agent/client_test.go) reject Auth tokens naming
+a different PS.
+
+Stores belong to the role making the decision. `testutil` exports a few
+in-memory stores, not a complete mission application backend; the larger
+examples use internal fixtures. See [Resource](resource/storetest) and
+[Person Server](personserver/storetest) contracts before implementing persistence. Deferred permission and question inboxes currently
+need host indexes populated by their stores; mission proposals have a public
+pending queue. [Permission](personserver/permission_test.go),
+[question](personserver/interaction_endpoint_test.go), and
+[mission queue](personserver/mission_proposal_deferred_test.go) tests exercise
+those storage paths.
+
 ## Versions and local development
 
 For in-process development, use `https://resource.example` as in the runnable
