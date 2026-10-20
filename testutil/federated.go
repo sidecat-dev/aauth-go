@@ -72,7 +72,7 @@ func (s *accessAuthorizationStore) ReplaceAccessAuthorization(ctx context.Contex
 // NewFederatedAuthorizationStore returns an empty concurrency-safe PS
 // federation store. It fences in-flight AS calls and retains exact responses;
 // it does not settle payments or bound retained records.
-func NewFederatedAuthorizationStore() personserver.FederatedAuthorizationStore {
+func NewFederatedAuthorizationStore() personserver.FederatedAuthorizationQueueStore {
 	return &federatedAuthorizationStore{records: make(map[string]personserver.FederatedAuthorizationRecord)}
 }
 

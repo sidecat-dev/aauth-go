@@ -13,7 +13,10 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/diagnostics"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 )
 
 // Protocol 28e8258, Error Response Format and Token Endpoint Error Codes:
@@ -156,4 +159,152 @@ func TestFederatedWaitingExposesOnlySafeHint(t *testing.T) {
 			t.Fatal("payment details exposed to Agent")
 		}
 	}
+}
+
+// Deferred federation supports missionless Core only. Each companion or
+// delegation request reaches consent and the AS before a local typed refusal;
+// it must neither issue a token nor retain an unsupported continuation.
+func TestDeferredCompositionRefusesR3BudgetAndDelegation(t *testing.T) {
+	for _, reason := range []string{"r3", "budget", "delegation"} {
+		for _, status := range []int{202, 402} {
+			t.Run(reason+"/"+http.StatusText(status), func(t *testing.T) {
+				p := newSubagentPersonServerProtocol(t)
+				key, agent, parent := p.parentKey.PublicJWK(), "aauth:planner@ap.example", ""
+				if reason == "delegation" {
+					key, agent, parent = p.childKey.PublicJWK(), "aauth:planner+search@ap.example", agent
+				}
+				if err := p.store.Commit(context.Background(), PersonTokenRecord{
+					JTI: "person-token", PersonServer: "https://ps.example", Resource: "https://resource.example",
+					Subject: "person-123", Tenant: "tenant-1", ExpiresAt: p.now.Add(10 * time.Minute),
+					RetainUntil: p.now.Add(15 * time.Minute), AgentProvider: "https://ap.example",
+					Agent: agent, ParentAgent: parent, Confirmation: key,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				resourceToken := p.resourceToken(t, "https://as.example", "person-token", key)
+				claims, err := aauth.VerifyResourceToken(context.Background(), resourceToken, p.resolver, p.clock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var document []byte
+				consents, asCalls := 0, 0
+				continuations := &refusedFederationStore{}
+				config := FederatedAuthorizationConfig{
+					Issuer: "https://ps.example", SigningKey: p.personKey, KeyResolver: p.resolver,
+					Clock: p.clock, NewID: func() string { return "unused" }, Tokens: p.store,
+					AccessServerEndpoint: func(context.Context, string) (string, error) { return "https://as.example/token", nil },
+					BindPerson:           p.policyPerson,
+					Consent:              func(context.Context, AuthorizationRequest) error { consents++; return nil },
+					Deferred:             &FederatedDeferredConfig{Store: continuations, Lifetime: time.Minute},
+				}
+				config.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.String() == "https://resource.example/r3/document" {
+						return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(document)), Request: req}, nil
+					}
+					if req.URL.String() != "https://as.example/token" || req.Method != http.MethodPost {
+						t.Fatal("unexpected AS request")
+					}
+					asCalls++
+					return &http.Response{StatusCode: status, Header: http.Header{
+						"Location": {"https://as.example/pending/test"}, "Www-Authenticate": {`Payment id="private-invoice"`},
+						"Cache-Control": {"no-store"}, "Content-Type": {"application/json"},
+					}, Body: io.NopCloser(strings.NewReader(`{"status":"pending"}`)), Request: req}, nil
+				})}
+				switch reason {
+				case "r3":
+					registry := newPersonServerR3Registry(t)
+					op, err := mcp.NewOperation("records.read")
+					if err != nil {
+						t.Fatal(err)
+					}
+					operations, err := mcp.NewOperationSet(op)
+					if err != nil {
+						t.Fatal(err)
+					}
+					doc, err := r3.NewDocument(operations, r3.DocumentOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					document, err = json.Marshal(doc)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resourceToken, _, err = r3.MintResourceToken(registry, p.resourceKey, claims, "https://resource.example/r3/document", document)
+					if err != nil {
+						t.Fatal(err)
+					}
+					config.R3 = &R3Config{Registry: registry, Admit: func(context.Context, string) error { return nil },
+						ConsentDocument: func(context.Context, AuthorizationRequest, r3.Reference, r3.Document) error { consents++; return nil },
+					}
+				case "budget":
+					unit, err := budgets.NewUnit("credits", 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					offer, err := budgets.NewValue(100, unit)
+					if err != nil {
+						t.Fatal(err)
+					}
+					declaration, err := budgets.NewUnitDeclaration(unit, "Service credits")
+					if err != nil {
+						t.Fatal(err)
+					}
+					resourceToken, err = budgets.MintResourceToken(p.resourceKey, claims, offer, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					config.Budget = &FederatedBudgetConfig{
+						ResolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
+							return []budgets.UnitDeclaration{declaration}, nil
+						},
+						Ceiling: func(context.Context, AuthorizationRequest) (*budgets.Value, error) { return nil, nil },
+					}
+				}
+				server, err := NewFederatedAuthorization(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := map[string]string{"resource_token": resourceToken, "presented_token": p.presentedToken(t, resourceToken)}
+				if reason == "delegation" {
+					input["subagent_token"] = p.childToken
+				}
+				body, err := json.Marshal(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, "https://ps.example/token", bytes.NewReader(body))
+				request.Header.Set("Content-Type", "application/json")
+				if err := signPersonServerTestRequest(request, p.parentKey, p.parentToken, p.clock); err != nil {
+					t.Fatal(err)
+				}
+				var observed diagnostics.Problem
+				response := httptest.NewRecorder()
+				diagnostics.Handler(server.Handler(), func(_ context.Context, problem diagnostics.Problem) { observed = problem }).ServeHTTP(response, request)
+				problem, err := aauth.DecodeProblemResponse(response.Result())
+				if err != nil {
+					t.Fatal(err)
+				}
+				var refusal *DeferredCompositionError
+				if problem.Status != 500 || problem.Code != "server_error" || !errors.As(observed.Cause, &refusal) || refusal.Reason() != reason {
+					t.Fatalf("refusal = %v, cause=%T %v", problem, observed.Cause, observed.Cause)
+				}
+				if consents != 1 || asCalls != 1 || continuations.creates != 0 {
+					t.Fatalf("consent=%d AS=%d continuation writes=%d", consents, asCalls, continuations.creates)
+				}
+				if strings.Contains(response.Body.String(), "private-invoice") || strings.Contains(response.Body.String(), "auth_token") {
+					t.Fatal("refusal exposed AS data or authorization")
+				}
+			})
+		}
+	}
+}
+
+type refusedFederationStore struct {
+	FederatedAuthorizationStore
+	creates int
+}
+
+func (s *refusedFederationStore) CreateFederatedAuthorization(context.Context, FederatedAuthorizationRecord) error {
+	s.creates++
+	return errors.New("unsupported request reached continuation store")
 }

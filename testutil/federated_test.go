@@ -21,4 +21,9 @@ func TestPublicFederationStores(t *testing.T) {
 			return testutil.NewFederatedAuthorizationStore()
 		}})
 	})
+	t.Run("PS queue", func(t *testing.T) {
+		personstoretest.RunFederatedAuthorizationQueue(t, personstoretest.FederatedAuthorizationQueueContract{New: func(testing.TB) personserver.FederatedAuthorizationQueueStore {
+			return testutil.NewFederatedAuthorizationStore()
+		}})
+	})
 }

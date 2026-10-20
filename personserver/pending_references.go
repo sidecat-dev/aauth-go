@@ -30,6 +30,19 @@ type InteractionQuestionQueueStore interface {
 	ListPendingInteractionQuestions(ctx context.Context, personServer string, now time.Time, limit int) ([]InteractionQuestionRecord, error)
 }
 
+// FederatedAuthorizationQueueStore optionally exposes retained AS continuations
+// to the PS host. Existing FederatedAuthorizationStore adapters need not
+// implement this interface unless the host uses PendingFederatedAuthorizationReferences.
+//
+// ListPendingFederatedAuthorizations returns at most limit unexpired records
+// for personServer, excluding Terminal and Gone. It includes Advancing records,
+// orders by NextPollAt then ID, returns independent copies, and changes no state.
+// limit is in [1,1000]; a nil or canceled context or invalid limit returns an error.
+type FederatedAuthorizationQueueStore interface {
+	FederatedAuthorizationStore
+	ListPendingFederatedAuthorizations(ctx context.Context, personServer string, now time.Time, limit int) ([]FederatedAuthorizationRecord, error)
+}
+
 // PendingPermissionReferences lists a bounded snapshot of retained pending
 // permission references. The configured store must implement PermissionQueueStore.
 // The host must authenticate the person separately and call ResumePermission
@@ -108,6 +121,7 @@ func (server *Server) PendingInteractionQuestionReferences(ctx context.Context, 
 
 // PendingFederatedAuthorizationReferences lists a bounded snapshot of
 // unexpired, nonterminal AS continuations, ordered by NextPollAt then ID.
+// The configured store must implement FederatedAuthorizationQueueStore.
 // In-flight continuations are included for inspection, not for another AS call.
 // Listing neither reserves work nor polls the AS. The host must authenticate
 // the viewer, filter by owner and reload with FederatedAuthorization before
@@ -119,8 +133,12 @@ func (server *Server) PendingFederatedAuthorizationReferences(ctx context.Contex
 	if server == nil || server.federatedDeferred == nil {
 		return nil, ErrFederationNotReady
 	}
+	queue, ok := server.federatedDeferred.Store.(FederatedAuthorizationQueueStore)
+	if !ok {
+		return nil, errors.New("personserver: federated authorization store does not support pending listing")
+	}
 	now := server.clock.Now().UTC()
-	records, err := server.federatedDeferred.Store.ListPendingFederatedAuthorizations(ctx, server.issuer, now, limit)
+	records, err := queue.ListPendingFederatedAuthorizations(ctx, server.issuer, now, limit)
 	if err != nil {
 		return nil, err
 	}

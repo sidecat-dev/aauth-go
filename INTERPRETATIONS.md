@@ -1641,12 +1641,19 @@ public explanation; `DeferredCompositionError` identifies the reason to the
 host through diagnostics. A valid pending envelope asking for unsupported
 claims, clarification or interaction uses the same typed refusal, both on the
 initial response and a later AS poll. Its reason identifies that branch.
+On a later AS poll, the PS retains the bounded reason with the terminal response;
+`AdvanceFederation` reports successful retention, and Agent delivery reconstructs
+the typed diagnostic. The store carries neither a Go error nor an arbitrary AS
+cause. The reason survives serialization and server recomposition.
 `as_unreachable` is reserved for the federation failures described by Auth Token
 Delivery, rather than local missing support.
 
 Host queue listing is a library API, not a new endpoint. It is scoped to one
 PS, ordered by next poll time then ID, and includes in-flight records for
-monitoring. It neither reserves nor advances requests. Agent `Retry-After` is
+monitoring. It neither reserves nor advances requests. The optional
+`FederatedAuthorizationQueueStore` extends the base continuation store, matching
+the permission and question listing pattern; adapters without it can still
+complete exchanges. Agent `Retry-After` is
 the nonnegative remaining interval until the retained AS poll time, rounded up
 to whole seconds. Once due, zero permits the caller's next explicit poll;
 only the host can advance the AS request.
@@ -1660,6 +1667,8 @@ unknown values; absence clears an earlier hint. No AS challenge, payment body
 or credentials are copied to the Agent. The hint grants no payment authority.
 
 **Evidence:** `TestDeferredCompositionRefusalHasLocalReason`,
+`TestDeferredCompositionRefusesR3BudgetAndDelegation`,
+`TestFederatedStoreWithoutQueueStillDelivers`,
 `TestPendingFederatedReferencesValidateStoreResults`,
 `TestFederatedPendingReferencesAcrossRecomposition`,
 `TestFederatedAgentRetryAfterTracksASSchedule`,
@@ -1668,7 +1677,7 @@ or credentials are copied to the Agent. The hint grants no payment authority.
 `TestPendingExchangeWaitReasonIsOptionalDisplayHint`,
 `TestFederatedAgentWaitReasonPaymentThenApproval`,
 `TestFederatedUnsupportedRequirementIsLocalRefusal`, and the PS federation store
-contract in `personserver/storetest/federated.go`.
+contracts in `personserver/storetest/federated.go`.
 
 ## Federated grants have no exchange identifier
 

@@ -264,7 +264,10 @@ Use `errors.As` on the diagnostic cause to inspect
 `*personserver.DeferredCompositionError` and its `Reason()`; this is distinct
 from `502 as_unreachable` for an unavailable or unverifiable AS response.
 Unsupported AS claims, interaction and clarification requirements use the same
-local refusal, including when they arrive on a later poll.
+local refusal, including when they arrive on a later poll. `AdvanceFederation`
+retains that terminal result; diagnostics reports its reconstructed typed cause
+when the Agent polls. Store adapters must preserve `FederatedResponse.RefusalReason`
+with the terminal response.
 
 The Agent uses `BeginExchange` and `PollExchange`. `PendingExchange.WaitReason()`
 returns `awaiting_payment`, `awaiting_approval`, or empty when the PS supplies no
@@ -302,9 +305,11 @@ body content. Claims, clarification, interaction forwarding and deferred
 R3/Budget/delegated/mission combinations remain unsupported. The earliest
 original credential expiry and configured lifetime bound both pending records.
 Custom adapters should run `accessserver/storetest.RunDeferredAuthorization`
-and `personserver/storetest.RunFederatedAuthorization`. The latter includes the
-required `ListPendingFederatedAuthorizations` method; custom PS adapters must
-implement it and rerun that contract.
+and `personserver/storetest.RunFederatedAuthorization`. Pending listing is optional:
+implement `personserver.FederatedAuthorizationQueueStore` and also run
+`personserver/storetest.RunFederatedAuthorizationQueue` to support the host queue
+API. Existing adapters can continue exchanges without listing; the queue API
+returns an error when the adapter does not support it.
 
 A pending result is delivered once per continuation. The pinned draft provides
 no Auth-token claim binding it to a particular exchange, so an AS can return the
@@ -418,9 +423,10 @@ not preserved. It observes problems written by the role serializer, including
 - retained held-invocation responses replayed by a Resource, including its
   stored `server_error` fallback (the original cause is not retained);
 - errors returned directly from non-HTTP methods, including `AdvanceFederation`;
-- retained federation results delivered by a PS; the original asynchronous
-  cause is not retained with the response. Inspect the host continuation record
-  and the method error as well as HTTP access logs.
+- retained federation results delivered by a PS, except local
+  `DeferredCompositionError` refusals, whose typed reason is reconstructed on
+  delivery. Other asynchronous causes are not retained; inspect the continuation
+  record and method error as well as HTTP access logs.
 
 ## Versions and local development
 

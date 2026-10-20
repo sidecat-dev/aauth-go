@@ -77,6 +77,10 @@ type FederatedResponse struct {
 	Status int
 	Header http.Header
 	Body   []byte
+	// RefusalReason retains a local DeferredCompositionError reason for terminal
+	// 500 responses. Adapters preserve it with the response; no Go error or
+	// untrusted AS cause is serialized. Agent delivery reports the typed cause.
+	RefusalReason string
 }
 
 // FederatedAuthorizationRecord keeps one exact request and its continuation
@@ -108,15 +112,10 @@ type FederatedAuthorizationRecord struct {
 // compares the complete previous record, preserves immutable fields, increments
 // Revision by one, and never reopens Gone or replaces a terminal response.
 // Missing IDs and failed comparisons return ErrFederatedAuthorizationConflict.
-// ListPendingFederatedAuthorizations returns at most limit unexpired records
-// for personServer, excluding Terminal and Gone. It includes Advancing records,
-// orders by NextPollAt then ID, returns independent copies, and changes no state.
-// limit is in [1,1000]; a nil or canceled context or invalid limit returns an error.
 // The host authenticates operators before exposing records or invoking progress.
 type FederatedAuthorizationStore interface {
 	CreateFederatedAuthorization(context.Context, FederatedAuthorizationRecord) error
 	LoadFederatedAuthorization(context.Context, string) (FederatedAuthorizationRecord, error)
-	ListPendingFederatedAuthorizations(ctx context.Context, personServer string, now time.Time, limit int) ([]FederatedAuthorizationRecord, error)
 	ReplaceFederatedAuthorization(context.Context, FederatedAuthorizationRecord, FederatedAuthorizationRecord) error
 }
 
@@ -299,7 +298,7 @@ func (server *Server) AdvanceFederation(ctx context.Context, reference string) e
 		next.NextPollAt = server.clock.Now().UTC().Add(buffer.retry)
 	} else {
 		next.Terminal = true
-		next.Response = FederatedResponse{Status: buffer.status, Header: buffer.header.Clone(), Body: append([]byte(nil), buffer.body.Bytes()...)}
+		next.Response = FederatedResponse{Status: buffer.status, Header: buffer.header.Clone(), Body: append([]byte(nil), buffer.body.Bytes()...), RefusalReason: buffer.refusalReason}
 	}
 	return server.federatedDeferred.Store.ReplaceFederatedAuthorization(ctx, record, next)
 }
@@ -457,7 +456,11 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 		next.Revision++
 		next.Gone = true
 		if err := server.federatedDeferred.Store.ReplaceFederatedAuthorization(r.Context(), record, next); err != nil {
-			writeProblem(w, 500, "server_error", err)
+			if errors.Is(err, ErrFederatedAuthorizationConflict) {
+				writeProblem(w, 410, "request_consumed", err)
+			} else {
+				writeProblem(w, 500, "server_error", err)
+			}
 			return
 		}
 		buffer.send(w)
@@ -495,6 +498,9 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 	}
 	w.WriteHeader(delivery.Status)
 	_, _ = w.Write(delivery.Body)
+	if delivery.Status == http.StatusInternalServerError && delivery.RefusalReason != "" {
+		httpapi.ReportProblem(w, delivery.Status, "server_error", &DeferredCompositionError{reason: delivery.RefusalReason})
+	}
 }
 
 // An AS grant may expire or cease to verify between the host's AS poll and
@@ -536,11 +542,12 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 }
 
 type federatedResponseBuffer struct {
-	header  http.Header
-	status  int
-	body    bytes.Buffer
-	pending *FederatedResponse
-	retry   time.Duration
+	header        http.Header
+	status        int
+	body          bytes.Buffer
+	pending       *FederatedResponse
+	retry         time.Duration
+	refusalReason string
 }
 
 func newFederatedResponseBuffer() *federatedResponseBuffer {
@@ -557,6 +564,14 @@ func (b *federatedResponseBuffer) Write(p []byte) (int, error) {
 		b.status = 200
 	}
 	return b.body.Write(p)
+}
+
+// Retain only the bounded local refusal, never arbitrary private causes.
+func (b *federatedResponseBuffer) ReportAAuthProblem(status int, code string, cause error) {
+	var refusal *DeferredCompositionError
+	if status == http.StatusInternalServerError && code == "server_error" && errors.As(cause, &refusal) {
+		b.refusalReason = refusal.Reason()
+	}
 }
 func (b *federatedResponseBuffer) send(w http.ResponseWriter) {
 	for k, v := range b.header {

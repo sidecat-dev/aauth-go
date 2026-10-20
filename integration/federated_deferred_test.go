@@ -948,6 +948,10 @@ func TestFederatedUnsupportedRequirementIsLocalRefusal(t *testing.T) {
 					if err := f.ps.AdvanceFederation(context.Background(), record.ID); err != nil {
 						t.Fatal(err)
 					}
+					// Retention must survive serialization and server recomposition.
+					f.psStore = &serializedFederatedStore{FederatedAuthorizationStore: f.psStore}
+					f.recompose(t)
+					f.network.Handle("https://ps.example", diagnostics.Handler(f.ps.Handler(), func(_ context.Context, p diagnostics.Problem) { cause = p.Cause }))
 					_, err = f.client.PollExchange(context.Background(), pending)
 				}
 				requireDeferredProblem(t, err, 500, "server_error")
@@ -955,12 +959,11 @@ func TestFederatedUnsupportedRequirementIsLocalRefusal(t *testing.T) {
 				if !errors.As(err, &problem) || !strings.Contains(problem.Detail, requirement) {
 					t.Fatalf("missing refusal reason: %v", err)
 				}
-				if phase == "initial" {
-					var refusal *personserver.DeferredCompositionError
-					if !errors.As(cause, &refusal) || refusal.Reason() != requirement {
-						t.Fatalf("local cause = %T %v", cause, cause)
-					}
-				} else {
+				var refusal *personserver.DeferredCompositionError
+				if !errors.As(cause, &refusal) || refusal.Reason() != requirement {
+					t.Fatalf("local cause = %T %v", cause, cause)
+				}
+				if phase == "poll" {
 					_, err = f.client.PollExchange(context.Background(), pending)
 					requireDeferredProblem(t, err, 410, "request_consumed")
 				}
@@ -1076,4 +1079,120 @@ func (s *overlappingAccessStore) ReplaceAccessAuthorization(ctx context.Context,
 	s.arrived <- struct{}{}
 	<-s.release
 	return s.DeferredAuthorizationStore.ReplaceAccessAuthorization(ctx, before, after)
+}
+
+// A persistence adapter round trip must retain the bounded diagnostic reason,
+// without serializing Go errors or relying on a live server's in-memory state.
+type serializedFederatedStore struct {
+	personserver.FederatedAuthorizationStore
+}
+
+func (s *serializedFederatedStore) LoadFederatedAuthorization(ctx context.Context, id string) (personserver.FederatedAuthorizationRecord, error) {
+	r, err := s.FederatedAuthorizationStore.LoadFederatedAuthorization(ctx, id)
+	if err != nil {
+		return r, err
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return r, err
+	}
+	var loaded personserver.FederatedAuthorizationRecord
+	err = json.Unmarshal(data, &loaded)
+	return loaded, err
+}
+
+// Protocol 28e8258, Pending URL Security: after one terminal expiry response,
+// every competing Agent poll receives Gone, including a losing store CAS.
+func TestFederatedConcurrentExpiredAgentPollsConsumeOnce(t *testing.T) {
+	f := newDeferredFederation(t)
+	pending := f.begin(t)
+	record, err := f.ps.FederatedAuthorization(context.Background(), deferredReference(pending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := &overlappingFederatedStore{FederatedAuthorizationStore: f.psStore, arrived: make(chan struct{}, 2), release: make(chan struct{})}
+	f.psStore = gate
+	f.recompose(t)
+	f.now.Store(record.ExpiresAt.Unix())
+	results := make(chan *http.Response, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() { results <- deferredGET(t, f, pending.Location(), f.agentKey, record.AgentToken, "") })
+	}
+	for range 2 {
+		select {
+		case <-gate.arrived:
+		case <-time.After(10 * time.Second):
+			close(gate.release)
+			wg.Wait()
+			t.Fatal("Agent polls did not overlap at expiry consumption")
+		}
+	}
+	close(gate.release)
+	wg.Wait()
+	close(results)
+	counts := map[string]int{}
+	for response := range results {
+		problem, err := aauth.DecodeProblemResponse(response)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[fmt.Sprintf("%d %s", problem.Status, problem.Code)]++
+	}
+	if len(counts) != 2 || counts["408 expired"] != 1 || counts["410 request_consumed"] != 1 {
+		t.Fatalf("concurrent expired polls = %v", counts)
+	}
+	if f.asPolls.Load() != 0 || f.protected.Load() != 0 {
+		t.Fatal("expired polls advanced authorization")
+	}
+}
+
+type overlappingFederatedStore struct {
+	personserver.FederatedAuthorizationStore
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func (s *overlappingFederatedStore) ReplaceFederatedAuthorization(ctx context.Context, before, after personserver.FederatedAuthorizationRecord) error {
+	s.arrived <- struct{}{}
+	<-s.release
+	return s.FederatedAuthorizationStore.ReplaceFederatedAuthorization(ctx, before, after)
+}
+
+// Listing is an optional host capability. An adapter implementing only the
+// original continuation transitions still completes a deferred exchange.
+func TestFederatedStoreWithoutQueueStillDelivers(t *testing.T) {
+	f := newDeferredFederation(t)
+	f.psStore = &federatedStoreWithoutQueue{store: f.psStore}
+	f.recompose(t)
+	pending := f.begin(t)
+	if refs, err := f.ps.PendingFederatedAuthorizationReferences(context.Background(), 1); err == nil || len(refs) != 0 || !strings.Contains(err.Error(), "does not support pending listing") {
+		t.Fatalf("optional queue = %v %v", refs, err)
+	}
+	f.stage.Store(2)
+	if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.client.PollExchange(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result.Token(); !ok {
+		t.Fatal("base store did not deliver authorization")
+	}
+}
+
+type federatedStoreWithoutQueue struct {
+	store personserver.FederatedAuthorizationStore
+}
+
+func (s *federatedStoreWithoutQueue) CreateFederatedAuthorization(ctx context.Context, r personserver.FederatedAuthorizationRecord) error {
+	return s.store.CreateFederatedAuthorization(ctx, r)
+}
+func (s *federatedStoreWithoutQueue) LoadFederatedAuthorization(ctx context.Context, id string) (personserver.FederatedAuthorizationRecord, error) {
+	return s.store.LoadFederatedAuthorization(ctx, id)
+}
+func (s *federatedStoreWithoutQueue) ReplaceFederatedAuthorization(ctx context.Context, before, after personserver.FederatedAuthorizationRecord) error {
+	return s.store.ReplaceFederatedAuthorization(ctx, before, after)
 }
