@@ -1617,8 +1617,8 @@ separate unimplemented branches.
 Each pending deadline is the earliest of its configured lifetime, the original
 Resource-token expiry, Agent-token expiry and presented-token expiry. A wait
 cannot extend any credential that justified it. An expired request returns one
-`408 expired`, then `410 invalid_code`. The latter follows the existing consumed
-PS continuation interpretation. A retained grant is reverified at actual Agent
+`408 expired`, then `410 request_consumed`. The continuation error choices are
+recorded below. A retained grant is reverified at actual Agent
 delivery, and `expires_in` is recomputed then.
 
 The PS conditionally marks an AS call in progress before sending it. If the
@@ -1630,3 +1630,107 @@ errors. The lifetime bounds processing, not store retention or queue capacity.
 
 **Evidence:** `integration/federated_deferred_test.go`, the two role-specific
 federation `storetest` contracts, and `example/federatedpayment`.
+
+## Deferred federation host visibility and Agent hints
+
+**Source:** Protocol `28e8258`, AS Response, Pending Response Format, Polling
+with GET, Error Response Format and Token Endpoint Error Codes.
+
+A local request-composition refusal uses `500 server_error` with a bounded
+public explanation; `DeferredCompositionError` identifies the reason to the
+host through diagnostics. A valid pending envelope asking for unsupported
+claims, clarification or interaction uses the same typed refusal, both on the
+initial response and a later AS poll. Its reason identifies that branch.
+`as_unreachable` is reserved for the federation failures described by Auth Token
+Delivery, rather than local missing support.
+
+Host queue listing is a library API, not a new endpoint. It is scoped to one
+PS, ordered by next poll time then ID, and includes in-flight records for
+monitoring. It neither reserves nor advances requests. Agent `Retry-After` is
+the nonnegative remaining interval until the retained AS poll time, rounded up
+to whole seconds. Once due, zero permits the caller's next explicit poll;
+only the host can advance the AS request.
+
+The optional `pending_reason` response field is a library display extension,
+not a draft-defined requirement. The PS maps AS `402` to `awaiting_payment` and
+approval `202` to `awaiting_approval`, while keeping `status: pending` and
+`requirement=approval`. Other retained statuses omit the hint. The Agent
+exposes recognized values through `PendingExchange.WaitReason()` and ignores
+unknown values; absence clears an earlier hint. No AS challenge, payment body
+or credentials are copied to the Agent. The hint grants no payment authority.
+
+**Evidence:** `TestDeferredCompositionRefusalHasLocalReason`,
+`TestPendingFederatedReferencesValidateStoreResults`,
+`TestFederatedPendingReferencesAcrossRecomposition`,
+`TestFederatedAgentRetryAfterTracksASSchedule`,
+`TestFederatedWaitingRoundsUpRemainingRetryAfter`,
+`TestFederatedWaitingExposesOnlySafeHint`,
+`TestPendingExchangeWaitReasonIsOptionalDisplayHint`,
+`TestFederatedAgentWaitReasonPaymentThenApproval`,
+`TestFederatedUnsupportedRequirementIsLocalRefusal`, and the PS federation store
+contract in `personserver/storetest/federated.go`.
+
+## Federated grants have no exchange identifier
+
+**Source:** Protocol `28e8258`, Auth Token Delivery, Auth Token Structure,
+Common JWT Claims and HTTP Message Signatures Profile / Verification (Server).
+
+Auth Token Delivery specifies signature, issuer, audience, confirmation key,
+subject, scope and expiry checks. Auth Token Structure carries no Resource-token
+ID, presented-token ID or pending-request ID. Common JWT Claims describes `jti`
+as a unique token identifier for replay detection, audit and revocation; it
+neither makes each delivery a new token nor requires a PS cache of previously
+delivered grant JTIs. Verification (Server) also explicitly does not require
+PS or AS replay caches for Resource tokens.
+
+The PS therefore accepts an identical, still-valid AS grant in separate Core
+exchanges when it satisfies each exchange's full authorization context and
+expiry bounds. This does not prove that the AS made a fresh approval or billing
+decision for the second exchange. Single terminal delivery is scoped to each
+retained continuation, not to a token across all continuations. The library
+adds no cross-exchange JTI cache or private request-binding claim. An AS remains
+the authority that can issue an equivalent fresh grant in any event.
+
+**Evidence:** `TestFederatedEquivalentGrantHasNoCrossExchangeBinding` in
+`integration/federated_deferred_test.go` creates distinct pending, Resource and
+presented-token references, delivers the same grant bytes for both, and refuses
+another delivery from either consumed continuation. The adjacent altered-grant
+tests execute signature and scope refusals.
+
+## Federation pending-URL error names and competing polls
+
+**Source:** Protocol `28e8258`, Pending URL Security, Polling Error Codes and
+Error Response Format.
+
+The draft requires authentication at pending URLs and `410` after terminal
+delivery. Its `invalid_code` names an interaction code; `denied` names an
+approver's decision. Neither describes these opaque federation references or
+a different authenticated poller. The AS and PS federation endpoints use these
+library error-code extensions, without claiming that the draft registers them:
+
+| Status and error | Meaning |
+| --- | --- |
+| `410 unknown_request` | No retained continuation for that reference. |
+| `410 request_consumed` | The retained continuation has already delivered its terminal result. |
+| `403 wrong_poller` | The authenticated PS, Agent identity or Agent key does not own the continuation. |
+| `409 request_conflict` | Another AS poll changed a still-pending record before this poll could publish. |
+
+An explicit AS policy denial remains `403 denied`; expiry remains one
+`408 expired` before consumption. These choices apply only to AS and federated
+PS token continuations. Interaction-code endpoints retain their own mappings.
+
+An AS record has no in-flight policy lock. Concurrent polls may each run policy
+and sign a Core token before one conditional store replacement wins. Only that
+winner publishes its buffered result; losing signed tokens are discarded. A
+loser reloads the record to distinguish consumption from a nonterminal update.
+Hosts must not rely on exactly-once policy execution or charge on a poll. The
+PS's separate in-flight fence normally prevents overlapping AS polls from that
+host, but is not an AS-wide lock.
+
+**Evidence:** `TestFederatedPendingErrorsDistinguishUnknownAndConsumed`,
+`TestFederatedDeferredPollIdentityAndSingleDelivery`,
+`TestFederatedDeferredDenialRetainsPollingError`, and
+`TestFederatedASConcurrentPollsPublishOneResult` in
+`integration/federated_deferred_test.go`. The last test overlaps native AS
+polls at store replacement, asserting one published wait or grant and the
+corresponding conflict or consumed response from its competitor.

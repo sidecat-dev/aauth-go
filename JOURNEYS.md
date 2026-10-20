@@ -109,7 +109,7 @@ Specifications:
 - [x] **Deferred four-party approval and payment — Implemented bounded path**
   - Flow: Resource challenge → PS consent → AS `402` payment → host settlement
     → PS-signed AS poll → `202` approval → grant → verified PS delivery → Resource.
-  - Start with: `go run ./example/federatedpayment`. Payment is simulated host
+  - Read the [per-request composition limit](USE-IN-YOUR-SERVICE.md#continue-an-as-approval-or-payment-request), then run `go run ./example/federatedpayment`. Payment is simulated host
     state; no payment provider is contacted.
   - Evidence: [`example/federatedpayment/main_test.go`](example/federatedpayment/main_test.go)
     and [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go).

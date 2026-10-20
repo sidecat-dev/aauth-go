@@ -115,7 +115,11 @@ func run(output io.Writer) {
 	result := must(reader.BeginExchange(ctx, agent.ExchangeRequest{PersonServer: "https://ps.example", ResourceToken: required.ResourceToken, PresentedToken: person}))
 	pending, ok := result.Pending()
 	check(ok, "expected PS pending response")
-	reference := pending.Location()[strings.LastIndex(pending.Location(), "/")+1:]
+	check(pending.WaitReason() == "awaiting_payment", "expected payment hint")
+	// Hosts discover their own queue; no Agent callback or store hook is needed.
+	references := must(people.PendingFederatedAuthorizationReferences(ctx, 10))
+	check(len(references) == 1, "expected one pending continuation")
+	reference := references[0]
 	host := must(people.FederatedAuthorization(ctx, reference))
 	check(host.Response.Status == 402, "expected AS payment challenge")
 	fmt.Fprintln(output, "Payment required at Access Server")
@@ -126,6 +130,9 @@ func run(output io.Writer) {
 	mustSucceed(people.AdvanceFederation(ctx, reference))
 	host = must(people.FederatedAuthorization(ctx, reference))
 	check(host.Response.Status == 202, "expected approval wait")
+	result = must(reader.PollExchange(ctx, pending))
+	pending, ok = result.Pending()
+	check(ok && pending.WaitReason() == "awaiting_approval", "expected approval hint")
 	fmt.Fprintln(output, "Payment confirmed; approval pending")
 	approved.Store(true)
 	mustSucceed(people.AdvanceFederation(ctx, reference))

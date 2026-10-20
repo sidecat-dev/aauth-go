@@ -106,6 +106,39 @@ func (server *Server) PendingInteractionQuestionReferences(ctx context.Context, 
 	return refs, nil
 }
 
+// PendingFederatedAuthorizationReferences lists a bounded snapshot of
+// unexpired, nonterminal AS continuations, ordered by NextPollAt then ID.
+// In-flight continuations are included for inspection, not for another AS call.
+// Listing neither reserves work nor polls the AS. The host must authenticate
+// the viewer, filter by owner and reload with FederatedAuthorization before
+// displaying or advancing a request; references confer no authority.
+func (server *Server) PendingFederatedAuthorizationReferences(ctx context.Context, limit int) ([]string, error) {
+	if err := validatePendingList(ctx, limit); err != nil {
+		return nil, err
+	}
+	if server == nil || server.federatedDeferred == nil {
+		return nil, ErrFederationNotReady
+	}
+	now := server.clock.Now().UTC()
+	records, err := server.federatedDeferred.Store.ListPendingFederatedAuthorizations(ctx, server.issuer, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) > limit {
+		return nil, ErrFederatedAuthorizationConflict
+	}
+	refs := make([]string, 0, len(records))
+	seen := make(map[string]bool, len(records))
+	for _, record := range records {
+		if record.ID == "" || record.PersonServer != server.issuer || !now.Before(record.ExpiresAt) || record.Terminal || record.Gone || seen[record.ID] {
+			return nil, ErrFederatedAuthorizationConflict
+		}
+		seen[record.ID] = true
+		refs = append(refs, record.ID)
+	}
+	return refs, nil
+}
+
 func validatePendingList(ctx context.Context, limit int) error {
 	if ctx == nil {
 		return errors.New("personserver: context is required")

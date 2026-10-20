@@ -19,9 +19,9 @@ type FederatedAuthorizationContract struct {
 	New func(testing.TB) personserver.FederatedAuthorizationStore
 }
 
-// RunFederatedAuthorization checks copy isolation, immutable request retention, conditional
-// updates and single consumption. Backend restart and failure testing remain
-// the adapter author's responsibility.
+// RunFederatedAuthorization checks copy isolation, immutable request retention,
+// bounded pending listing, conditional updates and single consumption. Backend
+// restart and failure testing remain the adapter author's responsibility.
 func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationContract) {
 	t.Helper()
 	if contract.New == nil {
@@ -31,6 +31,86 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 	fixture := func() personserver.FederatedAuthorizationRecord {
 		return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", Location: "https://as.example/pending/test", ExpiresAt: time.Unix(100, 0), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
 	}
+	t.Run("pending listing is bounded isolated and read only", func(t *testing.T) {
+		store := contract.New(t)
+		queue := store
+		now := time.Unix(50, 0)
+		for _, id := range []string{"later", "first-b", "first-a", "foreign", "expired", "terminal", "gone", "advancing"} {
+			r := fixture()
+			r.ID = id
+			r.NextPollAt = now
+			switch id {
+			case "later":
+				r.NextPollAt = now.Add(time.Second)
+			case "foreign":
+				r.PersonServer = "https://other.example"
+			case "expired":
+				r.ExpiresAt = now
+			}
+			if err := store.CreateFederatedAuthorization(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			after := r
+			switch id {
+			case "terminal":
+				after.Terminal = true
+			case "gone":
+				after.Gone = true
+			case "advancing":
+				after.Advancing = true
+			default:
+				continue
+			}
+			after.Revision++
+			if err := store.ReplaceFederatedAuthorization(ctx, r, after); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, limit := range []int{2, 1000} {
+			rows, err := queue.ListPendingFederatedAuthorizations(ctx, "https://ps.example", now, limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"advancing", "first-a", "first-b", "later"}
+			if limit < len(want) {
+				want = want[:limit]
+			}
+			var ids []string
+			for _, row := range rows {
+				ids = append(ids, row.ID)
+			}
+			if !reflect.DeepEqual(ids, want) {
+				t.Fatalf("pending IDs = %v, want %v", ids, want)
+			}
+			rows[0].Response.Body[0] = 'x'
+			rows[0].Response.Header.Set("WWW-Authenticate", "changed")
+		}
+		retained, err := store.LoadFederatedAuthorization(ctx, "advancing")
+		if err != nil || string(retained.Response.Body) != "payment" || retained.Response.Header.Get("WWW-Authenticate") != `Payment id="test"` || retained.Revision != 2 || !retained.Advancing {
+			t.Fatalf("listing exposed or changed retained state: %#v %v", retained, err)
+		}
+		retained, err = store.LoadFederatedAuthorization(ctx, "expired")
+		if err != nil || retained.Gone || retained.Revision != 1 {
+			t.Fatal("listing consumed an expired result")
+		}
+		for _, limit := range []int{-1, 0, 1001} {
+			if _, err := queue.ListPendingFederatedAuthorizations(ctx, "https://ps.example", now, limit); err == nil {
+				t.Fatalf("accepted limit %d", limit)
+			}
+		}
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := queue.ListPendingFederatedAuthorizations(canceled, "https://ps.example", now, 1); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled: %v", err)
+		}
+		if _, err := queue.ListPendingFederatedAuthorizations(nil, "https://ps.example", now, 1); err == nil {
+			t.Fatal("accepted nil context")
+		}
+		rows, err := queue.ListPendingFederatedAuthorizations(ctx, "https://absent.example", now, 10)
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("foreign queue = %v %v", rows, err)
+		}
+	})
 	t.Run("replacement requires an existing record", func(t *testing.T) {
 		store := contract.New(t)
 		var before personserver.FederatedAuthorizationRecord

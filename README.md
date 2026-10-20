@@ -56,7 +56,7 @@ Request verified: aauth:reader@agents.example
 | Need | Start with | Setup |
 | --- | --- | --- |
 | Direct Agent identity | [`example/agentidentity`](example/agentidentity) | In-process; no Person or Access Server |
-| Deferred AS approval or payment | [`example/federatedpayment`](example/federatedpayment) | In-process Core; simulated settlement, explicit host polls |
+| Deferred AS approval or payment | [`example/federatedpayment`](example/federatedpayment) | [Missionless Core limit](USE-IN-YOUR-SERVICE.md#continue-an-as-approval-or-payment-request); simulated settlement, explicit host polls |
 | Three-party or four-party authorization | [`example/threeparty`](example/threeparty), [`example/fourparty`](example/fourparty) | In-process role composition |
 | Self-hosted Agent or composed hosted-service profile | [`example/selfhosted`](example/selfhosted), [`example/hostedservice`](example/hostedservice) | In-process; see [local](LOCAL-AGENT-PROFILE.md) and [hosted](HOSTED-SERVICE-PROFILE.md) profile limits |
 | Permission, missions or interaction | [`example/permission`](example/permission), [`example/mission`](example/mission), [`example/psconsent`](example/psconsent) | In-process |

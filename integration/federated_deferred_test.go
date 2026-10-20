@@ -18,6 +18,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/accessserver"
 	"gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/diagnostics"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
@@ -94,6 +95,37 @@ func TestFederatedPaymentApprovalAndDeliveryAcrossRecomposition(t *testing.T) {
 	next := f.exchange(t)
 	if _, ok := next.Token(); !ok {
 		t.Fatal("established billing relationship did not skip payment")
+	}
+}
+
+// A host can recover outstanding work after recomposition without observing
+// Create or borrowing the Agent's pending URL. Listing does not advance the AS.
+func TestFederatedPendingReferencesAcrossRecomposition(t *testing.T) {
+	f := newDeferredFederation(t)
+	pending := f.begin(t)
+	f.recompose(t)
+	queue := f.ps
+	refs, err := queue.PendingFederatedAuthorizationReferences(context.Background(), 10)
+	if err != nil || len(refs) != 1 || refs[0] != deferredReference(pending) {
+		t.Fatalf("references = %v %v", refs, err)
+	}
+	if f.asPolls.Load() != 0 {
+		t.Fatal("listing advanced federation")
+	}
+	f.stage.Store(2)
+	if err := f.ps.AdvanceFederation(context.Background(), refs[0]); err != nil {
+		t.Fatal(err)
+	}
+	refs, err = queue.PendingFederatedAuthorizationReferences(context.Background(), 10)
+	if err != nil || len(refs) != 0 {
+		t.Fatalf("completed references = %v %v", refs, err)
+	}
+	result, err := f.client.PollExchange(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result.Token(); !ok {
+		t.Fatal("listing consumed the retained grant")
 	}
 }
 
@@ -266,7 +298,7 @@ func TestFederatedDeferredDenialRetainsPollingError(t *testing.T) {
 	_, err := f.client.PollExchange(context.Background(), pending)
 	requireDeferredProblem(t, err, 403, "denied")
 	_, err = f.client.PollExchange(context.Background(), pending)
-	requireDeferredProblem(t, err, 410, "invalid_code")
+	requireDeferredProblem(t, err, 410, "request_consumed")
 }
 func requireDeferredProblem(t *testing.T, err error, status int, code string) {
 	t.Helper()
@@ -319,8 +351,9 @@ func TestFederatedDeferredPollIdentityAndSingleDelivery(t *testing.T) {
 			}
 			response := deferredGET(t, f, pending.Location(), key, token, "")
 			defer response.Body.Close()
-			if response.StatusCode != 403 {
-				t.Fatalf("foreign %s: %d", kind, response.StatusCode)
+			problem, err := aauth.DecodeProblemResponse(response)
+			if err != nil || problem.Status != 403 || problem.Code != "wrong_poller" {
+				t.Fatalf("foreign %s: %v %v", kind, problem, err)
 			}
 		})
 	}
@@ -334,9 +367,10 @@ func TestFederatedDeferredPollIdentityAndSingleDelivery(t *testing.T) {
 		}
 	}))
 	response := deferredGET(t, f, record.Location, f.psKey, "", "https://other-ps.example")
+	problem, err := aauth.DecodeProblemResponse(response)
 	response.Body.Close()
-	if response.StatusCode != 403 {
-		t.Fatalf("foreign PS: %d", response.StatusCode)
+	if err != nil || problem.Status != 403 || problem.Code != "wrong_poller" {
+		t.Fatalf("foreign PS: %v %v", problem, err)
 	}
 	f.stage.Store(2)
 	// Only one worker may cross the AS boundary; others see a fence or terminal state.
@@ -396,7 +430,7 @@ func TestFederatedDeferredExpiryAndRetryAfter(t *testing.T) {
 		_, err := f.client.PollExchange(context.Background(), p)
 		requireDeferredProblem(t, err, 408, "expired")
 		_, err = f.client.PollExchange(context.Background(), p)
-		requireDeferredProblem(t, err, 410, "invalid_code")
+		requireDeferredProblem(t, err, 410, "request_consumed")
 	})
 	t.Run("retry-after", func(t *testing.T) {
 		f := newDeferredFederation(t)
@@ -427,7 +461,7 @@ func TestFederatedDeferredExpiryAndRetryAfter(t *testing.T) {
 	})
 }
 func TestFederatedDeferredRefusesChangedLocationAndInvalidGrant(t *testing.T) {
-	for _, kind := range []string{"foreign-location", "changed-location", "claims", "missing-no-store", "missing-status", "invalid-signature", "broader-scope"} {
+	for _, kind := range []string{"foreign-location", "changed-location", "missing-no-store", "missing-status", "invalid-signature", "broader-scope"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newDeferredFederation(t)
 			p := f.begin(t)
@@ -445,8 +479,6 @@ func TestFederatedDeferredRefusesChangedLocationAndInvalidGrant(t *testing.T) {
 					w.Header().Set("Location", "https://attacker.example/collect")
 				case "changed-location":
 					w.Header().Set("Location", "https://as.example/another")
-				case "claims":
-					w.Header().Set("AAuth-Requirement", "requirement=claims")
 				case "missing-no-store":
 					w.Header().Del("Cache-Control")
 				case "missing-status":
@@ -736,4 +768,312 @@ func TestFederatedDeferredPSDeadlineAfterDeliveryVerification(t *testing.T) {
 		t.Fatal("PS delivered grant after PS 10s pending deadline; release verification completed at 11s")
 	}
 	requireDeferredProblem(t, err, 408, "expired")
+}
+
+// Protocol 28e8258, Deferred Responses / Polling with GET: Agent polling
+// follows Retry-After. A PS continuation reflects the retained AS schedule.
+func TestFederatedAgentRetryAfterTracksASSchedule(t *testing.T) {
+	f := newDeferredFederation(t)
+	f.retry.Store(7)
+	pending := f.begin(t)
+	if pending.RetryAfter() != 7*time.Second {
+		t.Fatalf("initial Retry-After = %v", pending.RetryAfter())
+	}
+	for _, tc := range []struct {
+		advance int64
+		want    time.Duration
+	}{{2, 5 * time.Second}, {5, 0}} {
+		f.now.Add(tc.advance)
+		result, err := f.client.PollExchange(context.Background(), pending)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ok bool
+		pending, ok = result.Pending()
+		if !ok || pending.RetryAfter() != tc.want {
+			t.Fatalf("pending=%v Retry-After=%v, want %v", ok, pending.RetryAfter(), tc.want)
+		}
+	}
+	f.asMutation = func(r *http.Request, w *httptest.ResponseRecorder) {
+		if r.Method == http.MethodGet {
+			w.Code = http.StatusServiceUnavailable
+			w.Header().Set("Retry-After", "11")
+			w.Body.Reset()
+		}
+	}
+	if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.client.PollExchange(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok || pending.RetryAfter() != 11*time.Second {
+		t.Fatalf("backoff Retry-After = %v", pending.RetryAfter())
+	}
+}
+
+// The optional pending_reason extension is a display hint only. AS payment
+// details stay with the PS; the Agent continues to use the PS pending URL.
+func TestFederatedAgentWaitReasonPaymentThenApproval(t *testing.T) {
+	f := newDeferredFederation(t)
+	pending := f.begin(t)
+	check := func(p agent.PendingExchange, want string) {
+		t.Helper()
+		if p.WaitReason() != want {
+			t.Fatalf("wait reason = %q, want %q", p.WaitReason(), want)
+		}
+		if p.Requirement() != aauth.RequirementApproval || !strings.HasPrefix(p.Location(), "https://ps.example/") {
+			t.Fatal("hint changed the polling contract")
+		}
+	}
+	check(pending, "awaiting_payment")
+	f.stage.Store(1)
+	if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.client.PollExchange(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok {
+		t.Fatal("missing approval continuation")
+	}
+	check(pending, "awaiting_approval")
+}
+
+// Protocol 28e8258, Auth Token Delivery, Auth Token Structure and Common JWT
+// Claims: jti identifies the token, not the exchange. No grant claim binds it
+// to a Resource-token ID or pending URL. Equivalent, still-valid grants can be
+// delivered for distinct exchanges; single delivery applies to each PS record.
+func TestFederatedEquivalentGrantHasNoCrossExchangeBinding(t *testing.T) {
+	f := newDeferredFederation(t)
+	ctx := context.Background()
+	first := f.begin(t)
+	firstRecord, err := f.ps.FederatedAuthorization(ctx, deferredReference(first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var grantBody []byte
+	f.asMutation = func(r *http.Request, w *httptest.ResponseRecorder) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/token/pending/") && w.Code == http.StatusOK {
+			if grantBody == nil {
+				grantBody = append([]byte(nil), w.Body.Bytes()...)
+			} else {
+				w.Body.Reset()
+				_, _ = w.Body.Write(grantBody)
+			}
+		}
+	}
+	f.stage.Store(2)
+	if err := f.ps.AdvanceFederation(ctx, firstRecord.ID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.client.PollExchange(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstToken, ok := result.Token()
+	if !ok {
+		t.Fatal("missing first grant")
+	}
+	f.stage.Store(0)
+	second := f.begin(t)
+	secondRecord, err := f.ps.FederatedAuthorization(ctx, deferredReference(second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRecord.ID == secondRecord.ID || firstRecord.ResourceToken == secondRecord.ResourceToken || firstRecord.PresentedToken == secondRecord.PresentedToken {
+		t.Fatal("fixture did not create a distinct exchange")
+	}
+	f.stage.Store(2)
+	if err := f.ps.AdvanceFederation(ctx, secondRecord.ID); err != nil {
+		t.Fatal(err)
+	}
+	result, err = f.client.PollExchange(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondToken, ok := result.Token()
+	if !ok || secondToken != firstToken {
+		t.Fatal("equivalent grant was not delivered unchanged")
+	}
+	for _, pending := range []agent.PendingExchange{first, second} {
+		_, err := f.client.PollExchange(ctx, pending)
+		var problem *aauth.ProblemError
+		if !errors.As(err, &problem) || problem.Status != 410 {
+			t.Fatalf("consumed continuation replay = %v", err)
+		}
+	}
+}
+
+func TestFederatedUnsupportedRequirementIsLocalRefusal(t *testing.T) {
+	for _, requirement := range []string{"claims", "interaction", "clarification"} {
+		for _, phase := range []string{"initial", "poll"} {
+			t.Run(requirement+"/"+phase, func(t *testing.T) {
+				f := newDeferredFederation(t)
+				pending := f.begin(t)
+				record, err := f.ps.FederatedAuthorization(context.Background(), deferredReference(pending))
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.stage.Store(1)
+				f.asMutation = func(r *http.Request, w *httptest.ResponseRecorder) {
+					if r.URL.Path != "/token" && !strings.HasPrefix(r.URL.Path, "/token/pending/") {
+						return
+					}
+					header := "requirement=" + requirement
+					body := map[string]any{"status": "pending"}
+					switch requirement {
+					case "claims":
+						body["required_claims"] = []string{"email"}
+					case "clarification":
+						body["clarification"], body["timeout"] = "Proceed?", 30
+					case "interaction":
+						header += `;url="https://as.example/interaction";code="ABCD"`
+					}
+					w.Header().Set("AAuth-Requirement", header)
+					w.Body.Reset()
+					if err := json.NewEncoder(w.Body).Encode(body); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var cause error
+				f.network.Handle("https://ps.example", diagnostics.Handler(f.ps.Handler(), func(_ context.Context, p diagnostics.Problem) { cause = p.Cause }))
+				if phase == "initial" {
+					_, err = f.client.BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: "https://ps.example", ResourceToken: record.ResourceToken, PresentedToken: record.PresentedToken})
+				} else {
+					if err := f.ps.AdvanceFederation(context.Background(), record.ID); err != nil {
+						t.Fatal(err)
+					}
+					_, err = f.client.PollExchange(context.Background(), pending)
+				}
+				requireDeferredProblem(t, err, 500, "server_error")
+				var problem *aauth.ProblemError
+				if !errors.As(err, &problem) || !strings.Contains(problem.Detail, requirement) {
+					t.Fatalf("missing refusal reason: %v", err)
+				}
+				if phase == "initial" {
+					var refusal *personserver.DeferredCompositionError
+					if !errors.As(cause, &refusal) || refusal.Reason() != requirement {
+						t.Fatalf("local cause = %T %v", cause, cause)
+					}
+				} else {
+					_, err = f.client.PollExchange(context.Background(), pending)
+					requireDeferredProblem(t, err, 410, "request_consumed")
+				}
+				if f.protected.Load() != 0 {
+					t.Fatal("unsupported requirement released authorization")
+				}
+			})
+		}
+	}
+}
+
+func TestFederatedPendingErrorsDistinguishUnknownAndConsumed(t *testing.T) {
+	f := newDeferredFederation(t)
+	pending := f.begin(t)
+	record, err := f.ps.FederatedAuthorization(context.Background(), deferredReference(pending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"unknown", "consumed"} {
+		want := "unknown_request"
+		if phase == "consumed" {
+			f.stage.Store(2)
+			if err := f.ps.AdvanceFederation(context.Background(), record.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.client.PollExchange(context.Background(), pending); err != nil {
+				t.Fatal(err)
+			}
+			want = "request_consumed"
+		}
+		for _, role := range []string{"AS", "PS"} {
+			location, key, token, ps := record.Location, f.psKey, "", "https://ps.example"
+			if role == "PS" {
+				location, key, token, ps = pending.Location(), f.agentKey, record.AgentToken, ""
+			}
+			if phase == "unknown" {
+				location = location[:strings.LastIndex(location, "/")+1] + "unknown-reference"
+			}
+			response := deferredGET(t, f, location, key, token, ps)
+			problem, err := aauth.DecodeProblemResponse(response)
+			response.Body.Close()
+			if err != nil || problem.Status != 410 || string(problem.Code) != want {
+				t.Fatalf("%s %s = %v %v", role, phase, problem, err)
+			}
+		}
+	}
+}
+
+// Two authenticated callers may reach AS policy before either replacement.
+// The store winner alone publishes its result. A losing wait is a conflict,
+// while a losing terminal delivery reports that the request was consumed.
+func TestFederatedASConcurrentPollsPublishOneResult(t *testing.T) {
+	for _, stage := range []int32{1, 2} {
+		t.Run(fmt.Sprint(stage), func(t *testing.T) {
+			f := newDeferredFederation(t)
+			pending := f.begin(t)
+			record, err := f.ps.FederatedAuthorization(context.Background(), deferredReference(pending))
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate := &overlappingAccessStore{DeferredAuthorizationStore: f.asStore, arrived: make(chan struct{}, 2), release: make(chan struct{})}
+			f.asStore = gate
+			f.recompose(t)
+			f.stage.Store(stage)
+			results := make(chan *http.Response, 2)
+			var wg sync.WaitGroup
+			for range 2 {
+				wg.Go(func() { results <- deferredGET(t, f, record.Location, f.psKey, "", "https://ps.example") })
+			}
+			for range 2 {
+				select {
+				case <-gate.arrived:
+				case <-time.After(10 * time.Second):
+					close(gate.release)
+					wg.Wait()
+					t.Fatal("AS polls did not overlap at publication")
+				}
+			}
+			close(gate.release)
+			wg.Wait()
+			close(results)
+			wins, losses := 0, 0
+			for response := range results {
+				wantStatus, loseStatus, loseCode := 202, 409, "request_conflict"
+				if stage == 2 {
+					wantStatus, loseStatus, loseCode = 200, 410, "request_consumed"
+				}
+				if response.StatusCode == wantStatus {
+					wins++
+				} else {
+					problem, err := aauth.DecodeProblemResponse(response)
+					if err != nil || problem.Status != loseStatus || string(problem.Code) != loseCode {
+						t.Errorf("losing poll = %v %v", problem, err)
+					}
+					losses++
+				}
+				response.Body.Close()
+			}
+			if wins != 1 || losses != 1 {
+				t.Fatalf("published %d results, %d refusals", wins, losses)
+			}
+		})
+	}
+}
+
+type overlappingAccessStore struct {
+	accessserver.DeferredAuthorizationStore
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func (s *overlappingAccessStore) ReplaceAccessAuthorization(ctx context.Context, before, after accessserver.PendingAuthorizationRecord) error {
+	s.arrived <- struct{}{}
+	<-s.release
+	return s.DeferredAuthorizationStore.ReplaceAccessAuthorization(ctx, before, after)
 }

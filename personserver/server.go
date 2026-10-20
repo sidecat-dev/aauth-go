@@ -1329,8 +1329,21 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	defer accessResponse.Body.Close()
 	if accessResponse.StatusCode == 202 || accessResponse.StatusCode == 402 {
-		if server.federatedDeferred == nil || r3Context != nil || budgetOffer != nil || delegated || missionRecord != nil {
-			writeAccessServerUnreachable(response, errors.New("personserver: AS continuation requires configured top-level missionless Core federation"))
+		reason := ""
+		switch {
+		case server.federatedDeferred == nil:
+			reason = "not_configured"
+		case r3Context != nil:
+			reason = "r3"
+		case budgetOffer != nil:
+			reason = "budget"
+		case delegated:
+			reason = "delegation"
+		case missionRecord != nil:
+			reason = "mission"
+		}
+		if reason != "" {
+			writeFederatedContinuationProblem(response, &DeferredCompositionError{reason: reason})
 			return
 		}
 		server.beginFederatedAuthorization(response, request, accessResponse, endpoint, input.ResourceToken, agentToken, input.PresentedToken, agent, resourceToken, presented.ExpiresAt)

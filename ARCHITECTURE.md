@@ -465,7 +465,7 @@ artifact.
 
 The direct clarification path extends one already verified pending
 authorization rather than creating a second consent object. The ordinary
-`DeferredAuthorizationStore` continues to own interaction and terminal token
+`personserver.DeferredAuthorizationStore` continues to own interaction and terminal token
 state. Applications that enable chat additionally implement the focused
 `AuthorizationClarificationStore` over those same records. That extension
 retains a bounded question and an answer accepted through a signed Agent

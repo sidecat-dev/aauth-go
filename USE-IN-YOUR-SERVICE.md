@@ -252,18 +252,36 @@ cover present and absent Resources and protect the retained mapping from mutatio
 ## Continue an AS approval or payment request
 
 For top-level missionless Core, set `accessserver.Config.Deferred` with an
-AS-owned `DeferredAuthorizationStore`, and
+AS-owned `accessserver.DeferredAuthorizationStore`, and
 `personserver.FederatedAuthorizationConfig.Deferred` with a separate
-`FederatedAuthorizationStore`. An AS policy returns `Decision.Pending` while
+`personserver.FederatedAuthorizationStore`. An AS policy returns `Decision.Pending` while
 approval or payment is needed; a normal decision grants access.
 
-The Agent uses `BeginExchange` and `PollExchange`. A PS host loads the reference
-from its pending URL with `FederatedAuthorization`, inspects the retained AS
-response, and calls `AdvanceFederation` for one AS poll after payment settlement
-or an approval wait. Authenticate the operator before exposing a record or
-advancing it. Payment details are untrusted input; the library does not settle
-payments. Hosts interpret the indicated protocol and cache billing relationships
-per AS. The AS's host likewise remembers which PS has established billing.
+The limit applies to each request, not to the PS's overall configuration: a
+PS with Missions, R3 and Budget enabled can still defer a separate missionless
+Core request. A local refusal returns `500 server_error` with a safe explanation.
+Use `errors.As` on the diagnostic cause to inspect
+`*personserver.DeferredCompositionError` and its `Reason()`; this is distinct
+from `502 as_unreachable` for an unavailable or unverifiable AS response.
+Unsupported AS claims, interaction and clarification requirements use the same
+local refusal, including when they arrive on a later poll.
+
+The Agent uses `BeginExchange` and `PollExchange`. `PendingExchange.WaitReason()`
+returns `awaiting_payment`, `awaiting_approval`, or empty when the PS supplies no
+recognized hint. These optional `pending_reason` values are a library extension
+for display, not permission to pay. Payment details stay with the PS. Respect
+`PendingExchange.RetryAfter()`: the PS derives it from the remaining AS polling
+wait, rounded up to seconds, and updates it after AS backoff.
+
+A PS host calls `PendingFederatedAuthorizationReferences(ctx, limit)` to list
+outstanding work, then `FederatedAuthorization` to load each record. The bounded
+snapshot includes in-flight requests and excludes expired or terminal ones;
+listing does not reserve work. Authenticate the operator and filter records by
+owner before displaying them. Inspect the retained AS response, settle payment
+through the indicated protocol, then call `AdvanceFederation` when `NextPollAt`
+is due and `Advancing` is false. The library does not settle payments. Hosts cache
+billing relationships per AS; the AS's host remembers which PS has established
+billing.
 
 [Run the payment example](example/federatedpayment) for a complete
 `402 → 202 → 200` path using these APIs. Its payment state is simulated.
@@ -271,13 +289,29 @@ per AS. The AS's host likewise remembers which PS has established billing.
 exchange implicitly. An in-flight AS call whose completion cannot be stored
 stays fenced until expiry, because its terminal result may already be consumed.
 Observe store errors and pending records rather than retrying that call.
+Concurrent direct AS polls may each run policy and sign before one store update
+wins; only that winner publishes its result. Policy must not charge on a poll.
+
+Federation pending URLs distinguish `410 unknown_request`,
+`410 request_consumed` and `403 wrong_poller`. A competing nonterminal AS update
+returns `409 request_conflict`. These are [library error-code extensions](INTERPRETATIONS.md#federation-pending-url-error-names-and-competing-polls);
+explicit policy denial remains `403 denied`.
 
 The supported challenge carrier is `WWW-Authenticate`, with optional opaque
 body content. Claims, clarification, interaction forwarding and deferred
 R3/Budget/delegated/mission combinations remain unsupported. The earliest
 original credential expiry and configured lifetime bound both pending records.
 Custom adapters should run `accessserver/storetest.RunDeferredAuthorization`
-and `personserver/storetest.RunFederatedAuthorization`.
+and `personserver/storetest.RunFederatedAuthorization`. The latter includes the
+required `ListPendingFederatedAuthorizations` method; custom PS adapters must
+implement it and rerun that contract.
+
+A pending result is delivered once per continuation. The pinned draft provides
+no Auth-token claim binding it to a particular exchange, so an AS can return the
+same still-valid grant for equivalent exchanges. The PS checks the grant's
+identity, key, scope, context and expiry, but keeps no cross-exchange grant-JTI
+cache. See [the source reading](INTERPRETATIONS.md#federated-grants-have-no-exchange-identifier)
+and [the executable limit](integration/federated_deferred_test.go).
 
 ## Use in-memory stores in examples and tests
 

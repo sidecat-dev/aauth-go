@@ -2,8 +2,11 @@ package testutil
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"sort"
 	"sync"
+	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/accessserver"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
@@ -107,6 +110,36 @@ func (s *federatedAuthorizationStore) LoadFederatedAuthorization(ctx context.Con
 	}
 	return cloneFederated(r), nil
 }
+func (s *federatedAuthorizationStore) ListPendingFederatedAuthorizations(ctx context.Context, personServer string, now time.Time, limit int) ([]personserver.FederatedAuthorizationRecord, error) {
+	if ctx == nil {
+		return nil, errors.New("testutil: context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 1000 {
+		return nil, errors.New("testutil: pending list limit must be between 1 and 1000")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var rows []personserver.FederatedAuthorizationRecord
+	for _, r := range s.records {
+		if r.PersonServer == personServer && now.Before(r.ExpiresAt) && !r.Terminal && !r.Gone {
+			rows = append(rows, cloneFederated(r))
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].NextPollAt.Equal(rows[j].NextPollAt) {
+			return rows[i].ID < rows[j].ID
+		}
+		return rows[i].NextPollAt.Before(rows[j].NextPollAt)
+	})
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
 func (s *federatedAuthorizationStore) ReplaceFederatedAuthorization(ctx context.Context, before, after personserver.FederatedAuthorizationRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err

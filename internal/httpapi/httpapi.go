@@ -68,13 +68,15 @@ func WriteJSON(response http.ResponseWriter, status int, value any) {
 // ProblemFields carries explicitly public extensions supplied by the deciding
 // role. Diagnostic causes are never serialized into these fields.
 type ProblemFields struct {
+	// Detail is an explicitly public explanation; never copy a diagnostic cause.
+	Detail            string `json:"-"`
 	MissionStatus     string `json:"mission_status,omitempty"`
 	TerminationReason string `json:"termination_reason,omitempty"`
 }
 
 // WriteProblem writes an AAuth problem response with optional public fields.
-// Diagnostic causes stay local; only explicitly public Signature-Key detail
-// crosses the wire.
+// Diagnostic causes stay local; only explicitly supplied public detail crosses
+// the wire.
 func WriteProblem(response http.ResponseWriter, status int, code string, cause error, fields ...ProblemFields) {
 	defer ReportProblem(response, status, code, cause)
 	detail := http.StatusText(status)
@@ -109,6 +111,9 @@ func WriteProblem(response http.ResponseWriter, status int, code string, cause e
 	var extensions ProblemFields
 	if len(fields) > 0 {
 		extensions = fields[0]
+	}
+	if extensions.Detail != "" {
+		detail = extensions.Detail
 	}
 	_ = json.NewEncoder(response).Encode(struct {
 		Type   string `json:"type,omitempty"`

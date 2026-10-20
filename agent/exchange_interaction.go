@@ -106,6 +106,7 @@ type PendingExchange struct {
 	location             string
 	origin               string
 	retryAfter           time.Duration
+	waitReason           string
 	interactionURL       string
 	interactionCode      string
 	interacting          bool
@@ -147,6 +148,17 @@ func (pending PendingExchange) RetryAfter() time.Duration {
 		return 0
 	}
 	return pending.retryAfter
+}
+
+// WaitReason returns the optional pending_reason display hint supplied by the
+// PS: "awaiting_payment", "awaiting_approval", or empty when absent or unknown.
+// This library extension is not a protocol requirement or authority to pay.
+// A caller may translate it for the person; payment details remain with the PS.
+func (pending PendingExchange) WaitReason() string {
+	if pending.kind != pendingExchangeVerified {
+		return ""
+	}
+	return pending.waitReason
 }
 
 // Requirement returns the current generic requirement token. An empty value
@@ -238,7 +250,7 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 }
 
 // PollExchange performs exactly one bodyless Agent-token-signed GET for a
-// verified pending exchange. A typed 410 invalid_code response is terminal and
+// verified pending exchange. A typed 410 response is terminal and
 // MUST NOT be retried.
 func (client *Client) PollExchange(ctx context.Context, pending PendingExchange) (ExchangeResult, error) {
 	const operation = "poll exchange"
@@ -603,13 +615,19 @@ func (client *Client) pendingExchangeResponse(
 		return PendingExchange{}, err
 	}
 	var commonBody struct {
-		Status string `json:"status"`
+		Status        string `json:"status"`
+		PendingReason string `json:"pending_reason"`
 	}
 	if err := decodePendingExchangeBody(encodedBody, &commonBody); err != nil {
 		return PendingExchange{}, err
 	}
 	if strings.TrimSpace(commonBody.Status) == "" {
 		return PendingExchange{}, errors.New("pending response status is required")
+	}
+	waitReason := ""
+	switch commonBody.PendingReason {
+	case "awaiting_payment", "awaiting_approval":
+		waitReason = commonBody.PendingReason
 	}
 	requirementValues := response.Header.Values("AAuth-Requirement")
 	var requirement aauth.Requirement
@@ -680,7 +698,7 @@ func (client *Client) pendingExchangeResponse(
 	claims := resourceClaims
 	return PendingExchange{
 		kind: pendingExchangeVerified, personServer: personServer,
-		location: location, origin: origin, retryAfter: retryAfter, interactionURL: interactionURL,
+		location: location, origin: origin, retryAfter: retryAfter, waitReason: waitReason, interactionURL: interactionURL,
 		interactionCode: interactionCode, interacting: prior.interacting || commonBody.Status == "interacting",
 		requirement: requirement, interactionCapable: prior.interactionCapable,
 		clarification: clarification, clarificationCapable: prior.clarificationCapable,

@@ -46,7 +46,10 @@ type PendingDecision struct {
 
 // PendingAuthorizationRecord retains the exact token request and its verified
 // PS identity. Deadline and request are immutable. Revision starts at one;
-// replacement increments it. Gone is irreversible.
+// replacement increments it. Gone is irreversible. Concurrent polls may each
+// evaluate policy and sign a token before the replacement comparison. Only the
+// winning replacement publishes its buffered response; losing tokens are not
+// released. This is a publication fence, not exactly-once policy execution.
 type PendingAuthorizationRecord struct {
 	ID           string
 	PersonServer string
@@ -171,18 +174,18 @@ func (server *Server) handlePendingToken(w http.ResponseWriter, r *http.Request)
 	record, err := server.deferred.Store.LoadAccessAuthorization(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, ErrPendingAuthorizationConflict) {
-			writeProblem(w, 410, "invalid_code", err)
+			writeProblem(w, 410, "unknown_request", err)
 		} else {
 			writeProblem(w, 500, "server_error", err)
 		}
 		return
 	}
 	if record.PersonServer != ps {
-		writeProblem(w, 403, "denied", errors.New("pending request belongs to another PS"))
+		writeProblem(w, 403, "wrong_poller", errors.New("pending request belongs to another PS"))
 		return
 	}
 	if record.Gone {
-		writeProblem(w, 410, "invalid_code", nil)
+		writeProblem(w, 410, "request_consumed", nil)
 		return
 	}
 	now := server.clock.Now().UTC()
@@ -216,7 +219,17 @@ func (server *Server) handlePendingToken(w http.ResponseWriter, r *http.Request)
 	}
 	if err := server.deferred.Store.ReplaceAccessAuthorization(r.Context(), record, next); err != nil {
 		if errors.Is(err, ErrPendingAuthorizationConflict) {
-			writeProblem(w, 410, "invalid_code", err)
+			current, loadErr := server.deferred.Store.LoadAccessAuthorization(r.Context(), record.ID)
+			switch {
+			case errors.Is(loadErr, ErrPendingAuthorizationConflict):
+				writeProblem(w, 410, "unknown_request", loadErr)
+			case loadErr != nil:
+				writeProblem(w, 500, "server_error", loadErr)
+			case current.Gone:
+				writeProblem(w, 410, "request_consumed", err)
+			default:
+				writeProblem(w, http.StatusConflict, "request_conflict", err)
+			}
 		} else {
 			writeProblem(w, 500, "server_error", err)
 		}

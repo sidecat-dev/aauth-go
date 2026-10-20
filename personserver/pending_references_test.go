@@ -69,8 +69,9 @@ func TestPendingReferenceQueuesRejectInvalidCallsAndBackendFailures(t *testing.T
 	backendError := errors.New("queue unavailable")
 	permission := &permissionQueueProbe{err: backendError}
 	question := &questionQueueProbe{err: backendError}
-	server := &Server{issuer: p.personServerID, clock: p.clock, permissions: permission, interactionQuestionStore: question}
-	for name, list := range map[string]func(context.Context, int) ([]string, error){"permission": server.PendingPermissionReferences, "question": server.PendingInteractionQuestionReferences} {
+	federation := &federatedQueueProbe{err: backendError}
+	server := &Server{issuer: p.personServerID, clock: p.clock, permissions: permission, interactionQuestionStore: question, federatedDeferred: &FederatedDeferredConfig{Store: federation}}
+	for name, list := range map[string]func(context.Context, int) ([]string, error){"permission": server.PendingPermissionReferences, "question": server.PendingInteractionQuestionReferences, "federation": server.PendingFederatedAuthorizationReferences} {
 		t.Run(name, func(t *testing.T) {
 			for _, limit := range []int{-1, 0, 1001} {
 				if _, err := list(context.Background(), limit); err == nil || errors.Is(err, backendError) {
@@ -90,11 +91,11 @@ func TestPendingReferenceQueuesRejectInvalidCallsAndBackendFailures(t *testing.T
 			}
 		})
 	}
-	if permission.calls != 1 || question.calls != 1 {
+	if permission.calls != 1 || question.calls != 1 || federation.calls != 1 {
 		t.Fatalf("invalid calls reached backend: %d %d", permission.calls, question.calls)
 	}
 	empty := &Server{}
-	for _, list := range []func(context.Context, int) ([]string, error){empty.PendingPermissionReferences, empty.PendingInteractionQuestionReferences} {
+	for _, list := range []func(context.Context, int) ([]string, error){empty.PendingPermissionReferences, empty.PendingInteractionQuestionReferences, empty.PendingFederatedAuthorizationReferences} {
 		if _, err := list(context.Background(), 1); err == nil {
 			t.Fatal("unconfigured queue accepted")
 		}

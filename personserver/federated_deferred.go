@@ -22,6 +22,42 @@ import (
 // ErrFederatedAuthorizationConflict reports a missing record or competing update.
 var ErrFederatedAuthorizationConflict = errors.New("personserver: federated authorization conflict")
 
+// DeferredCompositionError identifies a local PS configuration or request
+// composition that cannot retain an AS continuation. It is available through
+// diagnostics.Handler with errors.As; the wire response is 500 server_error
+// with a public explanation, not a federation reachability error.
+type DeferredCompositionError struct{ reason string }
+
+// Reason returns not_configured, r3, budget, delegation, mission, claims,
+// clarification, interaction or requirement (an unsupported extension).
+// A mixed-capability PS may still defer a top-level missionless Core request.
+func (e *DeferredCompositionError) Reason() string {
+	if e == nil {
+		return ""
+	}
+	return e.reason
+}
+func (e *DeferredCompositionError) Error() string {
+	switch e.Reason() {
+	case "not_configured":
+		return "personserver: deferred AS authorization is not configured"
+	case "r3":
+		return "personserver: deferred AS authorization does not support R3 requests"
+	case "budget":
+		return "personserver: deferred AS authorization does not support Budget requests"
+	case "delegation":
+		return "personserver: deferred AS authorization does not support delegated requests"
+	case "mission":
+		return "personserver: deferred AS authorization does not support mission-bound requests"
+	case "claims", "clarification", "interaction":
+		return "personserver: deferred AS authorization does not support " + e.Reason() + " requirements"
+	case "requirement":
+		return "personserver: deferred AS authorization supports only approval and payment requirements"
+	default:
+		return "personserver: unsupported deferred AS authorization composition"
+	}
+}
+
 // ErrFederationNotReady means a poll is premature, already running, or terminal.
 var ErrFederationNotReady = errors.New("personserver: federation cannot be advanced")
 
@@ -72,11 +108,26 @@ type FederatedAuthorizationRecord struct {
 // compares the complete previous record, preserves immutable fields, increments
 // Revision by one, and never reopens Gone or replaces a terminal response.
 // Missing IDs and failed comparisons return ErrFederatedAuthorizationConflict.
+// ListPendingFederatedAuthorizations returns at most limit unexpired records
+// for personServer, excluding Terminal and Gone. It includes Advancing records,
+// orders by NextPollAt then ID, returns independent copies, and changes no state.
+// limit is in [1,1000]; a nil or canceled context or invalid limit returns an error.
 // The host authenticates operators before exposing records or invoking progress.
 type FederatedAuthorizationStore interface {
 	CreateFederatedAuthorization(context.Context, FederatedAuthorizationRecord) error
 	LoadFederatedAuthorization(context.Context, string) (FederatedAuthorizationRecord, error)
+	ListPendingFederatedAuthorizations(ctx context.Context, personServer string, now time.Time, limit int) ([]FederatedAuthorizationRecord, error)
 	ReplaceFederatedAuthorization(context.Context, FederatedAuthorizationRecord, FederatedAuthorizationRecord) error
+}
+
+func writeFederatedContinuationProblem(w http.ResponseWriter, err error) {
+	var refusal *DeferredCompositionError
+	if errors.As(err, &refusal) {
+		w.Header().Set("Cache-Control", "no-store")
+		httpapi.WriteProblem(w, http.StatusInternalServerError, "server_error", refusal, httpapi.ProblemFields{Detail: refusal.Error()})
+		return
+	}
+	writeAccessServerUnreachable(w, err)
 }
 
 func validateFederatedDeferredConfig(c *FederatedDeferredConfig) error {
@@ -103,7 +154,7 @@ func (server *Server) FederatedAuthorization(ctx context.Context, reference stri
 func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http.Request, as *http.Response, endpoint, resourceCompact, agentCompact, presentedCompact string, agent aauth.AgentTokenClaims, resource aauth.ResourceTokenClaims, presentedExpiry time.Time) {
 	state, location, retry, err := readFederatedPending(as, endpoint, "")
 	if err != nil {
-		writeAccessServerUnreachable(w, err)
+		writeFederatedContinuationProblem(w, err)
 		return
 	}
 	now := server.clock.Now().UTC()
@@ -137,7 +188,7 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 
 func readFederatedPending(response *http.Response, endpoint, prior string) (FederatedResponse, string, time.Duration, error) {
 	fail := func() (FederatedResponse, string, time.Duration, error) {
-		return FederatedResponse{}, "", 0, errors.New("personserver: malformed or unsupported AS continuation")
+		return FederatedResponse{}, "", 0, errors.New("personserver: malformed AS continuation")
 	}
 	if response.StatusCode != 202 && response.StatusCode != 402 {
 		return fail()
@@ -191,8 +242,16 @@ func readFederatedPending(response *http.Response, endpoint, prior string) (Fede
 		}
 		if len(response.Header.Values("AAuth-Requirement")) != 0 {
 			requirement, err := aauth.ParseRequirement(response.Header.Values("AAuth-Requirement"))
-			if err != nil || requirement != aauth.RequirementApproval {
+			if err != nil {
 				return fail()
+			}
+			if requirement != aauth.RequirementApproval {
+				reason := "requirement"
+				switch requirement {
+				case aauth.RequirementClaims, aauth.RequirementClarification, aauth.RequirementInteraction:
+					reason = string(requirement)
+				}
+				return FederatedResponse{}, "", 0, &DeferredCompositionError{reason: reason}
 			}
 		}
 	} else {
@@ -320,7 +379,7 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 	if response.StatusCode == 202 || response.StatusCode == 402 {
 		pending, _, retry, err := readFederatedPending(response, record.Location, record.Location)
 		if err != nil {
-			writeAccessServerUnreachable(out, err)
+			writeFederatedContinuationProblem(out, err)
 			return
 		}
 		out.pending = &pending
@@ -342,9 +401,24 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 }
 func (server *Server) writeFederatedWaiting(w http.ResponseWriter, record FederatedAuthorizationRecord) {
 	w.Header().Set("Location", strings.TrimRight(server.issuer, "/")+"/token/federated/"+record.ID)
-	w.Header().Set("Retry-After", "5")
+	remaining := record.NextPollAt.Sub(server.clock.Now())
+	seconds := int64(0)
+	if remaining > 0 {
+		seconds = int64(remaining / time.Second)
+		if remaining%time.Second != 0 {
+			seconds++
+		}
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 	w.Header().Set("AAuth-Requirement", "requirement=approval")
-	writePrivateJSON(w, 202, map[string]string{"status": "pending"})
+	body := map[string]string{"status": "pending"}
+	switch record.Response.Status {
+	case http.StatusPaymentRequired:
+		body["pending_reason"] = "awaiting_payment"
+	case http.StatusAccepted:
+		body["pending_reason"] = "awaiting_approval"
+	}
+	writePrivateJSON(w, 202, body)
 }
 func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Request) {
 	_, agent, _, err := server.verifyAgentProof(r, nil)
@@ -359,7 +433,7 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 	record, err := server.FederatedAuthorization(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, ErrFederatedAuthorizationConflict) {
-			writeProblem(w, 410, "invalid_code", err)
+			writeProblem(w, 410, "unknown_request", err)
 		} else {
 			writeProblem(w, 500, "server_error", err)
 		}
@@ -367,12 +441,12 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 	}
 	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
 	if err != nil || agent.Issuer != record.AgentIssuer || agent.Subject != record.Agent || agent.PersonServer != server.issuer || thumbprint != record.AgentJKT {
-		writeProblem(w, 403, "denied", errors.New("pending request belongs to another Agent or key"))
+		writeProblem(w, 403, "wrong_poller", errors.New("pending request belongs to another Agent or key"))
 		return
 	}
 
 	if record.Gone {
-		writeProblem(w, 410, "invalid_code", nil)
+		writeProblem(w, 410, "request_consumed", nil)
 		return
 	}
 	if !server.clock.Now().Before(record.ExpiresAt) {
@@ -410,7 +484,7 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 	next.Gone = true
 	if err := server.federatedDeferred.Store.ReplaceFederatedAuthorization(r.Context(), record, next); err != nil {
 		if errors.Is(err, ErrFederatedAuthorizationConflict) {
-			writeProblem(w, 410, "invalid_code", err)
+			writeProblem(w, 410, "request_consumed", err)
 		} else {
 			writeProblem(w, 500, "server_error", err)
 		}

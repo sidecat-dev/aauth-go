@@ -1756,3 +1756,53 @@ func emptyResponse(request *http.Request, status int) *http.Response {
 		Body:       io.NopCloser(strings.NewReader("")),
 	}
 }
+
+func TestPendingExchangeWaitReasonIsOptionalDisplayHint(t *testing.T) {
+	if (agent.PendingExchange{}).WaitReason() != "" {
+		t.Fatal("zero pending exchange has a wait reason")
+	}
+	for _, tc := range []struct{ name, body, want string }{
+		{"payment", `{"status":"pending","pending_reason":"awaiting_payment"}`, "awaiting_payment"},
+		{"approval", `{"status":"pending","pending_reason":"awaiting_approval"}`, "awaiting_approval"},
+		{"absent", `{"status":"pending"}`, ""},
+		{"unknown", `{"status":"pending","pending_reason":"private invoice text"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newExchangeInteractionHarness(t)
+			h.initial = func(r *http.Request) (*http.Response, error) {
+				response := validExchangePendingResponse(r, "/pending/exchange-1", "0", "pending")
+				response.Header.Set("AAuth-Requirement", "requirement=approval")
+				response.Body = io.NopCloser(strings.NewReader(tc.body))
+				return response, nil
+			}
+			h.poll = []func(*http.Request) (*http.Response, error){func(r *http.Request) (*http.Response, error) {
+				response := validExchangePendingResponse(r, "/pending/exchange-1", "0", "pending")
+				response.Header.Set("AAuth-Requirement", "requirement=approval")
+				return response, nil
+			}}
+			client := h.client(t)
+			result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{PersonServer: h.protocol.personServerID, ResourceToken: h.resourceToken, PresentedToken: h.presentedToken})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, ok := result.Pending()
+			if !ok || result.Failure() != nil {
+				t.Fatalf("pending=%v failure=%v", ok, result.Failure())
+			}
+			if pending.WaitReason() != tc.want {
+				t.Fatalf("wait reason=%q, want %q", pending.WaitReason(), tc.want)
+			}
+			result, err = client.PollExchange(context.Background(), pending)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, ok = result.Pending()
+			if !ok {
+				t.Fatal("missing continued pending response")
+			}
+			if pending.WaitReason() != "" {
+				t.Fatal("stale wait reason retained")
+			}
+		})
+	}
+}
