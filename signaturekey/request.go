@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -154,7 +155,8 @@ func SignJWKSURIRequestWithOptions(
 // SignRequest signs one request with the exact supplied Signature-Key
 // credential. It reads nonempty content within MaxBodyBytes (default 1 MiB),
 // computes SHA-256 Content-Digest and covers it and any Content-Type. The caller
-// can still read the request body after signing succeeds or fails.
+// can still read the request body after signing succeeds or fails. A positive
+// ContentLength must match the buffered body size; zero and -1 impose no length.
 func SignRequest(request *http.Request, key jose.SigningKey, credential Credential, clock Clock, options SignOptions) error {
 	if request == nil || request.URL == nil {
 		return errors.New("aauth: request URL is required")
@@ -207,6 +209,9 @@ func SignRequest(request *http.Request, key jose.SigningKey, credential Credenti
 			return err
 		}
 		body = copied
+	}
+	if request.ContentLength > 0 && request.ContentLength != int64(len(body)) {
+		return fmt.Errorf("aauth: ContentLength %d does not match request body length %d", request.ContentLength, len(body))
 	}
 	if len(body) > 0 {
 		additional = uniqueLower(append(additional, "content-digest"))
@@ -852,7 +857,7 @@ func readRequestBody(request *http.Request, maxBodyBytes int64) ([]byte, error) 
 		}
 	}
 	reader := io.Reader(original)
-	if maxBodyBytes > 0 {
+	if maxBodyBytes > 0 && maxBodyBytes < math.MaxInt64 {
 		reader = io.LimitReader(original, maxBodyBytes+1)
 	}
 	body, err := io.ReadAll(reader)

@@ -23,6 +23,13 @@ func TestPublicStoreExamplesRunInAnExternalModule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(consumer, "go.mod"), []byte(module), 0600); err != nil {
 		t.Fatal(err)
 	}
+	contracts, err := os.ReadFile(filepath.Join(root, "testutil", "mission_contracts_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(consumer, "mission_contracts_test.go"), contracts, 0600); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"mission", "fourparty", "audit", "permission", "interactionquestion", "interactionrelay", "selfhosted", "bootstrap", "psconsent", "budget", "revocation"} {
 		source := filepath.Join(root, "example", name)
 		target := filepath.Join(consumer, name)

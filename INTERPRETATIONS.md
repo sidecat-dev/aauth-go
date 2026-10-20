@@ -589,6 +589,12 @@ before role policy. An uncovered body or media type returns `invalid_input`
 with the required components; a covered digest or field that no longer matches
 returns `invalid_signature`. Body detection inspects bytes, not Content-Length.
 
+Before signing, a positive Go `Request.ContentLength` must match the buffered
+content size. A mismatch is a local input error: no proof headers are attached
+and the body remains readable. Zero and `-1` with nonempty content are allowed.
+This prevents HTTP framing from sending fewer bytes than the digest covers;
+the verifier still checks actual content rather than trusting Content-Length.
+
 Empty content retains the existing component profile, including non-nil empty
 transport readers. Explicitly requiring `content-digest` still covers the
 SHA-256 digest of zero bytes. Advertised components remain unconditional;
@@ -605,6 +611,8 @@ its freshness window.
 `resource/body_coverage_test.go` execute bounded signing, preserved content,
 unspecified and unknown lengths, and rejection of added/changed/removed bodies
 and changed media types before Agent/Person identity or PS/AS Auth policy.
+The signing tests also exercise HTTP serialization, mismatched positive
+lengths, and the maximum `int64` body limit without overflow or content loss.
 `agent/body_default_test.go` checks the client's configured bound before
 transport in Agent-identity, initial Person-token, Auth-token and Budget calls,
 even when Resource metadata declares no additional components.
