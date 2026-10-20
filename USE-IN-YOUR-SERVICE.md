@@ -76,11 +76,18 @@ func signAgentRequest(request *http.Request, key jose.SigningKey, token string, 
 }
 ```
 
-The signer preserves the body for transport. Without the unconditional
-configuration, an empty request needs no digest. [Resource tests](resource/body_coverage_test.go)
+The signer preserves the body for transport. To use only the nonempty-body
+default, omit `content-digest` from `AdditionalSignatureComponents` on the
+Resource and from `AdditionalComponents` on the signer. Empty requests then
+need no digest. Keep the explicit component if empty requests must also carry
+a signed digest: the signer computes the SHA-256 digest of zero bytes.
+This applies to empty GETs and POSTs alike; a missing required component is
+refused before your handler runs.
+
+[Resource tests](resource/body_coverage_test.go)
 refuse added, changed and removed content, and changed media types, before
 policy in all four token modes. [The example tests](example/verifyagent/main_test.go)
-also exercise the explicit configuration and a valid POST.
+also exercise the explicit empty-body requirement and a valid POST.
 
 Signed bodies are limited to 1 MiB by default. Set the Resource's
 `MaxSignedBodyBytes` and the signer's `SignOptions.MaxBodyBytes` for your
@@ -249,6 +256,11 @@ the library module.
 
 Each constructor returns a separate store. Use one instance for each deciding
 role; the fixtures do not combine PS consent with mission lifecycle transactions.
+Declare consent-store fields as `personserver.DeferredAuthorizationStore`;
+`testutil.NewDeferredAuthorizationStore` returns that interface. The returned
+store also implements the optional `personserver.AuthorizationClarificationStore`
+extension, which the Person Server discovers when configured with the store.
+
 Durable adapters must satisfy the
 [Resource](resource/storetest) and [Person Server](personserver/storetest)
 contracts and the [R3 issuance contract](r3/storetest).

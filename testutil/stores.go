@@ -1,10 +1,9 @@
-// Package testutil supplies in-memory stores for examples and integration
-// tests and local development that compose the public protocol roles.
+// Package testutil supplies in-memory stores for local development, examples
+// and tests that compose the public protocol roles.
 //
-// The constructors and returned interfaces are public module APIs, with the
-// same versioning expectations as the role packages. Pin a module revision:
-// the pre-v1 APIs may change as the drafts evolve. These stores do not persist
-// across processes, bound retention, or provide production persistence.
+// Stability: the exported APIs follow the same versioning expectations as
+// the role packages; pre-v1 APIs may change as the drafts evolve. Pin a module
+// revision. These stores do not persist across processes or bound retention.
 package testutil
 
 import (

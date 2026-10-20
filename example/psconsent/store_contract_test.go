@@ -15,8 +15,13 @@ func TestAuthorizationStoreContracts(t *testing.T) {
 		},
 	})
 	storetest.RunClarification(t, storetest.Contract{
-		New: func(testing.TB) storetest.ClarificationStore {
-			return testutil.NewDeferredAuthorizationStore()
+		New: func(tb testing.TB) storetest.ClarificationStore {
+			tb.Helper()
+			store, ok := testutil.NewDeferredAuthorizationStore().(storetest.ClarificationStore)
+			if !ok {
+				tb.Fatal("deferred authorization store does not implement the optional clarification contract")
+			}
+			return store
 		},
 	})
 }

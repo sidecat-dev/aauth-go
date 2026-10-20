@@ -12,13 +12,6 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
 
-// DeferredAuthorizationStore keeps consent and clarification transitions in
-// the same in-memory transaction boundary.
-type DeferredAuthorizationStore interface {
-	personserver.DeferredAuthorizationStore
-	personserver.AuthorizationClarificationStore
-}
-
 type deferredAuthorizationStore struct {
 	mu      sync.Mutex
 	pending map[string]*memoryPendingAuthorization
@@ -35,9 +28,10 @@ type memoryPendingAuthorization struct {
 }
 
 // NewDeferredAuthorizationStore returns an empty, concurrency-safe consent and
-// clarification store. Retained results survive Server recomposition, not a
-// process restart. Records are retained for the lifetime of the store.
-func NewDeferredAuthorizationStore() DeferredAuthorizationStore {
+// clarification store. It also implements personserver.AuthorizationClarificationStore
+// over the same pending records. Retained results survive Server recomposition,
+// not a process restart. Records are retained for the lifetime of the store.
+func NewDeferredAuthorizationStore() personserver.DeferredAuthorizationStore {
 	return &deferredAuthorizationStore{
 		pending: make(map[string]*memoryPendingAuthorization),
 		byCode:  make(map[[32]byte]string),
