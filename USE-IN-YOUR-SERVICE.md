@@ -58,9 +58,15 @@ does not grant person-authorized scopes. The runnable example allows only
 ## Protect request bodies
 
 The default proof covers method, authority, path and `Signature-Key`, plus
-the query when present. **It does not cover body bytes.** The handler above
-requires `content-digest` so a caller cannot omit body integrity on a POST.
-The caller must sign it too:
+the query and Authorization field when present. **Nonempty content also covers
+SHA-256 Content-Digest and Content-Type when present.** The signer computes the
+digest; verification checks the actual bytes before policy or dispatch.
+Missing coverage returns `401` with `Signature-Error: invalid_input` and
+`required_input`; changed bytes or a mismatched digest return `401` with
+`Signature-Error: invalid_signature`.
+
+The handler above additionally requires `content-digest` on *every* request,
+including empty ones. Its caller supplies that unconditional component:
 
 ```go
 func signAgentRequest(request *http.Request, key jose.SigningKey, token string, clock aauth.Clock) error {
@@ -70,17 +76,23 @@ func signAgentRequest(request *http.Request, key jose.SigningKey, token string, 
 }
 ```
 
-The signer computes the digest, including for an empty GET body, and restores
-the body for transport. The Resource rejects missing coverage and changed
-bytes before calling `app`. [The example tests](example/verifyagent/main_test.go)
-exercise both refusals and a valid POST. If `Content-Type` selects how your
-application interprets a body, require and sign `content-type` as well.
+The signer preserves the body for transport. Without the unconditional
+configuration, an empty request needs no digest. [Resource tests](resource/body_coverage_test.go)
+refuse added, changed and removed content, and changed media types, before
+policy in all four token modes. [The example tests](example/verifyagent/main_test.go)
+also exercise the explicit configuration and a valid POST.
 
 Signed bodies are limited to 1 MiB by default. Set the Resource's
 `MaxSignedBodyBytes` and the signer's `SignOptions.MaxBodyBytes` for your
 service's limit. An oversized signed body currently returns `401 invalid_input`;
-discovery does not advertise the limit. Unsigned body reads need a separate
-application limit.
+discovery does not advertise the limit. `agent.Config.MaxSignedBodyBytes`
+sets the client limit. Streaming digest trailers are not implemented.
+
+This is a stricter library default, permitted by the draft's Resource component
+negotiation, rather than a universal protocol requirement. Callers that previously
+sent unsigned Resource bodies must now cover the digest and any Content-Type.
+Unconditional advertised components still apply to empty requests too.
+See the [recorded interpretation](INTERPRETATIONS.md#nonempty-request-content-is-covered-by-default).
 
 ## Add revocation and application policy
 

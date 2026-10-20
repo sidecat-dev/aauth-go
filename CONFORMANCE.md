@@ -58,10 +58,15 @@ The [session authority regression](resource/session_authority_test.go) covers
 initial authorization, session use, discovery and pending routes before state
 access. A correctly signed path still needs application routing and access policy.
 
-The default request proof does not cover body bytes. The
-[service example](example/verifyagent/main.go) requires `content-digest`;
-[its tests](example/verifyagent/main_test.go) accept a covered POST and refuse
-missing coverage or changed bytes before application dispatch.
+The bounded request profile signs and requires `content-digest` on nonempty
+content, plus `content-type` when present. This is a [local default](INTERPRETATIONS.md#nonempty-request-content-is-covered-by-default),
+permitted by Resource component negotiation. [Signer tests](signaturekey/body_default_test.go)
+check actual bytes and limits; the [Resource matrix](resource/body_coverage_test.go)
+rejects missing coverage, altered bodies and media types before policy in all
+four token modes, including bodies with unspecified or unknown length.
+The [service example](example/verifyagent/main.go) additionally requires
+digests on empty requests; [its tests](example/verifyagent/main_test.go)
+exercise that explicit configuration.
 
 | Source area | Status | Current boundary | Evidence |
 | --- | --- | --- | --- |

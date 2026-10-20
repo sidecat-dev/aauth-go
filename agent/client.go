@@ -853,9 +853,9 @@ func (client *Client) signJSONRequest(request *http.Request, compact string) err
 }
 
 func (client *Client) signResourceRequest(request *http.Request, compact string, components []string) error {
-	options := signaturekey.SignOptions{AdditionalComponents: append([]string(nil), components...)}
-	if containsFold(components, "content-digest") {
-		options.MaxBodyBytes = client.maxSignedBodyBytes
+	options := signaturekey.SignOptions{
+		AdditionalComponents: append([]string(nil), components...),
+		MaxBodyBytes:         client.maxSignedBodyBytes,
 	}
 	return signaturekey.SignJWTRequestWithOptions(request, client.signingKey, compact, client.clock, options)
 }

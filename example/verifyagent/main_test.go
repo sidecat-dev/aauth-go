@@ -73,7 +73,10 @@ func TestServiceVerificationProtectsRequestBodies(t *testing.T) {
 			if test.digest {
 				err = signAgentRequest(request, agentKey, token, clock)
 			} else {
+				body := request.Body
+				request.Body = http.NoBody
 				err = signaturekey.SignJWTRequest(request, agentKey, token, clock)
+				request.Body = body
 			}
 			if err != nil {
 				t.Fatal(err)

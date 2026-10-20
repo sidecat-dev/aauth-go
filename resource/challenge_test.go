@@ -515,19 +515,22 @@ func TestAuthTokenRequirementRejectsIgnoredScopePolicyBodyReadError(t *testing.T
 		&bytesThenErrorBody{reader: strings.NewReader(`{"record":"truncated"}`), err: readFailure},
 	)
 	request.GetBody = nil
+	body := request.Body
+	request.Body = http.NoBody
 	if err := signaturekey.SignJWTRequest(request, agentKey, personToken, clock); err != nil {
 		t.Fatal(err)
 	}
+	request.Body = body
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 
-	if response.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusInternalServerError, response.Body.String())
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusUnauthorized, response.Body.String())
 	}
 	if values := response.Header().Values("AAuth-Requirement"); len(values) != 0 {
 		t.Fatalf("AAuth-Requirement = %q", values)
 	}
-	if policyCalls != 1 || issued != 0 || resolved != 0 || protected != 0 {
+	if policyCalls != 0 || issued != 0 || resolved != 0 || protected != 0 {
 		t.Fatalf("calls: RequiredScopes=%d NewID=%d ResolvePerson=%d Protected=%d", policyCalls, issued, resolved, protected)
 	}
 	var problem struct {
@@ -536,8 +539,8 @@ func TestAuthTokenRequirementRejectsIgnoredScopePolicyBodyReadError(t *testing.T
 	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
 		t.Fatal(err)
 	}
-	if problem.Code != "server_error" {
-		t.Fatalf("problem error = %q, want server_error", problem.Code)
+	if problem.Code != "invalid_token" {
+		t.Fatalf("problem error = %q, want invalid_token", problem.Code)
 	}
 
 	independentRequest := httptest.NewRequest(http.MethodPost, resourceIssuer+"/records", nil)
@@ -556,7 +559,7 @@ func TestAuthTokenRequirementRejectsIgnoredScopePolicyBodyReadError(t *testing.T
 	if values := independentResponse.Header().Values("AAuth-Requirement"); len(values) != 0 {
 		t.Fatalf("GetBody AAuth-Requirement = %q", values)
 	}
-	if policyCalls != 2 || issued != 0 || resolved != 0 || protected != 0 {
+	if policyCalls != 1 || issued != 0 || resolved != 0 || protected != 0 {
 		t.Fatalf("GetBody calls: RequiredScopes=%d NewID=%d ResolvePerson=%d Protected=%d", policyCalls, issued, resolved, protected)
 	}
 	problem = struct {

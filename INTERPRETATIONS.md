@@ -564,11 +564,50 @@ solve this for Resources that also have bodyless protected routes.
 
 This implementation always signs and requires `content-type` and
 `content-digest` at `/authorize`, then adds the Resource's advertised
-components. Advertised components alone govern ordinary protected routes. A
+components. Ordinary protected routes use the nonempty-content default below
+alongside their advertised components. A
 transport-mutation test proves that changing `scope` after signing is refused.
 
 **Executable example:**
 `integration/core_four_party_test.go:TestCurrentCoreFourParty`.
+
+## Nonempty request content is covered by default
+
+**Source:** AAuth Core `a99d353`, `Covered Components` and `Verification`,
+step 2; RFC 9530, `Content-Digest`.
+
+Core mandates body digest and media-type coverage at PS/AS endpoints but
+explicitly lets Resources declare their requirements for arbitrary APIs,
+including large and streamed payloads. It permits further component
+requirements through metadata and `invalid_input` / `required_input`.
+It does not impose a universal Resource-body digest requirement.
+
+This library chooses a bounded profile: signing nonempty content computes and
+covers SHA-256 `content-digest`, and covers `content-type` when that field is
+present. Verification requires the same coverage and checks the actual content
+before role policy. An uncovered body or media type returns `invalid_input`
+with the required components; a covered digest or field that no longer matches
+returns `invalid_signature`. Body detection inspects bytes, not Content-Length.
+
+Empty content retains the existing component profile, including non-nil empty
+transport readers. Explicitly requiring `content-digest` still covers the
+SHA-256 digest of zero bytes. Advertised components remain unconditional;
+metadata does not imply that the conditional default applies to empty content.
+
+This changes the default for body-bearing Resource calls. Signing and
+verification buffer within their configured bound (1 MiB by default); larger
+payloads require explicit limits. Unchecked body pass-through and streaming
+digest trailers are not supported. The proof does not prevent replay within
+its freshness window.
+
+**Evidence:** `signaturekey/body_default_test.go`,
+`signaturekey/body_limit_external_test.go` and
+`resource/body_coverage_test.go` execute bounded signing, preserved content,
+unspecified and unknown lengths, and rejection of added/changed/removed bodies
+and changed media types before Agent/Person identity or PS/AS Auth policy.
+`agent/body_default_test.go` checks the client's configured bound before
+transport in Agent-identity, initial Person-token, Auth-token and Budget calls,
+even when Resource metadata declares no additional components.
 
 ## A bodyless poll can cover the digest of empty content
 
