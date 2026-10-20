@@ -38,3 +38,34 @@ func TestDiagnosticsReceivesBudgetCostFailureWithoutChangingRefusal(t *testing.T
 		t.Fatal("diagnostics caused a budget mutation")
 	}
 }
+
+func TestDiagnosticsDoesNotObservePlainAuthorityRefusals(t *testing.T) {
+	protected := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("foreign authority reached the application")
+	})
+	regular := newBudgetResourceProtocol(t, 1, protected).server(t)
+	sessions := newResourceSessionProtocol(t)
+	managed, err := NewResourceManaged(sessions.config(newMemorySessionStore(), protected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, service := range map[string]http.Handler{
+		"Resource": regular.Handler(), "Resource-managed sessions": managed.Handler(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			observed := 0
+			handler := diagnostics.Handler(service, func(context.Context, diagnostics.Problem) {
+				observed++
+			})
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://foreign.example/records", nil))
+			if response.Code != http.StatusMisdirectedRequest || observed != 0 {
+				t.Fatalf("foreign authority: status=%d observations=%d", response.Code, observed)
+			}
+			if response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+				response.Body.String() != http.StatusText(http.StatusMisdirectedRequest)+"\n" {
+				t.Fatalf("authority refusal changed: %v %q", response.Header(), response.Body.String())
+			}
+		})
+	}
+}

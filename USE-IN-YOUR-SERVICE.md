@@ -84,6 +84,10 @@ a signed digest: the signer computes the SHA-256 digest of zero bytes.
 This applies to empty GETs and POSTs alike; a missing required component is
 refused before your handler runs.
 
+If you set a positive `http.Request.ContentLength`, it must match the actual
+body size. Signing refuses a mismatch before attaching proof headers and
+leaves the body readable. Zero or `-1` with a nonempty body remains supported.
+
 [Resource tests](resource/body_coverage_test.go)
 refuse added, changed and removed content, and changed media types, before
 policy in all four token modes. [The example tests](example/verifyagent/main_test.go)
@@ -277,6 +281,10 @@ extension, which the Person Server discovers when configured with the store.
 Durable adapters must satisfy the
 [Resource](resource/storetest) and [Person Server](personserver/storetest)
 contracts and the [R3 issuance contract](r3/storetest).
+The public mission fixture exposes `LoadAuthToken` and `LoadR3Issuance` for
+the observation callbacks required by `RunMission` and `RunMissionR3Issuance`.
+Use the [public-constructor contract tests](testutil/mission_contracts_test.go)
+as the wiring example; they also run from an external module.
 
 ## Find requests waiting for the person
 
@@ -322,6 +330,8 @@ not preserved. It observes problems written by the role serializer, including
 
 - `AAuth-Requirement` challenges, including Budget step-up, or successful polls;
 - application responses and router-generated errors;
+- plain-text HTTP 421 refusals for a foreign authority from either Resource
+  handler; observe these through your outer HTTP access logger;
 - retained held-invocation responses replayed by a Resource, including its
   stored `server_error` fallback (the original cause is not retained);
 - errors returned directly from non-HTTP methods.

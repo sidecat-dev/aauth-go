@@ -56,6 +56,22 @@ var _ personserver.MissionPermissionStore = (*missionStore)(nil)
 var _ personserver.MissionProposalStore = (*missionStore)(nil)
 var _ personserver.MissionR3IssuanceStore = (*missionStore)(nil)
 
+// LoadAuthToken observes a retained Auth-token record for store contracts.
+func (store *missionStore) LoadAuthToken(reference aauth.TokenReference) (personserver.IssuedAuthTokenRecord, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, ok := store.auth[reference.Issuer+"\x00"+reference.JTI]
+	return record, ok
+}
+
+// LoadR3Issuance returns an independent copy for store contracts.
+func (store *missionStore) LoadR3Issuance(reference aauth.TokenReference) (r3.IssuanceRecord, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, ok := store.r3Issuances[reference]
+	return record.Clone(), ok
+}
+
 func (store *missionStore) CreateMissionProposal(
 	_ context.Context,
 	record personserver.MissionProposalRecord,

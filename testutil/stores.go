@@ -11,6 +11,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
 	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 )
 
 // MissionStore combines mission lifecycle, proposals, permissions, audit and
@@ -21,6 +22,10 @@ type MissionStore interface {
 	personserver.PermissionQueueStore
 	personserver.MissionAuditStore
 	personserver.MissionR3IssuanceStore
+	// LoadAuthToken and LoadR3Issuance are read-only observations for storetest
+	// fixtures. They return independent copies and do not enforce expiry.
+	LoadAuthToken(aauth.TokenReference) (personserver.IssuedAuthTokenRecord, bool)
+	LoadR3Issuance(aauth.TokenReference) (r3.IssuanceRecord, bool)
 }
 
 // NewMissionStore returns an empty, concurrency-safe in-memory mission store.
