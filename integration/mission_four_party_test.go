@@ -32,7 +32,7 @@ import (
 func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Date(2026, 8, 30, 22, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	const (
@@ -504,6 +504,8 @@ func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 		token string
 		err   error
 	}
+	// Observe commit entry or exchange completion; scheduler latency is not a
+	// protocol failure. The test context releases the commit gate on failure.
 	exchangeDone := make(chan exchangeResult, 1)
 	go func() {
 		token, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
@@ -526,8 +528,6 @@ func TestMissionBoundImmediateFourPartyR3BudgetJourney(t *testing.T) {
 		close(store.allowFirstMissionAuthCommit)
 	case result := <-exchangeDone:
 		t.Fatalf("federated exchange completed before mission auth-token retention: token=%q err=%v", result.token, result.err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("federated exchange never reached mission auth-token retention")
 	}
 	result := <-exchangeDone
 	if result.err != nil {

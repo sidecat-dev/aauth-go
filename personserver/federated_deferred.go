@@ -111,6 +111,8 @@ type FederatedAuthorizationRecord struct {
 // rejects duplicate IDs. Load returns independent copies. Replace atomically
 // compares the complete previous record, preserves immutable fields, increments
 // Revision by one, and never reopens Gone or replaces a terminal response.
+// Create, Load and Replace preserve the complete Response, including RefusalReason,
+// so a persisted local refusal retains its typed diagnostic on Agent delivery.
 // Missing IDs and failed comparisons return ErrFederatedAuthorizationConflict.
 // The host authenticates operators before exposing records or invoking progress.
 type FederatedAuthorizationStore interface {

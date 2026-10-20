@@ -20,8 +20,9 @@ type FederatedAuthorizationContract struct {
 }
 
 // RunFederatedAuthorization checks copy isolation, immutable request retention,
-// conditional updates and single consumption. Backend
-// restart and failure testing remain the adapter author's responsibility.
+// complete response retention including RefusalReason, conditional updates and
+// single consumption. Backend restart and failure testing remain the adapter
+// author's responsibility.
 func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationContract) {
 	t.Helper()
 	if contract.New == nil {
@@ -80,7 +81,7 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 			case reflect.Slice:
 				v.SetBytes([]byte("changed"))
 			default:
-				v.Set(reflect.ValueOf(time.Unix(999, 0)))
+				v.Set(reflect.ValueOf(time.Unix(999, 0).UTC()))
 			}
 			if err := store.ReplaceFederatedAuthorization(ctx, before, after); !errors.Is(err, personserver.ErrFederatedAuthorizationConflict) {
 				t.Fatalf("changed %s accepted: %v", field, err)
@@ -106,8 +107,14 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 			t.Fatal(err)
 		}
 		retained, err := store.LoadFederatedAuthorization(ctx, terminal.ID)
-		if err != nil || !reflect.DeepEqual(retained, terminal) {
-			t.Fatalf("terminal response lost its diagnostic reason: %#v %v", retained, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if retained.Response.RefusalReason != terminal.Response.RefusalReason {
+			t.Fatalf("terminal refusal reason = %q, want %q", retained.Response.RefusalReason, terminal.Response.RefusalReason)
+		}
+		if !reflect.DeepEqual(retained, terminal) {
+			t.Fatal("terminal record changed on load")
 		}
 		for _, field := range []string{"state", "body", "reason"} {
 			changed := terminal
@@ -165,8 +172,9 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 	})
 }
 
+// UTC fixtures survive JSON timestamp round trips without a location mismatch.
 func federatedAuthorizationRecord() personserver.FederatedAuthorizationRecord {
-	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", Location: "https://as.example/pending/test", ExpiresAt: time.Unix(100, 0), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
+	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", Location: "https://as.example/pending/test", ExpiresAt: time.Unix(100, 0).UTC(), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
 }
 
 // FederatedAuthorizationQueueContract constructs a fresh store with optional
@@ -187,7 +195,7 @@ func RunFederatedAuthorizationQueue(t *testing.T, contract FederatedAuthorizatio
 	t.Run("pending listing is bounded isolated and read only", func(t *testing.T) {
 		store := contract.New(t)
 		queue := store
-		now := time.Unix(50, 0)
+		now := time.Unix(50, 0).UTC()
 		for _, id := range []string{"later", "first-b", "first-a", "foreign", "expired", "terminal", "gone", "advancing"} {
 			r := fixture()
 			r.ID = id

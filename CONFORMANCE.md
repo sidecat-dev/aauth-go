@@ -231,12 +231,15 @@ storage or combine separate role transaction boundaries.
 
 `accessserver/storetest.RunDeferredAuthorization` and
 `personserver/storetest.RunFederatedAuthorization` check copy isolation,
-immutable request identity, conditional revisions and one terminal consumption.
+immutable request identity, complete response retention (including
+`FederatedResponse.RefusalReason` in the PS store), conditional revisions and
+one terminal consumption.
 The optional `personserver/storetest.RunFederatedAuthorizationQueue` checks
 bounded pending listing, issuer isolation, stable ordering, expiry filtering
 and copy isolation without state changes.
 [`testutil/federated_test.go`](testutil/federated_test.go) executes all three through
-public constructors. [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go)
+public constructors, including a PS adapter that round-trips JSON and normalizes
+timestamps to UTC. [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go)
 checks recomposition, wrong poll identities, expiry, interval enforcement,
 concurrent delivery, altered grants and failed completion persistence. It also
 executes host queue recovery, Agent retry scheduling and payment/approval display
