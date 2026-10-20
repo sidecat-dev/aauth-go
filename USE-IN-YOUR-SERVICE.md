@@ -232,6 +232,7 @@ and at exhaustion, alongside binding and concurrent-cap enforcement.
 | --- | --- |
 | Core + Budget, three or four parties | Immediate grants and replacement-grant step-up; [three-party](integration/budget_three_party_test.go) and [four-party](integration/budget_four_party_test.go) tests. |
 | R3 class + Budget | Immediate grants; denied operations report zero cost. [Three-party](integration/r3_budget_three_party_test.go) and [four-party](integration/r3_direct_four_party_test.go) tests. |
+| AS deferred approval/payment + R3, Budget, delegation or missions | Immediate compositions retain their existing support; a deferred result is refused. See [deferred federation](#continue-an-as-approval-or-payment-request). |
 | Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
 | Budget + deferred Core consent | Immediate requests work, but selecting deferred consent for a Budget request returns `500 server_error`; [request-time limit test](personserver/budget_test.go). |
 | Reactive `Client.Begin` + mission Person token | Refused before sending; use proactive authorization. [Input tests](agent/call_test.go). |
@@ -247,6 +248,36 @@ means the approval contains no token for that exact Resource identifier.
 `PersonTokens()` returns a copy of all returned Resource-to-token mappings;
 use its keys when reporting the available Resources. [Mission tests](agent/mission_test.go)
 cover present and absent Resources and protect the retained mapping from mutation.
+
+## Continue an AS approval or payment request
+
+For top-level missionless Core, set `accessserver.Config.Deferred` with an
+AS-owned `DeferredAuthorizationStore`, and
+`personserver.FederatedAuthorizationConfig.Deferred` with a separate
+`FederatedAuthorizationStore`. An AS policy returns `Decision.Pending` while
+approval or payment is needed; a normal decision grants access.
+
+The Agent uses `BeginExchange` and `PollExchange`. A PS host loads the reference
+from its pending URL with `FederatedAuthorization`, inspects the retained AS
+response, and calls `AdvanceFederation` for one AS poll after payment settlement
+or an approval wait. Authenticate the operator before exposing a record or
+advancing it. Payment details are untrusted input; the library does not settle
+payments. Hosts interpret the indicated protocol and cache billing relationships
+per AS. The AS's host likewise remembers which PS has established billing.
+
+[Run the payment example](example/federatedpayment) for a complete
+`402 → 202 → 200` path using these APIs. Its payment state is simulated.
+`Retry-After` is enforced on AS polls; Agent polling never advances the AS
+exchange implicitly. An in-flight AS call whose completion cannot be stored
+stays fenced until expiry, because its terminal result may already be consumed.
+Observe store errors and pending records rather than retrying that call.
+
+The supported challenge carrier is `WWW-Authenticate`, with optional opaque
+body content. Claims, clarification, interaction forwarding and deferred
+R3/Budget/delegated/mission combinations remain unsupported. The earliest
+original credential expiry and configured lifetime bound both pending records.
+Custom adapters should run `accessserver/storetest.RunDeferredAuthorization`
+and `personserver/storetest.RunFederatedAuthorization`.
 
 ## Use in-memory stores in examples and tests
 
@@ -269,6 +300,7 @@ fixture discards its identities and decisions and is not a cleanup strategy.
 | `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |
 | `NewEnrollmentStore`, `NewAgentTokenRevocationStore` | AP enrollment or Resource revocation, respectively |
 | `NewDeferredAuthorizationStore` | PS consent and clarification, sharing one transaction boundary |
+| `NewAccessAuthorizationStore`, `NewFederatedAuthorizationStore` | Separate AS request retention and PS federation continuation |
 | `NewBudgetStore` | Resource fixed-price token consumption and person totals |
 | `NewR3DocumentStore`, `NewR3IssuanceStore` | Resource documents or role-local issuance audit, respectively |
 | `NewIssuedAuthTokenStore`, `NewAuthTokenStatusStore` | PS-issued Auth tokens or Resource revocation status, respectively |
@@ -290,7 +322,7 @@ store also implements the optional `personserver.AuthorizationClarificationStore
 extension, which the Person Server discovers when configured with the store.
 
 Durable adapters must satisfy the
-[Resource](resource/storetest) and [Person Server](personserver/storetest)
+[Resource](resource/storetest), [Access Server](accessserver/storetest) and [Person Server](personserver/storetest)
 contracts and the [R3 issuance contract](r3/storetest).
 The public mission fixture exposes `LoadAuthToken` and `LoadR3Issuance` for
 the observation callbacks required by `RunMission` and `RunMissionR3Issuance`.
@@ -351,7 +383,10 @@ not preserved. It observes problems written by the role serializer, including
   handler; observe these through your outer HTTP access logger;
 - retained held-invocation responses replayed by a Resource, including its
   stored `server_error` fallback (the original cause is not retained);
-- errors returned directly from non-HTTP methods.
+- errors returned directly from non-HTTP methods, including `AdvanceFederation`;
+- retained federation results delivered by a PS; the original asynchronous
+  cause is not retained with the response. Inspect the host continuation record
+  and the method error as well as HTTP access logs.
 
 ## Versions and local development
 

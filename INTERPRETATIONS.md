@@ -1592,3 +1592,41 @@ future-`iat` refusal.
 Events is excluded. Subscribe-token and event-token validation keep their own
 `validateTimes` in `events/token.go`, which still refuses any future `iat`;
 neither was changed.
+
+## Deferred federation keeps payment and progress with the PS host
+
+**Source:** Protocol `28e8258`, AS Response, Auth Token Delivery, PS-AS Trust
+Establishment, Deferred Responses and Pending URL Security.
+
+The AS retains the exact verified token request before publishing a pending
+URL. The PS retains a separate continuation before returning its own pending
+URL to the Agent. Both URLs use 256-bit random references. PS polls use the
+server's `jwks_uri` identity; Agent polls remain bound to the original Agent
+issuer, identifier and key. No payment credentials or AS payment challenge are
+forwarded to the Agent.
+
+`AdvanceFederation` performs one explicit AS GET. The host calls it after
+settling the indicated payment or when approval polling is due. Hosts own
+payment-protocol interpretation, settlement and billing-relationship caches
+per AS/PS; policy callbacks inspect that state without charging on a poll.
+The library currently carries one `WWW-Authenticate` challenge with optional
+opaque content. It does not implement a payment protocol or other payment
+header formats. AS claims, clarification and interaction forwarding remain
+separate unimplemented branches.
+
+Each pending deadline is the earliest of its configured lifetime, the original
+Resource-token expiry, Agent-token expiry and presented-token expiry. A wait
+cannot extend any credential that justified it. An expired request returns one
+`408 expired`, then `410 invalid_code`. The latter follows the existing consumed
+PS continuation interpretation. A retained grant is reverified at actual Agent
+delivery, and `expires_in` is recomputed then.
+
+The PS conditionally marks an AS call in progress before sending it. If the
+process or completion write fails after handoff, the call remains fenced until
+expiry. It is not automatically retried: the AS may already have consumed its
+terminal response. This bounds ambiguous delivery without pretending that two
+servers share a transaction. Hosts must monitor pending records and store
+errors. The lifetime bounds processing, not store retention or queue capacity.
+
+**Evidence:** `integration/federated_deferred_test.go`, the two role-specific
+federation `storetest` contracts, and `example/federatedpayment`.

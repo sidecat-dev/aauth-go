@@ -172,6 +172,25 @@ upstream tokens; mission- or account-bound upstream tokens; AS-issued upstream
 tokens and federated downstream issuance; and repeated hops or cascade. This
 overlay does not claim full call chaining.
 
+## Targeted additional source: Protocol -11 deferred AS delivery
+
+The Core approval/payment continuation follows **AS Response**, **Auth Token
+Delivery**, **PS-AS Trust Establishment**, **Deferred Responses**, and **Pending
+URL Security** at the revision below. This adopts the PS's terminal-error relay
+and `as_unreachable` distinction for deferred delivery alongside the existing
+immediate verifier. It does not implement the claims, clarification or user
+interaction branches described in those sections. Payment settlement remains
+outside AAuth; the implemented challenge carrier is `WWW-Authenticate`.
+
+- Document: AAuth Protocol -11, `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Sections: AS Response and Auth Token Delivery (1610–1661), PS-AS Trust
+  Establishment (1686–1740), Deferred Responses (2478–2568), and Pending URL
+  Security (2835–2841).
+- SHA-256: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
+The baseline manifest remains unchanged; this is a bounded additional source.
+
 ## Native R3 vocabulary baselines
 
 R3 names seven external description formats without citing exact revisions.

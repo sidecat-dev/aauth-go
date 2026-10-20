@@ -1,8 +1,9 @@
-// Package accessserver implements the Access Server role for immediate
-// four-party AAuth Core and R3 class and per-call authorization.
+// Package accessserver implements four-party AAuth Core authorization and
+// immediate R3 class and per-call authorization.
 package accessserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -41,6 +42,8 @@ type Config struct {
 	Authorize         func(context.Context, AuthorizationRequest) (Decision, error)
 	Budget            *BudgetConfig
 	R3                *R3Config
+	// Deferred enables retained Core approval and payment continuations.
+	Deferred *DeferredConfig
 }
 
 // Agent is the verified agent identity presented to authorization policy.
@@ -75,6 +78,8 @@ type AuthorizationRequest struct {
 // Decision is the requested Core-scope subset and lifetime granted by Core
 // policy. R3 policy decisions are returned through R3Config callbacks.
 type Decision struct {
+	// Pending defers Core authorization instead of granting scopes.
+	Pending  *PendingDecision
 	Scopes   []string
 	Lifetime time.Duration
 	// Budget is required when AuthorizationRequest.Budget is present and may
@@ -82,7 +87,7 @@ type Decision struct {
 	Budget *budgets.Value
 }
 
-// Server is an immediate AAuth Access Server.
+// Server is an AAuth Access Server.
 type Server struct {
 	issuer            string
 	signingKey        jose.SigningKey
@@ -93,9 +98,10 @@ type Server struct {
 	authorize         func(context.Context, AuthorizationRequest) (Decision, error)
 	budget            *budgetConfig
 	r3                *r3Config
+	deferred          *DeferredConfig
 }
 
-// New constructs an immediate Access Server.
+// New constructs an Access Server.
 func New(config Config) (*Server, error) {
 	if err := aauth.ValidateServerIdentifier(config.Issuer); err != nil {
 		return nil, fmt.Errorf("accessserver: issuer: %w", err)
@@ -126,11 +132,14 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateDeferredConfig(config.Deferred); err != nil {
+		return nil, err
+	}
 	return &Server{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
 		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize,
-		budget: budgetConfiguration, r3: r3Configuration,
+		budget: budgetConfiguration, r3: r3Configuration, deferred: cloneDeferredConfig(config.Deferred),
 	}, nil
 }
 
@@ -138,6 +147,9 @@ func New(config Config) (*Server, error) {
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", server.handleToken)
+	if server.deferred != nil {
+		mux.HandleFunc("GET /token/pending/{id}", server.handlePendingToken)
+	}
 	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
 	return mux
@@ -168,6 +180,16 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 
+	server.authorizeToken(response, request, personServer, proof, nil)
+}
+
+func (server *Server) authorizeToken(response http.ResponseWriter, request *http.Request, personServer string, proof signaturekey.VerifiedRequest, pending *PendingAuthorizationRecord) {
+	encoded, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
+	if err != nil || len(encoded) > maxRequestBytes {
+		writeProblem(response, 400, "invalid_request", err)
+		return
+	}
+
 	var input struct {
 		ResourceToken  string          `json:"resource_token"`
 		AgentToken     string          `json:"agent_token"`
@@ -176,7 +198,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		UpstreamToken  json.RawMessage `json:"upstream_token"`
 		Budget         json.RawMessage `json:"budget"`
 	}
-	if err := decodeJSON(request.Body, &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
+	if err := decodeJSON(bytes.NewReader(encoded), &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
@@ -372,7 +394,19 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if err != nil {
-		writeAccessPolicyProblem(response, err)
+		if pending != nil && errors.Is(err, ErrAccessDenied) {
+			writeProblem(response, 403, "denied", err)
+		} else {
+			writeAccessPolicyProblem(response, err)
+		}
+		return
+	}
+	if decision.Pending != nil {
+		if r3Context != nil || budgetOffer != nil || subagentClaims != nil || resourceClaims.MissionS256 != "" {
+			writeProblem(response, 500, "server_error", errors.New("accessserver: deferred authorization supports top-level missionless Core requests only"))
+			return
+		}
+		server.deferAuthorization(response, request, personServer, encoded, resourceClaims, agentClaims, presented, decision, pending)
 		return
 	}
 	if err := validateDecision(decision, requestedScopes, r3Context != nil); err != nil {

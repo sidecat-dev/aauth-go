@@ -106,6 +106,18 @@ Specifications:
 
 ## AAuth Protocol
 
+- [x] **Deferred four-party approval and payment — Implemented bounded path**
+  - Flow: Resource challenge → PS consent → AS `402` payment → host settlement
+    → PS-signed AS poll → `202` approval → grant → verified PS delivery → Resource.
+  - Start with: `go run ./example/federatedpayment`. Payment is simulated host
+    state; no payment provider is contacted.
+  - Evidence: [`example/federatedpayment/main_test.go`](example/federatedpayment/main_test.go)
+    and [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go).
+  - Boundary: top-level missionless Core, `WWW-Authenticate` challenge carrier,
+    explicit host-driven polling, separate in-memory role stores. No claims,
+    clarification, interaction forwarding or deferred companion combinations.
+
+
 Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md).
 
 ### Runnable journeys

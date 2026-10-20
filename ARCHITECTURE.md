@@ -560,6 +560,15 @@ not require a duplicate Core scope.
 
 ### `accessserver`
 
+The bounded deferred Core path retains an exact PS-authenticated request through
+`accessserver.DeferredAuthorizationStore`. The AS policy may request payment or
+wait for approval before granting. The PS owns its separate
+`FederatedAuthorizationStore`: it fences one explicit AS poll, verifies the
+result and retains it for authenticated Agent delivery. Payment settlement and
+billing relationships stay in host policy; there is no shared PS/AS store or
+implicit polling loop. Both roles consume terminal delivery conditionally.
+
+
 The target owns four-party PS authentication, Resource-token verification,
 policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuer
 commits the mandatory audit record before publishing the token.

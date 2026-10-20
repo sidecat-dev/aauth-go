@@ -50,6 +50,8 @@ var errSubagentTokenSyntax = errors.New("personserver: subagent_token must be a 
 // person tokens, retains their lineage, and federates auth-token requests to an
 // Access Server.
 type FederatedAuthorizationConfig struct {
+	// Deferred enables host-driven AS approval and payment continuations.
+	Deferred    *FederatedDeferredConfig
 	Issuer      string
 	SigningKey  jose.SigningKey
 	KeyResolver signaturekey.KeyResolver
@@ -283,6 +285,7 @@ type Server struct {
 	keyResolver                      signaturekey.KeyResolver
 	clock                            aauth.Clock
 	newID                            func() string
+	federatedDeferred                *FederatedDeferredConfig
 	httpClient                       *http.Client
 	maximumResourceTokenLifetime     time.Duration
 	accessServerEndpoint             func(context.Context, string) (string, error)
@@ -351,6 +354,9 @@ type serverConfig struct {
 
 // NewFederatedAuthorization constructs a four-party Person Server.
 func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, error) {
+	if err := validateFederatedDeferredConfig(config.Deferred); err != nil {
+		return nil, err
+	}
 	if config.HTTPClient == nil {
 		return nil, errors.New("personserver: HTTP client is required")
 	}
@@ -389,6 +395,10 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		return http.ErrUseLastResponse
 	}
 	server.httpClient = &httpClient
+	if config.Deferred != nil {
+		v := *config.Deferred
+		server.federatedDeferred = &v
+	}
 	server.accessServerEndpoint = config.AccessServerEndpoint
 	server.consent = config.Consent
 	if config.Budget != nil {
@@ -664,6 +674,9 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /person", server.handlePerson)
 	mux.HandleFunc("GET /person/pending/{id}", server.handlePendingPersonToken)
 	mux.HandleFunc("POST /token", server.handleToken)
+	if server.federatedDeferred != nil {
+		mux.HandleFunc("GET /token/federated/{id}", server.handleFederatedPending)
+	}
 	mux.HandleFunc("/token/pending/{id}", server.handlePendingAuthorization)
 	mux.HandleFunc("GET /.well-known/aauth-person.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
@@ -1315,6 +1328,14 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	defer accessResponse.Body.Close()
+	if accessResponse.StatusCode == 202 || accessResponse.StatusCode == 402 {
+		if server.federatedDeferred == nil || r3Context != nil || budgetOffer != nil || delegated || missionRecord != nil {
+			writeAccessServerUnreachable(response, errors.New("personserver: AS continuation requires configured top-level missionless Core federation"))
+			return
+		}
+		server.beginFederatedAuthorization(response, request, accessResponse, endpoint, input.ResourceToken, agentToken, input.PresentedToken, agent, resourceToken, presented.ExpiresAt)
+		return
+	}
 	if accessResponse.StatusCode != http.StatusOK {
 		if relayAccessServerProblem(response, accessResponse) {
 			return
@@ -1323,119 +1344,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeAccessServerUnreachable(response, errors.New("access server returned no well-formed terminal error"))
 		return
 	}
-	accessBody, err := io.ReadAll(io.LimitReader(accessResponse.Body, maxRequestBytes+1))
-	if err != nil || len(accessBody) > maxRequestBytes {
-		writeAccessServerUnreachable(response, errors.New("access-server response is unavailable"))
-		return
-	}
-	var accessOutput struct {
-		AuthToken string `json:"auth_token"`
-		ExpiresIn int64  `json:"expires_in"`
-	}
-	if err := decodeJSON(bytes.NewReader(accessBody), &accessOutput); err != nil || accessOutput.AuthToken == "" {
-		writeAccessServerUnreachable(response, errors.New("access-server response is invalid"))
-		return
-	}
-	var authToken aauth.AuthTokenClaims
-	if r3Context != nil && budgetOffer != nil {
-		var grant budgets.Value
-		authToken, grant, err = server.verifyR3BudgetAccessResult(
-			request.Context(), accessOutput.AuthToken, r3Context,
-		)
-		if err == nil {
-			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
-		}
-	} else if r3Context != nil {
-		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
-	} else if budgetOffer != nil {
-		var grant budgets.Value
-		authToken, grant, err = budgets.VerifyAuthToken(
-			request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
-		)
-		if err == nil {
-			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
-		}
-	} else {
-		carriesBudget, budgetErr := budgets.TokenCarriesClaims(accessOutput.AuthToken)
-		if budgetErr != nil {
-			err = budgetErr
-		} else if carriesBudget {
-			err = errors.New("Access Server auth token invented a Budget")
-		} else {
-			authToken, err = aauth.VerifyAuthToken(
-				request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
-			)
-		}
-	}
-	if err != nil {
-		writeAccessServerUnreachable(response, err)
-		return
-	}
-	if authToken.Issuer != resourceToken.Audience ||
-		authToken.DWK != aauth.AccessDiscoveryDocument ||
-		authToken.ExpiresAt > agent.ExpiresAt ||
-		authToken.ExpiresAt > credentialAgent.ExpiresAt ||
-		authToken.ExpiresAt > presented.ExpiresAt.Unix() ||
-		authToken.MissionS256 != resourceToken.MissionS256 ||
-		authToken.Tenant != resourceToken.Tenant || !equalStringPointers(authToken.Account, resourceToken.Account) {
-		writeAccessServerUnreachable(response, errors.New("access-server auth token changed the authorized context"))
-		return
-	}
-	if err := aauth.ValidateCurrentAuthTokenContext(
-		authToken,
-		aauth.AuthTokenContext{
-			Issuer: resourceToken.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
-			Resource: resourceToken.Issuer, PersonServer: server.issuer, Subject: resourceToken.Subject,
-			RequestKey: credentialAgent.Confirmation.JWK,
-		},
-	); err != nil {
-		writeAccessServerUnreachable(response, err)
-		return
-	}
-	var grantedScopes []string
-	if authToken.Scope != "" {
-		grantedScopes, err = parseScopes(authToken.Scope)
-	} else if r3Context == nil {
-		err = errors.New("Access Server auth token has no authorization claim")
-	}
-	validScopeGrant := len(scopes) == 0 && len(grantedScopes) == 0 ||
-		len(scopes) > 0 && len(grantedScopes) > 0 && scopeSubset(grantedScopes, scopes)
-	if err != nil || !validScopeGrant {
-		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
-		return
-	}
-	if missionRecord != nil {
-		if authorizationRequest.Mission == nil || authorizationRequest.Mission.S256 != missionRecord.S256 {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission record does not match federated authorization context"))
-			return
-		}
-		if !missionRecord.ExpiresAt.IsZero() && authToken.ExpiresAt > missionRecord.ExpiresAt.Unix() {
-			writeAccessServerUnreachable(response, errors.New("access-server auth token outlives the mission-bound authorization"))
-			return
-		}
-		issuedRecord, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
-		if err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			return
-		}
-		commitAt := server.clock.Now().UTC()
-		if err := server.missions.CommitMissionAuthToken(
-			request.Context(), *missionRecord, commitAt, issuedRecord,
-		); err != nil {
-			writeMissionReferenceProblem(response, err)
-			return
-		}
-	} else if authorizationRequest.Mission != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: federated mission authorization has no retained mission"))
-		return
-	}
-	writePrivateJSON(response, http.StatusOK, struct {
-		AuthToken string `json:"auth_token"`
-		ExpiresIn int64  `json:"expires_in"`
-	}{
-		AuthToken: accessOutput.AuthToken,
-		ExpiresIn: authToken.ExpiresAt - server.clock.Now().Unix(),
-	})
+	server.deliverFederatedAuthorization(response, request, accessResponse, resourceToken, agent, credentialAgent, presented.ExpiresAt, scopes, r3Context, budgetOffer, personBudgetCeiling, missionRecord, authorizationRequest)
+
 }
 
 func equalStringPointers(first, second *string) bool {
@@ -2051,4 +1961,123 @@ func writeAccessPolicyProblem(response http.ResponseWriter, err error) {
 func writeProblem(response http.ResponseWriter, status int, code string, cause error) {
 	response.Header().Set("Cache-Control", "no-store")
 	httpapi.WriteProblem(response, status, code, cause)
+}
+
+func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter, request *http.Request, accessResponse *http.Response,
+	resourceToken aauth.ResourceTokenClaims, agent, credentialAgent aauth.AgentTokenClaims, presentedExpiresAt time.Time,
+	scopes []string, r3Context *verifiedR3, budgetOffer, personBudgetCeiling *budgets.Value,
+	missionRecord *MissionRecord, authorizationRequest AuthorizationRequest) {
+	accessBody, err := io.ReadAll(io.LimitReader(accessResponse.Body, maxRequestBytes+1))
+	if err != nil || len(accessBody) > maxRequestBytes {
+		writeAccessServerUnreachable(response, errors.New("access-server response is unavailable"))
+		return
+	}
+	var accessOutput struct {
+		AuthToken string `json:"auth_token"`
+		ExpiresIn int64  `json:"expires_in"`
+	}
+	if err := decodeJSON(bytes.NewReader(accessBody), &accessOutput); err != nil || accessOutput.AuthToken == "" {
+		writeAccessServerUnreachable(response, errors.New("access-server response is invalid"))
+		return
+	}
+	var authToken aauth.AuthTokenClaims
+	if r3Context != nil && budgetOffer != nil {
+		var grant budgets.Value
+		authToken, grant, err = server.verifyR3BudgetAccessResult(
+			request.Context(), accessOutput.AuthToken, r3Context,
+		)
+		if err == nil {
+			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
+		}
+	} else if r3Context != nil {
+		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
+	} else if budgetOffer != nil {
+		var grant budgets.Value
+		authToken, grant, err = budgets.VerifyAuthToken(
+			request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
+		)
+		if err == nil {
+			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
+		}
+	} else {
+		carriesBudget, budgetErr := budgets.TokenCarriesClaims(accessOutput.AuthToken)
+		if budgetErr != nil {
+			err = budgetErr
+		} else if carriesBudget {
+			err = errors.New("Access Server auth token invented a Budget")
+		} else {
+			authToken, err = aauth.VerifyAuthToken(
+				request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
+			)
+		}
+	}
+	if err != nil {
+		writeAccessServerUnreachable(response, err)
+		return
+	}
+	if authToken.Issuer != resourceToken.Audience ||
+		authToken.DWK != aauth.AccessDiscoveryDocument ||
+		authToken.ExpiresAt > agent.ExpiresAt ||
+		authToken.ExpiresAt > credentialAgent.ExpiresAt ||
+		authToken.ExpiresAt > presentedExpiresAt.Unix() ||
+		authToken.MissionS256 != resourceToken.MissionS256 ||
+		authToken.Tenant != resourceToken.Tenant || !equalStringPointers(authToken.Account, resourceToken.Account) {
+		writeAccessServerUnreachable(response, errors.New("access-server auth token changed the authorized context"))
+		return
+	}
+	if err := aauth.ValidateCurrentAuthTokenContext(
+		authToken,
+		aauth.AuthTokenContext{
+			Issuer: resourceToken.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
+			Resource: resourceToken.Issuer, PersonServer: server.issuer, Subject: resourceToken.Subject,
+			RequestKey: credentialAgent.Confirmation.JWK,
+		},
+	); err != nil {
+		writeAccessServerUnreachable(response, err)
+		return
+	}
+	var grantedScopes []string
+	if authToken.Scope != "" {
+		grantedScopes, err = parseScopes(authToken.Scope)
+	} else if r3Context == nil {
+		err = errors.New("Access Server auth token has no authorization claim")
+	}
+	validScopeGrant := len(scopes) == 0 && len(grantedScopes) == 0 ||
+		len(scopes) > 0 && len(grantedScopes) > 0 && scopeSubset(grantedScopes, scopes)
+	if err != nil || !validScopeGrant {
+		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
+		return
+	}
+	if missionRecord != nil {
+		if authorizationRequest.Mission == nil || authorizationRequest.Mission.S256 != missionRecord.S256 {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission record does not match federated authorization context"))
+			return
+		}
+		if !missionRecord.ExpiresAt.IsZero() && authToken.ExpiresAt > missionRecord.ExpiresAt.Unix() {
+			writeAccessServerUnreachable(response, errors.New("access-server auth token outlives the mission-bound authorization"))
+			return
+		}
+		issuedRecord, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		commitAt := server.clock.Now().UTC()
+		if err := server.missions.CommitMissionAuthToken(
+			request.Context(), *missionRecord, commitAt, issuedRecord,
+		); err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+	} else if authorizationRequest.Mission != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: federated mission authorization has no retained mission"))
+		return
+	}
+	writePrivateJSON(response, http.StatusOK, struct {
+		AuthToken string `json:"auth_token"`
+		ExpiresIn int64  `json:"expires_in"`
+	}{
+		AuthToken: accessOutput.AuthToken,
+		ExpiresIn: authToken.ExpiresAt - server.clock.Now().Unix(),
+	})
 }
