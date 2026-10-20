@@ -6,7 +6,7 @@ authoritative.
 
 **Last reconciled:** 2026-10-01
 
-**Last upstream check:** 2026-10-20. All 80 GitHub issues and pull requests
+**Last upstream check:** 2026-10-20. All 82 GitHub issues and pull requests
 linked below were checked. The 32 issues submitted on October 1 (AAuth
 #225–#254 and Signature-Key #44–#45) remain open with no comments. The seven
 submitted comments on AAuth #108, #199, #208, #215, #221 and #222 have no
@@ -18,8 +18,17 @@ closed; no item changes status in this check.
 AAuth HEAD is `70d67375deb0bb002af7da0711fc58f6e8926e7e`; its six source
 files tracked here are byte-identical to `28e8258`. Signature-Key HEAD remains
 `69f5ba2`. The section coordinates and unresolved findings below therefore
-remain applicable. The newer exploratory Supervision document is outside this
-repository's source manifest. No follow-up was reposted.
+remain applicable. The newer exploratory Supervision document (739 lines,
+16 MUST occurrences) is outside this repository's source manifest and is not
+implemented. No follow-up was reposted.
+
+Two existing upstream discussions remain open without a draft change:
+[#255](https://github.com/dickhardt/AAuth/issues/255) questions OpenAPI
+`operationId` requirements; the editor's response still favors a stable
+identifier, so the adapter's current requirement remains in place.
+[#261](https://github.com/dickhardt/AAuth/issues/261) discusses denial reasons
+and acceptable alternatives, overlapping #229 (AAG-F009 and AAG-F070).
+These are monitoring notes, not new submissions or resolutions.
 
 | Source | Upstream commit |
 | --- | --- |
@@ -37,6 +46,8 @@ Status values:
 
 - **open:** still present upstream at the commits above, and we have not raised it
   ourselves.
+- **pending cross-check (aauth-rust):** a new finding awaiting corroboration in
+  both `aauth-go` and `aauth-rust`; it has not been filed upstream.
 - **submitted:** still present upstream, and we raised it ourselves in an upstream
   issue, comment, mailing-list post or Slack message; the item gives the date,
   channel and link or record.
@@ -53,6 +64,9 @@ in the index at the end; their full text remains in this file's git history.
 
 ## Keeping this file current
 
+- Cross-check each new draft finding in both `aauth-go` and `aauth-rust`
+  before submitting it upstream. Until that check is complete, record it as
+  **pending cross-check (aauth-rust)** with its source section and evidence.
 - When we submit an item, record the date, channel and link on the item
   (**Status:** and **Submitted:**) and in its row of the tracking table.
 - When upstream changes, update the commits above and recheck every unresolved
