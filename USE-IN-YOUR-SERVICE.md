@@ -87,6 +87,7 @@ refused before your handler runs.
 If you set a positive `http.Request.ContentLength`, it must match the actual
 body size. Signing refuses a mismatch before attaching proof headers and
 leaves the body readable. Zero or `-1` with a nonempty body remains supported.
+Signing also refuses a positive length when the body is `nil` or `http.NoBody`.
 
 [Resource tests](resource/body_coverage_test.go)
 refuse added, changed and removed content, and changed media types, before
