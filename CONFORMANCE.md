@@ -49,7 +49,9 @@ choices where the sources do not determine behavior.
 ## AAuth Core
 
 `resource.Server` refuses a request authority different from its Issuer before
-routing or policy. The [authority matrix](resource/authority_test.go) covers
+routing or policy. This is a [local routing safeguard](INTERPRETATIONS.md#resource-handlers-admit-their-configured-authority);
+the draft does not explicitly prescribe the comparison. The
+[authority matrix](resource/authority_test.go) covers
 Agent and Person identity plus PS- and AS-issued Auth tokens, DNS case and
 default-port normalization, forwarding headers, and host/path mutations.
 A correctly signed path still needs application routing and access policy.

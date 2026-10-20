@@ -448,10 +448,18 @@ This is a provisional extension, not a registered AAuth error. Clients must
 treat an unknown terminal `403` as denial. The name can change when the Core
 specification defines this result.
 
-## Resource request authority must match its issuer
+## Resource handlers admit their configured authority
 
-**Source:** AAuth Core `a99d353`, `Covered Components`; RFC 9421 Section 2.2.3;
+**Source:** AAuth Core `a99d353` and `28e8258`, `Covered Components` and
+`Verification (Server)`; RFC 9421 Section 2.2.3;
 [RFC 9110 Sections 7.4 and 15.5.20](https://www.rfc-editor.org/rfc/rfc9110.html#name-421-misdirected-request).
+
+The draft requires coverage and verification of the received request's
+authority. It does not explicitly compare that authority with the Resource's
+configured identifier. Its cross-host replay rationale assumes correct HTTP
+routing. This check is a local routing safeguard, not a claim that the draft
+already specifies this comparison or its error response. AAG-F107 in
+[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) asks where that responsibility belongs.
 
 A valid signature binds the request's target host, but does not prove that the
 receiving handler serves that host. An Auth token's audience check is also

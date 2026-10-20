@@ -27,6 +27,8 @@ Status values:
 - **submitted:** still present upstream, and we raised it ourselves in an upstream
   issue, comment, mailing-list post or Slack message; the item gives the date,
   channel and link or record.
+- **pending cross-check (aauth-rust):** not submitted; awaiting joint review of
+  the Rust evidence and the proposed clarification.
 
 The editor taking a topic from our earlier public notes (round one, June 2026)
 is not a submission by us; such items are open.
@@ -75,7 +77,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 47 (P1: 6, P2: 27, P3: 14; 46 submitted). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 1 pending cross-check). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -94,6 +96,7 @@ Unresolved: 47 (P1: 6, P2: 27, P3: 14; 46 submitted). Local implementation notes
 | AAG-F009 | Synchronous token-endpoint policy denial has no registered error | Core | missing-requirement | P2 | submitted | bb58b20 (2026-08-28) | 2026-10-01, GitHub | New issue [#229](https://github.com/dickhardt/AAuth/issues/229) |
 | AAG-F010a | Four-party tenant changes issuer namespace | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) |
 | AAG-F016 | The mandatory signature set does not bind a query | Core | missing-requirement | P2 | submitted | 92879d7 (2026-08-29) | 2026-10-01, GitHub | Comment on [#222](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827) |
+| AAG-F107 | Resource authority admission is not explicit | Core | missing-requirement | P2 | pending cross-check (aauth-rust) | 2026-10-20 | Not submitted | — |
 | AAG-F017 | Authorization endpoint body is not required to be signed | Core, R3 | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#230](https://github.com/dickhardt/AAuth/issues/230) |
 | AAG-F025 | Application 202 in a deferred result is indistinguishable from "keep polling" | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#231](https://github.com/dickhardt/AAuth/issues/231) |
 | AAG-F026 | Body signature components from resource metadata conflict with bodyless polls | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#232](https://github.com/dickhardt/AAuth/issues/232) |
@@ -572,6 +575,56 @@ The organization behind the first person token is (PS-A, "acme") but behind its 
 **Related upstream issues:** [#210](https://github.com/dickhardt/AAuth/issues/210) Trust Posture still treats tenant as part of the person's identifier (open, dickhardt 2026-09-25; same sentence, different point).
 
 **Venue:** Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) (one comment together with AAG-F010), posted 2026-10-01. Earlier plan: Comment on [#215](https://github.com/dickhardt/AAuth/issues/215). Together with AAG-F010. [#210](https://github.com/dickhardt/AAuth/issues/210) concerns the same sentence but a different point.
+
+### AAG-F107 — Resource authority admission is not explicit
+
+**Status:** pending cross-check (aauth-rust)
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-20
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-20.
+
+**Source:** Core `28e8258`, `Agent Token Verification` (537–543), `Auth Token
+Verification` (1802–1814), `Server Identifiers` (1946–1954), `Covered Components`
+(2202–2216), `Verification (Server)` (2240–2250), and `Why These Covered
+Components` (3518–3522). The file is byte-identical at `70d6737`.
+
+The verification procedure requires a proof over the request's `@authority`
+and `@path`; RFC 9421 derives these from the received request. Auth-token
+verification separately compares `aud` with the Resource's identifier. Neither
+step explicitly compares the request authority with that identifier. The
+rationale says authority coverage prevents cross-host replay, which depends
+on the receiving service admitting the target host.
+
+**Evidence:** With an otherwise valid credential and a request signed for
+`https://other.example/records`, Go `5636c1b` dispatched both Agent-identity and
+Auth-token requests when delivered with `Host: other.example`. The Auth token's
+audience correctly named the configured Resource. Changing Host, path or query
+after signing failed verification. A separate Rust acceptance test at
+`b4ebe7028ce8eba2a7dca375b3eef314057c4ecf` reported the same unchanged-foreign-host
+acceptance on its Agent-identity path; that revision's
+`crates/aauth-resource/src/lib.rs` constructor takes keys and policy but no
+receiving authority. No Rust Auth-token path is claimed by this evidence.
+
+Go's [authority regression](resource/authority_test.go) now checks the
+configured authority before dispatch. This is a local routing safeguard,
+documented in [INTERPRETATIONS.md](INTERPRETATIONS.md#resource-handlers-admit-their-configured-authority),
+not evidence that the earlier behavior violated an explicit AAuth comparison.
+RFC 9110 Section 7.4 already constrains HTTP origin handling; the open question
+is how that responsibility maps to AAuth's Resource identifier and verification
+procedure, including when HTTP routing is supplied by the embedding application.
+
+**Question:** Must a Resource admit the signed request authority against its
+configured identifier before dispatch, or may it rely on an explicitly required
+HTTP routing check? Please specify any permitted aliases and the rejection
+behavior. The identifier has no path; path authorization remains a separate
+application decision. This question is distinct from AAG-F016's query coverage.
 
 ### AAG-F016 — The mandatory signature set does not bind a query
 
