@@ -671,6 +671,11 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 		(!value.record.SubagentExpiresAt.IsZero() && !now.Before(value.record.SubagentExpiresAt)) {
 		return ErrPendingAuthorizationExpired
 	}
+	// Record.Agent is the top-level requester whose binding authorized the
+	// request, including one it mediates for a sub-agent.
+	if err := server.checkAgentBinding(ctx, AgentBinding{AgentProvider: value.record.AgentProvider, Agent: value.record.Agent}); err != nil {
+		return err
+	}
 	// The pending deadline bounds only when approval may happen; it does not
 	// shorten the Auth token, which stays inside its predecessor tokens.
 	expiresAt := now.Add(decision.Lifetime)
@@ -1076,6 +1081,18 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 	if err := server.validateAuthorizationPollContext(id, identity, result); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
+	}
+	switch result.State {
+	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollApproved:
+		// A revoked binding ends a live request and withholds a retained token.
+		if err := server.checkAgentBinding(request.Context(), AgentBinding{AgentProvider: result.Pending.AgentProvider, Agent: result.Pending.Agent}); err != nil {
+			if errors.Is(err, ErrAgentBindingRevoked) && result.State == AuthorizationPollApproved &&
+				!server.consumePendingAuthorizationResult(response, request, id, result, mission) {
+				return
+			}
+			writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
+			return
+		}
 	}
 	switch result.State {
 	case AuthorizationPollWaiting:

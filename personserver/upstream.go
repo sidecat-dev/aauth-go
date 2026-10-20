@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 var (
 	errUpstreamTokenSyntax      = errors.New("personserver: upstream_token must be a non-empty compact token string")
 	errUpstreamTokenUnsupported = errors.New("personserver: upstream_token is not supported by this authorization configuration")
-	errUpstreamCallerRevoked    = errors.New("personserver: the Agent token of the upstream token's calling Agent is revoked")
+	errUpstreamCallerRevoked    = errors.New("personserver: the Agent token or binding of the upstream token's calling Agent is revoked")
 )
 
 type verifiedUpstreamToken struct {
@@ -131,6 +132,18 @@ func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *veri
 		if revoked {
 			return errUpstreamCallerRevoked
 		}
+	}
+	// The binding behind the chain is the caller's, or its parent's when the
+	// upstream token was issued to a mediated sub-agent.
+	binding := AgentBinding{AgentProvider: record.AgentProvider, Agent: record.Agent}
+	if record.ParentAgent != "" {
+		binding.Agent = record.ParentAgent
+	}
+	if err := server.checkAgentBinding(ctx, binding); err != nil {
+		if errors.Is(err, ErrAgentBindingRevoked) {
+			return fmt.Errorf("%w: %w", errUpstreamCallerRevoked, err)
+		}
+		return &upstreamStoreError{cause: err}
 	}
 	return nil
 }

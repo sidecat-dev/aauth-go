@@ -19,9 +19,10 @@ type FederatedAuthorizationContract struct {
 	New func(testing.TB) personserver.FederatedAuthorizationStore
 }
 
-// RunFederatedAuthorization checks copy isolation, immutable request retention,
-// complete response retention including RefusalReason, conditional updates and
-// single consumption. Backend restart and failure testing remain the adapter
+// RunFederatedAuthorization checks copy isolation, immutable request retention
+// including the exact sub-agent token of a parent-mediated request, complete
+// response retention including RefusalReason, conditional updates and single
+// consumption. Backend restart and failure testing remain the adapter
 // author's responsibility.
 func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationContract) {
 	t.Helper()
@@ -71,7 +72,7 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 		if err := store.CreateFederatedAuthorization(ctx, before); err != nil {
 			t.Fatal(err)
 		}
-		for _, field := range []string{"ID", "PersonServer", "ResourceToken", "AgentToken", "AgentIssuer", "Agent", "AgentJKT", "PresentedToken", "Location", "ExpiresAt"} {
+		for _, field := range []string{"ID", "PersonServer", "ResourceToken", "AgentToken", "AgentIssuer", "Agent", "AgentJKT", "PresentedToken", "SubagentToken", "Location", "ExpiresAt"} {
 			after := fixture()
 			after.Revision++
 			v := reflect.ValueOf(&after).Elem().FieldByName(field)
@@ -174,7 +175,7 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 
 // UTC fixtures survive JSON timestamp round trips without a location mismatch.
 func federatedAuthorizationRecord() personserver.FederatedAuthorizationRecord {
-	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", Location: "https://as.example/pending/test", ExpiresAt: time.Unix(100, 0).UTC(), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
+	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", SubagentToken: "child", Location: "https://as.example/pending/test", ExpiresAt: time.Unix(100, 0).UTC(), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
 }
 
 // FederatedAuthorizationQueueContract constructs a fresh store with optional

@@ -161,18 +161,17 @@ func TestFederatedWaitingExposesOnlySafeHint(t *testing.T) {
 	}
 }
 
-// Deferred federation supports missionless Core only. Each companion or
-// delegation request reaches consent and the AS before a local typed refusal;
-// it must neither issue a token nor retain an unsupported continuation.
-func TestDeferredCompositionRefusesR3BudgetAndDelegation(t *testing.T) {
-	for _, reason := range []string{"r3", "budget", "delegation"} {
+// Deferred federation supports missionless Core requests, top-level or
+// parent-mediated. Each companion request reaches consent and the AS before a
+// local typed refusal; it must neither issue a token nor retain an unsupported
+// continuation. integration/subagent_federated_deferred_test.go covers the
+// parent-mediated continuation that is now retained.
+func TestDeferredCompositionRefusesR3AndBudget(t *testing.T) {
+	for _, reason := range []string{"r3", "budget"} {
 		for _, status := range []int{202, 402} {
 			t.Run(reason+"/"+http.StatusText(status), func(t *testing.T) {
 				p := newSubagentPersonServerProtocol(t)
 				key, agent, parent := p.parentKey.PublicJWK(), "aauth:planner@ap.example", ""
-				if reason == "delegation" {
-					key, agent, parent = p.childKey.PublicJWK(), "aauth:planner+search@ap.example", agent
-				}
 				if err := p.store.Commit(context.Background(), PersonTokenRecord{
 					JTI: "person-token", PersonServer: "https://ps.example", Resource: "https://resource.example",
 					Subject: "person-123", Tenant: "tenant-1", ExpiresAt: p.now.Add(10 * time.Minute),
@@ -265,9 +264,6 @@ func TestDeferredCompositionRefusesR3BudgetAndDelegation(t *testing.T) {
 					t.Fatal(err)
 				}
 				input := map[string]string{"resource_token": resourceToken, "presented_token": p.presentedToken(t, resourceToken)}
-				if reason == "delegation" {
-					input["subagent_token"] = p.childToken
-				}
 				body, err := json.Marshal(input)
 				if err != nil {
 					t.Fatal(err)

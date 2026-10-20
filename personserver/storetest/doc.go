@@ -97,7 +97,8 @@
 // Missionless and mission-bound Interaction-relay stores use
 // RunInteractionRelay and RunMissionInteractionRelay respectively.
 // Three-party Auth-token revocation uses RunIssuedAuthToken for the Person
-// Server's exact issued-token routing records.
+// Server's exact issued-token routing records. Host-invoked Agent-person
+// binding revocation uses RunAgentBindingRevocation.
 //
 // New must return a fresh, empty store. The contract checks the public state
 // transitions, identity binding, copy isolation, retry rules, concurrency,

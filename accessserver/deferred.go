@@ -19,8 +19,9 @@ import (
 // ErrPendingAuthorizationConflict reports a missing record or competing update.
 var ErrPendingAuthorizationConflict = errors.New("accessserver: pending authorization conflict")
 
-// DeferredConfig enables bounded approval and payment waits for top-level,
-// missionless Core requests. It does not enable claims or interaction forwarding.
+// DeferredConfig enables bounded approval and payment waits for missionless
+// Core requests, top-level or parent-mediated. It does not enable claims or
+// interaction forwarding.
 type DeferredConfig struct {
 	Store    DeferredAuthorizationStore
 	Lifetime time.Duration
@@ -97,7 +98,11 @@ func validPendingDecision(d Decision) bool {
 	c := p.Payment
 	return c.Authenticate != "" && len(c.Authenticate) <= 8192 && !strings.ContainsAny(c.Authenticate, "\r\n") && len(c.Body) <= maxRequestBytes && !strings.ContainsAny(c.ContentType, "\r\n") && (len(c.Body) == 0 || c.ContentType != "")
 }
-func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request, ps string, encoded []byte, resource aauth.ResourceTokenClaims, agent aauth.AgentTokenClaims, presented aauth.PresentedToken, decision Decision, prior *PendingAuthorizationRecord) {
+
+// deferAuthorization retains the exact verified request. credentialExpiresAt
+// is the earlier of the parent and any sub-agent token expiry, so a wait never
+// outlasts either Agent token.
+func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request, ps string, encoded []byte, resource aauth.ResourceTokenClaims, credentialExpiresAt time.Time, presented aauth.PresentedToken, decision Decision, prior *PendingAuthorizationRecord) {
 	if server.deferred == nil || !validPendingDecision(decision) {
 		writeProblem(w, 500, "server_error", errors.New("accessserver: invalid or unconfigured deferred decision"))
 		return
@@ -106,7 +111,7 @@ func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request,
 	var record PendingAuthorizationRecord
 	if prior == nil {
 		deadline := now.Add(server.deferred.Lifetime)
-		for _, t := range []time.Time{time.Unix(resource.ExpiresAt, 0), time.Unix(agent.ExpiresAt, 0), presented.ExpiresAt} {
+		for _, t := range []time.Time{time.Unix(resource.ExpiresAt, 0), credentialExpiresAt, presented.ExpiresAt} {
 			if t.Before(deadline) {
 				deadline = t
 			}
@@ -144,31 +149,41 @@ func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request,
 	writePrivateJSON(w, 202, map[string]string{"status": "pending"})
 }
 
-func (server *Server) handlePendingToken(w http.ResponseWriter, r *http.Request) {
+// verifyPendingPoller authenticates the Person Server that polls or cancels a
+// pending URL with its own bodyless jwks_uri-signed request.
+func (server *Server) verifyPendingPoller(w http.ResponseWriter, r *http.Request) (string, signaturekey.VerifiedRequest, bool) {
 	prepared, err := signaturekey.PrepareRequest(r, server.clock, signaturekey.VerifyOptions{AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI}, MaxBodyBytes: maxRequestBytes})
 	if err != nil {
 		writeProblem(w, 401, "invalid_request", err)
-		return
+		return "", signaturekey.VerifiedRequest{}, false
 	}
 	ps, dwk, _, ok := prepared.Credential().JWKSURI()
 	if !ok || dwk != aauth.PersonDiscoveryDocument {
 		writeProblem(w, 401, "invalid_request", errors.New("person server proof required"))
-		return
+		return "", signaturekey.VerifiedRequest{}, false
 	}
 	proof, err := prepared.VerifyJWKSURI(r.Context(), server.keyResolver)
 	if err != nil || proof.Signer() != ps {
 		writeProblem(w, 401, "invalid_request", err)
-		return
+		return "", signaturekey.VerifiedRequest{}, false
 	}
 	if err := server.trustPersonServer(r.Context(), ps); err != nil {
 		writeAccessPolicyProblem(w, err)
-		return
+		return "", signaturekey.VerifiedRequest{}, false
 	}
 	if r.Body != nil {
 		if body, err := io.ReadAll(io.LimitReader(r.Body, 1)); err != nil || len(body) != 0 {
-			writeProblem(w, 400, "invalid_request", errors.New("poll must be bodyless"))
-			return
+			writeProblem(w, 400, "invalid_request", errors.New("pending request must be bodyless"))
+			return "", signaturekey.VerifiedRequest{}, false
 		}
+	}
+	return ps, proof, true
+}
+
+func (server *Server) handlePendingToken(w http.ResponseWriter, r *http.Request) {
+	ps, proof, ok := server.verifyPendingPoller(w, r)
+	if !ok {
+		return
 	}
 
 	record, err := server.deferred.Store.LoadAccessAuthorization(r.Context(), r.PathValue("id"))
@@ -236,6 +251,50 @@ func (server *Server) handlePendingToken(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	buffer.send(w)
+}
+
+// handlePendingCancellation lets the owning Person Server withdraw a waiting
+// request. The record is consumed; later polls answer 410 request_consumed.
+func (server *Server) handlePendingCancellation(w http.ResponseWriter, r *http.Request) {
+	ps, _, ok := server.verifyPendingPoller(w, r)
+	if !ok {
+		return
+	}
+	record, err := server.deferred.Store.LoadAccessAuthorization(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, ErrPendingAuthorizationConflict) {
+			writeProblem(w, 410, "unknown_request", err)
+		} else {
+			writeProblem(w, 500, "server_error", err)
+		}
+		return
+	}
+	if record.PersonServer != ps {
+		writeProblem(w, 403, "wrong_poller", errors.New("pending request belongs to another PS"))
+		return
+	}
+	if record.Gone {
+		writeProblem(w, 410, "request_consumed", nil)
+		return
+	}
+	next := record
+	next.Revision++
+	next.Gone = true
+	if err := server.deferred.Store.ReplaceAccessAuthorization(r.Context(), record, next); err != nil {
+		if errors.Is(err, ErrPendingAuthorizationConflict) {
+			current, loadErr := server.deferred.Store.LoadAccessAuthorization(r.Context(), record.ID)
+			if loadErr == nil && current.Gone {
+				writeProblem(w, 410, "request_consumed", err)
+			} else {
+				writeProblem(w, http.StatusConflict, "request_conflict", err)
+			}
+		} else {
+			writeProblem(w, 500, "server_error", err)
+		}
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type deferredResponse struct {

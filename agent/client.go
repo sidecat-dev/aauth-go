@@ -578,18 +578,11 @@ func (client *Client) personServerRequestBinding(
 			expirySource: "agent token",
 		}, nil
 	}
-	claims, err := aauth.VerifyAgentToken(ctx, subagentToken, client.keyResolver, client.clock)
+	// The same relationship the Person Server enforces, checked before any
+	// request: this client is the child's parent and issuer, with its own key.
+	claims, err := aauth.VerifySubagentToken(ctx, subagentToken, client.agentClaims, client.keyResolver, client.clock)
 	if err != nil {
 		return personServerCredential{}, fmt.Errorf("verify subagent token: %w", err)
-	}
-	if claims.ParentAgent == "" {
-		return personServerCredential{}, errors.New("subagent token does not identify a sub-agent")
-	}
-	if claims.ParentAgent != client.agentClaims.Subject {
-		return personServerCredential{}, errors.New("subagent token parent_agent does not match parent")
-	}
-	if claims.Confirmation.JWK.Equal(client.agentClaims.Confirmation.JWK) {
-		return personServerCredential{}, errors.New("subagent token must use a key distinct from the parent")
 	}
 	expiryCeiling := client.agentClaims.ExpiresAt
 	expirySource := "agent token"

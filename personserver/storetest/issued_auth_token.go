@@ -56,6 +56,7 @@ func RunIssuedAuthToken(t *testing.T, contract IssuedAuthTokenContract) {
 		{"expires at", func(record *personserver.IssuedAuthTokenRecord) { record.ExpiresAt = record.ExpiresAt.Add(time.Second) }},
 		{"agent provider", func(record *personserver.IssuedAuthTokenRecord) { record.AgentProvider = "https://other-agent.example" }},
 		{"agent", func(record *personserver.IssuedAuthTokenRecord) { record.Agent = "aauth:other@agent.example" }},
+		{"parent agent", func(record *personserver.IssuedAuthTokenRecord) { record.ParentAgent = "aauth:parent@agent.example" }},
 		{"agent token jti", func(record *personserver.IssuedAuthTokenRecord) { record.AgentTokenJTI = "other-agent-token" }},
 		{"agent key thumbprint", func(record *personserver.IssuedAuthTokenRecord) { record.AgentJKT = "other-agent-key-thumbprint" }},
 		{"upstream issuer", func(record *personserver.IssuedAuthTokenRecord) {

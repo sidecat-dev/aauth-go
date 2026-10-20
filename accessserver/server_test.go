@@ -333,7 +333,7 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 			"resource_token": childResourceToken,
 			"agent_token":    agentToken,
 			"subagent_token": otherChildToken,
-		}), "invalid_agent_token")
+		}), "invalid_subagent_token")
 		if authorizeCalls != beforeAuthorize {
 			t.Fatal("wrong-parent sub-agent reached authorization policy")
 		}
@@ -386,7 +386,7 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 			"resource_token": resourceToken,
 			"agent_token":    agentToken,
 			"subagent_token": sharedKeyToken,
-		}), "invalid_agent_token")
+		}), "invalid_subagent_token")
 		if authorizeCalls != beforeAuthorize {
 			t.Fatal("shared-key sub-agent reached authorization policy")
 		}

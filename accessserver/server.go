@@ -149,6 +149,7 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /token", server.handleToken)
 	if server.deferred != nil {
 		mux.HandleFunc("GET /token/pending/{id}", server.handlePendingToken)
+		mux.HandleFunc("DELETE /token/pending/{id}", server.handlePendingCancellation)
 	}
 	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
@@ -246,20 +247,14 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: subagent_token must be a non-empty compact token string"))
 			return
 		}
-		verified, err := aauth.VerifyAgentToken(request.Context(), compact, server.keyResolver, verificationClock)
+		// The AS verifies the relationship itself rather than trusting the PS:
+		// the child names this parent, shares its issuer and holds its own key.
+		verified, err := aauth.VerifySubagentToken(request.Context(), compact, agentClaims, server.keyResolver, verificationClock)
 		if err == nil {
 			err = proof.CheckIssuedAt(time.Unix(verified.IssuedAt, 0))
 		}
 		if err != nil {
-			writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
-			return
-		}
-		if verified.ParentAgent != agentClaims.Subject {
-			writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("sub-agent token does not name the requesting parent"))
-			return
-		}
-		if verified.Confirmation.JWK.Equal(agentClaims.Confirmation.JWK) {
-			writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("sub-agent token must use a key distinct from the parent"))
+			writeSubagentTokenProblem(response, err)
 			return
 		}
 		confirmation = verified.Confirmation.JWK
@@ -402,11 +397,11 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		return
 	}
 	if decision.Pending != nil {
-		if r3Context != nil || budgetOffer != nil || subagentClaims != nil || resourceClaims.MissionS256 != "" {
-			writeProblem(response, 500, "server_error", errors.New("accessserver: deferred authorization supports top-level missionless Core requests only"))
+		if r3Context != nil || budgetOffer != nil || resourceClaims.MissionS256 != "" {
+			writeProblem(response, 500, "server_error", errors.New("accessserver: deferred authorization supports missionless Core requests only"))
 			return
 		}
-		server.deferAuthorization(response, request, personServer, encoded, resourceClaims, agentClaims, presented, decision, pending)
+		server.deferAuthorization(response, request, personServer, encoded, resourceClaims, credentialExpiresAt, presented, decision, pending)
 		return
 	}
 	if err := validateDecision(decision, requestedScopes, r3Context != nil); err != nil {
@@ -625,6 +620,20 @@ func writePresentedTokenProblem(response http.ResponseWriter, err error) {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 	default:
 		writeProblem(response, http.StatusBadRequest, "invalid_presented_token", err)
+	}
+}
+
+// writeSubagentTokenProblem maps a subagent_token failure to Protocol -11's
+// <invalid|expired>_subagent_token codes, keeping parameter clock_skew.
+func writeSubagentTokenProblem(response http.ResponseWriter, err error) {
+	var skew *signaturekey.Error
+	switch {
+	case errors.As(err, &skew) && skew.Code == signaturekey.ErrorClockSkew:
+		writeProblem(response, http.StatusBadRequest, string(signaturekey.ErrorClockSkew), err)
+	case errors.Is(err, aauth.ErrExpiredSubagentToken):
+		writeProblem(response, http.StatusBadRequest, "expired_subagent_token", err)
+	default:
+		writeProblem(response, http.StatusBadRequest, "invalid_subagent_token", err)
 	}
 }
 

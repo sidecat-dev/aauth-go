@@ -88,14 +88,14 @@ func TestParentMediatedSubagentRefusesInvalidRelationshipsBeforeNetwork(t *testi
 			token: func(h *subagentClientHarness) string {
 				return h.mintAgentToken(t, "aauth:other+child@ap.example", "aauth:other@ap.example", h.protocol.personServerID, h.childKey, time.Hour)
 			},
-			want: "parent_agent does not match parent",
+			want: "parent_agent does not name the requesting Agent",
 		},
 		{
 			name: "parent and child share one key",
 			token: func(h *subagentClientHarness) string {
 				return h.mintAgentToken(t, harnessChildID, harnessParentID, "", h.protocol.agentKey, time.Hour)
 			},
-			want: "key distinct from the parent",
+			want: "key distinct from its parent",
 		},
 	} {
 		test := test
@@ -123,7 +123,7 @@ func TestParentMediatedSubagentRefusesInvalidRelationshipsBeforeNetwork(t *testi
 							SubagentToken:  token,
 						})
 					}
-					if err == nil || !strings.Contains(err.Error(), test.want) {
+					if !errors.Is(err, aauth.ErrInvalidSubagentToken) || !strings.Contains(err.Error(), test.want) {
 						t.Fatalf("error = %v, want %q", err, test.want)
 					}
 					if harness.networkCalls != 0 {

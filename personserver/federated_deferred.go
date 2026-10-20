@@ -28,9 +28,9 @@ var ErrFederatedAuthorizationConflict = errors.New("personserver: federated auth
 // with a public explanation, not a federation reachability error.
 type DeferredCompositionError struct{ reason string }
 
-// Reason returns not_configured, r3, budget, delegation, mission, claims,
-// clarification, interaction or requirement (an unsupported extension).
-// A mixed-capability PS may still defer a top-level missionless Core request.
+// Reason returns not_configured, r3, budget, mission, claims, clarification,
+// interaction or requirement (an unsupported extension). A mixed-capability
+// PS may still defer a missionless Core request, top-level or parent-mediated.
 func (e *DeferredCompositionError) Reason() string {
 	if e == nil {
 		return ""
@@ -45,8 +45,6 @@ func (e *DeferredCompositionError) Error() string {
 		return "personserver: deferred AS authorization does not support R3 requests"
 	case "budget":
 		return "personserver: deferred AS authorization does not support Budget requests"
-	case "delegation":
-		return "personserver: deferred AS authorization does not support delegated requests"
 	case "mission":
 		return "personserver: deferred AS authorization does not support mission-bound requests"
 	case "claims", "clarification", "interaction":
@@ -61,10 +59,11 @@ func (e *DeferredCompositionError) Error() string {
 // ErrFederationNotReady means a poll is premature, already running, or terminal.
 var ErrFederationNotReady = errors.New("personserver: federation cannot be advanced")
 
-// FederatedDeferredConfig enables top-level, missionless Core AS approval and
-// payment continuations. Hosts settle payment and cache billing relationships
-// per AS, then call AdvanceFederation explicitly. No payment is made by the
-// library. R3, Budget, delegation, missions, claims and clarification are absent.
+// FederatedDeferredConfig enables missionless Core AS approval and payment
+// continuations, top-level or parent-mediated for a one-level sub-agent. Hosts
+// settle payment and cache billing relationships per AS, then call
+// AdvanceFederation explicitly. No payment is made by the library. R3, Budget,
+// missions, claims and clarification are absent.
 type FederatedDeferredConfig struct {
 	Store    FederatedAuthorizationStore
 	Lifetime time.Duration
@@ -87,6 +86,9 @@ type FederatedResponse struct {
 // in the PS boundary. The token bytes, IDs, Location, and ExpiresAt are immutable.
 // Advancing fences an external AS poll: an uncertain poll is never reclaimed.
 // Terminal stores the verified result or local problem; Gone prevents replay.
+// AgentIssuer, Agent and AgentJKT name the Agent that signed the request and
+// alone may poll; for a parent-mediated request that is the parent, and
+// SubagentToken holds the exact sub-agent token the grant is bound to.
 type FederatedAuthorizationRecord struct {
 	ID             string
 	PersonServer   string
@@ -96,6 +98,7 @@ type FederatedAuthorizationRecord struct {
 	Agent          string
 	AgentJKT       string
 	PresentedToken string
+	SubagentToken  string
 	Location       string
 	ExpiresAt      time.Time
 	RetryAfter     time.Duration
@@ -152,7 +155,17 @@ func (server *Server) FederatedAuthorization(ctx context.Context, reference stri
 	return record, err
 }
 
-func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http.Request, as *http.Response, endpoint, resourceCompact, agentCompact, presentedCompact string, agent aauth.AgentTokenClaims, resource aauth.ResourceTokenClaims, presentedExpiry time.Time) {
+// federatedContinuationInput is the verified request a PS continuation retains.
+// agent signed the request; credentialAgent holds the credentials and equals
+// agent unless subagentToken is set.
+type federatedContinuationInput struct {
+	resourceToken, agentToken, presentedToken, subagentToken string
+	agent, credentialAgent                                   aauth.AgentTokenClaims
+	resource                                                 aauth.ResourceTokenClaims
+	presentedExpiresAt                                       time.Time
+}
+
+func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http.Request, as *http.Response, endpoint string, input federatedContinuationInput) {
 	state, location, retry, err := readFederatedPending(as, endpoint, "")
 	if err != nil {
 		writeFederatedContinuationProblem(w, err)
@@ -160,7 +173,10 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 	}
 	now := server.clock.Now().UTC()
 	deadline := now.Add(server.federatedDeferred.Lifetime)
-	for _, t := range []time.Time{time.Unix(resource.ExpiresAt, 0), time.Unix(agent.ExpiresAt, 0), presentedExpiry} {
+	for _, t := range []time.Time{
+		time.Unix(input.resource.ExpiresAt, 0), time.Unix(input.agent.ExpiresAt, 0),
+		time.Unix(input.credentialAgent.ExpiresAt, 0), input.presentedExpiresAt,
+	} {
 		if t.Before(deadline) {
 			deadline = t
 		}
@@ -174,12 +190,17 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 		writeProblem(w, 500, "server_error", err)
 		return
 	}
-	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	thumbprint, err := input.agent.Confirmation.JWK.Thumbprint()
 	if err != nil {
 		writeProblem(w, 500, "server_error", err)
 		return
 	}
-	record := FederatedAuthorizationRecord{ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: server.issuer, ResourceToken: resourceCompact, AgentToken: agentCompact, AgentIssuer: agent.Issuer, Agent: agent.Subject, AgentJKT: thumbprint, PresentedToken: presentedCompact, Location: location, ExpiresAt: deadline, NextPollAt: now.Add(retry), RetryAfter: retry, Revision: 1, Response: state}
+	record := FederatedAuthorizationRecord{
+		ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: server.issuer, ResourceToken: input.resourceToken,
+		AgentToken: input.agentToken, AgentIssuer: input.agent.Issuer, Agent: input.agent.Subject, AgentJKT: thumbprint,
+		PresentedToken: input.presentedToken, SubagentToken: input.subagentToken, Location: location,
+		ExpiresAt: deadline, NextPollAt: now.Add(retry), RetryAfter: retry, Revision: 1, Response: state,
+	}
 	if err := server.federatedDeferred.Store.CreateFederatedAuthorization(r.Context(), record); err != nil {
 		writeProblem(w, 500, "server_error", err)
 		return
@@ -305,7 +326,7 @@ func (server *Server) AdvanceFederation(ctx context.Context, reference string) e
 	return server.federatedDeferred.Store.ReplaceFederatedAuthorization(ctx, record, next)
 }
 func (server *Server) advanceFederatedRequest(ctx context.Context, record FederatedAuthorizationRecord, out *federatedResponseBuffer) {
-	agent, err := aauth.VerifyAgentToken(ctx, record.AgentToken, server.keyResolver, server.clock)
+	agent, credential, err := server.verifyFederatedAgents(ctx, record)
 	if err != nil {
 		writeProblem(out, 408, "expired", err)
 		return
@@ -320,16 +341,11 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writeProblem(out, 408, "expired", err)
 		return
 	}
-	if server.agentTokenRevocations != nil {
-		revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{Issuer: agent.Issuer, JTI: agent.JTI})
-		if err != nil {
-			writeProblem(out, 500, "server_error", err)
-			return
-		}
-		if revoked {
-			writeProblem(out, 403, "revoked", nil)
-			return
-		}
+	// A revoked token or binding ends the wait here, without presenting the
+	// retained request to the AS again.
+	if err := server.checkFederatedRevocations(ctx, agent, credential); err != nil {
+		writeFederatedRevocationProblem(out, err)
+		return
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, record.Location, nil)
 	if err != nil {
@@ -398,7 +414,67 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writeAccessServerUnreachable(out, err)
 		return
 	}
-	server.deliverFederatedAuthorization(out, request, response, resource, agent, agent, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{})
+	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{})
+}
+
+// verifyFederatedAgents reverifies the retained Agent tokens at the current
+// instant. credential is the parent itself for a top-level request, or the
+// sub-agent whose relationship to that parent is checked again.
+func (server *Server) verifyFederatedAgents(ctx context.Context, record FederatedAuthorizationRecord) (aauth.AgentTokenClaims, aauth.AgentTokenClaims, error) {
+	agent, err := aauth.VerifyAgentToken(ctx, record.AgentToken, server.keyResolver, server.clock)
+	if err != nil {
+		return aauth.AgentTokenClaims{}, aauth.AgentTokenClaims{}, err
+	}
+	if record.SubagentToken == "" {
+		return agent, agent, nil
+	}
+	child, err := aauth.VerifySubagentToken(ctx, record.SubagentToken, agent, server.keyResolver, server.clock)
+	if err != nil {
+		return aauth.AgentTokenClaims{}, aauth.AgentTokenClaims{}, err
+	}
+	return agent, child, nil
+}
+
+// revokedPendingTokenError names which Agent token of a waiting request its
+// Agent Provider revoked; Polling Error Codes asks detail to say which.
+type revokedPendingTokenError struct{ detail string }
+
+func (failure *revokedPendingTokenError) Error() string { return "personserver: " + failure.detail }
+
+// checkFederatedRevocations applies the Agent Provider's revocations to the
+// parent and any sub-agent token, then the parent's binding.
+func (server *Server) checkFederatedRevocations(ctx context.Context, agent, credential aauth.AgentTokenClaims) error {
+	if server.agentTokenRevocations != nil {
+		for _, token := range []aauth.AgentTokenClaims{agent, credential} {
+			revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{Issuer: token.Issuer, JTI: token.JTI})
+			if err != nil {
+				return &agentTokenRevocationStoreError{cause: err}
+			}
+			if revoked {
+				if token.ParentAgent != "" {
+					return &revokedPendingTokenError{detail: "The sub-agent token of this request was revoked."}
+				}
+				return &revokedPendingTokenError{detail: "The Agent token that started this request was revoked."}
+			}
+		}
+	}
+	return server.checkAgentBinding(ctx, agentBinding(agent))
+}
+
+// writeFederatedRevocationProblem answers a pending request whose Agent token
+// was revoked with polling error revoked, and a revoked binding as the
+// synchronous request would be answered, revoked_presented_token.
+func writeFederatedRevocationProblem(w http.ResponseWriter, err error) {
+	var revoked *revokedPendingTokenError
+	switch {
+	case errors.As(err, &revoked):
+		w.Header().Set("Cache-Control", "no-store")
+		httpapi.WriteProblem(w, http.StatusForbidden, "revoked", err, httpapi.ProblemFields{Detail: revoked.detail})
+	case errors.Is(err, ErrAgentBindingRevoked):
+		writeProblem(w, http.StatusBadRequest, "revoked_presented_token", err)
+	default:
+		writeProblem(w, http.StatusInternalServerError, "server_error", err)
+	}
 }
 func (server *Server) writeFederatedWaiting(w http.ResponseWriter, record FederatedAuthorizationRecord) {
 	w.Header().Set("Location", strings.TrimRight(server.issuer, "/")+"/token/federated/"+record.ID)
@@ -468,6 +544,26 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 		buffer.send(w)
 		return
 	}
+	if err := server.checkAgentBinding(r.Context(), AgentBinding{AgentProvider: record.AgentIssuer, Agent: record.Agent}); err != nil {
+		if !errors.Is(err, ErrAgentBindingRevoked) {
+			writeProblem(w, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		// The parent's binding authorized this wait and any retained grant.
+		next := record
+		next.Revision++
+		next.Gone = true
+		if replaceErr := server.federatedDeferred.Store.ReplaceFederatedAuthorization(r.Context(), record, next); replaceErr != nil {
+			if errors.Is(replaceErr, ErrFederatedAuthorizationConflict) {
+				writeProblem(w, 410, "request_consumed", replaceErr)
+			} else {
+				writeProblem(w, 500, "server_error", replaceErr)
+			}
+			return
+		}
+		writeProblem(w, http.StatusBadRequest, "revoked_presented_token", err)
+		return
+	}
 	if !record.Terminal {
 		server.writeFederatedWaiting(w, record)
 		return
@@ -508,7 +604,7 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 // An AS grant may expire or cease to verify between the host's AS poll and
 // Agent delivery. Reuse the immediate delivery checks at the actual release.
 func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Request, record FederatedAuthorizationRecord) {
-	agent, err := aauth.VerifyAgentToken(r.Context(), record.AgentToken, server.keyResolver, server.clock)
+	agent, credential, err := server.verifyFederatedAgents(r.Context(), record)
 	if err != nil {
 		writeAccessServerUnreachable(w, err)
 		return
@@ -528,19 +624,79 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 		writeAccessServerUnreachable(w, err)
 		return
 	}
-	if server.agentTokenRevocations != nil {
-		revoked, err := server.agentTokenRevocations.IsRevoked(r.Context(), aauth.TokenReference{Issuer: agent.Issuer, JTI: agent.JTI})
-		if err != nil {
-			writeProblem(w, 500, "server_error", err)
-			return
-		}
-		if revoked {
-			writeProblem(w, 403, "revoked", nil)
-			return
-		}
+	if err := server.checkFederatedRevocations(r.Context(), agent, credential); err != nil {
+		writeFederatedRevocationProblem(w, err)
+		return
 	}
 	response := &http.Response{StatusCode: 200, Header: record.Response.Header, Body: io.NopCloser(bytes.NewReader(record.Response.Body))}
-	server.deliverFederatedAuthorization(w, r, response, resource, agent, agent, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{})
+	server.deliverFederatedAuthorization(w, r, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{})
+}
+
+// handleFederatedCancellation lets the Agent that started a federated wait
+// withdraw it. The PS consumes its continuation first, so nothing retained
+// can be delivered afterwards, then sends the AS one signed DELETE for a
+// request still waiting there. The AS answer does not change the Agent's
+// result: an AS that misses it retains the request only until its deadline.
+func (server *Server) handleFederatedCancellation(w http.ResponseWriter, r *http.Request) {
+	_, agent, _, err := server.verifyAgentProof(r, nil)
+	if err != nil {
+		writeAgentTokenProblem(w, err)
+		return
+	}
+	if !requestBodyIsEmpty(r) {
+		writeProblem(w, 400, "invalid_request", errors.New("cancellation must be bodyless"))
+		return
+	}
+	record, err := server.FederatedAuthorization(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, ErrFederatedAuthorizationConflict) {
+			writeProblem(w, 410, "unknown_request", err)
+		} else {
+			writeProblem(w, 500, "server_error", err)
+		}
+		return
+	}
+	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
+	if err != nil || agent.Issuer != record.AgentIssuer || agent.Subject != record.Agent || agent.PersonServer != server.issuer || thumbprint != record.AgentJKT {
+		writeProblem(w, 403, "wrong_poller", errors.New("pending request belongs to another Agent or key"))
+		return
+	}
+	if record.Gone {
+		writeProblem(w, 410, "request_consumed", nil)
+		return
+	}
+	next := record
+	next.Revision++
+	next.Gone = true
+	if err := server.federatedDeferred.Store.ReplaceFederatedAuthorization(r.Context(), record, next); err != nil {
+		if errors.Is(err, ErrFederatedAuthorizationConflict) {
+			writeProblem(w, 410, "request_consumed", err)
+		} else {
+			writeProblem(w, 500, "server_error", err)
+		}
+		return
+	}
+	if !record.Terminal {
+		server.cancelAccessServerRequest(r.Context(), record)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) cancelAccessServerRequest(ctx context.Context, record FederatedAuthorizationRecord) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, record.Location, nil)
+	if err != nil {
+		return
+	}
+	if err := signaturekey.SignJWKSURIRequest(request, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock); err != nil {
+		return
+	}
+	response, err := server.httpClient.Do(request)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxRequestBytes))
+	_ = response.Body.Close()
 }
 
 type federatedResponseBuffer struct {

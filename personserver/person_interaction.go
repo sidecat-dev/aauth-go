@@ -550,6 +550,11 @@ func (server *Server) ApprovePersonTokenInteraction(ctx context.Context, interac
 	if !now.Before(interaction.expiresAt) || !now.Before(interaction.agentExpiresAt) {
 		return ErrPendingPersonTokenExpired
 	}
+	// The requesting Agent is top-level; its binding authorizes this issuance,
+	// including one it mediates for a sub-agent.
+	if err := server.checkAgentBinding(ctx, AgentBinding{AgentProvider: interaction.agentProvider, Agent: interaction.requestingAgent}); err != nil {
+		return err
+	}
 	expiresAt := now.Add(person.Lifetime)
 	if interaction.agentExpiresAt.Before(expiresAt) {
 		expiresAt = interaction.agentExpiresAt
@@ -835,6 +840,18 @@ func (server *Server) handlePendingPersonToken(response http.ResponseWriter, req
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 		return
+	}
+	switch result.State {
+	case PersonTokenPollWaiting, PersonTokenPollInteracting, PersonTokenPollApproved:
+		// A revoked binding ends a live request and withholds a retained token.
+		if err := server.checkAgentBinding(request.Context(), AgentBinding{AgentProvider: snapshot.Record.AgentProvider, Agent: snapshot.Record.RequestingAgent}); err != nil {
+			if errors.Is(err, ErrAgentBindingRevoked) && result.State == PersonTokenPollApproved &&
+				!server.consumePendingPersonTokenResult(response, request, id, result, mission) {
+				return
+			}
+			writeAgentBindingProblem(response, err, http.StatusForbidden, "person_token_denied")
+			return
+		}
 	}
 	switch result.State {
 	case PersonTokenPollWaiting:
