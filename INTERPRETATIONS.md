@@ -466,9 +466,9 @@ receiving handler serves that host. An Auth token's audience check is also
 insufficient: its audience can match the Resource while the signed request
 names another host.
 
-`resource.Server.Handler` therefore admits only its configured Issuer's
-authority before routing or authentication. It uses `Request.Host`, falling
-back to `URL.Host`, accepts DNS case differences and the default HTTPS port
+`resource.Server.Handler` and `resource.ResourceManagedServer.Handler` therefore
+admit only their configured Issuer's authority before routing or authentication.
+The check uses `Request.Host`, falling back to `URL.Host`, accepts DNS case differences and the default HTTPS port
 443, and ignores forwarding headers. A foreign authority receives HTTP 421
 with `no-store`, without `Signature-Error`: the request is misdirected, not
 necessarily incorrectly signed. This also makes foreign-host R3 document
@@ -477,12 +477,15 @@ fetches return 421 before their document-access checks.
 The issuer has no path. Application routing and authorization decide which
 correctly signed paths it serves; changing a path after signing still fails
 signature verification. Reverse proxies must preserve the public authority
-and signed target. This rule applies to `resource.Server`, not a claim about
-every role or the separate session and Event services.
+and signed target. The Resource-managed session service applies the same check
+to initial authorization, session use, discovery and pending routes. Event
+services have their own endpoint binding checks.
 
 **Evidence:** `resource/authority_test.go:TestResourceBindsRequestAuthorityToIssuer`
 covers Agent identity, Person identity, PS-issued Auth tokens and AS-issued
 Auth tokens, including host/path mutations and forwarding-header controls.
+`resource/session_authority_test.go:TestResourceManagedRejectsForeignAuthorityBeforeSessionAccess`
+checks the session service before authorization policy, store access or dispatch.
 
 ## Query-bearing requests cover `@query`
 
@@ -1153,9 +1156,9 @@ insufficiency reports the remainder and may also report `required`.
 
 **Source:** AAuth Budgets at `a99d353`, `Sending Rules` and `AAuth-Budget Response Header`.
 
-After verifying the Budget token, request proof, issuer role and Resource
-context, a Resource-generated error carries `cost=0` and the current remainder
-when its meter is available. This differs from the step-up challenge above:
+After verifying the Budget token, request proof, issuer role, Resource context,
+account/scope structure and revocation status, a Resource-generated route refusal
+carries `cost=0` and the current remainder when its meter is available. This differs from the step-up challenge above:
 an ordinary error is a completed request with no charge. Application failures
 after an atomic charge retain the charged cost.
 
@@ -1163,12 +1166,17 @@ The Resource observes its own store through `Charge` with zero cost, which may
 establish the token binding but must not increase either consumption ledger.
 An exhausted result supplies a zero remainder. A failed or inconsistent meter
 result supplies no feedback; the implementation never substitutes the signed
-cap for an unknown balance. No second observation follows a failed charge.
+cap for an unknown balance. Invalid or revoked credentials never reach the
+Budget store. Pricing failures also omit feedback without observing the
+ledger; pricing is part of metering. No second observation follows a failed
+charge. A free route still dispatches when its zero-cost observation fails.
 The Agent continues to classify missing feedback as uncertain, even on a
 problem response, because that body does not establish consumption.
 Evidence: `TestBudgetScopeRefusalReportsUnchargedBalance`,
-`TestBudgetRefusalDoesNotInventBalance`, `TestBudgetFeedbackRequiresVerifiedRequestAndResourceContext`
-and `storetest.RunBudget`.
+`TestBudgetRefusalDoesNotInventBalance`, `TestBudgetFeedbackRequiresVerifiedRequestAndResourceContext`,
+`TestBudgetFeedbackRejectsInvalidCredentialBeforeMetering`,
+`TestBudgetCostPolicyFailureDoesNotObserveBalance`,
+`TestUnmeteredBudgetCallSurvivesMeterFailure` and `storetest.RunBudget`.
 
 ## The host selects retained lineage for a Budget step-up token
 

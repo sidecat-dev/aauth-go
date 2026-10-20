@@ -159,6 +159,19 @@ to that Resource's authorization request. These Core checks do not enforce
 R3 or Budget claims; the [role examples](JOURNEYS.md) show that composition.
 See the [glossary](GLOSSARY.md) for the token fields and companion terms.
 
+## Plan AP signing-key rotation
+
+`agentprovider.Server` publishes one signing key. Replacing that key can make
+unexpired Agent tokens unverifiable after a verifier refreshes its JWKS cache.
+The HTTP resolver supports multiple published keys and selects the token
+header's `kid`; it does not try every key. For an overlap window, your host
+must publish both old and new public keys at the discovered `jwks_uri`, retaining
+the old key for tokens you still intend to accept. Automatic publication and
+retirement are the **AP-KEY-ROLLOVER** gap in [CONFORMANCE.md](CONFORMANCE.md).
+The [rotation test](integration/agentprovider_rotation_test.go) demonstrates
+single-key replacement, cached verification, a host-published overlap set and
+retirement after refresh.
+
 ## Compose authorization features
 
 A single Resource can serve free and priced routes. Set
@@ -167,7 +180,8 @@ every protected route. `Cost` runs only for metered calls. Free routes accept
 Core Auth tokens; when given a Budget token, they report zero cost and its
 current remainder. [Route tests](resource/budget_routes_test.go) execute both
 cases, exhausted grants, and refusal feedback. A failed meter can omit
-feedback; handle `BudgetCallUncertainError` without automatically retrying.
+feedback; an unmetered route still runs when its meter fails. Handle
+`BudgetCallUncertainError` without automatically retrying.
 
 **Custom Budget stores must support zero-cost observations.**
 `BudgetStore.Charge` must accept `Cost == 0` and return the current remainder
@@ -211,8 +225,9 @@ transport. Changing `Issuer` alone does not make a request to
 separate TLS processes and certificates at its declared module pin.
 
 **HTTP 421 behind a reverse proxy:** every request through
-`resource.Server.Handler`, including discovery, must match the configured
-`Issuer` authority. For a service reached as `https://resource.example`, set
+`resource.Server.Handler` or `resource.ResourceManagedServer.Handler`, including
+discovery, must match the configured `Issuer` authority. For a service reached
+as `https://resource.example`, set
 `Issuer` to that identifier and configure the proxy to forward
 `Host: resource.example`, even if its upstream connection goes to
 `127.0.0.1:8080`. Preserve the signed path and query too. `Forwarded` and
@@ -223,7 +238,8 @@ after signing: the request proof also binds the caller's original authority.
 If you expose a different Resource identity, configure it consistently in
 the Resource, discovery, callers and Auth-token audiences; callers must sign
 that target. [Authority tests](resource/authority_test.go) exercise the
-receiving-host and signed-request checks.
+receiving-host and signed-request checks; [session tests](resource/session_authority_test.go)
+cover initial authorization, session use, discovery and pending routes.
 
 `go get gitlab.com/sidecat-dev/aauth-go` records a published version in your
 module. Review and commit `go.mod` and `go.sum`; these editor drafts and APIs

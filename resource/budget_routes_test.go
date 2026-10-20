@@ -2,14 +2,18 @@ package resource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/r3/vocab/mcp"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -251,4 +255,146 @@ type budgetStoreFunc func(context.Context, BudgetCharge) (BudgetChargeResult, er
 
 func (charge budgetStoreFunc) Charge(ctx context.Context, request BudgetCharge) (BudgetChargeResult, error) {
 	return charge(ctx, request)
+}
+
+// Core at a99d353, Auth Token Verification and Token Revocation, precedes use of a
+// credential's grant. Rejected credentials must not reach the Budget ledger.
+func TestBudgetFeedbackRejectsInvalidCredentialBeforeMetering(t *testing.T) {
+	for _, kind := range []string{"revoked", "conflicting token", "status unavailable", "unsupported account", "undeclared scope"} {
+		t.Run(kind, func(t *testing.T) {
+			protocol := newBudgetResourceProtocol(t, 1, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("invalid credential dispatched") }))
+			statuses := newTestAuthTokenStatusStore()
+			protocol.config.AuthTokenStatuses = statuses
+			token := protocol.authTokenWith(t, "rejected-credential", budgetValue(t, 5, protocol.unit), func(claims *aauth.AuthTokenClaims) {
+				switch kind {
+				case "unsupported account":
+					account := "account-1"
+					claims.Account = &account
+				case "undeclared scope":
+					claims.Scope = "undeclared"
+				}
+			})
+			reference := aauth.TokenReference{Issuer: personIssuer, JTI: "rejected-credential"}
+			want := http.StatusForbidden
+			switch kind {
+			case "revoked":
+				statuses.revoked[reference] = true
+				want = http.StatusUnauthorized
+			case "conflicting token":
+				statuses.records[reference] = ObservedAuthToken{Reference: reference}
+			case "status unavailable":
+				statuses.observeError = errors.New("status unavailable")
+				want = http.StatusInternalServerError
+			}
+			response := protocol.call(t, protocol.server(t), token)
+			if response.Code != want {
+				t.Errorf("status=%d want=%d body=%s", response.Code, want, response.Body.String())
+			}
+			if response.Header().Get("AAuth-Budget") != "" || protocol.store.chargeCount() != 0 || len(protocol.store.tokens) != 0 {
+				t.Fatalf("rejected credential reached meter: feedback=%q calls=%d bindings=%d", response.Header().Get("AAuth-Budget"), protocol.store.chargeCount(), len(protocol.store.tokens))
+			}
+		})
+	}
+}
+
+// Budgets at a99d353, Sending Rules, permits feedback omission for a meter fault.
+// A route that requires no charge remains available when its balance is unknown.
+func TestUnmeteredBudgetCallSurvivesMeterFailure(t *testing.T) {
+	dispatched := 0
+	protocol := newBudgetResourceProtocol(t, 1, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { dispatched++; w.WriteHeader(http.StatusNoContent) }))
+	protocol.config.Budget.Metered = func(*http.Request) bool { return false }
+	protocol.config.Budget.Cost = func(context.Context, BudgetCostRequest) (int64, error) { t.Fatal("free route priced"); return 0, nil }
+	protocol.store.failure = errors.New("meter unavailable")
+	response := protocol.call(t, protocol.server(t), protocol.authToken(t, "free-meter-fault", budgetValue(t, 5, protocol.unit)))
+	if response.Code != http.StatusNoContent || dispatched != 1 || response.Header().Get("AAuth-Budget") != "" || protocol.store.chargeCount() != 1 || len(protocol.store.tokens) != 0 {
+		t.Fatalf("status=%d dispatched=%d feedback=%q observations=%d bindings=%d", response.Code, dispatched, response.Header().Get("AAuth-Budget"), protocol.store.chargeCount(), len(protocol.store.tokens))
+	}
+}
+
+func TestBudgetCostPolicyFailureDoesNotObserveBalance(t *testing.T) {
+	for _, kind := range []string{"policy error", "invalid cost"} {
+		t.Run(kind, func(t *testing.T) {
+			protocol := newBudgetResourceProtocol(t, 1, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("failed pricing dispatched") }))
+			protocol.config.Budget.Cost = func(context.Context, BudgetCostRequest) (int64, error) {
+				if kind == "policy error" {
+					return 0, errors.New("price unavailable")
+				}
+				return -1, nil
+			}
+			response := protocol.call(t, protocol.server(t), protocol.authToken(t, "pricing-fault", budgetValue(t, 5, protocol.unit)))
+			if response.Code != http.StatusInternalServerError || response.Header().Get("AAuth-Budget") != "" || protocol.store.chargeCount() != 0 {
+				t.Fatalf("status=%d feedback=%q observations=%d", response.Code, response.Header().Get("AAuth-Budget"), protocol.store.chargeCount())
+			}
+		})
+	}
+}
+
+// The implemented combined profile is class-R3 with a fixed Budget. Per-call
+// composition remains a gap; it must not reach challenge creation or metering.
+func TestR3BudgetPerCallClaimsRejectedBeforeMetering(t *testing.T) {
+	protocol := newBudgetResourceProtocol(t, 1, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("unsupported composition dispatched") }))
+	documents := &r3TestDocumentStore{}
+	r3Config := newResourceMCPConfig(t, documents, []string{"records.read"}, func(*http.Request) (string, bool, error) {
+		t.Fatal("unsupported composition reached route policy")
+		return "", false, nil
+	})
+	protocol.resolver[signaturekey.StaticKeyReference{Issuer: accessIssuer, DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: protocol.personKey.ID()}] = protocol.personKey.PublicJWK()
+	config := protocol.config
+	server, err := NewFederatedAuthorization(FederatedAuthorizationConfig{
+		Issuer: config.Issuer, AccessServer: accessIssuer, SigningKey: config.SigningKey, KeyResolver: config.KeyResolver, Clock: config.Clock, NewID: config.NewID,
+		ScopeDescriptions: config.ScopeDescriptions, RequiredScopes: config.RequiredScopes, ResolvePerson: config.ResolvePerson, Protected: config.Protected, Budget: config.Budget, R3: r3Config,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := protocol.authTokenWith(t, "unsupported-per-call", budgetValue(t, 5, protocol.unit), func(claims *aauth.AuthTokenClaims) {
+		claims.Issuer = accessIssuer
+		claims.DWK = aauth.AccessDiscoveryDocument
+	})
+	claims, err := aauth.VerifyAuthTokenCore(context.Background(), base, protocol.resolver, protocol.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := mcp.NewOperation("records.read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed, err := operation.ToR3()
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, err := r3.NewGrantedOperations(mcp.Vocabulary(), typed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantedJSON, err := json.Marshal(granted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uriJSON, _ := json.Marshal(resourceIssuer + "/r3/class")
+	digestJSON, _ := json.Marshal(r3.Digest([]byte("class document")))
+	claims.AdditionalClaims["r3_uri"] = uriJSON
+	claims.AdditionalClaims["r3_s256"] = digestJSON
+	claims.AdditionalClaims["r3_granted"] = grantedJSON
+	classToken, err := aauth.MintAuthTokenCore(protocol.personKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same independently signed claims are accepted by the combined verifier
+	// before adding r3_per_call, so the negative case isolates that profile limit.
+	if _, _, _, _, err := r3.VerifyBudgetAuthToken(context.Background(), r3Config.Registry, classToken, protocol.resolver, protocol.clock); err != nil {
+		t.Fatal(err)
+	}
+	claims.AdditionalClaims["r3_per_call"] = grantedJSON
+	token, err := aauth.MintAuthTokenCore(protocol.personKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := r3.VerifyBudgetAuthToken(context.Background(), r3Config.Registry, token, protocol.resolver, protocol.clock); err == nil || !strings.Contains(err.Error(), "the class-R3 Budget profile does not permit r3_per_call") {
+		t.Fatalf("combined verifier error=%v", err)
+	}
+	response := protocol.call(t, server, token)
+	if response.Code != http.StatusUnauthorized || response.Header().Get("AAuth-Requirement") != "" || response.Header().Get("AAuth-Budget") != "" || protocol.store.chargeCount() != 0 {
+		t.Fatalf("status=%d headers=%v observations=%d", response.Code, response.Header(), protocol.store.chargeCount())
+	}
 }

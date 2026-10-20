@@ -567,17 +567,21 @@ func (server *Server) newHandler() http.Handler {
 		mux.HandleFunc("/pending/", server.serveHeldNamespace)
 	}
 	mux.Handle("/", http.HandlerFunc(server.serveProtected))
+	return withResourceAuthority(server.issuer, mux)
+}
+
+func withResourceAuthority(issuer string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if !server.matchesRequestAuthority(request) {
+		if !matchesRequestAuthority(issuer, request) {
 			response.Header().Set("Cache-Control", "private, no-store, no-transform")
 			http.Error(response, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
 			return
 		}
-		mux.ServeHTTP(response, request)
+		next.ServeHTTP(response, request)
 	})
 }
 
-func (server *Server) matchesRequestAuthority(request *http.Request) bool {
+func matchesRequestAuthority(issuer string, request *http.Request) bool {
 	if request == nil || request.URL == nil {
 		return false
 	}
@@ -597,7 +601,7 @@ func (server *Server) matchesRequestAuthority(request *http.Request) bool {
 	}
 	// Construction validates Issuer as https://host with no explicit port.
 	// DNS case and the default HTTPS port do not change that authority.
-	expected := strings.TrimPrefix(server.issuer, "https://")
+	expected := strings.TrimPrefix(issuer, "https://")
 	return strings.EqualFold(authority, expected) || strings.EqualFold(authority, expected+":443")
 }
 

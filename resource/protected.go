@@ -257,12 +257,6 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request key does not match auth token"))
 		return
 	}
-	applicationResponse := response
-	var budgetResponse *budgetResponseWriter
-	if budgetGrant != nil {
-		budgetResponse = newBudgetResponseWriter(response, request.Context(), server.budget.store, claims, *budgetGrant)
-		response = budgetResponse
-	}
 	if claims.Account != nil && server.validateAccount == nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
@@ -307,6 +301,14 @@ func (server *Server) serveAuthTokenProtected(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 		return
+	}
+	// Balance observation requires a structurally valid, non-revoked credential.
+	// Route authorization can still refuse it without charging the request.
+	applicationResponse := response
+	var budgetResponse *budgetResponseWriter
+	if budgetGrant != nil {
+		budgetResponse = newBudgetResponseWriter(response, request.Context(), server.budget.store, claims, *budgetGrant)
+		response = budgetResponse
 	}
 	requiredScopes, err := server.authorizeScopes(request, scopes, authorization != nil)
 	if err != nil {
@@ -389,10 +391,9 @@ func (server *Server) serveAuthTokenProtected(
 			return
 		}
 	} else if budgetResponse != nil {
-		if err := budgetResponse.setUnchargedFeedback(); err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			return
-		}
+		// Sending Rules permits omitted feedback when the meter fails. This
+		// route needs no charge, so the application can still serve it.
+		_ = budgetResponse.setUnchargedFeedback()
 	}
 	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
 	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
@@ -443,6 +444,9 @@ func (server *Server) enforceFixedBudget(
 	grant budgets.Value,
 	r3Reference *r3.Reference,
 ) bool {
+	// Pricing is part of metering. A pricing failure must not trigger a
+	// fallback balance observation or establish a ledger binding.
+	response.observationBlocked = true
 	policyRequest, finish, err := cloneScopePolicyRequest(request)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("prepare Resource Budget cost request: %w", err))
@@ -460,7 +464,6 @@ func (server *Server) enforceFixedBudget(
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget cost policy: %w", err))
 		return false
 	}
-	response.observationBlocked = true
 	result, err := server.budget.store.Charge(request.Context(), BudgetCharge{
 		Token:        aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		PersonServer: claims.PersonServer,

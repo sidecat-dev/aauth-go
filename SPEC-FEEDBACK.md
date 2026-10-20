@@ -606,14 +606,11 @@ on the receiving service admitting the target host.
 `https://other.example/records`, Go `5636c1b` dispatched both Agent-identity and
 Auth-token requests when delivered with `Host: other.example`. The Auth token's
 audience correctly named the configured Resource. Changing Host, path or query
-after signing failed verification. A separate Rust acceptance test at
-`b4ebe7028ce8eba2a7dca375b3eef314057c4ecf` reported the same unchanged-foreign-host
-acceptance on its Agent-identity path; that revision's
-`crates/aauth-resource/src/lib.rs` constructor takes keys and policy but no
-receiving authority. No Rust Auth-token path is claimed by this evidence.
+after signing failed verification.
 
-Go's [authority regression](resource/authority_test.go) now checks the
-configured authority before dispatch. This is a local routing safeguard,
+The [authority regression](resource/authority_test.go) and
+[session regression](resource/session_authority_test.go) now check the configured
+authority before dispatch. This is a local routing safeguard,
 documented in [INTERPRETATIONS.md](INTERPRETATIONS.md#resource-handlers-admit-their-configured-authority),
 not evidence that the earlier behavior violated an explicit AAuth comparison.
 RFC 9110 Section 7.4 already constrains HTTP origin handling; the open question

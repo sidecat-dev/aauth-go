@@ -10,8 +10,9 @@ import (
 )
 
 // budgetResponseWriter supplies feedback for Resource-generated refusals after
-// the token and request proof have been verified. Application handlers receive
-// the original writer with feedback already set by the completed charge.
+// token structure, request proof and revocation status have been checked.
+// Application handlers receive the original writer after charging or observing
+// the balance; meter faults on unmetered routes leave feedback unset.
 type budgetResponseWriter struct {
 	http.ResponseWriter
 	ctx                context.Context
