@@ -248,6 +248,27 @@ until its own deadline. The [permission](example/permission/main.go) and
 without extracting references from the Agent's poll URL. Mission proposals
 have a separate [pending queue](personserver/mission_proposal_deferred_test.go).
 
+## Diagnose a refused request
+
+Wrap the role handler directly with `diagnostics.Handler` to observe the original
+cause of an AAuth problem response:
+
+```go
+handler := diagnostics.Handler(service.Handler(), func(ctx context.Context, p diagnostics.Problem) {
+    // Use errors.Is/As on p.Cause; retain only selected, redacted log fields.
+    logger.LogAttrs(ctx, slog.LevelWarn, "AAuth request refused",
+        slog.Int("status", p.Status), slog.String("code", p.Code))
+})
+```
+
+The [runnable example](diagnostics/example_test.go) receives a local cause while
+the caller receives the protocol refusal. The callback runs synchronously after
+serialization and must handle concurrent requests. Causes can contain private
+host data; nothing logs them automatically. The wrapper preserves standard HTTP
+writer capabilities and `http.ResponseController`; custom writer interfaces are
+not preserved. It observes role-generated problem responses, not ordinary
+application responses, router errors or errors from non-HTTP methods.
+
 ## Versions and local development
 
 For in-process development, use `https://resource.example` as in the runnable

@@ -68,6 +68,7 @@ func WriteJSON(response http.ResponseWriter, status int, value any) {
 // WriteProblem writes an AAuth problem response. Diagnostic causes stay local;
 // only explicitly public Signature-Key detail crosses the wire.
 func WriteProblem(response http.ResponseWriter, status int, code string, cause error) {
+	defer ReportProblem(response, status, code, cause)
 	detail := http.StatusText(status)
 	var signatureFailure *signaturekey.Error
 	if status == http.StatusUnauthorized {
@@ -111,4 +112,15 @@ func WriteProblem(response http.ResponseWriter, status int, code string, cause e
 		}(),
 		Status: status, Code: code, Detail: detail,
 	})
+}
+
+// ReportProblem forwards a local diagnostic without changing the response.
+// Internal response wrappers forward this hook without exposing their underlying
+// transport or adding optional HTTP capabilities.
+func ReportProblem(response http.ResponseWriter, status int, code string, cause error) {
+	if reporter, ok := response.(interface {
+		ReportAAuthProblem(int, string, error)
+	}); ok {
+		reporter.ReportAAuthProblem(status, code, cause)
+	}
 }

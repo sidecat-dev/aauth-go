@@ -7,6 +7,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 )
 
 // budgetResponseWriter supplies feedback for Resource-generated refusals after
@@ -21,6 +22,10 @@ type budgetResponseWriter struct {
 	remaining          *int64
 	observationBlocked bool
 	wroteHeader        bool
+}
+
+func (response *budgetResponseWriter) ReportAAuthProblem(status int, code string, cause error) {
+	httpapi.ReportProblem(response.ResponseWriter, status, code, cause)
 }
 
 func newBudgetResponseWriter(response http.ResponseWriter, ctx context.Context, store BudgetStore, claims aauth.AuthTokenClaims, grant budgets.Value) *budgetResponseWriter {
