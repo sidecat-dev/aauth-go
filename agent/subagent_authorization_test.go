@@ -171,7 +171,7 @@ func TestSubagentCannotMediateAnotherSubagent(t *testing.T) {
 		Resource:      harness.protocol.resourceID,
 		SubagentToken: harness.childToken,
 	})
-	if err == nil || !strings.Contains(err.Error(), "sub-agent must not call the Person Server directly") {
+	if !errors.Is(err, agent.ErrSubagentPersonServerCall) {
 		t.Fatalf("nested mediation error = %v", err)
 	}
 	if harness.networkCalls != 0 {

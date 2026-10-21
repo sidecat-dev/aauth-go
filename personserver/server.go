@@ -61,9 +61,15 @@ type FederatedAuthorizationConfig struct {
 	// MaximumResourceTokenLifetime bounds resource tokens derived from a
 	// retained person token. Zero selects DefaultMaximumResourceTokenLifetime.
 	MaximumResourceTokenLifetime time.Duration
-	AccessServerEndpoint         func(context.Context, string) (string, error)
-	Tokens                       TokenStore
-	BindPerson                   func(context.Context, PersonTokenRequest) (Person, error)
+	// AccessServerEndpoint maps a Resource token's Access Server issuer to
+	// that server's HTTPS token endpoint, typically from its metadata. An
+	// accessserver.Server serves it at the issuer's /token, and its pending
+	// URLs below /token/pending/.
+	AccessServerEndpoint func(context.Context, string) (string, error)
+	// Tokens retains issued Person tokens. Without missions any TokenStore
+	// serves; testutil.NewMissionStore provides one for tests either way.
+	Tokens     TokenStore
+	BindPerson func(context.Context, PersonTokenRequest) (Person, error)
 	// RequirePersonTokenInteraction optionally selects a host-authenticated
 	// interaction before BindPerson. A required interaction uses the deferred
 	// extension implemented by Tokens; with Missions, Tokens implements
@@ -814,7 +820,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	}
 	if upstream == nil {
 		// The signing Agent's binding authorizes it and every child it mediates.
-		if err := server.checkAgentBinding(request.Context(), agentBinding(agent)); err != nil {
+		if err := server.checkAgentBinding(request.Context(), agentBinding(agent), proof.VerifiedAt()); err != nil {
 			writeAgentBindingProblem(response, err, http.StatusForbidden, "person_token_denied")
 			return
 		}
@@ -1143,7 +1149,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if upstream == nil {
 		// Only a top-level Agent signs here, so its binding authorized the
 		// presented credential, whether it holds it or a child it mediates does.
-		if err := server.checkAgentBinding(request.Context(), agentBinding(agent)); err != nil {
+		// A credential issued before a replacement binding stays refused.
+		if err := server.checkAgentBinding(request.Context(), agentBinding(agent), presentedTokenIssuedAt(presented)); err != nil {
 			writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
 			return
 		}

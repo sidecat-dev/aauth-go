@@ -143,7 +143,9 @@ func New(config Config) (*Server, error) {
 	}, nil
 }
 
-// Handler serves the token, metadata, and JWKS endpoints.
+// Handler serves POST /token, the metadata and JWKS documents, and with
+// Deferred the pending URLs GET and DELETE /token/pending/{id}, where id is the
+// PendingAuthorizationRecord ID.
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", server.handleToken)

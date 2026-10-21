@@ -243,20 +243,24 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     parent → PS on behalf of the child → immediate issuance, standard host
     interaction, or an AS approval or payment wait that only the parent polls
     or cancels → credential bound to the child key → child → Resource.
-    Revoking the parent's binding stops the next issuance and any pending
-    delivery. Alternatively, Resource 1 receives an authorized call → acts as
-    its own Agent → PS → Resource 2.
+    Revoking the parent's binding stops the next issuance, missions and any
+    pending delivery; re-establishing it admits only later requests.
+    Alternatively, Resource 1 receives an authorized call → acts as its own
+    Agent → PS → Resource 2.
   - Start with: `agentprovider.Server.IssueSubagent` or `SubagentHandler` with
     `agent.Client.RequestSubagentToken`; `PersonTokenRequest.SubagentToken`,
     `ExchangeRequest.SubagentToken`, `BeginExchange`, `PollExchange`,
-    `CancelExchange`; `personserver.Server.RevokeAgentBinding`;
+    `CancelExchange`; `personserver.Server.RevokeAgentBinding` and
+    `ReestablishAgentBinding`;
     `PersonTokenRequest.UpstreamToken`, `ExchangeRequest.UpstreamToken`, and
     `personserver.CallChainingConfig`.
   - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go),
     [`integration/subagent_federated_deferred_test.go`](integration/subagent_federated_deferred_test.go),
     [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go),
     [`integration/call_chaining_test.go`](integration/call_chaining_test.go),
-    `go run ./example/subagent`, and `go run ./example/callchaining`. The shared
+    [`personserver/agent_binding_lifecycle_test.go`](personserver/agent_binding_lifecycle_test.go),
+    `go run ./example/subagent` (the hosted sub-agent request through the AS
+    wait), and `go run ./example/callchaining`. The shared
     harness's `authorization.subagent` slice measures the same native roles.
   - Missing: recursive delegation, repeated chain depth, federated downstream
     chaining, sub-agent call chaining, mission composition, and Agent-token

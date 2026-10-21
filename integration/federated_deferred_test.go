@@ -771,7 +771,8 @@ func TestFederatedDeferredPSDeadlineAfterDeliveryVerification(t *testing.T) {
 }
 
 // Protocol 28e8258, Deferred Responses / Polling with GET: Agent polling
-// follows Retry-After. A PS continuation reflects the retained AS schedule.
+// follows Retry-After. A PS continuation reflects the retained AS schedule;
+// once the AS poll is due it waits on the host, so it advertises one second.
 func TestFederatedAgentRetryAfterTracksASSchedule(t *testing.T) {
 	f := newDeferredFederation(t)
 	f.retry.Store(7)
@@ -782,7 +783,7 @@ func TestFederatedAgentRetryAfterTracksASSchedule(t *testing.T) {
 	for _, tc := range []struct {
 		advance int64
 		want    time.Duration
-	}{{2, 5 * time.Second}, {5, 0}} {
+	}{{2, 5 * time.Second}, {5, time.Second}} {
 		f.now.Add(tc.advance)
 		result, err := f.client.PollExchange(context.Background(), pending)
 		if err != nil {

@@ -123,7 +123,8 @@ func TestAuthorizationClarificationCancellationIsTerminal(t *testing.T) {
 	}
 	location := pendingResponse.Header().Get("Location")
 	cancelled := protocol.cancelClarification(t, server, location, protocol.agentKey, protocol.agentToken)
-	if cancelled.Code != http.StatusNoContent || cancelled.Body.Len() != 0 {
+	if cancelled.Code != http.StatusOK || cancelled.Header().Get("Cache-Control") != "no-store" ||
+		strings.TrimSpace(cancelled.Body.String()) != `{"status":"cancelled"}` {
 		t.Fatalf("cancel = %d %s", cancelled.Code, cancelled.Body.String())
 	}
 	if replay := protocol.cancelClarification(t, server, location, protocol.agentKey, protocol.agentToken); replay.Code != http.StatusGone {
@@ -211,7 +212,7 @@ func TestAuthorizationClarificationRejectsMalformedStoreResults(t *testing.T) {
 				t.Fatal(err)
 			}
 			location := pendingResponse.Header().Get("Location")
-			if cancelled := protocol.cancelClarification(t, server, location, protocol.agentKey, protocol.agentToken); cancelled.Code != http.StatusNoContent {
+			if cancelled := protocol.cancelClarification(t, server, location, protocol.agentKey, protocol.agentToken); cancelled.Code != http.StatusOK {
 				t.Fatalf("cancel = %d %s", cancelled.Code, cancelled.Body.String())
 			}
 			store.mu.Lock()

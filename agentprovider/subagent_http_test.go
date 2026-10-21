@@ -133,11 +133,14 @@ func TestHostedSubagentRequestRefusesWithoutIssuing(t *testing.T) {
 		}
 		return string(encoded)
 	}
+	// Only the policy denial reaches host policy: a request issuance would
+	// refuse never reaches a policy that records the parent's sub-agents.
 	for _, test := range []struct {
-		name   string
-		send   func(*testing.T, *hostedSubagentFixture) *httptest.ResponseRecorder
-		status int
-		code   string
+		name     string
+		send     func(*testing.T, *hostedSubagentFixture) *httptest.ResponseRecorder
+		status   int
+		code     string
+		consults bool
 	}{
 		{name: "unsigned", status: http.StatusUnauthorized, send: func(t *testing.T, f *hostedSubagentFixture) *httptest.ResponseRecorder {
 			request := httptest.NewRequest(http.MethodPost, "https://ap.example/subagent", strings.NewReader(childJWK(f)))
@@ -175,7 +178,15 @@ func TestHostedSubagentRequestRefusesWithoutIssuing(t *testing.T) {
 			body, _ := json.Marshal(map[string]any{"jwk": f.parent.PublicJWK()})
 			return signed(t, f, f.parent, f.parentCompact, "https://ap.example/subagent", string(body))
 		}},
-		{name: "policy denial", status: http.StatusForbidden, code: "subagent_denied", send: func(t *testing.T, f *hostedSubagentFixture) *httptest.ResponseRecorder {
+		{name: "malformed discriminator", status: http.StatusBadRequest, code: "invalid_request", send: func(t *testing.T, f *hostedSubagentFixture) *httptest.ResponseRecorder {
+			body, _ := json.Marshal(map[string]any{"jwk": f.child.PublicJWK(), "discriminator": "bad@part"})
+			return signed(t, f, f.parent, f.parentCompact, "https://ap.example/subagent", string(body))
+		}},
+		{name: "nested discriminator", status: http.StatusBadRequest, code: "invalid_request", send: func(t *testing.T, f *hostedSubagentFixture) *httptest.ResponseRecorder {
+			body, _ := json.Marshal(map[string]any{"jwk": f.child.PublicJWK(), "discriminator": "a+b"})
+			return signed(t, f, f.parent, f.parentCompact, "https://ap.example/subagent", string(body))
+		}},
+		{name: "policy denial", status: http.StatusForbidden, code: "subagent_denied", consults: true, send: func(t *testing.T, f *hostedSubagentFixture) *httptest.ResponseRecorder {
 			f.policy = func(context.Context, agentprovider.SubagentRequest) (agentprovider.SubagentDecision, error) {
 				return agentprovider.SubagentDecision{}, agentprovider.ErrSubagentDenied
 			}
@@ -203,6 +214,9 @@ func TestHostedSubagentRequestRefusesWithoutIssuing(t *testing.T) {
 			}
 			if test.name != "sub-agent as parent" && len(f.ids) != issued {
 				t.Fatal("refusal consumed a token identifier")
+			}
+			if consulted := len(f.seen) != 0; consulted != test.consults {
+				t.Fatalf("host policy consulted = %t, want %t", consulted, test.consults)
 			}
 		})
 	}

@@ -39,7 +39,9 @@ func TestServiceGuideSubagentSnippetsCompile(t *testing.T) {
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"gitlab.com/sidecat-dev/aauth-go/agent"

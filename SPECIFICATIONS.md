@@ -202,22 +202,25 @@ text, and only for missionless one-level parent-mediated authorization:
   the signing parent in `parent_agent`, or reuses its key, with
   `invalid_subagent_token`.
 - **Token Endpoint Error Codes**: the request-parameter sub-agent token uses
-  `invalid_subagent_token`, `expired_subagent_token` and, where the Person Server
-  retains its Agent Provider's revocation, `revoked_subagent_token`, at both PS
-  and AS token endpoints.
-- **Parent-Mediated Authorization**, final paragraph: revoking the parent's
-  grant makes the next sub-agent authorization fail while delivered Auth tokens
-  expire normally. It applies to AS approval and payment waits as well as
-  immediate and PS-hosted issuance.
+  `invalid_subagent_token` and `expired_subagent_token` at both PS and AS token
+  endpoints, and `revoked_subagent_token` at the Person Server, which retains
+  its Agent Provider's revocations.
+- **Parent-Mediated Authorization**, final paragraph: the parent's consent for
+  a child's request can be withdrawn and existing auth tokens expire normally.
+  Host policy reevaluates that consent on every child request, including AS
+  approval and payment waits as well as immediate and PS-hosted issuance.
 - **Agent-Person Binding** and **Upstream Token Verification** step 4: a binding
-  the host revoked refuses new Person tokens, presented credentials and pending
-  deliveries under it, and a chained request with `revoked_upstream_token`.
+  the host revoked refuses new Person tokens and missions, presented
+  credentials and pending deliveries under it, and a chained request with
+  `revoked_upstream_token`; a replacement binding admits only later requests.
+  The binding-revocation operation and its answers are this library's reading
+  ([INTERPRETATIONS.md](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery)).
 
 - Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
 - Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
 - Sections: `## Sub-Agents` (1888–1938), `### Upstream Token Verification`
   step 4 (1835), the three sub-agent rows of `### Token Endpoint Error Codes`
-  (2594–2596), and `## Agent-Person Binding` (2912–2918).
+  (2594–2596), and `## Agent-Person Binding` (2912–2926).
 - SHA-256: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
 Not adopted by this entry: Agent-token revocation cascades to sub-agents,

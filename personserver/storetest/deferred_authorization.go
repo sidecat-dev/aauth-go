@@ -287,7 +287,8 @@ func deferredAuthorizationRecord(t testing.TB, id, code string) personserver.Pen
 	return personserver.PendingAuthorizationRecord{
 		ID: id, CodeSHA256: sha256.Sum256([]byte(code)),
 		PersonServer: "https://person.example", AgentProvider: "https://agent.example",
-		Agent: "aauth:local@agent.example", Subagent: "aauth:local+worker@agent.example",
+		Agent: "aauth:local@agent.example", AgentTokenJTI: "parent-token",
+		Subagent: "aauth:local+worker@agent.example", SubagentTokenJTI: "child-token",
 		Resource: "https://resource.example", Subject: "person-123", Tenant: "tenant-1",
 		Scopes:                   []string{"records.read", "records.list"},
 		Confirmation:             deferredAuthorizationJWKFor(t, "parent", 1),
@@ -452,7 +453,8 @@ func requireDeferredAuthorizationRecord(t testing.TB, record personserver.Pendin
 		!reflect.DeepEqual(record.Capabilities, []string{"interaction"}) ||
 		string(record.AgentAdditionalClaims["platform"]) != `"orchestrator"` ||
 		string(record.SubagentAdditionalClaims["workload"]) != `"worker"` ||
-		record.Agent != "aauth:local@agent.example" || record.Subagent != "aauth:local+worker@agent.example" {
+		record.Agent != "aauth:local@agent.example" || record.Subagent != "aauth:local+worker@agent.example" ||
+		record.AgentTokenJTI != "parent-token" || record.SubagentTokenJTI != "child-token" {
 		t.Fatalf("retained authorization record = %#v", record)
 	}
 }

@@ -139,7 +139,7 @@ func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *veri
 	if record.ParentAgent != "" {
 		binding.Agent = record.ParentAgent
 	}
-	if err := server.checkAgentBinding(ctx, binding); err != nil {
+	if err := server.checkAgentBinding(ctx, binding, time.Unix(upstream.claims.IssuedAt, 0)); err != nil {
 		if errors.Is(err, ErrAgentBindingRevoked) {
 			return fmt.Errorf("%w: %w", errUpstreamCallerRevoked, err)
 		}

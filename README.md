@@ -62,7 +62,7 @@ Request verified: aauth:reader@agents.example
 | Permission, missions or interaction | [`example/permission`](example/permission), [`example/mission`](example/mission), [`example/psconsent`](example/psconsent) | In-process |
 | R3 operations, Budgets or Events | [`example/r3threeparty`](example/r3threeparty), [`example/budget`](example/budget), [`example/events`](example/events) | In-process; terms in the [glossary](GLOSSARY.md) |
 | Revocation and Person-token recovery | [`example/revocation`](example/revocation) | In-process |
-| Sub-agents: child issuance, parent-mediated grants including an AS approval wait, binding revocation | [`example/subagent`](example/subagent) | In-process; see [Delegate to a sub-agent](USE-IN-YOUR-SERVICE.md#delegate-to-a-sub-agent) |
+| Sub-agents: the hosted child request, parent-mediated grants including an AS approval wait, binding revocation | [`example/subagent`](example/subagent) | In-process; see [Delegate to a sub-agent](USE-IN-YOUR-SERVICE.md#delegate-to-a-sub-agent) |
 | Separate services, restart and retained state | [`walkthrough/local`](walkthrough/local), [`walkthrough/hosted`](walkthrough/hosted), [`walkthrough/callchaining`](walkthrough/callchaining) | Multiple TLS processes and state directories |
 | Historical Go/TypeScript qualifications (2026-09-01) | [`walkthrough/interop`](walkthrough/interop) | Live qualification needs public HTTPS and external services |
 

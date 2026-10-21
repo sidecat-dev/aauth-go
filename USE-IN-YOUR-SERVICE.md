@@ -326,9 +326,10 @@ and [the executable limit](integration/federated_deferred_test.go).
 A **sub-agent** is a child Agent with its own key, whose Agent token names its
 parent in `parent_agent`. The parent makes every Person Server request and
 poll; the child holds the issued Person and Auth tokens and is the only one
-that calls the Resource. [Run the example](example/subagent) for a
-three-party grant, a four-party grant that waits for AS approval, and a
-revoked binding. The tested snippets below come from the same flow.
+that calls the Resource. [Run the example](example/subagent) for the hosted
+sub-agent request, a three-party grant, a four-party grant that waits for AS
+approval, and a revoked binding. The snippets below follow the same flow; a
+`testutil` test compiles them against the public API from an external module.
 
 **Issue the child token.** Only the parent's own Agent Provider can issue it.
 A provider you run issues it directly from the parent's current token:
@@ -342,19 +343,43 @@ func issueChild(ctx context.Context, provider *agentprovider.Server, parentToken
 ```
 
 The child's `sub` becomes the parent's local part plus `+search`; its `exp` is
-capped at the parent's. A hosted provider mounts `SubagentHandler` instead,
-with a policy that limits how many sub-agents a parent may have:
+capped at the parent's. A hosted provider mounts `SubagentHandler` instead, on
+the same origin as its metadata and JWKS, which the parent uses to verify the
+child. Its policy records each parent's live sub-agents, here at most three,
+and picks a free discriminator when the suggestion is taken:
 
 ```go
-func mountSubagents(mux *http.ServeMux, provider *agentprovider.Server) {
+type subagentRegistry struct {
+	mu       sync.Mutex
+	byParent map[string]map[string]bool
+}
+
+func mountSubagents(mux *http.ServeMux, provider *agentprovider.Server, registry *subagentRegistry) {
+	mux.Handle("/", provider.Handler())
 	mux.Handle("POST /subagent", provider.SubagentHandler(func(_ context.Context, request agentprovider.SubagentRequest) (agentprovider.SubagentDecision, error) {
-		if request.Discriminator == "" {
+		registry.mu.Lock()
+		defer registry.mu.Unlock()
+		live := registry.byParent[request.Parent.Subject]
+		if len(live) >= 3 {
 			return agentprovider.SubagentDecision{}, agentprovider.ErrSubagentDenied
 		}
-		return agentprovider.SubagentDecision{Discriminator: request.Discriminator, Lifetime: 30 * time.Minute}, nil
+		discriminator := request.Discriminator
+		for n := 1; discriminator == "" || live[discriminator]; n++ {
+			discriminator = fmt.Sprintf("worker%d", n)
+		}
+		if live == nil {
+			live = make(map[string]bool)
+			registry.byParent[request.Parent.Subject] = live
+		}
+		live[discriminator] = true
+		return agentprovider.SubagentDecision{Discriminator: discriminator, Lifetime: 30 * time.Minute}, nil
 	}))
 }
 ```
+
+The handler refuses a request it could not issue, such as the parent's own
+key or a malformed discriminator, before the policy sees it. The host removes
+a registry entry when it retires that sub-agent.
 
 The parent then requests the token with its own signed request. The helper
 sends only to the parent's provider origin and verifies the returned child:
@@ -407,7 +432,7 @@ func authorizeChild(ctx context.Context, parent, child *agent.Client, childToken
 	if !ok {
 		return "", errors.New("unexpected exchange result")
 	}
-	// Persist pending, wait pending.RetryAfter(), then poll once per call.
+	// Persist pending; wait pending.RetryAfter(), at least a second, then poll once.
 	next, err := parent.PollExchange(ctx, pending)
 	if err != nil {
 		return "", err
@@ -421,8 +446,11 @@ func authorizeChild(ctx context.Context, parent, child *agent.Client, childToken
 
 The child alone signs the protected call, with `child.Do(ctx, agent.Call{...})`.
 The parent cannot use the child's token: it is bound to the child's key. A
-child that calls or polls the Person Server is refused, and `CancelExchange`
-on the parent withdraws a wait at both the PS and the AS.
+child's client refuses Person Server calls locally with
+`agent.ErrSubagentPersonServerCall`; a child that signs its own request anyway
+gets `400 invalid_agent_token`, and one that polls its parent's pending URL
+gets `403 wrong_poller`. `CancelExchange` on the parent withdraws a wait at
+both the PS and the AS.
 
 **Revoke the parent's binding.** Configure an Agent-binding store on the
 Person Server, then call `RevokeAgentBinding` from an authenticated
@@ -439,12 +467,22 @@ func revokeParent(ctx context.Context, people *personserver.Server) error {
 Set `AgentBindingRevocations` in `PSAuthorizationConfig` or
 `FederatedAuthorizationConfig` (for example `testutil.NewAgentBindingRevocationStore()`
 in tests), and run `personserver/storetest.RunAgentBindingRevocation` against a
-custom store. While the binding is revoked, new Person tokens for the parent
-or any child are `403 person_token_denied`, token requests and pending waits
-are `400 revoked_presented_token`, and chained calls are
-`400 revoked_upstream_token`. Delivered tokens are not revoked at Resources;
-they expire normally. Keep the revocation for at least an hour before
-establishing a new binding for the same Agent.
+custom store. While the binding is revoked, new Person tokens and missions for
+the parent or any child are `403 person_token_denied`, token requests and
+federated or consent waits are `400 revoked_presented_token`, Person-token
+waits are `403 person_token_denied`, and chained calls are
+`400 revoked_upstream_token`. Each refusal's `detail` names the revoked
+binding, so a caller can tell it from a denial; a refused wait is ended, and
+its pending URL answers `410` afterwards. Delivered tokens are not revoked at
+Resources; they expire normally, and the Agent Provider still issues
+sub-agent tokens, so a full cut-off also needs Agent Provider action and short
+Auth-token lifetimes.
+
+To bind the Agent to a person again, call `ReestablishAgentBinding` after your
+`BindPerson` policy names the new person. Requests made after it are admitted;
+every wait and presented token from before it stays refused, so no waiting
+period is needed. Keep the store entries: deleting one re-admits whatever the
+revoked binding authorized that has not expired.
 
 Policy sees both identities: `PersonTokenRequest.Agent` and
 `AuthorizationRequest.Agent` name the parent whose consent applies;
@@ -470,7 +508,7 @@ fixture discards its identities and decisions and is not a cleanup strategy.
 
 | Constructor | State it owns |
 | --- | --- |
-| `NewMissionStore` | PS mission lifecycle, proposals, permissions, audit and R3 issuance |
+| `NewMissionStore` | PS Person-token records (the `Tokens` store, with or without missions), mission lifecycle, proposals, permissions, audit and R3 issuance |
 | `NewMissionInteractionQuestionStore` | The same mission state plus questions, sharing one transaction boundary |
 | `NewMissionInteractionRelayStore` | The same mission state plus interaction relays, sharing one transaction boundary |
 | `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |

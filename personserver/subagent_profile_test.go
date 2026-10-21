@@ -393,39 +393,71 @@ func (p *subagentPersonServerProtocol) forgeAgentToken(t *testing.T, members map
 
 type memoryAgentBindingRevocations struct {
 	mu        sync.Mutex
-	revoked   map[AgentBinding]bool
+	states    map[AgentBinding]AgentBindingRevocation
 	revokeErr error
 	lookupErr error
 }
 
 func newMemoryAgentBindingRevocations() *memoryAgentBindingRevocations {
-	return &memoryAgentBindingRevocations{revoked: make(map[AgentBinding]bool)}
+	return &memoryAgentBindingRevocations{states: make(map[AgentBinding]AgentBindingRevocation)}
 }
 
-func (store *memoryAgentBindingRevocations) RevokeAgentBinding(_ context.Context, binding AgentBinding) error {
+func (store *memoryAgentBindingRevocations) RevokeAgentBinding(_ context.Context, binding AgentBinding, at time.Time) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.revokeErr != nil {
 		return store.revokeErr
 	}
-	store.revoked[binding] = true
+	state := store.states[binding]
+	if at.After(state.RevokedAt) {
+		state.RevokedAt = at
+	}
+	state.ReestablishedAt = time.Time{}
+	store.states[binding] = state
 	return nil
 }
 
-func (store *memoryAgentBindingRevocations) IsAgentBindingRevoked(_ context.Context, binding AgentBinding) (bool, error) {
+func (store *memoryAgentBindingRevocations) ReestablishAgentBinding(_ context.Context, binding AgentBinding, at time.Time) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.revokeErr != nil {
+		return store.revokeErr
+	}
+	state, ok := store.states[binding]
+	if !ok {
+		return ErrAgentBindingNotRevoked
+	}
+	if state.ReestablishedAt.IsZero() {
+		state.ReestablishedAt = at
+		if at.Before(state.RevokedAt) {
+			state.ReestablishedAt = state.RevokedAt
+		}
+		store.states[binding] = state
+	}
+	return nil
+}
+
+func (store *memoryAgentBindingRevocations) LoadAgentBindingRevocation(_ context.Context, binding AgentBinding) (AgentBindingRevocation, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.lookupErr != nil {
-		return false, store.lookupErr
+		return AgentBindingRevocation{}, store.lookupErr
 	}
-	return store.revoked[binding], nil
+	return store.states[binding], nil
+}
+
+// set replaces one binding's state directly, as a host's own store could.
+func (store *memoryAgentBindingRevocations) set(binding AgentBinding, state AgentBindingRevocation) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.states[binding] = state
 }
 
 func (store *memoryAgentBindingRevocations) snapshot() []AgentBinding {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	var bindings []AgentBinding
-	for binding := range store.revoked {
+	for binding := range store.states {
 		bindings = append(bindings, binding)
 	}
 	return bindings
@@ -460,7 +492,7 @@ func TestCallChainingRefusesARevokedCallerBinding(t *testing.T) {
 				t, protocol, protocol.personRequest(t, server, protocol.upstreamToken, ""),
 			)
 			resourceToken := protocol.resourceToken(t, personClaims, protocol.personServerID, "payments.charge", nil)
-			bindings.revoked[AgentBinding{AgentProvider: callChainOriginalAgentProvider, Agent: callChainOriginalAgent}] = true
+			bindings.set(AgentBinding{AgentProvider: callChainOriginalAgentProvider, Agent: callChainOriginalAgent}, AgentBindingRevocation{RevokedAt: protocol.now})
 			binds := protocol.chainBindCalls
 			assertCallChainingProblem(t, protocol.personRequest(t, server, protocol.upstreamToken, ""), http.StatusBadRequest, "revoked_upstream_token")
 			assertCallChainingProblem(t, protocol.tokenRequest(t, server, resourceToken, protocol.upstreamToken, ""), http.StatusBadRequest, "revoked_upstream_token")

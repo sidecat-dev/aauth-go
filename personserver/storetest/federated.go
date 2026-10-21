@@ -72,7 +72,7 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 		if err := store.CreateFederatedAuthorization(ctx, before); err != nil {
 			t.Fatal(err)
 		}
-		for _, field := range []string{"ID", "PersonServer", "ResourceToken", "AgentToken", "AgentIssuer", "Agent", "AgentJKT", "PresentedToken", "SubagentToken", "Location", "ExpiresAt"} {
+		for _, field := range []string{"ID", "PersonServer", "ResourceToken", "AgentToken", "AgentIssuer", "Agent", "AgentJKT", "PresentedToken", "SubagentToken", "Location", "CreatedAt", "ExpiresAt"} {
 			after := fixture()
 			after.Revision++
 			v := reflect.ValueOf(&after).Elem().FieldByName(field)
@@ -175,7 +175,7 @@ func RunFederatedAuthorization(t *testing.T, contract FederatedAuthorizationCont
 
 // UTC fixtures survive JSON timestamp round trips without a location mismatch.
 func federatedAuthorizationRecord() personserver.FederatedAuthorizationRecord {
-	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", SubagentToken: "child", Location: "https://as.example/pending/test", ExpiresAt: time.Unix(100, 0).UTC(), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
+	return personserver.FederatedAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", ResourceToken: "resource", AgentToken: "agent", AgentIssuer: "https://ap.example", Agent: "aauth:test@ap.example", AgentJKT: "key", PresentedToken: "person", SubagentToken: "child", Location: "https://as.example/pending/test", CreatedAt: time.Unix(10, 0).UTC(), ExpiresAt: time.Unix(100, 0).UTC(), Revision: 1, Response: personserver.FederatedResponse{Status: 402, Header: http.Header{"Www-Authenticate": {`Payment id="test"`}}, Body: []byte("payment")}}
 }
 
 // FederatedAuthorizationQueueContract constructs a fresh store with optional

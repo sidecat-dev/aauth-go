@@ -25,7 +25,7 @@ import (
 
 // Protocol 28e8258, Sub-Agents (Parent-Mediated Authorization), AS Response,
 // Auth Token Delivery, Deferred Responses and Pending URL Security; Bootstrap
-// cc75f8e, Sub-Agent Tokens. The parent owns consent, the binding and every
+// 28e8258, Sub-Agent Tokens. The parent owns consent, the binding and every
 // PS poll; the PS owns AS polls; the child holds the credentials.
 type subagentFederation struct {
 	now                        atomic.Int64
@@ -47,6 +47,8 @@ type subagentFederation struct {
 	mu                         sync.Mutex
 	asPolicy                   []string
 	recompose                  func(*testing.T)
+	// afterAS, when set, runs once after the AS answers a token request.
+	afterAS atomic.Pointer[func()]
 }
 
 const (
@@ -134,6 +136,11 @@ func newSubagentFederation(t *testing.T, childLifetime time.Duration) *subagentF
 				}
 			}
 			as.Handler().ServeHTTP(w, r)
+			if r.URL.Path == "/token" {
+				if hook := f.afterAS.Swap(nil); hook != nil {
+					(*hook)()
+				}
+			}
 		}))
 		f.ps, err = personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
 			Issuer: "https://ps.example", SigningKey: f.psKey, KeyResolver: resolver, Clock: f.clock, NewID: newID,
@@ -378,6 +385,9 @@ func TestSubagentFederatedContinuationExpiresWithTheChildToken(t *testing.T) {
 	requireDeferredProblem(t, err, http.StatusRequestTimeout, "expired")
 	_, err = f.parent.PollExchange(context.Background(), pending)
 	requireDeferredProblem(t, err, http.StatusGone, "request_consumed")
+	if f.asCancels.Load() != 1 {
+		t.Fatalf("AS withdrawals after the PS ended the wait = %d, want 1", f.asCancels.Load())
+	}
 }
 
 // Protocol 28e8258, Agent Response to Clarification (Cancel Request) and
@@ -402,32 +412,41 @@ func TestSubagentFederatedCancellationClosesBothContinuations(t *testing.T) {
 	}
 }
 
-// Protocol 28e8258, Sub-Agents: revoking the parent's binding makes the next
-// sub-agent authorization fail. A waiting request is answered
-// revoked_presented_token once and then consumed; no further AS poll occurs.
+// Protocol 28e8258, Sub-Agents and Agent-Person Binding: revoking the parent's
+// binding makes the next sub-agent authorization fail. A waiting request is
+// answered revoked_presented_token once and then consumed; no further AS poll
+// occurs, and the PS withdraws the request at the AS. A replacement binding
+// does not adopt the wait.
 func TestSubagentFederatedBindingRevocationEndsTheWait(t *testing.T) {
-	for _, advanceFirst := range []bool{false, true} {
-		t.Run(map[bool]string{false: "agent poll", true: "host advance"}[advanceFirst], func(t *testing.T) {
+	for _, mode := range []string{"agent poll", "host advance", "replacement binding"} {
+		t.Run(mode, func(t *testing.T) {
 			f := newSubagentFederation(t, 10*time.Minute)
 			f.stage.Store(1)
 			pending := f.begin(t)
-			if err := f.ps.RevokeAgentBinding(context.Background(), personserver.AgentBinding{
-				AgentProvider: "https://ap.example", Agent: subagentParentID,
-			}); err != nil {
+			binding := personserver.AgentBinding{AgentProvider: "https://ap.example", Agent: subagentParentID}
+			f.now.Add(1)
+			if err := f.ps.RevokeAgentBinding(context.Background(), binding); err != nil {
 				t.Fatal(err)
 			}
 			f.stage.Store(2)
-			if advanceFirst {
+			switch mode {
+			case "host advance":
 				if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
 					t.Fatal(err)
 				}
+			case "replacement binding":
+				f.now.Add(1)
+				if err := f.ps.ReestablishAgentBinding(context.Background(), binding); err != nil {
+					t.Fatal(err)
+				}
+				f.now.Add(1)
 			}
 			_, err := f.parent.PollExchange(context.Background(), pending)
 			requireDeferredProblem(t, err, http.StatusBadRequest, "revoked_presented_token")
 			_, err = f.parent.PollExchange(context.Background(), pending)
 			requireDeferredProblem(t, err, http.StatusGone, "request_consumed")
-			if f.asPolls.Load() != 0 {
-				t.Fatalf("revoked binding still polled the AS %d times", f.asPolls.Load())
+			if f.asPolls.Load() != 0 || f.asCancels.Load() != 1 {
+				t.Fatalf("revoked binding: AS polls %d, withdrawals %d", f.asPolls.Load(), f.asCancels.Load())
 			}
 		})
 	}
@@ -459,8 +478,86 @@ func TestSubagentFederatedRevokedChildTokenEndsTheWait(t *testing.T) {
 	if !errors.As(err, &problem) || !strings.Contains(problem.Detail, "sub-agent token") {
 		t.Fatalf("revoked detail = %#v", problem)
 	}
-	if f.asPolls.Load() != 0 {
-		t.Fatalf("revoked child token still polled the AS %d times", f.asPolls.Load())
+	if f.asPolls.Load() != 0 || f.asCancels.Load() != 1 {
+		t.Fatalf("revoked child token: AS polls %d, withdrawals %d", f.asPolls.Load(), f.asCancels.Load())
+	}
+}
+
+// hookedFederatedStore runs afterLoad once, after a Load returns, so a test
+// can place a host advance between a handler's Load and its Replace.
+type hookedFederatedStore struct {
+	personserver.FederatedAuthorizationQueueStore
+	afterLoad atomic.Pointer[func()]
+}
+
+func (store *hookedFederatedStore) LoadFederatedAuthorization(ctx context.Context, id string) (personserver.FederatedAuthorizationRecord, error) {
+	record, err := store.FederatedAuthorizationQueueStore.LoadFederatedAuthorization(ctx, id)
+	if hook := store.afterLoad.Swap(nil); hook != nil {
+		(*hook)()
+	}
+	return record, err
+}
+
+// A parent's withdrawal that loses its compare-and-swap to a host advance
+// still withdraws: the PS reloads and consumes the grant the advance retained,
+// so nothing is delivered after the cancellation is answered.
+func TestSubagentFederatedCancellationWinsAConcurrentAdvance(t *testing.T) {
+	f := newSubagentFederation(t, 10*time.Minute)
+	hooked := &hookedFederatedStore{FederatedAuthorizationQueueStore: f.psStore}
+	f.psStore = hooked
+	f.recompose(t)
+	f.stage.Store(1)
+	pending := f.begin(t)
+	f.stage.Store(2)
+	advance := func() {
+		if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
+			t.Errorf("concurrent advance: %v", err)
+		}
+	}
+	hooked.afterLoad.Store(&advance)
+	requireCancelled(t, f.signedPending(t, http.MethodDelete, pending.Location(), f.parentKey, f.parentToken))
+	if f.asPolls.Load() != 1 {
+		t.Fatalf("the advance did not reach the AS: polls %d", f.asPolls.Load())
+	}
+	_, err := f.parent.PollExchange(context.Background(), pending)
+	requireDeferredProblem(t, err, http.StatusGone, "request_consumed")
+	record, err := f.ps.FederatedAuthorization(context.Background(), deferredReference(pending))
+	if err != nil || !record.Gone {
+		t.Fatalf("cancelled continuation = %#v %v", record, err)
+	}
+}
+
+// The AS keeps its own deadline, so a wait the PS ends at creation, because
+// the AS answered after the PS deadline, is withdrawn at the AS too.
+func TestSubagentFederatedLateASAnswerIsWithdrawn(t *testing.T) {
+	f := newSubagentFederation(t, 10*time.Minute)
+	f.stage.Store(1)
+	late := func() { f.now.Add(6 * 60) }
+	f.afterAS.Store(&late)
+	ctx := context.Background()
+	person, err := f.parent.PersonToken(ctx, agent.PersonTokenRequest{
+		PersonServer: "https://ps.example", Resource: "https://resource.example", SubagentToken: f.childToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	personToken, _ := person.Token()
+	request, _ := http.NewRequest(http.MethodGet, "https://resource.example/records", nil)
+	call, err := f.child.Begin(ctx, agent.InitialCall{Request: request, PersonToken: personToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	required, ok := call.AuthorizationRequired()
+	if !ok {
+		t.Fatal("missing child-bound Resource token")
+	}
+	_, err = f.parent.BeginExchange(ctx, agent.ExchangeRequest{
+		PersonServer: "https://ps.example", ResourceToken: required.ResourceToken,
+		PresentedToken: personToken, SubagentToken: f.childToken,
+	})
+	requireDeferredProblem(t, err, http.StatusRequestTimeout, "expired")
+	if f.asCancels.Load() != 1 {
+		t.Fatalf("AS withdrawals of a late answer = %d, want 1", f.asCancels.Load())
 	}
 }
 
@@ -568,6 +665,7 @@ func requireCancelled(t *testing.T, response *http.Response) {
 }
 
 // A withdrawal that arrives after the wait expired closes it with expired.
+// The AS deadline is its own, so the PS still withdraws the request there.
 func TestSubagentFederatedCancellationAfterExpiryIsExpired(t *testing.T) {
 	f := newSubagentFederation(t, 10*time.Minute)
 	f.stage.Store(1)
@@ -577,8 +675,8 @@ func TestSubagentFederatedCancellationAfterExpiryIsExpired(t *testing.T) {
 	requireDeferredProblem(t, err, http.StatusRequestTimeout, "expired")
 	_, err = f.parent.PollExchange(context.Background(), pending)
 	requireDeferredProblem(t, err, http.StatusGone, "request_consumed")
-	if f.asCancels.Load() != 0 {
-		t.Fatal("an expired wait was cancelled at the AS")
+	if f.asCancels.Load() != 1 {
+		t.Fatalf("AS withdrawals after the PS deadline = %d, want 1", f.asCancels.Load())
 	}
 }
 

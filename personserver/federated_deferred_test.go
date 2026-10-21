@@ -124,13 +124,15 @@ func (s *federatedQueueProbe) ListPendingFederatedAuthorizations(_ context.Conte
 	return s.records, s.err
 }
 
+// Agent polls never advance the AS exchange, so a poll that is already due
+// waits on the host: answering Retry-After: 0 would invite a busy loop.
 func TestFederatedWaitingRoundsUpRemainingRetryAfter(t *testing.T) {
 	now := time.Unix(100, 0)
 	server := &Server{issuer: "https://ps.example", clock: aauth.ClockFunc(func() time.Time { return now })}
 	for _, tc := range []struct {
 		remaining time.Duration
 		want      string
-	}{{time.Millisecond, "1"}, {time.Second + time.Nanosecond, "2"}, {0, "0"}, {-time.Second, "0"}} {
+	}{{time.Millisecond, "1"}, {time.Second, "1"}, {time.Second + time.Nanosecond, "2"}, {0, "1"}, {-time.Second, "1"}} {
 		w := httptest.NewRecorder()
 		server.writeFederatedWaiting(w, FederatedAuthorizationRecord{ID: "request", NextPollAt: now.Add(tc.remaining)})
 		if got := w.Header().Get("Retry-After"); got != tc.want {

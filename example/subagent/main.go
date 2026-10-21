@@ -1,8 +1,9 @@
 // The subagent example runs one-level parent-mediated authorization in
-// process: the Agent Provider issues a sub-agent token from the parent's own
-// token, the parent obtains every credential from the Person Server, and only
-// the sub-agent calls the Resource. It shows a three-party immediate grant, a
-// four-party grant that waits for Access Server approval, and how revoking the
+// process: the parent asks its hosted Agent Provider for a sub-agent token with
+// its own signed request, the parent obtains every credential from the Person
+// Server, and only the sub-agent calls the Resource. It shows a three-party
+// immediate grant, a four-party grant that waits for Access Server approval and
+// is advanced from the Person Server host's queue, and how revoking the
 // parent's binding stops the next authorization.
 package main
 
@@ -17,7 +18,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,26 +55,36 @@ func run(output io.Writer) {
 	var ids atomic.Uint64
 	newID := func() string { return fmt.Sprintf("example-%d", ids.Add(1)) }
 
-	// The parent's own Agent Provider issues the child from the parent's
-	// current token. The child's private key never leaves the child.
+	// The parent's own hosted Agent Provider issues the child. Its metadata
+	// and JWKS share the origin with the sub-agent endpoint, and its policy
+	// decides which parents may spawn which sub-agents. The child's private
+	// key never leaves the child.
 	parentKey, childKey := newSigningKey("parent-key"), newSigningKey("child-key")
 	provider := must(agentprovider.New(agentprovider.Config{
 		Issuer: agentProviderID, SigningKey: newSigningKey("agent-provider-key"), Clock: clock, NewID: newID,
 	}))
-	network.Handle(agentProviderID, provider.Handler())
+	providerRoutes := http.NewServeMux()
+	providerRoutes.Handle("/", provider.Handler())
+	providerRoutes.Handle("POST /subagent", provider.SubagentHandler(func(_ context.Context, request agentprovider.SubagentRequest) (agentprovider.SubagentDecision, error) {
+		if request.Parent.Subject != parentAgentID || request.Discriminator != "search" {
+			return agentprovider.SubagentDecision{}, agentprovider.ErrSubagentDenied
+		}
+		return agentprovider.SubagentDecision{Discriminator: "search", Lifetime: 30 * time.Minute}, nil
+	}))
+	network.Handle(agentProviderID, providerRoutes)
 	parentToken := must(provider.Issue(aauth.AgentTokenRequest{
 		Agent: parentAgentID, PersonServer: personServerID, PublicKey: parentKey.PublicJWK(), Lifetime: time.Hour,
 	}))
-	childToken := must(provider.IssueSubagent(ctx, parentToken, agentprovider.SubagentTokenRequest{
-		Discriminator: "search", PublicKey: childKey.PublicJWK(), Lifetime: 30 * time.Minute,
-	}))
-	childClaims := must(aauth.VerifyAgentToken(ctx, childToken, resolver, clock))
-	fmt.Fprintf(output, "Agent Provider issued sub-agent %s for %s\n", childClaims.Subject, childClaims.ParentAgent)
-
 	parent := must(agent.New(ctx, agent.Config{
 		Identifier: parentAgentID, SigningKey: parentKey, AgentToken: parentToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
 	}))
+	childToken := must(parent.RequestSubagentToken(ctx, agent.SubagentTokenRequest{
+		Endpoint: agentProviderID + "/subagent", PublicKey: childKey.PublicJWK(), Discriminator: "search",
+	}))
+	childClaims := must(aauth.VerifyAgentToken(ctx, childToken, resolver, clock))
+	fmt.Fprintf(output, "Agent Provider issued sub-agent %s for %s\n", childClaims.Subject, childClaims.ParentAgent)
+
 	child := must(agent.New(ctx, agent.Config{
 		Identifier: childClaims.Subject, SigningKey: childKey, AgentToken: childToken,
 		KeyResolver: resolver, HTTPClient: httpClient, Clock: clock,
@@ -174,11 +184,13 @@ func run(output io.Writer) {
 	pending, ok := exchange.Pending()
 	check(ok, "expected a pending exchange")
 	fmt.Fprintln(output, "Four-party: the Access Server is waiting for approval; the parent polls the Person Server")
-	// A real host authenticates its operator and schedules AS polls; this
-	// example approves at the AS, then advances the one PS-owned continuation.
+	// A real host authenticates its operator and schedules AS polls from its
+	// own queue; this example approves at the AS, then advances the one due
+	// PS-owned continuation.
 	approved.Store(true)
-	reference := pending.Location()[strings.LastIndex(pending.Location(), "/")+1:]
-	mustSucceed(federated.AdvanceFederation(ctx, reference))
+	references := must(federated.PendingFederatedAuthorizationReferences(ctx, 10))
+	check(len(references) == 1, "expected one pending continuation")
+	mustSucceed(federated.AdvanceFederation(ctx, references[0]))
 	authToken = mustToken(must(parent.PollExchange(ctx, pending)).Token())
 	callAsChild(ctx, output, child, ordersURL, authToken)
 

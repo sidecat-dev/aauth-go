@@ -63,8 +63,9 @@ func (server *Server) IssueSubagent(ctx context.Context, parentToken string, req
 	if parent.Issuer != server.issuer || parent.ParentAgent != "" {
 		return "", fmt.Errorf("%w: a sub-agent cannot have sub-agents", ErrInvalidSubagentParent)
 	}
-	if request.Discriminator == "" || strings.Contains(request.Discriminator, "+") {
-		return "", fmt.Errorf("%w: the discriminator must be one nonempty segment without +", ErrInvalidSubagentRequest)
+	child, err := subagentIdentifier(parent.Subject, request.Discriminator)
+	if err != nil {
+		return "", err
 	}
 	if _, err := request.PublicKey.PublicKey(); err != nil {
 		return "", fmt.Errorf("%w: sub-agent key: %w", ErrInvalidSubagentRequest, err)
@@ -75,8 +76,6 @@ func (server *Server) IssueSubagent(ctx context.Context, parentToken string, req
 	if request.Lifetime <= 0 {
 		return "", fmt.Errorf("%w: lifetime must be positive", ErrInvalidSubagentRequest)
 	}
-	local, domain, _ := strings.Cut(strings.TrimPrefix(parent.Subject, "aauth:"), "@")
-	child := "aauth:" + local + "+" + request.Discriminator + "@" + domain
 	issuedAt := server.clock.Now().UTC().Truncate(time.Second)
 	lifetime := request.Lifetime
 	if parentExpiresAt := time.Unix(parent.ExpiresAt, 0); issuedAt.Add(lifetime).After(parentExpiresAt) {
@@ -94,6 +93,20 @@ func (server *Server) IssueSubagent(ctx context.Context, parentToken string, req
 		return "", fmt.Errorf("%w: %w", ErrInvalidSubagentRequest, err)
 	}
 	return compact, nil
+}
+
+// subagentIdentifier names parent's sub-agent with discriminator, which must be
+// one nonempty local-part segment without the reserved "+".
+func subagentIdentifier(parent, discriminator string) (string, error) {
+	if discriminator == "" || strings.Contains(discriminator, "+") {
+		return "", fmt.Errorf("%w: the discriminator must be one nonempty segment without +", ErrInvalidSubagentRequest)
+	}
+	local, domain, _ := strings.Cut(strings.TrimPrefix(parent, "aauth:"), "@")
+	child := "aauth:" + local + "+" + discriminator + "@" + domain
+	if err := aauth.ValidateAgentRelationship(child, parent); err != nil {
+		return "", fmt.Errorf("%w: discriminator: %w", ErrInvalidSubagentRequest, err)
+	}
+	return child, nil
 }
 
 // ErrSubagentDenied is returned by host sub-agent policy to refuse a hosted
@@ -126,8 +139,10 @@ type SubagentDecision struct {
 // "discriminator": <optional>}; the response is {"agent_token": <compact>}.
 // Bootstrap defines no route or member names; these follow its example, and
 // the host chooses where to mount the handler. Policy decides whether this
-// parent may spawn, how many live sub-agents it may have and their lifetime.
-// The handler keeps no replay cache: an exact replay within the signature
+// parent may spawn, how many live sub-agents it may have and their lifetime;
+// it sees only requests issuance can satisfy: a key distinct from the
+// parent's and, when suggested, a well-formed discriminator. The handler
+// keeps no replay cache: an exact replay within the signature
 // window yields another token for the same sub-agent key, usable only by that
 // key's holder, so policy that counts live sub-agents should count it once.
 func (server *Server) SubagentHandler(policy func(context.Context, SubagentRequest) (SubagentDecision, error)) http.Handler {
@@ -194,6 +209,17 @@ func (server *Server) serveSubagent(response http.ResponseWriter, request *http.
 	if _, err := input.JWK.PublicKey(); err != nil {
 		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", fmt.Errorf("agentprovider: sub-agent jwk: %w", err))
 		return
+	}
+	// Refuse what issuance would refuse before policy can record the request.
+	if input.JWK.Equal(parent.Confirmation.JWK) {
+		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", fmt.Errorf("%w: the sub-agent must hold a key distinct from its parent", ErrInvalidSubagentRequest))
+		return
+	}
+	if input.Discriminator != "" {
+		if _, err := subagentIdentifier(parent.Subject, input.Discriminator); err != nil {
+			httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", err)
+			return
+		}
 	}
 	decision, err := policy(request.Context(), SubagentRequest{Parent: parent, PublicKey: input.JWK, Discriminator: input.Discriminator})
 	if err != nil {

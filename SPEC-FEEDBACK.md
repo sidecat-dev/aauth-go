@@ -637,28 +637,34 @@ application decision. This question is distinct from AAG-F016's query coverage.
 
 **Checked:** 2026-10-20.
 
-**Source:** Core `28e8258`, `Parent-Mediated Authorization` (1938), `Polling
-Error Codes` (2617–2630, the `revoked` row at 2624), `Revocation Cascade`
-(2752), `Presenting a Revoked Token` (2760–2767) and `Agent-Person Binding`
-(2916). The file is byte-identical at `70d6737`.
+**Source:** Core `28e8258`, `Polling Error Codes` (2617–2630, the `revoked`
+row at 2624), `Revocation Cascade` (2752), `Presenting a Revoked Token`
+(2760–2767) and `Agent-Person Binding` (2916, 2925). The file is
+byte-identical at `70d6737`.
 
 The polling error `revoked` covers three tokens a pending request depends on:
 the Resource token, an upstream token, and the Agent token of the Agent that
 started the request. Three revocations that the same sections make terminal
 for a synchronous request are not covered while it waits. A Person token the
 PS revoked is answered `revoked_presented_token` at the token endpoint (2752).
-Revoking the parent's grant makes the next sub-agent authorization fail
-(1938), and a binding is revoked before a new one is established (2916), but
-no answer is assigned to a request already waiting on that binding. A
-sub-agent token its Agent Provider revoked is `revoked_subagent_token`
-synchronously, yet it is not the token of the Agent that started the request.
+Revoking an agent's binding immediately prevents it from obtaining new auth
+tokens (2925), and a binding is revoked before a new one is established
+(2916), but no answer is assigned to a request already waiting on that
+binding. A sub-agent token its Agent Provider revoked is
+`revoked_subagent_token` synchronously, yet it is not the token of the Agent
+that started the request; the change log's "any token a pending request
+depends on" suggests it is covered, but the row does not name it.
 
-**Evidence:** aauth-go and aauth-rust both answer the next parent poll after
-the parent's binding is revoked with `400 revoked_presented_token`, the
-synchronous code; the shared harness's `revoked-pending` scenario pins it for
-both. For a sub-agent token revoked while waiting, aauth-go answers
-`403 revoked` with a `detail` naming the sub-agent token
-([INTERPRETATIONS.md](INTERPRETATIONS.md#parent-mediated-federated-waits-stay-with-the-parent)).
+**Evidence:** aauth-go and aauth-rust both answer the next parent poll on a
+federated wait after the parent's binding is revoked with
+`400 revoked_presented_token`, the synchronous code; the shared harness's
+`revoked-pending` scenario pins it for both. aauth-go answers its PS-hosted
+consent wait the same way, and a PS-hosted Person-token wait with the
+synchronous `403 person_token_denied`, each with a `detail` naming the binding
+and then `410`. For a sub-agent token revoked while waiting, aauth-go answers
+`403 revoked` with a `detail` naming the sub-agent token, in federated and
+PS-hosted waits alike
+([INTERPRETATIONS.md](INTERPRETATIONS.md#a-ps-hosted-wait-ends-when-an-agent-token-it-depends-on-is-revoked)).
 
 **Question:** Should `revoked` also cover a revoked presented token, a revoked
 Agent-person binding and a revoked sub-agent token, or should a pending request
@@ -1264,10 +1270,14 @@ DELETE to the AS, and answer `200` with `{"status":"cancelled"}`; their ASes
 answer the PS the same way. aauth-rust's PS treats any AS answer other than
 `200` or `410` as unreachable, so the success answer is an interoperability
 choice the draft does not make. The shared harness accepts any `2xx` followed
-by `410`.
+by `410`. aauth-go also withdraws the AS request when the PS ends a wait on
+its own, by expiry, revocation or an AS answer after the PS deadline, because
+the AS deadline is separate and an unattended payment request could still be
+paid.
 
 **Question:** Is DELETE a general way to withdraw any deferred request, and
-must a PS that federated a request withdraw it at the AS pending URL?
+must a PS that federated a request withdraw it at the AS pending URL, both on
+the Agent's withdrawal and when the PS itself ends the request?
 
 ## Against informative text
 

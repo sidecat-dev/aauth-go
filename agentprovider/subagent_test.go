@@ -13,7 +13,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-// Bootstrap cc75f8e, Sub-Agent Tokens; Protocol 28e8258, Sub-Agent Identity
+// Bootstrap 28e8258, Sub-Agent Tokens; Protocol 28e8258, Sub-Agent Identity
 // and Single-Level Depth: only the parent's own provider issues a sub-agent
 // token, from that parent's current top-level token.
 type subagentProviderFixture struct {
@@ -96,7 +96,7 @@ func TestIssueSubagentCreatesOneLevelChildOfTheVerifiedParent(t *testing.T) {
 	}
 }
 
-// Bootstrap cc75f8e: the sub-agent token's exp is no later than the parent's.
+// Bootstrap 28e8258: the sub-agent token's exp is no later than the parent's.
 func TestIssueSubagentCapsTheChildAtTheParentExpiry(t *testing.T) {
 	t.Parallel()
 
