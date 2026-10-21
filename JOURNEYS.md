@@ -239,19 +239,28 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     delegation; call chaining; held delivery; and revocation.
 
 - [ ] **Parent-mediated sub-agents and one Resource call chain — Partial**
-  - Flow: parent → PS on behalf of one child → immediate issuance or standard
-    host interaction and explicit parent poll → credential bound to the child
-    key → child → Resource. Alternatively, Resource 1 receives an authorized
-    call → acts as its own Agent → PS → Resource 2.
-  - Start with: `PersonTokenRequest.SubagentToken`,
-    `ExchangeRequest.SubagentToken`, `PersonTokenRequest.UpstreamToken`,
-    `ExchangeRequest.UpstreamToken`, and `personserver.CallChainingConfig`.
+  - Flow: the parent's own AP issues the child from the parent's token →
+    parent → PS on behalf of the child → immediate issuance, standard host
+    interaction, or an AS approval or payment wait that only the parent polls
+    or cancels → credential bound to the child key → child → Resource.
+    Revoking the parent's binding stops the next issuance and any pending
+    delivery. Alternatively, Resource 1 receives an authorized call → acts as
+    its own Agent → PS → Resource 2.
+  - Start with: `agentprovider.Server.IssueSubagent` or `SubagentHandler` with
+    `agent.Client.RequestSubagentToken`; `PersonTokenRequest.SubagentToken`,
+    `ExchangeRequest.SubagentToken`, `BeginExchange`, `PollExchange`,
+    `CancelExchange`; `personserver.Server.RevokeAgentBinding`;
+    `PersonTokenRequest.UpstreamToken`, `ExchangeRequest.UpstreamToken`, and
+    `personserver.CallChainingConfig`.
   - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go),
+    [`integration/subagent_federated_deferred_test.go`](integration/subagent_federated_deferred_test.go),
     [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go),
     [`integration/call_chaining_test.go`](integration/call_chaining_test.go),
-    `go run ./example/subagent`, and `go run ./example/callchaining`.
-  - Missing: recursive or remote delegation, repeated chain depth, federated
-    downstream chaining, and mission composition.
+    `go run ./example/subagent`, and `go run ./example/callchaining`. The shared
+    harness's `authorization.subagent` slice measures the same native roles.
+  - Missing: recursive delegation, repeated chain depth, federated downstream
+    chaining, sub-agent call chaining, mission composition, and Agent-token
+    revocation cascades.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
   - Flow: AP signs an exact Agent-token reference → PS or a known direct
@@ -873,9 +882,10 @@ sentences.
   - Consent: in direct-PS mode, either PS call may return a pending
     interaction. The host sees parent and child separately; the parent retains,
     restores, and polls the handle; the approved token remains child-bound.
-  - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go)
+  - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go),
+    [`integration/subagent_federated_deferred_test.go`](integration/subagent_federated_deferred_test.go)
     and `go run ./example/subagent`.
-  - Missing: mission-bound composition and Access Server deferred mediation.
+  - Missing: mission-bound composition.
 
 - [x] **Agent identity at an independent Resource — Historical qualification (2026-09-01)**
   - Flow: AAuth Go Agent Provider metadata and JWKS → Go-minted Agent token →

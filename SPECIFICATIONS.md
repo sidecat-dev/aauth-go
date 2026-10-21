@@ -191,6 +191,63 @@ outside AAuth; the implemented challenge carrier is `WWW-Authenticate`.
 
 The baseline manifest remains unchanged; this is a bounded additional source.
 
+## Targeted additional source: Protocol -11 Sub-Agents
+
+This is one targeted source, not a repin. The manifest above and every other
+Protocol clause remain at their stated revisions. Only these rules follow this
+text, and only for missionless one-level parent-mediated authorization:
+
+- **Sub-Agent Identity**: a sub-agent token's `iss` equals its parent's. The PS,
+  and here also the AS, refuse a `subagent_token` that differs, does not name
+  the signing parent in `parent_agent`, or reuses its key, with
+  `invalid_subagent_token`.
+- **Token Endpoint Error Codes**: the request-parameter sub-agent token uses
+  `invalid_subagent_token`, `expired_subagent_token` and, where the Person Server
+  retains its Agent Provider's revocation, `revoked_subagent_token`, at both PS
+  and AS token endpoints.
+- **Parent-Mediated Authorization**, final paragraph: revoking the parent's
+  grant makes the next sub-agent authorization fail while delivered Auth tokens
+  expire normally. It applies to AS approval and payment waits as well as
+  immediate and PS-hosted issuance.
+- **Agent-Person Binding** and **Upstream Token Verification** step 4: a binding
+  the host revoked refuses new Person tokens, presented credentials and pending
+  deliveries under it, and a chained request with `revoked_upstream_token`.
+
+- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Sections: `## Sub-Agents` (1888–1938), `### Upstream Token Verification`
+  step 4 (1835), the three sub-agent rows of `### Token Endpoint Error Codes`
+  (2594–2596), and `## Agent-Person Binding` (2912–2918).
+- SHA-256: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
+
+Not adopted by this entry: Agent-token revocation cascades to sub-agents,
+recursive delegation, mission-bound mediation, and sub-agent call chaining.
+The waits' cancellation and error answers that the source does not settle are
+recorded in [INTERPRETATIONS.md](INTERPRETATIONS.md#parent-mediated-federated-waits-stay-with-the-parent).
+
+## Targeted additional source: Bootstrap Sub-Agent Tokens
+
+This is one targeted source, not a repin; the Bootstrap row of the manifest
+stays at its stated revision for every other section. Only Agent Provider
+sub-agent issuance follows this text: `agentprovider.Server.IssueSubagent`
+(same `iss`, `sub` from the parent's local part and a discriminator,
+`parent_agent`, `ps` copied, the sub-agent's `cnf`, `exp` no later than the
+parent's, top-level parents only), `agentprovider.Server.SubagentHandler`, and
+`agent.Client.RequestSubagentToken` for the hosted request. The request members
+`jwk` and `discriminator` follow the section's illustrative example; the
+`agent_token` response member and the route are this library's choice, since the
+section defines no endpoint. Recording which parent requested each sub-agent
+token, and how many are live per parent, remains host policy.
+
+- Document: AAuth Bootstrap Guidance, editor source `draft-hardt-aauth-bootstrap.md`.
+- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Section: `# Sub-Agent Tokens` at line 339 (lines 339–400), with `## Self-Hosted
+  Sub-Agents` (343–367) and `## Sub-Agents Under a Hosted AP` (369–400).
+- SHA-256: `40ca9d052e942a78ef01a827a23bd0149d34a58f626e750949f3ddcd2601b82c`.
+
+The overlays are lists, not table rows, because the baseline manifest check
+requires exactly one table row per source file.
+
 ## Native R3 vocabulary baselines
 
 R3 names seven external description formats without citing exact revisions.

@@ -634,9 +634,10 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 
 // handleFederatedCancellation lets the Agent that started a federated wait
 // withdraw it. The PS consumes its continuation first, so nothing retained
-// can be delivered afterwards, then sends the AS one signed DELETE for a
-// request still waiting there. The AS answer does not change the Agent's
-// result: an AS that misses it retains the request only until its deadline.
+// can be delivered afterwards, answers 200 {"status":"cancelled"} (408 expired
+// once its deadline passed), and sends the AS one signed DELETE for a request
+// still waiting there. The AS answer does not change the Agent's result: an AS
+// that misses it retains the request only until its deadline.
 func (server *Server) handleFederatedCancellation(w http.ResponseWriter, r *http.Request) {
 	_, agent, _, err := server.verifyAgentProof(r, nil)
 	if err != nil {
@@ -665,6 +666,7 @@ func (server *Server) handleFederatedCancellation(w http.ResponseWriter, r *http
 		writeProblem(w, 410, "request_consumed", nil)
 		return
 	}
+	expired := !server.clock.Now().Before(record.ExpiresAt)
 	next := record
 	next.Revision++
 	next.Gone = true
@@ -676,11 +678,14 @@ func (server *Server) handleFederatedCancellation(w http.ResponseWriter, r *http
 		}
 		return
 	}
+	if expired {
+		writeProblem(w, http.StatusRequestTimeout, "expired", nil)
+		return
+	}
 	if !record.Terminal {
 		server.cancelAccessServerRequest(r.Context(), record)
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusNoContent)
+	writePrivateJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 func (server *Server) cancelAccessServerRequest(ctx context.Context, record FederatedAuthorizationRecord) {

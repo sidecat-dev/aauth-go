@@ -254,7 +254,8 @@ func (server *Server) handlePendingToken(w http.ResponseWriter, r *http.Request)
 }
 
 // handlePendingCancellation lets the owning Person Server withdraw a waiting
-// request. The record is consumed; later polls answer 410 request_consumed.
+// request. The record is consumed and the answer is 200 {"status":"cancelled"},
+// or 408 expired once its deadline passed; later polls are 410 request_consumed.
 func (server *Server) handlePendingCancellation(w http.ResponseWriter, r *http.Request) {
 	ps, _, ok := server.verifyPendingPoller(w, r)
 	if !ok {
@@ -277,6 +278,7 @@ func (server *Server) handlePendingCancellation(w http.ResponseWriter, r *http.R
 		writeProblem(w, 410, "request_consumed", nil)
 		return
 	}
+	expired := !server.clock.Now().Before(record.ExpiresAt)
 	next := record
 	next.Revision++
 	next.Gone = true
@@ -293,8 +295,11 @@ func (server *Server) handlePendingCancellation(w http.ResponseWriter, r *http.R
 		}
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusNoContent)
+	if expired {
+		writeProblem(w, http.StatusRequestTimeout, "expired", nil)
+		return
+	}
+	writePrivateJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 type deferredResponse struct {

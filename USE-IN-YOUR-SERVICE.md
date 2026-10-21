@@ -232,7 +232,8 @@ and at exhaustion, alongside binding and concurrent-cap enforcement.
 | --- | --- |
 | Core + Budget, three or four parties | Immediate grants and replacement-grant step-up; [three-party](integration/budget_three_party_test.go) and [four-party](integration/budget_four_party_test.go) tests. |
 | R3 class + Budget | Immediate grants; denied operations report zero cost. [Three-party](integration/r3_budget_three_party_test.go) and [four-party](integration/r3_direct_four_party_test.go) tests. |
-| AS deferred approval/payment + R3, Budget, delegation or missions | Immediate compositions retain their existing support; a deferred result is refused. See [deferred federation](#continue-an-as-approval-or-payment-request). |
+| AS deferred approval/payment + R3, Budget or missions | Immediate compositions retain their existing support; a deferred result is refused. See [deferred federation](#continue-an-as-approval-or-payment-request). |
+| AS deferred approval/payment + one-level sub-agent | Missionless Core waits for the parent; the grant binds the child. See [Delegate to a sub-agent](#delegate-to-a-sub-agent) and the [integration tests](integration/subagent_federated_deferred_test.go). |
 | Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
 | Budget + deferred Core consent | Immediate requests work, but selecting deferred consent for a Budget request returns `500 server_error`; [request-time limit test](personserver/budget_test.go). |
 | Reactive `Client.Begin` + mission Person token | Refused before sending; use proactive authorization. [Input tests](agent/call_test.go). |
@@ -251,7 +252,8 @@ cover present and absent Resources and protect the retained mapping from mutatio
 
 ## Continue an AS approval or payment request
 
-For top-level missionless Core, set `accessserver.Config.Deferred` with an
+For missionless Core, top-level or parent-mediated for a
+[sub-agent](#delegate-to-a-sub-agent), set `accessserver.Config.Deferred` with an
 AS-owned `accessserver.DeferredAuthorizationStore`, and
 `personserver.FederatedAuthorizationConfig.Deferred` with a separate
 `personserver.FederatedAuthorizationStore`. An AS policy returns `Decision.Pending` while
@@ -269,7 +271,8 @@ retains that terminal result; diagnostics reports its reconstructed typed cause
 when the Agent polls. Store adapters must preserve `FederatedResponse.RefusalReason`
 with the terminal response.
 
-The Agent uses `BeginExchange` and `PollExchange`. `PendingExchange.WaitReason()`
+The Agent uses `BeginExchange` and `PollExchange`, and `CancelExchange` to
+withdraw a wait; the PS then withdraws its AS request too. `PendingExchange.WaitReason()`
 returns `awaiting_payment`, `awaiting_approval`, or empty when the PS supplies no
 recognized hint. These optional `pending_reason` values are a library extension
 for display, not permission to pay. Payment details stay with the PS. Respect
@@ -302,7 +305,7 @@ explicit policy denial remains `403 denied`.
 
 The supported challenge carrier is `WWW-Authenticate`, with optional opaque
 body content. Claims, clarification, interaction forwarding and deferred
-R3/Budget/delegated/mission combinations remain unsupported. The earliest
+R3/Budget/mission combinations remain unsupported. The earliest
 original credential expiry and configured lifetime bound both pending records.
 Custom adapters should run `accessserver/storetest.RunDeferredAuthorization`
 and `personserver/storetest.RunFederatedAuthorization`. Pending listing is optional:
@@ -317,6 +320,140 @@ same still-valid grant for equivalent exchanges. The PS checks the grant's
 identity, key, scope, context and expiry, but keeps no cross-exchange grant-JTI
 cache. See [the source reading](INTERPRETATIONS.md#federated-grants-have-no-exchange-identifier)
 and [the executable limit](integration/federated_deferred_test.go).
+
+## Delegate to a sub-agent
+
+A **sub-agent** is a child Agent with its own key, whose Agent token names its
+parent in `parent_agent`. The parent makes every Person Server request and
+poll; the child holds the issued Person and Auth tokens and is the only one
+that calls the Resource. [Run the example](example/subagent) for a
+three-party grant, a four-party grant that waits for AS approval, and a
+revoked binding. The tested snippets below come from the same flow.
+
+**Issue the child token.** Only the parent's own Agent Provider can issue it.
+A provider you run issues it directly from the parent's current token:
+
+```go
+func issueChild(ctx context.Context, provider *agentprovider.Server, parentToken string, childKey jose.JWK) (string, error) {
+	return provider.IssueSubagent(ctx, parentToken, agentprovider.SubagentTokenRequest{
+		Discriminator: "search", PublicKey: childKey, Lifetime: 30 * time.Minute,
+	})
+}
+```
+
+The child's `sub` becomes the parent's local part plus `+search`; its `exp` is
+capped at the parent's. A hosted provider mounts `SubagentHandler` instead,
+with a policy that limits how many sub-agents a parent may have:
+
+```go
+func mountSubagents(mux *http.ServeMux, provider *agentprovider.Server) {
+	mux.Handle("POST /subagent", provider.SubagentHandler(func(_ context.Context, request agentprovider.SubagentRequest) (agentprovider.SubagentDecision, error) {
+		if request.Discriminator == "" {
+			return agentprovider.SubagentDecision{}, agentprovider.ErrSubagentDenied
+		}
+		return agentprovider.SubagentDecision{Discriminator: request.Discriminator, Lifetime: 30 * time.Minute}, nil
+	}))
+}
+```
+
+The parent then requests the token with its own signed request. The helper
+sends only to the parent's provider origin and verifies the returned child:
+
+```go
+func requestChild(ctx context.Context, parent *agent.Client, childKey jose.JWK) (string, error) {
+	return parent.RequestSubagentToken(ctx, agent.SubagentTokenRequest{
+		Endpoint: "https://agents.example/subagent", PublicKey: childKey, Discriminator: "search",
+	})
+}
+```
+
+**Authorize through the parent.** The parent asks for a Person token bound to
+the child. The child presents it to the Resource, and the parent exchanges the
+child's Resource token. With four-party federation the exchange may wait for
+AS approval or payment; the parent keeps polling, and the child receives the
+Auth token at the end:
+
+```go
+func authorizeChild(ctx context.Context, parent, child *agent.Client, childToken string, request *http.Request) (string, error) {
+	person, err := parent.PersonToken(ctx, agent.PersonTokenRequest{
+		PersonServer: "https://person.example", Resource: "https://orders.example", SubagentToken: childToken,
+	})
+	if err != nil {
+		return "", err
+	}
+	personToken, ok := person.Token()
+	if !ok {
+		return "", errors.New("the Person Server asked for interaction")
+	}
+	call, err := child.Begin(ctx, agent.InitialCall{Request: request, PersonToken: personToken})
+	if err != nil {
+		return "", err
+	}
+	required, ok := call.AuthorizationRequired()
+	if !ok {
+		return "", errors.New("the Resource did not ask for authorization")
+	}
+	exchange, err := parent.BeginExchange(ctx, agent.ExchangeRequest{
+		PersonServer: "https://person.example", ResourceToken: required.ResourceToken,
+		PresentedToken: personToken, SubagentToken: childToken,
+	})
+	if err != nil {
+		return "", err
+	}
+	if token, ok := exchange.Token(); ok {
+		return token, nil
+	}
+	pending, ok := exchange.Pending()
+	if !ok {
+		return "", errors.New("unexpected exchange result")
+	}
+	// Persist pending, wait pending.RetryAfter(), then poll once per call.
+	next, err := parent.PollExchange(ctx, pending)
+	if err != nil {
+		return "", err
+	}
+	if token, ok := next.Token(); ok {
+		return token, nil
+	}
+	return "", errors.New("still waiting")
+}
+```
+
+The child alone signs the protected call, with `child.Do(ctx, agent.Call{...})`.
+The parent cannot use the child's token: it is bound to the child's key. A
+child that calls or polls the Person Server is refused, and `CancelExchange`
+on the parent withdraws a wait at both the PS and the AS.
+
+**Revoke the parent's binding.** Configure an Agent-binding store on the
+Person Server, then call `RevokeAgentBinding` from an authenticated
+administrator action:
+
+```go
+func revokeParent(ctx context.Context, people *personserver.Server) error {
+	return people.RevokeAgentBinding(ctx, personserver.AgentBinding{
+		AgentProvider: "https://agents.example", Agent: "aauth:planner@agents.example",
+	})
+}
+```
+
+Set `AgentBindingRevocations` in `PSAuthorizationConfig` or
+`FederatedAuthorizationConfig` (for example `testutil.NewAgentBindingRevocationStore()`
+in tests), and run `personserver/storetest.RunAgentBindingRevocation` against a
+custom store. While the binding is revoked, new Person tokens for the parent
+or any child are `403 person_token_denied`, token requests and pending waits
+are `400 revoked_presented_token`, and chained calls are
+`400 revoked_upstream_token`. Delivered tokens are not revoked at Resources;
+they expire normally. Keep the revocation for at least an hour before
+establishing a new binding for the same Agent.
+
+Policy sees both identities: `PersonTokenRequest.Agent` and
+`AuthorizationRequest.Agent` name the parent whose consent applies;
+`Subagent` names the child, with its own Agent Provider claims in
+`SubagentAdditionalClaims`. The AS receives both as `AuthorizationRequest.Agent`
+and `Subagent`. Limits: one level only, missionless only for AS waits, no
+sub-agent call chaining, and no cascade from an Agent-token revocation to the
+child's credentials. See [CONFORMANCE.md](CONFORMANCE.md) and
+[the interpretations](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery).
 
 ## Use in-memory stores in examples and tests
 

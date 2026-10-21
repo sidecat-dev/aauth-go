@@ -30,7 +30,7 @@ func TestPublicStoreExamplesRunInAnExternalModule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(consumer, "mission_contracts_test.go"), contracts, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"mission", "fourparty", "audit", "permission", "interactionquestion", "interactionrelay", "selfhosted", "bootstrap", "psconsent", "budget", "revocation"} {
+	for _, name := range []string{"mission", "fourparty", "audit", "permission", "interactionquestion", "interactionrelay", "selfhosted", "bootstrap", "psconsent", "budget", "revocation", "subagent"} {
 		source := filepath.Join(root, "example", name)
 		target := filepath.Join(consumer, name)
 		if err := os.Mkdir(target, 0700); err != nil {

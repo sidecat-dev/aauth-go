@@ -388,9 +388,7 @@ func TestSubagentFederatedCancellationClosesBothContinuations(t *testing.T) {
 	f.stage.Store(1)
 	pending := f.begin(t)
 	requirePendingProblem(t, f.signedPending(t, http.MethodDelete, pending.Location(), f.childKey, f.childToken), http.StatusForbidden, "wrong_poller")
-	if err := f.parent.CancelExchange(context.Background(), pending); err != nil {
-		t.Fatal(err)
-	}
+	requireCancelled(t, f.signedPending(t, http.MethodDelete, pending.Location(), f.parentKey, f.parentToken))
 	if f.asCancels.Load() != 1 || f.asPolls.Load() != 0 {
 		t.Fatalf("AS cancels = %d polls = %d", f.asCancels.Load(), f.asPolls.Load())
 	}
@@ -542,10 +540,7 @@ func TestAccessServerCancellationBelongsToTheRequestingPersonServer(t *testing.T
 	requirePendingProblem(t, cancel(record.Location, otherKey, "https://other-ps.example"), http.StatusForbidden, "wrong_poller")
 	requirePendingProblem(t, cancel("https://as.example/token/pending/unknown", f.psKey, "https://ps.example"), http.StatusGone, "unknown_request")
 	response := cancel(record.Location, f.psKey, "https://ps.example")
-	response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("owner cancellation = %d", response.StatusCode)
-	}
+	requireCancelled(t, response)
 	requirePendingProblem(t, cancel(record.Location, f.psKey, "https://ps.example"), http.StatusGone, "request_consumed")
 	poll, _ := http.NewRequest(http.MethodGet, record.Location, nil)
 	if err := signaturekey.SignJWKSURIRequest(poll, f.psKey, "https://ps.example", aauth.PersonDiscoveryDocument, f.clock); err != nil {
@@ -556,4 +551,58 @@ func TestAccessServerCancellationBelongsToTheRequestingPersonServer(t *testing.T
 		t.Fatal(err)
 	}
 	requirePendingProblem(t, polled, http.StatusGone, "request_consumed")
+}
+
+// Both implementations answer a successful withdrawal the same way, so a PS
+// of either one can cancel at an AS of the other.
+func requireCancelled(t *testing.T, response *http.Response) {
+	t.Helper()
+	defer response.Body.Close()
+	var body struct {
+		Status string `json:"status"`
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" ||
+		json.NewDecoder(response.Body).Decode(&body) != nil || body.Status != "cancelled" {
+		t.Fatalf("cancellation = %d %v %#v", response.StatusCode, response.Header, body)
+	}
+}
+
+// A withdrawal that arrives after the wait expired closes it with expired.
+func TestSubagentFederatedCancellationAfterExpiryIsExpired(t *testing.T) {
+	f := newSubagentFederation(t, 10*time.Minute)
+	f.stage.Store(1)
+	pending := f.begin(t)
+	f.now.Add(61)
+	err := f.parent.CancelExchange(context.Background(), pending)
+	requireDeferredProblem(t, err, http.StatusRequestTimeout, "expired")
+	_, err = f.parent.PollExchange(context.Background(), pending)
+	requireDeferredProblem(t, err, http.StatusGone, "request_consumed")
+	if f.asCancels.Load() != 0 {
+		t.Fatal("an expired wait was cancelled at the AS")
+	}
+}
+
+// An AS wait withdrawn after its deadline is consumed with expired.
+func TestAccessServerCancellationAfterItsDeadlineIsExpired(t *testing.T) {
+	f := newSubagentFederation(t, 10*time.Minute)
+	f.stage.Store(1)
+	pending := f.begin(t)
+	record, err := f.ps.FederatedAuthorization(context.Background(), deferredReference(pending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.now.Add(61)
+	cancel := func() *http.Response {
+		request, _ := http.NewRequest(http.MethodDelete, record.Location, nil)
+		if err := signaturekey.SignJWKSURIRequest(request, f.psKey, "https://ps.example", aauth.PersonDiscoveryDocument, f.clock); err != nil {
+			t.Fatal(err)
+		}
+		response, err := f.network.RoundTrip(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	requirePendingProblem(t, cancel(), http.StatusRequestTimeout, "expired")
+	requirePendingProblem(t, cancel(), http.StatusGone, "request_consumed")
 }
