@@ -65,13 +65,19 @@ import (
 	if err := os.WriteFile(filepath.Join(consumer, "guide_test.go"), []byte(serviceGuideSubagentTest), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	// Include compilation in the enclosing test deadline, leaving time to
+	// report cancellation before the test runner exits.
+	ctx := t.Context()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-time.Second))
+		defer cancel()
+	}
 	command := exec.CommandContext(ctx, "go", "test", "-mod=mod", "-count=1", "./...")
 	command.Dir = consumer
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("guide snippets failed: %v\n%s", err, output)
+		t.Fatalf("guide snippets failed: %v (context: %v)\n%s", err, ctx.Err(), output)
 	}
 }
 

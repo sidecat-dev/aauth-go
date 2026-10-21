@@ -53,14 +53,20 @@ func TestPublicStoreExamplesRunInAnExternalModule(t *testing.T) {
 			}
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	// Compilation is part of this consumer check, not a two-minute performance
+	// contract. Leave time to report cancellation before the test runner exits.
+	ctx := t.Context()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-time.Second))
+		defer cancel()
+	}
 	for _, args := range [][]string{{"test", "-mod=mod", "./...", "-count=1"}, {"run", "-mod=mod", "./mission"}} {
 		command := exec.CommandContext(ctx, "go", args...)
 		command.Dir = consumer
 		command.Env = append(os.Environ(), "GOWORK=off")
 		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("external examples %v: %v\n%s", args, err, output)
+			t.Fatalf("external examples %v: %v (context: %v)\n%s", args, err, ctx.Err(), output)
 		}
 	}
 }
