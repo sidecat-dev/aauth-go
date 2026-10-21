@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 2 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 50 (P1: 6, P2: 29, P3: 15; 46 submitted, 4 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -95,6 +95,7 @@ Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 2 open). Local implementati
 | AAG-F010a | Four-party tenant changes issuer namespace | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) |
 | AAG-F016 | The mandatory signature set does not bind a query | Core | missing-requirement | P2 | submitted | 92879d7 (2026-08-29) | 2026-10-01, GitHub | Comment on [#222](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827) |
 | AAG-F107 | Resource authority admission is not explicit | Core | missing-requirement | P2 | open | 2026-10-20 | Not submitted | — |
+| AAG-F108 | A waiting request has no polling error for a revoked binding, presented token or sub-agent token | Core | missing-requirement | P2 | open | 2026-10-20 | Not submitted | — |
 | AAG-F017 | Authorization endpoint body is not required to be signed | Core, R3 | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#230](https://github.com/dickhardt/AAuth/issues/230) |
 | AAG-F025 | Application 202 in a deferred result is indistinguishable from "keep polling" | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#231](https://github.com/dickhardt/AAuth/issues/231) |
 | AAG-F026 | Body signature components from resource metadata conflict with bodyless polls | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#232](https://github.com/dickhardt/AAuth/issues/232) |
@@ -114,6 +115,7 @@ Unresolved: 48 (P1: 6, P2: 28, P3: 14; 46 submitted, 2 open). Local implementati
 | AAG-F105 | Deferred mission approval does not define key renewal before token delivery | Core | missing-requirement | P2 | submitted | 4647768 (2026-08-31) | 2026-10-01, GitHub | Comment on [#108](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159888) |
 | AAG-F106 | Events requires every event to transit the AP, with no AP-authorized local delivery component | Events | missing-requirement | P2 | submitted | not public before | Slack, thread with the editor on delegated event delivery; the original Slack date is not retained (transcript supplied 2026-08-03) | None now: we deferred the follow-up until a working delegated offline/local example exists |
 | AAG-F083 | Standard R3 vocabularies do not identify external specification revisions | R3 | missing-requirement | P3 | submitted | 83219c1 (2026-08-31) | 2026-10-01, GitHub | New issue [#249](https://github.com/dickhardt/AAuth/issues/249) |
+| AAG-F109 | Cancellation is defined only as an answer to clarification | Core | missing-requirement | P3 | open | 2026-10-20 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -620,6 +622,66 @@ configured identifier before dispatch, or may it rely on an explicitly required
 HTTP routing check? Please specify any permitted aliases and the rejection
 behavior. The identifier has no path; path authorization remains a separate
 application decision. This question is distinct from AAG-F016's query coverage.
+
+### AAG-F108 — A waiting request has no polling error for a revoked binding, presented token or sub-agent token
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-20
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-20.
+
+**Source:** Core `28e8258`, `Polling Error Codes` (2617–2630, the `revoked`
+row at 2624), `Revocation Cascade` (2752), `Presenting a Revoked Token`
+(2760–2767) and `Agent-Person Binding` (2916, 2925). The file is
+byte-identical at `70d6737`.
+
+The polling error `revoked` covers three tokens a pending request depends on:
+the Resource token, an upstream token, and the Agent token of the Agent that
+started the request. Three revocations that the same sections make terminal
+for a synchronous request are not covered while it waits. A Person token the
+PS revoked is answered `revoked_presented_token` at the token endpoint (2752).
+Revoking an agent's binding immediately prevents it from obtaining new auth
+tokens (2925), and a binding is revoked before a new one is established
+(2916), but no answer is assigned to a request already waiting on that
+binding. A sub-agent token its Agent Provider revoked is
+`revoked_subagent_token` synchronously, yet it is not the token of the Agent
+that started the request; the change log's "any token a pending request
+depends on" suggests it is covered, but the row does not name it.
+
+A replacement also needs an ordering boundary that delayed work cannot cross.
+In aauth-go, a policy callback or initial AS exchange could replace the binding
+before a pending record was created; using that later creation time admitted
+an old-subject request into the new binding. Regression tests retain the
+verified request's original time. Delayed store-operation retries likewise
+must not reopen a newer revocation. The draft defines no binding-generation
+or host-operation contract for these races. An AS-issued Auth token with an
+`iat` thirty seconds ahead of the PS clock also passed the old replacement
+fence despite being issued before revocation. The bounded implementation now
+requires fresh PS Person tokens after replacement instead of trusting AS
+issuance time; it cannot claim transparent Auth-token step-up across a new
+binding without retained binding-generation lineage.
+
+**Evidence:** aauth-go and aauth-rust both answer the next parent poll on a
+federated wait after the parent's binding is revoked with
+`400 revoked_presented_token`, the synchronous code; the shared harness's
+`revoked-pending` scenario pins it for both. aauth-go answers its PS-hosted
+consent wait the same way, and a PS-hosted Person-token wait with the
+synchronous `403 person_token_denied`, each with a `detail` naming the binding
+and then `410`. For a sub-agent token revoked while waiting, aauth-go answers
+`403 revoked` with a `detail` naming the sub-agent token, in federated and
+PS-hosted waits alike
+([INTERPRETATIONS.md](INTERPRETATIONS.md#a-ps-hosted-wait-ends-when-an-agent-token-it-depends-on-is-revoked)).
+
+**Question:** Should `revoked` also cover a revoked presented token, a revoked
+Agent-person binding and a revoked sub-agent token, or should a pending request
+end with the synchronous `revoked_<parameter>_token` code?
 
 ### AAG-F016 — The mandatory signature set does not bind a query
 
@@ -1189,6 +1251,46 @@ R3 assigns operation identities, discovery behavior, and annotation encodings to
 **Question:** Should R3 add normative references and a stated revision policy for each standard vocabulary, including how newer compatible revisions are admitted?
 
 **Venue:** New issue [#249](https://github.com/dickhardt/AAuth/issues/249), posted 2026-10-01. Earlier plan: Umbrella only. Raise it before format-specific questions such as AAG-F078.
+
+### AAG-F109 — Cancellation is defined only as an answer to clarification
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-20
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-20.
+
+**Source:** Core `28e8258`, `Agent Response to Clarification` (1076–1084),
+`Cancel Request` (1119–1121), `AS Response` (1610–1661) and `Deferred
+Responses` (2478–2568).
+
+A signed DELETE to the pending URL is one of the three answers to a
+clarification; the PS then terminates the consent session and later requests
+return `410`. The draft does not say whether an Agent may withdraw a request
+that waits for approval or payment, and when the PS federated it, whether the
+PS withdraws its own AS request. AAG-F094 separately asks for the success
+response of clarification actions.
+
+**Evidence:** aauth-go and aauth-rust both accept the parent's DELETE on a
+federated approval or payment wait, consume the PS record, forward one signed
+DELETE to the AS, and answer `200` with `{"status":"cancelled"}`; their ASes
+answer the PS the same way. aauth-rust's PS treats any AS answer other than
+`200` or `410` as unreachable, so the success answer is an interoperability
+choice the draft does not make. The shared harness accepts any `2xx` followed
+by `410`. aauth-go also withdraws the AS request when the PS ends a wait on
+its own, by expiry, revocation or an AS answer after the PS deadline, because
+the AS deadline is separate and an unattended payment request could still be
+paid.
+
+**Question:** Is DELETE a general way to withdraw any deferred request, and
+must a PS that federated a request withdraw it at the AS pending URL, both on
+the Agent's withdrawal and when the PS itself ends the request?
 
 ## Against informative text
 

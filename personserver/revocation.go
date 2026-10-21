@@ -31,7 +31,9 @@ var ErrIssuedAuthTokenConflict = errors.New("personserver: issued auth token con
 // AgentProvider, Agent, AgentTokenJTI and AgentJKT name the Agent the token was
 // issued to and the Agent token it signed the request with. They are all set
 // or all empty. Call chaining identifies the calling Agent of an upstream auth
-// token from them; a record without them identifies no caller.
+// token from them; a record without them identifies no caller. ParentAgent is
+// nonempty when Agent is a sub-agent whose parent mediated the issuance; that
+// parent's binding authorized the token.
 //
 // UpstreamTokenReference and UpstreamTokenSHA256 name the exact upstream auth
 // token of a chained issuance. They are both set or both empty.
@@ -45,6 +47,7 @@ type IssuedAuthTokenRecord struct {
 
 	AgentProvider string
 	Agent         string
+	ParentAgent   string
 	AgentTokenJTI string
 	AgentJKT      string
 
@@ -121,6 +124,7 @@ func (record *IssuedAuthTokenRecord) bindRecipient(agent aauth.AgentTokenClaims,
 	}
 	record.AgentProvider = agent.Issuer
 	record.Agent = agent.Subject
+	record.ParentAgent = agent.ParentAgent
 	record.AgentTokenJTI = agent.JTI
 	record.AgentJKT = thumbprint
 	if upstream != nil {
@@ -327,7 +331,7 @@ func validateIssuedAuthTokenRecord(record IssuedAuthTokenRecord) error {
 	if record.CompactSHA256 == ([32]byte{}) || record.IssuedAt.IsZero() || !record.ExpiresAt.After(record.IssuedAt) {
 		return errors.New("personserver: issued auth-token record is invalid")
 	}
-	if record.AgentProvider != "" || record.Agent != "" || record.AgentTokenJTI != "" || record.AgentJKT != "" {
+	if record.AgentProvider != "" || record.Agent != "" || record.ParentAgent != "" || record.AgentTokenJTI != "" || record.AgentJKT != "" {
 		if !record.identifiesRecipient() {
 			return errors.New("personserver: issued auth-token recipient is incomplete")
 		}
@@ -335,6 +339,11 @@ func validateIssuedAuthTokenRecord(record IssuedAuthTokenRecord) error {
 			Issuer: record.AgentProvider, JTI: record.AgentTokenJTI,
 		}); err != nil {
 			return fmt.Errorf("personserver: issued auth-token recipient: %w", err)
+		}
+		if record.ParentAgent != "" {
+			if err := aauth.ValidateAgentRelationship(record.Agent, record.ParentAgent); err != nil {
+				return fmt.Errorf("personserver: issued auth-token recipient: %w", err)
+			}
 		}
 	}
 	emptyReference := record.UpstreamTokenReference == (aauth.TokenReference{})

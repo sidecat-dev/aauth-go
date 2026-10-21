@@ -314,8 +314,8 @@ func (server *Server) handlePendingAuthorizationCancellation(response http.Respo
 		writePendingAuthorizationMutationProblem(response, err)
 		return
 	}
-	response.Header().Set("Cache-Control", "no-store")
-	response.WriteHeader(http.StatusNoContent)
+	// One withdrawal answer for every wait this Person Server hosts or federates.
+	writePrivateJSON(response, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 func (server *Server) pendingAuthorizationMission(

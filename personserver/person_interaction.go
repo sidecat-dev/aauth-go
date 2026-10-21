@@ -46,18 +46,20 @@ type PersonTokenInteractionPolicy struct {
 }
 
 // PendingPersonTokenRecord is the immutable verified request retained before
-// a person-token interaction is exposed. Agent, ParentAgent, Confirmation,
-// and AgentExpiresAt identify the eventual credential recipient. The
-// Requesting fields independently identify the top-level Agent authorized to
-// poll. They are equal for a direct request and distinct for a parent-mediated
-// child. CodeSHA256 hashes the normalized correlation code; the plaintext code
-// is not durable authority.
+// a person-token interaction is exposed. Agent, AgentTokenJTI, ParentAgent,
+// Confirmation, and AgentExpiresAt identify the eventual credential recipient.
+// The Requesting fields independently identify the top-level Agent authorized
+// to poll. They are equal for a direct request and distinct for a
+// parent-mediated child. Both token identifiers name AgentProvider tokens, and
+// its revocation of either ends the wait. CodeSHA256 hashes the normalized
+// correlation code; the plaintext code is not durable authority.
 type PendingPersonTokenRecord struct {
 	ID                              string
 	CodeSHA256                      [32]byte
 	PersonServer                    string
 	AgentProvider                   string
 	Agent                           string
+	AgentTokenJTI                   string
 	ParentAgent                     string
 	Resource                        string
 	MissionS256                     string
@@ -65,6 +67,7 @@ type PendingPersonTokenRecord struct {
 	AgentExpiresAt                  time.Time
 	AgentAdditionalClaims           map[string]json.RawMessage
 	RequestingAgent                 string
+	RequestingAgentTokenJTI         string
 	RequestingConfirmation          jose.JWK
 	RequestingAgentExpiresAt        time.Time
 	RequestingAgentAdditionalClaims map[string]json.RawMessage
@@ -175,9 +178,11 @@ type PersonTokenInteraction struct {
 	id                              string
 	codeSHA256                      [32]byte
 	agent                           string
+	agentTokenJTI                   string
 	agentProvider                   string
 	parentAgent                     string
 	requestingAgent                 string
+	requestingAgentTokenJTI         string
 	resource                        string
 	missionS256                     string
 	mission                         *MissionContext
@@ -261,6 +266,7 @@ func validatePersonTokenInteractionPolicy(policy PersonTokenInteractionPolicy) e
 func validatePendingPersonTokenRecord(record PendingPersonTokenRecord) error {
 	if record.ID == "" || record.CodeSHA256 == ([32]byte{}) || record.PersonServer == "" || record.AgentProvider == "" ||
 		record.Agent == "" || record.RequestingAgent == "" || record.Resource == "" ||
+		record.AgentTokenJTI == "" || record.RequestingAgentTokenJTI == "" ||
 		record.AgentExpiresAt.IsZero() || record.RequestingAgentExpiresAt.IsZero() || record.CreatedAt.IsZero() ||
 		!record.ExpiresAt.After(record.CreatedAt) || record.AgentExpiresAt.Before(record.ExpiresAt) ||
 		record.RequestingAgentExpiresAt.Before(record.ExpiresAt) || record.RetryAfter < 0 || record.RetryAfter%time.Second != 0 {
@@ -282,7 +288,8 @@ func validatePendingPersonTokenRecord(record PendingPersonTokenRecord) error {
 		return err
 	}
 	if record.ParentAgent == "" {
-		if record.Agent != record.RequestingAgent || !record.Confirmation.Equal(record.RequestingConfirmation) {
+		if record.Agent != record.RequestingAgent || !record.Confirmation.Equal(record.RequestingConfirmation) ||
+			record.AgentTokenJTI != record.RequestingAgentTokenJTI {
 			return errors.New("personserver: top-level pending identity is inconsistent")
 		}
 	} else if record.ParentAgent != record.RequestingAgent || record.Confirmation.Equal(record.RequestingConfirmation) {
@@ -313,6 +320,7 @@ func (server *Server) beginPersonTokenInteraction(
 	credentialAgent aauth.AgentTokenClaims,
 	policy PersonTokenInteractionPolicy,
 	mission *MissionRecord,
+	createdAt time.Time,
 ) error {
 	if server.deferredTokens == nil {
 		return errors.New("personserver: deferred token store is required")
@@ -320,7 +328,8 @@ func (server *Server) beginPersonTokenInteraction(
 	if err := validatePersonTokenInteractionPolicy(policy); err != nil {
 		return err
 	}
-	createdAt := server.clock.Now().UTC()
+	// Policy latency must not move an old request into a replacement binding.
+	createdAt = createdAt.UTC()
 	expiresAt := createdAt.Add(policy.Lifetime)
 	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0).UTC()
 	agentExpiresAt := time.Unix(credentialAgent.ExpiresAt, 0).UTC()
@@ -333,7 +342,7 @@ func (server *Server) beginPersonTokenInteraction(
 	if mission != nil && !mission.ExpiresAt.IsZero() && mission.ExpiresAt.Before(expiresAt) {
 		expiresAt = mission.ExpiresAt
 	}
-	if !expiresAt.After(createdAt) {
+	if !expiresAt.After(server.clock.Now()) {
 		return ErrPendingPersonTokenExpired
 	}
 
@@ -362,11 +371,13 @@ func (server *Server) beginPersonTokenInteraction(
 		}
 		record := PendingPersonTokenRecord{
 			ID: id, CodeSHA256: codeSHA256, PersonServer: server.issuer,
-			AgentProvider: credentialAgent.Issuer, Agent: credentialAgent.Subject, ParentAgent: credentialAgent.ParentAgent,
-			Resource: personRequest.Resource, MissionS256: missionS256(mission), Confirmation: credentialAgent.Confirmation.JWK,
+			AgentProvider: credentialAgent.Issuer, Agent: credentialAgent.Subject, AgentTokenJTI: credentialAgent.JTI,
+			ParentAgent: credentialAgent.ParentAgent,
+			Resource:    personRequest.Resource, MissionS256: missionS256(mission), Confirmation: credentialAgent.Confirmation.JWK,
 			AgentExpiresAt:                  agentExpiresAt,
 			AgentAdditionalClaims:           cloneClaims(credentialAgent.AdditionalClaims),
 			RequestingAgent:                 requestingAgent.Subject,
+			RequestingAgentTokenJTI:         requestingAgent.JTI,
 			RequestingConfirmation:          requestingAgent.Confirmation.JWK,
 			RequestingAgentExpiresAt:        requestingAgentExpiresAt,
 			RequestingAgentAdditionalClaims: cloneClaims(requestingAgent.AdditionalClaims),
@@ -492,9 +503,10 @@ func (server *Server) personTokenInteractionFromRecord(
 	interaction := PersonTokenInteraction{
 		kind: personTokenInteractionCorrelated, personServer: server.issuer, id: record.ID,
 		codeSHA256:    record.CodeSHA256,
-		agentProvider: record.AgentProvider, agent: record.Agent, parentAgent: record.ParentAgent,
-		requestingAgent: record.RequestingAgent,
-		resource:        record.Resource, missionS256: record.MissionS256, confirmation: record.Confirmation,
+		agentProvider: record.AgentProvider, agent: record.Agent, agentTokenJTI: record.AgentTokenJTI,
+		parentAgent: record.ParentAgent, requestingAgent: record.RequestingAgent,
+		requestingAgentTokenJTI: record.RequestingAgentTokenJTI,
+		resource:                record.Resource, missionS256: record.MissionS256, confirmation: record.Confirmation,
 		agentExpiresAt: record.AgentExpiresAt, requestingConfirmation: record.RequestingConfirmation,
 		requestingAgentExpiresAt: record.RequestingAgentExpiresAt,
 		createdAt:                record.CreatedAt, expiresAt: record.ExpiresAt, retryAfter: record.RetryAfter,
@@ -549,6 +561,12 @@ func (server *Server) ApprovePersonTokenInteraction(ctx context.Context, interac
 	now := server.clock.Now().UTC()
 	if !now.Before(interaction.expiresAt) || !now.Before(interaction.agentExpiresAt) {
 		return ErrPendingPersonTokenExpired
+	}
+	// The requesting Agent is top-level; its binding authorizes this issuance,
+	// including one it mediates for a sub-agent. A revoked Agent token the
+	// request was made with refuses the decision too.
+	if err := server.checkPersonTokenWaitRevocations(ctx, snapshot.Record); err != nil {
+		return err
 	}
 	expiresAt := now.Add(person.Lifetime)
 	if interaction.agentExpiresAt.Before(expiresAt) {
@@ -700,6 +718,8 @@ func pendingRecordMatchesInteraction(record PendingPersonTokenRecord, interactio
 	return record.ID == interaction.id && record.CodeSHA256 == interaction.codeSHA256 &&
 		record.PersonServer == interaction.personServer && record.AgentProvider == interaction.agentProvider &&
 		record.Agent == interaction.agent && record.ParentAgent == interaction.parentAgent &&
+		record.AgentTokenJTI == interaction.agentTokenJTI &&
+		record.RequestingAgentTokenJTI == interaction.requestingAgentTokenJTI &&
 		record.Resource == interaction.resource && record.MissionS256 == interaction.missionS256 &&
 		record.Confirmation.Equal(interaction.confirmation) &&
 		record.AgentExpiresAt.Equal(interaction.agentExpiresAt) &&
@@ -837,6 +857,18 @@ func (server *Server) handlePendingPersonToken(response http.ResponseWriter, req
 		return
 	}
 	switch result.State {
+	case PersonTokenPollWaiting, PersonTokenPollInteracting, PersonTokenPollApproved:
+		// A revoked Agent token or binding ends a live request and withholds a
+		// retained token. The answer is terminal, so the request is ended first.
+		if err := server.checkPersonTokenWaitRevocations(request.Context(), snapshot.Record); err != nil {
+			if pendingRevoked(err) && !server.endPendingPersonToken(response, request, id, identity, result, mission) {
+				return
+			}
+			writePendingRevocationProblem(response, err, http.StatusForbidden, "person_token_denied")
+			return
+		}
+	}
+	switch result.State {
 	case PersonTokenPollWaiting:
 		server.writePendingPersonToken(response, request.URL.Path, result.RetryAfter, "pending")
 	case PersonTokenPollInteracting:
@@ -876,6 +908,66 @@ func (server *Server) handlePendingPersonToken(response http.ResponseWriter, req
 	default:
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: store returned an invalid pending state"))
 	}
+}
+
+// checkPersonTokenWaitRevocations applies revocations to the Agent tokens a
+// Person-token wait was started with and to the requesting Agent's binding.
+func (server *Server) checkPersonTokenWaitRevocations(ctx context.Context, record PendingPersonTokenRecord) error {
+	child := ""
+	if record.ParentAgent != "" {
+		child = record.AgentTokenJTI
+	}
+	return server.checkPendingRevocations(ctx, record.AgentProvider, record.RequestingAgent,
+		record.RequestingAgentTokenJTI, child, record.CreatedAt)
+}
+
+// endPendingPersonToken makes a revocation answer terminal: it invalidates a
+// live request and consumes a retained result, so the pending URL is gone
+// afterwards. It reports whether the caller may write its answer.
+func (server *Server) endPendingPersonToken(
+	response http.ResponseWriter,
+	request *http.Request,
+	id string,
+	identity PersonTokenPollIdentity,
+	result PersonTokenPollRecord,
+	mission *MissionRecord,
+) bool {
+	ctx := request.Context()
+	for attempt := 0; attempt < 3; attempt++ {
+		now := server.clock.Now().UTC()
+		switch result.State {
+		case PersonTokenPollGone:
+			return true
+		case PersonTokenPollWaiting, PersonTokenPollInteracting:
+			err := server.deferredTokens.InvalidatePendingPersonToken(ctx, id, now)
+			if err == nil {
+				return true
+			}
+			if !errors.Is(err, ErrPendingPersonTokenConflict) && !errors.Is(err, ErrPendingPersonTokenExpired) {
+				writeProblem(response, http.StatusInternalServerError, "server_error", err)
+				return false
+			}
+		default:
+			return server.consumePendingPersonTokenResult(response, request, id, result, mission)
+		}
+		var err error
+		if mission != nil {
+			result, err = server.missionDeferredTokens.PollMissionPendingPersonToken(
+				ctx, cloneMissionRecordForTransition(*mission), id, identity, now,
+			)
+		} else {
+			result, err = server.deferredTokens.PollPendingPersonToken(ctx, id, identity, now)
+		}
+		if errors.Is(err, ErrPendingPersonTokenNotFound) || errors.Is(err, ErrPendingPersonTokenGone) {
+			return true
+		}
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return false
+		}
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", ErrPendingPersonTokenConflict)
+	return false
 }
 
 func (server *Server) consumePendingPersonTokenResult(

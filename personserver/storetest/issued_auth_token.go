@@ -56,6 +56,7 @@ func RunIssuedAuthToken(t *testing.T, contract IssuedAuthTokenContract) {
 		{"expires at", func(record *personserver.IssuedAuthTokenRecord) { record.ExpiresAt = record.ExpiresAt.Add(time.Second) }},
 		{"agent provider", func(record *personserver.IssuedAuthTokenRecord) { record.AgentProvider = "https://other-agent.example" }},
 		{"agent", func(record *personserver.IssuedAuthTokenRecord) { record.Agent = "aauth:other@agent.example" }},
+		{"parent agent", func(record *personserver.IssuedAuthTokenRecord) { record.ParentAgent = "aauth:parent@agent.example" }},
 		{"agent token jti", func(record *personserver.IssuedAuthTokenRecord) { record.AgentTokenJTI = "other-agent-token" }},
 		{"agent key thumbprint", func(record *personserver.IssuedAuthTokenRecord) { record.AgentJKT = "other-agent-key-thumbprint" }},
 		{"upstream issuer", func(record *personserver.IssuedAuthTokenRecord) {
@@ -150,7 +151,8 @@ func issuedAuthTokenRecord(issuer, jti, resourceID string, marker byte) personse
 		Reference: aauth.TokenReference{Issuer: issuer, JTI: jti},
 		Resource:  resourceID, MissionS256: "mission-digest",
 		CompactSHA256: [32]byte{marker}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
-		AgentProvider: "https://agent.example", Agent: "aauth:assistant@agent.example",
+		AgentProvider: "https://agent.example", Agent: "aauth:assistant+lane@agent.example",
+		ParentAgent:   "aauth:assistant@agent.example",
 		AgentTokenJTI: "agent-token-" + jti, AgentJKT: "agent-key-thumbprint",
 		UpstreamTokenReference: aauth.TokenReference{Issuer: issuer, JTI: "upstream-" + jti},
 		UpstreamTokenSHA256:    [32]byte{marker, 1},

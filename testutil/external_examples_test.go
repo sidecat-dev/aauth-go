@@ -30,7 +30,7 @@ func TestPublicStoreExamplesRunInAnExternalModule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(consumer, "mission_contracts_test.go"), contracts, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"mission", "fourparty", "audit", "permission", "interactionquestion", "interactionrelay", "selfhosted", "bootstrap", "psconsent", "budget", "revocation"} {
+	for _, name := range []string{"mission", "fourparty", "audit", "permission", "interactionquestion", "interactionrelay", "selfhosted", "bootstrap", "psconsent", "budget", "revocation", "subagent"} {
 		source := filepath.Join(root, "example", name)
 		target := filepath.Join(consumer, name)
 		if err := os.Mkdir(target, 0700); err != nil {
@@ -53,14 +53,20 @@ func TestPublicStoreExamplesRunInAnExternalModule(t *testing.T) {
 			}
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	// Compilation is part of this consumer check, not a two-minute performance
+	// contract. Leave time to report cancellation before the test runner exits.
+	ctx := t.Context()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-time.Second))
+		defer cancel()
+	}
 	for _, args := range [][]string{{"test", "-mod=mod", "./...", "-count=1"}, {"run", "-mod=mod", "./mission"}} {
 		command := exec.CommandContext(ctx, "go", args...)
 		command.Dir = consumer
 		command.Env = append(os.Environ(), "GOWORK=off")
 		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("external examples %v: %v\n%s", args, err, output)
+			t.Fatalf("external examples %v: %v (context: %v)\n%s", args, err, ctx.Err(), output)
 		}
 	}
 }

@@ -85,14 +85,19 @@ type AuthorizationInteractionPolicy struct {
 // retained before the Person Server exposes an interaction. CodeSHA256 is the
 // normalized code digest; the plaintext correlation code is never retained.
 // PersonTokenExpiresAt is the verified expiry of the Person token presented to
-// the Person Server; the approved Auth token never outlives it.
+// the Person Server; the approved Auth token never outlives it. AgentTokenJTI
+// names the Agent token that started the request and SubagentTokenJTI, for a
+// parent-mediated request, the sub-agent token; both were issued by
+// AgentProvider, and its revocation of either ends the wait.
 type PendingAuthorizationRecord struct {
 	ID                       string
 	CodeSHA256               [32]byte
 	PersonServer             string
 	AgentProvider            string
 	Agent                    string
+	AgentTokenJTI            string
 	Subagent                 string
+	SubagentTokenJTI         string
 	Resource                 string
 	Subject                  string
 	Tenant                   string
@@ -380,7 +385,7 @@ func validateAuthorizationInteractionPolicy(policy AuthorizationInteractionPolic
 
 func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error {
 	if record.ID == "" || record.CodeSHA256 == ([32]byte{}) || record.PersonServer == "" ||
-		record.AgentProvider == "" || record.Agent == "" || record.Resource == "" || record.Subject == "" ||
+		record.AgentProvider == "" || record.Agent == "" || record.AgentTokenJTI == "" || record.Resource == "" || record.Subject == "" ||
 		record.AgentExpiresAt.IsZero() || record.ResourceTokenExpiresAt.IsZero() || record.PersonTokenExpiresAt.IsZero() ||
 		record.CreatedAt.IsZero() || !record.ExpiresAt.After(record.CreatedAt) || record.AgentExpiresAt.Before(record.ExpiresAt) ||
 		record.ResourceTokenExpiresAt.Before(record.ExpiresAt) || record.PersonTokenExpiresAt.Before(record.ExpiresAt) ||
@@ -401,14 +406,14 @@ func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error
 	}
 	if record.Subagent == "" {
 		if record.SubagentConfirmation != (jose.JWK{}) || !record.SubagentExpiresAt.IsZero() ||
-			len(record.SubagentAdditionalClaims) != 0 {
+			len(record.SubagentAdditionalClaims) != 0 || record.SubagentTokenJTI != "" {
 			return errors.New("personserver: top-level pending authorization has sub-agent context")
 		}
 	} else {
 		if err := aauth.ValidateAgentRelationship(record.Subagent, record.Agent); err != nil {
 			return err
 		}
-		if record.SubagentExpiresAt.IsZero() || record.SubagentExpiresAt.Before(record.ExpiresAt) ||
+		if record.SubagentTokenJTI == "" || record.SubagentExpiresAt.IsZero() || record.SubagentExpiresAt.Before(record.ExpiresAt) ||
 			record.SubagentConfirmation == (jose.JWK{}) || record.SubagentConfirmation.Equal(record.Confirmation) {
 			return errors.New("personserver: delegated pending authorization is inconsistent")
 		}
@@ -450,6 +455,7 @@ func (server *Server) beginAuthorizationInteraction(
 	missionRecord *MissionRecord,
 	policy AuthorizationInteractionPolicy,
 	personTokenExpiresAt time.Time,
+	createdAt time.Time,
 ) error {
 	if server.authorizationInteractions == nil {
 		return errors.New("personserver: deferred authorization store is required")
@@ -457,13 +463,15 @@ func (server *Server) beginAuthorizationInteraction(
 	if err := validateAuthorizationInteractionPolicy(policy); err != nil {
 		return err
 	}
-	createdAt := server.clock.Now().UTC()
+	// Keep the verified request's admission time across host policy work.
+	// A binding replaced while policy runs must not adopt the old request.
+	createdAt = createdAt.UTC()
 	expiresAt := createdAt.Add(policy.Lifetime)
 	// Approval must finish while the retained Person token is current.
 	if personTokenExpiresAt.Before(expiresAt) {
 		expiresAt = personTokenExpiresAt
 	}
-	if !expiresAt.After(createdAt) {
+	if !expiresAt.After(server.clock.Now()) {
 		return ErrPendingAuthorizationExpired
 	}
 	agentExpiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
@@ -481,7 +489,7 @@ func (server *Server) beginAuthorizationInteraction(
 	if missionRecord != nil && !missionRecord.ExpiresAt.IsZero() && missionRecord.ExpiresAt.Before(expiresAt) {
 		expiresAt = missionRecord.ExpiresAt
 	}
-	if !expiresAt.After(createdAt) {
+	if !expiresAt.After(server.clock.Now()) {
 		return ErrPendingAuthorizationExpired
 	}
 	for attempt := 0; attempt < 3; attempt++ {
@@ -511,7 +519,7 @@ func (server *Server) beginAuthorizationInteraction(
 		}
 		record := PendingAuthorizationRecord{
 			ID: id, CodeSHA256: digest, PersonServer: server.issuer,
-			AgentProvider: agent.Issuer, Agent: authorization.Agent, Resource: authorization.Resource,
+			AgentProvider: agent.Issuer, Agent: authorization.Agent, AgentTokenJTI: agent.JTI, Resource: authorization.Resource,
 			Subject: authorization.Subject, Tenant: authorization.Tenant, MissionS256: resourceToken.MissionS256,
 			MissionExpiresAt: missionExpiresAt,
 			Scopes:           append([]string(nil), authorization.Scopes...), Confirmation: agent.Confirmation.JWK,
@@ -523,6 +531,7 @@ func (server *Server) beginAuthorizationInteraction(
 		}
 		if authorization.Subagent != "" {
 			record.Subagent = authorization.Subagent
+			record.SubagentTokenJTI = credentialAgent.JTI
 			record.SubagentConfirmation = credentialAgent.Confirmation.JWK
 			record.SubagentExpiresAt = credentialAgentExpiresAt
 			record.SubagentAdditionalClaims = cloneClaims(authorization.SubagentAdditionalClaims)
@@ -670,6 +679,13 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	if !now.Before(value.record.ExpiresAt) || !now.Before(value.record.AgentExpiresAt) ||
 		(!value.record.SubagentExpiresAt.IsZero() && !now.Before(value.record.SubagentExpiresAt)) {
 		return ErrPendingAuthorizationExpired
+	}
+	// Record.Agent is the top-level requester whose binding authorized the
+	// request, including one it mediates for a sub-agent; a revoked Agent
+	// token the request was made with refuses the decision too.
+	if err := server.checkPendingRevocations(ctx, value.record.AgentProvider, value.record.Agent,
+		value.record.AgentTokenJTI, value.record.SubagentTokenJTI, value.record.CreatedAt); err != nil {
+		return err
 	}
 	// The pending deadline bounds only when approval may happen; it does not
 	// shorten the Auth token, which stays inside its predecessor tokens.
@@ -974,6 +990,7 @@ func (server *Server) validatePendingAuthorizationSnapshot(ctx context.Context, 
 func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bool {
 	return left.ID == right.ID && left.CodeSHA256 == right.CodeSHA256 && left.PersonServer == right.PersonServer &&
 		left.AgentProvider == right.AgentProvider && left.Agent == right.Agent && left.Subagent == right.Subagent &&
+		left.AgentTokenJTI == right.AgentTokenJTI && left.SubagentTokenJTI == right.SubagentTokenJTI &&
 		left.Resource == right.Resource &&
 		left.Subject == right.Subject && left.Tenant == right.Tenant && reflect.DeepEqual(left.Scopes, right.Scopes) &&
 		left.Confirmation.Equal(right.Confirmation) && left.AgentExpiresAt.Equal(right.AgentExpiresAt) &&
@@ -1076,6 +1093,20 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 	if err := server.validateAuthorizationPollContext(id, identity, result); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
+	}
+	switch result.State {
+	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollApproved:
+		// A revoked Agent token or binding ends a live request and withholds a
+		// retained token. The answer is terminal, so the request is ended first.
+		pending := result.Pending
+		if err := server.checkPendingRevocations(request.Context(), pending.AgentProvider, pending.Agent,
+			pending.AgentTokenJTI, pending.SubagentTokenJTI, pending.CreatedAt); err != nil {
+			if pendingRevoked(err) && !server.endPendingAuthorization(response, request, id, identity, result, mission) {
+				return
+			}
+			writePendingRevocationProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
+			return
+		}
 	}
 	switch result.State {
 	case AuthorizationPollWaiting:
@@ -1266,6 +1297,89 @@ func (server *Server) consumePendingAuthorizationResult(
 		return false
 	}
 	return true
+}
+
+// endPendingAuthorization makes a revocation answer terminal. It ends a live
+// request through the store's own transitions, failing a waiting or
+// interacting request or cancelling an active question, and consumes a
+// terminal result, so the pending URL is gone afterwards. It reports whether
+// the caller may write its answer.
+func (server *Server) endPendingAuthorization(
+	response http.ResponseWriter,
+	request *http.Request,
+	id string,
+	identity AuthorizationPollIdentity,
+	result AuthorizationPollRecord,
+	mission *MissionRecord,
+) bool {
+	ctx := request.Context()
+	for attempt := 0; attempt < 3; attempt++ {
+		now := server.clock.Now().UTC()
+		var err error
+		switch result.State {
+		case AuthorizationPollGone, AuthorizationPollCancelled:
+			return true
+		case AuthorizationPollWaiting, AuthorizationPollInteracting:
+			if mission != nil {
+				err = server.missionAuthorizationInteractions.FailMissionPendingAuthorization(
+					ctx, cloneMissionRecordForTransition(*mission), id, now,
+				)
+			} else {
+				err = server.authorizationInteractions.FailPendingAuthorization(ctx, id, now)
+			}
+		case AuthorizationPollClarifying:
+			if err = server.cancelPendingAuthorizationQuestion(ctx, id, identity, mission, now); err == nil {
+				return true
+			}
+		default:
+			return server.consumePendingAuthorizationResult(response, request, id, result, mission)
+		}
+		if err != nil && !errors.Is(err, ErrPendingAuthorizationConflict) && !errors.Is(err, ErrPendingAuthorizationExpired) {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return false
+		}
+		if mission != nil {
+			result, err = server.missionAuthorizationInteractions.PollMissionPendingAuthorization(
+				ctx, cloneMissionRecordForTransition(*mission), id, identity, now,
+			)
+		} else {
+			result, err = server.authorizationInteractions.PollPendingAuthorization(ctx, id, identity, now)
+		}
+		if errors.Is(err, ErrPendingAuthorizationNotFound) || errors.Is(err, ErrPendingAuthorizationGone) {
+			return true
+		}
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return false
+		}
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", ErrPendingAuthorizationConflict)
+	return false
+}
+
+// cancelPendingAuthorizationQuestion ends a request with an active
+// clarification question, which only the clarification store can do.
+func (server *Server) cancelPendingAuthorizationQuestion(
+	ctx context.Context,
+	id string,
+	identity AuthorizationPollIdentity,
+	mission *MissionRecord,
+	now time.Time,
+) error {
+	if mission != nil {
+		clarifications, ok := server.authorizationInteractions.(MissionAuthorizationClarificationStore)
+		if !ok {
+			return ErrPendingAuthorizationConflict
+		}
+		return clarifications.CancelMissionPendingAuthorizationClarification(
+			ctx, cloneMissionRecordForTransition(*mission), id, identity, now,
+		)
+	}
+	clarifications, ok := server.authorizationInteractions.(AuthorizationClarificationStore)
+	if !ok {
+		return ErrPendingAuthorizationConflict
+	}
+	return clarifications.CancelPendingAuthorizationClarification(ctx, id, identity, now)
 }
 
 func pendingAuthorizationIdentityMatches(record PendingAuthorizationRecord, identity AuthorizationPollIdentity) bool {

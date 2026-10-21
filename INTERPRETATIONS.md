@@ -266,11 +266,13 @@ that same key. Each issued token is capped by the earlier of the parent and
 child Agent-token expirations.
 
 The child token's optional `ps` claim does not select this flow; the parent
-selects and authenticates to its Person Server. The Person Server retains the
-child's Agent Provider, child, parent, and child key with the person-token
-record. A later token request must match that record before policy runs. The
-parent and child keys must be distinct, and the Resource receives none of the
-relationship fields.
+selects and authenticates to its Person Server. When present it must equal the
+parent's `ps`, because Bootstrap issues the child with its parent's value;
+another value is `invalid_subagent_token` at the PS and AS, as in aauth-rust.
+The Person Server retains the child's Agent Provider, child, parent, and child
+key with the person-token record. A later token request must match that record
+before policy runs. The parent and child keys must be distinct, and the
+Resource receives none of the relationship fields.
 
 The record binds the stable relationship, not one compact child token. A later
 valid child token may rotate `jti`, expiry, or additional policy claims when
@@ -281,7 +283,9 @@ The Person Server verifies the HTTP proof before applying the top-level-only
 request rule. A correctly signed direct request from a child returns
 `400 invalid_agent_token` without `Signature-Error`; a forged proof returns
 `401` with its Signature-Key failure. Core requires the direct-child refusal
-but does not assign it an error code.
+but does not assign it an error code (AAG-F045). A refused `subagent_token`
+parameter instead uses Protocol -11's `invalid_subagent_token`,
+`expired_subagent_token` or `revoked_subagent_token`.
 
 **Executable examples:**
 `personserver/subagent_test.go:TestServerIssuesImmediatePersonAndAuthTokensForSubagent`
@@ -401,11 +405,13 @@ the missing error contract.
 The source sends both tokens to the Access Server but does not explicitly say
 whether the AS verifies them itself. This implementation does. The AS verifies
 the parent and child tokens at the Person Server proof's fixed instant,
-confirms their relationship, and requires the parent token to name the signing
-Person Server. The child's optional `ps` claim does not select the flow. Policy
-receives both identities, and issuance uses only the child key. The Person
-Server then verifies the returned auth token against the child key before
-returning it to the parent.
+confirms their relationship (one issuer, and a child `ps` equal to the
+parent's when present), and requires the parent token to name the signing
+Person Server. A deferred request repeats all of this on every Person Server
+poll from the retained request bytes. The child's optional `ps` claim does not
+select the flow. Policy receives both identities, and issuance uses only the
+child key. The Person Server then verifies the returned auth token against the
+child key before returning it to the parent.
 
 **Executable example:**
 `integration/subagent_authorization_test.go:TestCurrentCoreParentMediatedSubagentImmediateASAuthorization`.
@@ -1654,9 +1660,10 @@ monitoring. It neither reserves nor advances requests. The optional
 `FederatedAuthorizationQueueStore` extends the base continuation store, matching
 the permission and question listing pattern; adapters without it can still
 complete exchanges. Agent `Retry-After` is
-the nonnegative remaining interval until the retained AS poll time, rounded up
-to whole seconds. Once due, zero permits the caller's next explicit poll;
-only the host can advance the AS request.
+the remaining interval until the retained AS poll time, rounded up to whole
+seconds, and at least one second. Once the AS poll is due only the host can
+advance it, so advertising zero would invite an Agent that follows the hint to
+poll in a busy loop until the host's next pass.
 
 The optional `pending_reason` response field is a library display extension,
 not a draft-defined requirement. The PS maps AS `402` to `awaiting_payment` and
@@ -1667,7 +1674,7 @@ unknown values; absence clears an earlier hint. No AS challenge, payment body
 or credentials are copied to the Agent. The hint grants no payment authority.
 
 **Evidence:** `TestDeferredCompositionRefusalHasLocalReason`,
-`TestDeferredCompositionRefusesR3BudgetAndDelegation`,
+`TestDeferredCompositionRefusesR3AndBudget`,
 `TestFederatedStoreWithoutQueueStillDelivers`,
 `TestPendingFederatedReferencesValidateStoreResults`,
 `TestFederatedPendingReferencesAcrossRecomposition`,
@@ -1743,3 +1750,180 @@ host, but is not an AS-wide lock.
 `integration/federated_deferred_test.go`. The last test overlaps native AS
 polls at store replacement, asserting one published wait or grant and the
 corresponding conflict or consumed response from its competitor.
+
+## Parent-mediated federated waits stay with the parent
+
+**Source:** Protocol `28e8258`, Sub-Agents (Parent-Mediated Authorization),
+AS Response, Deferred Responses, Polling Error Codes, Agent Response to
+Clarification (Cancel Request) and Pending URL Security.
+
+Parent-Mediated Authorization has the parent make every Person Server call
+and says consent surfaces for the parent; it does not describe an AS that
+defers a sub-agent's request. This implementation treats the wait as the
+parent's request. The PS retains the exact sub-agent token beside the parent's
+token, and only the parent's identity and key may poll or cancel. A child that
+signs a poll or cancellation receives `403 wrong_poller` and changes nothing,
+before or after the AS completes. Both waits end at the earliest of their
+configured lifetime and the Resource, parent, sub-agent and presented-token
+expiries, using the sub-agent token actually presented. Both Agent tokens and
+their relationship are verified again before each AS poll and before release,
+and the released grant must be bound to the child key.
+
+The polling error `revoked` names the Agent token of the Agent that started the
+request. A sub-agent token its Agent Provider revoked while the request waits
+also ends it with `403 revoked`; the public `detail` says which token was
+revoked. Neither token is presented to the AS again.
+
+DELETE on a pending URL is defined as an answer to a clarification. A parent
+may also withdraw an approval or payment wait with a bodyless signed DELETE.
+The PS consumes its own record first, so nothing retained can be released
+later, answers `200` with `{"status":"cancelled"}`, and sends the AS one signed
+DELETE. A withdrawal that loses its compare-and-swap to a host advance reloads
+and consumes again, so it still wins and any grant the advance retained is
+withheld; only a request another poll or cancellation consumed first is
+answered `410 request_consumed`. The AS consumes its record for its owning PS
+with the same answer (another PS receives `403 wrong_poller`), and later polls
+receive `410 request_consumed`. A withdrawal after the deadline consumes the
+record and answers `408 expired`. The PS-hosted consent wait answers its own
+cancellation the same way. These answers match aauth-rust, whose PS accepts
+only `200` or `410` from an AS DELETE, so either PS can withdraw at either AS.
+
+The two deadlines are configured separately, so a wait the PS ends on its own,
+because of its deadline, a revocation or an AS answer that arrives after the
+PS deadline, may still be live at the AS, where an unattended payment request
+could still be paid. The PS therefore sends the AS the same best-effort DELETE
+whenever it ends a wait the AS has not finished. A missed AS DELETE leaves the
+AS record only until its deadline; the PS does not retry it (AAG-F109).
+
+**Evidence:** `integration/subagent_federated_deferred_test.go`, including
+`TestSubagentFederatedWaitsEndWithThePresentedChildToken`,
+`TestSubagentFederatedCancellationClosesBothContinuations`,
+`TestSubagentFederatedCancellationWinsAConcurrentAdvance`,
+`TestSubagentFederatedLateASAnswerIsWithdrawn`,
+`TestSubagentFederatedCancellationAfterExpiryIsExpired`,
+`TestAccessServerCancellationBelongsToTheRequestingPersonServer` and
+`TestSubagentFederatedRevokedChildTokenEndsTheWait`; the shared harness
+`authorization.subagent` slice exercises the same answers against aauth-rust.
+
+## A revoked Agent-person binding ends issuance and pending delivery
+
+**Source:** Protocol `28e8258`, Agent-Person Binding, Upstream Token
+Verification step 4, Revocation Cascade, Presenting a Revoked Token, Polling
+Error Codes and Pending URL Security.
+
+Agent-Person Binding says a changed association is handled by revoking the
+existing binding and establishing a new one, and that revocation immediately
+prevents the agent from obtaining new auth tokens. It defines no operation or
+answers for it outside call chaining. Here the host revokes a binding through
+`Server.RevokeAgentBinding`, keyed by the top-level Agent's provider and
+identifier, after authenticating its administrator. The binding belongs to the
+Agent that signs Person Server requests, so a parent's revocation also covers
+every child it mediates. This is distinct from the parent's per-scope consent
+that Parent-Mediated Authorization says the parent can withdraw: host policy
+already reevaluates that consent on every child request.
+
+While the binding is revoked, the PS answers as the synchronous request would
+be answered: a Person-token request, a mission proposal (whose approval issues
+Person tokens) and a pending Person-token interaction or mission proposal
+receive `403 person_token_denied`; a token request and a pending consent or
+federated wait receive `400 revoked_presented_token`; a chained request whose
+caller, or the caller's mediating parent, holds the binding receives
+`400 revoked_upstream_token`. Each refusal carries a public `detail` naming
+the revoked binding, so a caller can tell it from a denial. The pending answer
+is not the polling code `revoked`, whose table names only the Resource,
+upstream and Agent tokens (AAG-F108). It is terminal: the PS ends the wait
+first, so its pending URL answers `410` afterwards, as Pending URL Security
+requires. A federated wait is consumed and withdrawn at the AS; a PS-hosted
+wait is failed, cancelled or consumed through its store's own transitions,
+and an undelivered mission approval is withheld. Host approval and mission
+approval are refused with `ErrAgentBindingRevoked`. Delivered Person and Auth
+tokens are not revoked at Resources or ASes; they expire normally. The
+permission, audit and interaction endpoints issue no credential and are not
+gated by this state.
+
+`Server.ReestablishAgentBinding` records that the host has established the new
+binding. Requests made after it are admitted under the host's `BindPerson`
+policy, while every pending request created, and every presented or upstream
+token issued, at or before that instant stays refused. The revocation entry is
+the fence, so the host keeps it, and the replacement needs no waiting period
+for the old binding's credentials to expire. The comparison uses the Person
+Server's clock. Distinct lifecycle changes use strictly increasing instants;
+store retries retain their original instant. A stale revocation leaves a later
+replacement alone, and a replacement at or before the latest revocation is
+refused with `ErrAgentBindingStale`. Hosts coordinate this clock and binding
+policy across instances.
+
+A pending record retains the original verified request time, before any host
+policy or Access Server round trip. Those operations cannot move an old
+request past a replacement fence. The same binding is checked again after
+host policy before immediate credential issuance, and before federated
+delivery. An Agent poll checks retained Agent-token revocations even when no
+host has advanced the Access Server wait.
+
+An AS-issued presented Auth token has no retained binding generation in this
+profile, and its `iat` belongs to the AS's clock. After replacement the PS
+therefore refuses that presentation with `revoked_presented_token`, including
+new AS tokens, and requires a fresh PS Person token for the next authorization
+or step-up. A never-revoked binding still accepts AS Auth-token step-up.
+Locally issued JWTs use whole-second `iat`, which must be strictly later than
+the replacement instant; a request in that same second can be refused safely.
+`TestReplacementDoesNotAdmitOldASAuthTokenWithAheadClock` reproduces the old
+credential being admitted without this rule.
+
+**Evidence:** `personserver/subagent_profile_test.go`
+(`TestRevokedAgentBindingRefusesNewPersonTokens`,
+`TestRevokedAgentBindingRefusesTokenRequests`,
+`TestCallChainingRefusesARevokedCallerBinding`),
+`personserver/agent_binding_lifecycle_test.go`
+(`TestRevokedAgentBindingEndsPSHostedConsentInEveryState`,
+`TestRevokedAgentBindingEndsPersonTokenInteractionsInEveryState`,
+`TestReestablishedAgentBindingAdmitsOnlyLaterRequests`,
+`TestRevokedAgentBindingRefusesMissionApproval`),
+`TestSubagentFederatedBindingRevocationEndsTheWait`, the
+`storetest.RunAgentBindingRevocation` contract, and the shared harness's
+`revoked-binding` and `revoked-pending` scenarios, which aauth-rust answers the
+same way.
+
+## A PS-hosted wait ends when an Agent token it depends on is revoked
+
+**Source:** Protocol `28e8258`, Presenting a Revoked Token and Polling Error
+Codes.
+
+Presenting a Revoked Token says a pending request whose agent's agent token is
+revoked while it waits terminates with `revoked`, `detail` saying which. A
+PS-hosted consent or Person-token wait retains the identifiers of the Agent
+token that started it and, for a parent-mediated request, of the sub-agent
+token. The parent re-authenticates on every poll, but the child never calls the
+Person Server, so only the Person Server can refuse to bind a credential to a
+child key its Agent Provider withdrew. A revocation of either token, recorded
+through the Person Server's Agent-token revocation store, ends the wait with
+`403 revoked` and a `detail` naming the token, and later polls receive `410`;
+host approval is refused with an error matching `ErrAgentTokenRevoked`. The
+federated wait applies the same rule before each AS poll and before release.
+
+**Evidence:** `TestRevokedAgentTokenEndsPSHostedWaits` in
+`personserver/agent_binding_lifecycle_test.go` and
+`TestSubagentFederatedRevokedChildTokenEndsTheWait`.
+
+## A sub-agent token comes from the parent's own provider
+
+**Source:** Bootstrap `28e8258`, Sub-Agent Tokens; Protocol `28e8258`,
+Sub-Agent Identity.
+
+`IssueSubagent` authenticates the parent token with only the provider's own
+signing key, not a general resolver, because a sub-agent's `iss` must equal its
+parent's. Bootstrap says a sub-agent's `exp` should not exceed, or is no later
+than, the parent's; the provider caps a longer requested lifetime at the
+parent's `exp` rather than refusing it. The host supplies the discriminator and
+owns its uniqueness. The hosted handler accepts the draft's illustrative `jwk`
+and `discriminator` members, ignores other members rather than letting them
+reach the token, and answers a sub-agent signer or policy refusal with
+`403 subagent_denied`; Bootstrap defines no error codes for this request.
+Bootstrap has the provider record which parent requested each live
+sub-agent, which only host policy can do, so the handler refuses a request it
+could not issue, the parent's own key or a malformed suggested discriminator,
+with `400 invalid_request` before policy sees it. It keeps no replay cache: an exact replay inside the signature window yields
+another token for the same sub-agent key, which only that key's holder can use.
+
+**Evidence:** `agentprovider/subagent_test.go` and
+`agentprovider/subagent_http_test.go`.

@@ -28,6 +28,11 @@ func TestPublicFederationStores(t *testing.T) {
 			return testutil.NewFederatedAuthorizationStore()
 		}})
 	})
+	t.Run("PS binding revocation", func(t *testing.T) {
+		personstoretest.RunAgentBindingRevocation(t, personstoretest.AgentBindingRevocationContract{New: func(testing.TB) personserver.AgentBindingRevocationStore {
+			return testutil.NewAgentBindingRevocationStore()
+		}})
+	})
 }
 
 // JSON-backed adapters may canonicalize timestamps to UTC while preserving

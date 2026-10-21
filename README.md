@@ -62,6 +62,7 @@ Request verified: aauth:reader@agents.example
 | Permission, missions or interaction | [`example/permission`](example/permission), [`example/mission`](example/mission), [`example/psconsent`](example/psconsent) | In-process |
 | R3 operations, Budgets or Events | [`example/r3threeparty`](example/r3threeparty), [`example/budget`](example/budget), [`example/events`](example/events) | In-process; terms in the [glossary](GLOSSARY.md) |
 | Revocation and Person-token recovery | [`example/revocation`](example/revocation) | In-process |
+| Sub-agents: the hosted child request, parent-mediated grants including an AS approval wait, binding revocation | [`example/subagent`](example/subagent) | In-process; see [Delegate to a sub-agent](USE-IN-YOUR-SERVICE.md#delegate-to-a-sub-agent) |
 | Separate services, restart and retained state | [`walkthrough/local`](walkthrough/local), [`walkthrough/hosted`](walkthrough/hosted), [`walkthrough/callchaining`](walkthrough/callchaining) | Multiple TLS processes and state directories |
 | Historical Go/TypeScript qualifications (2026-09-01) | [`walkthrough/interop`](walkthrough/interop) | Live qualification needs public HTTPS and external services |
 
@@ -78,7 +79,7 @@ to point a consumer module at your checkout.
 | `aauth` | Core identifiers, token claims, minting, verification, and context checks |
 | `jose` | Focused Ed25519 JWK and compact-JWS behavior |
 | `signaturekey` | HTTP request proofs, credentials, discovery, and error negotiation |
-| `agentprovider` | Agent enrollment, Agent-token issuance, metadata, and Events inbox |
+| `agentprovider` | Agent enrollment, Agent and sub-agent token issuance, metadata, and Events inbox |
 | `agent` | Explicit caller-side protocol steps; no hidden polling or consequence retry |
 | `personserver` | Person identity, authorization, missions, permission, interaction, audit, and federation |
 | `resource` | Identity, sessions, authorization, R3 enforcement, Budget charging, Events, and revocation |
@@ -112,8 +113,9 @@ storage, key-resolution, clock, and transport interfaces. See
 
 The repository has executing paths for direct identity, three- and four-party
 authorization, Resource-managed sessions, hosted enrollment and refresh,
-missions, local permission, audit, interaction, bounded delegation and call
-chaining, revocation, R3, Events, and fixed-price Budgets.
+missions, local permission, audit, interaction, one-level parent-mediated
+sub-agents (including AS approval and payment waits), bounded call chaining,
+revocation, R3, Events, and fixed-price Budgets.
 
 It does **not** yet implement all of AAuth Core or every companion profile.
 Notable exclusions include production store adapters, key custody, TLS and

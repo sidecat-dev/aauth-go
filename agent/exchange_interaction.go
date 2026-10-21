@@ -142,7 +142,8 @@ func (pending PendingExchange) Location() string {
 }
 
 // RetryAfter returns the minimum interval the caller must respect before the
-// next explicit poll.
+// next explicit poll. A server may advertise zero; a caller that polls in a
+// loop still paces it, for example at one second.
 func (pending PendingExchange) RetryAfter() time.Duration {
 	if pending.kind != pendingExchangeVerified {
 		return 0

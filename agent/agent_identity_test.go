@@ -255,7 +255,7 @@ func TestSubAgentCanCallAsAgentButCannotCallPersonServer(t *testing.T) {
 			return err
 		},
 	} {
-		if err := call(); err == nil || !strings.Contains(err.Error(), "sub-agent must not call the Person Server directly") {
+		if err := call(); !errors.Is(err, agent.ErrSubagentPersonServerCall) {
 			t.Fatalf("%s error = %v", name, err)
 		}
 	}

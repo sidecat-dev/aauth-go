@@ -759,6 +759,7 @@ type personInteractionProtocol struct {
 	resourceID      string
 	bindCalls       int
 	policyDelay     time.Duration
+	bindings        AgentBindingRevocationStore
 }
 
 func newPersonInteractionProtocol(t *testing.T) *personInteractionProtocol {
@@ -808,7 +809,8 @@ func (protocol *personInteractionProtocol) newServer(t *testing.T, store *memory
 			protocol.bindCalls++
 			return Person{Subject: "immediate-person", Lifetime: time.Minute}, nil
 		},
-		Consent: func(context.Context, AuthorizationRequest) error { return nil },
+		Consent:                 func(context.Context, AuthorizationRequest) error { return nil },
+		AgentBindingRevocations: protocol.bindings,
 	}
 	if deferred {
 		config.RequirePersonTokenInteraction = func(_ context.Context, request PersonTokenRequest) (PersonTokenInteractionPolicy, bool, error) {

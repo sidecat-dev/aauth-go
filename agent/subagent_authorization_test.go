@@ -88,14 +88,21 @@ func TestParentMediatedSubagentRefusesInvalidRelationshipsBeforeNetwork(t *testi
 			token: func(h *subagentClientHarness) string {
 				return h.mintAgentToken(t, "aauth:other+child@ap.example", "aauth:other@ap.example", h.protocol.personServerID, h.childKey, time.Hour)
 			},
-			want: "parent_agent does not match parent",
+			want: "parent_agent does not name the requesting Agent",
+		},
+		{
+			name: "child names another person server",
+			token: func(h *subagentClientHarness) string {
+				return h.mintAgentToken(t, harnessChildID, harnessParentID, "https://other-ps.example", h.childKey, time.Hour)
+			},
+			want: "names another Person Server",
 		},
 		{
 			name: "parent and child share one key",
 			token: func(h *subagentClientHarness) string {
 				return h.mintAgentToken(t, harnessChildID, harnessParentID, "", h.protocol.agentKey, time.Hour)
 			},
-			want: "key distinct from the parent",
+			want: "key distinct from its parent",
 		},
 	} {
 		test := test
@@ -123,7 +130,7 @@ func TestParentMediatedSubagentRefusesInvalidRelationshipsBeforeNetwork(t *testi
 							SubagentToken:  token,
 						})
 					}
-					if err == nil || !strings.Contains(err.Error(), test.want) {
+					if !errors.Is(err, aauth.ErrInvalidSubagentToken) || !strings.Contains(err.Error(), test.want) {
 						t.Fatalf("error = %v, want %q", err, test.want)
 					}
 					if harness.networkCalls != 0 {
@@ -164,7 +171,7 @@ func TestSubagentCannotMediateAnotherSubagent(t *testing.T) {
 		Resource:      harness.protocol.resourceID,
 		SubagentToken: harness.childToken,
 	})
-	if err == nil || !strings.Contains(err.Error(), "sub-agent must not call the Person Server directly") {
+	if !errors.Is(err, agent.ErrSubagentPersonServerCall) {
 		t.Fatalf("nested mediation error = %v", err)
 	}
 	if harness.networkCalls != 0 {

@@ -81,7 +81,7 @@ func (server *Server) issueAt(request aauth.AgentTokenRequest, issuedAt time.Tim
 		return "", time.Time{}, errors.New("aauth: agent provider is required")
 	}
 	if request.ParentAgent != "" {
-		return "", time.Time{}, errors.New("aauth: this Agent Provider implements top-level agent tokens only")
+		return "", time.Time{}, errors.New("aauth: Issue mints top-level Agent tokens; use IssueSubagent for a sub-agent")
 	}
 	issuedAt = issuedAt.UTC().Truncate(time.Second)
 	compact, err := aauth.MintAgentToken(
