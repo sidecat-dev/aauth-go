@@ -12,11 +12,17 @@ This is an incomplete implementation, not an official conformance suite.
 
 ## Use it in your service
 
-Requires Go 1.25 or later:
+Requires Go 1.25 or later. In your application's module, install a published
+version with:
 
 ```sh
 go get gitlab.com/sidecat-dev/aauth-go
 ```
+
+This selects a published version, which may differ from the checkout you are
+reading. To use this checkout from another module, follow the
+[checkout installation](USE-IN-YOUR-SERVICE.md#versions-and-local-development)
+and verify the selected module with `go list -m`.
 
 For an HTTP endpoint accepting Agent identity, start with
 `resource.NewAgentIdentity`. It verifies the token **and the request proof**
@@ -65,6 +71,11 @@ Request verified: aauth:reader@agents.example
 | Sub-agents: the hosted child request, parent-mediated grants including an AS approval wait, binding revocation | [`example/subagent`](example/subagent) | In-process; see [Delegate to a sub-agent](USE-IN-YOUR-SERVICE.md#delegate-to-a-sub-agent) |
 | Separate services, restart and retained state | [`walkthrough/local`](walkthrough/local), [`walkthrough/hosted`](walkthrough/hosted), [`walkthrough/callchaining`](walkthrough/callchaining) | Multiple TLS processes and state directories |
 | Historical Go/TypeScript qualifications (2026-09-01) | [`walkthrough/interop`](walkthrough/interop) | Live qualification needs public HTTPS and external services |
+
+Revoking a parent/person binding stops new PS issuance and pending delivery.
+Already delivered Resource grants and the child Agent token remain valid until
+their normal expiry; this action does not revoke tokens at the Resource or
+Agent Provider. See the [revocation boundary](USE-IN-YOUR-SERVICE.md#delegate-to-a-sub-agent).
 
 [JOURNEYS.md](JOURNEYS.md) is the full catalog, including delegation, call
 chaining and the other examples. Standalone walkthroughs pin published module

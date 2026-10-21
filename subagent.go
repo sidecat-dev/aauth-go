@@ -20,8 +20,12 @@ var (
 
 // VerifySubagentToken verifies a sub-agent's Agent token carried as a request
 // parameter for parent-mediated authorization (Protocol -11, Sub-Agents).
-// Parent must be the verified claims of the top-level Agent that signed the
-// request. The child token is verified on its own terms; then its
+// Parent must be the freshly verified claims of the top-level Agent that signed
+// this request. Verify the parent's compact token with VerifyAgentToken at the
+// current protocol time before calling this helper; cached claims from an
+// earlier verification are not sufficient. This helper receives only the parent
+// claims and cannot reverify the parent's signature or expiry.
+// The child token is verified on its own terms; then its
 // authoritative parent_agent must name that parent, both tokens must share one
 // issuer, a child ps claim must equal the parent's (Bootstrap copies it), and
 // the child must hold a distinct confirmation key. A grandchild fails because
