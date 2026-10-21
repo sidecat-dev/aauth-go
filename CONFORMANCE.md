@@ -25,6 +25,19 @@ Status terms:
   or lacks an executing role path.
 - **Not implemented** — no current supported path is claimed.
 
+## Binding replacement boundary
+
+A configured Agent-binding revocation store fences old requests using their
+original verification time, including time spent in host policy or AS work.
+After replacement, AS-issued Auth tokens are refused as presented credentials:
+their issuer's clock cannot prove the PS binding generation. Obtain a fresh
+PS Person token for each new authorization or step-up. A local JWT's
+whole-second `iat` must be strictly later than the replacement instant.
+Revocation checks and issuance commits are not one atomic transaction across
+stores; a host requiring that cutoff coordinates both operations. Delivered
+tokens expire normally. See [the binding interpretation](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery)
+and [race regressions](personserver/agent_binding_admission_race_test.go).
+
 ## Presented-token verification
 
 The targeted Protocol -11 overlay in [SPECIFICATIONS.md](SPECIFICATIONS.md)

@@ -655,6 +655,19 @@ binding. A sub-agent token its Agent Provider revoked is
 that started the request; the change log's "any token a pending request
 depends on" suggests it is covered, but the row does not name it.
 
+A replacement also needs an ordering boundary that delayed work cannot cross.
+In aauth-go, a policy callback or initial AS exchange could replace the binding
+before a pending record was created; using that later creation time admitted
+an old-subject request into the new binding. Regression tests retain the
+verified request's original time. Delayed store-operation retries likewise
+must not reopen a newer revocation. The draft defines no binding-generation
+or host-operation contract for these races. An AS-issued Auth token with an
+`iat` thirty seconds ahead of the PS clock also passed the old replacement
+fence despite being issued before revocation. The bounded implementation now
+requires fresh PS Person tokens after replacement instead of trusting AS
+issuance time; it cannot claim transparent Auth-token step-up across a new
+binding without retained binding-generation lineage.
+
 **Evidence:** aauth-go and aauth-rust both answer the next parent poll on a
 federated wait after the parent's binding is revoked with
 `400 revoked_presented_token`, the synchronous code; the shared harness's

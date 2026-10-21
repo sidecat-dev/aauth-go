@@ -320,6 +320,7 @@ func (server *Server) beginPersonTokenInteraction(
 	credentialAgent aauth.AgentTokenClaims,
 	policy PersonTokenInteractionPolicy,
 	mission *MissionRecord,
+	createdAt time.Time,
 ) error {
 	if server.deferredTokens == nil {
 		return errors.New("personserver: deferred token store is required")
@@ -327,7 +328,8 @@ func (server *Server) beginPersonTokenInteraction(
 	if err := validatePersonTokenInteractionPolicy(policy); err != nil {
 		return err
 	}
-	createdAt := server.clock.Now().UTC()
+	// Policy latency must not move an old request into a replacement binding.
+	createdAt = createdAt.UTC()
 	expiresAt := createdAt.Add(policy.Lifetime)
 	requestingAgentExpiresAt := time.Unix(requestingAgent.ExpiresAt, 0).UTC()
 	agentExpiresAt := time.Unix(credentialAgent.ExpiresAt, 0).UTC()
@@ -340,7 +342,7 @@ func (server *Server) beginPersonTokenInteraction(
 	if mission != nil && !mission.ExpiresAt.IsZero() && mission.ExpiresAt.Before(expiresAt) {
 		expiresAt = mission.ExpiresAt
 	}
-	if !expiresAt.After(createdAt) {
+	if !expiresAt.After(server.clock.Now()) {
 		return ErrPendingPersonTokenExpired
 	}
 

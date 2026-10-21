@@ -455,6 +455,7 @@ func (server *Server) beginAuthorizationInteraction(
 	missionRecord *MissionRecord,
 	policy AuthorizationInteractionPolicy,
 	personTokenExpiresAt time.Time,
+	createdAt time.Time,
 ) error {
 	if server.authorizationInteractions == nil {
 		return errors.New("personserver: deferred authorization store is required")
@@ -462,13 +463,15 @@ func (server *Server) beginAuthorizationInteraction(
 	if err := validateAuthorizationInteractionPolicy(policy); err != nil {
 		return err
 	}
-	createdAt := server.clock.Now().UTC()
+	// Keep the verified request's admission time across host policy work.
+	// A binding replaced while policy runs must not adopt the old request.
+	createdAt = createdAt.UTC()
 	expiresAt := createdAt.Add(policy.Lifetime)
 	// Approval must finish while the retained Person token is current.
 	if personTokenExpiresAt.Before(expiresAt) {
 		expiresAt = personTokenExpiresAt
 	}
-	if !expiresAt.After(createdAt) {
+	if !expiresAt.After(server.clock.Now()) {
 		return ErrPendingAuthorizationExpired
 	}
 	agentExpiresAt := time.Unix(agent.ExpiresAt, 0).UTC()
@@ -486,7 +489,7 @@ func (server *Server) beginAuthorizationInteraction(
 	if missionRecord != nil && !missionRecord.ExpiresAt.IsZero() && missionRecord.ExpiresAt.Before(expiresAt) {
 		expiresAt = missionRecord.ExpiresAt
 	}
-	if !expiresAt.After(createdAt) {
+	if !expiresAt.After(server.clock.Now()) {
 		return ErrPendingAuthorizationExpired
 	}
 	for attempt := 0; attempt < 3; attempt++ {

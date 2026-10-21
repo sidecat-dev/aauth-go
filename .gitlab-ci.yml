@@ -1,5 +1,9 @@
 image: golang:1.25
 
+default:
+  tags:
+    - sprint-gen6
+
 variables:
   GOTOOLCHAIN: local
 

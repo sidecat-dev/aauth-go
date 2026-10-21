@@ -445,6 +445,9 @@ func (server *Server) prepareMissionApproval(
 		if err != nil {
 			return MissionProposalApproval{}, &missionPersonBindingError{cause: fmt.Errorf("Resource %q: %w", resource, err)}
 		}
+		if err := server.checkAgentBinding(ctx, agentBinding(agent), proposedAt); err != nil {
+			return MissionProposalApproval{}, err
+		}
 		issuedAt := server.clock.Now().UTC()
 		if !record.ExpiresAt.IsZero() && !issuedAt.Before(record.ExpiresAt) {
 			return MissionProposalApproval{}, errors.New("personserver: mission expired before approval could be retained")

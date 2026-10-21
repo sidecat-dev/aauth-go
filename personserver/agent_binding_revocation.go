@@ -19,6 +19,9 @@ var (
 	// ErrAgentBindingNotRevoked reports a replacement for a binding the host
 	// has not revoked.
 	ErrAgentBindingNotRevoked = errors.New("personserver: Agent-person binding is not revoked")
+	// ErrAgentBindingStale reports a replacement instant that does not follow
+	// the latest revocation. It must not reopen that revocation.
+	ErrAgentBindingStale = errors.New("personserver: Agent-person binding replacement is stale")
 )
 
 // AgentBinding names one Agent-person binding in this Person Server's
@@ -43,14 +46,17 @@ type AgentBindingRevocation struct {
 // AgentBindingRevocationStore retains the host's revocations of Agent-person
 // bindings.
 //
-// RevokeAgentBinding records a revocation in force: it keeps the later of the
-// recorded and supplied instants and clears any replacement.
-// ReestablishAgentBinding records a replacement at the later of the supplied
-// instant and RevokedAt; it returns ErrAgentBindingNotRevoked when no
+// RevokeAgentBinding records a revocation in force only when its instant is
+// later than both retained instants; older or exact retries leave state alone.
+// ReestablishAgentBinding records a replacement after RevokedAt; it returns
+// ErrAgentBindingStale for an instant at or before RevokedAt, and
+// ErrAgentBindingNotRevoked when no
 // revocation is recorded and keeps the first instant when the revocation was
 // already replaced. LoadAgentBindingRevocation returns the zero value for a
 // binding never revoked. Operations for one binding must be linearizable. A
 // non-sentinel error may be indeterminate, so an exact retry must be safe.
+// Hosts supply strictly increasing instants for distinct lifecycle changes;
+// retries retain the original instant.
 //
 // An entry outlives its replacement because it is the fence that keeps the
 // revoked binding's credentials out: while a revocation is in force nothing
@@ -67,7 +73,10 @@ type AgentBindingRevocationStore interface {
 // RevokeAgentBinding records a host-authenticated revocation of one top-level
 // Agent's binding at the Server's current time. It requires
 // AgentBindingRevocations. It does not revoke issued tokens at Resources or
-// Access Servers; delivered Auth tokens expire normally.
+// Access Servers; delivered Auth tokens expire normally. Each Server method
+// call is a new host action, not a replay identifier. After an indeterminate
+// store error, inspect the store state; exact store retries retain the original
+// caller-owned instant rather than calling this convenience method again.
 func (server *Server) RevokeAgentBinding(ctx context.Context, binding AgentBinding) error {
 	if err := server.validateAgentBindingCall(ctx, binding); err != nil {
 		return err
@@ -80,8 +89,8 @@ func (server *Server) RevokeAgentBinding(ctx context.Context, binding AgentBindi
 // after it are admitted again under the host's BindPerson policy, while every
 // pending request created and every token issued under the revoked binding
 // stays refused. It returns ErrAgentBindingNotRevoked for a binding that is not
-// revoked. Hosts running several instances keep their clocks within the
-// interval between a revocation and its replacement.
+// revoked. As with RevokeAgentBinding, each call is a new host action. Hosts
+// coordinate strictly increasing lifecycle instants across instances.
 func (server *Server) ReestablishAgentBinding(ctx context.Context, binding AgentBinding) error {
 	if err := server.validateAgentBindingCall(ctx, binding); err != nil {
 		return err

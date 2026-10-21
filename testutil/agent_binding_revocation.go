@@ -27,9 +27,10 @@ func (store *agentBindingRevocationStore) RevokeAgentBinding(ctx context.Context
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	state := store.states[binding]
-	if at.After(state.RevokedAt) {
-		state.RevokedAt = at
+	if !at.After(state.RevokedAt) || !at.After(state.ReestablishedAt) {
+		return nil
 	}
+	state.RevokedAt = at
 	state.ReestablishedAt = time.Time{}
 	store.states[binding] = state
 	return nil
@@ -45,13 +46,13 @@ func (store *agentBindingRevocationStore) ReestablishAgentBinding(ctx context.Co
 	if !ok {
 		return personserver.ErrAgentBindingNotRevoked
 	}
+	if !at.After(state.RevokedAt) {
+		return personserver.ErrAgentBindingStale
+	}
 	if !state.ReestablishedAt.IsZero() {
 		return nil
 	}
 	state.ReestablishedAt = at
-	if at.Before(state.RevokedAt) {
-		state.ReestablishedAt = state.RevokedAt
-	}
 	store.states[binding] = state
 	return nil
 }

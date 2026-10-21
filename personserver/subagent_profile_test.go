@@ -409,9 +409,10 @@ func (store *memoryAgentBindingRevocations) RevokeAgentBinding(_ context.Context
 		return store.revokeErr
 	}
 	state := store.states[binding]
-	if at.After(state.RevokedAt) {
-		state.RevokedAt = at
+	if !at.After(state.RevokedAt) || !at.After(state.ReestablishedAt) {
+		return nil
 	}
+	state.RevokedAt = at
 	state.ReestablishedAt = time.Time{}
 	store.states[binding] = state
 	return nil
@@ -427,11 +428,11 @@ func (store *memoryAgentBindingRevocations) ReestablishAgentBinding(_ context.Co
 	if !ok {
 		return ErrAgentBindingNotRevoked
 	}
+	if !at.After(state.RevokedAt) {
+		return ErrAgentBindingStale
+	}
 	if state.ReestablishedAt.IsZero() {
 		state.ReestablishedAt = at
-		if at.Before(state.RevokedAt) {
-			state.ReestablishedAt = state.RevokedAt
-		}
 		store.states[binding] = state
 	}
 	return nil

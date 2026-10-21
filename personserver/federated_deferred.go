@@ -84,8 +84,8 @@ type FederatedResponse struct {
 
 // FederatedAuthorizationRecord keeps one exact request and its continuation
 // in the PS boundary. The token bytes, IDs, Location, CreatedAt, and ExpiresAt
-// are immutable. CreatedAt is when the PS began the wait; a binding replaced
-// after it no longer authorizes the wait.
+// are immutable. CreatedAt is the initial request's verification time, before
+// policy or AS work; a binding replaced after it no longer authorizes the wait.
 // Advancing fences an external AS poll: an uncertain poll is never reclaimed.
 // Terminal stores the verified result or local problem; Gone prevents replay.
 // AgentIssuer, Agent and AgentJKT name the Agent that signed the request and
@@ -166,6 +166,7 @@ type federatedContinuationInput struct {
 	agent, credentialAgent                                   aauth.AgentTokenClaims
 	resource                                                 aauth.ResourceTokenClaims
 	presentedExpiresAt                                       time.Time
+	createdAt                                                time.Time
 }
 
 func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http.Request, as *http.Response, endpoint string, input federatedContinuationInput) {
@@ -175,7 +176,7 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 		return
 	}
 	now := server.clock.Now().UTC()
-	deadline := now.Add(server.federatedDeferred.Lifetime)
+	deadline := input.createdAt.Add(server.federatedDeferred.Lifetime)
 	for _, t := range []time.Time{
 		time.Unix(input.resource.ExpiresAt, 0), time.Unix(input.agent.ExpiresAt, 0),
 		time.Unix(input.credentialAgent.ExpiresAt, 0), input.presentedExpiresAt,
@@ -204,7 +205,7 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 		ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: server.issuer, ResourceToken: input.resourceToken,
 		AgentToken: input.agentToken, AgentIssuer: input.agent.Issuer, Agent: input.agent.Subject, AgentJKT: thumbprint,
 		PresentedToken: input.presentedToken, SubagentToken: input.subagentToken, Location: location,
-		CreatedAt: now, ExpiresAt: deadline, NextPollAt: now.Add(retry), RetryAfter: retry, Revision: 1, Response: state,
+		CreatedAt: input.createdAt, ExpiresAt: deadline, NextPollAt: now.Add(retry), RetryAfter: retry, Revision: 1, Response: state,
 	}
 	if err := server.federatedDeferred.Store.CreateFederatedAuthorization(r.Context(), record); err != nil {
 		writeProblem(w, 500, "server_error", err)
@@ -431,7 +432,7 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writeAccessServerUnreachable(out, err)
 		return
 	}
-	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{})
+	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt)
 }
 
 // verifyFederatedAgents reverifies the retained Agent tokens at the current
@@ -510,15 +511,20 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
-	// The parent's binding authorized this wait and any retained grant, and a
-	// replacement binding does not adopt it.
-	if err := server.checkAgentBinding(r.Context(), AgentBinding{AgentProvider: record.AgentIssuer, Agent: record.Agent}, record.CreatedAt); err != nil {
-		if !errors.Is(err, ErrAgentBindingRevoked) {
+	// A poll must observe revocations even before a host advances the AS wait.
+	// The signing parent may have refreshed its token since the request began.
+	startingAgent, credential, err := server.verifyFederatedAgents(r.Context(), record)
+	if err != nil {
+		writeAccessServerUnreachable(w, err)
+		return
+	}
+	if err := server.checkFederatedRevocations(r.Context(), record, startingAgent, credential); err != nil {
+		if !pendingRevoked(err) {
 			writeProblem(w, http.StatusInternalServerError, "server_error", err)
 			return
 		}
 		if server.endFederatedAuthorization(w, r, record) {
-			writeAgentBindingProblem(w, err, http.StatusBadRequest, "revoked_presented_token")
+			writePendingRevocationProblem(w, err, http.StatusBadRequest, "revoked_presented_token")
 		}
 		return
 	}
@@ -642,7 +648,7 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 		return
 	}
 	response := &http.Response{StatusCode: 200, Header: record.Response.Header, Body: io.NopCloser(bytes.NewReader(record.Response.Body))}
-	server.deliverFederatedAuthorization(w, r, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{})
+	server.deliverFederatedAuthorization(w, r, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt)
 }
 
 // handleFederatedCancellation lets the Agent that started a federated wait

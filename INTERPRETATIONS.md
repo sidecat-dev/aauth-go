@@ -1847,8 +1847,28 @@ policy, while every pending request created, and every presented or upstream
 token issued, at or before that instant stays refused. The revocation entry is
 the fence, so the host keeps it, and the replacement needs no waiting period
 for the old binding's credentials to expire. The comparison uses the Person
-Server's clock, so instances share one clock within the time between a
-revocation and its replacement.
+Server's clock. Distinct lifecycle changes use strictly increasing instants;
+store retries retain their original instant. A stale revocation leaves a later
+replacement alone, and a replacement at or before the latest revocation is
+refused with `ErrAgentBindingStale`. Hosts coordinate this clock and binding
+policy across instances.
+
+A pending record retains the original verified request time, before any host
+policy or Access Server round trip. Those operations cannot move an old
+request past a replacement fence. The same binding is checked again after
+host policy before immediate credential issuance, and before federated
+delivery. An Agent poll checks retained Agent-token revocations even when no
+host has advanced the Access Server wait.
+
+An AS-issued presented Auth token has no retained binding generation in this
+profile, and its `iat` belongs to the AS's clock. After replacement the PS
+therefore refuses that presentation with `revoked_presented_token`, including
+new AS tokens, and requires a fresh PS Person token for the next authorization
+or step-up. A never-revoked binding still accepts AS Auth-token step-up.
+Locally issued JWTs use whole-second `iat`, which must be strictly later than
+the replacement instant; a request in that same second can be refused safely.
+`TestReplacementDoesNotAdmitOldASAuthTokenWithAheadClock` reproduces the old
+credential being admitted without this rule.
 
 **Evidence:** `personserver/subagent_profile_test.go`
 (`TestRevokedAgentBindingRefusesNewPersonTokens`,

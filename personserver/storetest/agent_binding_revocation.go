@@ -17,10 +17,10 @@ type AgentBindingRevocationContract struct {
 }
 
 // RunAgentBindingRevocation checks the public Agent-person binding revocation
-// store contract: a binding starts unrevoked; revocation is idempotent, keeps
-// the later instant, clears a replacement, and is isolated to one provider and
-// Agent; a replacement requires a revocation, keeps its first instant, never
-// precedes the revocation, and does not erase it; and concurrent revocations
+// store contract: a binding starts unrevoked; a newer revocation clears a
+// replacement and is isolated to one provider and Agent; stale retries cannot
+// undo a later decision; a replacement requires a revocation, keeps its first
+// instant, follows the revocation, and does not erase it; concurrent revocations
 // and lookups settle on revoked. Passing it complements, but does not replace,
 // backend transaction, restart, and failure-injection tests.
 func RunAgentBindingRevocation(t *testing.T, contract AgentBindingRevocationContract) {
@@ -69,16 +69,28 @@ func RunAgentBindingRevocation(t *testing.T, contract AgentBindingRevocationCont
 		t.Fatalf("repeated ReestablishAgentBinding = %v", err)
 	}
 	expect(t, binding, revokedAt, reestablishedAt)
+	for _, at := range []time.Time{revokedAt, reestablishedAt.Add(-time.Second)} {
+		if err := store.RevokeAgentBinding(ctx, binding, at); err != nil {
+			t.Fatal(err)
+		}
+		expect(t, binding, revokedAt, reestablishedAt)
+	}
 
 	again := reestablishedAt.Add(time.Hour)
 	if err := store.RevokeAgentBinding(ctx, binding, again); err != nil {
 		t.Fatal(err)
 	}
 	expect(t, binding, again, time.Time{})
-	if err := store.ReestablishAgentBinding(ctx, binding, again.Add(-time.Second)); err != nil {
+	for _, at := range []time.Time{reestablishedAt, again.Add(-time.Second), again} {
+		if err := store.ReestablishAgentBinding(ctx, binding, at); !errors.Is(err, personserver.ErrAgentBindingStale) {
+			t.Fatalf("stale replacement = %v", err)
+		}
+		expect(t, binding, again, time.Time{})
+	}
+	if err := store.ReestablishAgentBinding(ctx, binding, again.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	expect(t, binding, again, again)
+	expect(t, binding, again, again.Add(time.Second))
 
 	raceStore := contract.New(t)
 	var wait sync.WaitGroup

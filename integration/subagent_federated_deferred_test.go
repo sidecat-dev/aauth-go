@@ -456,6 +456,14 @@ func TestSubagentFederatedBindingRevocationEndsTheWait(t *testing.T) {
 // token is revoked while it waits terminates with revoked. The sub-agent token
 // is held to the same rule, and the PS does not present it to the AS again.
 func TestSubagentFederatedRevokedChildTokenEndsTheWait(t *testing.T) {
+	for _, advance := range []bool{false, true} {
+		t.Run(fmt.Sprintf("advance=%t", advance), func(t *testing.T) {
+			testSubagentFederatedRevokedChildTokenEndsTheWait(t, advance)
+		})
+	}
+}
+
+func testSubagentFederatedRevokedChildTokenEndsTheWait(t *testing.T, advance bool) {
 	f := newSubagentFederation(t, 10*time.Minute)
 	f.stage.Store(1)
 	pending := f.begin(t)
@@ -469,8 +477,10 @@ func TestSubagentFederatedRevokedChildTokenEndsTheWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.stage.Store(2)
-	if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
-		t.Fatal(err)
+	if advance {
+		if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	_, err = f.parent.PollExchange(context.Background(), pending)
 	requireDeferredProblem(t, err, http.StatusForbidden, "revoked")
@@ -481,6 +491,8 @@ func TestSubagentFederatedRevokedChildTokenEndsTheWait(t *testing.T) {
 	if f.asPolls.Load() != 0 || f.asCancels.Load() != 1 {
 		t.Fatalf("revoked child token: AS polls %d, withdrawals %d", f.asPolls.Load(), f.asCancels.Load())
 	}
+	_, err = f.parent.PollExchange(context.Background(), pending)
+	requireDeferredProblem(t, err, http.StatusGone, "request_consumed")
 }
 
 // hookedFederatedStore runs afterLoad once, after a Load returns, so a test

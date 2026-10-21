@@ -329,7 +329,8 @@ poll; the child holds the issued Person and Auth tokens and is the only one
 that calls the Resource. [Run the example](example/subagent) for the hosted
 sub-agent request, a three-party grant, a four-party grant that waits for AS
 approval, and a revoked binding. The snippets below follow the same flow; a
-`testutil` test compiles them against the public API from an external module.
+`testutil` test compiles them against the public API from an external module
+and exercises the hosted registry's first request, collisions and limit.
 
 **Issue the child token.** Only the parent's own Agent Provider can issue it.
 A provider you run issues it directly from the parent's current token:
@@ -359,6 +360,9 @@ func mountSubagents(mux *http.ServeMux, provider *agentprovider.Server, registry
 	mux.Handle("POST /subagent", provider.SubagentHandler(func(_ context.Context, request agentprovider.SubagentRequest) (agentprovider.SubagentDecision, error) {
 		registry.mu.Lock()
 		defer registry.mu.Unlock()
+		if registry.byParent == nil {
+			registry.byParent = make(map[string]map[string]bool)
+		}
 		live := registry.byParent[request.Parent.Subject]
 		if len(live) >= 3 {
 			return agentprovider.SubagentDecision{}, agentprovider.ErrSubagentDenied
@@ -483,6 +487,20 @@ To bind the Agent to a person again, call `ReestablishAgentBinding` after your
 every wait and presented token from before it stays refused, so no waiting
 period is needed. Keep the store entries: deleting one re-admits whatever the
 revoked binding authorized that has not expired.
+
+An AS-issued Auth token cannot prove which binding authorized it using the
+AS's clock. After replacement, obtain a fresh PS Person token for each new
+authorization or step-up instead of presenting an AS Auth token. PS token
+timestamps use whole seconds, so a fresh token's issuance second must be
+strictly later than the replacement instant. Distinct host binding changes
+use strictly increasing times; a stale replacement returns
+`personserver.ErrAgentBindingStale` and leaves the revocation in force.
+The Server convenience methods each begin a new host action. After an
+indeterminate store error, inspect retained state; an exact retry through the
+store uses the original caller-retained timestamp. Revocation checks and
+issuance stores are separate interfaces, so hosts needing an atomic cutoff
+against concurrent issuance must coordinate their administrative and issuance
+operations. Already delivered credentials expire normally.
 
 Policy sees both identities: `PersonTokenRequest.Agent` and
 `AuthorizationRequest.Agent` name the parent whose consent applies;
