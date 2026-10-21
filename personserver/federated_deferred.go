@@ -444,8 +444,12 @@ func (failure *revokedPendingTokenError) Error() string { return "personserver: 
 // checkFederatedRevocations applies the Agent Provider's revocations to the
 // parent and any sub-agent token, then the parent's binding.
 func (server *Server) checkFederatedRevocations(ctx context.Context, agent, credential aauth.AgentTokenClaims) error {
+	tokens := []aauth.AgentTokenClaims{agent}
+	if credential.ParentAgent != "" {
+		tokens = append(tokens, credential)
+	}
 	if server.agentTokenRevocations != nil {
-		for _, token := range []aauth.AgentTokenClaims{agent, credential} {
+		for _, token := range tokens {
 			revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{Issuer: token.Issuer, JTI: token.JTI})
 			if err != nil {
 				return &agentTokenRevocationStoreError{cause: err}

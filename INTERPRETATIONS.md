@@ -266,11 +266,13 @@ that same key. Each issued token is capped by the earlier of the parent and
 child Agent-token expirations.
 
 The child token's optional `ps` claim does not select this flow; the parent
-selects and authenticates to its Person Server. The Person Server retains the
-child's Agent Provider, child, parent, and child key with the person-token
-record. A later token request must match that record before policy runs. The
-parent and child keys must be distinct, and the Resource receives none of the
-relationship fields.
+selects and authenticates to its Person Server. When present it must equal the
+parent's `ps`, because Bootstrap issues the child with its parent's value;
+another value is `invalid_subagent_token` at the PS and AS, as in aauth-rust.
+The Person Server retains the child's Agent Provider, child, parent, and child
+key with the person-token record. A later token request must match that record
+before policy runs. The parent and child keys must be distinct, and the
+Resource receives none of the relationship fields.
 
 The record binds the stable relationship, not one compact child token. A later
 valid child token may rotate `jti`, expiry, or additional policy claims when
@@ -403,12 +405,13 @@ the missing error contract.
 The source sends both tokens to the Access Server but does not explicitly say
 whether the AS verifies them itself. This implementation does. The AS verifies
 the parent and child tokens at the Person Server proof's fixed instant,
-confirms their relationship (including one issuer), and requires the parent
-token to name the signing Person Server. A deferred request repeats all of this
-on every Person Server poll from the retained request bytes. The child's optional `ps` claim does not select the flow. Policy
-receives both identities, and issuance uses only the child key. The Person
-Server then verifies the returned auth token against the child key before
-returning it to the parent.
+confirms their relationship (one issuer, and a child `ps` equal to the
+parent's when present), and requires the parent token to name the signing
+Person Server. A deferred request repeats all of this on every Person Server
+poll from the retained request bytes. The child's optional `ps` claim does not
+select the flow. Policy receives both identities, and issuance uses only the
+child key. The Person Server then verifies the returned auth token against the
+child key before returning it to the parent.
 
 **Executable example:**
 `integration/subagent_authorization_test.go:TestCurrentCoreParentMediatedSubagentImmediateASAuthorization`.
@@ -1847,7 +1850,9 @@ parent's `exp` rather than refusing it. The host supplies the discriminator and
 owns its uniqueness. The hosted handler accepts the draft's illustrative `jwk`
 and `discriminator` members, ignores other members rather than letting them
 reach the token, and answers a sub-agent signer or policy refusal with
-`403 subagent_denied`; Bootstrap defines no error codes for this request.
+`403 subagent_denied`; Bootstrap defines no error codes for this request. It
+keeps no replay cache: an exact replay inside the signature window yields
+another token for the same sub-agent key, which only that key's holder can use.
 
 **Evidence:** `agentprovider/subagent_test.go` and
 `agentprovider/subagent_http_test.go`.

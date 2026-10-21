@@ -127,6 +127,9 @@ type SubagentDecision struct {
 // Bootstrap defines no route or member names; these follow its example, and
 // the host chooses where to mount the handler. Policy decides whether this
 // parent may spawn, how many live sub-agents it may have and their lifetime.
+// The handler keeps no replay cache: an exact replay within the signature
+// window yields another token for the same sub-agent key, usable only by that
+// key's holder, so policy that counts live sub-agents should count it once.
 func (server *Server) SubagentHandler(policy func(context.Context, SubagentRequest) (SubagentDecision, error)) http.Handler {
 	if server == nil || policy == nil {
 		return http.NotFoundHandler()

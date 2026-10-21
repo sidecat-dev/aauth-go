@@ -80,6 +80,12 @@ func TestVerifySubagentTokenReturnsTheVerifiedChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A child may omit ps or copy its parent's.
+	withPS := f.childRequest()
+	withPS.PersonServer = parent.PersonServer
+	if _, err := aauth.VerifySubagentToken(context.Background(), f.mint(t, "https://agents.example", f.provider, withPS, f.now, "child-ps"), parent, f.resolver, f.clock); err != nil {
+		t.Fatalf("child copying its parent's ps = %v", err)
+	}
 	if child.Subject != "aauth:planner+search@agents.example" || child.ParentAgent != parent.Subject ||
 		child.Issuer != parent.Issuer || !child.Confirmation.JWK.Equal(f.child.PublicJWK()) {
 		t.Fatalf("child = %#v", child)
@@ -122,6 +128,11 @@ func TestVerifySubagentTokenRefusesEachBrokenRelationship(t *testing.T) {
 				Agent: "aauth:planner+search@other.example", ParentAgent: "aauth:planner@other.example",
 				PublicKey: f.child.PublicJWK(), Lifetime: time.Hour,
 			}, f.now, "foreign")
+		}},
+		{name: "another person server", want: aauth.ErrInvalidSubagentToken, child: func(t *testing.T, f *subagentCoreFixture) string {
+			request := f.childRequest()
+			request.PersonServer = "https://other-person.example"
+			return f.mint(t, "https://agents.example", f.provider, request, f.now, "other-person-server")
 		}},
 		{name: "parent key reused", want: aauth.ErrInvalidSubagentToken, child: func(t *testing.T, f *subagentCoreFixture) string {
 			request := f.childRequest()

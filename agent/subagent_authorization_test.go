@@ -91,6 +91,13 @@ func TestParentMediatedSubagentRefusesInvalidRelationshipsBeforeNetwork(t *testi
 			want: "parent_agent does not name the requesting Agent",
 		},
 		{
+			name: "child names another person server",
+			token: func(h *subagentClientHarness) string {
+				return h.mintAgentToken(t, harnessChildID, harnessParentID, "https://other-ps.example", h.childKey, time.Hour)
+			},
+			want: "names another Person Server",
+		},
+		{
 			name: "parent and child share one key",
 			token: func(h *subagentClientHarness) string {
 				return h.mintAgentToken(t, harnessChildID, harnessParentID, "", h.protocol.agentKey, time.Hour)

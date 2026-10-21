@@ -51,6 +51,16 @@ func TestSubagentTokenFailuresUseSubagentErrorCodes(t *testing.T) {
 			}
 			return compact
 		}},
+		{name: "another person server", code: "invalid_subagent_token", child: func(t *testing.T, p *subagentPersonServerProtocol) string {
+			compact, err := aauth.MintAgentToken("https://ap.example", p.providerKey, aauth.AgentTokenRequest{
+				Agent: "aauth:planner+search@ap.example", ParentAgent: "aauth:planner@ap.example",
+				PersonServer: "https://other-ps.example", PublicKey: p.childKey.PublicJWK(), Lifetime: time.Hour,
+			}, p.now, "other-ps-child")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return compact
+		}},
 		{name: "expired", code: "expired_subagent_token", child: func(t *testing.T, p *subagentPersonServerProtocol) string {
 			compact, err := aauth.MintAgentToken("https://ap.example", p.providerKey, aauth.AgentTokenRequest{
 				Agent: "aauth:planner+search@ap.example", ParentAgent: "aauth:planner@ap.example",

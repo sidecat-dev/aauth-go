@@ -11,8 +11,8 @@ import (
 var (
 	// ErrInvalidSubagentToken maps to invalid_subagent_token: the sub-agent
 	// token is malformed or unverifiable, is not a sub-agent token, does not
-	// name the signing parent in parent_agent, has another issuer, or reuses
-	// the parent's key.
+	// name the signing parent in parent_agent, has another issuer or Person
+	// Server than its parent, or reuses the parent's key.
 	ErrInvalidSubagentToken = errors.New("aauth: sub-agent token is invalid")
 	// ErrExpiredSubagentToken maps to expired_subagent_token.
 	ErrExpiredSubagentToken = errors.New("aauth: sub-agent token is expired")
@@ -23,8 +23,9 @@ var (
 // Parent must be the verified claims of the top-level Agent that signed the
 // request. The child token is verified on its own terms; then its
 // authoritative parent_agent must name that parent, both tokens must share one
-// issuer, and the child must hold a distinct confirmation key. A grandchild
-// fails because its parent is itself a sub-agent.
+// issuer, a child ps claim must equal the parent's (Bootstrap copies it), and
+// the child must hold a distinct confirmation key. A grandchild fails because
+// its parent is itself a sub-agent.
 //
 // A failure wraps ErrExpiredSubagentToken or ErrInvalidSubagentToken. The
 // caller still applies its request-window iat check, any Agent-token
@@ -54,6 +55,8 @@ func VerifySubagentToken(
 		return AgentTokenClaims{}, fmt.Errorf("%w: parent_agent does not name the requesting Agent", ErrInvalidSubagentToken)
 	case child.Issuer != parent.Issuer:
 		return AgentTokenClaims{}, fmt.Errorf("%w: the issuer differs from the requesting Agent's", ErrInvalidSubagentToken)
+	case child.PersonServer != "" && child.PersonServer != parent.PersonServer:
+		return AgentTokenClaims{}, fmt.Errorf("%w: the token names another Person Server than its parent's", ErrInvalidSubagentToken)
 	case child.Confirmation.JWK.Equal(parent.Confirmation.JWK):
 		return AgentTokenClaims{}, fmt.Errorf("%w: the sub-agent must hold a key distinct from its parent", ErrInvalidSubagentToken)
 	}

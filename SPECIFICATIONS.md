@@ -233,7 +233,9 @@ sub-agent issuance follows this text: `agentprovider.Server.IssueSubagent`
 (same `iss`, `sub` from the parent's local part and a discriminator,
 `parent_agent`, `ps` copied, the sub-agent's `cnf`, `exp` no later than the
 parent's, top-level parents only), `agentprovider.Server.SubagentHandler`, and
-`agent.Client.RequestSubagentToken` for the hosted request. The request members
+`agent.Client.RequestSubagentToken` for the hosted request. Because the child's
+`ps` is copied from its parent, `aauth.VerifySubagentToken` refuses a child
+whose `ps` names another Person Server than its parent's. The request members
 `jwk` and `discriminator` follow the section's illustrative example; the
 `agent_token` response member and the route are this library's choice, since the
 section defines no endpoint. Recording which parent requested each sub-agent

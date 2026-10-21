@@ -392,6 +392,28 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		}
 	})
 
+	t.Run("parent-mediated request refuses a child naming another person server", func(t *testing.T) {
+		elsewhere, err := aauth.MintAgentToken(
+			"https://ap.example", apKey,
+			aauth.AgentTokenRequest{
+				Agent: "aauth:planner+elsewhere@ap.example", ParentAgent: "aauth:planner@ap.example",
+				PersonServer: "https://other-ps.example", PublicKey: subagentKey.PublicJWK(), Lifetime: time.Hour,
+			}, now, "other-ps-child-token",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeAuthorize := authorizeCalls
+		assertAccessProblem(t, callTokenEndpointWith(map[string]any{
+			"resource_token": resourceToken,
+			"agent_token":    agentToken,
+			"subagent_token": elsewhere,
+		}), "invalid_subagent_token")
+		if authorizeCalls != beforeAuthorize {
+			t.Fatal("child of another person server reached authorization policy")
+		}
+	})
+
 	t.Run("agent-token expiry remains the auth-token ceiling", func(t *testing.T) {
 		shortAgentToken, err := aauth.MintAgentToken(
 			"https://ap.example", apKey,
