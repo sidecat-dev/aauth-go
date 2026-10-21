@@ -272,12 +272,20 @@ when the Agent polls. Store adapters must preserve `FederatedResponse.RefusalRea
 with the terminal response.
 
 The Agent uses `BeginExchange` and `PollExchange`, and `CancelExchange` to
-withdraw a wait; the PS then withdraws its AS request too. `PendingExchange.WaitReason()`
+close its PS wait; the PS sends a best-effort withdrawal to the AS too.
+`PendingExchange.WaitReason()`
 returns `awaiting_payment`, `awaiting_approval`, or empty when the PS supplies no
 recognized hint. These optional `pending_reason` values are a library extension
 for display, not permission to pay. Payment details stay with the PS. Respect
 `PendingExchange.RetryAfter()`: the PS derives it from the remaining AS polling
 wait, rounded up to seconds, and updates it after AS backoff.
+
+There are two polling schedules. `PendingExchange.RetryAfter()` tells the Agent
+when to poll the PS again; the host record's `NextPollAt` tells the PS when it
+may poll the AS. The PS advertises at least one second to the Agent even when
+the host's AS poll is already due. `PollExchange` does not sleep or reject an
+early call locally: the application schedules it. Polling the PS never advances
+the AS request.
 
 A PS host calls `PendingFederatedAuthorizationReferences(ctx, limit)` to list
 outstanding work, then `FederatedAuthorization` to load each record. The bounded
@@ -326,9 +334,21 @@ and [the executable limit](integration/federated_deferred_test.go).
 A **sub-agent** is a child Agent with its own key, whose Agent token names its
 parent in `parent_agent`. The parent makes every Person Server request and
 poll; the child holds the issued Person and Auth tokens and is the only one
-that calls the Resource. [Run the example](example/subagent) for the hosted
-sub-agent request, a three-party grant, a four-party grant that waits for AS
-approval, and a revoked binding. The snippets below follow the same flow; a
+that calls the Resource. From the repository root, run the complete hosted
+child request, three-party grant, delayed four-party grant and revoked binding:
+
+```sh
+go run ./example/subagent
+```
+
+The [complete program](example/subagent/main.go) wires every role and its stores.
+Its `logicalTransport` routes the configured HTTPS origins directly to handlers;
+its `Admit` method allows key discovery only at those origins. It needs no DNS,
+listener, certificates or external account. A real network deployment supplies
+its own HTTPS transport and trusted discovery policy. To run the same program
+from a separate module, use the [checkout installation](#versions-and-local-development).
+
+The snippets below extract the service integration steps; a
 `testutil` test compiles them against the public API from an external module
 and exercises the hosted registry's first request, collisions and limit.
 
@@ -365,7 +385,7 @@ func mountSubagents(mux *http.ServeMux, provider *agentprovider.Server, registry
 		}
 		live := registry.byParent[request.Parent.Subject]
 		if len(live) >= 3 {
-			return agentprovider.SubagentDecision{}, agentprovider.ErrSubagentDenied
+			return agentprovider.SubagentDecision{}, fmt.Errorf("%w: parent has three active children", agentprovider.ErrSubagentDenied)
 		}
 		discriminator := request.Discriminator
 		for n := 1; discriminator == "" || live[discriminator]; n++ {
@@ -385,6 +405,14 @@ The handler refuses a request it could not issue, such as the parent's own
 key or a malformed discriminator, before the policy sees it. The host removes
 a registry entry when it retires that sub-agent.
 
+`403 subagent_denied` is deliberately generic: it can mean the host's quota or
+another issuance policy refused the request, or that a child tried to create a
+grandchild. Wrap `agentprovider.ErrSubagentDenied` with a host-local reason as
+above and wrap `provider.SubagentHandler(...)` directly with
+[`diagnostics.Handler`](#diagnose-a-refused-request) to observe that cause.
+Select safe diagnostic fields for operators; the policy reason is not added to
+the public response.
+
 The parent then requests the token with its own signed request. The helper
 sends only to the parent's provider origin and verifies the returned child:
 
@@ -399,62 +427,88 @@ func requestChild(ctx context.Context, parent *agent.Client, childKey jose.JWK) 
 **Authorize through the parent.** The parent asks for a Person token bound to
 the child. The child presents it to the Resource, and the parent exchanges the
 child's Resource token. With four-party federation the exchange may wait for
-AS approval or payment; the parent keeps polling, and the child receives the
-Auth token at the end:
+AS approval or payment. Return the whole exchange result so the caller can
+retain its pending continuation instead of losing it when no token is ready:
 
 ```go
-func authorizeChild(ctx context.Context, parent, child *agent.Client, childToken string, request *http.Request) (string, error) {
+func beginChildAuthorization(ctx context.Context, parent, child *agent.Client, childToken string, request *http.Request) (agent.ExchangeResult, error) {
 	person, err := parent.PersonToken(ctx, agent.PersonTokenRequest{
 		PersonServer: "https://person.example", Resource: "https://orders.example", SubagentToken: childToken,
 	})
 	if err != nil {
-		return "", err
+		return agent.ExchangeResult{}, err
 	}
 	personToken, ok := person.Token()
 	if !ok {
-		return "", errors.New("the Person Server asked for interaction")
+		return agent.ExchangeResult{}, errors.New("the Person Server asked for interaction")
 	}
 	call, err := child.Begin(ctx, agent.InitialCall{Request: request, PersonToken: personToken})
 	if err != nil {
-		return "", err
+		return agent.ExchangeResult{}, err
 	}
 	required, ok := call.AuthorizationRequired()
 	if !ok {
-		return "", errors.New("the Resource did not ask for authorization")
+		if response, ok := call.Response(); ok {
+			response.Body.Close()
+		}
+		return agent.ExchangeResult{}, errors.New("the Resource did not ask for authorization")
 	}
-	exchange, err := parent.BeginExchange(ctx, agent.ExchangeRequest{
+	return parent.BeginExchange(ctx, agent.ExchangeRequest{
 		PersonServer: "https://person.example", ResourceToken: required.ResourceToken,
 		PresentedToken: personToken, SubagentToken: childToken,
 	})
-	if err != nil {
-		return "", err
-	}
-	if token, ok := exchange.Token(); ok {
-		return token, nil
-	}
-	pending, ok := exchange.Pending()
-	if !ok {
-		return "", errors.New("unexpected exchange result")
-	}
-	// Persist pending; wait pending.RetryAfter(), at least a second, then poll once.
-	next, err := parent.PollExchange(ctx, pending)
-	if err != nil {
-		return "", err
-	}
-	if token, ok := next.Token(); ok {
-		return token, nil
-	}
-	return "", errors.New("still waiting")
 }
 ```
+
+This helper covers the immediate Person-token path; a service that supports
+Person interaction must retain and handle that result too. For the exchange,
+check `Token()`, `Failure()`, `Response()` and `Pending()` as documented on
+[`agent.ExchangeResult`](agent/exchange_interaction.go). Close any returned HTTP
+response body. Keep the latest pending value when scheduling another poll.
+
+**Advance a delayed grant.** Scene 2 in the complete program shows both sides
+of the wait. In a service, the steps have distinct owners:
+
+1. The parent retains the `PendingExchange` from `BeginExchange`. It schedules
+   `parent.PollExchange(ctx, pending)` using `pending.RetryAfter()` and paces
+   repeated polls even if the interval is zero.
+2. The authenticated PS host lists `PendingFederatedAuthorizationReferences`
+   and loads each record with `FederatedAuthorization`. Filter the queue by
+   owner before displaying it; listing neither reserves nor approves work.
+3. The AS host records the person's approval or settled payment in its own
+   application state. Its `Authorize` policy returns `Decision.Pending` until
+   that state permits a normal grant. The example simulates approval with
+   `approved.Store(true)`; that is not a public approval endpoint.
+4. The PS host calls `AdvanceFederation(ctx, reference)` when `NextPollAt` is
+   due and `Advancing` is false. This performs the AS poll and retains its
+   result. Handle the method's error; an Agent poll cannot perform this step.
+5. The parent's next poll obtains the result. Only the child uses the delivered
+   Auth token at the Resource. The in-process example advances a due AS request
+   and polls immediately under its fixed clock; a real caller still respects
+   the Agent retry hint.
+
+For an operator's view, `record.Agent` identifies the parent. Verify the retained
+`record.AgentToken` with `aauth.VerifyAgentToken` at the current protocol time,
+then pass those fresh parent claims and `record.SubagentToken` to
+`aauth.VerifySubagentToken` to obtain the child's `Subject` and `ParentAgent`.
+Verify `record.ResourceToken` with `aauth.VerifyResourceToken` to display its
+`Scope` string as the requested scope. These helpers use your trusted key
+resolver and clock. Show verification failures as unavailable details; do not
+decode an unverified JWT for a trusted approval label or log the raw tokens.
+This display does not authorize a grant; the normal role checks and host policy
+still apply when advancing and delivering it.
 
 The child alone signs the protected call, with `child.Do(ctx, agent.Call{...})`.
 The parent cannot use the child's token: it is bound to the child's key. A
 child's client refuses Person Server calls locally with
 `agent.ErrSubagentPersonServerCall`; a child that signs its own request anyway
-gets `400 invalid_agent_token`, and one that polls its parent's pending URL
-gets `403 wrong_poller`. `CancelExchange` on the parent withdraws a wait at
-both the PS and the AS.
+gets `400 invalid_agent_token` on PS Person-token and PS-hosted consent routes.
+A child polling its parent's **federated** pending URL gets `403 wrong_poller`;
+PS-hosted consent and Person-token pending routes instead reject it with
+`400 invalid_agent_token`. `CancelExchange` on the parent closes the PS's
+federated continuation and sends a best-effort withdrawal to the AS. A successful
+PS cancellation does not confirm AS withdrawal; if the AS cannot be reached,
+its pending request may remain until expiry.
 
 **Revoke the parent's binding.** Configure an Agent-binding store on the
 Person Server, then call `RevokeAgentBinding` from an authenticated
@@ -477,8 +531,9 @@ federated or consent waits are `400 revoked_presented_token`, Person-token
 waits are `403 person_token_denied`, and chained calls are
 `400 revoked_upstream_token`. Each refusal's `detail` names the revoked
 binding, so a caller can tell it from a denial; a refused wait is ended, and
-its pending URL answers `410` afterwards. Delivered tokens are not revoked at
-Resources; they expire normally, and the Agent Provider still issues
+its pending URL answers `410` afterwards. Delivered grants are not revoked at
+Resources, and the child Agent token remains valid until its normal expiry.
+The Agent Provider still issues
 sub-agent tokens, so a full cut-off also needs Agent Provider action and short
 Auth-token lifetimes.
 
@@ -653,9 +708,29 @@ are still evolving. The standalone `walkthrough/` modules deliberately pin
 published pseudo-versions. Their tests exercise those versions, not this
 checkout.
 
-To try this checkout from a consumer module placed beside it:
+To try the current checkout in a separate module, start in the `aauth-go`
+repository root. Capture its absolute path before changing directories. This
+creates a temporary consumer and copies the complete sub-agent example into it:
 
 ```sh
-go mod edit -replace=gitlab.com/sidecat-dev/aauth-go=../aauth-go
+aauth_checkout="$(pwd -P)"
+aauth_consumer="$(mktemp -d "${TMPDIR:-/tmp}/aauth-consumer.XXXXXX")"
+cd "$aauth_consumer"
+go mod init example.com/aauth-consumer
+go mod edit -require=gitlab.com/sidecat-dev/aauth-go@v0.0.0
+go mod edit "-replace=gitlab.com/sidecat-dev/aauth-go=$aauth_checkout"
+cp "$aauth_checkout/example/subagent/main.go" .
 go mod tidy
+go list -m gitlab.com/sidecat-dev/aauth-go
+go run .
 ```
+
+The `go list -m` output must show `=>` followed by your absolute checkout path.
+The run prints the issued child, successful `records.read` and `orders.read`
+calls, the approval wait and the final `person_token_denied` refusal. The
+placeholder `v0.0.0` is satisfied by the local replacement; it is not a published
+release. For an existing application, apply the same absolute replacement to
+its module and run `go mod tidy` after adding imports. A replacement does not
+publish or pin the checkout's contents, so record the checkout commit when
+sharing results. Remove the replacement and select a published version before
+distributing a module intended to work without your local checkout.
