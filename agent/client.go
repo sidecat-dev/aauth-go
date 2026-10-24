@@ -760,6 +760,11 @@ type personServerMetadata struct {
 	AuditEndpoint       string `json:"audit_endpoint"`
 	InteractionEndpoint string `json:"interaction_endpoint"`
 	JWKSURI             string `json:"jwks_uri"`
+	LogoURI             string `json:"logo_uri"`
+	LogoDarkURI         string `json:"logo_dark_uri"`
+	DocumentationURI    string `json:"documentation_uri"`
+	TosURI              string `json:"tos_uri"`
+	PolicyURI           string `json:"policy_uri"`
 }
 
 type resourceMetadata struct {
@@ -771,6 +776,11 @@ type resourceMetadata struct {
 	AdditionalSignatureComponents []string          `json:"additional_signature_components"`
 	R3Vocabularies                map[string]string `json:"r3_vocabularies"`
 	BudgetUnits                   json.RawMessage   `json:"budget_units"`
+	LogoURI                       string            `json:"logo_uri"`
+	LogoDarkURI                   string            `json:"logo_dark_uri"`
+	DocumentationURI              string            `json:"documentation_uri"`
+	TosURI                        string            `json:"tos_uri"`
+	PolicyURI                     string            `json:"policy_uri"`
 	parsedBudgetUnits             []budgets.UnitDeclaration
 }
 
@@ -802,6 +812,9 @@ func (client *Client) personServerMetadata(ctx context.Context, issuer string) (
 	if err := aauth.ValidateEndpoint(metadata.AuthTokenEndpoint); err != nil {
 		return personServerMetadata{}, fmt.Errorf("person-server metadata auth_token_endpoint: %w", err)
 	}
+	if err := validateMetadataDisplayURIs(metadataDisplayURIs(metadata.LogoURI, metadata.LogoDarkURI, metadata.DocumentationURI, metadata.TosURI, metadata.PolicyURI)); err != nil {
+		return personServerMetadata{}, fmt.Errorf("person-server metadata: %w", err)
+	}
 	return metadata, nil
 }
 
@@ -818,7 +831,29 @@ func (client *Client) resourceMetadata(ctx context.Context, issuer string) (reso
 			return resourceMetadata{}, fmt.Errorf("resource metadata authorization_endpoint: %w", err)
 		}
 	}
+	if err := validateMetadataDisplayURIs(metadataDisplayURIs(metadata.LogoURI, metadata.LogoDarkURI, metadata.DocumentationURI, metadata.TosURI, metadata.PolicyURI)); err != nil {
+		return resourceMetadata{}, fmt.Errorf("resource metadata: %w", err)
+	}
 	return metadata, nil
+}
+
+func metadataDisplayURIs(logo, logoDark, documentation, tos, policy string) map[string]string {
+	return map[string]string{
+		"logo_uri": logo, "logo_dark_uri": logoDark, "documentation_uri": documentation,
+		"tos_uri": tos, "policy_uri": policy,
+	}
+}
+
+func validateMetadataDisplayURIs(fields map[string]string) error {
+	for name, value := range fields {
+		if value == "" {
+			continue
+		}
+		if err := aauth.ValidateHTTPSURL(value); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func validateRequestedBudget(requested budgets.Value, declarations []budgets.UnitDeclaration) error {

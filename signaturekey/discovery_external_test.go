@@ -615,3 +615,36 @@ func TestHTTPKeyResolverRejectsAmbiguousDiscoveryJSONNames(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPKeyResolverRejectsNonHTTPSDisplayURIs(t *testing.T) {
+	now := time.Date(2026, 8, 29, 23, 0, 0, 0, time.UTC)
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x51}, ed25519.SeedSize))
+	signingKey, err := jose.NewEd25519SigningKey("issuer-key", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/.well-known/aauth-access.json":
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(response, `{"issuer":%q,"jwks_uri":%q,"logo_uri":"http://insecure.example/logo","policy_uri":"https://docs.example/policy#privacy"}`, server.URL, server.URL+"/jwks")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
+		Client: server.Client(),
+		Clock:  fixedClock(now),
+		Admit:  func(context.Context, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolver.ResolveKey(context.Background(), server.URL, "aauth-access.json", signingKey.ID())
+	var invalid *signaturekey.ResolutionError
+	if !errors.As(err, &invalid) || invalid.Code != signaturekey.ResolutionInvalid || !strings.Contains(err.Error(), "logo_uri") {
+		t.Fatalf("resolution error = %T %v", err, err)
+	}
+}
