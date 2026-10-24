@@ -221,30 +221,31 @@ func requirementPrefix(source string) string {
 func requirementDependencies(source string, line int) []string {
 	switch source {
 	case "core":
-		if 2626 <= line && line <= 2761 {
+		// HTTP Message Signatures Profile through JWKS Discovery.
+		if 2160 <= line && line <= 2289 {
 			return []string{"signature_key"}
 		}
 	case "r3":
 		dependencies := []string{"core"}
-		if 298 <= line && line <= 304 {
+		if 316 <= line && line <= 323 {
 			dependencies = append(dependencies, "budgets")
 		}
-		if 428 <= line && line <= 443 || 688 <= line && line <= 697 {
+		if 448 <= line && line <= 466 || 727 <= line && line <= 737 {
 			dependencies = append(dependencies, "signature_key")
 		}
-		if 215 <= line && line <= 234 {
+		if 233 <= line && line <= 253 {
 			dependencies = append(dependencies, "events")
 		}
 		return dependencies
 	case "events":
 		dependencies := []string{"core", "signature_key"}
-		if line >= 458 {
+		if line >= 472 {
 			dependencies = append(dependencies, "r3", "asyncapi")
 		}
 		return dependencies
 	case "budgets":
 		dependencies := []string{"core"}
-		if 419 <= line && line <= 427 {
+		if 425 <= line && line <= 431 {
 			dependencies = append(dependencies, "r3")
 		}
 		return dependencies
