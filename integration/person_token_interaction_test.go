@@ -135,7 +135,7 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	}
 
 	result, err := reader.PersonToken(ctx, clientagent.PersonTokenRequest{
-		PersonServer: personServerID, Resource: resourceID,
+		PersonServer: personServerID, Resource: resourceID, Capabilities: []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -210,6 +210,7 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 
 	result, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID, MissionS256: mission.S256,
+		Capabilities: []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +253,7 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 
 	result, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID, MissionS256: mission.S256,
+		Capabilities: []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,6 +292,7 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	}
 	result, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
 		PersonServer: personServerID, Resource: resourceID, SubagentToken: childToken,
+		Capabilities: []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)

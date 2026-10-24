@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -263,7 +264,8 @@ func readFederatedPending(response *http.Response, endpoint, prior string) (Fede
 			return fail()
 		}
 		var input struct {
-			Status string `json:"status"`
+			Status         string   `json:"status"`
+			RequiredClaims []string `json:"required_claims"`
 		}
 		if decodeJSON(bytes.NewReader(body), &input) != nil || input.Status == "" {
 			return fail()
@@ -273,10 +275,16 @@ func readFederatedPending(response *http.Response, endpoint, prior string) (Fede
 			if err != nil {
 				return fail()
 			}
-			if requirement != aauth.RequirementApproval {
+			switch requirement {
+			case aauth.RequirementApproval:
+			case aauth.RequirementClaims:
+				if err := validateFederatedRequiredClaims(input.RequiredClaims); err != nil {
+					return FederatedResponse{}, "", 0, err
+				}
+			default:
 				reason := "requirement"
 				switch requirement {
-				case aauth.RequirementClaims, aauth.RequirementClarification, aauth.RequirementInteraction:
+				case aauth.RequirementClarification, aauth.RequirementInteraction:
 					reason = string(requirement)
 				}
 				return FederatedResponse{}, "", 0, &DeferredCompositionError{reason: reason}
@@ -297,12 +305,38 @@ func readFederatedPending(response *http.Response, endpoint, prior string) (Fede
 // A process loss or store failure during an AS call leaves Advancing fenced
 // until expiry: the external result may have been consumed, so no retry is safe.
 func (server *Server) AdvanceFederation(ctx context.Context, reference string) error {
+	return server.continueFederation(ctx, reference, nil)
+}
+
+// SubmitFederatedClaims posts the requested claim values to the Access Server.
+// The Agent still observes requirement=approval. The posted JSON object contains
+// only the requested claim names. sub is rejected, and the full set is required
+// in one POST. Retry-After does not delay this delivery.
+func (server *Server) SubmitFederatedClaims(ctx context.Context, reference string, claims map[string]json.RawMessage) error {
+	if claims == nil {
+		return errors.New("personserver: claims response is required")
+	}
+	return server.continueFederation(ctx, reference, claims)
+}
+
+func (server *Server) continueFederation(ctx context.Context, reference string, claims map[string]json.RawMessage) error {
 	record, err := server.FederatedAuthorization(ctx, reference)
 	if err != nil {
 		return err
 	}
+	var claimsBody []byte
+	if claims != nil {
+		required, err := requiredClaimsFromRecord(record)
+		if err != nil {
+			return err
+		}
+		claimsBody, err = claimsResponseBody(required, claims)
+		if err != nil {
+			return err
+		}
+	}
 	now := server.clock.Now().UTC()
-	if record.Terminal || record.Gone || record.Advancing || now.Before(record.NextPollAt) {
+	if record.Terminal || record.Gone || record.Advancing || (claims == nil && now.Before(record.NextPollAt)) {
 		return ErrFederationNotReady
 	}
 	next := record
@@ -317,7 +351,7 @@ func (server *Server) AdvanceFederation(ctx context.Context, reference string) e
 		buffer.local = true
 		writeProblem(buffer, 408, "expired", nil)
 	} else {
-		server.advanceFederatedRequest(ctx, record, buffer)
+		server.advanceFederatedRequest(ctx, record, buffer, claimsBody)
 	}
 	next = record
 	next.Revision++
@@ -339,7 +373,7 @@ func (server *Server) AdvanceFederation(ctx context.Context, reference string) e
 	}
 	return nil
 }
-func (server *Server) advanceFederatedRequest(ctx context.Context, record FederatedAuthorizationRecord, out *federatedResponseBuffer) {
+func (server *Server) advanceFederatedRequest(ctx context.Context, record FederatedAuthorizationRecord, out *federatedResponseBuffer, claimsBody []byte) {
 	agent, credential, err := server.verifyFederatedAgents(ctx, record)
 	if err != nil {
 		out.local = true
@@ -365,12 +399,27 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writePendingRevocationProblem(out, err, http.StatusBadRequest, "revoked_presented_token")
 		return
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, record.Location, nil)
+	method := http.MethodGet
+	var reader io.Reader
+	if claimsBody != nil {
+		method = http.MethodPost
+		reader = bytes.NewReader(claimsBody)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, record.Location, reader)
 	if err != nil {
 		writeAccessServerUnreachable(out, err)
 		return
 	}
-	if err := signaturekey.SignJWKSURIRequest(request, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock); err != nil {
+	if claimsBody != nil {
+		request.Header.Set("Content-Type", "application/json")
+		err = signaturekey.SignJWKSURIRequestWithOptions(
+			request, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock,
+			signaturekey.SignOptions{AdditionalComponents: []string{"content-type", "content-digest"}, MaxBodyBytes: maxRequestBytes},
+		)
+	} else {
+		err = signaturekey.SignJWKSURIRequest(request, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock)
+	}
+	if err != nil {
 		writeProblem(out, 500, "server_error", err)
 		return
 	}
@@ -684,6 +733,62 @@ func (server *Server) handleFederatedCancellation(w http.ResponseWriter, r *http
 
 // withdrawAccessServerRequest sends the AS one best-effort signed DELETE for a
 // request the PS no longer waits on. Its answer changes nothing at the PS.
+func validateFederatedRequiredClaims(names []string) error {
+	if len(names) == 0 {
+		return errors.New("personserver: malformed AS continuation")
+	}
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "sub" {
+			return &DeferredCompositionError{reason: "sub"}
+		}
+		if name == "" || strings.ContainsAny(name, " \t\r\n") {
+			return errors.New("personserver: malformed AS continuation")
+		}
+		if _, ok := seen[name]; ok {
+			return errors.New("personserver: malformed AS continuation")
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+func requiredClaimsFromRecord(record FederatedAuthorizationRecord) ([]string, error) {
+	values := record.Response.Header.Values("AAuth-Requirement")
+	if len(values) == 0 {
+		return nil, errors.New("personserver: continuation is not waiting for claims")
+	}
+	requirement, err := aauth.ParseRequirement(values)
+	if err != nil || requirement != aauth.RequirementClaims {
+		return nil, errors.New("personserver: continuation is not waiting for claims")
+	}
+	var body struct {
+		RequiredClaims []string `json:"required_claims"`
+	}
+	if json.Unmarshal(record.Response.Body, &body) != nil {
+		return nil, errors.New("personserver: malformed claims continuation")
+	}
+	if err := validateFederatedRequiredClaims(body.RequiredClaims); err != nil {
+		return nil, err
+	}
+	return append([]string(nil), body.RequiredClaims...), nil
+}
+
+func claimsResponseBody(required []string, claims map[string]json.RawMessage) ([]byte, error) {
+	if _, present := claims["sub"]; present {
+		return nil, errors.New("personserver: claims response must not include sub")
+	}
+	out := make(map[string]json.RawMessage, len(required))
+	for _, name := range required {
+		value, present := claims[name]
+		if !present || len(bytes.TrimSpace(value)) == 0 || string(value) == "null" {
+			return nil, errors.New("personserver: claims response is incomplete")
+		}
+		out[name] = append(json.RawMessage(nil), value...)
+	}
+	return json.Marshal(out)
+}
+
 func (server *Server) withdrawAccessServerRequest(ctx context.Context, location string) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, location, nil)
 	if err != nil {

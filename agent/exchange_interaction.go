@@ -123,6 +123,7 @@ type PendingExchange struct {
 	tokenExpiresAt       int64
 	tokenExpirySource    string
 	parentMediated       bool
+	budget               *budgets.Value
 }
 
 // PersonServer returns the Person Server that accepted the exchange.
@@ -218,9 +219,6 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		if verifiedResource.r3Reference != nil {
 			return ExchangeResult{}, fail(operation, errors.New("R3 exchange interaction is not implemented"))
 		}
-		if verifiedResource.budget != nil {
-			return ExchangeResult{}, fail(operation, errors.New("Budget exchange interaction is not implemented"))
-		}
 		resourceClaims := verifiedResource.claims
 		if input.UpstreamToken != "" {
 			return ExchangeResult{}, fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
@@ -234,6 +232,10 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		missionCapabilityFallback := resourceClaims.MissionS256 != "" && input.Capabilities == nil
 		pending.interactionCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "interaction")
 		pending.clarificationCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "clarification")
+		if verifiedResource.budget != nil {
+			offer := *verifiedResource.budget
+			pending.budget = &offer
+		}
 		if err := validatePendingExchangeRequirement(pending); err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
@@ -310,7 +312,7 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 		token, err := client.verifiedExchangeResponse(
 			ctx,
 			response,
-			verifiedExchangeResource{claims: *pending.resourceClaims},
+			verifiedExchangeResource{claims: *pending.resourceClaims, budget: pending.budget},
 			personServerCredential{
 				requestKey: pending.tokenKey, expiresAt: pending.tokenExpiresAt,
 				expirySource: pending.tokenExpirySource, parentMediated: pending.parentMediated,
@@ -500,10 +502,12 @@ func (client *Client) finishExchangeRequest(
 		PresentedToken string    `json:"presented_token"`
 		SubagentToken  string    `json:"subagent_token,omitempty"`
 		UpstreamToken  string    `json:"upstream_token,omitempty"`
+		LoginHint      string    `json:"login_hint,omitempty"`
 		Capabilities   *[]string `json:"capabilities,omitempty"`
 	}{
 		ResourceToken: input.ResourceToken, PresentedToken: input.PresentedToken,
-		SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken, Capabilities: capabilities,
+		SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken,
+		LoginHint: resourceClaims.LoginHint, Capabilities: capabilities,
 	})
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
@@ -706,7 +710,7 @@ func (client *Client) pendingExchangeResponse(
 		resourceToken: resourceToken, resourceClaims: &claims,
 		agentProvider: client.agentClaims.Issuer, agent: client.identifier, agentJKT: thumbprint,
 		tokenKey: tokenKey, tokenExpiresAt: tokenExpiresAt, tokenExpirySource: tokenExpirySource,
-		parentMediated: parentMediated,
+		parentMediated: parentMediated, budget: prior.budget,
 	}, nil
 }
 

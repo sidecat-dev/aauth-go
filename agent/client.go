@@ -132,6 +132,11 @@ type PersonTokenRequest struct {
 	MissionS256   string
 	SubagentToken string
 	UpstreamToken string
+	// LoginHint is forwarded unchanged when the caller already has one.
+	// Exchange copies the resource token's login_hint itself.
+	LoginHint string
+	// Capabilities advertises interaction support. Nil omits the member.
+	Capabilities []string
 }
 
 // AuthorizeRequest asks a Resource to issue one token for the exact directed
@@ -270,12 +275,23 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
+	var capabilities *[]string
+	if input.Capabilities != nil {
+		values := append([]string(nil), input.Capabilities...)
+		capabilities = &values
+	}
 	body, err := json.Marshal(struct {
-		Resource      string `json:"resource"`
-		MissionS256   string `json:"mission_s256,omitempty"`
-		SubagentToken string `json:"subagent_token,omitempty"`
-		UpstreamToken string `json:"upstream_token,omitempty"`
-	}{Resource: input.Resource, MissionS256: input.MissionS256, SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken})
+		Resource      string    `json:"resource"`
+		MissionS256   string    `json:"mission_s256,omitempty"`
+		SubagentToken string    `json:"subagent_token,omitempty"`
+		UpstreamToken string    `json:"upstream_token,omitempty"`
+		LoginHint     string    `json:"login_hint,omitempty"`
+		Capabilities  *[]string `json:"capabilities,omitempty"`
+	}{
+		Resource: input.Resource, MissionS256: input.MissionS256,
+		SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken,
+		LoginHint: input.LoginHint, Capabilities: capabilities,
+	})
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}

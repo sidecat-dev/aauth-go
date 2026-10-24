@@ -34,6 +34,7 @@ type ResourceTokenClaims struct {
 	NotBefore        int64                      `json:"nbf,omitempty"`
 	Scope            string                     `json:"scope,omitempty"`
 	Account          *string                    `json:"account,omitempty"`
+	LoginHint        string                     `json:"login_hint,omitempty"`
 	MissionS256      string                     `json:"mission_s256,omitempty"`
 	Tenant           string                     `json:"tenant,omitempty"`
 	Interaction      *ResourceInteraction       `json:"interaction,omitempty"`
@@ -43,7 +44,7 @@ type ResourceTokenClaims struct {
 var resourceTokenClaimNames = map[string]struct{}{
 	"iss": {}, "dwk": {}, "aud": {}, "jti": {}, "ps": {}, "sub": {},
 	"presented_jti": {}, "agent_jkt": {}, "iat": {}, "exp": {}, "nbf": {},
-	"scope": {}, "account": {}, "mission_s256": {}, "tenant": {}, "interaction": {},
+	"scope": {}, "account": {}, "login_hint": {}, "mission_s256": {}, "tenant": {}, "interaction": {},
 }
 
 // MintResourceToken creates a short-lived resource assertion.
@@ -189,6 +190,11 @@ func validateResourceClaimsWithOptionalScope(claims ResourceTokenClaims, now tim
 	}
 	if err := validateTimes(claims.IssuedAt, claims.ExpiresAt, claims.NotBefore, now); err != nil {
 		return fmt.Errorf("aauth: resource-token: %w", err)
+	}
+	if claims.LoginHint == "" {
+		// An omitted hint is absent. A present empty string is not a hint.
+	} else if strings.TrimSpace(claims.LoginHint) == "" {
+		return errors.New("aauth: resource-token login_hint is empty")
 	}
 	if claims.MissionS256 != "" {
 		if err := validateS256("resource-token mission_s256", claims.MissionS256); err != nil {

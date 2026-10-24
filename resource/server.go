@@ -57,7 +57,12 @@ type FederatedAuthorizationConfig struct {
 	// ErrInvalidAccount for an intentional refusal and returns another error for
 	// an operational failure.
 	ValidateAccount func(context.Context, PersonIdentity, string) error
-	Protected       http.Handler
+	// AuthorizationAsk, when set, names the person this Resource asked for.
+	// The callback runs on the person-token challenge and on auth-token
+	// admission. A nil result means the request has no ask. A malformed ask
+	// is a host error and authorizes nobody.
+	AuthorizationAsk func(context.Context, *http.Request) (*AuthorizationAsk, error)
+	Protected        http.Handler
 	// R3 optionally enables registered R3 authorization on this HTTP Resource.
 	R3 *R3Config
 	// Budget optionally enables proactive four-party Budget offers and
@@ -103,7 +108,10 @@ type PSAuthorizationConfig struct {
 	// ErrInvalidAccount for an intentional refusal and returns another error for
 	// an operational failure.
 	ValidateAccount func(context.Context, PersonIdentity, string) error
-	Protected       http.Handler
+	// AuthorizationAsk, when set, names the person this Resource asked for.
+	// See FederatedAuthorizationConfig.AuthorizationAsk.
+	AuthorizationAsk func(context.Context, *http.Request) (*AuthorizationAsk, error)
+	Protected        http.Handler
 	// R3 optionally enables registered class authorization on this HTTP
 	// Resource. Per-call authorization remains a federated-only composition.
 	R3 *R3Config
@@ -162,6 +170,48 @@ type PersonContext struct {
 	MissionS256      string
 	Tenant           string
 	AdditionalClaims map[string]json.RawMessage
+}
+
+// AuthorizationAsk is what a Resource asked a Person Server to authorize.
+// LoginHint is copied into the resource token and is not an auth subject.
+// Account and Tenant are exact expectations, including absence. Subject is
+// required; an empty subject is a host error and authorizes nobody.
+type AuthorizationAsk struct {
+	PersonServer string
+	LoginHint    string
+	Subject      string
+	Account      *string
+	Tenant       string
+}
+
+func (ask AuthorizationAsk) malformed() bool {
+	if aauth.ValidateServerIdentifier(ask.PersonServer) != nil || ask.Subject == "" {
+		return true
+	}
+	if ask.Account != nil && *ask.Account == "" {
+		return true
+	}
+	return false
+}
+
+func (ask AuthorizationAsk) matchesPerson(issuer, subject, tenant string) bool {
+	return ask.PersonServer == issuer && ask.Subject == subject && ask.Tenant == tenant
+}
+
+func (ask AuthorizationAsk) matchesAuth(personServer, subject, tenant string, account *string) bool {
+	return ask.PersonServer == personServer && ask.Subject == subject && ask.Tenant == tenant && sameAskAccount(ask.Account, account)
+}
+
+var (
+	errAuthorizationAskHost     = errors.New("aauth: authorization ask is invalid")
+	errAuthorizationAskMismatch = errors.New("aauth: credential does not match the authorization ask")
+)
+
+func sameAskAccount(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // AuthPrincipal is the person and scoped grant established by one current
@@ -277,6 +327,7 @@ type Server struct {
 	requiredScopes                func(*http.Request) []string
 	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	validateAccount               func(context.Context, PersonIdentity, string) error
+	authorizationAsk              func(context.Context, *http.Request) (*AuthorizationAsk, error)
 	protected                     http.Handler
 	authTokenStatuses             AuthTokenStatusStore
 	agentTokenRevocations         AgentTokenRevocationStore
@@ -396,9 +447,10 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		AdditionalSignatureComponents: config.AdditionalSignatureComponents,
 		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
-		ValidateAccount: config.ValidateAccount,
-		Protected:       config.Protected,
-		R3:              config.R3,
+		ValidateAccount:  config.ValidateAccount,
+		AuthorizationAsk: config.AuthorizationAsk,
+		Protected:        config.Protected,
+		R3:               config.R3,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
 }
 
@@ -508,6 +560,7 @@ func newAuthorizationServer(
 		requiredScopes:                requiredScopes,
 		resolvePerson:                 config.ResolvePerson,
 		validateAccount:               config.ValidateAccount,
+		authorizationAsk:              config.AuthorizationAsk,
 		protected:                     config.Protected,
 		authTokenStatuses:             authTokenStatuses,
 		heldInvocations:               config.HeldInvocations,

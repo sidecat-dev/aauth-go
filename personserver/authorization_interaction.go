@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 )
@@ -113,9 +114,12 @@ type PendingAuthorizationRecord struct {
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
 	Capabilities             []string
-	CreatedAt                time.Time
-	ExpiresAt                time.Time
-	RetryAfter               time.Duration
+	// BudgetOffer is the verified resource-token offer. Approval must narrow
+	// it; a nil offer forbids a Budget on the decision.
+	BudgetOffer *budgets.Value
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	RetryAfter  time.Duration
 }
 
 // AuthorizationApproval is the canonical host decision and PS-issued token
@@ -435,6 +439,11 @@ func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error
 			return err
 		}
 	}
+	if record.BudgetOffer != nil {
+		if _, err := json.Marshal(record.BudgetOffer); err != nil {
+			return fmt.Errorf("personserver: pending authorization budget: %w", err)
+		}
+	}
 	if record.MissionS256 != "" {
 		if err := aauth.ValidateMissionS256(record.MissionS256); err != nil {
 			return err
@@ -527,6 +536,7 @@ func (server *Server) beginAuthorizationInteraction(
 			PersonTokenExpiresAt:  personTokenExpiresAt.UTC(),
 			AgentAdditionalClaims: cloneClaims(authorization.AgentAdditionalClaims),
 			Capabilities:          append([]string(nil), authorization.Capabilities...),
+			BudgetOffer:           cloneBudgetValue(authorization.Budget),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
 		}
 		if authorization.Subagent != "" {
@@ -651,7 +661,12 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	if err != nil {
 		return err
 	}
+	grantedBudget, err := validateBudgetDecision(value.record.BudgetOffer, decision.Budget)
+	if err != nil {
+		return err
+	}
 	decision.Scopes = append([]string(nil), granted...)
+	decision.Budget = cloneBudgetValue(grantedBudget)
 	now := server.clock.Now().UTC()
 	snapshot, err := server.loadAuthorizationInteraction(ctx, value, now)
 	if err != nil {
@@ -716,7 +731,12 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 		IssuedAt:     now.Unix(), ExpiresAt: expiresAt.Unix(), Scope: strings.Join(granted, " "),
 		MissionS256: value.record.MissionS256, Tenant: value.record.Tenant,
 	}
-	compact, err := aauth.MintAuthToken(server.signingKey, claims)
+	var compact string
+	if grantedBudget != nil {
+		compact, err = budgets.MintAuthToken(server.signingKey, claims, *grantedBudget)
+	} else {
+		compact, err = aauth.MintAuthToken(server.signingKey, claims)
+	}
 	if err != nil {
 		return err
 	}
@@ -1192,7 +1212,7 @@ func (server *Server) validateAuthorizationPollContext(id string, identity Autho
 	if err != nil || thumbprint != identity.ConfirmationThumbprint || result.RetryAfter != result.Pending.RetryAfter {
 		return ErrPendingAuthorizationConflict
 	}
-	emptyDecision := len(result.Decision.Scopes) == 0 && result.Decision.Lifetime == 0
+	emptyDecision := len(result.Decision.Scopes) == 0 && result.Decision.Lifetime == 0 && result.Decision.Budget == nil
 	switch result.State {
 	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollDenied,
 		AuthorizationPollAbandoned, AuthorizationPollServerError, AuthorizationPollExpired:
@@ -1226,15 +1246,31 @@ func (server *Server) validateApprovedAuthorization(ctx context.Context, result 
 	if err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}
+	grantedBudget, err := validateBudgetDecision(result.Pending.BudgetOffer, result.Decision.Budget)
+	if err != nil {
+		return aauth.AuthTokenClaims{}, err
+	}
 	if result.DecidedAt.Before(result.Pending.CreatedAt) || !result.DecidedAt.Before(result.Pending.ExpiresAt) ||
 		!result.DecidedAt.Before(result.Pending.AgentExpiresAt) || !result.DecidedAt.Before(result.Pending.PersonTokenExpiresAt) ||
 		(!result.Pending.SubagentExpiresAt.IsZero() && !result.DecidedAt.Before(result.Pending.SubagentExpiresAt)) ||
 		(!result.Pending.MissionExpiresAt.IsZero() && !result.DecidedAt.Before(result.Pending.MissionExpiresAt)) {
 		return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token has an invalid decision time")
 	}
-	claims, err := aauth.VerifyAuthToken(ctx, result.Token, server.keyResolver, server.clock)
-	if err != nil {
-		return aauth.AuthTokenClaims{}, err
+	var claims aauth.AuthTokenClaims
+	if result.Pending.BudgetOffer != nil {
+		verified, grant, verifyErr := budgets.VerifyAuthToken(ctx, result.Token, server.keyResolver, server.clock)
+		if verifyErr != nil {
+			return aauth.AuthTokenClaims{}, verifyErr
+		}
+		if !budgetValuesEqual(grant, *grantedBudget) {
+			return aauth.AuthTokenClaims{}, errors.New("personserver: approved auth token Budget does not match the decision")
+		}
+		claims = verified
+	} else {
+		claims, err = aauth.VerifyAuthToken(ctx, result.Token, server.keyResolver, server.clock)
+		if err != nil {
+			return aauth.AuthTokenClaims{}, err
+		}
 	}
 	confirmation := result.Pending.Confirmation
 	if result.Pending.Subagent != "" {
@@ -1402,11 +1438,23 @@ func (server *Server) writePendingAuthorization(response http.ResponseWriter, lo
 
 func cloneAuthorizationDecision(decision AuthorizationDecision) AuthorizationDecision {
 	decision.Scopes = append([]string(nil), decision.Scopes...)
+	decision.Budget = cloneBudgetValue(decision.Budget)
 	return decision
 }
 
+func budgetValuesEqual(left, right budgets.Value) bool {
+	return left.Amount() == right.Amount() && left.Unit().Equal(right.Unit())
+}
+
+func budgetPointersEqual(left, right *budgets.Value) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return budgetValuesEqual(*left, *right)
+}
+
 func authorizationDecisionsSemanticallyEqual(left, right AuthorizationDecision) bool {
-	if left.Lifetime != right.Lifetime || len(left.Scopes) != len(right.Scopes) {
+	if left.Lifetime != right.Lifetime || len(left.Scopes) != len(right.Scopes) || !budgetPointersEqual(left.Budget, right.Budget) {
 		return false
 	}
 	leftScopes := make(map[string]struct{}, len(left.Scopes))
@@ -1434,6 +1482,7 @@ func clonePendingAuthorizationRecord(record PendingAuthorizationRecord) PendingA
 	record.AgentAdditionalClaims = cloneClaims(record.AgentAdditionalClaims)
 	record.SubagentAdditionalClaims = cloneClaims(record.SubagentAdditionalClaims)
 	record.Capabilities = append([]string(nil), record.Capabilities...)
+	record.BudgetOffer = cloneBudgetValue(record.BudgetOffer)
 	return record
 }
 
@@ -1443,7 +1492,7 @@ func cloneAuthorizationApproval(approval AuthorizationApproval) AuthorizationApp
 }
 
 func authorizationApprovalIsZero(approval AuthorizationApproval) bool {
-	return len(approval.Decision.Scopes) == 0 && approval.Decision.Lifetime == 0 &&
+	return len(approval.Decision.Scopes) == 0 && approval.Decision.Lifetime == 0 && approval.Decision.Budget == nil &&
 		approval.Token == "" && approval.ExpiresIn == 0 && approval.DecidedAt.IsZero()
 }
 

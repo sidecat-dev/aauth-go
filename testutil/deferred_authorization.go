@@ -515,6 +515,10 @@ func decisionsEqual(left, right personserver.AuthorizationDecision) bool {
 func clonePendingAuthorization(record personserver.PendingAuthorizationRecord) personserver.PendingAuthorizationRecord {
 	record.Scopes = append([]string(nil), record.Scopes...)
 	record.Capabilities = append([]string(nil), record.Capabilities...)
+	if record.BudgetOffer != nil {
+		offer := *record.BudgetOffer
+		record.BudgetOffer = &offer
+	}
 	record.AgentAdditionalClaims = cloneAuthorizationClaims(record.AgentAdditionalClaims)
 	record.SubagentAdditionalClaims = cloneAuthorizationClaims(record.SubagentAdditionalClaims)
 	return record
@@ -533,6 +537,10 @@ func cloneAuthorizationClaims(claims map[string]json.RawMessage) map[string]json
 
 func cloneAuthorizationDecision(decision personserver.AuthorizationDecision) personserver.AuthorizationDecision {
 	decision.Scopes = append([]string(nil), decision.Scopes...)
+	if decision.Budget != nil {
+		budget := *decision.Budget
+		decision.Budget = &budget
+	}
 	return decision
 }
 

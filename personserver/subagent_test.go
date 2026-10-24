@@ -96,6 +96,7 @@ func (p *subagentPersonServerProtocol) personRequest(t *testing.T, server *Serve
 	body, err := json.Marshal(map[string]any{
 		"resource":       "https://resource.example",
 		"subagent_token": childToken,
+		"capabilities":   []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -87,7 +87,7 @@ func callHostedResource(
 	people *personserver.Server,
 ) error {
 	personResult, err := client.PersonToken(ctx, clientagent.PersonTokenRequest{
-		PersonServer: hostedPersonID, Resource: hostedResource,
+		PersonServer: hostedPersonID, Resource: hostedResource, Capabilities: []string{"interaction"},
 	})
 	if err != nil {
 		return err
