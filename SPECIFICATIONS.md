@@ -321,8 +321,9 @@ Variable-cost settlement and streaming trailers are not executed.
 
 - Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
 - Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
-- Sections: PS-to-AS Token Request Extensions (542–572) and Auth Token
-  Extensions (574–608).
+- Sections: PS-to-AS Token Request Extensions (542–572), Auth Token
+  Extensions (574–608), Unreported Allocations (827–857), and Usage Counters
+  (929–1075).
 - SHA-256: `f00d34c91576476cdb30b7aa1aa13a0bc9fc1d99fc43b4f0389ccb3e8bf2e150`.
 
 This note is a list, not a second manifest row.
