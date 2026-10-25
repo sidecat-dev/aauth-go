@@ -665,9 +665,13 @@ figure arrives, `budgets.AccountedSpend` holds the full grant; a record
 replaces that assumption and does not settle the allocation.
 `budgets.Free` applies the draft's settlement formula. A Resource whose Budget
 store implements `BudgetUsageStore` publishes `usage_endpoint` and serves a
-signed `POST /usage`. The response is not signed. Variable-cost settlement,
-streaming trailers, automatic reauthorization, and reactive Resource-held or
-R3+Budget first calls are not part of these profiles.
+signed `POST /usage`. The response is not signed. A streamed response can send `reserved` in the
+header and `cost` in an `AAuth-Budget` trailer. The fixed-price protected path
+still commits the known cost before dispatch and does not keep a reservation.
+The Agent treats a `reserved` header without `cost` as complete and assumes
+the reservation until a cost-only trailer arrives. Automatic reauthorization
+and reactive Resource-held or R3+Budget first calls are not part of these
+profiles.
 
 ## Source tensions and implementation choices
 

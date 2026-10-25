@@ -29,12 +29,14 @@ func ParseReason(value string) (Reason, error) {
 // String returns the registered reason token.
 func (reason Reason) String() string { return string(reason) }
 
-// Feedback is the parsed AAuth-Budget response field for the fixed-price
-// success and refusal paths.
+// Feedback is the parsed AAuth-Budget response field. A fixed-price success
+// carries cost. A refusal carries remaining and maybe required. A streamed
+// response carries reserved and omits cost until a trailer, if any, arrives.
 type Feedback struct {
 	initialized bool
 	remaining   int64
 	cost        *int64
+	reserved    *int64
 	required    *int64
 	unit        *Unit
 }
@@ -91,6 +93,28 @@ func NewRefusalFeedback(grant Value, remaining int64, required *int64) (Feedback
 	return Feedback{initialized: true, remaining: remaining, required: retainedRequired, unit: &unit}, nil
 }
 
+// NewReservedFeedback constructs the header for a response whose cost is not
+// known yet. Remaining is already net of the reservation. The header omits cost.
+func NewReservedFeedback(grant Value, remaining, reserved int64) (Feedback, error) {
+	if err := grant.validate(); err != nil {
+		return Feedback{}, fmt.Errorf("budgets: reserved feedback grant: %w", err)
+	}
+	if err := ValidateFeedbackUnit(grant.unit); err != nil {
+		return Feedback{}, err
+	}
+	if err := validateAmount("remaining", remaining); err != nil {
+		return Feedback{}, err
+	}
+	if err := validateAmount("reserved", reserved); err != nil {
+		return Feedback{}, err
+	}
+	if remaining > grant.amount || reserved > grant.amount || remaining+reserved > grant.amount {
+		return Feedback{}, errors.New("budgets: reserved feedback exceeds the granted budget")
+	}
+	unit := grant.unit
+	return Feedback{initialized: true, remaining: remaining, reserved: &reserved, unit: &unit}, nil
+}
+
 // Remaining returns the balance reported for the presented Auth token.
 func (feedback Feedback) Remaining() int64 { return feedback.remaining }
 
@@ -100,6 +124,14 @@ func (feedback Feedback) Cost() (int64, bool) {
 		return 0, false
 	}
 	return *feedback.cost, true
+}
+
+// Reserved returns the amount held for this request when the header reported it.
+func (feedback Feedback) Reserved() (int64, bool) {
+	if feedback.reserved == nil {
+		return 0, false
+	}
+	return *feedback.reserved, true
 }
 
 // Required returns the computed maximum cost of a refused request when
@@ -139,10 +171,18 @@ func ParseFeedback(values []string) (Feedback, error) {
 	} else if ok {
 		feedback.cost = &cost
 	}
+	if reserved, ok, err := feedbackInteger(dictionary, "reserved"); err != nil {
+		return Feedback{}, err
+	} else if ok {
+		feedback.reserved = &reserved
+	}
 	if required, ok, err := feedbackInteger(dictionary, "required"); err != nil {
 		return Feedback{}, err
 	} else if ok {
 		feedback.required = &required
+	}
+	if feedback.cost != nil && feedback.reserved != nil {
+		return Feedback{}, errors.New("budgets: AAuth-Budget header must not carry both cost and reserved")
 	}
 
 	unitName, unitPresent, err := feedbackString(dictionary, "unit")
@@ -174,11 +214,17 @@ func FormatFeedback(feedback Feedback) (string, error) {
 	if err := feedback.validate(); err != nil {
 		return "", err
 	}
+	if feedback.cost != nil && feedback.reserved != nil {
+		return "", errors.New("budgets: AAuth-Budget header must not carry both cost and reserved")
+	}
 	dictionary := httpsfv.NewDictionary()
 	if feedback.cost != nil {
 		dictionary.Add("cost", httpsfv.NewItem(*feedback.cost))
 	}
 	dictionary.Add("remaining", httpsfv.NewItem(feedback.remaining))
+	if feedback.reserved != nil {
+		dictionary.Add("reserved", httpsfv.NewItem(*feedback.reserved))
+	}
 	if feedback.required != nil {
 		dictionary.Add("required", httpsfv.NewItem(*feedback.required))
 	}
@@ -208,6 +254,12 @@ func ValidateFeedback(grant Value, feedback Feedback) error {
 	}
 	if feedback.cost != nil && *feedback.cost+feedback.remaining > grant.amount {
 		return errors.New("budgets: feedback cost and remainder exceed the signed grant")
+	}
+	if feedback.reserved != nil && *feedback.reserved+feedback.remaining > grant.amount {
+		return errors.New("budgets: feedback reservation and remainder exceed the signed grant")
+	}
+	if feedback.cost != nil && feedback.reserved != nil && *feedback.cost > *feedback.reserved {
+		return errors.New("budgets: trailer cost exceeds the reserved amount")
 	}
 	if feedback.unit != nil && !feedback.unit.Equal(grant.unit) {
 		return errors.New("budgets: feedback denomination conflicts with the signed grant")
@@ -243,6 +295,16 @@ func (feedback Feedback) validate() error {
 			return err
 		}
 	}
+	if feedback.reserved != nil {
+		if err := validateAmount("reserved", *feedback.reserved); err != nil {
+			return err
+		}
+	}
+	if feedback.cost != nil && feedback.reserved != nil {
+		if *feedback.cost > *feedback.reserved {
+			return errors.New("budgets: trailer cost exceeds the reserved amount")
+		}
+	}
 	if feedback.required != nil {
 		if err := validateAmount("required", *feedback.required); err != nil {
 			return err
@@ -253,6 +315,9 @@ func (feedback Feedback) validate() error {
 	}
 	if feedback.cost != nil && feedback.required != nil {
 		return errors.New("budgets: AAuth-Budget cost and required are mutually exclusive")
+	}
+	if feedback.reserved != nil && feedback.required != nil {
+		return errors.New("budgets: AAuth-Budget reserved and required are mutually exclusive")
 	}
 	if feedback.unit != nil {
 		if err := feedback.unit.validate(); err != nil {
@@ -301,4 +366,78 @@ func feedbackString(dictionary *httpsfv.Dictionary, name string) (string, bool, 
 		return "", false, fmt.Errorf("budgets: AAuth-Budget %s must be a String", name)
 	}
 	return value, true, nil
+}
+
+// FormatTrailer emits the cost-only AAuth-Budget trailer. A trailer must not
+// restate a member the header carried.
+func FormatTrailer(cost int64) (string, error) {
+	if err := validateAmount("cost", cost); err != nil {
+		return "", err
+	}
+	dictionary := httpsfv.NewDictionary()
+	dictionary.Add("cost", httpsfv.NewItem(cost))
+	formatted, err := httpsfv.Marshal(dictionary)
+	if err != nil {
+		return "", fmt.Errorf("budgets: format AAuth-Budget trailer: %w", err)
+	}
+	return formatted, nil
+}
+
+// ApplyTrailer merges a cost-only trailer into a header. An empty trailer
+// leaves the header unchanged: a recipient must not treat the trailer as
+// necessary. Any member other than cost is rejected, including members the
+// header already carried and members this profile does not recognize. The
+// general header rule ignores unknown members; the trailer rule allows cost
+// and nothing else, and this function follows the trailer rule.
+func ApplyTrailer(header Feedback, trailer []string) (Feedback, error) {
+	if err := header.validate(); err != nil {
+		return Feedback{}, err
+	}
+	if len(trailer) == 0 {
+		return header, nil
+	}
+	dictionary, err := httpsfv.UnmarshalDictionary(trailer)
+	if err != nil {
+		return Feedback{}, fmt.Errorf("budgets: parse AAuth-Budget trailer: %w", err)
+	}
+	for _, name := range dictionary.Names() {
+		if name != "cost" {
+			return Feedback{}, fmt.Errorf("budgets: AAuth-Budget trailer must not carry %s", name)
+		}
+	}
+	cost, present, err := feedbackInteger(dictionary, "cost")
+	if err != nil {
+		return Feedback{}, err
+	}
+	if !present {
+		return Feedback{}, errors.New("budgets: AAuth-Budget trailer requires cost")
+	}
+	if _, headerHasCost := header.Cost(); headerHasCost {
+		return Feedback{}, errors.New("budgets: AAuth-Budget trailer restates cost")
+	}
+	updated := header
+	updated.cost = &cost
+	if err := updated.validate(); err != nil {
+		return Feedback{}, err
+	}
+	return updated, nil
+}
+
+// SettledRemaining is remaining + reserved - cost after a streamed response.
+// Remaining is already net of the reservation, so the unspent hold returns to
+// the grant. A header that omitted cost uses the full reservation.
+func SettledRemaining(feedback Feedback) (int64, error) {
+	if err := feedback.validate(); err != nil {
+		return 0, err
+	}
+	reserved, _ := feedback.Reserved()
+	cost, hasCost := feedback.Cost()
+	if !hasCost {
+		cost = reserved
+	}
+	settled := feedback.remaining + reserved - cost
+	if settled < 0 {
+		return 0, errors.New("budgets: settled remainder is negative")
+	}
+	return settled, nil
 }

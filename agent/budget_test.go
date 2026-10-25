@@ -329,6 +329,62 @@ func TestAgentDoBudgetReturnsValidatedSuccessFeedback(t *testing.T) {
 	}
 }
 
+func TestAgentAcceptsReservedBudgetFeedbackWithoutATrailer(t *testing.T) {
+	t.Parallel()
+
+	protocol := newTestProtocol(t)
+	unit := budgetUnit(t, "USD", 6)
+	grant := budgetValue(t, 2_000_000, unit)
+	authToken, err := budgets.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
+		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+		Audience: protocol.resourceID, JTI: "budget-auth-reserved",
+		PersonServer: protocol.personServerID, Subject: "person-123",
+		Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
+		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
+		Scope: "records.read",
+	}, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedback, err := budgets.NewReservedFeedback(grant, 1_568_800, 431_200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted, err := budgets.FormatFeedback(feedback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == protocol.resourceID+"/.well-known/aauth-resource.json" {
+			return jsonResponse(request, http.StatusOK, map[string]any{"issuer": protocol.resourceID}), nil
+		}
+		response := jsonResponse(request, http.StatusOK, map[string]string{"result": "ok"})
+		response.Header.Set("Trailer", "AAuth-Budget")
+		response.Header.Set("AAuth-Budget", formatted)
+		return response, nil
+	})})
+	request, _ := http.NewRequest(http.MethodPost, protocol.resourceID+"/records", strings.NewReader(`{"query":"current"}`))
+	request.Header.Set("Content-Type", "application/json")
+	result, err := client.BeginBudgetCall(context.Background(), agent.BudgetCall{
+		Request: request, AuthToken: authToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := result.Response()
+	if !ok {
+		t.Fatal("reserved Budget response was not complete")
+	}
+	defer response.Body.Close()
+	if cost, reported := result.Cost(); reported {
+		t.Fatalf("exact cost = %d", cost)
+	}
+	assumed, ok := result.AssumedCost()
+	if !ok || assumed != 431_200 {
+		t.Fatalf("assumed cost = %d, %t", assumed, ok)
+	}
+}
+
 func TestAgentDoBudgetReturnsTypedAuthorizationRequirementWithoutRetry(t *testing.T) {
 	t.Parallel()
 

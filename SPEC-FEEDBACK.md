@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 57 (P1: 6, P2: 33, P3: 18; 46 submitted, 11 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 58 (P1: 6, P2: 33, P3: 19; 46 submitted, 12 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F116 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -125,6 +125,7 @@ Findings AAG-F110 through AAG-F116 were read against AAuth Budgets `70d6737`, no
 | AAG-F114 | A combined scope key and jkts query does not say whether per-key figures are scoped | Budgets | missing-requirement | P3 | open | 2026-10-25 | Not submitted | — |
 | AAG-F115 | A three-party issuer is not told to preserve an offered budget | Budgets | MUST/SHALL/REQUIRED | P2 | open | 2026-10-25 | Not submitted | — |
 | AAG-F116 | Age 0 is not a positive current_age | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F117 | A trailer must carry only cost, while unknown members are ignored | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -1452,6 +1453,28 @@ This library's direct Person Server rejects an authorization decision that drops
 Recipients must ignore `AAuth-Budget` on a response served from cache with a positive `current_age`. This library ignores the header whenever an `Age` header is present, including `Age: 0`. A zero age is fresh, so the draft would still have the agent read the header.
 
 **Question:** Is `Age: 0` current, and must a recipient read `AAuth-Budget` on that response?
+
+### AAG-F117 — A trailer must carry only cost, while unknown members are ignored
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `AAuth-Budget Response Header` (627) and `Trailer Rules` (695–702).
+
+Recipients must ignore `AAuth-Budget` members they do not recognize. A trailer must carry `cost` and nothing else, and must not restate a header member. An unrecognized trailer member is both an unknown member, which is ignored, and something other than `cost`, which is forbidden.
+
+This library rejects any trailer member other than `cost`, including unrecognized names. A header still ignores unrecognized members.
+
+**Question:** Does the trailer rule override ignore-unknown for that field instance?
 
 ## Against informative text
 

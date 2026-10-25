@@ -816,9 +816,11 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
 
 ### Not implemented
 
-- [ ] **Variable-cost and streaming calls — Not implemented.** There is no
-  reservation/settlement store contract, trailer reconciliation, or safe
-  interrupted-stream journey.
+- [ ] **Variable-cost reservation — Not implemented as a store.** The fixed-price
+  path still commits the known cost before dispatch. `WriteStreamingBudgetHeader`
+  and `WriteStreamingBudgetTrailer` send `reserved` and a cost-only trailer.
+  The Agent accepts a `reserved` header with no trailer and assumes that hold.
+  There is no reserve-commit-release store and no interrupted-stream journey.
 - [x] **Usage queries — Implemented as a Resource endpoint and issuer helper.**
   A store that implements `resource.BudgetUsageStore` publishes
   `usage_endpoint` and answers a signed Person Server or Access Server

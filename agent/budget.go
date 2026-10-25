@@ -112,6 +112,18 @@ func (result BudgetCallResult) Cost() (int64, bool) {
 	return result.feedback.Cost()
 }
 
+// AssumedCost is the exact cost when the Resource reported one, and otherwise
+// the full reservation. A response that omitted both is not a successful result.
+func (result BudgetCallResult) AssumedCost() (int64, bool) {
+	if cost, ok := result.Cost(); ok {
+		return cost, true
+	}
+	if result.kind == 0 || !result.hasFeedback {
+		return 0, false
+	}
+	return result.feedback.Reserved()
+}
+
 // BudgetCallUncertainError reports an attempted Budget request whose exact
 // metering outcome is unavailable. Callers must carry AssumedCost and must
 // not automatically retry the chargeable request.
@@ -285,10 +297,14 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 		}, nil
 	}
 	if _, present := feedback.Cost(); !present {
-		closeResponse(response)
-		return BudgetCallResult{}, fail(operation, newBudgetUncertain(
-			errors.New("fixed-price Budget response omitted cost"), grant,
-		))
+		if _, reserved := feedback.Reserved(); !reserved {
+			closeResponse(response)
+			return BudgetCallResult{}, fail(operation, newBudgetUncertain(
+				errors.New("fixed-price Budget response omitted cost"), grant,
+			))
+		}
+		// reserved without cost is complete. A declared trailer is not required;
+		// until one arrives the request is assumed to have cost the reservation.
 	}
 	if _, present := feedback.Required(); present {
 		closeResponse(response)

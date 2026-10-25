@@ -316,7 +316,11 @@ consumption record as the full grant, and `budgets.Free` applies the
 settlement formula. Consent display helpers format a human amount and sanitize
 a Markdown unit description; this library does not render the consent screen.
 
-Variable-cost settlement and streaming trailers are not executed.
+A streamed response may carry `reserved` and a cost-only `AAuth-Budget`
+trailer. The recipient does not require the trailer. The fixed-price path
+still commits before dispatch. There is no reserve-commit-release store.
+
+Variable-cost settlement is not executed.
 [CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining gaps.
 
 - Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
