@@ -327,9 +327,6 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	if input.PersonToken == "" {
 		return "", fail(operation, errors.New("person token is required"))
 	}
-	if input.Budget != nil && (input.UpstreamToken != "" || client.agentClaims.ParentAgent != "") {
-		return "", fail(operation, errors.New("delegated or call-chain Budget authorization is not implemented"))
-	}
 	if input.R3Operations != nil {
 		if client.r3 == nil {
 			return "", fail(operation, errors.New("R3 is not configured"))

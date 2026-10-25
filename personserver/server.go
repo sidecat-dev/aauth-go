@@ -1065,8 +1065,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 		}
 	}
-	if budgetOffer != nil && (delegated || upstream != nil) {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: Budget does not compose with delegation or call chaining"))
+	// A direct Person Server sizes this token's own grant. A budget is not a
+	// sub-budget of a parent or upstream token, so delegation and one call-chain
+	// hop use the same offer and narrowing as any other auth token. Federated
+	// issuance still refuses the combination.
+	if budgetOffer != nil && (delegated || upstream != nil) && server.authorizationMode != authorizationModePersonServer {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: federated Budget does not compose with delegation or call chaining"))
 		return
 	}
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()

@@ -331,14 +331,19 @@ A step-up consumption record is committed spend. Other requests' in-flight
 holds reduce `remaining` and are not part of that record.
 
 An interrupted stream is not a separate journey.
+
+A direct Person Server sizes a sub-agent auth token, and a one-hop call-chain
+auth token, from that token's own resource-token offer. The grant is not a
+remainder of a parent or upstream budget. Federated delegation, federated call
+chaining, and per-call R3 stay outside this path.
 [CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining gaps.
 
 - Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
 - Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Sections: PS-to-AS Token Request Extensions (542–572), Auth Token
   Extensions (574–608), AAuth-Budget Response Header (610–650), Trailer Rules
-  (695–704), The Budget Is a Hard Cap (908–915), Unreported Allocations
-  (827–857), and Usage Counters (929–1075).
+  (695–704), The Budget Is a Hard Cap (908–915), Delegation (921–923),
+  Unreported Allocations (827–857), and Usage Counters (929–1075).
 - SHA-256: `f00d34c91576476cdb30b7aa1aa13a0bc9fc1d99fc43b4f0389ccb3e8bf2e150`.
 
 This note is a list, not a second manifest row.

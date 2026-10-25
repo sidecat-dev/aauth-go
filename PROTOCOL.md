@@ -678,7 +678,9 @@ hold as the trailer; a handler that writes nothing gets that fixed-price header
 for the whole hold. The commit uses the resource clock as the charge time. A
 usage response reports the store's completeness time when the store sets one.
 A step-up record is committed spend and does not count other requests' holds.
-The Agent treats a `reserved` header without `cost` as
+A direct Person Server sizes a sub-agent or one-hop call-chain auth token from
+that token's own offer; the grant is not a remainder of a parent or upstream
+budget. The Agent treats a `reserved` header without `cost` as
 complete and assumes the reservation until `ApplyTrailer` reads a cost-only trailer. Automatic reauthorization
 and reactive Resource-held or R3+Budget first calls are not part of these
 profiles.

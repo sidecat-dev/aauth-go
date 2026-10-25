@@ -812,8 +812,9 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
   - Boundary: a PS omission is not a grant. The AS issues no `budget` claim, and
     the PS rejects an Auth token that carries one. A step-up Resource token
     carries `budget_consumed` for the presented Auth token in that grant's
-    scale. Per-call R3 plus Budget, deferred interaction, delegation, and call
-    chaining remain excluded. Variable-cost reservation is a separate journey.
+    scale. Per-call R3 plus Budget and deferred interaction remain excluded.
+    Direct delegation and one-hop call chaining are a separate journey.
+    Variable-cost reservation is a separate journey.
 
 ### Not implemented
 
@@ -853,9 +854,19 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
     class R3 uses the AS issuance commit followed by the PS mission comparison
     and exact-token commit; a later mission race withholds the token even though
     the independent AS audit remains.
-- [ ] **Delegation, call chaining, and per-call mission R3 Budgets — Not implemented.**
-  The Agent, PS, and Resource fail closed rather than carrying a Budget through
-  these remaining compositions.
+- [x] **Delegation and one-hop call chaining — Each auth token carries its own Budget.**
+  A direct Person Server sizes the grant from that token's resource-token
+  offer. A second token for the same offer is not reduced by the first, and
+  the upstream token is not a balance to draw down. The parent mediates a
+  sub-agent exchange; the auth token is bound to the child. The child can
+  request its own budgeted resource token. Federated delegation and federated
+  call chaining stay refused.
+  Evidence: [`personserver/budget_delegation_test.go`](personserver/budget_delegation_test.go)
+  and [`agent/budget_test.go`](agent/budget_test.go).
+- [ ] **Per-call mission R3 Budgets — Not implemented.**
+  The Access Server refuses a fixed Budget that also grants per-call R3
+  operations. Mission-bound delegation and mission-bound call chaining stay
+  refused.
 
 ## AAuth interoperability demo profile
 
