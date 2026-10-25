@@ -5,26 +5,28 @@ The exact commits below define the text used for implementation and review.
 Rendered Internet-Draft publications may be older than these editor revisions.
 
 SHA-256 values below are over the raw editor-source bytes at the named commit.
-All seven files match the retained local source mirror used for review.
+All eight files are the whole editor source at that commit. Notes after the
+table record which behavior this library executes; they are not a second pin.
 
 ## Exact source manifest
 
 | Document | Repository commit | Editor source | SHA-256 |
 | --- | --- | --- | --- |
-| AAuth Protocol | [AAuth `a99d353`](https://github.com/dickhardt/AAuth/commit/a99d353cf18aee81d0c5445bac070164fb3b8bc5) | [`draft-hardt-oauth-aauth-protocol.md`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md) | `c984278f21e3931f0cc272d6768b84bcc471f8ab4a1a1922dd92940a91df7e19` |
-| AAuth Rich Resource Requests (R3) | [AAuth `a99d353`](https://github.com/dickhardt/AAuth/commit/a99d353cf18aee81d0c5445bac070164fb3b8bc5) | [`draft-hardt-aauth-r3.md`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-r3.md) | `dd768a3b7417c45c0028f2750a50173670fd84c8f432e54ba94799ca93621760` |
-| AAuth Events | [AAuth `a99d353`](https://github.com/dickhardt/AAuth/commit/a99d353cf18aee81d0c5445bac070164fb3b8bc5) | [`draft-hardt-aauth-events.md`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-events.md) | `6ac4f1c649172a359a6ef32380b189a4edcd9855014bbb03fefe096b74802eb0` |
-| AAuth Bootstrap Guidance | [AAuth `a99d353`](https://github.com/dickhardt/AAuth/commit/a99d353cf18aee81d0c5445bac070164fb3b8bc5) | [`draft-hardt-aauth-bootstrap.md`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-bootstrap.md) | `ebfe4858e9511020ceb498aea997953b8b79594689ce177ba228230c3ceaf872` |
-| AAuth Budgets | [AAuth `a99d353`](https://github.com/dickhardt/AAuth/commit/a99d353cf18aee81d0c5445bac070164fb3b8bc5) | [`draft-hardt-aauth-budgets.md`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-budgets.md) | `7a27351888d04a4d1059dd9a261243d0960bcc4d918705641b1d9e68c90d4a4d` |
-| AAuth Interoperability Demo Profile | [AAuth `a99d353`](https://github.com/dickhardt/AAuth/commit/a99d353cf18aee81d0c5445bac070164fb3b8bc5) | [`interop-demo-profile.md`](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/interop-demo-profile.md) | `ee503da3ea6803370cffe03171f600d44bf9c81a05872b2014b01a61982fe195` |
-| HTTP Signature Keys | [Signature-Key `0ff751b`](https://github.com/dickhardt/signature-key/commit/0ff751b571e7fe51336bcc1e526954a202317cc0) | [`draft-hardt-httpbis-signature-key.md`](https://github.com/dickhardt/signature-key/blob/0ff751b571e7fe51336bcc1e526954a202317cc0/draft-hardt-httpbis-signature-key.md) | `335c6164569fc5b21aae7930c83c4088e4c02b857f9f3acee8335f16f23d66cb` |
+| AAuth Protocol | [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e) | [`draft-hardt-oauth-aauth-protocol.md`](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-oauth-aauth-protocol.md) | `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0` |
+| AAuth Rich Resource Requests (R3) | [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e) | [`draft-hardt-aauth-r3.md`](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-r3.md) | `39672880b054e380d39c9c997523b3320216bade2e348a8f79990f2d85e1f2aa` |
+| AAuth Events | [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e) | [`draft-hardt-aauth-events.md`](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-events.md) | `462b2fa2fdb10791dd976a7566cd09f5e5d64686c8d6e2966cc2e0caf87acd12` |
+| AAuth Bootstrap Guidance | [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e) | [`draft-hardt-aauth-bootstrap.md`](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-bootstrap.md) | `40ca9d052e942a78ef01a827a23bd0149d34a58f626e750949f3ddcd2601b82c` |
+| AAuth Budgets | [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e) | [`draft-hardt-aauth-budgets.md`](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-budgets.md) | `f00d34c91576476cdb30b7aa1aa13a0bc9fc1d99fc43b4f0389ccb3e8bf2e150` |
+| AAuth Supervision | [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e) | [`draft-hardt-aauth-supervision.md`](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-supervision.md) | `9fd44f899e06bf2a1e903459799cccdd8c6365b5eb5fa1efe2ed5b23b1a6d1a3` |
+| AAuth Interoperability Demo Profile | [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e) | [`interop-demo-profile.md`](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/interop-demo-profile.md) | `596c7d2c952d8ec6cdfd66a91c2d123705f3e4ed75fa581b4e3ac20404971545` |
+| HTTP Signature Keys | [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6) | [`draft-hardt-httpbis-signature-key.md`](https://github.com/dickhardt/signature-key/blob/69f5ba2647be848feed043fb6d8b0790e43cd0b6/draft-hardt-httpbis-signature-key.md) | `b2b43db67a1aa5249d1166589834d44f81e97ea2e6375a07b475115efa196b7d` |
 
-## Targeted additional source: Signature-Key `clock_skew`
+## Executed behavior: Signature-Key `clock_skew`
 
-This is one targeted source, not a repin. The manifest above and the rest of
-the library remain at their stated revisions. Only the signature `created`
-classification in `signaturekey.PrepareRequest` and the `Signature-Error:
-error=clock_skew` answer for a header JWT `iat` follow this text.
+The manifest pins the whole Signature-Key file. This note records the behavior
+this library executes for signature `created` classification in
+`signaturekey.PrepareRequest` and the `Signature-Error: error=clock_skew`
+answer for a header JWT `iat`.
 
 - Document: HTTP Signature Keys, editor source `draft-hardt-httpbis-signature-key.md`.
 - Repository commit: [Signature-Key `69f5ba2`](https://github.com/dickhardt/signature-key/commit/69f5ba2647be848feed043fb6d8b0790e43cd0b6).
@@ -34,12 +36,12 @@ error=clock_skew` answer for a header JWT `iat` follow this text.
 The overlay is a list, not a table row, because the baseline manifest check
 requires exactly one table row per source file.
 
-The JWT `iat` rule itself follows the Protocol -11 overlay below.
+The JWT `iat` rule itself follows the JWT `iat` note below.
 
-## Targeted additional source: Signature-Key `revoked_jwt`
+## Executed behavior: Signature-Key `revoked_jwt`
 
-This is one targeted source, not a repin. Only the `revoked_jwt` code and its
-use for a withdrawn JWT carried in `Signature-Key` follow this text:
+The manifest pins the whole Signature-Key file. This library executes the
+`revoked_jwt` code for a withdrawn JWT carried in `Signature-Key`:
 `signaturekey.ErrorRevokedJWT`, returned by a Resource or Person Server only
 where its own revocation store gives it notice.
 
@@ -51,10 +53,10 @@ where its own revocation store gives it notice.
 The overlay is a list, not a table row, because the baseline manifest check
 requires exactly one table row per source file.
 
-## Targeted additional source: Protocol -11 presenting a revoked token
+## Executed behavior: presenting a revoked token
 
-This is one targeted source, not a repin. Only the first bullet of the section
-follows this text: a revoked Agent or Auth token carried in `Signature-Key` is
+The manifest pins the whole Protocol file. This library executes the first
+bullet of Presenting a Revoked Token: a revoked Agent or Auth token carried in `Signature-Key` is
 `401` with `Signature-Error: error=revoked_jwt`, and a Resource refusing a
 revoked Auth token also sends `AAuth-Requirement: requirement=person-token`
 and never `requirement=auth-token`. A token carried as a request parameter
@@ -69,23 +71,22 @@ automate those steps; the [revocation example](example/revocation) composes
 them explicitly. This is distinct from **Re-authorization** after expiry or key
 rotation (lines 1289–1305).
 
-- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Document: AAuth Protocol, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Section: the `### Presenting a Revoked Token` heading at line 2760; the section is lines 2760-2767.
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
 The overlay is a list, not a table row, because the baseline manifest check
 requires exactly one table row per source file.
 
-## Targeted additional source: Protocol -11 agent identifier local part
+## Executed behavior: agent identifier local part
 
-This is one targeted source, not a repin. The manifest above and the rest of
-the library, including every other Protocol clause, remain at their stated
-revisions. Only the `local` part grammar and exact-comparison rule in
-`ValidateAgentIdentifier` and `ValidateAgentRelationship` follow this text.
+The manifest pins the whole Protocol file. This library executes the `local`
+part grammar and exact-comparison rule in `ValidateAgentIdentifier` and
+`ValidateAgentRelationship`.
 
-- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Document: AAuth Protocol, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Section: the `## Agent Identifiers` heading at line 486; the section is lines 486-507. Document History line 3213 records the change (issue #164).
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
@@ -94,11 +95,10 @@ identifiers compare exactly without case folding. The overlay is a list, not a
 table row, because the baseline manifest check requires exactly one table row
 per source file.
 
-## Targeted additional source: Protocol -11 revocation request
+## Executed behavior: revocation request
 
-This is one targeted source, not a repin. The manifest above and every other
-Protocol clause remain at their stated revisions. Only the revocation request
-and its `403 unsupported_iss` mapping follow this text: the `{jti, exp}` body,
+The manifest pins the whole Protocol file. This library executes the revocation
+request and its `403 unsupported_iss` mapping: the `{jti, exp}` body,
 the issuer taken only from the verified signature, mandatory `content-type`
 and `content-digest` coverage, `(iss, jti)` state recorded whether or not the
 token was seen, and the Errors table entries already adopted in
@@ -112,16 +112,15 @@ a present body that is not `application/json`, one JSON object with an optional
 array `downstream`, is `aauth.ErrRevocationUnavailable`. A valid `downstream`
 report is validated and not returned.
 
-- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Document: AAuth Protocol, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Section: the `## Token Revocation` heading at line 2666, `### Revocation Request` (lines 2670-2700) and the Errors table in `### Revocation Response` (lines 2701-2746).
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
-## Targeted additional source: Protocol -11 JWT `iat` and `clock_skew`
+## Executed behavior: JWT `iat` and `clock_skew`
 
-This is one targeted source, not a repin. The manifest above and every other
-Protocol clause remain at their stated revisions. Only the JWT `iat` rule and
-its `clock_skew` answers follow this text. General token verification no longer
+The manifest pins the whole Protocol file. This library executes the JWT `iat`
+rule and its `clock_skew` answers. General token verification no longer
 refuses a future `iat`; `exp` and `nbf` checks are unchanged and no universal
 JWT leeway is added. A verifier that has a prepared signed request refuses a
 JWT whose `iat` is later than the request's captured time plus its effective
@@ -134,8 +133,8 @@ verifier with no request, such as a response-token consumer, applies no
 future-`iat` refusal. The Events subscribe-token and event-token checks are
 unchanged; both still refuse a future `iat`.
 
-- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Document: AAuth Protocol, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Section: the `### Common JWT Verification` heading at line 2311 (lines 2311-2322) and the `clock_skew` row at line 2597 of `### Token Endpoint Error Codes`.
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
@@ -146,11 +145,10 @@ requires exactly one table row per source file.
 is a non-normative diagnostic implementation, not an editor source. It is
 tracked by Git commit rather than inserted into the source manifest.
 
-## Targeted additional source: Protocol -11 call-chain expiry
+## Executed behavior: call-chain expiry
 
-This is one targeted source, not a repin. The manifest above and every other
-Protocol clause remain at their stated revisions. Only these rules follow this
-text, and only on the supported call-chain path: one immediate, missionless,
+The manifest pins the whole Protocol file. This library executes these rules
+only on the supported call-chain path: one immediate, missionless,
 accountless hop whose `upstream_token` is an auth token issued by the same
 Person Server.
 
@@ -161,8 +159,8 @@ Person Server.
   `### Auth Token Structure`, and "Downstream access does not outlive it" in
   `### Call Chaining`.
 
-- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Document: AAuth Protocol, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Section: `### Person Token Structure` at line 856 (the `exp` rule at line 863), `### Auth Token Structure` at line 1768 (the `exp` rule at line 1775), and `### Call Chaining` at line 1846 (the paragraph at line 1850).
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
@@ -172,30 +170,30 @@ upstream tokens; mission- or account-bound upstream tokens; AS-issued upstream
 tokens and federated downstream issuance; and repeated hops or cascade. This
 overlay does not claim full call chaining.
 
-## Targeted additional source: Protocol -11 deferred AS delivery
+## Executed behavior: deferred AS delivery
 
-The Core approval/payment continuation follows **AS Response**, **Auth Token
-Delivery**, **PS-AS Trust Establishment**, **Deferred Responses**, and **Pending
-URL Security** at the revision below. This adopts the PS's terminal-error relay
-and `as_unreachable` distinction for deferred delivery alongside the existing
-immediate verifier. It does not implement the claims, clarification or user
-interaction branches described in those sections. Payment settlement remains
-outside AAuth; the implemented challenge carrier is `WWW-Authenticate`.
+The manifest pins the whole Protocol file. The Core approval and payment
+continuation follows **AS Response**, **Auth Token Delivery**, **PS-AS Trust
+Establishment**, **Deferred Responses**, and **Pending URL Security**. This
+library executes the PS's terminal-error relay and `as_unreachable` distinction
+for deferred delivery alongside the immediate verifier. It does not execute the
+claims, clarification, or user-interaction branches described in those sections.
+Payment settlement remains outside AAuth; the implemented challenge carrier is
+`WWW-Authenticate`.
 
-- Document: AAuth Protocol -11, `draft-hardt-oauth-aauth-protocol.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Document: AAuth Protocol, `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Sections: AS Response and Auth Token Delivery (1610–1661), PS-AS Trust
   Establishment (1686–1740), Deferred Responses (2478–2568), and Pending URL
   Security (2835–2841).
 - SHA-256: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
-The baseline manifest remains unchanged; this is a bounded additional source.
+This note is a list, not a second manifest row.
 
-## Targeted additional source: Protocol -11 Sub-Agents
+## Executed behavior: Sub-Agents
 
-This is one targeted source, not a repin. The manifest above and every other
-Protocol clause remain at their stated revisions. Only these rules follow this
-text, and only for missionless one-level parent-mediated authorization:
+The manifest pins the whole Protocol file. This library executes these rules
+for missionless one-level parent-mediated authorization:
 
 - **Sub-Agent Identity**: a sub-agent token's `iss` equals its parent's. The PS,
   and here also the AS, refuse a `subagent_token` that differs, does not name
@@ -216,8 +214,8 @@ text, and only for missionless one-level parent-mediated authorization:
   The binding-revocation operation and its answers are this library's reading
   ([INTERPRETATIONS.md](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery)).
 
-- Document: AAuth Protocol -11, editor source `draft-hardt-oauth-aauth-protocol.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Document: AAuth Protocol, editor source `draft-hardt-oauth-aauth-protocol.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Sections: `## Sub-Agents` (1888–1938), `### Upstream Token Verification`
   step 4 (1835), the three sub-agent rows of `### Token Endpoint Error Codes`
   (2594–2596), and `## Agent-Person Binding` (2912–2926).
@@ -228,11 +226,10 @@ recursive delegation, mission-bound mediation, and sub-agent call chaining.
 The waits' cancellation and error answers that the source does not settle are
 recorded in [INTERPRETATIONS.md](INTERPRETATIONS.md#parent-mediated-federated-waits-stay-with-the-parent).
 
-## Targeted additional source: Bootstrap Sub-Agent Tokens
+## Executed behavior: Bootstrap Sub-Agent Tokens
 
-This is one targeted source, not a repin; the Bootstrap row of the manifest
-stays at its stated revision for every other section. Only Agent Provider
-sub-agent issuance follows this text: `agentprovider.Server.IssueSubagent`
+The manifest pins the whole Bootstrap file. This library executes Agent
+Provider sub-agent issuance: `agentprovider.Server.IssueSubagent`
 (same `iss`, `sub` from the parent's local part and a discriminator,
 `parent_agent`, `ps` copied, the sub-agent's `cnf`, `exp` no later than the
 parent's, top-level parents only), `agentprovider.Server.SubagentHandler`, and
@@ -245,7 +242,7 @@ section defines no endpoint. Recording which parent requested each sub-agent
 token, and how many are live per parent, remains host policy.
 
 - Document: AAuth Bootstrap Guidance, editor source `draft-hardt-aauth-bootstrap.md`.
-- Repository commit: [AAuth `28e8258`](https://github.com/dickhardt/AAuth/commit/28e8258f8153a2a51a709c53ebc9618f941564e4).
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Section: `# Sub-Agent Tokens` at line 339 (lines 339–400), with `## Self-Hosted
   Sub-Agents` (343–367) and `## Sub-Agents Under a Hosted AP` (369–400).
 - SHA-256: `40ca9d052e942a78ef01a827a23bd0149d34a58f626e750949f3ddcd2601b82c`.
@@ -272,9 +269,9 @@ the narrower representation this repository actually parses.
 
 ## Verify the protocol map against source bytes
 
-[PROTOCOL.md](PROTOCOL.md) is backed by a machine-readable map of all 612
-normalized Markdown headings and 1,200 uppercase normative or field-presence
-occurrences in these seven files. Given a directory containing the exact
+[PROTOCOL.md](PROTOCOL.md) is backed by a machine-readable map of all 683
+normalized Markdown headings and 1,313 uppercase normative or field-presence
+occurrences in these eight files. Given a directory containing the exact
 editor-source files above, verify every digest, line count, heading coordinate,
 title, non-overlapping range, exact-line digest, strength, dependency, and the
 owner and proof seam supplied by each occurrence's heading with:
@@ -310,10 +307,11 @@ replay enforcement remain explicit gaps in [CONFORMANCE.md](CONFORMANCE.md).
 
 ### Companion specifications and interoperability
 
-R3, Events, Bootstrap, Budgets, and the interoperability profile are pinned as
-first-class inputs even where behavior is absent. This repository now has one
-executing two-key repository profile; its application-selected endpoints and
-JSON remain implementation choices because the source is informational.
+R3, Events, Bootstrap, Budgets, Supervision, and the interoperability profile
+are pinned as first-class inputs even where behavior is absent. Supervision is
+pinned and not executed. This repository has one executing two-key repository
+profile; its application-selected endpoints and JSON remain implementation
+choices because the source is informational.
 [CONFORMANCE.md](CONFORMANCE.md) separates reusable Core primitives from an
 executing companion-spec path, and [ARCHITECTURE.md](ARCHITECTURE.md) assigns
 new behavior without moving companion semantics into the Core package.

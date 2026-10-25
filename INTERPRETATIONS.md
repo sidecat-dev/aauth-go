@@ -75,29 +75,29 @@ scheme if they can recover and enforce the same PS/AS-only fetch boundary.
 
 ## Event replay identity is distinct from subscription identity
 
-**Source:** Events, `Subscribe Token`, `Event Token`, and `Agent
-Verification`.
+**Source:** Events, `Structure` and `Agent Verification` at the pinned
+`70d67375` text.
 
-The draft uses `eid` as the subscription identifier and permits multiple or
-unlimited deliveries, then tells the Agent to deduplicate events by `(iss,
-eid)`. Applying that literally discards every legitimate delivery after the
-first.
+`eid` identifies the subscription. Each event token carries a required `jti`,
+and `(iss, jti)` is the deduplication key at the Agent Provider and the Agent.
+The earlier `(iss, eid)` reading would discard later events on the same
+subscription; that sentence is not in this pin.
 
-The implementation keeps `(iss, eid)` as subscription and routing
-context. It derives a local delivery fingerprint as SHA-256 over the exact
-compact Event token bytes, a separator, the signed content type, another
-separator, and the exact payload bytes. An exact replay is ignored; a different
-authenticated token, content type, or payload on the same subscription is a
-different delivery. The fingerprint is local state, not a new wire claim.
+The implementation keeps `eid` as subscription and routing context. It derives
+a local delivery fingerprint as SHA-256 over the exact compact Event token
+bytes, a separator, the signed content type, another separator, and the exact
+payload bytes. An exact replay is ignored; a different authenticated token,
+content type, or payload on the same subscription is a different delivery.
+The fingerprint is local state, not a new wire claim. Requiring `jti` when
+an event token is minted or verified is separate from this fingerprint.
 
-## Events uses the stricter normative expiry rule
+## Event-token expiry is MUST NOT in both sections
 
-**Source:** Events, `Subscribe Token`, `Event Token`, and `Agent
-Verification`.
+**Source:** Events, `Structure` (the `exp` claim) and `Agent Verification`.
 
-The draft says both `MUST NOT` and `SHOULD NOT` act after Event-token expiry.
-The implementation applies `MUST NOT`. The inconsistency remains recorded for
-editor feedback.
+Both sections say the Agent MUST NOT act on an event token whose `exp` has
+passed. There is no MUST versus SHOULD NOT conflict in the pinned text.
+Verification rejects an expired event token.
 
 ## Events registration has exact retry and delivery-time endpoint resolution
 
