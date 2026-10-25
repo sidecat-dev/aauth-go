@@ -1451,6 +1451,54 @@ func (store *memoryDeferredAuthorizationStore) AnswerPendingAuthorizationClarifi
 	return nil
 }
 
+func (store *memoryDeferredAuthorizationStore) ReplacePendingAuthorizationRequest(
+	_ context.Context,
+	id string,
+	identity AuthorizationPollIdentity,
+	replacement UpdatedAuthorizationRequest,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok || !memoryAuthorizationIdentityMatches(pending, identity) {
+		return ErrPendingAuthorizationNotFound
+	}
+	materializeMemoryAuthorizationExpiry(pending, now)
+	if pending.state == AuthorizationPollExpired {
+		return ErrPendingAuthorizationExpired
+	}
+	if pending.state == AuthorizationPollGone || pending.state == AuthorizationPollCancelled {
+		return ErrPendingAuthorizationGone
+	}
+	if pending.state != AuthorizationPollInteracting && pending.state != AuthorizationPollClarifying {
+		return ErrPendingAuthorizationConflict
+	}
+	if len(replacement.Scopes) == 0 || !replacement.ResourceTokenExpiresAt.After(now) || !replacement.PersonTokenExpiresAt.After(now) {
+		return ErrPendingAuthorizationConflict
+	}
+	if pending.state == AuthorizationPollClarifying {
+		if len(pending.clarifications) == 0 {
+			return ErrPendingAuthorizationConflict
+		}
+		latest := &pending.clarifications[len(pending.clarifications)-1]
+		if latest.Response != "" || !now.Before(latest.ExpiresAt) {
+			return ErrPendingAuthorizationConflict
+		}
+		responseText := replacement.Justification
+		if responseText == "" {
+			responseText = "updated_request"
+		}
+		latest.Response = responseText
+		latest.RespondedAt = now
+		pending.state = AuthorizationPollInteracting
+	}
+	pending.record.Scopes = append([]string(nil), replacement.Scopes...)
+	pending.record.ResourceTokenExpiresAt = replacement.ResourceTokenExpiresAt.UTC()
+	pending.record.PersonTokenExpiresAt = replacement.PersonTokenExpiresAt.UTC()
+	return nil
+}
+
 func (store *memoryDeferredAuthorizationStore) CancelPendingAuthorizationClarification(
 	_ context.Context,
 	id string,

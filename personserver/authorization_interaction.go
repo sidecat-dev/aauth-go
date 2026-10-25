@@ -282,10 +282,27 @@ type MissionDeferredAuthorizationStore interface {
 // the active question and return ErrPendingAuthorizationGone after cancellation;
 // LoadPendingAuthorization exposes the complete ordered dialogue and terminal
 // cancellation time.
+//
+// ReplacePendingAuthorizationRequest applies a verified updated_request while
+// the record is Interacting or Clarifying. Clarifying closes the open round:
+// the justification is the retained response, or the text "updated_request"
+// when the agent omitted one, and the state returns to Interacting. Scopes
+// and the two token expiries are replaced. A later replacement is applied
+// again. Identity mismatch is ErrPendingAuthorizationNotFound.
 type AuthorizationClarificationStore interface {
 	RequestPendingAuthorizationClarification(context.Context, string, AuthorizationClarificationRequest, time.Time) (AuthorizationClarificationRound, error)
 	AnswerPendingAuthorizationClarification(context.Context, string, AuthorizationPollIdentity, string, time.Time) error
 	CancelPendingAuthorizationClarification(context.Context, string, AuthorizationPollIdentity, time.Time) error
+	ReplacePendingAuthorizationRequest(context.Context, string, AuthorizationPollIdentity, UpdatedAuthorizationRequest, time.Time) error
+}
+
+// UpdatedAuthorizationRequest is the verified replacement for one pending
+// consent ask. The server has already checked the resource-token pair.
+type UpdatedAuthorizationRequest struct {
+	Scopes                 []string
+	ResourceTokenExpiresAt time.Time
+	PersonTokenExpiresAt   time.Time
+	Justification          string
 }
 
 // MissionAuthorizationClarificationStore is the optional clarification

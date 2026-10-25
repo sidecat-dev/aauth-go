@@ -205,6 +205,54 @@ func (store *deferredAuthorizationStore) AnswerPendingAuthorizationClarification
 	return nil
 }
 
+func (store *deferredAuthorizationStore) ReplacePendingAuthorizationRequest(
+	_ context.Context,
+	reference string,
+	identity personserver.AuthorizationPollIdentity,
+	replacement personserver.UpdatedAuthorizationRequest,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[reference]
+	if !ok || !authorizationIdentityMatches(pending, identity) {
+		return personserver.ErrPendingAuthorizationNotFound
+	}
+	materializeAuthorizationExpiry(pending, now)
+	if pending.state == personserver.AuthorizationPollExpired {
+		return personserver.ErrPendingAuthorizationExpired
+	}
+	if pending.state == personserver.AuthorizationPollGone || pending.state == personserver.AuthorizationPollCancelled {
+		return personserver.ErrPendingAuthorizationGone
+	}
+	if pending.state != personserver.AuthorizationPollInteracting && pending.state != personserver.AuthorizationPollClarifying {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if len(replacement.Scopes) == 0 || !replacement.ResourceTokenExpiresAt.After(now) || !replacement.PersonTokenExpiresAt.After(now) {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if pending.state == personserver.AuthorizationPollClarifying {
+		if len(pending.clarifications) == 0 {
+			return personserver.ErrPendingAuthorizationConflict
+		}
+		latest := &pending.clarifications[len(pending.clarifications)-1]
+		if latest.Response != "" || !now.Before(latest.ExpiresAt) {
+			return personserver.ErrPendingAuthorizationConflict
+		}
+		responseText := replacement.Justification
+		if responseText == "" {
+			responseText = "updated_request"
+		}
+		latest.Response = responseText
+		latest.RespondedAt = now
+		pending.state = personserver.AuthorizationPollInteracting
+	}
+	pending.record.Scopes = append([]string(nil), replacement.Scopes...)
+	pending.record.ResourceTokenExpiresAt = replacement.ResourceTokenExpiresAt.UTC()
+	pending.record.PersonTokenExpiresAt = replacement.PersonTokenExpiresAt.UTC()
+	return nil
+}
+
 func (store *deferredAuthorizationStore) CancelPendingAuthorizationClarification(
 	_ context.Context,
 	reference string,

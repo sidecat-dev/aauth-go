@@ -455,6 +455,105 @@ func TestAuthorizationClarificationActionRejectsInvalidActionAndWrongIdentity(t 
 	}
 }
 
+func TestUpdatedRequestReplacesThePendingAskWhenIdentityMatches(t *testing.T) {
+	protocol := newAuthorizationInteractionProtocol(t)
+	store := newMemoryDeferredAuthorizationStore()
+	server := protocol.newServer(t, store)
+	pendingResponse := protocol.exchange(t, server, []string{"interaction", "clarification"})
+	requirement, err := aauth.ParseInteractionRequirement(pendingResponse.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := strings.TrimPrefix(requirement.URL, protocol.interactionURL+"/")
+	interaction, err := server.ConsumeAuthorizationInteractionCode(context.Background(), reference, requirement.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.RequestAuthorizationClarification(context.Background(), interaction, AuthorizationClarificationRequest{
+		Question: "Why write?", Lifetime: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	location := pendingResponse.Header().Get("Location")
+	thumbprint, err := protocol.agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowPerson := protocol.personTokenForUpdate(t, "authorization-person-token-2", protocol.subject)
+	narrowResource, err := aauth.MintResourceToken(protocol.resourceKey, aauth.ResourceTokenClaims{
+		Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument, Audience: protocol.personServerID,
+		JTI: "authorization-resource-token-2", PersonServer: protocol.personServerID, Subject: protocol.subject,
+		PresentedJTI: "authorization-person-token-2", AgentJKT: thumbprint,
+		IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
+		Scope: "records.read", Tenant: protocol.tenant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := protocol.clarificationAction(t, server, location, protocol.agentKey, protocol.agentToken, updatedRequestBody(t, narrowResource, narrowPerson, "read only"))
+	if accepted.Code != http.StatusNoContent {
+		t.Fatalf("updated_request = %d %s", accepted.Code, accepted.Body.String())
+	}
+	resumed, err := server.ResumeAuthorizationInteraction(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read"}) {
+		t.Fatalf("scopes = %#v", resumed.RequestedScopes())
+	}
+	rounds := resumed.Clarifications()
+	if len(rounds) != 1 || rounds[0].Response != "read only" {
+		t.Fatalf("clarification = %#v", rounds)
+	}
+
+	otherPerson := protocol.personTokenForUpdate(t, "authorization-person-token-3", "other-person")
+	otherResource, err := aauth.MintResourceToken(protocol.resourceKey, aauth.ResourceTokenClaims{
+		Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument, Audience: protocol.personServerID,
+		JTI: "authorization-resource-token-3", PersonServer: protocol.personServerID, Subject: "other-person",
+		PresentedJTI: "authorization-person-token-3", AgentJKT: thumbprint,
+		IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
+		Scope: "records.read", Tenant: protocol.tenant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched := protocol.clarificationAction(t, server, location, protocol.agentKey, protocol.agentToken, updatedRequestBody(t, otherResource, otherPerson, "other subject"))
+	assertAuthorizationInteractionProblem(t, mismatched, http.StatusBadRequest, "invalid_resource_token")
+	resumed, err = server.ResumeAuthorizationInteraction(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read"}) {
+		t.Fatalf("scopes after mismatch = %#v", resumed.RequestedScopes())
+	}
+}
+
+func updatedRequestBody(t *testing.T, resourceToken, presentedToken, justification string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{
+		"action": "updated_request", "resource_token": resourceToken,
+		"presented_token": presentedToken, "justification": justification,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func (p *authorizationInteractionProtocol) personTokenForUpdate(t *testing.T, jti, subject string) string {
+	t.Helper()
+	compact, err := aauth.MintPersonToken(p.personKey, aauth.PersonTokenClaims{
+		Issuer: p.personServerID, DWK: aauth.PersonDiscoveryDocument, Audience: p.resourceID,
+		Subject: subject, Confirmation: aauth.Confirmation{JWK: p.agentKey.PublicJWK()},
+		JTI: jti, IssuedAt: p.now.Unix(), ExpiresAt: p.now.Add(20 * time.Minute).Unix(),
+		Tenant: p.tenant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compact
+}
+
 func (p *authorizationInteractionProtocol) answerClarification(
 	t *testing.T,
 	server *Server,

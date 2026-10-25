@@ -9,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // Clarifications returns the complete retained dialogue in order. Questions
@@ -207,7 +210,7 @@ func (server *Server) handlePendingAuthorizationClarificationAnswer(response htt
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("authorization clarification is not configured"))
 		return
 	}
-	_, agent, _, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
+	_, agent, proof, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -220,9 +223,16 @@ func (server *Server) handlePendingAuthorizationClarificationAnswer(response htt
 	var input struct {
 		Action                string `json:"action"`
 		ClarificationResponse string `json:"clarification_response"`
+		ResourceToken         string `json:"resource_token"`
+		PresentedToken        string `json:"presented_token"`
+		Justification         string `json:"justification"`
 	}
 	if err := decodeJSON(request.Body, &input); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	if input.Action == "updated_request" {
+		server.handleUpdatedAuthorizationRequest(response, request, clarifications, identity, input.ResourceToken, input.PresentedToken, input.Justification, proof)
 		return
 	}
 	if input.Action != "clarification_response" || strings.TrimSpace(input.ClarificationResponse) == "" ||
@@ -256,6 +266,104 @@ func (server *Server) handlePendingAuthorizationClarificationAnswer(response htt
 		)
 	}
 	if err != nil {
+		writePendingAuthorizationMutationProblem(response, err)
+		return
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) handleUpdatedAuthorizationRequest(
+	response http.ResponseWriter,
+	request *http.Request,
+	clarifications AuthorizationClarificationStore,
+	identity AuthorizationPollIdentity,
+	resourceCompact, presentedCompact, justification string,
+	proof signaturekey.VerifiedRequest,
+) {
+	if resourceCompact == "" || presentedCompact == "" {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("updated_request requires resource_token and presented_token"))
+		return
+	}
+	if len(justification) > MaximumAuthorizationClarificationBytes {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("updated_request justification exceeds the clarification bound"))
+		return
+	}
+	id := request.PathValue("id")
+	if id == "" {
+		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
+		return
+	}
+	now := server.clock.Now().UTC()
+	mission, err := server.pendingAuthorizationMission(request.Context(), id, identity, now)
+	if err != nil {
+		writePendingAuthorizationMutationProblem(response, err)
+		return
+	}
+	if mission != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("mission updated_request is not implemented"))
+		return
+	}
+	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
+	resourceToken, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
+		request.Context(), resourceCompact, verificationClock,
+	)
+	if err == nil {
+		err = proof.CheckIssuedAt(time.Unix(resourceToken.IssuedAt, 0))
+	}
+	if err != nil {
+		writeEndpointTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
+		return
+	}
+	if r3Context != nil || budgetOffer != nil || resourceToken.Interaction != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("updated_request does not accept R3, Budget, or resource interaction"))
+		return
+	}
+	if err := server.validateResourceTokenTopology(resourceToken); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+		return
+	}
+	scopes, err := parseScopes(resourceToken.Scope)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+		return
+	}
+	presented, err := aauth.VerifyPresentedToken(
+		request.Context(), presentedCompact, resourceToken, server.keyResolver, verificationClock,
+	)
+	if err == nil {
+		err = proof.CheckIssuedAt(presentedTokenIssuedAt(presented))
+	}
+	if err != nil {
+		writePresentedTokenProblem(response, err)
+		return
+	}
+	snapshot, err := server.authorizationInteractions.LoadPendingAuthorization(request.Context(), id, now)
+	if err != nil {
+		writePendingAuthorizationMutationProblem(response, err)
+		return
+	}
+	if !pendingAuthorizationIdentityMatches(snapshot.Record, identity) {
+		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
+		return
+	}
+	thumbprint, err := snapshot.Record.Confirmation.Thumbprint()
+	if err != nil || resourceToken.Issuer != snapshot.Record.Resource ||
+		resourceToken.PersonServer != snapshot.Record.PersonServer ||
+		resourceToken.Subject != snapshot.Record.Subject ||
+		resourceToken.AgentJKT != thumbprint ||
+		resourceToken.MissionS256 != snapshot.Record.MissionS256 ||
+		resourceToken.Tenant != snapshot.Record.Tenant {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("updated resource token does not match the pending request"))
+		return
+	}
+	replacement := UpdatedAuthorizationRequest{
+		Scopes:                 scopes,
+		ResourceTokenExpiresAt: time.Unix(resourceToken.ExpiresAt, 0).UTC(),
+		PersonTokenExpiresAt:   presented.ExpiresAt.UTC(),
+		Justification:          strings.TrimSpace(justification),
+	}
+	if err := clarifications.ReplacePendingAuthorizationRequest(request.Context(), id, identity, replacement, now); err != nil {
 		writePendingAuthorizationMutationProblem(response, err)
 		return
 	}
