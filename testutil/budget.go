@@ -10,9 +10,10 @@ import (
 )
 
 type budgetStore struct {
-	mu      sync.Mutex
-	tokens  map[aauth.TokenReference]budgetAccount
-	persons map[string]int64
+	mu       sync.Mutex
+	tokens   map[aauth.TokenReference]budgetAccount
+	persons  map[string]int64
+	postings []usagePosting
 }
 
 type budgetAccount struct {
@@ -54,6 +55,11 @@ func (store *budgetStore) Charge(
 	account.consumed += charge.Cost
 	store.tokens[charge.Token] = account
 	store.persons[budgetPersonKey(charge.PersonServer, charge.Subject, charge.Audience)] += charge.Cost
+	store.postings = append(store.postings, usagePosting{
+		issuer: charge.Token.Issuer, personServer: charge.PersonServer, subject: charge.Subject,
+		audience: charge.Audience, tenant: charge.Tenant, mission: charge.MissionS256,
+		agentJKT: charge.AgentJKT, unit: charge.Grant.Unit(), cost: charge.Cost, at: charge.ChargedAt,
+	})
 	return resource.BudgetChargeResult{Cost: charge.Cost, Remaining: remaining - charge.Cost}, nil
 }
 

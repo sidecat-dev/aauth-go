@@ -40,9 +40,9 @@ func TestFederatedBudgetGrantMustFitResourceOfferAndPersonServerCeiling(t *testi
 	}{
 		{name: "within both ceilings", ceiling: &ceiling, grant: value(300_000, usd6)},
 		{name: "equal explicit ceiling", ceiling: &ceiling, grant: ceiling},
-		{name: "omitted ceiling uses Resource offer", grant: offer},
+		{name: "omitted ceiling rejects a Budget claim", grant: offer, wantErr: "omitted"},
 		{name: "exceeds explicit ceiling", ceiling: &ceiling, grant: value(450_001, usd6), wantErr: "Person Server ceiling"},
-		{name: "exceeds Resource offer when ceiling omitted", grant: value(600_001, usd6), wantErr: "Resource offer"},
+		{name: "omitted ceiling rejects a broadened claim", grant: value(600_001, usd6), wantErr: "omitted"},
 		{name: "changes unit", ceiling: &ceiling, grant: value(300_000, credits), wantErr: "Resource offer"},
 		{name: "changes decimals", ceiling: &ceiling, grant: value(30, usd2), wantErr: "Resource offer"},
 	} {

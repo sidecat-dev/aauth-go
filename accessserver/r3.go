@@ -147,52 +147,46 @@ func (server *Server) verifyResourceTokenForAuthorization(
 	ctx context.Context,
 	compact string,
 	clock aauth.Clock,
-) (aauth.ResourceTokenClaims, *verifiedR3, *budgets.Value, error) {
+) (aauth.ResourceTokenClaims, *verifiedR3, *budgets.Value, *budgets.ConsumptionRecord, error) {
 	carriesR3, err := r3dispatch.TokenCarriesClaims(compact)
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, nil, nil, err
+		return aauth.ResourceTokenClaims{}, nil, nil, nil, err
 	}
 	carriesBudget, err := budgets.TokenCarriesClaims(compact)
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, nil, nil, err
+		return aauth.ResourceTokenClaims{}, nil, nil, nil, err
 	}
 	if carriesR3 && carriesBudget {
 		if server.r3 == nil {
-			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: R3 Budget resource token is not supported")
+			return aauth.ResourceTokenClaims{}, nil, nil, nil, errors.New("accessserver: R3 Budget resource token is not supported")
 		}
 		claims, reference, offer, consumed, err := r3.VerifyBudgetResourceToken(
 			ctx, server.r3.registry, compact, server.keyResolver, clock,
 		)
 		if err != nil {
-			return aauth.ResourceTokenClaims{}, nil, nil, err
+			return aauth.ResourceTokenClaims{}, nil, nil, nil, err
 		}
-		if consumed != nil {
-			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: a Budget consumption record requires retained grant resolution")
-		}
-		return claims, &verifiedR3{reference: reference}, &offer, nil
+		return claims, &verifiedR3{reference: reference}, &offer, cloneConsumptionRecord(consumed), nil
 	}
 	if carriesBudget {
 		claims, offer, consumed, err := budgets.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
 		if err != nil {
-			return aauth.ResourceTokenClaims{}, nil, nil, err
+			return aauth.ResourceTokenClaims{}, nil, nil, nil, err
 		}
-		if consumed != nil {
-			return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: a Budget consumption record requires retained grant resolution")
-		}
-		return claims, nil, &offer, nil
+		return claims, nil, &offer, cloneConsumptionRecord(consumed), nil
 	}
 	if !carriesR3 {
 		claims, err := aauth.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
-		return claims, nil, nil, err
+		return claims, nil, nil, nil, err
 	}
 	if server.r3 == nil {
-		return aauth.ResourceTokenClaims{}, nil, nil, errors.New("accessserver: R3 resource token is not supported")
+		return aauth.ResourceTokenClaims{}, nil, nil, nil, errors.New("accessserver: R3 resource token is not supported")
 	}
 	claims, reference, err := r3.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, nil, nil, err
+		return aauth.ResourceTokenClaims{}, nil, nil, nil, err
 	}
-	return claims, &verifiedR3{reference: reference}, nil, nil
+	return claims, &verifiedR3{reference: reference}, nil, nil, nil
 }
 
 func (server *Server) fetchR3Artifact(

@@ -70,9 +70,13 @@ type AuthorizationRequest struct {
 	// Subagent is present only for a parent-mediated request. Agent remains
 	// the top-level parent whose grant the policy evaluates.
 	Subagent *Agent
-	// Budget is the verified Resource offer narrowed by the Person Server. When
-	// the signed request omits a ceiling, it is the Resource offer itself.
+	// Budget is the Person Server ceiling when the PS-to-AS request carried one.
+	// It is nil when that request omitted budget, including when the Resource
+	// token offered a budget. Omission is not a grant.
 	Budget *budgets.Value
+	// BudgetConsumed is the resource token's consumption record when the
+	// Resource reported spend on the presented auth token. It is not a grant.
+	BudgetConsumed *budgets.ConsumptionRecord
 	// Claims are values the Person Server posted for a requirement=claims wait.
 	// Keys are claim names. sub is never present.
 	Claims map[string]json.RawMessage
@@ -226,7 +230,7 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
 		return
 	}
-	resourceClaims, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
+	resourceClaims, r3Context, budgetOffer, budgetConsumed, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err == nil {
@@ -342,8 +346,9 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 			ExpiresAt:        time.Unix(agentClaims.ExpiresAt, 0).UTC(),
 			AdditionalClaims: cloneClaims(agentClaims.AdditionalClaims),
 		},
-		Budget: cloneBudgetValue(budgetCeiling),
-		Claims: cloneClaims(pendingClaims(pending)),
+		Budget:         cloneBudgetValue(budgetCeiling),
+		BudgetConsumed: cloneConsumptionRecord(budgetConsumed),
+		Claims:         cloneClaims(pendingClaims(pending)),
 	}
 	if subagentClaims != nil {
 		policyRequest.Subagent = &Agent{

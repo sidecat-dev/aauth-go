@@ -66,6 +66,18 @@ func RunBudget(t *testing.T, contract BudgetContract) {
 		t.Fatalf("Charge after insufficiency = %#v, %v", result, err)
 	}
 
+	t.Run("person ledger is not a ceiling", func(t *testing.T) {
+		store := contract.New(t)
+		first := budgetCharge(t, "https://person.example", "token-a", 10, 10)
+		second := budgetCharge(t, "https://person.example", "token-b", 10, 10)
+		for _, charge := range []resource.BudgetCharge{first, second} {
+			result, err := store.Charge(ctx, charge)
+			if err != nil || result != (resource.BudgetChargeResult{Cost: 10, Remaining: 0}) {
+				t.Fatalf("Charge %s = %#v, %v", charge.Token.JTI, result, err)
+			}
+		}
+	})
+
 	t.Run("zero-cost observations", func(t *testing.T) {
 		store := contract.New(t)
 		charge := budgetCharge(t, "https://person.example", "observed-token", 10, 0)

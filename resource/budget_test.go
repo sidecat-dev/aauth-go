@@ -320,6 +320,53 @@ func TestBudgetResourceMaySelectAnotherDeclaredDenomination(t *testing.T) {
 	}
 }
 
+func TestMeteredApplicationFailureStaysOnTheHeaderAndTheLedger(t *testing.T) {
+	t.Parallel()
+
+	protectedCalls := 0
+	protocol := newBudgetResourceProtocol(t, 200_000, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		protectedCalls++
+		http.Error(response, "boom", http.StatusInternalServerError)
+	}))
+	protocol.config.Budget.Challenge = protocol.challenge(t, nil)
+	grant := budgetValue(t, 200_000, protocol.unit)
+	authToken := protocol.authToken(t, "failed-after-meter", grant)
+	server := protocol.server(t)
+
+	failed := protocol.call(t, server, authToken)
+	if failed.Code != http.StatusInternalServerError || protectedCalls != 1 {
+		t.Fatalf("status = %d, protected = %d, body = %s", failed.Code, protectedCalls, failed.Body.String())
+	}
+	feedback, err := budgets.ParseFeedback(failed.Header().Values("AAuth-Budget"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cost, hasCost := feedback.Cost()
+	if !hasCost || cost != 200_000 || feedback.Remaining() != 0 {
+		t.Fatalf("failed-call feedback = cost %d/%t remaining %d", cost, hasCost, feedback.Remaining())
+	}
+	if consumed := protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer); consumed != 200_000 {
+		t.Fatalf("person ledger after failed call = %d", consumed)
+	}
+
+	refusal := protocol.call(t, server, authToken)
+	assertBudgetRefusal(
+		t, refusal, budgets.ReasonBudgetExhausted,
+		0, 0, false, protocol.unit, protocol.resolver, protocol.clock,
+	)
+	if protectedCalls != 1 {
+		t.Fatalf("exhausted follow-up dispatched the application: protected = %d", protectedCalls)
+	}
+	requirement, _, err := budgets.ParseAuthTokenRequirement(refusal.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, record, err := budgets.VerifyResourceToken(context.Background(), requirement.ResourceToken, protocol.resolver, protocol.clock)
+	if err != nil || record == nil || record.JTI() != "failed-after-meter" || record.Consumed() != 200_000 {
+		t.Fatalf("consumption record = %#v, %v", record, err)
+	}
+}
+
 func TestBudgetProtectedCallChargesOnceAndRetainedStoreSurvivesResourceRecomposition(t *testing.T) {
 	t.Parallel()
 
@@ -357,6 +404,14 @@ func TestBudgetProtectedCallChargesOnceAndRetainedStoreSurvivesResourceRecomposi
 	if consumed := protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer); consumed != 400_000 {
 		t.Fatalf("person consumed = %d, want 400000", consumed)
 	}
+	state := protocol.store.tokens[aauth.TokenReference{Issuer: personIssuer, JTI: "budget-auth-token"}]
+	thumbprint, err := protocol.agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.charge.AgentJKT != thumbprint || !state.charge.ChargedAt.Equal(protocol.now) {
+		t.Fatalf("metered charge attribution = jkt %q at %s", state.charge.AgentJKT, state.charge.ChargedAt)
+	}
 }
 
 func TestBudgetProtectedCallReportsExhaustionWithoutChargingOrCallingTheApplication(t *testing.T) {
@@ -380,6 +435,14 @@ func TestBudgetProtectedCallReportsExhaustionWithoutChargingOrCallingTheApplicat
 	)
 	if protectedCalls != 1 || protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer) != 200_000 {
 		t.Fatalf("exhausted call consequences: Protected=%d consumed=%d", protectedCalls, protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer))
+	}
+	requirement, _, err := budgets.ParseAuthTokenRequirement(second.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, consumed, err := budgets.VerifyResourceToken(context.Background(), requirement.ResourceToken, protocol.resolver, protocol.clock)
+	if err != nil || consumed == nil || consumed.JTI() != "exhausted-budget-auth-token" || consumed.Consumed() != 200_000 {
+		t.Fatalf("consumption record = %#v, %v", consumed, err)
 	}
 }
 
@@ -573,6 +636,53 @@ func TestBudgetRefusalRejectsAChallengeNamingTheRetainedPersonToken(t *testing.T
 	}
 	if cost, ok := feedback.Cost(); !ok || cost != 0 || feedback.Remaining() != 100_000 {
 		t.Fatalf("refusal feedback=%#v", feedback)
+	}
+}
+
+func TestBudgetRefusalRejectsConsumptionRestatedInAnotherUnit(t *testing.T) {
+	t.Parallel()
+
+	protectedCalls := 0
+	protocol := newBudgetResourceProtocol(t, 200_000, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		protectedCalls++
+	}))
+	tokens, err := budgets.NewUnit("tokens", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration, err := budgets.NewBoundedUnitDeclaration(tokens, 2_000_000, "Model tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	protocol.config.Budget.Units = append(protocol.config.Budget.Units, declaration)
+	protocol.config.Budget.Challenge = func(_ context.Context, request BudgetChallengeRequest) (string, error) {
+		thumbprint, err := request.Principal.Confirmation.Thumbprint()
+		if err != nil {
+			return "", err
+		}
+		record, err := budgets.ConsumptionForPresentedGrant(request.Token.JTI, request.Grant, request.Remaining)
+		if err != nil {
+			return "", err
+		}
+		claims := aauth.ResourceTokenClaims{
+			Issuer: resourceIssuer, DWK: aauth.ResourceDiscoveryDocument,
+			Audience: request.Principal.PersonServer, JTI: "replacement-" + request.Token.JTI,
+			PersonServer: request.Principal.PersonServer, Subject: request.Principal.Subject,
+			PresentedJTI: request.Token.JTI, AgentJKT: thumbprint,
+			IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
+			Scope:       strings.Join(request.Principal.Scope, " "),
+			Account:     cloneBudgetAccount(request.Principal.Account),
+			MissionS256: request.Principal.MissionS256, Tenant: request.Principal.Tenant,
+		}
+		return budgets.MintResourceToken(protocol.resourceKey, claims, budgetValue(t, 1_000, tokens), &record)
+	}
+	authToken := protocol.authToken(t, "stale-scale-challenge", budgetValue(t, 100_000, protocol.unit))
+	response := protocol.call(t, protocol.server(t), authToken)
+	if response.Code != http.StatusInternalServerError || protectedCalls != 0 {
+		t.Fatalf("stale-scale challenge status=%d Protected=%d body=%s", response.Code, protectedCalls, response.Body.String())
+	}
+	if response.Header().Get("AAuth-Requirement") != "" {
+		t.Fatalf("stale-scale challenge was issued: requirement=%q", response.Header().Get("AAuth-Requirement"))
 	}
 }
 
@@ -946,7 +1056,15 @@ func (protocol *budgetResourceProtocol) challengeToken(
 	if mutate != nil {
 		mutate(&claims, &offer)
 	}
-	return budgets.MintResourceToken(protocol.resourceKey, claims, offer, nil)
+	var consumed *budgets.ConsumptionRecord
+	if offer.Unit().Equal(request.Grant.Unit()) {
+		record, err := budgets.ConsumptionForPresentedGrant(request.Token.JTI, request.Grant, request.Remaining)
+		if err != nil {
+			return "", err
+		}
+		consumed = &record
+	}
+	return budgets.MintResourceToken(protocol.resourceKey, claims, offer, consumed)
 }
 
 func assertBudgetSuccess(t *testing.T, response *httptest.ResponseRecorder, cost, remaining int64, unit budgets.Unit) {

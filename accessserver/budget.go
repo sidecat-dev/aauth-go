@@ -88,8 +88,11 @@ func selectBudgetCeiling(resourceOffer, personCeiling *budgets.Value) (*budgets.
 		}
 		return nil, nil
 	}
+	// A missing parameter is not the Resource offer. The PS echoes that offer
+	// when it grants the full figure; omission means the PS is not granting a
+	// budget, and the AS must not issue a budget claim.
 	if personCeiling == nil {
-		return cloneBudgetValue(resourceOffer), nil
+		return nil, nil
 	}
 	if err := budgets.ValidateNarrowing(*resourceOffer, *personCeiling); err != nil {
 		return nil, fmt.Errorf("Person Server Budget ceiling: %w", err)
@@ -102,5 +105,13 @@ func cloneBudgetValue(value *budgets.Value) *budgets.Value {
 		return nil
 	}
 	cloned := *value
+	return &cloned
+}
+
+func cloneConsumptionRecord(record *budgets.ConsumptionRecord) *budgets.ConsumptionRecord {
+	if record == nil {
+		return nil
+	}
+	cloned := *record
 	return &cloned
 }

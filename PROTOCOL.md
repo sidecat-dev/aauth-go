@@ -624,11 +624,13 @@ before application dispatch and reports cost and remaining Budget as an RFC
 
 Immediate four-party Core uses the same Resource offer and protected-call
 enforcement. The Person Server and Access Server each resolve trusted current
-`budget_units` metadata. The PS may lower only the amount and carries that
-ceiling in its signed request. If it omits the optional member, the AS uses the
-verified Resource offer as the PS ceiling. AS policy may lower only the amount,
-the PS verifies the returned signed grant against both ceilings, and the Agent
-verifies the complete Resource-token context before protected use.
+`budget_units` metadata. The PS copies `unit` and `decimals` from the Resource
+token and may lower only the amount. If it omits the optional member, that
+omission is not a grant: the AS issues no `budget` claim, and the PS rejects a
+token that carries one. When the PS sends a ceiling, AS policy may lower only
+the amount, and the PS verifies the returned claim against both the Resource
+offer and that ceiling. The Agent reads a present grant from the Auth token and
+accepts a token that omits the claim without substituting the Resource offer.
 
 The direct Core path also composes with an active mission. The exact mission
 digest flows from the mission Person token through the Resource and Auth tokens
@@ -655,8 +657,19 @@ explicit retry under the fresh narrowed grant; Core, R3+Budget, and
 hosted-service runnable journeys prove that composition. No library method
 retries a chargeable consequence automatically.
 When a post-send outcome cannot be verified, it carries the full signed grant
-as the only locally proved upper bound. Variable-cost settlement, streaming
-trailers, `budget_consumed` policy, usage queries, automatic reauthorization,
+as the only locally proved upper bound. A step-up Resource token may carry
+`budget_consumed` for the presented Auth token. The Person Server and Access
+Server verify that record and hand it to policy; they do not keep a grant
+store in order to admit it. The host joins `jti` to its own ledger. Until a
+figure arrives, `budgets.AccountedSpend` holds the full grant; a record
+replaces that assumption and does not settle the allocation.
+`budgets.Free` applies the draft's settlement formula. A Resource whose Budget
+store implements `BudgetUsageStore` publishes `usage_endpoint` and serves a
+signed `POST /usage`. The response is not signed. A streamed response can send `reserved` in the
+header and `cost` in an `AAuth-Budget` trailer. The fixed-price protected path
+still commits the known cost before dispatch and does not keep a reservation.
+The Agent treats a `reserved` header without `cost` as complete and assumes
+the reservation until a cost-only trailer arrives. Automatic reauthorization
 and reactive Resource-held or R3+Budget first calls are not part of these
 profiles.
 

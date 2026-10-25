@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
@@ -20,6 +21,9 @@ var (
 	// ErrBudgetConflict reports reuse of one auth-token identity with a
 	// different signed grant or person context.
 	ErrBudgetConflict = errors.New("resource: Budget token context conflicts with retained state")
+	// ErrUsageMixedUnit reports that one usage answer would mix denominations.
+	// The usage response names one unit and the draft defines no selector.
+	ErrUsageMixedUnit = errors.New("resource: usage figures span more than one Budget unit")
 )
 
 // BudgetOfferRequest is the authenticated, typed input to an optional host
@@ -107,6 +111,12 @@ type BudgetCharge struct {
 	Account      *string
 	Grant        budgets.Value
 	Cost         int64
+	// AgentJKT is the confirmation thumbprint of the presented auth token.
+	// ChargedAt is when this charge was metered. Neither field is part of the
+	// token-binding identity: a later charge for the same token may carry a
+	// newer time, and stores compare the grant and person context only.
+	AgentJKT  string
+	ChargedAt time.Time
 }
 
 // BudgetChargeResult is the definitive result of one BudgetStore.Charge.
@@ -128,6 +138,63 @@ type BudgetChargeResult struct {
 // return ErrBudgetExhausted with Cost and Remaining both zero.
 type BudgetStore interface {
 	Charge(context.Context, BudgetCharge) (BudgetChargeResult, error)
+}
+
+// BudgetUsageCaller is the signed server asking for usage counters.
+type BudgetUsageCaller struct {
+	// Identifier is the Signature-Key id, which the response echoes as aud.
+	Identifier string
+	// Document is aauth-person.json or aauth-access.json.
+	Document string
+}
+
+// BudgetUsageQuery is one usage-endpoint question. A Person Server sees
+// postings whose auth-token iss or ps is the caller. An Access Server sees
+// postings it issued, and a scope key also requires PersonServer. Tenant and
+// mission totals stay inside that person-server namespace. Calendar counters
+// use UTC boundaries: day at 00:00, ISO week at Monday 00:00, and the current
+// month and year. A counter that cannot be represented within the 15-digit
+// limit is omitted; all_time failing that limit omits the usage object.
+// A JKT is omitted rather than reported as zero when it was never seen or its
+// last metered charge is more than 24 hours before AsOf. ChargedAt zero is not
+// pruned. A zero cost that was metered is a real zero.
+type BudgetUsageQuery struct {
+	Caller       BudgetUsageCaller
+	AsOf         time.Time
+	Subject      string
+	Tenant       string
+	MissionS256  string
+	PersonServer string
+	JKTs         []string
+}
+
+// BudgetUsageResult is the aggregate a usage store can answer. HasUnit is
+// false when no posting matched. ScopeRecognized is false for a scope key the
+// caller has not metered, which the endpoint reports by omitting usage.
+// A false *OK field means that counter overflowed the 15-digit limit.
+// JKTs contains only thumbprints the store can answer.
+type BudgetUsageResult struct {
+	Unit            budgets.Unit
+	HasUnit         bool
+	ScopeRecognized bool
+	AllTime         int64
+	AllTimeOK       bool
+	Day             int64
+	DayOK           bool
+	Week            int64
+	WeekOK          bool
+	Month           int64
+	MonthOK         bool
+	Year            int64
+	YearOK          bool
+	JKTs            map[string]int64
+}
+
+// BudgetUsageStore is the optional usage-query half of a Budget store. A
+// Resource advertises usage_endpoint and serves POST /usage only when its
+// BudgetStore also implements this interface.
+type BudgetUsageStore interface {
+	QueryUsage(context.Context, BudgetUsageQuery) (BudgetUsageResult, error)
 }
 
 // BudgetConfig enables the fixed-price Budget profile on an authorized

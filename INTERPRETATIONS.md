@@ -1172,10 +1172,10 @@ The draft permits an Auth-token issuer to omit an offered Budget and then asks
 the Resource to apply a default. A positive default would bypass Person Server
 narrowing. The fixed-price profiles therefore treat omission from the Auth
 token as no metering authorization and refuse the operation; they do not
-construct a synthetic zero-valued grant. In four-party Core, the distinct
-PS-to-AS omission rule is implemented exactly as written: the AS uses the
-verified Resource offer as the PS ceiling. It must still issue an explicit
-equal-or-lower Budget for metered protected use. `BudgetConfig.Metered` lets
+construct a synthetic zero-valued grant. In four-party Core, PS-to-AS omission
+is not a grant: the AS does not substitute the Resource offer, and it must not
+issue a `budget` claim. A metered route then refuses that Auth token. When the
+PS does send a ceiling, the AS may only lower its amount. `BudgetConfig.Metered` lets
 host routing policy distinguish priced operations from free ones. Its absence
 meters every protected route, preserving the existing default. A free route
 accepts an otherwise valid Core Auth token without consulting pricing or the

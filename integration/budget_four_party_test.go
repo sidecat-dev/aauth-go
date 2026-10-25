@@ -121,9 +121,13 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 			capturedAccount := *request.Account
 			accessPolicyRequest.Account = &capturedAccount
 			*request.Account = "mutated-by-access-policy"
+			var granted *budgets.Value
+			if request.Budget != nil {
+				granted = &accessGrant
+			}
 			return accessserver.Decision{
 				Scopes: append([]string(nil), request.Scopes...),
-				Budget: &accessGrant, Lifetime: 30 * time.Minute,
+				Budget: granted, Lifetime: 30 * time.Minute,
 			}, nil
 		},
 		Budget: &accessserver.BudgetConfig{
@@ -188,13 +192,21 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 				if err != nil {
 					return "", err
 				}
+				var consumed *budgets.ConsumptionRecord
+				if challenge.Grant.Unit().Equal(resourceOffer.Unit()) {
+					record, recordErr := budgets.ConsumptionForPresentedGrant(challenge.Token.JTI, challenge.Grant, challenge.Remaining)
+					if recordErr != nil {
+						return "", recordErr
+					}
+					consumed = &record
+				}
 				return budgets.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
 					Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument, Audience: accessServerID,
 					PersonServer: personServerID, Subject: challenge.Principal.Subject,
 					JTI: "budget-four-party-step-up", PresentedJTI: challenge.Token.JTI, AgentJKT: jkt,
 					Scope: scope, Account: challenge.Principal.Account,
 					IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
-				}, resourceOffer, nil)
+				}, resourceOffer, consumed)
 			},
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -395,9 +407,10 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 	if !ok {
 		t.Fatal("missing four-party step-up")
 	}
-	challenge, _, _, err := budgets.VerifyResourceToken(ctx, stepUp.ResourceToken(), resolver, clock)
-	if err != nil || challenge.Audience != accessServerID || challenge.PresentedJTI != verifiedClaims.JTI {
-		t.Fatalf("step-up=%#v error=%v", challenge, err)
+	challenge, _, consumed, err := budgets.VerifyResourceToken(ctx, stepUp.ResourceToken(), resolver, clock)
+	if err != nil || challenge.Audience != accessServerID || challenge.PresentedJTI != verifiedClaims.JTI ||
+		consumed == nil || consumed.JTI() != verifiedClaims.JTI || consumed.Consumed() != 250_000 {
+		t.Fatalf("step-up=%#v consumed=%#v error=%v", challenge, consumed, err)
 	}
 	if protectedCalls.Load() != 2 || integrationBudgetFeedback(t, refusal.result).Remaining() != 50_000 {
 		t.Fatal("refusal changed consumption or dispatched")
@@ -419,22 +432,25 @@ func TestBudgetImmediateFourPartyFixedPriceJourney(t *testing.T) {
 		t.Fatal("replacement grant was not independently metered")
 	}
 
-	// The Budgets draft makes the PS-to-AS member optional. If the Person
-	// Server omits it, the Access Server must use the Resource offer as the
-	// ceiling rather than treating Budget as absent.
+	// Omitting the PS-to-AS budget parameter is not a grant of the Resource offer.
 	omitPersonCeiling.Store(true)
 	accessRequestBody = ""
 	accessPolicyRequest = accessserver.AuthorizationRequest{}
-	if _, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
+	omittedToken, err := agent.Exchange(ctx, clientagent.ExchangeRequest{
 		PersonServer: personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("exchange with omitted Person Server ceiling: %v", err)
 	}
 	if strings.Contains(accessRequestBody, `"budget"`) {
 		t.Fatalf("PS-to-AS request carried an omitted Budget ceiling: %s", accessRequestBody)
 	}
-	if accessPolicyRequest.Budget == nil || !integrationSameBudget(*accessPolicyRequest.Budget, resourceOffer) {
-		t.Fatalf("Access Server omission fallback = %#v, want Resource offer", accessPolicyRequest.Budget)
+	if accessPolicyRequest.Budget != nil {
+		t.Fatalf("Access Server treated omission as a ceiling: %#v", accessPolicyRequest.Budget)
+	}
+	omittedBudget, err := budgets.TokenCarriesClaims(omittedToken)
+	if err != nil || omittedBudget {
+		t.Fatalf("omitted PS budget still produced a budget claim: carries=%t err=%v", omittedBudget, err)
 	}
 
 	accessMetadataWrongScale.Store(true)

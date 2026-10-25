@@ -808,20 +808,26 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     into the Resource token. PS and AS policy receive it, the AS copies it into
     the Auth token, and Agent verification, Resource pricing, charging, and
     dispatch preserve it.
-  - Boundary: a PS omission means the Resource offer at the AS as the source
-    requires. A successful AS response must still carry an explicit signed
-    Budget. Per-call R3 plus Budget, deferred interaction, delegation, call chaining, consumption
-    history, variable cost, streaming, and usage queries remain excluded.
+  - Boundary: a PS omission is not a grant. The AS issues no `budget` claim, and
+    the PS rejects an Auth token that carries one. A step-up Resource token
+    carries `budget_consumed` for the presented Auth token in that grant's
+    scale. Per-call R3 plus Budget, deferred interaction, delegation, call
+    chaining, variable cost, streaming, and usage queries remain excluded.
 
 ### Not implemented
 
-- [ ] **Variable-cost and streaming calls — Not implemented.** There is no
-  reservation/settlement store contract, trailer reconciliation, or safe
-  interrupted-stream journey.
-- [ ] **Consumption history and usage queries — Not implemented as role journeys.**
-  `budgets.NewConsumptionRecord` and token helpers cover the carrier, while the
-  direct PS refuses nonempty history until retained prior-grant resolution
-  exists. There is no usage endpoint or counter-response journey.
+- [ ] **Variable-cost reservation — Not implemented as a store.** The fixed-price
+  path still commits the known cost before dispatch. `WriteStreamingBudgetHeader`
+  and `WriteStreamingBudgetTrailer` send `reserved` and a cost-only trailer.
+  The Agent accepts a `reserved` header with no trailer and assumes that hold.
+  There is no reserve-commit-release store and no interrupted-stream journey.
+- [x] **Usage queries — Implemented as a Resource endpoint and issuer helper.**
+  A store that implements `resource.BudgetUsageStore` publishes
+  `usage_endpoint` and answers a signed Person Server or Access Server
+  `POST /usage`. Counters are UTC calendar totals plus per-key figures.
+  `budgets.PostUsage` sends the query. The response is not signed. A step-up
+  Resource token may carry `budget_consumed`; the direct PS and the AS verify
+  it and deliver the record to policy without retaining the prior grant.
 - [x] **Mission-bound fixed Budget — Implemented in both authorization topologies**
   - Flow: host-reviewed mission and mission Person token → proactive Resource
     Budget offer → PS policy receives the exact active mission and narrows the

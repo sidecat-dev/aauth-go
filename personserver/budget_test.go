@@ -145,7 +145,7 @@ func TestDirectPSRejectsMalformedBudgetBeforeAuthorizationPolicy(t *testing.T) {
 	}
 }
 
-func TestDirectPSRejectsBudgetHistoryWithoutRetainedGrantResolution(t *testing.T) {
+func TestDirectPSDeliversBudgetConsumptionWithoutRetainingTheGrant(t *testing.T) {
 	t.Parallel()
 
 	protocol := newBudgetAuthorizationProtocol(t)
@@ -163,15 +163,18 @@ func TestDirectPSRejectsBudgetHistoryWithoutRetainedGrantResolution(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	policyCalls := 0
-	server := protocol.server(t, func(context.Context, AuthorizationRequest) (AuthorizationDecision, error) {
-		policyCalls++
+	var seen *budgets.ConsumptionRecord
+	server := protocol.server(t, func(_ context.Context, request AuthorizationRequest) (AuthorizationDecision, error) {
+		seen = request.BudgetConsumed
 		return AuthorizationDecision{Scopes: []string{"records.read"}, Lifetime: time.Minute, Budget: &offer}, nil
 	})
 
 	response := protocol.exchange(t, server, compact)
-	if response.Code != http.StatusBadRequest || policyCalls != 0 {
-		t.Fatalf("Budget history = %d %s; policy calls=%d", response.Code, response.Body.String(), policyCalls)
+	if response.Code != http.StatusOK {
+		t.Fatalf("Budget history = %d %s", response.Code, response.Body.String())
+	}
+	if seen == nil || seen.JTI() != "budget-person-token" || seen.Consumed() != 431_200 {
+		t.Fatalf("policy consumption = %#v", seen)
 	}
 }
 
