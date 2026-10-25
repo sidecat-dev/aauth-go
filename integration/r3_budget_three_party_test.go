@@ -185,6 +185,14 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 					if err != nil {
 						return "", err
 					}
+					var consumed *budgets.ConsumptionRecord
+					if request.Grant.Unit().Equal(offeredBudget.Unit()) {
+						metered, meterErr := budgets.ConsumptionForPresentedGrant(request.Token.JTI, request.Grant, request.Remaining)
+						if meterErr != nil {
+							return "", meterErr
+						}
+						consumed = &metered
+					}
 					return compactResult(r3.MintBudgetResourceToken(
 						registry, resourceKey, aauth.ResourceTokenClaims{
 							Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument,
@@ -192,7 +200,7 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 							PersonServer: lineage.Person.Issuer, Subject: lineage.Person.Subject,
 							PresentedJTI: request.Token.JTI, AgentJKT: lineage.AgentJKT,
 							IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
-						}, request.R3Reference.URI(), record.ExactJSON, offeredBudget, nil,
+						}, request.R3Reference.URI(), record.ExactJSON, offeredBudget, consumed,
 					))
 				},
 			},

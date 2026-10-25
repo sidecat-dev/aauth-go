@@ -564,17 +564,27 @@ func (client *Client) verifiedExchangeResponse(
 			ctx, output.AuthToken, resource.claims, *resource.r3Reference, credential,
 		)
 	} else if resource.budget != nil {
-		claims, granted, verifyErr := budgets.VerifyAuthToken(
-			ctx, output.AuthToken, client.keyResolver, client.clock,
-		)
-		if verifyErr != nil {
-			err = verifyErr
-		} else if validateErr := client.validateAuthTokenForResourceBinding(
-			claims, resource.claims, credential,
-		); validateErr != nil {
-			err = validateErr
-		} else if narrowErr := budgets.ValidateNarrowing(*resource.budget, granted); narrowErr != nil {
-			err = fmt.Errorf("auth-token Budget did not narrow the Resource offer: %w", narrowErr)
+		carriesBudget, carryErr := budgets.TokenCarriesClaims(output.AuthToken)
+		if carryErr != nil {
+			err = carryErr
+		} else if !carriesBudget {
+			// The issuer omitted the grant. The Resource offer is not a substitute,
+			// and the agent does not compare that offer with what it first requested.
+			_, err = client.verifyAuthTokenForResourceBinding(ctx, output.AuthToken, resource.claims, credential)
+		} else {
+			var claims aauth.AuthTokenClaims
+			var granted budgets.Value
+			claims, granted, err = budgets.VerifyAuthToken(
+				ctx, output.AuthToken, client.keyResolver, client.clock,
+			)
+			if err == nil {
+				err = client.validateAuthTokenForResourceBinding(claims, resource.claims, credential)
+			}
+			if err == nil {
+				if narrowErr := budgets.ValidateNarrowing(*resource.budget, granted); narrowErr != nil {
+					err = fmt.Errorf("auth-token Budget did not narrow the Resource offer: %w", narrowErr)
+				}
+			}
 		}
 	} else {
 		_, err = client.verifyAuthTokenForResourceBinding(ctx, output.AuthToken, resource.claims, credential)

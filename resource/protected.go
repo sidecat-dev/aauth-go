@@ -544,7 +544,10 @@ func (server *Server) enforceFixedBudget(
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
-	if err := server.validateBudgetChallenge(request.Context(), challengeToken, claims.JTI, principal, r3Reference); err != nil {
+	if err := server.validateBudgetChallenge(
+		request.Context(), challengeToken, claims.JTI, principal, r3Reference,
+		grant.Amount()-result.Remaining, grant.Unit(),
+	); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
@@ -567,19 +570,22 @@ func (server *Server) validateBudgetChallenge(
 	presentedJTI string,
 	principal AuthPrincipal,
 	expectedR3Reference *r3.Reference,
+	metered int64,
+	meteredUnit budgets.Unit,
 ) error {
 	var claims aauth.ResourceTokenClaims
 	var offer budgets.Value
+	var consumed *budgets.ConsumptionRecord
 	if expectedR3Reference == nil {
 		var err error
-		claims, offer, _, err = budgets.VerifyResourceToken(ctx, compact, server.keyResolver, server.clock)
+		claims, offer, consumed, err = budgets.VerifyResourceToken(ctx, compact, server.keyResolver, server.clock)
 		if err != nil {
 			return err
 		}
 	} else {
 		var reference r3.Reference
 		var err error
-		claims, reference, offer, _, err = r3.VerifyBudgetResourceToken(
+		claims, reference, offer, consumed, err = r3.VerifyBudgetResourceToken(
 			ctx, server.r3.registry, compact, server.keyResolver, server.clock,
 		)
 		if err != nil {
@@ -587,6 +593,14 @@ func (server *Server) validateBudgetChallenge(
 		}
 		if reference != *expectedR3Reference {
 			return errors.New("fresh Resource token changed the protected R3 reference")
+		}
+	}
+	if consumed != nil {
+		if !offer.Unit().Equal(meteredUnit) {
+			return errors.New("fresh Resource token states consumption in a different scale than the metered grant")
+		}
+		if consumed.Consumed() != metered {
+			return errors.New("fresh Resource token consumption record does not match metered spend")
 		}
 	}
 	thumbprint, err := principal.Confirmation.Thumbprint()

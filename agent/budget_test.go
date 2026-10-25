@@ -206,6 +206,61 @@ func TestAgentRefusesAnAuthTokenThatBroadensTheResourceBudget(t *testing.T) {
 	}
 }
 
+func TestAgentAcceptsAnAuthTokenThatOmitsAnOfferedBudget(t *testing.T) {
+	t.Parallel()
+
+	protocol := newTestProtocol(t)
+	protocol.resourceAudience = protocol.personServerID
+	unit := budgetUnit(t, "USD", 6)
+	offered := budgetValue(t, 400_000, unit)
+	thumbprint, _ := protocol.agentKey.PublicJWK().Thumbprint()
+	resourceClaims := aauth.ResourceTokenClaims{
+		Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
+		Audience: protocol.personServerID, JTI: "budget-resource-omitted-grant",
+		PersonServer: protocol.personServerID, Subject: "person-123", PresentedJTI: "person-token-1",
+		AgentJKT: thumbprint, IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
+		Scope: "records.read",
+	}
+	resourceToken, err := budgets.MintResourceToken(protocol.resourceKey, resourceClaims, offered, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personToken := protocol.presentedPersonToken(t, resourceClaims, protocol.agentKey.PublicJWK())
+	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == protocol.personServerID+"/.well-known/aauth-person.json" {
+			return jsonResponse(request, http.StatusOK, map[string]string{
+				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"auth_token_endpoint": protocol.authTokenEndpoint,
+			}), nil
+		}
+		compact, mintErr := aauth.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
+			Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+			Audience: protocol.resourceID, JTI: "budget-auth-omitted-grant",
+			PersonServer: protocol.personServerID, Subject: "person-123",
+			Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
+			IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
+			Scope: "records.read",
+		})
+		if mintErr != nil {
+			t.Fatal(mintErr)
+		}
+		return jsonResponse(request, http.StatusOK, map[string]any{
+			"auth_token": compact, "expires_in": int64((30 * time.Minute) / time.Second),
+		}), nil
+	})})
+
+	authToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carries, err := budgets.TokenCarriesClaims(authToken)
+	if err != nil || carries {
+		t.Fatalf("omitted grant carries a budget=%t err=%v", carries, err)
+	}
+}
+
 func TestAgentDoBudgetReturnsValidatedSuccessFeedback(t *testing.T) {
 	t.Parallel()
 

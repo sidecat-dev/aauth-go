@@ -305,7 +305,7 @@ func (server *Server) handleUpdatedAuthorizationRequest(
 		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	resourceToken, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
+	resourceToken, r3Context, budgetOffer, _, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), resourceCompact, verificationClock,
 	)
 	if err == nil {

@@ -184,8 +184,8 @@ type BudgetConfig struct {
 // FederatedBudgetConfig supplies the independent Resource-metadata lookup and
 // Person Server ceiling decision for four-party Budget authorization. Ceiling
 // runs after consent and receives an independent copy of the same verified
-// policy input. It may return nil to omit the request member; the Access Server
-// then uses the verified Resource offer as the Person Server ceiling.
+// policy input. It may return nil to omit the request member. Omission is not
+// a grant: the Access Server must not issue a budget claim.
 type FederatedBudgetConfig struct {
 	ResolveResourceUnits func(context.Context, string) ([]budgets.UnitDeclaration, error)
 	Ceiling              func(context.Context, AuthorizationRequest) (*budgets.Value, error)
@@ -254,7 +254,12 @@ type AuthorizationRequest struct {
 	Capabilities []string
 	// Budget is the verified Resource-token offer. The callback receives an
 	// independent copy and may return only an amount-narrowed value.
-	Budget                   *budgets.Value
+	Budget *budgets.Value
+	// BudgetConsumed is the resource token's consumption record when the
+	// Resource reported spend on the presented auth token. It is not a grant.
+	// The host joins PresentedJTI to its own ledger; this library does not
+	// retain grants in order to admit the record.
+	BudgetConsumed           *budgets.ConsumptionRecord
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
 	// Mission is nonnil when the retained person-token lineage names an active
@@ -1016,7 +1021,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	resourceToken, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
+	resourceToken, r3Context, budgetOffer, budgetConsumed, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err == nil {
@@ -1240,6 +1245,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		Scopes:                append([]string(nil), scopes...),
 		Capabilities:          append([]string(nil), capabilities...),
 		Budget:                cloneBudgetValue(budgetOffer),
+		BudgetConsumed:        cloneConsumptionRecord(budgetConsumed),
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		Mission:               missionContext,
 	}
@@ -1606,16 +1612,37 @@ func validateBudgetDecision(offered, granted *budgets.Value) (*budgets.Value, er
 	return cloneBudgetValue(granted), nil
 }
 
+// federatedBudgetOmitted reports a budget claim on an auth token the Person
+// Server did not grant. A PS that omits the PS-to-AS budget parameter, and a
+// PS whose resource token carried no budget, both require the claim to be absent.
+func federatedBudgetOmitted(compact string) error {
+	carriesBudget, err := budgets.TokenCarriesClaims(compact)
+	if err != nil {
+		return err
+	}
+	if carriesBudget {
+		return errors.New("Access Server auth token invented a Budget")
+	}
+	return nil
+}
+
+func (server *Server) verifyFederatedBudgetOmission(ctx context.Context, compact string) (aauth.AuthTokenClaims, error) {
+	if err := federatedBudgetOmitted(compact); err != nil {
+		return aauth.AuthTokenClaims{}, err
+	}
+	return aauth.VerifyAuthToken(ctx, compact, server.keyResolver, server.clock)
+}
+
 func validateFederatedBudgetGrant(
 	resourceOffer budgets.Value,
 	personCeiling *budgets.Value,
 	accessGrant budgets.Value,
 ) error {
+	if personCeiling == nil {
+		return errors.New("Access Server issued a Budget when the Person Server omitted the parameter")
+	}
 	if err := budgets.ValidateNarrowing(resourceOffer, accessGrant); err != nil {
 		return fmt.Errorf("Access Server Budget exceeds the Resource offer: %w", err)
-	}
-	if personCeiling == nil {
-		return nil
 	}
 	if err := budgets.ValidateNarrowing(*personCeiling, accessGrant); err != nil {
 		return fmt.Errorf("Access Server Budget exceeds the Person Server ceiling: %w", err)
@@ -2086,6 +2113,7 @@ func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationReques
 	request.Scopes = append([]string(nil), request.Scopes...)
 	request.Capabilities = append([]string(nil), request.Capabilities...)
 	request.Budget = cloneBudgetValue(request.Budget)
+	request.BudgetConsumed = cloneConsumptionRecord(request.BudgetConsumed)
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
 	request.Mission = cloneMissionContext(request.Mission)
@@ -2101,6 +2129,14 @@ func cloneBudgetValue(value *budgets.Value) *budgets.Value {
 		return nil
 	}
 	cloned := *value
+	return &cloned
+}
+
+func cloneConsumptionRecord(record *budgets.ConsumptionRecord) *budgets.ConsumptionRecord {
+	if record == nil {
+		return nil
+	}
+	cloned := *record
 	return &cloned
 }
 
@@ -2155,7 +2191,8 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		return
 	}
 	var authToken aauth.AuthTokenClaims
-	if r3Context != nil && budgetOffer != nil {
+	switch {
+	case r3Context != nil && budgetOffer != nil && personBudgetCeiling != nil:
 		var grant budgets.Value
 		authToken, grant, err = server.verifyR3BudgetAccessResult(
 			request.Context(), accessOutput.AuthToken, r3Context,
@@ -2163,9 +2200,13 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		if err == nil {
 			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
 		}
-	} else if r3Context != nil {
+	case r3Context != nil && budgetOffer != nil:
+		if err = federatedBudgetOmitted(accessOutput.AuthToken); err == nil {
+			authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
+		}
+	case r3Context != nil:
 		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
-	} else if budgetOffer != nil {
+	case budgetOffer != nil && personBudgetCeiling != nil:
 		var grant budgets.Value
 		authToken, grant, err = budgets.VerifyAuthToken(
 			request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
@@ -2173,13 +2214,10 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		if err == nil {
 			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
 		}
-	} else {
-		carriesBudget, budgetErr := budgets.TokenCarriesClaims(accessOutput.AuthToken)
-		if budgetErr != nil {
-			err = budgetErr
-		} else if carriesBudget {
-			err = errors.New("Access Server auth token invented a Budget")
-		} else {
+	case budgetOffer != nil:
+		authToken, err = server.verifyFederatedBudgetOmission(request.Context(), accessOutput.AuthToken)
+	default:
+		if err = federatedBudgetOmitted(accessOutput.AuthToken); err == nil {
 			authToken, err = aauth.VerifyAuthToken(
 				request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
 			)

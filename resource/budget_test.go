@@ -381,6 +381,14 @@ func TestBudgetProtectedCallReportsExhaustionWithoutChargingOrCallingTheApplicat
 	if protectedCalls != 1 || protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer) != 200_000 {
 		t.Fatalf("exhausted call consequences: Protected=%d consumed=%d", protectedCalls, protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer))
 	}
+	requirement, _, err := budgets.ParseAuthTokenRequirement(second.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, consumed, err := budgets.VerifyResourceToken(context.Background(), requirement.ResourceToken, protocol.resolver, protocol.clock)
+	if err != nil || consumed == nil || consumed.JTI() != "exhausted-budget-auth-token" || consumed.Consumed() != 200_000 {
+		t.Fatalf("consumption record = %#v, %v", consumed, err)
+	}
 }
 
 func TestBudgetProtectedCallEnforcesTheCapAtomicallyAcrossConcurrentRequests(t *testing.T) {
@@ -946,7 +954,15 @@ func (protocol *budgetResourceProtocol) challengeToken(
 	if mutate != nil {
 		mutate(&claims, &offer)
 	}
-	return budgets.MintResourceToken(protocol.resourceKey, claims, offer, nil)
+	var consumed *budgets.ConsumptionRecord
+	if offer.Unit().Equal(request.Grant.Unit()) {
+		record, err := budgets.ConsumptionForPresentedGrant(request.Token.JTI, request.Grant, request.Remaining)
+		if err != nil {
+			return "", err
+		}
+		consumed = &record
+	}
+	return budgets.MintResourceToken(protocol.resourceKey, claims, offer, consumed)
 }
 
 func assertBudgetSuccess(t *testing.T, response *httptest.ResponseRecorder, cost, remaining int64, unit budgets.Unit) {

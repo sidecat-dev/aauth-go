@@ -287,6 +287,39 @@ The ordinary Go suite also verifies that each file, commit, and digest remains
 bound in one row of this manifest and that the model uses controlled
 classification, ownership, state-role, and proof-seam vocabularies.
 
+## Executed behavior: Budgets
+
+The manifest pins the whole Budgets draft. This library executes the fixed-price
+narrowing chain and the consumption-record carrier:
+
+- A resource token's `budget` is the offer. Later parties copy `unit` and
+  `decimals` and may only lower `amount`.
+- When that token carries `budget` and the Person Server omits the PS-to-AS
+  `budget` parameter, the Access Server issues no `budget` claim. Omission is
+  not the Resource offer. The Person Server rejects an auth token that carries
+  a claim after that omission. A metered route then treats the auth token as
+  no budget authorization.
+- When the Person Server sends a ceiling, the Access Server may only lower
+  `amount`, and the Person Server checks the returned claim against both
+  ceilings.
+- A step-up resource token may carry `budget_consumed` for `presented_jti`.
+  The Person Server and Access Server verify the record and deliver it to
+  policy. They do not retain the prior grant in order to admit it. The
+  Resource rejects a record whose amount or scale disagrees with the metered
+  grant it just charged.
+
+Variable-cost settlement, streaming trailers, and usage queries are not
+executed. [CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining
+gaps.
+
+- Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
+- Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
+- Sections: PS-to-AS Token Request Extensions (542–572) and Auth Token
+  Extensions (574–608).
+- SHA-256: `f00d34c91576476cdb30b7aa1aa13a0bc9fc1d99fc43b4f0389ccb3e8bf2e150`.
+
+This note is a list, not a second manifest row.
+
 ## Implementation relationship
 
 ### AAuth Core
