@@ -639,6 +639,53 @@ func TestBudgetRefusalRejectsAChallengeNamingTheRetainedPersonToken(t *testing.T
 	}
 }
 
+func TestBudgetRefusalRejectsConsumptionRestatedInAnotherUnit(t *testing.T) {
+	t.Parallel()
+
+	protectedCalls := 0
+	protocol := newBudgetResourceProtocol(t, 200_000, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		protectedCalls++
+	}))
+	tokens, err := budgets.NewUnit("tokens", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration, err := budgets.NewBoundedUnitDeclaration(tokens, 2_000_000, "Model tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	protocol.config.Budget.Units = append(protocol.config.Budget.Units, declaration)
+	protocol.config.Budget.Challenge = func(_ context.Context, request BudgetChallengeRequest) (string, error) {
+		thumbprint, err := request.Principal.Confirmation.Thumbprint()
+		if err != nil {
+			return "", err
+		}
+		record, err := budgets.ConsumptionForPresentedGrant(request.Token.JTI, request.Grant, request.Remaining)
+		if err != nil {
+			return "", err
+		}
+		claims := aauth.ResourceTokenClaims{
+			Issuer: resourceIssuer, DWK: aauth.ResourceDiscoveryDocument,
+			Audience: request.Principal.PersonServer, JTI: "replacement-" + request.Token.JTI,
+			PersonServer: request.Principal.PersonServer, Subject: request.Principal.Subject,
+			PresentedJTI: request.Token.JTI, AgentJKT: thumbprint,
+			IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
+			Scope:       strings.Join(request.Principal.Scope, " "),
+			Account:     cloneBudgetAccount(request.Principal.Account),
+			MissionS256: request.Principal.MissionS256, Tenant: request.Principal.Tenant,
+		}
+		return budgets.MintResourceToken(protocol.resourceKey, claims, budgetValue(t, 1_000, tokens), &record)
+	}
+	authToken := protocol.authToken(t, "stale-scale-challenge", budgetValue(t, 100_000, protocol.unit))
+	response := protocol.call(t, protocol.server(t), authToken)
+	if response.Code != http.StatusInternalServerError || protectedCalls != 0 {
+		t.Fatalf("stale-scale challenge status=%d Protected=%d body=%s", response.Code, protectedCalls, response.Body.String())
+	}
+	if response.Header().Get("AAuth-Requirement") != "" {
+		t.Fatalf("stale-scale challenge was issued: requirement=%q", response.Header().Get("AAuth-Requirement"))
+	}
+}
+
 func TestBudgetStoreBindsAnAuthTokenReferenceToOneGrantAndContext(t *testing.T) {
 	t.Parallel()
 
