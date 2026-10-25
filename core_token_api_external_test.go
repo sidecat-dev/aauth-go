@@ -809,6 +809,40 @@ func TestPersonTokenVerificationRejectsAuthorizationClaims(t *testing.T) {
 	}
 }
 
+func TestResourceTokenRejectsEmptyAndNullLoginHint(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 29, 21, 0, 0, 0, time.UTC)
+	key := coreTokenKey(t, "login-hint-resource")
+	agent := coreTokenKey(t, "login-hint-agent")
+	thumbprint, err := agent.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: key.ID()}: key.PublicJWK(),
+	}
+	members := map[string]any{
+		"iss": "https://resource.example", "dwk": aauth.ResourceDiscoveryDocument,
+		"aud": "https://person.example", "jti": "resource-token-login-hint",
+		"ps": "https://person.example", "sub": "person-123", "presented_jti": "person-token-1",
+		"agent_jkt": thumbprint, "scope": "records.read",
+		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
+	}
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	if _, err := aauth.VerifyResourceToken(context.Background(), signCoreTokenPayload(t, key, aauth.ResourceTokenType, members), resolver, clock); err != nil {
+		t.Fatal(err)
+	}
+	for _, hint := range []any{"", nil} {
+		rejected := cloneCoreTokenMembers(members)
+		rejected["login_hint"] = hint
+		_, err := aauth.VerifyResourceToken(context.Background(), signCoreTokenPayload(t, key, aauth.ResourceTokenType, rejected), resolver, clock)
+		if err == nil || !strings.Contains(err.Error(), "login_hint") {
+			t.Fatalf("login_hint %#v error = %v", hint, err)
+		}
+	}
+}
+
 func signCoreTokenPayload(t *testing.T, key jose.SigningKey, tokenType string, members map[string]any) string {
 	t.Helper()
 	payload, err := json.Marshal(members)

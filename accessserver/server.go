@@ -73,6 +73,9 @@ type AuthorizationRequest struct {
 	// Budget is the verified Resource offer narrowed by the Person Server. When
 	// the signed request omits a ceiling, it is the Resource offer itself.
 	Budget *budgets.Value
+	// Claims are values the Person Server posted for a requirement=claims wait.
+	// Keys are claim names. sub is never present.
+	Claims map[string]json.RawMessage
 }
 
 // Decision is the requested Core-scope subset and lifetime granted by Core
@@ -144,13 +147,14 @@ func New(config Config) (*Server, error) {
 }
 
 // Handler serves POST /token, the metadata and JWKS documents, and with
-// Deferred the pending URLs GET and DELETE /token/pending/{id}, where id is the
-// PendingAuthorizationRecord ID.
+// Deferred the pending URLs GET, POST, and DELETE /token/pending/{id}, where id
+// is the PendingAuthorizationRecord ID. POST delivers claims.
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", server.handleToken)
 	if server.deferred != nil {
 		mux.HandleFunc("GET /token/pending/{id}", server.handlePendingToken)
+		mux.HandleFunc("POST /token/pending/{id}", server.handlePendingClaims)
 		mux.HandleFunc("DELETE /token/pending/{id}", server.handlePendingCancellation)
 	}
 	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
@@ -339,6 +343,7 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 			AdditionalClaims: cloneClaims(agentClaims.AdditionalClaims),
 		},
 		Budget: cloneBudgetValue(budgetCeiling),
+		Claims: cloneClaims(pendingClaims(pending)),
 	}
 	if subagentClaims != nil {
 		policyRequest.Subagent = &Agent{
@@ -531,6 +536,13 @@ func writeAccessPolicyProblem(response http.ResponseWriter, err error) {
 		return
 	}
 	writeProblem(response, http.StatusInternalServerError, "server_error", err)
+}
+
+func pendingClaims(pending *PendingAuthorizationRecord) map[string]json.RawMessage {
+	if pending == nil {
+		return nil
+	}
+	return pending.Claims
 }
 
 func cloneClaims(claims map[string]json.RawMessage) map[string]json.RawMessage {

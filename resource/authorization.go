@@ -95,8 +95,24 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 		}
 		budgetOffer = &offer
 	}
+	ask, err := server.checkedAuthorizationAsk(request, claims)
+	if err != nil {
+		writeAuthorizationAskProblem(response, err)
+		return
+	}
+	loginHint := ""
+	if ask != nil {
+		loginHint = ask.LoginHint
+		if account != nil && !sameAskAccount(account, ask.Account) {
+			writeProblem(response, http.StatusBadRequest, "invalid_account", errors.New("authorization account does not match the authorization ask"))
+			return
+		}
+		if account == nil {
+			account = cloneAuthorizationAccount(ask.Account)
+		}
+	}
 	compact, err := server.issueAuthorizationResourceToken(
-		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, account, operations, budgetOffer,
+		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, account, operations, budgetOffer, loginHint,
 	)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -142,8 +158,9 @@ func (server *Server) issueAuthorizationResourceToken(
 	account *string,
 	operations *r3.OperationSet,
 	budgetOffer *budgets.Value,
+	loginHint string,
 ) (string, error) {
-	claims, err := server.resourceTokenClaims(verifiedAt, requestKey, person, scopes, account)
+	claims, err := server.resourceTokenClaims(verifiedAt, requestKey, person, scopes, account, loginHint)
 	if err != nil {
 		return "", err
 	}
@@ -201,8 +218,9 @@ func (server *Server) issueResourceToken(
 	requestKey jose.JWK,
 	person aauth.PersonTokenClaims,
 	scopes []string,
+	loginHint string,
 ) (string, error) {
-	claims, err := server.resourceTokenClaims(verifiedAt, requestKey, person, scopes, nil)
+	claims, err := server.resourceTokenClaims(verifiedAt, requestKey, person, scopes, nil, loginHint)
 	if err != nil {
 		return "", err
 	}
@@ -215,6 +233,7 @@ func (server *Server) resourceTokenClaims(
 	person aauth.PersonTokenClaims,
 	scopes []string,
 	account *string,
+	loginHint string,
 ) (aauth.ResourceTokenClaims, error) {
 	agentJKT, err := requestKey.Thumbprint()
 	if err != nil {
@@ -241,6 +260,7 @@ func (server *Server) resourceTokenClaims(
 		ExpiresAt:    expiresAt.Unix(),
 		Scope:        strings.Join(scopes, " "),
 		Account:      cloneAuthorizationAccount(account),
+		LoginHint:    loginHint,
 		PersonServer: person.Issuer,
 		Subject:      person.Subject,
 		PresentedJTI: person.JTI,
@@ -272,6 +292,57 @@ func (server *Server) validateAuthorizationAccount(
 		return nil, err
 	}
 	return &account, nil
+}
+
+func (server *Server) lookupAuthorizationAsk(request *http.Request) (*AuthorizationAsk, error) {
+	if server.authorizationAsk == nil {
+		return nil, nil
+	}
+	policyRequest, finish, err := cloneScopePolicyRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = finish() }()
+	ask, err := server.authorizationAsk(policyRequest.Context(), policyRequest)
+	if err != nil || ask == nil {
+		return nil, err
+	}
+	copied := *ask
+	copied.Account = cloneAuthorizationAccount(ask.Account)
+	if copied.malformed() {
+		return nil, errAuthorizationAskHost
+	}
+	return &copied, nil
+}
+
+func (server *Server) checkedAuthorizationAsk(request *http.Request, person aauth.PersonTokenClaims) (*AuthorizationAsk, error) {
+	ask, err := server.lookupAuthorizationAsk(request)
+	if err != nil || ask == nil {
+		return nil, err
+	}
+	if !ask.matchesPerson(person.Issuer, person.Subject, person.Tenant) {
+		return nil, errAuthorizationAskMismatch
+	}
+	return ask, nil
+}
+
+func (server *Server) authTokenMatchesAsk(request *http.Request, claims aauth.AuthTokenClaims) error {
+	ask, err := server.lookupAuthorizationAsk(request)
+	if err != nil || ask == nil {
+		return err
+	}
+	if !ask.matchesAuth(claims.PersonServer, claims.Subject, claims.Tenant, claims.Account) {
+		return errAuthorizationAskMismatch
+	}
+	return nil
+}
+
+func writeAuthorizationAskProblem(response http.ResponseWriter, err error) {
+	if errors.Is(err, errAuthorizationAskMismatch) {
+		writeProblem(response, http.StatusForbidden, "access_denied", err)
+		return
+	}
+	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
 func cloneAuthorizationAccount(account *string) *string {

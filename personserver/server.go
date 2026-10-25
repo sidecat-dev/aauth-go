@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
@@ -223,6 +225,10 @@ type PersonTokenRequest struct {
 	// Upstream is nonnil only for explicit call chaining. It is an independent
 	// copy of the verified PS-issued auth-token claims.
 	Upstream *aauth.AuthTokenClaims
+	// Capabilities are the agent's declared interaction abilities. Omitted
+	// request members fall back to the mission's capabilities when a mission
+	// is bound.
+	Capabilities []string
 }
 
 // Person is the directed identity and lifetime selected by person-binding
@@ -758,11 +764,12 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"justification": input.Justification, "login_hint": input.LoginHint,
-		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
-		"platform": input.Platform, "device": input.Device, "capabilities": input.Capabilities,
-	}); err != nil {
+	if _, err := parseIgnoredPersonRequestHints(input.Justification, input.LoginHint, input.Tenant, input.DomainHint, input.Prompt, input.Platform, input.Device); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	capabilities, err := parseAuthorizationCapabilities(input.Capabilities)
+	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
@@ -825,10 +832,14 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
+	if input.Capabilities == nil && missionRecord != nil {
+		capabilities = append([]string(nil), missionRecord.Capabilities...)
+	}
 	personRequest := PersonTokenRequest{
 		Agent: agent.Subject, Resource: input.Resource,
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		Mission:               missionContext,
+		Capabilities:          append([]string(nil), capabilities...),
 	}
 	if delegated {
 		personRequest.Subagent = credentialAgent.Subject
@@ -845,6 +856,10 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 		if required {
+			if !slices.Contains(capabilities, "interaction") && !slices.Contains(capabilities, "clarification") {
+				writeProblem(response, http.StatusForbidden, "user_unreachable", errors.New("personserver: agent did not declare interaction or clarification"))
+				return
+			}
 			if err := server.beginPersonTokenInteraction(
 				response, request, personRequest, agent, credentialAgent, policy, missionRecord, proof.VerifiedAt(),
 			); err != nil {
@@ -949,10 +964,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if supportsCapabilities {
 		unsupportedCapabilities = nil
 	}
+	if _, err := parseIgnoredPersonRequestHints(input.Justification, input.LoginHint, input.Tenant, input.DomainHint, input.Prompt, input.Platform, input.Device); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"justification": input.Justification, "login_hint": input.LoginHint,
-		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
-		"platform": input.Platform, "device": input.Device, "capabilities": unsupportedCapabilities,
+		"capabilities": unsupportedCapabilities,
 	}); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
@@ -1255,10 +1272,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 				return
 			}
 			if required {
-				if budgetOffer != nil {
-					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: Budget authorization interaction is not implemented"))
-					return
-				}
 				if !slices.Contains(capabilities, "interaction") {
 					writeProblem(response, http.StatusForbidden, "user_unreachable", errors.New("Agent did not declare interaction capability"))
 					return
@@ -1931,6 +1944,77 @@ func decodeJSON(reader io.Reader, destination any) error {
 	return httpapi.DecodeJSON(reader, maxRequestBytes, destination)
 }
 
+func parseIgnoredPersonRequestHints(justification, loginHint, tenant, domainHint, prompt, platform, device json.RawMessage) (struct{}, error) {
+	for name, raw := range map[string]json.RawMessage{
+		"justification": justification, "login_hint": loginHint, "tenant": tenant, "domain_hint": domainHint,
+	} {
+		if _, err := parseOptionalRequestString(name, raw); err != nil {
+			return struct{}{}, err
+		}
+	}
+	promptValue, err := parseOptionalRequestString("prompt", prompt)
+	if err != nil {
+		return struct{}{}, err
+	}
+	if promptValue != "" {
+		switch promptValue {
+		case "none", "login", "consent", "select_account":
+		default:
+			return struct{}{}, fmt.Errorf("personserver: prompt %q is not registered", promptValue)
+		}
+	}
+	platformValue, err := parseOptionalRequestString("platform", platform)
+	if err != nil {
+		return struct{}{}, err
+	}
+	if platformValue != "" {
+		switch platformValue {
+		case "web", "mobile", "desktop", "workload", "self-hosted":
+		default:
+			return struct{}{}, fmt.Errorf("personserver: platform %q is not registered", platformValue)
+		}
+	}
+	deviceValue, err := parseOptionalRequestString("device", device)
+	if err != nil {
+		return struct{}{}, err
+	}
+	if deviceValue != "" {
+		if err := validatePersonRequestDevice(deviceValue); err != nil {
+			return struct{}{}, err
+		}
+	}
+	return struct{}{}, nil
+}
+
+func parseOptionalRequestString(name string, raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", fmt.Errorf("personserver: %s must be a string", name)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("personserver: %s must be a string", name)
+	}
+	if value == "" {
+		return "", fmt.Errorf("personserver: %s is empty", name)
+	}
+	return value, nil
+}
+
+func validatePersonRequestDevice(device string) error {
+	if utf8.RuneCountInString(device) > 64 {
+		return errors.New("personserver: device exceeds 64 characters")
+	}
+	for _, character := range device {
+		if !unicode.IsPrint(character) {
+			return errors.New("personserver: device must be printable UTF-8")
+		}
+	}
+	return nil
+}
+
 func rejectUnsupportedRequestMembers(members map[string]json.RawMessage) error {
 	for name, value := range members {
 		if value != nil {
@@ -1968,6 +2052,7 @@ func clonePersonTokenRequest(request PersonTokenRequest) PersonTokenRequest {
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
 	request.Mission = cloneMissionContext(request.Mission)
+	request.Capabilities = append([]string(nil), request.Capabilities...)
 	if request.Upstream != nil {
 		upstream := cloneAuthTokenClaims(*request.Upstream)
 		request.Upstream = &upstream

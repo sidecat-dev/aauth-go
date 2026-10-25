@@ -193,16 +193,8 @@ func TestServerIssuesAndRetainsDirectedPersonToken(t *testing.T) {
 	}
 
 	for name, unsupportedBody := range map[string]string{
-		"mission":       `{"resource":"https://resource.example","mission_s256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
-		"upstream":      `{"resource":"https://resource.example","upstream_token":"token"}`,
-		"justification": `{"resource":"https://resource.example","justification":"because"}`,
-		"login hint":    `{"resource":"https://resource.example","login_hint":"person@example.com"}`,
-		"tenant":        `{"resource":"https://resource.example","tenant":"tenant-1"}`,
-		"domain hint":   `{"resource":"https://resource.example","domain_hint":"example.com"}`,
-		"prompt":        `{"resource":"https://resource.example","prompt":"consent"}`,
-		"platform":      `{"resource":"https://resource.example","platform":"desktop"}`,
-		"device":        `{"resource":"https://resource.example","device":"test device"}`,
-		"capabilities":  `{"resource":"https://resource.example","capabilities":["interaction"]}`,
+		"mission":  `{"resource":"https://resource.example","mission_s256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
+		"upstream": `{"resource":"https://resource.example","upstream_token":"token"}`,
 	} {
 		t.Run("known unsupported person request "+name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "https://person.example/person", strings.NewReader(unsupportedBody))
@@ -479,13 +471,6 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 
 	for name, value := range map[string]any{
 		"upstream_token": "token",
-		"justification":  "because",
-		"login_hint":     "person@example.com",
-		"tenant":         "tenant-1",
-		"domain_hint":    "example.com",
-		"prompt":         "consent",
-		"platform":       "desktop",
-		"device":         "test device",
 		"capabilities":   []string{"interaction"},
 	} {
 		t.Run("known unsupported token request "+name, func(t *testing.T) {
@@ -506,7 +491,62 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 			}
 		})
 	}
+	for name, value := range map[string]any{
+		"justification": "because",
+		"login_hint":    "person@example.com",
+		"tenant":        "tenant-1",
+		"domain_hint":   "example.com",
+		"prompt":        "consent",
+		"platform":      "desktop",
+		"device":        "test device",
+	} {
+		t.Run("ignored token request "+name, func(t *testing.T) {
+			before := accessCalls
+			requestBody, err := json.Marshal(map[string]any{"resource_token": resourceToken, "presented_token": presentedToken, name: value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(requestBody))
+			request.Header.Set("Content-Type", "application/json")
+			if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if accessCalls != before+1 {
+				t.Fatalf("ignored %s did not reach Access Server; calls = %d, before = %d", name, accessCalls, before)
+			}
+		})
+	}
+	for name, value := range map[string]any{
+		"prompt":   "please",
+		"platform": "fridge",
+		"device":   strings.Repeat("x", 65),
+	} {
+		t.Run("invalid token request "+name, func(t *testing.T) {
+			before := accessCalls
+			requestBody, err := json.Marshal(map[string]any{"resource_token": resourceToken, "presented_token": presentedToken, name: value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(requestBody))
+			request.Header.Set("Content-Type", "application/json")
+			if err := signPersonServerTestRequest(request, agentKey, agentToken, clock); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			assertPersonServerProblem(t, response, "invalid_request")
+			if accessCalls != before {
+				t.Fatalf("invalid %s reached Access Server; calls = %d", name, accessCalls)
+			}
+		})
+	}
 
+	callsBeforeRejection := accessCalls
 	expiredResourceToken, err := aauth.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
 		Audience: "https://access.example", JTI: "expired-resource-token", AgentJKT: agentJKT,
@@ -526,7 +566,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	assertPersonServerProblem(t, response, "expired_resource_token")
-	if accessCalls != 1 {
+	if accessCalls != callsBeforeRejection {
 		t.Fatalf("expired resource token reached Access Server; calls = %d", accessCalls)
 	}
 
@@ -554,7 +594,7 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 		t.Fatalf("parameter token skew Signature-Error = %q", got)
 	}
 	assertPersonServerProblem(t, response, "clock_skew")
-	if accessCalls != 1 {
+	if accessCalls != callsBeforeRejection {
 		t.Fatalf("future resource token reached Access Server; calls = %d", accessCalls)
 	}
 
@@ -584,13 +624,13 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 
 	consentErr = errors.Join(ErrAccessDenied, errors.New("person declined access"))
 	assertPolicyProblem(callTokenEndpoint(), http.StatusForbidden, "access_denied")
-	if accessCalls != 1 {
+	if accessCalls != callsBeforeRejection {
 		t.Fatalf("consent denial reached Access Server; calls = %d", accessCalls)
 	}
 
 	consentErr = errors.New("consent policy data is unavailable")
 	assertPolicyProblem(callTokenEndpoint(), http.StatusInternalServerError, "server_error")
-	if accessCalls != 1 {
+	if accessCalls != callsBeforeRejection {
 		t.Fatalf("consent failure reached Access Server; calls = %d", accessCalls)
 	}
 	consentErr = nil

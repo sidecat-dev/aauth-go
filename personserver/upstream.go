@@ -219,10 +219,23 @@ func (server *Server) writeUpstreamTokenProblem(response http.ResponseWriter, er
 		if writeParameterClockSkew(response, tokenFailure.cause) {
 			return
 		}
+		if upstreamTokenExpired(tokenFailure.cause) {
+			writeProblem(response, http.StatusBadRequest, "expired_upstream_token", tokenFailure.cause)
+			return
+		}
 		writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", tokenFailure.cause)
 		return
 	}
+	if upstreamTokenExpired(err) {
+		writeProblem(response, http.StatusBadRequest, "expired_upstream_token", err)
+		return
+	}
 	writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", err)
+}
+
+func upstreamTokenExpired(err error) bool {
+	var validation *aauth.TokenValidationError
+	return errors.As(err, &validation) && validation.Code == aauth.TokenValidationExpired
 }
 
 func cloneAuthTokenClaims(claims aauth.AuthTokenClaims) aauth.AuthTokenClaims {

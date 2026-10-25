@@ -176,8 +176,11 @@ The manifest pins the whole Protocol file. The Core approval and payment
 continuation follows **AS Response**, **Auth Token Delivery**, **PS-AS Trust
 Establishment**, **Deferred Responses**, and **Pending URL Security**. This
 library executes the PS's terminal-error relay and `as_unreachable` distinction
-for deferred delivery alongside the immediate verifier. It does not execute the
-claims, clarification, or user-interaction branches described in those sections.
+for deferred delivery alongside the immediate verifier. A missionless Core
+claims wait uses `requirement=claims` and `required_claims`; the Person Server
+posts one JSON object of those names, rejects `sub`, and the Agent still sees
+approval. It does not execute the clarification or user-interaction branches
+described in those sections.
 Payment settlement remains outside AAuth; the implemented challenge carrier is
 `WWW-Authenticate`.
 

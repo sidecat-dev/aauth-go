@@ -16,10 +16,41 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
+
+func TestPendingAuthorizationRecordsEqualComparesBudgetOffer(t *testing.T) {
+	unit, err := budgets.NewUnit("usd", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftOffer, err := budgets.NewValue(100, unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightOffer, err := budgets.NewValue(200, unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmation := personServerTestKey(t, "budget-equality").PublicJWK()
+	left := PendingAuthorizationRecord{Confirmation: confirmation, BudgetOffer: &leftOffer}
+	right := PendingAuthorizationRecord{Confirmation: confirmation, BudgetOffer: &rightOffer}
+	if pendingAuthorizationRecordsEqual(left, right) {
+		t.Fatal("different budget offers compared equal")
+	}
+	copied := leftOffer
+	right.BudgetOffer = &copied
+	if !pendingAuthorizationRecordsEqual(left, right) {
+		t.Fatal("equal budget offers compared different")
+	}
+	right.BudgetOffer = nil
+	if pendingAuthorizationRecordsEqual(left, right) {
+		t.Fatal("missing budget offer compared equal")
+	}
+}
 
 func TestDeferredAuthorizationConfigurationAndImmediateCompatibility(t *testing.T) {
 	protocol := newAuthorizationInteractionProtocol(t)
@@ -1448,6 +1479,55 @@ func (store *memoryDeferredAuthorizationStore) AnswerPendingAuthorizationClarifi
 	latest.Response = answer
 	latest.RespondedAt = now
 	pending.state = AuthorizationPollInteracting
+	return nil
+}
+
+func (store *memoryDeferredAuthorizationStore) ReplacePendingAuthorizationRequest(
+	_ context.Context,
+	id string,
+	identity AuthorizationPollIdentity,
+	replacement UpdatedAuthorizationRequest,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[id]
+	if !ok || !memoryAuthorizationIdentityMatches(pending, identity) {
+		return ErrPendingAuthorizationNotFound
+	}
+	materializeMemoryAuthorizationExpiry(pending, now)
+	if pending.state == AuthorizationPollExpired {
+		return ErrPendingAuthorizationExpired
+	}
+	if pending.state == AuthorizationPollGone || pending.state == AuthorizationPollCancelled {
+		return ErrPendingAuthorizationGone
+	}
+	if pending.state != AuthorizationPollInteracting && pending.state != AuthorizationPollClarifying {
+		return ErrPendingAuthorizationConflict
+	}
+	if len(replacement.Scopes) == 0 || !replacement.ResourceTokenExpiresAt.After(now) || !replacement.PersonTokenExpiresAt.After(now) ||
+		!UpdatedAuthorizationExpiriesCoverPending(pending.record.ExpiresAt, replacement.ResourceTokenExpiresAt, replacement.PersonTokenExpiresAt) {
+		return ErrPendingAuthorizationConflict
+	}
+	if pending.state == AuthorizationPollClarifying {
+		if len(pending.clarifications) == 0 {
+			return ErrPendingAuthorizationConflict
+		}
+		latest := &pending.clarifications[len(pending.clarifications)-1]
+		if latest.Response != "" || !now.Before(latest.ExpiresAt) {
+			return ErrPendingAuthorizationConflict
+		}
+		responseText := replacement.Justification
+		if responseText == "" {
+			responseText = "updated_request"
+		}
+		latest.Response = responseText
+		latest.RespondedAt = now
+		pending.state = AuthorizationPollInteracting
+	}
+	pending.record.Scopes = append([]string(nil), replacement.Scopes...)
+	pending.record.ResourceTokenExpiresAt = replacement.ResourceTokenExpiresAt.UTC()
+	pending.record.PersonTokenExpiresAt = replacement.PersonTokenExpiresAt.UTC()
 	return nil
 }
 

@@ -832,7 +832,7 @@ func (protocol *personInteractionProtocol) newServer(t *testing.T, store *memory
 
 func (protocol *personInteractionProtocol) personTokenRequest(t *testing.T) *http.Request {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, protocol.personServerID+"/person", bytes.NewBufferString(`{"resource":"https://resource.example"}`))
+	request := httptest.NewRequest(http.MethodPost, protocol.personServerID+"/person", bytes.NewBufferString(`{"resource":"https://resource.example","capabilities":["interaction"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signPersonServerTestRequest(request, protocol.agentKey, protocol.agentToken, protocol.clock); err != nil {
 		t.Fatal(err)

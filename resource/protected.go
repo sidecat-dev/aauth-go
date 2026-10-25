@@ -253,6 +253,10 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token context does not match resource"))
 		return
 	}
+	if err := server.authTokenMatchesAsk(request, claims); err != nil {
+		writeAuthorizationAskProblem(response, err)
+		return
+	}
 	if !claims.Confirmation.JWK.Equal(proof.PublicKey()) {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request key does not match auth token"))
 		return
@@ -659,12 +663,8 @@ func (server *Server) servePersonTokenChallenge(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if hold {
-		server.serveHeldChallenge(response, request, proof, claims, scopes)
-		return
-	}
 	var budgetOffer *budgets.Value
-	if server.budget != nil {
+	if !hold && server.budget != nil {
 		offer, present, err := server.budget.initialOfferFor(request.Context(), request, claims, scopes)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -674,8 +674,23 @@ func (server *Server) servePersonTokenChallenge(
 			budgetOffer = &offer
 		}
 	}
+	ask, err := server.checkedAuthorizationAsk(request, claims)
+	if err != nil {
+		writeAuthorizationAskProblem(response, err)
+		return
+	}
+	loginHint := ""
+	var askAccount *string
+	if ask != nil {
+		loginHint = ask.LoginHint
+		askAccount = cloneAuthorizationAccount(ask.Account)
+	}
+	if hold {
+		server.serveHeldChallenge(response, request, proof, claims, scopes, loginHint)
+		return
+	}
 	resourceToken, err := server.issueAuthorizationResourceToken(
-		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, nil, nil, budgetOffer,
+		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, askAccount, nil, budgetOffer, loginHint,
 	)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)

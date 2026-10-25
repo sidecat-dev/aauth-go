@@ -205,6 +205,55 @@ func (store *deferredAuthorizationStore) AnswerPendingAuthorizationClarification
 	return nil
 }
 
+func (store *deferredAuthorizationStore) ReplacePendingAuthorizationRequest(
+	_ context.Context,
+	reference string,
+	identity personserver.AuthorizationPollIdentity,
+	replacement personserver.UpdatedAuthorizationRequest,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[reference]
+	if !ok || !authorizationIdentityMatches(pending, identity) {
+		return personserver.ErrPendingAuthorizationNotFound
+	}
+	materializeAuthorizationExpiry(pending, now)
+	if pending.state == personserver.AuthorizationPollExpired {
+		return personserver.ErrPendingAuthorizationExpired
+	}
+	if pending.state == personserver.AuthorizationPollGone || pending.state == personserver.AuthorizationPollCancelled {
+		return personserver.ErrPendingAuthorizationGone
+	}
+	if pending.state != personserver.AuthorizationPollInteracting && pending.state != personserver.AuthorizationPollClarifying {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if len(replacement.Scopes) == 0 || !replacement.ResourceTokenExpiresAt.After(now) || !replacement.PersonTokenExpiresAt.After(now) ||
+		!personserver.UpdatedAuthorizationExpiriesCoverPending(pending.record.ExpiresAt, replacement.ResourceTokenExpiresAt, replacement.PersonTokenExpiresAt) {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if pending.state == personserver.AuthorizationPollClarifying {
+		if len(pending.clarifications) == 0 {
+			return personserver.ErrPendingAuthorizationConflict
+		}
+		latest := &pending.clarifications[len(pending.clarifications)-1]
+		if latest.Response != "" || !now.Before(latest.ExpiresAt) {
+			return personserver.ErrPendingAuthorizationConflict
+		}
+		responseText := replacement.Justification
+		if responseText == "" {
+			responseText = "updated_request"
+		}
+		latest.Response = responseText
+		latest.RespondedAt = now
+		pending.state = personserver.AuthorizationPollInteracting
+	}
+	pending.record.Scopes = append([]string(nil), replacement.Scopes...)
+	pending.record.ResourceTokenExpiresAt = replacement.ResourceTokenExpiresAt.UTC()
+	pending.record.PersonTokenExpiresAt = replacement.PersonTokenExpiresAt.UTC()
+	return nil
+}
+
 func (store *deferredAuthorizationStore) CancelPendingAuthorizationClarification(
 	_ context.Context,
 	reference string,
@@ -515,6 +564,10 @@ func decisionsEqual(left, right personserver.AuthorizationDecision) bool {
 func clonePendingAuthorization(record personserver.PendingAuthorizationRecord) personserver.PendingAuthorizationRecord {
 	record.Scopes = append([]string(nil), record.Scopes...)
 	record.Capabilities = append([]string(nil), record.Capabilities...)
+	if record.BudgetOffer != nil {
+		offer := *record.BudgetOffer
+		record.BudgetOffer = &offer
+	}
 	record.AgentAdditionalClaims = cloneAuthorizationClaims(record.AgentAdditionalClaims)
 	record.SubagentAdditionalClaims = cloneAuthorizationClaims(record.SubagentAdditionalClaims)
 	return record
@@ -533,6 +586,10 @@ func cloneAuthorizationClaims(claims map[string]json.RawMessage) map[string]json
 
 func cloneAuthorizationDecision(decision personserver.AuthorizationDecision) personserver.AuthorizationDecision {
 	decision.Scopes = append([]string(nil), decision.Scopes...)
+	if decision.Budget != nil {
+		budget := *decision.Budget
+		decision.Budget = &budget
+	}
 	return decision
 }
 

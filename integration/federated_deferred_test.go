@@ -207,6 +207,11 @@ func newDeferredFederation(t *testing.T) *deferredFederation {
 					return accessserver.Decision{Pending: &accessserver.PendingDecision{RetryAfter: time.Duration(f.retry.Load()) * time.Second, Payment: &accessserver.PaymentChallenge{Authenticate: `Payment id="bill-1", method="example"`}}}, nil
 				case 1:
 					return accessserver.Decision{Pending: &accessserver.PendingDecision{}}, nil
+				case 3:
+					if _, ok := r.Claims["email"]; ok {
+						return accessserver.Decision{Scopes: r.Scopes, Lifetime: time.Duration(f.grantLifetime.Load()) * time.Second}, nil
+					}
+					return accessserver.Decision{Pending: &accessserver.PendingDecision{RequiredClaims: []string{"email"}}}, nil
 				default:
 					return accessserver.Decision{Scopes: r.Scopes, Lifetime: time.Duration(f.grantLifetime.Load()) * time.Second}, nil
 				}
@@ -910,8 +915,41 @@ func TestFederatedEquivalentGrantHasNoCrossExchangeBinding(t *testing.T) {
 	}
 }
 
+func TestFederatedClaimsStayWithThePersonServer(t *testing.T) {
+	f := newDeferredFederation(t)
+	f.stage.Store(3)
+	pending := f.begin(t)
+	if pending.Requirement() != aauth.RequirementApproval {
+		t.Fatalf("agent requirement = %q", pending.Requirement())
+	}
+	if strings.HasPrefix(pending.Location(), "https://as.example/") {
+		t.Fatal("agent was sent to the access server")
+	}
+	reference := deferredReference(pending)
+	record, err := f.ps.FederatedAuthorization(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Response.Header.Get("AAuth-Requirement") != "requirement=claims" || !strings.Contains(string(record.Response.Body), `"email"`) {
+		t.Fatalf("host claims challenge = %#v", record.Response)
+	}
+	if err := f.ps.SubmitFederatedClaims(context.Background(), reference, map[string]json.RawMessage{"sub": json.RawMessage(`"person"`), "email": json.RawMessage(`"a@example.com"`)}); err == nil {
+		t.Fatal("claims response containing sub was accepted")
+	}
+	if err := f.ps.SubmitFederatedClaims(context.Background(), reference, map[string]json.RawMessage{"email": json.RawMessage(`"a@example.com"`)}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.client.PollExchange(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result.Token(); !ok {
+		t.Fatal("claims delivery did not produce an auth token")
+	}
+}
+
 func TestFederatedUnsupportedRequirementIsLocalRefusal(t *testing.T) {
-	for _, requirement := range []string{"claims", "interaction", "clarification"} {
+	for _, requirement := range []string{"interaction", "clarification"} {
 		for _, phase := range []string{"initial", "poll"} {
 			t.Run(requirement+"/"+phase, func(t *testing.T) {
 				f := newDeferredFederation(t)

@@ -34,6 +34,7 @@ func (server *Server) serveHeldChallenge(
 	proof signaturekey.VerifiedRequest,
 	person aauth.PersonTokenClaims,
 	scopes []string,
+	loginHint string,
 ) {
 	snapshot, err := snapshotHeldRequest(request, server.maxRetainedRequestBodyBytes)
 	if err != nil {
@@ -44,7 +45,7 @@ func (server *Server) serveHeldChallenge(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	resourceToken, err := server.issueResourceToken(proof.VerifiedAt(), proof.PublicKey(), person, scopes)
+	resourceToken, err := server.issueResourceToken(proof.VerifiedAt(), proof.PublicKey(), person, scopes, loginHint)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return

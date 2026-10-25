@@ -561,6 +561,39 @@ func TestUnsupportedSchemeReturnsNegotiableTypedError(t *testing.T) {
 	}
 }
 
+func TestCachedSchemeReturnsUnsupportedScheme(t *testing.T) {
+	now := time.Date(2026, 8, 28, 22, 30, 0, 0, time.UTC)
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x44}, ed25519.SeedSize))
+	signingKey, err := jose.NewEd25519SigningKey("cached-scheme-key", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := signaturekey.NewJWTCredential("opaque.current.token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://resource.example/items", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signaturekey.SignRequest(request, signingKey, credential, fixedClock(now), signaturekey.SignOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Signature-Key", "sig=cached")
+	_, err = signaturekey.PrepareRequest(
+		request,
+		fixedClock(now),
+		signaturekey.VerifyOptions{AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeJWT, signaturekey.SchemeHWK}},
+	)
+	var failure *signaturekey.Error
+	if !errors.As(err, &failure) {
+		t.Fatalf("error = %T %v, want *signaturekey.Error", err, err)
+	}
+	if failure.Code != signaturekey.ErrorUnsupportedScheme {
+		t.Fatalf("code = %q, want %q", failure.Code, signaturekey.ErrorUnsupportedScheme)
+	}
+}
+
 func TestRequestProofAcceptsOneArbitraryMatchingLabel(t *testing.T) {
 	now := time.Date(2026, 8, 29, 20, 15, 0, 0, time.UTC)
 	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x47}, ed25519.SeedSize))

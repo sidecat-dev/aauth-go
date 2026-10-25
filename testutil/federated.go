@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
@@ -25,6 +26,14 @@ type accessAuthorizationStore struct {
 
 func cloneAccess(r accessserver.PendingAuthorizationRecord) accessserver.PendingAuthorizationRecord {
 	r.Request = append([]byte(nil), r.Request...)
+	r.RequiredClaims = append([]string(nil), r.RequiredClaims...)
+	if r.Claims != nil {
+		cloned := make(map[string]json.RawMessage, len(r.Claims))
+		for name, value := range r.Claims {
+			cloned[name] = append(json.RawMessage(nil), value...)
+		}
+		r.Claims = cloned
+	}
 	return r
 }
 func (s *accessAuthorizationStore) CreateAccessAuthorization(ctx context.Context, r accessserver.PendingAuthorizationRecord) error {
@@ -61,6 +70,8 @@ func (s *accessAuthorizationStore) ReplaceAccessAuthorization(ctx context.Contex
 	immutable.Revision = before.Revision
 	immutable.NextPollAt = before.NextPollAt
 	immutable.Gone = before.Gone
+	immutable.Claims = before.Claims
+	immutable.RequiredClaims = before.RequiredClaims
 	current, exists := s.records[before.ID]
 	if !exists || !reflect.DeepEqual(current, before) || !reflect.DeepEqual(immutable, before) || after.Revision != before.Revision+1 || before.Gone {
 		return accessserver.ErrPendingAuthorizationConflict

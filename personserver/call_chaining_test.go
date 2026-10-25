@@ -184,6 +184,7 @@ func TestCallChainingRejectsUnacceptableUpstreamBeforePolicyOrRetention(t *testi
 		},
 		{
 			name: "expired",
+			code: "expired_upstream_token",
 			token: func(t *testing.T, protocol *callChainingProtocol) string {
 				claims := protocol.upstreamClaims
 				claims.IssuedAt = protocol.now.Add(-20 * time.Minute).Unix()
@@ -426,7 +427,7 @@ func TestCallChainingRequiresCurrentUpstreamAtBothPersonServerCalls(t *testing.T
 	protocol.now = protocol.now.Add(11 * time.Minute)
 	resourceToken := protocol.resourceToken(t, personClaims, protocol.personServerID, "payments.charge", nil)
 	response := protocol.tokenRequest(t, server, resourceToken, protocol.upstreamToken, "")
-	assertCallChainingProblem(t, response, http.StatusBadRequest, "invalid_upstream_token")
+	assertCallChainingProblem(t, response, http.StatusBadRequest, "expired_upstream_token")
 	_, commits, loads := protocol.store.observation()
 	if protocol.chainBindCalls != 1 || protocol.chainAuthorizeCalls != 0 || commits != 1 || loads != 0 {
 		t.Fatalf(

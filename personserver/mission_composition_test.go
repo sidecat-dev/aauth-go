@@ -142,7 +142,7 @@ func TestMissionCompositionRejectsDeferredPersonBeforeBindingOrRetention(t *test
 	before := snapshotCompositionMissionStore(protocol.store)
 
 	response := signedCompositionRequest(t, protocol.server, protocol.personServerID+"/person", map[string]any{
-		"resource": protocol.resourceID, "mission_s256": mission.S256,
+		"resource": protocol.resourceID, "mission_s256": mission.S256, "capabilities": []string{"interaction"},
 	}, protocol.agentKey, protocol.agentToken, protocol.clock)
 
 	assertCompositionProblem(t, response, http.StatusInternalServerError, "server_error")
