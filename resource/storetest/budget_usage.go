@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,6 +157,36 @@ func RunBudgetUsage(t *testing.T, contract BudgetUsageContract) {
 	if err != nil || overflow.AllTimeOK || !overflow.ScopeRecognized {
 		t.Fatalf("overflow usage = %+v, %v", overflow, err)
 	}
+
+	t.Run("concurrent tokens", func(t *testing.T) {
+		store := contract.New(t)
+		usageStore := store.(resource.BudgetUsageStore)
+		charges := make([]resource.BudgetCharge, 8)
+		for index := range charges {
+			charges[index] = usageCharge(t, person, person, "person-race", "race-"+string(rune('a'+index)), key, asOf, 1)
+		}
+		var wait sync.WaitGroup
+		errs := make([]error, len(charges))
+		for index := range charges {
+			wait.Add(1)
+			go func(index int) {
+				defer wait.Done()
+				_, errs[index] = store.Charge(ctx, charges[index])
+			}(index)
+		}
+		wait.Wait()
+		for index, err := range errs {
+			if err != nil {
+				t.Fatalf("concurrent charge %d: %v", index, err)
+			}
+		}
+		raced, err := usageStore.QueryUsage(ctx, resource.BudgetUsageQuery{
+			Caller: personCaller, AsOf: asOf, Subject: "person-race",
+		})
+		if err != nil || !raced.ScopeRecognized || !raced.AllTimeOK || raced.AllTime != int64(len(charges)) {
+			t.Fatalf("concurrent person usage = %+v, %v", raced, err)
+		}
+	})
 }
 
 func usageCharge(t *testing.T, issuer, personServer, subject, jti, agent string, at time.Time, cost int64) resource.BudgetCharge {
