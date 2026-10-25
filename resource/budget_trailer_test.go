@@ -85,7 +85,7 @@ func TestBudgetHeaderIsSentWhenTheAgentOmitsTheBudgetCapability(t *testing.T) {
 		t, protocol.clock, protocol.agentKey, authToken,
 		http.MethodGet, resourceIssuer+"/records", "",
 	)
-	request.Header.Set("AAuth-Capabilities", "interaction")
+	request.Header.Set("AAuth-Capabilities", "interaction, not-a-real-capability")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	assertBudgetSuccess(t, response, 200_000, 300_000, protocol.unit)

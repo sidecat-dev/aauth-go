@@ -320,6 +320,53 @@ func TestBudgetResourceMaySelectAnotherDeclaredDenomination(t *testing.T) {
 	}
 }
 
+func TestMeteredApplicationFailureStaysOnTheHeaderAndTheLedger(t *testing.T) {
+	t.Parallel()
+
+	protectedCalls := 0
+	protocol := newBudgetResourceProtocol(t, 200_000, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		protectedCalls++
+		http.Error(response, "boom", http.StatusInternalServerError)
+	}))
+	protocol.config.Budget.Challenge = protocol.challenge(t, nil)
+	grant := budgetValue(t, 200_000, protocol.unit)
+	authToken := protocol.authToken(t, "failed-after-meter", grant)
+	server := protocol.server(t)
+
+	failed := protocol.call(t, server, authToken)
+	if failed.Code != http.StatusInternalServerError || protectedCalls != 1 {
+		t.Fatalf("status = %d, protected = %d, body = %s", failed.Code, protectedCalls, failed.Body.String())
+	}
+	feedback, err := budgets.ParseFeedback(failed.Header().Values("AAuth-Budget"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cost, hasCost := feedback.Cost()
+	if !hasCost || cost != 200_000 || feedback.Remaining() != 0 {
+		t.Fatalf("failed-call feedback = cost %d/%t remaining %d", cost, hasCost, feedback.Remaining())
+	}
+	if consumed := protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer); consumed != 200_000 {
+		t.Fatalf("person ledger after failed call = %d", consumed)
+	}
+
+	refusal := protocol.call(t, server, authToken)
+	assertBudgetRefusal(
+		t, refusal, budgets.ReasonBudgetExhausted,
+		0, 0, false, protocol.unit, protocol.resolver, protocol.clock,
+	)
+	if protectedCalls != 1 {
+		t.Fatalf("exhausted follow-up dispatched the application: protected = %d", protectedCalls)
+	}
+	requirement, _, err := budgets.ParseAuthTokenRequirement(refusal.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, record, err := budgets.VerifyResourceToken(context.Background(), requirement.ResourceToken, protocol.resolver, protocol.clock)
+	if err != nil || record == nil || record.JTI() != "failed-after-meter" || record.Consumed() != 200_000 {
+		t.Fatalf("consumption record = %#v, %v", record, err)
+	}
+}
+
 func TestBudgetProtectedCallChargesOnceAndRetainedStoreSurvivesResourceRecomposition(t *testing.T) {
 	t.Parallel()
 
