@@ -128,7 +128,10 @@ func validateResourceTokenCoreMembers(members map[string]json.RawMessage) error 
 	if err := validateOptionalStringClaim(ResourceTokenType, members, "scope", false); err != nil {
 		return err
 	}
-	return validateOptionalStringClaim(ResourceTokenType, members, "account", true)
+	if err := validateOptionalStringClaim(ResourceTokenType, members, "account", true); err != nil {
+		return err
+	}
+	return validateOptionalStringClaim(ResourceTokenType, members, "login_hint", false)
 }
 
 func validateResourceTokenMembers(members map[string]json.RawMessage) error {

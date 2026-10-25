@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,7 +87,7 @@ func TestEventTokenRoundTripAndSelfJWTProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if claims.Issuer != "https://resource.example" || claims.DWK != aauth.ResourceDiscoveryDocument ||
-		claims.Audience != "aauth:agent@ap.example" || claims.EventID != "event-1" ||
+		claims.Audience != "aauth:agent@ap.example" || claims.EventID != "event-1" || claims.JTI == "" ||
 		claims.IssuedAt != now.Unix() || claims.ExpiresAt != now.Add(5*time.Minute).Unix() {
 		t.Fatalf("event claims = %#v", claims)
 	}
@@ -186,6 +187,48 @@ func TestEventTokenRejectsWrongDiscoveryDocumentBeforeResolutionAndCnfCaseVarian
 				t.Fatalf("invalid token performed %d key resolutions", calls)
 			}
 		})
+	}
+}
+
+func TestEventTokenRequiresJTI(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 20, 0, 0, 0, time.UTC)
+	key := eventsTestKey(t, "event-jti-key", 0x35)
+	payload, err := json.Marshal(map[string]any{
+		"iss": "https://resource.example", "dwk": aauth.ResourceDiscoveryDocument,
+		"aud": "aauth:agent@ap.example", "eid": "event-1",
+		"iat": now.Unix(), "exp": now.Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := jose.SignCompact(key, jose.Header{
+		Algorithm: jose.Ed25519Algorithm, Type: events.EventTokenType, KeyID: key.ID(),
+	}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = events.VerifyEventToken(context.Background(), compact, signaturekey.StaticKeyResolver{
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: key.ID()}: key.PublicJWK(),
+	}, aauth.ClockFunc(func() time.Time { return now }))
+	if err == nil || !strings.Contains(err.Error(), "jti") {
+		t.Fatalf("missing jti error = %v", err)
+	}
+	minted, err := events.MintEventToken("https://resource.example", key, events.EventTokenRequest{
+		Agent: "aauth:agent@ap.example", EventID: "event-1", JTI: "event-token-1", Lifetime: time.Minute,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := events.VerifyEventToken(context.Background(), minted, signaturekey.StaticKeyResolver{
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: key.ID()}: key.PublicJWK(),
+	}, aauth.ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.JTI != "event-token-1" {
+		t.Fatalf("jti = %q", claims.JTI)
 	}
 }
 

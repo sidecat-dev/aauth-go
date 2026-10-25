@@ -228,7 +228,8 @@ func (store *deferredAuthorizationStore) ReplacePendingAuthorizationRequest(
 	if pending.state != personserver.AuthorizationPollInteracting && pending.state != personserver.AuthorizationPollClarifying {
 		return personserver.ErrPendingAuthorizationConflict
 	}
-	if len(replacement.Scopes) == 0 || !replacement.ResourceTokenExpiresAt.After(now) || !replacement.PersonTokenExpiresAt.After(now) {
+	if len(replacement.Scopes) == 0 || !replacement.ResourceTokenExpiresAt.After(now) || !replacement.PersonTokenExpiresAt.After(now) ||
+		!personserver.UpdatedAuthorizationExpiriesCoverPending(pending.record.ExpiresAt, replacement.ResourceTokenExpiresAt, replacement.PersonTokenExpiresAt) {
 		return personserver.ErrPendingAuthorizationConflict
 	}
 	if pending.state == personserver.AuthorizationPollClarifying {

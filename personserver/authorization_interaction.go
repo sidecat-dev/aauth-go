@@ -287,8 +287,11 @@ type MissionDeferredAuthorizationStore interface {
 // the record is Interacting or Clarifying. Clarifying closes the open round:
 // the justification is the retained response, or the text "updated_request"
 // when the agent omitted one, and the state returns to Interacting. Scopes
-// and the two token expiries are replaced. A later replacement is applied
-// again. Identity mismatch is ErrPendingAuthorizationNotFound.
+// and the two token expiries are replaced. Each replacement expiry must be at
+// least the pending ExpiresAt; a shorter token is
+// ErrPendingAuthorizationConflict and leaves the record unchanged, so a later
+// poll does not fail record validation. A later replacement is applied again.
+// Identity mismatch is ErrPendingAuthorizationNotFound.
 type AuthorizationClarificationStore interface {
 	RequestPendingAuthorizationClarification(context.Context, string, AuthorizationClarificationRequest, time.Time) (AuthorizationClarificationRound, error)
 	AnswerPendingAuthorizationClarification(context.Context, string, AuthorizationPollIdentity, string, time.Time) error
@@ -303,6 +306,13 @@ type UpdatedAuthorizationRequest struct {
 	ResourceTokenExpiresAt time.Time
 	PersonTokenExpiresAt   time.Time
 	Justification          string
+}
+
+// UpdatedAuthorizationExpiriesCoverPending reports whether both replacement
+// tokens remain current through the pending deadline. A shorter token would
+// make the retained record fail validation on the next poll or approval.
+func UpdatedAuthorizationExpiriesCoverPending(pendingExpires, resourceExpires, personExpires time.Time) bool {
+	return !resourceExpires.Before(pendingExpires) && !personExpires.Before(pendingExpires)
 }
 
 // MissionAuthorizationClarificationStore is the optional clarification
@@ -1039,7 +1049,8 @@ func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bo
 		reflect.DeepEqual(left.AgentAdditionalClaims, right.AgentAdditionalClaims) &&
 		reflect.DeepEqual(left.SubagentAdditionalClaims, right.SubagentAdditionalClaims) &&
 		reflect.DeepEqual(left.Capabilities, right.Capabilities) && left.CreatedAt.Equal(right.CreatedAt) &&
-		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetryAfter == right.RetryAfter
+		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetryAfter == right.RetryAfter &&
+		budgetPointersEqual(left.BudgetOffer, right.BudgetOffer)
 }
 
 func optionalAuthorizationJWKEqual(left, right jose.JWK) bool {

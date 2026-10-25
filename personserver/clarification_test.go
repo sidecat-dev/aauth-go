@@ -13,6 +13,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -526,6 +527,349 @@ func TestUpdatedRequestReplacesThePendingAskWhenIdentityMatches(t *testing.T) {
 	if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read"}) {
 		t.Fatalf("scopes after mismatch = %#v", resumed.RequestedScopes())
 	}
+}
+
+func TestUpdatedRequestRefusesReplacementsThatBreakThePendingRecord(t *testing.T) {
+	t.Run("resource token expires before the pending deadline", func(t *testing.T) {
+		protocol, store, server, location, reference := startClarifyingAuthorization(t)
+		refused := protocol.postUpdatedRequest(t, server, location, "authorization-person-token-short", protocol.now.Add(2*time.Minute), nil)
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_resource_token")
+		assertPendingAskUnchanged(t, server, store, reference, location, protocol)
+	})
+
+	t.Run("person token expires before the pending deadline", func(t *testing.T) {
+		protocol, _, server, location, _ := startClarifyingAuthorization(t)
+		thumbprint, err := protocol.agentKey.PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		presented := protocol.personTokenForUpdateUntil(t, "authorization-person-token-short-person", protocol.subject, protocol.agentKey.PublicJWK(), protocol.now.Add(2*time.Minute))
+		resource := protocol.resourceTokenForUpdate(t, "authorization-resource-token-short-person", "authorization-person-token-short-person", protocol.subject, thumbprint, protocol.now.Add(5*time.Minute), nil)
+		refused := protocol.clarificationAction(t, server, location, protocol.agentKey, protocol.agentToken, updatedRequestBody(t, resource, presented, "short person token"))
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_resource_token")
+	})
+
+	t.Run("resource token exceeds the maximum lifetime", func(t *testing.T) {
+		protocol, _, server, location, _ := startClarifyingAuthorization(t)
+		refused := protocol.postUpdatedRequest(t, server, location, "authorization-person-token-long", protocol.now.Add(6*time.Minute), nil)
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_resource_token")
+	})
+
+	t.Run("account is rejected", func(t *testing.T) {
+		protocol, _, server, location, _ := startClarifyingAuthorization(t)
+		refused := protocol.postUpdatedRequest(t, server, location, "authorization-person-token-account", protocol.now.Add(5*time.Minute), testStringPointer("acct-1"))
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_request")
+	})
+
+	t.Run("pending budget offer is rejected", func(t *testing.T) {
+		protocol, store, server, location, reference := startClarifyingAuthorization(t)
+		unit, err := budgets.NewUnit("usd", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		offer, err := budgets.NewValue(100, unit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.mu.Lock()
+		store.pending[reference].record.BudgetOffer = &offer
+		store.mu.Unlock()
+		refused := protocol.postUpdatedRequest(t, server, location, "authorization-person-token-budget", protocol.now.Add(5*time.Minute), nil)
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_request")
+		resumed, err := server.ResumeAuthorizationInteraction(context.Background(), reference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read", "records.write"}) {
+			t.Fatalf("scopes = %#v", resumed.RequestedScopes())
+		}
+	})
+
+	t.Run("parent key does not satisfy a sub-agent ask", func(t *testing.T) {
+		protocol, store, server, location, reference := startClarifyingAuthorization(t)
+		rememberSubagent(t, store, reference, protocol)
+		refused := protocol.postUpdatedRequest(t, server, location, "authorization-person-token-parent", protocol.now.Add(5*time.Minute), nil)
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_resource_token")
+	})
+
+	t.Run("child key replaces a sub-agent ask", func(t *testing.T) {
+		protocol, store, server, location, reference := startClarifyingAuthorization(t)
+		child := rememberSubagent(t, store, reference, protocol)
+		thumbprint, err := child.PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		presented := protocol.personTokenForUpdateUntil(t, "authorization-person-token-child", protocol.subject, child.PublicJWK(), protocol.now.Add(20*time.Minute))
+		resource := protocol.resourceTokenForUpdate(t, "authorization-resource-token-child", "authorization-person-token-child", protocol.subject, thumbprint, protocol.now.Add(5*time.Minute), nil)
+		accepted := protocol.clarificationAction(t, server, location, protocol.agentKey, protocol.agentToken, updatedRequestBody(t, resource, presented, "child scope"))
+		if accepted.Code != http.StatusNoContent {
+			t.Fatalf("child updated_request = %d %s", accepted.Code, accepted.Body.String())
+		}
+		polled := protocol.poll(t, server, location, protocol.agentKey, protocol.agentToken)
+		if polled.Code != http.StatusAccepted {
+			t.Fatalf("poll after child update = %d %s", polled.Code, polled.Body.String())
+		}
+	})
+
+	t.Run("revoked agent binding", func(t *testing.T) {
+		protocol := newAuthorizationInteractionProtocol(t)
+		store := newMemoryDeferredAuthorizationStore()
+		bindings := newMemoryAgentBindingRevocations()
+		config := protocol.config(store)
+		config.AgentBindingRevocations = bindings
+		server, err := NewPSAuthorization(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, location, reference := continueClarification(t, protocol, server)
+		if err := bindings.RevokeAgentBinding(context.Background(), AgentBinding{
+			AgentProvider: protocol.providerID, Agent: protocol.agentID,
+		}, protocol.now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		refused := protocol.postUpdatedRequest(t, server, location, "authorization-person-token-revoked-binding", protocol.now.Add(5*time.Minute), nil)
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "revoked_presented_token")
+		assertPendingRecordUnchanged(t, server, store, reference, protocol)
+		polled := protocol.poll(t, server, location, protocol.agentKey, protocol.agentToken)
+		assertAuthorizationInteractionProblem(t, polled, http.StatusBadRequest, "revoked_presented_token")
+	})
+
+	t.Run("retained person token disagrees", func(t *testing.T) {
+		protocol := newAuthorizationInteractionProtocol(t)
+		store := newMemoryDeferredAuthorizationStore()
+		tokens := newMemoryTokenStore()
+		if err := tokens.Commit(context.Background(), directPersonTokenRecord(
+			"authorization-person-token", protocol.personServerID, protocol.resourceID, protocol.subject, protocol.tenant,
+			protocol.providerID, protocol.agentID, protocol.agentKey.PublicJWK(), protocol.now.Add(20*time.Minute), protocol.now.Add(25*time.Minute),
+		)); err != nil {
+			t.Fatal(err)
+		}
+		if err := tokens.Commit(context.Background(), directPersonTokenRecord(
+			"authorization-person-token-lineage", protocol.personServerID, protocol.resourceID, protocol.subject, protocol.tenant,
+			protocol.providerID, "aauth:other@provider.example", protocol.agentKey.PublicJWK(), protocol.now.Add(20*time.Minute), protocol.now.Add(25*time.Minute),
+		)); err != nil {
+			t.Fatal(err)
+		}
+		config := protocol.config(store)
+		config.Tokens = tokens
+		server, err := NewPSAuthorization(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, location, reference := continueClarification(t, protocol, server)
+		refused := protocol.postUpdatedRequest(t, server, location, "authorization-person-token-lineage", protocol.now.Add(5*time.Minute), nil)
+		assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_resource_token")
+		resumed, err := server.ResumeAuthorizationInteraction(context.Background(), reference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read", "records.write"}) {
+			t.Fatalf("scopes = %#v", resumed.RequestedScopes())
+		}
+	})
+
+	t.Run("revoked sub-agent token", func(t *testing.T) {
+		protocol := newAuthorizationInteractionProtocol(t)
+		store := newMemoryDeferredAuthorizationStore()
+		config := protocol.config(store)
+		config.AgentTokenRevocations = jtiRevocationStore{jti: "revoked-child-token"}
+		server, err := NewPSAuthorization(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, location, reference := continueClarification(t, protocol, server)
+		child := rememberSubagent(t, store, reference, protocol)
+		store.mu.Lock()
+		store.pending[reference].record.SubagentTokenJTI = "revoked-child-token"
+		store.mu.Unlock()
+		thumbprint, err := child.PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		presented := protocol.personTokenForUpdateUntil(t, "authorization-person-token-revoked-child", protocol.subject, child.PublicJWK(), protocol.now.Add(20*time.Minute))
+		resource := protocol.resourceTokenForUpdate(t, "authorization-resource-token-revoked-child", "authorization-person-token-revoked-child", protocol.subject, thumbprint, protocol.now.Add(5*time.Minute), nil)
+		refused := protocol.clarificationAction(t, server, location, protocol.agentKey, protocol.agentToken, updatedRequestBody(t, resource, presented, "revoked child"))
+		assertAuthorizationInteractionProblem(t, refused, http.StatusForbidden, "revoked")
+	})
+}
+
+func TestPersonServerOmitsSignatureKeyCache(t *testing.T) {
+	protocol := newAuthorizationInteractionProtocol(t)
+	server := protocol.newServer(t, newMemoryDeferredAuthorizationStore())
+	pending := protocol.exchange(t, server, []string{"interaction"})
+	if pending.Code != http.StatusAccepted {
+		t.Fatalf("exchange = %d %s", pending.Code, pending.Body.String())
+	}
+	location := pending.Header().Get("Location")
+	request := httptest.NewRequest(http.MethodGet, protocol.personServerID+location, nil)
+	credential, err := signaturekey.NewJWTCredential(protocol.agentToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err = credential.WithCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signaturekey.SignRequest(request, protocol.agentKey, credential, protocol.clock, signaturekey.SignOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("cached signature poll = %d %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Signature-Key-Cache"); got != "" {
+		t.Fatalf("Signature-Key-Cache = %q", got)
+	}
+}
+
+func startClarifyingAuthorization(t *testing.T) (*authorizationInteractionProtocol, *memoryDeferredAuthorizationStore, *Server, string, string) {
+	t.Helper()
+	protocol := newAuthorizationInteractionProtocol(t)
+	store := newMemoryDeferredAuthorizationStore()
+	server := protocol.newServer(t, store)
+	_, location, reference := continueClarification(t, protocol, server)
+	return protocol, store, server, location, reference
+}
+
+func continueClarification(t *testing.T, protocol *authorizationInteractionProtocol, server *Server) (*httptest.ResponseRecorder, string, string) {
+	t.Helper()
+	pending := protocol.exchange(t, server, []string{"interaction", "clarification"})
+	requirement, err := aauth.ParseInteractionRequirement(pending.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := strings.TrimPrefix(requirement.URL, protocol.interactionURL+"/")
+	interaction, err := server.ConsumeAuthorizationInteractionCode(context.Background(), reference, requirement.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.RequestAuthorizationClarification(context.Background(), interaction, AuthorizationClarificationRequest{
+		Question: "Why write?", Lifetime: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return pending, pending.Header().Get("Location"), reference
+}
+
+func (p *authorizationInteractionProtocol) postUpdatedRequest(
+	t *testing.T,
+	server *Server,
+	location string,
+	presentedJTI string,
+	resourceExpires time.Time,
+	account *string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	thumbprint, err := p.agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	presented := p.personTokenForUpdateUntil(t, presentedJTI, p.subject, p.agentKey.PublicJWK(), p.now.Add(20*time.Minute))
+	resource := p.resourceTokenForUpdate(t, presentedJTI+"-resource", presentedJTI, p.subject, thumbprint, resourceExpires, account)
+	return p.clarificationAction(t, server, location, p.agentKey, p.agentToken, updatedRequestBody(t, resource, presented, "narrow"))
+}
+
+func (p *authorizationInteractionProtocol) resourceTokenForUpdate(
+	t *testing.T,
+	jti string,
+	presentedJTI string,
+	subject string,
+	agentJKT string,
+	expires time.Time,
+	account *string,
+) string {
+	t.Helper()
+	compact, err := aauth.MintResourceToken(p.resourceKey, aauth.ResourceTokenClaims{
+		Issuer: p.resourceID, DWK: aauth.ResourceDiscoveryDocument, Audience: p.personServerID,
+		JTI: jti, PersonServer: p.personServerID, Subject: subject, PresentedJTI: presentedJTI,
+		AgentJKT: agentJKT, IssuedAt: p.now.Unix(), ExpiresAt: expires.Unix(),
+		Scope: "records.read", Tenant: p.tenant, Account: account,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compact
+}
+
+func (p *authorizationInteractionProtocol) personTokenForUpdateUntil(t *testing.T, jti, subject string, confirmation jose.JWK, expires time.Time) string {
+	t.Helper()
+	compact, err := aauth.MintPersonToken(p.personKey, aauth.PersonTokenClaims{
+		Issuer: p.personServerID, DWK: aauth.PersonDiscoveryDocument, Audience: p.resourceID,
+		Subject: subject, Confirmation: aauth.Confirmation{JWK: confirmation},
+		JTI: jti, IssuedAt: p.now.Unix(), ExpiresAt: expires.Unix(), Tenant: p.tenant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compact
+}
+
+func rememberSubagent(t *testing.T, store *memoryDeferredAuthorizationStore, reference string, protocol *authorizationInteractionProtocol) jose.SigningKey {
+	t.Helper()
+	child := personServerTestKey(t, "updated-request-child-"+reference)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending := store.pending[reference]
+	pending.record.Subagent = "aauth:planner+worker@provider.example"
+	pending.record.SubagentTokenJTI = "child-token"
+	pending.record.SubagentConfirmation = child.PublicJWK()
+	pending.record.SubagentExpiresAt = protocol.now.Add(10 * time.Minute)
+	return child
+}
+
+func assertPendingAskUnchanged(
+	t *testing.T,
+	server *Server,
+	store *memoryDeferredAuthorizationStore,
+	reference string,
+	location string,
+	protocol *authorizationInteractionProtocol,
+) {
+	t.Helper()
+	resumed, err := server.ResumeAuthorizationInteraction(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read", "records.write"}) {
+		t.Fatalf("scopes = %#v", resumed.RequestedScopes())
+	}
+	polled := protocol.poll(t, server, location, protocol.agentKey, protocol.agentToken)
+	if polled.Code != http.StatusAccepted {
+		t.Fatalf("poll = %d %s", polled.Code, polled.Body.String())
+	}
+	assertPendingRecordUnchanged(t, server, store, reference, protocol)
+}
+
+func assertPendingRecordUnchanged(
+	t *testing.T,
+	server *Server,
+	store *memoryDeferredAuthorizationStore,
+	reference string,
+	protocol *authorizationInteractionProtocol,
+) {
+	t.Helper()
+	resumed, err := server.ResumeAuthorizationInteraction(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read", "records.write"}) {
+		t.Fatalf("scopes = %#v", resumed.RequestedScopes())
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record := store.pending[reference].record
+	if !record.ResourceTokenExpiresAt.Equal(protocol.now.Add(5*time.Minute)) || !record.PersonTokenExpiresAt.Equal(protocol.now.Add(20*time.Minute)) {
+		t.Fatalf("expiries = %s %s", record.ResourceTokenExpiresAt, record.PersonTokenExpiresAt)
+	}
+}
+
+type jtiRevocationStore struct{ jti string }
+
+func (store jtiRevocationStore) Revoke(context.Context, aauth.RevocationRequest) error { return nil }
+
+func (store jtiRevocationStore) IsRevoked(_ context.Context, reference aauth.TokenReference) (bool, error) {
+	return reference.JTI == store.jti, nil
 }
 
 func updatedRequestBody(t *testing.T, resourceToken, presentedToken, justification string) string {

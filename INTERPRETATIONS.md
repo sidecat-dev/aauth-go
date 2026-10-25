@@ -88,8 +88,9 @@ a local delivery fingerprint as SHA-256 over the exact compact Event token
 bytes, a separator, the signed content type, another separator, and the exact
 payload bytes. An exact replay is ignored; a different authenticated token,
 content type, or payload on the same subscription is a different delivery.
-The fingerprint is local state, not a new wire claim. Requiring `jti` when
-an event token is minted or verified is separate from this fingerprint.
+The fingerprint is local state, not a new wire claim. Minting and verifying
+an event token requires `jti`; the fingerprint still distinguishes a changed
+body under a reused identifier.
 
 ## Event-token expiry is MUST NOT in both sections
 

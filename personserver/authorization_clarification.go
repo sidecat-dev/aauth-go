@@ -315,12 +315,18 @@ func (server *Server) handleUpdatedAuthorizationRequest(
 		writeEndpointTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
 		return
 	}
-	if r3Context != nil || budgetOffer != nil || resourceToken.Interaction != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("updated_request does not accept R3, Budget, or resource interaction"))
+	if r3Context != nil || budgetOffer != nil || resourceToken.Interaction != nil || resourceToken.Account != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("updated_request does not accept R3, Budget, account, or resource interaction"))
 		return
 	}
 	if err := server.validateResourceTokenTopology(resourceToken); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+		return
+	}
+	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()
+	resourceTokenIssuedAt := time.Unix(resourceToken.IssuedAt, 0).UTC()
+	if resourceTokenExpiresAt.Sub(resourceTokenIssuedAt) > server.maximumResourceTokenLifetime {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token exceeds the configured maximum lifetime"))
 		return
 	}
 	scopes, err := parseScopes(resourceToken.Scope)
@@ -347,7 +353,15 @@ func (server *Server) handleUpdatedAuthorizationRequest(
 		writeProblem(response, http.StatusGone, "invalid_code", ErrPendingAuthorizationNotFound)
 		return
 	}
-	thumbprint, err := snapshot.Record.Confirmation.Thumbprint()
+	if snapshot.Record.BudgetOffer != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("updated_request does not accept a pending Budget offer"))
+		return
+	}
+	confirmation := snapshot.Record.Confirmation
+	if snapshot.Record.Subagent != "" {
+		confirmation = snapshot.Record.SubagentConfirmation
+	}
+	thumbprint, err := confirmation.Thumbprint()
 	if err != nil || resourceToken.Issuer != snapshot.Record.Resource ||
 		resourceToken.PersonServer != snapshot.Record.PersonServer ||
 		resourceToken.Subject != snapshot.Record.Subject ||
@@ -357,10 +371,40 @@ func (server *Server) handleUpdatedAuthorizationRequest(
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("updated resource token does not match the pending request"))
 		return
 	}
+	personTokenExpiresAt := presented.ExpiresAt.UTC()
+	if !UpdatedAuthorizationExpiriesCoverPending(snapshot.Record.ExpiresAt, resourceTokenExpiresAt, personTokenExpiresAt) {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("updated tokens expire before the pending authorization"))
+		return
+	}
+	if err := server.validateUpdatedPresentedTokenLineage(
+		request.Context(), resourceToken, resourceTokenExpiresAt, presented, snapshot.Record, proof.VerifiedAt(),
+	); err != nil {
+		if errors.Is(err, errUpdatedPresentedLineage) {
+			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
+			return
+		}
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	bindingSince := presentedTokenIssuedAt(presented)
+	if presented.Auth != nil && presented.Auth.DWK == aauth.AccessDiscoveryDocument {
+		bindingSince = time.Time{}
+	}
+	if err := server.checkAgentBinding(request.Context(), AgentBinding{
+		AgentProvider: snapshot.Record.AgentProvider, Agent: snapshot.Record.Agent,
+	}, bindingSince); err != nil {
+		writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
+		return
+	}
+	if err := server.checkPendingRevocations(request.Context(), snapshot.Record.AgentProvider, snapshot.Record.Agent,
+		snapshot.Record.AgentTokenJTI, snapshot.Record.SubagentTokenJTI, snapshot.Record.CreatedAt); err != nil {
+		writePendingRevocationProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
+		return
+	}
 	replacement := UpdatedAuthorizationRequest{
 		Scopes:                 scopes,
-		ResourceTokenExpiresAt: time.Unix(resourceToken.ExpiresAt, 0).UTC(),
-		PersonTokenExpiresAt:   presented.ExpiresAt.UTC(),
+		ResourceTokenExpiresAt: resourceTokenExpiresAt,
+		PersonTokenExpiresAt:   personTokenExpiresAt,
 		Justification:          strings.TrimSpace(justification),
 	}
 	if err := clarifications.ReplacePendingAuthorizationRequest(request.Context(), id, identity, replacement, now); err != nil {
@@ -450,6 +494,50 @@ func (server *Server) pendingAuthorizationMission(
 		return nil, err
 	}
 	return &mission, nil
+}
+
+var errUpdatedPresentedLineage = errors.New("personserver: updated resource token does not match the retained person token")
+
+func (server *Server) validateUpdatedPresentedTokenLineage(
+	ctx context.Context,
+	resourceToken aauth.ResourceTokenClaims,
+	resourceTokenExpiresAt time.Time,
+	presented aauth.PresentedToken,
+	record PendingAuthorizationRecord,
+	verifiedAt time.Time,
+) error {
+	if presented.Person == nil || server.tokens == nil {
+		return nil
+	}
+	retained, err := server.tokens.Load(ctx, server.issuer, presented.JTI)
+	if errors.Is(err, ErrPersonTokenNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if validatePersonTokenRecord(retained) != nil ||
+		retained.JTI != resourceToken.PresentedJTI ||
+		retained.PersonServer != resourceToken.PersonServer ||
+		retained.Resource != resourceToken.Issuer ||
+		retained.Subject != resourceToken.Subject ||
+		retained.MissionS256 != resourceToken.MissionS256 ||
+		retained.Tenant != resourceToken.Tenant ||
+		retained.AgentProvider != record.AgentProvider ||
+		resourceTokenExpiresAt.After(retained.RetainUntil) ||
+		!retained.RetainUntil.After(verifiedAt) {
+		return errUpdatedPresentedLineage
+	}
+	if record.Subagent == "" {
+		if retained.Agent != record.Agent || retained.ParentAgent != "" || !retained.Confirmation.Equal(record.Confirmation) {
+			return errUpdatedPresentedLineage
+		}
+		return nil
+	}
+	if retained.Agent != record.Subagent || retained.ParentAgent != record.Agent || !retained.Confirmation.Equal(record.SubagentConfirmation) {
+		return errUpdatedPresentedLineage
+	}
+	return nil
 }
 
 func writePendingAuthorizationMutationProblem(response http.ResponseWriter, err error) {

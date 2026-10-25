@@ -77,6 +77,21 @@ func NewJWTCredential(compact string) (Credential, error) {
 	}, nil
 }
 
+// WithCache asks a verifier to retain a jwt or jkt-jwt assertion. The
+// parameter is the bare boolean `;cache`. Servers in this module do not
+// answer with a Signature-Key-Cache header.
+func (credential Credential) WithCache() (Credential, error) {
+	if credential.scheme != SchemeJWT && credential.scheme != SchemeJKTJWT {
+		return Credential{}, fmt.Errorf("aauth: %s does not accept cache", credential.scheme)
+	}
+	if credential.cacheRequested {
+		return credential, nil
+	}
+	credential.cacheRequested = true
+	credential.header += ";cache"
+	return credential, nil
+}
+
 // NewJKTJWTCredential carries one self-issued durable-to-ephemeral key
 // delegation. Verification remains coupled to the outer request proof.
 func NewJKTJWTCredential(compact string) (Credential, error) {
