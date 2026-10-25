@@ -660,9 +660,14 @@ When a post-send outcome cannot be verified, it carries the full signed grant
 as the only locally proved upper bound. A step-up Resource token may carry
 `budget_consumed` for the presented Auth token. The Person Server and Access
 Server verify that record and hand it to policy; they do not keep a grant
-store in order to admit it. The host joins `jti` to its own ledger. Variable-cost
-settlement, streaming trailers, usage queries, automatic reauthorization, and
-reactive Resource-held or R3+Budget first calls are not part of these profiles.
+store in order to admit it. The host joins `jti` to its own ledger. Until a
+figure arrives, `budgets.AccountedSpend` holds the full grant; a record
+replaces that assumption and does not settle the allocation.
+`budgets.Free` applies the draft's settlement formula. A Resource whose Budget
+store implements `BudgetUsageStore` publishes `usage_endpoint` and serves a
+signed `POST /usage`. The response is not signed. Variable-cost settlement,
+streaming trailers, automatic reauthorization, and reactive Resource-held or
+R3+Budget first calls are not part of these profiles.
 
 ## Source tensions and implementation choices
 

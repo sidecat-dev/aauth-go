@@ -819,10 +819,13 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
 - [ ] **Variable-cost and streaming calls — Not implemented.** There is no
   reservation/settlement store contract, trailer reconciliation, or safe
   interrupted-stream journey.
-- [ ] **Usage queries — Not implemented as a role journey.** There is no usage
-  endpoint or counter-response journey. A step-up Resource token may carry
-  `budget_consumed`; the direct PS and the AS verify it and deliver the record
-  to policy without retaining the prior grant.
+- [x] **Usage queries — Implemented as a Resource endpoint and issuer helper.**
+  A store that implements `resource.BudgetUsageStore` publishes
+  `usage_endpoint` and answers a signed Person Server or Access Server
+  `POST /usage`. Counters are UTC calendar totals plus per-key figures.
+  `budgets.PostUsage` sends the query. The response is not signed. A step-up
+  Resource token may carry `budget_consumed`; the direct PS and the AS verify
+  it and deliver the record to policy without retaining the prior grant.
 - [x] **Mission-bound fixed Budget — Implemented in both authorization topologies**
   - Flow: host-reviewed mission and mission Person token → proactive Resource
     Budget offer → PS policy receives the exact active mission and narrows the

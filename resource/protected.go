@@ -311,7 +311,7 @@ func (server *Server) serveAuthTokenProtected(
 	applicationResponse := response
 	var budgetResponse *budgetResponseWriter
 	if budgetGrant != nil {
-		budgetResponse = newBudgetResponseWriter(response, request.Context(), server.budget.store, claims, *budgetGrant)
+		budgetResponse = newBudgetResponseWriter(response, request.Context(), server.budget.store, claims, *budgetGrant, server.clock.Now())
 		response = budgetResponse
 	}
 	requiredScopes, err := server.authorizeScopes(request, scopes, authorization != nil)
@@ -468,17 +468,9 @@ func (server *Server) enforceFixedBudget(
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget cost policy: %w", err))
 		return false
 	}
-	result, err := server.budget.store.Charge(request.Context(), BudgetCharge{
-		Token:        aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
-		PersonServer: claims.PersonServer,
-		Subject:      claims.Subject,
-		Audience:     claims.Audience,
-		MissionS256:  claims.MissionS256,
-		Tenant:       claims.Tenant,
-		Account:      cloneBudgetAccount(claims.Account),
-		Grant:        grant,
-		Cost:         cost,
-	})
+	charge := response.charge
+	charge.Cost = cost
+	result, err := server.budget.store.Charge(request.Context(), charge)
 	if err == nil {
 		if result.Cost != cost || result.Remaining < 0 || result.Remaining > grant.Amount() ||
 			result.Cost+result.Remaining > grant.Amount() {

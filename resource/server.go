@@ -504,6 +504,13 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
+	if validatedBudget != nil {
+		if _, queryable := validatedBudget.store.(BudgetUsageStore); queryable {
+			if err := aauth.ValidateEndpoint(config.Issuer + "/usage"); err != nil {
+				return nil, fmt.Errorf("aauth: Resource usage endpoint: %w", err)
+			}
+		}
+	}
 	retainsApplication := config.HeldInvocations != nil || validatedR3 != nil && validatedR3.perCall != nil
 	for _, bound := range []struct {
 		name  string
@@ -613,6 +620,11 @@ func (server *Server) newHandler() http.Handler {
 	if server.authTokenStatuses != nil || server.agentTokenRevocations != nil {
 		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
+	if server.budget != nil {
+		if _, queryable := server.budget.store.(BudgetUsageStore); queryable {
+			mux.HandleFunc("POST /usage", server.serveUsage)
+		}
+	}
 	if server.r3 != nil {
 		mux.HandleFunc("/r3/{document}", server.serveR3Document)
 	}
@@ -673,6 +685,7 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		AdditionalSignatureComponents []string                  `json:"additional_signature_components,omitempty"`
 		R3Vocabularies                map[string]string         `json:"r3_vocabularies,omitempty"`
 		BudgetUnits                   []budgets.UnitDeclaration `json:"budget_units,omitempty"`
+		UsageEndpoint                 string                    `json:"usage_endpoint,omitempty"`
 	}{
 		Issuer:                        server.issuer,
 		JWKSURI:                       resourceJWKSURI(server),
@@ -683,6 +696,7 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		AdditionalSignatureComponents: append([]string(nil), server.additionalSignatureComponents...),
 		R3Vocabularies:                resourceR3Vocabularies(server),
 		BudgetUnits:                   resourceBudgetUnits(server),
+		UsageEndpoint:                 resourceUsageEndpoint(server),
 	})
 }
 
@@ -691,6 +705,16 @@ func resourceBudgetUnits(server *Server) []budgets.UnitDeclaration {
 		return nil
 	}
 	return append([]budgets.UnitDeclaration(nil), server.budget.units...)
+}
+
+func resourceUsageEndpoint(server *Server) string {
+	if server == nil || server.budget == nil {
+		return ""
+	}
+	if _, queryable := server.budget.store.(BudgetUsageStore); !queryable {
+		return ""
+	}
+	return server.issuer + "/usage"
 }
 
 func resourceR3Vocabularies(server *Server) map[string]string {

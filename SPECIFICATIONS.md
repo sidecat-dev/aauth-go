@@ -308,9 +308,16 @@ narrowing chain and the consumption-record carrier:
   Resource rejects a record whose amount or scale disagrees with the metered
   grant it just charged.
 
-Variable-cost settlement, streaming trailers, and usage queries are not
-executed. [CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining
-gaps.
+A Resource whose Budget store implements usage queries publishes
+`usage_endpoint` and serves signed `POST /usage`. Callers are a Person Server
+or an Access Server. The response carries one unit, UTC calendar counters, and
+per-key figures. It is not signed. `budgets.AccountedSpend` treats a missing
+consumption record as the full grant, and `budgets.Free` applies the
+settlement formula. Consent display helpers format a human amount and sanitize
+a Markdown unit description; this library does not render the consent screen.
+
+Variable-cost settlement and streaming trailers are not executed.
+[CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining gaps.
 
 - Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
 - Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).

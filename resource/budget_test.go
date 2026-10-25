@@ -357,6 +357,14 @@ func TestBudgetProtectedCallChargesOnceAndRetainedStoreSurvivesResourceRecomposi
 	if consumed := protocol.store.personConsumed(personIssuer, "person-1", resourceIssuer); consumed != 400_000 {
 		t.Fatalf("person consumed = %d, want 400000", consumed)
 	}
+	state := protocol.store.tokens[aauth.TokenReference{Issuer: personIssuer, JTI: "budget-auth-token"}]
+	thumbprint, err := protocol.agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.charge.AgentJKT != thumbprint || !state.charge.ChargedAt.Equal(protocol.now) {
+		t.Fatalf("metered charge attribution = jkt %q at %s", state.charge.AgentJKT, state.charge.ChargedAt)
+	}
 }
 
 func TestBudgetProtectedCallReportsExhaustionWithoutChargingOrCallingTheApplication(t *testing.T) {

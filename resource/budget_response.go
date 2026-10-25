@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
@@ -28,11 +29,13 @@ func (response *budgetResponseWriter) ReportAAuthProblem(status int, code string
 	httpapi.ReportProblem(response.ResponseWriter, status, code, cause)
 }
 
-func newBudgetResponseWriter(response http.ResponseWriter, ctx context.Context, store BudgetStore, claims aauth.AuthTokenClaims, grant budgets.Value) *budgetResponseWriter {
+func newBudgetResponseWriter(response http.ResponseWriter, ctx context.Context, store BudgetStore, claims aauth.AuthTokenClaims, grant budgets.Value, chargedAt time.Time) *budgetResponseWriter {
+	agentJKT, _ := claims.Confirmation.JWK.Thumbprint()
 	return &budgetResponseWriter{ResponseWriter: response, ctx: ctx, store: store, charge: BudgetCharge{
 		Token:        aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		PersonServer: claims.PersonServer, Subject: claims.Subject, Audience: claims.Audience,
 		MissionS256: claims.MissionS256, Tenant: claims.Tenant, Account: cloneBudgetAccount(claims.Account), Grant: grant,
+		AgentJKT: agentJKT, ChargedAt: chargedAt.UTC(),
 	}}
 }
 

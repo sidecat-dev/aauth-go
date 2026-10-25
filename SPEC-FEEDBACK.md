@@ -75,7 +75,9 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 50 (P1: 6, P2: 29, P3: 15; 46 submitted, 4 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 57 (P1: 6, P2: 33, P3: 18; 46 submitted, 11 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+
+Findings AAG-F110 through AAG-F116 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -116,6 +118,13 @@ Unresolved: 50 (P1: 6, P2: 29, P3: 15; 46 submitted, 4 open). Local implementati
 | AAG-F106 | Events requires every event to transit the AP, with no AP-authorized local delivery component | Events | missing-requirement | P2 | submitted | not public before | Slack, thread with the editor on delegated event delivery; the original Slack date is not retained (transcript supplied 2026-08-03) | None now: we deferred the follow-up until a working delegated offline/local example exists |
 | AAG-F083 | Standard R3 vocabularies do not identify external specification revisions | R3 | missing-requirement | P3 | submitted | 83219c1 (2026-08-31) | 2026-10-01, GitHub | New issue [#249](https://github.com/dickhardt/AAuth/issues/249) |
 | AAG-F109 | Cancellation is defined only as an answer to clarification | Core | missing-requirement | P3 | open | 2026-10-20 | Not submitted | — |
+| AAG-F110 | An omitted usage object still requires a unit | Budgets | MUST/SHALL/REQUIRED | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F111 | A usage query that spans two metered units has no error | Budgets | missing-requirement | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F112 | all_time cannot be omitted when it overflows | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F113 | invalid_request does not cover a misplaced ps member | Budgets | missing-requirement | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F114 | A combined scope key and jkts query does not say whether per-key figures are scoped | Budgets | missing-requirement | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F115 | A three-party issuer is not told to preserve an offered budget | Budgets | MUST/SHALL/REQUIRED | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F116 | Age 0 is not a positive current_age | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -1291,6 +1300,158 @@ paid.
 **Question:** Is DELETE a general way to withdraw any deferred request, and
 must a PS that federated a request withdraw it at the AS pending URL, both on
 the Agent's withdrawal and when the PS itself ends the request?
+
+### AAG-F110 — An omitted usage object still requires a unit
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Usage Response` (974–1002) and `One Unit Per Response` (1031–1035), `Authorization and Errors` (1061–1067).
+
+`unit` and `decimals` are required on every usage response. An unrecognized scope key returns 200 with `usage` omitted, so there is no metered figure whose unit the response can name. `One Unit Per Response` says the unit is the one the resource meters in, and there is no selector. A resource that declares more than one `budget_units` entry and has not metered the queried key has no metered unit.
+
+This library names `budget_units[0]` in that response. The scope key is still echoed, and `usage` is omitted, so the unit is not a claim that the key consumed that denomination.
+
+**Question:** When `usage` is omitted, which `unit` and `decimals` must the response carry if the resource declares more than one unit?
+
+### AAG-F111 — A usage query that spans two metered units has no error
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `One Unit Per Response` (1031–1035).
+
+Every figure in a response is one unit, and the request cannot select it. The draft does not say what a resource does when the same scope key, or the keys named by one `jkts` list, was metered in two units. Emitting one unit would drop or misstate the other.
+
+This library answers `500` with `server_error` and does not return a partial figure.
+
+**Question:** Should a mixed-unit usage query be a registered error, and must the resource refuse rather than choose a unit?
+
+### AAG-F112 — all_time cannot be omitted when it overflows
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Calendar Counters` (1004–1019).
+
+A counter that would exceed 15 digits is omitted rather than rounded. `all_time` is REQUIRED when the `usage` object is present. If `all_time` itself overflows, omitting only that member leaves an object the response schema does not allow.
+
+This library omits the whole `usage` object in that case. Other counters are omitted individually when they overflow and `all_time` still fits.
+
+**Question:** When `all_time` exceeds the 15-digit limit, is the `usage` object omitted, or is there another representation?
+
+### AAG-F113 — invalid_request does not cover a misplaced ps member
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Usage Request` (935–972) and `Authorization and Errors` (1061–1069).
+
+A Person Server omits `ps`. An Access Server sends `ps` when the request carries a scope key. `invalid_request` is defined for more than one scope key, neither a scope key nor `jkts`, a scope key from an Access Server without `ps`, or a malformed value. It does not mention a Person Server sending `ps`, or an Access Server sending `ps` on a `jkts`-only request.
+
+This library rejects both as `invalid_request`. `ps` then cannot retarget a query that the role is not supposed to namespace that way.
+
+**Question:** Are those two bodies `invalid_request`, or must the resource ignore `ps`?
+
+### AAG-F114 — A combined scope key and jkts query does not say whether per-key figures are scoped
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Per-Key Figures` (1021–1029) and the example at `Usage Response` (976–995).
+
+A `jkts` member is everything metered on auth tokens presented by that key, after the caller filter. The example's two key figures sum to the subject's `all_time`. The draft does not say whether a request that also carries `sub`, `tenant`, or `mission_s256` limits each key figure to that scope.
+
+This library does not intersect the key figure with the scope key. An Access Server request that carries a scope key still limits both figures to the request's `ps`. A key that presented tokens for two subjects of the same Person Server is reported as the sum.
+
+**Question:** Does a combined query restrict each thumbprint to the scope key, or is the thumbprint total independent of it?
+
+### AAG-F115 — A three-party issuer is not told to preserve an offered budget
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Auth Token Extensions` (574–608) and `PS-to-AS Token Request Extensions` (570–572).
+
+Four-party text says that when the resource token carries `budget` and the Person Server omits the parameter, the Access Server issues no `budget` claim, and omission is not a grant. The three-party path does not say the Person Server may omit the claim after the resource offered one. The resource rule says an auth token without `budget` carries no budget authorization and the resource applies its own default. A positive default can exceed the ceiling the person server would have set.
+
+This library's direct Person Server rejects an authorization decision that drops an offered budget, and a metered route refuses an auth token with no `budget` claim rather than applying a positive default. Four-party omission follows the draft: no claim is issued, and the metered route refuses.
+
+**Question:** May a three-party issuer omit `budget` when the resource token carried one, and must a resource's default for that token be no authorization rather than a positive amount?
+
+### AAG-F116 — Age 0 is not a positive current_age
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `AAuth-Budget Response Header` (650).
+
+Recipients must ignore `AAuth-Budget` on a response served from cache with a positive `current_age`. This library ignores the header whenever an `Age` header is present, including `Age: 0`. A zero age is fresh, so the draft would still have the agent read the header.
+
+**Question:** Is `Age: 0` current, and must a recipient read `AAuth-Budget` on that response?
 
 ## Against informative text
 
