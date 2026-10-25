@@ -383,6 +383,15 @@ func TestAgentAcceptsReservedBudgetFeedbackWithoutATrailer(t *testing.T) {
 	if !ok || assumed != 431_200 {
 		t.Fatalf("assumed cost = %d, %t", assumed, ok)
 	}
+	response.Trailer = make(http.Header)
+	response.Trailer.Set("AAuth-Budget", "cost=221200")
+	if err := result.ApplyTrailer(); err != nil {
+		t.Fatal(err)
+	}
+	cost, reported := result.Cost()
+	if !reported || cost != 221_200 {
+		t.Fatalf("settled cost = %d, %t", cost, reported)
+	}
 }
 
 func TestAgentDoBudgetReturnsTypedAuthorizationRequirementWithoutRetry(t *testing.T) {

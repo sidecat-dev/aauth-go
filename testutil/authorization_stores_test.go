@@ -39,6 +39,9 @@ func TestExportedBudgetStore(t *testing.T) {
 	resourcetest.RunBudgetUsage(t, resourcetest.BudgetUsageContract{
 		New: func(testing.TB) resource.BudgetStore { return testutil.NewBudgetStore() },
 	})
+	resourcetest.RunBudgetReserve(t, resourcetest.BudgetUsageContract{
+		New: func(testing.TB) resource.BudgetStore { return testutil.NewBudgetStore() },
+	})
 }
 
 func TestExportedR3DocumentStore(t *testing.T) {

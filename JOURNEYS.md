@@ -811,16 +811,24 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
   - Boundary: a PS omission is not a grant. The AS issues no `budget` claim, and
     the PS rejects an Auth token that carries one. A step-up Resource token
     carries `budget_consumed` for the presented Auth token in that grant's
-    scale. Per-call R3 plus Budget, deferred interaction, delegation, call
-    chaining, variable cost, streaming, and usage queries remain excluded.
+    scale. Per-call R3 plus Budget, deferred interaction, delegation, and call
+    chaining remain excluded. Variable-cost reservation is a separate journey.
 
 ### Not implemented
 
-- [ ] **Variable-cost reservation — Not implemented as a store.** The fixed-price
-  path still commits the known cost before dispatch. `WriteStreamingBudgetHeader`
-  and `WriteStreamingBudgetTrailer` send `reserved` and a cost-only trailer.
-  The Agent accepts a `reserved` header with no trailer and assumes that hold.
-  There is no reserve-commit-release store and no interrupted-stream journey.
+- [x] **Variable-cost reservation — Implemented as a store and protected path.**
+  `BudgetConfig.Maximum` reserves a finite bound before dispatch. The handler
+  calls `SettleBudget` with the actual cost; the unspent hold is released and
+  the trailer carries only that cost. A handler that does not settle commits
+  the whole hold. The fixed-price path still commits the known cost before
+  dispatch. `WriteStreamingBudgetHeader` and `WriteStreamingBudgetTrailer`
+  remain available for a host that writes the fields itself. The Agent accepts
+  a `reserved` header with no trailer, assumes that hold, and applies a
+  cost-only trailer with `ApplyTrailer` after reading the body.
+  Evidence: [`resource/storetest/budget_reserve.go`](resource/storetest/budget_reserve.go),
+  [`resource/budget_reserve_test.go`](resource/budget_reserve_test.go), and
+  [`agent/budget_test.go`](agent/budget_test.go).
+  Boundary: no interrupted-stream journey. An abandoned request commits the hold.
 - [x] **Usage queries — Implemented as a Resource endpoint and issuer helper.**
   A store that implements `resource.BudgetUsageStore` publishes
   `usage_endpoint` and answers a signed Person Server or Access Server

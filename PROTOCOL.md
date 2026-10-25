@@ -667,9 +667,10 @@ replaces that assumption and does not settle the allocation.
 store implements `BudgetUsageStore` publishes `usage_endpoint` and serves a
 signed `POST /usage`. The response is not signed. A streamed response can send `reserved` in the
 header and `cost` in an `AAuth-Budget` trailer. The fixed-price protected path
-still commits the known cost before dispatch and does not keep a reservation.
-The Agent treats a `reserved` header without `cost` as complete and assumes
-the reservation until a cost-only trailer arrives. Automatic reauthorization
+still commits the known cost before dispatch. `BudgetConfig.Maximum` reserves
+that bound first, `SettleBudget` commits the spent part, and an unsettled call
+commits the hold. The Agent treats a `reserved` header without `cost` as
+complete and assumes the reservation until `ApplyTrailer` reads a cost-only trailer. Automatic reauthorization
 and reactive Resource-held or R3+Budget first calls are not part of these
 profiles.
 

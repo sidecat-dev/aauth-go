@@ -318,16 +318,19 @@ a Markdown unit description; this library does not render the consent screen.
 
 A streamed response may carry `reserved` and a cost-only `AAuth-Budget`
 trailer. The recipient does not require the trailer. The fixed-price path
-still commits before dispatch. There is no reserve-commit-release store.
+still commits before dispatch. `BudgetConfig.Maximum` reserves that bound
+first; `SettleBudget` commits the actual cost and releases the rest, and a
+handler that does not settle commits the hold.
 
-Variable-cost settlement is not executed.
+An interrupted stream is not a separate journey.
 [CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining gaps.
 
 - Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
 - Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Sections: PS-to-AS Token Request Extensions (542–572), Auth Token
-  Extensions (574–608), Unreported Allocations (827–857), and Usage Counters
-  (929–1075).
+  Extensions (574–608), AAuth-Budget Response Header (610–650), Trailer Rules
+  (695–704), The Budget Is a Hard Cap (908–915), Unreported Allocations
+  (827–857), and Usage Counters (929–1075).
 - SHA-256: `f00d34c91576476cdb30b7aa1aa13a0bc9fc1d99fc43b4f0389ccb3e8bf2e150`.
 
 This note is a list, not a second manifest row.

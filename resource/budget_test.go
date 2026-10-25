@@ -1133,6 +1133,7 @@ type budgetMemoryStore struct {
 	mu      sync.Mutex
 	tokens  map[aauth.TokenReference]budgetTokenState
 	persons map[budgetPersonKey]int64
+	holds   map[string]budgetMemoryHold
 	failure error
 	charges int
 }
@@ -1140,6 +1141,12 @@ type budgetMemoryStore struct {
 type budgetTokenState struct {
 	charge   BudgetCharge
 	consumed int64
+	reserved int64
+}
+
+type budgetMemoryHold struct {
+	token  aauth.TokenReference
+	amount int64
 }
 
 type budgetPersonKey struct {
@@ -1152,6 +1159,7 @@ func newBudgetMemoryStore() *budgetMemoryStore {
 	return &budgetMemoryStore{
 		tokens:  make(map[aauth.TokenReference]budgetTokenState),
 		persons: make(map[budgetPersonKey]int64),
+		holds:   make(map[string]budgetMemoryHold),
 	}
 }
 
@@ -1166,7 +1174,7 @@ func (store *budgetMemoryStore) Charge(_ context.Context, charge BudgetCharge) (
 	if exists && !sameBudgetBinding(state.charge, charge) {
 		return BudgetChargeResult{}, ErrBudgetConflict
 	}
-	remaining := charge.Grant.Amount() - state.consumed
+	remaining := charge.Grant.Amount() - state.consumed - state.reserved
 	if remaining == 0 {
 		return BudgetChargeResult{Remaining: 0}, ErrBudgetExhausted
 	}
@@ -1179,6 +1187,79 @@ func (store *budgetMemoryStore) Charge(_ context.Context, charge BudgetCharge) (
 	person := budgetPersonKey{charge.PersonServer, charge.Subject, charge.Audience}
 	store.persons[person] += charge.Cost
 	return BudgetChargeResult{Cost: charge.Cost, Remaining: remaining - charge.Cost}, nil
+}
+
+func (store *budgetMemoryStore) Reserve(_ context.Context, reserve BudgetReserve) (BudgetReserveResult, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.failure != nil {
+		return BudgetReserveResult{}, store.failure
+	}
+	if reserve.ID == "" || reserve.Hold <= 0 {
+		return BudgetReserveResult{}, ErrBudgetReservation
+	}
+	if _, exists := store.holds[reserve.ID]; exists {
+		return BudgetReserveResult{}, ErrBudgetReservation
+	}
+	state, exists := store.tokens[reserve.Token]
+	charge := BudgetCharge{
+		Token: reserve.Token, PersonServer: reserve.PersonServer, Subject: reserve.Subject,
+		Audience: reserve.Audience, MissionS256: reserve.MissionS256, Tenant: reserve.Tenant,
+		Account: reserve.Account, Grant: reserve.Grant, AgentJKT: reserve.AgentJKT,
+		ChargedAt: reserve.ReservedAt,
+	}
+	if exists && !sameBudgetBinding(state.charge, charge) {
+		return BudgetReserveResult{}, ErrBudgetConflict
+	}
+	available := reserve.Grant.Amount() - state.consumed - state.reserved
+	if reserve.Hold > available {
+		if available == 0 {
+			return BudgetReserveResult{}, ErrBudgetExhausted
+		}
+		return BudgetReserveResult{Remaining: available}, ErrBudgetInsufficient
+	}
+	state.charge = cloneBudgetCharge(charge)
+	state.reserved += reserve.Hold
+	store.tokens[reserve.Token] = state
+	store.holds[reserve.ID] = budgetMemoryHold{token: reserve.Token, amount: reserve.Hold}
+	return BudgetReserveResult{Reserved: reserve.Hold, Remaining: available - reserve.Hold}, nil
+}
+
+func (store *budgetMemoryStore) Commit(_ context.Context, commit BudgetCommit) (BudgetChargeResult, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	hold, ok := store.holds[commit.ID]
+	if !ok || hold.token != commit.Token || commit.Cost < 0 || commit.Cost > hold.amount {
+		return BudgetChargeResult{}, ErrBudgetReservation
+	}
+	state, ok := store.tokens[hold.token]
+	if !ok || state.reserved < hold.amount {
+		return BudgetChargeResult{}, ErrBudgetReservation
+	}
+	delete(store.holds, commit.ID)
+	state.reserved -= hold.amount
+	state.consumed += commit.Cost
+	store.tokens[hold.token] = state
+	store.persons[budgetPersonKey{state.charge.PersonServer, state.charge.Subject, state.charge.Audience}] += commit.Cost
+	remaining := state.charge.Grant.Amount() - state.consumed - state.reserved
+	return BudgetChargeResult{Cost: commit.Cost, Remaining: remaining}, nil
+}
+
+func (store *budgetMemoryStore) Release(_ context.Context, release BudgetRelease) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	hold, ok := store.holds[release.ID]
+	if !ok || hold.token != release.Token {
+		return ErrBudgetReservation
+	}
+	state, ok := store.tokens[hold.token]
+	if !ok || state.reserved < hold.amount {
+		return ErrBudgetReservation
+	}
+	delete(store.holds, release.ID)
+	state.reserved -= hold.amount
+	store.tokens[hold.token] = state
+	return nil
 }
 
 func (store *budgetMemoryStore) chargeCount() int {

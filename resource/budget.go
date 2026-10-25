@@ -24,6 +24,9 @@ var (
 	// ErrUsageMixedUnit reports that one usage answer would mix denominations.
 	// The usage response names one unit and the draft defines no selector.
 	ErrUsageMixedUnit = errors.New("resource: usage figures span more than one Budget unit")
+	// ErrBudgetReservation reports a hold that cannot be settled: an unknown
+	// identifier, a second settle, or a cost above the hold.
+	ErrBudgetReservation = errors.New("resource: Budget reservation cannot be settled")
 )
 
 // BudgetOfferRequest is the authenticated, typed input to an optional host
@@ -140,6 +143,54 @@ type BudgetStore interface {
 	Charge(context.Context, BudgetCharge) (BudgetChargeResult, error)
 }
 
+// BudgetReserve is one in-flight hold against a single auth token. ID is
+// unique for the store. Hold is the maximum cost reserved before the response
+// is served. The person ledger is not charged until Commit.
+type BudgetReserve struct {
+	ID           string
+	Token        aauth.TokenReference
+	PersonServer string
+	Subject      string
+	Audience     string
+	MissionS256  string
+	Tenant       string
+	Account      *string
+	Grant        budgets.Value
+	Hold         int64
+	AgentJKT     string
+	ReservedAt   time.Time
+}
+
+// BudgetReserveResult is a successful hold. Remaining is net of committed
+// spend and every outstanding hold, including this one.
+type BudgetReserveResult struct {
+	Reserved  int64
+	Remaining int64
+}
+
+// BudgetCommit settles one hold. Cost must be between zero and the hold.
+// The unspent remainder of the hold returns to the token.
+type BudgetCommit struct {
+	Token     aauth.TokenReference
+	ID        string
+	Cost      int64
+	ChargedAt time.Time
+}
+
+// BudgetRelease drops a hold that was never served. It does not post usage.
+type BudgetRelease struct {
+	Token aauth.TokenReference
+	ID    string
+}
+
+// BudgetReserver is the optional reserve-commit-release store. Charge remains
+// the fixed-price path and must treat outstanding holds as already spoken for.
+type BudgetReserver interface {
+	Reserve(context.Context, BudgetReserve) (BudgetReserveResult, error)
+	Commit(context.Context, BudgetCommit) (BudgetChargeResult, error)
+	Release(context.Context, BudgetRelease) error
+}
+
 // BudgetUsageCaller is the signed server asking for usage counters.
 type BudgetUsageCaller struct {
 	// Identifier is the Signature-Key id, which the response echoes as aud.
@@ -216,8 +267,13 @@ type BudgetConfig struct {
 	Offer         func(context.Context, BudgetOfferRequest) (budgets.Value, error)
 	RetainLineage func(context.Context, BudgetLineage) error
 	Cost          func(context.Context, BudgetCostRequest) (int64, error)
-	Store         BudgetStore
-	Challenge     func(context.Context, BudgetChallengeRequest) (string, error)
+	// Maximum, when set, is the finite bound reserved before a variable-cost
+	// request is served. Store must implement BudgetReserver. The handler
+	// settles the actual cost with SettleBudget; an unsettled request commits
+	// the whole hold.
+	Maximum   func(context.Context, BudgetCostRequest) (int64, error)
+	Store     BudgetStore
+	Challenge func(context.Context, BudgetChallengeRequest) (string, error)
 }
 
 type budgetConfig struct {
@@ -228,7 +284,9 @@ type budgetConfig struct {
 	offer        func(context.Context, BudgetOfferRequest) (budgets.Value, error)
 	retain       func(context.Context, BudgetLineage) error
 	cost         func(context.Context, BudgetCostRequest) (int64, error)
+	maximum      func(context.Context, BudgetCostRequest) (int64, error)
 	store        BudgetStore
+	reserver     BudgetReserver
 	challenge    func(context.Context, BudgetChallengeRequest) (string, error)
 }
 
@@ -256,6 +314,14 @@ func validateBudgetConfig(config *BudgetConfig, topology authorizationTopology) 
 	if config.Store == nil {
 		return nil, errors.New("aauth: Resource Budget store is required")
 	}
+	var reserver BudgetReserver
+	if config.Maximum != nil {
+		var ok bool
+		reserver, ok = config.Store.(BudgetReserver)
+		if !ok {
+			return nil, errors.New("aauth: variable-cost Resource Budget requires a reserve-commit-release store")
+		}
+	}
 	if config.Challenge == nil {
 		return nil, errors.New("aauth: Resource Budget challenge issuer is required")
 	}
@@ -264,7 +330,8 @@ func validateBudgetConfig(config *BudgetConfig, topology authorizationTopology) 
 		byName:       make(map[string]budgets.UnitDeclaration, len(config.Units)),
 		metered:      config.Metered,
 		initialOffer: config.InitialOffer, offer: config.Offer, retain: config.RetainLineage,
-		cost: config.Cost, store: config.Store, challenge: config.Challenge,
+		cost: config.Cost, maximum: config.Maximum, store: config.Store, reserver: reserver,
+		challenge: config.Challenge,
 	}
 	if err := budgets.ValidateUnitDeclarations(config.Units); err != nil {
 		return nil, fmt.Errorf("aauth: Resource Budget units: %w", err)
