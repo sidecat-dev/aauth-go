@@ -98,22 +98,6 @@
       ]
     },
     {
-      "id": "MODEL-EVENT-EXPIRY-001",
-      "subject": "Agent action after event-token expiry",
-      "status": "implementation_choice",
-      "disposition": "Apply the stricter MUST NOT behavior.",
-      "grounding": "The Events draft gives conflicting normative strengths for the same action.",
-      "references": [
-        {
-          "source": "events",
-          "lines": [
-            367,
-            464
-          ]
-        }
-      ]
-    },
-    {
       "id": "MODEL-EVENT-ALG-001",
       "subject": "Polymorphic EdDSA in Events examples",
       "status": "implementation_choice",
@@ -204,25 +188,6 @@
             435,
             440,
             617
-          ]
-        }
-      ]
-    },
-    {
-      "id": "MODEL-EVENT-DELIVERY-ID-001",
-      "feedback_id": "AAG-F058",
-      "subject": "Per-delivery replay identity for multi-use subscriptions",
-      "status": "implementation_choice",
-      "disposition": "Treat eid only as subscription context. Deduplicate an exact accepted delivery by the SHA-256 of the compact event token, a zero separator, and the exact payload bytes.",
-      "grounding": "The draft reuses eid for every delivery but tells the Agent to deduplicate by (iss,eid), which would discard every legitimate later event.",
-      "references": [
-        {
-          "source": "events",
-          "lines": [
-            227,
-            234,
-            364,
-            468
           ]
         }
       ]
@@ -8545,9 +8510,9 @@
       "heading": "The Supervisor",
       "line": 63,
       "end": 68,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-THE-SUPERVISOR-63",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8558,9 +8523,9 @@
       "heading": "What This Document Defines",
       "line": 69,
       "end": 80,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-WHAT-THIS-DOCUMENT-DEFINES-69",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8610,9 +8575,9 @@
       "heading": "Protocol Overview",
       "line": 102,
       "end": 140,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-PROTOCOL-OVERVIEW-102",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8623,9 +8588,9 @@
       "heading": "Supervisor Metadata",
       "line": 141,
       "end": 166,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-SUPERVISOR-METADATA-141",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8636,9 +8601,9 @@
       "heading": "Configuration and Routing",
       "line": 167,
       "end": 176,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-CONFIGURATION-AND-ROUTING-167",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8649,9 +8614,9 @@
       "heading": "Authentication and Common Request Format",
       "line": 177,
       "end": 178,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-AUTHENTICATION-AND-COMMON-REQUEST-FORMAT-177",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8662,9 +8627,9 @@
       "heading": "PS Authentication",
       "line": 179,
       "end": 191,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-PS-AUTHENTICATION-179",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8675,9 +8640,9 @@
       "heading": "Envelope",
       "line": 192,
       "end": 204,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-ENVELOPE-192",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8688,9 +8653,9 @@
       "heading": "Supervision Decision Identifier",
       "line": 205,
       "end": 208,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-SUPERVISION-DECISION-IDENTIFIER-205",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8701,9 +8666,9 @@
       "heading": "Delivery",
       "line": 209,
       "end": 214,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-DELIVERY-209",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8714,9 +8679,9 @@
       "heading": "Connect",
       "line": 215,
       "end": 250,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-CONNECT-215",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8727,9 +8692,9 @@
       "heading": "Supervision Decisions",
       "line": 251,
       "end": 283,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-SUPERVISION-DECISIONS-251",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8740,9 +8705,9 @@
       "heading": "Deferred Decisions",
       "line": 284,
       "end": 289,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-DEFERRED-DECISIONS-284",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8753,9 +8718,9 @@
       "heading": "Clarification",
       "line": 290,
       "end": 313,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-CLARIFICATION-290",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8766,9 +8731,9 @@
       "heading": "Idempotence",
       "line": 314,
       "end": 317,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-IDEMPOTENCE-314",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8779,9 +8744,9 @@
       "heading": "Signed Decisions",
       "line": 318,
       "end": 347,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-SIGNED-DECISIONS-318",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8792,9 +8757,9 @@
       "heading": "Mission Endpoint",
       "line": 348,
       "end": 361,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-MISSION-ENDPOINT-348",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8805,9 +8770,9 @@
       "heading": "Proposal",
       "line": 362,
       "end": 425,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-PROPOSAL-362",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8818,9 +8783,9 @@
       "heading": "Approved",
       "line": 426,
       "end": 447,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-APPROVED-426",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8831,9 +8796,9 @@
       "heading": "Update",
       "line": 448,
       "end": 451,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-UPDATE-448",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8844,9 +8809,9 @@
       "heading": "Completion",
       "line": 452,
       "end": 455,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-COMPLETION-452",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8857,9 +8822,9 @@
       "heading": "Terminated",
       "line": 456,
       "end": 459,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-TERMINATED-456",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8870,9 +8835,9 @@
       "heading": "Decision Endpoint",
       "line": 460,
       "end": 463,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-DECISION-ENDPOINT-460",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8883,9 +8848,9 @@
       "heading": "Person Token",
       "line": 464,
       "end": 486,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-PERSON-TOKEN-464",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8896,9 +8861,9 @@
       "heading": "Auth Token",
       "line": 487,
       "end": 509,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-AUTH-TOKEN-487",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8909,9 +8874,9 @@
       "heading": "Permission",
       "line": 510,
       "end": 532,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-PERMISSION-510",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8922,9 +8887,9 @@
       "heading": "Event Endpoint",
       "line": 533,
       "end": 548,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-EVENT-ENDPOINT-533",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8935,9 +8900,9 @@
       "heading": "Decision Resolved",
       "line": 549,
       "end": 579,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-DECISION-RESOLVED-549",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8948,9 +8913,9 @@
       "heading": "Reach of an Answer",
       "line": 580,
       "end": 606,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-REACH-OF-AN-ANSWER-580",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8961,9 +8926,9 @@
       "heading": "Unavailable Supervisor",
       "line": 607,
       "end": 614,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-UNAVAILABLE-SUPERVISOR-607",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8974,9 +8939,9 @@
       "heading": "Replay and Recovery",
       "line": 615,
       "end": 624,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-REPLAY-AND-RECOVERY-615",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -8987,9 +8952,9 @@
       "heading": "Errors",
       "line": 625,
       "end": 640,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-ERRORS-625",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9000,9 +8965,9 @@
       "heading": "Security Considerations",
       "line": 641,
       "end": 642,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-SECURITY-CONSIDERATIONS-641",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9013,9 +8978,9 @@
       "heading": "The Supervisor Holds the Person's Authority",
       "line": 643,
       "end": 648,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-THE-SUPERVISOR-HOLDS-THE-PERSON-S-AUTHORITY-643",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9026,9 +8991,9 @@
       "heading": "Forwarded Tokens",
       "line": 649,
       "end": 652,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-FORWARDED-TOKENS-649",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9039,9 +9004,9 @@
       "heading": "Connect",
       "line": 653,
       "end": 656,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-CONNECT-653",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9052,9 +9017,9 @@
       "heading": "Response Authenticity",
       "line": 657,
       "end": 660,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-RESPONSE-AUTHENTICITY-657",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9065,9 +9030,9 @@
       "heading": "Egress",
       "line": 661,
       "end": 664,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-EGRESS-661",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9078,9 +9043,9 @@
       "heading": "Privacy Considerations",
       "line": 665,
       "end": 666,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-PRIVACY-CONSIDERATIONS-665",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9091,9 +9056,9 @@
       "heading": "What the Supervisor Sees",
       "line": 667,
       "end": 670,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-WHAT-THE-SUPERVISOR-SEES-667",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9104,9 +9069,9 @@
       "heading": "Identifiers",
       "line": 671,
       "end": 674,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-IDENTIFIERS-671",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9117,9 +9082,9 @@
       "heading": "Organizational Supervisors",
       "line": 675,
       "end": 678,
-      "classification": "normative",
+      "classification": "out_of_scope",
       "capability_id": "SUPERVISION-ORGANIZATIONAL-SUPERVISORS-675",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
@@ -9130,39 +9095,39 @@
       "heading": "IANA Considerations",
       "line": 679,
       "end": 680,
-      "classification": "normative",
+      "classification": "informational",
       "capability_id": "SUPERVISION-IANA-CONSIDERATIONS-679",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
-      "proof_detail": "supervision is pinned and not executed"
+      "proof_detail": "IANA template is not an executed registration check"
     },
     {
       "source": "supervision",
       "heading": "Well-Known URI Registration",
       "line": 681,
       "end": 688,
-      "classification": "normative",
+      "classification": "informational",
       "capability_id": "SUPERVISION-WELL-KNOWN-URI-REGISTRATION-681",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
-      "proof_detail": "supervision is pinned and not executed"
+      "proof_detail": "well-known registration template is not an executed check"
     },
     {
       "source": "supervision",
       "heading": "Implementation Status",
       "line": 689,
       "end": 694,
-      "classification": "normative",
+      "classification": "informational",
       "capability_id": "SUPERVISION-IMPLEMENTATION-STATUS-689",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
-      "proof_detail": "supervision is pinned and not executed"
+      "proof_detail": "RFC 7942 implementation-status boilerplate"
     },
     {
       "source": "supervision",
@@ -9195,13 +9160,13 @@
       "heading": "Design Rationale",
       "line": 707,
       "end": 708,
-      "classification": "normative",
+      "classification": "rationale",
       "capability_id": "SUPERVISION-DESIGN-RATIONALE-707",
-      "value_package": "aauth",
+      "value_package": "none",
       "state_owner_role": "none",
       "behavior_owner_package": "none",
       "proof_seam": "documentation",
-      "proof_detail": "supervision is pinned and not executed"
+      "proof_detail": "documentation-only"
     },
     {
       "source": "supervision",
@@ -18839,9 +18804,7 @@
       "heading_line": 593,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18856,9 +18819,7 @@
       "heading_line": 601,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18873,9 +18834,7 @@
       "heading_line": 605,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18890,9 +18849,7 @@
       "heading_line": 609,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18907,9 +18864,7 @@
       "heading_line": 609,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18924,9 +18879,7 @@
       "heading_line": 609,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18941,9 +18894,7 @@
       "heading_line": 617,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18958,9 +18909,7 @@
       "heading_line": 627,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18975,9 +18924,7 @@
       "heading_line": 641,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -18992,9 +18939,7 @@
       "heading_line": 641,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -19009,9 +18954,7 @@
       "heading_line": 693,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -19026,9 +18969,7 @@
       "heading_line": 693,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -19043,9 +18984,7 @@
       "heading_line": 693,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -19060,9 +18999,7 @@
       "heading_line": 749,
       "dependencies": [
         "core",
-        "signature_key",
-        "r3",
-        "asyncapi"
+        "signature_key"
       ]
     },
     {
@@ -24089,9 +24026,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "ee808a832a7b89685fa4364d7cb710602736e27579b7b33b206dbd0b9203a688",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000158-O01-OPTIONAL",
@@ -24100,9 +24041,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "d0654147beb569f826c3aa3fe6f368f1307f9095b7bca7838522a19be7275f68",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000158-O02-MAY",
@@ -24111,9 +24056,13 @@
       "occurrence": 2,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "d0654147beb569f826c3aa3fe6f368f1307f9095b7bca7838522a19be7275f68",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000159-O01-REQUIRED",
@@ -24122,9 +24071,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "6759d5b0771f842e2ef0c660ab02165db62453c3a8090f6e787f5e7ee56c9fef",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000160-O01-REQUIRED",
@@ -24133,9 +24086,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "d231d85e6197e028dfb97c9f50edc923da17183f0dda34d82cb6b37aebb03072",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000161-O01-REQUIRED",
@@ -24144,9 +24101,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "6f83b734a85033a111af3e89bd37fd6cea5b7dec7ef2bcf23589ee83fa482e21",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000162-O01-REQUIRED",
@@ -24155,9 +24116,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "9de5be9cecbf78a10fd8821eac9d85225cde56c9e986a092b12829496aab12db",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000163-O01-OPTIONAL",
@@ -24166,9 +24131,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "ed842aa75345f7872ea92f7692754a829e4cffc175e33c727bd3e9f64b3df457",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000165-O01-MAY",
@@ -24177,9 +24146,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "b311168795168821c32af7376241e8dab235c3254b0b7a87e0052593e78fbe89",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000165-O02-MUST",
@@ -24188,9 +24161,13 @@
       "occurrence": 2,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "b311168795168821c32af7376241e8dab235c3254b0b7a87e0052593e78fbe89",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000165-O03-MUST",
@@ -24199,9 +24176,13 @@
       "occurrence": 3,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "b311168795168821c32af7376241e8dab235c3254b0b7a87e0052593e78fbe89",
-      "heading_line": 141
+      "heading_line": 141,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000171-O01-MAY",
@@ -24210,9 +24191,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "c2ba348b6b2d9437494cc8b5c4a7e4fe419f892c1d6e65a67d301453bf231c81",
-      "heading_line": 167
+      "heading_line": 167,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000175-O01-MAY",
@@ -24221,9 +24206,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "2a7b4ae9a0e78eac5e3d36632a2c545b401195816a19bedbe5234d234b8fec95",
-      "heading_line": 167
+      "heading_line": 167,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000188-O01-MUST",
@@ -24232,9 +24221,13 @@
       "occurrence": 1,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "f545f8e00030f4d22ff8ff46c14dfaa91584bfac6bb3421c34961da20352bfff",
-      "heading_line": 179
+      "heading_line": 179,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000188-O02-MUST",
@@ -24243,9 +24236,13 @@
       "occurrence": 2,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "f545f8e00030f4d22ff8ff46c14dfaa91584bfac6bb3421c34961da20352bfff",
-      "heading_line": 179
+      "heading_line": 179,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000196-O01-REQUIRED",
@@ -24254,9 +24251,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "939b2415b9ce8e6884bbd070654e4820d6047f163d6b454b1b17e6778de27eb9",
-      "heading_line": 192
+      "heading_line": 192,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000197-O01-REQUIRED",
@@ -24265,9 +24266,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "3baf2fc3d7a2a6f44fa0b17d787f20ada8bd26dd6d758e5b7cf7849786dc2d68",
-      "heading_line": 192
+      "heading_line": 192,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000198-O01-REQUIRED",
@@ -24276,9 +24281,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "3644b05cdc0d866b25a904afca45ee6f52802b71a3e68a80815e67d3cbc9ca7e",
-      "heading_line": 192
+      "heading_line": 192,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000199-O01-REQUIRED",
@@ -24287,9 +24296,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "c3c16cdad0c408890ccae8960f644387262d6fbd144ea4a5009c9622199e63cc",
-      "heading_line": 192
+      "heading_line": 192,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000200-O01-REQUIRED",
@@ -24298,9 +24311,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "338a17b8573af19eafabf10a0a90120bebde1947e5277bfdb4ad84c1d9fb4cc5",
-      "heading_line": 192
+      "heading_line": 192,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000201-O01-OPTIONAL",
@@ -24309,9 +24326,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "ecf0632b915b7a693ad4e71f70592ce558fbb9fa525974cf4f73093fcfa1544e",
-      "heading_line": 192
+      "heading_line": 192,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000213-O01-SHOULD",
@@ -24320,9 +24341,13 @@
       "occurrence": 1,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "00efb80550ef489967b3525359ed12810b0e1b6133710b6b8acc3498f864ed07",
-      "heading_line": 209
+      "heading_line": 209,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000213-O02-RECOMMENDED",
@@ -24331,9 +24356,13 @@
       "occurrence": 2,
       "strength": "RECOMMENDED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "00efb80550ef489967b3525359ed12810b0e1b6133710b6b8acc3498f864ed07",
-      "heading_line": 209
+      "heading_line": 209,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000238-O01-REQUIRED",
@@ -24342,9 +24371,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "2d9f59d94d3b3725f6d2c339bd52042d4945716d111fcdc5666880659f18d47a",
-      "heading_line": 215
+      "heading_line": 215,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000239-O01-OPTIONAL",
@@ -24353,9 +24386,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "e8bcd9eab42a2737c242c12dba74da289dc427ecdd2f823a574098a7fa0ed03c",
-      "heading_line": 215
+      "heading_line": 215,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000244-O01-MAY",
@@ -24364,9 +24401,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "96422440e593b55ba86451963f46d75dca47d92e5421b77cfeaa76552f6aff29",
-      "heading_line": 215
+      "heading_line": 215,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000249-O01-MAY",
@@ -24375,9 +24416,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "1543c91075dcfae7c39e676e0f76f578a752540fbd0c719f7431ddbb8862af70",
-      "heading_line": 215
+      "heading_line": 215,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000264-O01-MAY",
@@ -24386,9 +24431,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "f58c195cc2154ccc27c50933baf75743ab6f5455acdf23394283ff3ac74cd8e0",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000265-O01-MAY",
@@ -24397,9 +24446,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "b9017c393f098a0844951c86e65cdeabaff367e26b5bbf3a48fa82fed7f008d1",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000266-O01-SHOULD",
@@ -24408,9 +24461,13 @@
       "occurrence": 1,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "2cff853b7ee72d19e633786f07f3adbc84fa0bcddabb15a945d2eef2fd0afa3c",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000266-O02-MAY",
@@ -24419,9 +24476,13 @@
       "occurrence": 2,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "2cff853b7ee72d19e633786f07f3adbc84fa0bcddabb15a945d2eef2fd0afa3c",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000266-O03-MAY",
@@ -24430,9 +24491,13 @@
       "occurrence": 3,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "2cff853b7ee72d19e633786f07f3adbc84fa0bcddabb15a945d2eef2fd0afa3c",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000266-O04-MAY",
@@ -24441,9 +24506,13 @@
       "occurrence": 4,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "2cff853b7ee72d19e633786f07f3adbc84fa0bcddabb15a945d2eef2fd0afa3c",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000280-O01-MUST",
@@ -24452,9 +24521,13 @@
       "occurrence": 1,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "1b6d1ecbd70e29dfd3765589193e315aaed6937fcf219f9ccd340f6478eb57be",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000280-O02-MUST",
@@ -24463,9 +24536,13 @@
       "occurrence": 2,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "1b6d1ecbd70e29dfd3765589193e315aaed6937fcf219f9ccd340f6478eb57be",
-      "heading_line": 251
+      "heading_line": 251,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000286-O01-MUST",
@@ -24474,9 +24551,13 @@
       "occurrence": 1,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "dbfab4659cfbb3bc092735a2257dca61b11d87ce54a57cb64baa9a99a32c97da",
-      "heading_line": 284
+      "heading_line": 284,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000286-O02-MUST",
@@ -24485,9 +24566,13 @@
       "occurrence": 2,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "dbfab4659cfbb3bc092735a2257dca61b11d87ce54a57cb64baa9a99a32c97da",
-      "heading_line": 284
+      "heading_line": 284,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000316-O01-MUST",
@@ -24496,9 +24581,13 @@
       "occurrence": 1,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "10143ed09acc05a46c41d11369ba44ffcfdbb0fd86fe628caa998d258855e09f",
-      "heading_line": 314
+      "heading_line": 314,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000316-O02-MAY",
@@ -24507,9 +24596,13 @@
       "occurrence": 2,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "10143ed09acc05a46c41d11369ba44ffcfdbb0fd86fe628caa998d258855e09f",
-      "heading_line": 314
+      "heading_line": 314,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000340-O01-MUST",
@@ -24518,9 +24611,13 @@
       "occurrence": 1,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "8416ad44c816b37879842acbc8bc457678bb51058e7cb904ea7e069fdd7a5391",
-      "heading_line": 318
+      "heading_line": 318,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000340-O02-SHOULD",
@@ -24529,9 +24626,13 @@
       "occurrence": 2,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "8416ad44c816b37879842acbc8bc457678bb51058e7cb904ea7e069fdd7a5391",
-      "heading_line": 318
+      "heading_line": 318,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000342-O01-MUST",
@@ -24540,9 +24641,13 @@
       "occurrence": 1,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "5eb5ac1d11d3aa7e837cfa2dad222624655ee63ae817134385691be00778adab",
-      "heading_line": 318
+      "heading_line": 318,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000342-O02-MUST",
@@ -24551,9 +24656,13 @@
       "occurrence": 2,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "5eb5ac1d11d3aa7e837cfa2dad222624655ee63ae817134385691be00778adab",
-      "heading_line": 318
+      "heading_line": 318,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000360-O01-REQUIRED",
@@ -24562,9 +24671,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "276ae0f3d5987fb2465e8bd7abaa20763ef0a13b5e06743d60a1969ace56985b",
-      "heading_line": 348
+      "heading_line": 348,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000360-O02-MUST",
@@ -24573,9 +24686,13 @@
       "occurrence": 2,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "276ae0f3d5987fb2465e8bd7abaa20763ef0a13b5e06743d60a1969ace56985b",
-      "heading_line": 348
+      "heading_line": 348,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000394-O01-REQUIRED",
@@ -24584,9 +24701,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "96f36d11f06558b5dd95deb69fef0956e4739f28747327a65ac810c3da5794ba",
-      "heading_line": 362
+      "heading_line": 362,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000415-O01-REQUIRED",
@@ -24595,9 +24716,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "d9dbc6442c9b15f5e69e1f18fc676b2e9d2a855792baf0836b9694040ba8c440",
-      "heading_line": 362
+      "heading_line": 362,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000415-O02-MAY",
@@ -24606,9 +24731,13 @@
       "occurrence": 2,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "d9dbc6442c9b15f5e69e1f18fc676b2e9d2a855792baf0836b9694040ba8c440",
-      "heading_line": 362
+      "heading_line": 362,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000416-O01-OPTIONAL",
@@ -24617,9 +24746,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "0e1f48d8ddcad0af10a0ff4093f4937c45fed7f1902c203e16b2fde37e92458b",
-      "heading_line": 362
+      "heading_line": 362,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000417-O01-OPTIONAL",
@@ -24628,9 +24761,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "f0f488d5e47e23b31fa35c50a9a159b6c5ef738a2dbd43e0099c4e1c38fc2985",
-      "heading_line": 362
+      "heading_line": 362,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000418-O01-OPTIONAL",
@@ -24639,9 +24776,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "f4ca7b00809be007ea3ef1e112e3f226a4b78ab5697216e91ff1e4c63faf31c0",
-      "heading_line": 362
+      "heading_line": 362,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000422-O01-MAY",
@@ -24650,9 +24791,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "840f441767ef5cb60ea2a07a1fb8841350024c65ac684b4c16ebbdf54af1a166",
-      "heading_line": 362
+      "heading_line": 362,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000444-O01-SHOULD",
@@ -24661,9 +24806,13 @@
       "occurrence": 1,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "7496968cd9b874669c7fd3b357941443ac74c561f8ff5d3256ea0492e53c68db",
-      "heading_line": 426
+      "heading_line": 426,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000450-O01-MAY",
@@ -24672,9 +24821,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "4b4548fc546dde35c241c28053b0a8a92e793c4d52145405f8a9f0983836b115",
-      "heading_line": 448
+      "heading_line": 448,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000458-O01-MAY",
@@ -24683,9 +24836,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "3f63b8e7ce657e957d71f213802c705be8f38e3da702ea06f3457e0551120cd3",
-      "heading_line": 456
+      "heading_line": 456,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000480-O01-REQUIRED",
@@ -24694,9 +24851,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "98ba637a8527327242e3a1d815d8b1c02ef82688c7f4520b4fa6100f3571ffaa",
-      "heading_line": 464
+      "heading_line": 464,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000481-O01-REQUIRED",
@@ -24705,9 +24866,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "4bc8b92c9fdd732d905677429cd26574b2dacbb314439ad9223cc78c3a9f817b",
-      "heading_line": 464
+      "heading_line": 464,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000482-O01-OPTIONAL",
@@ -24716,9 +24881,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "fc1859f0a3c31c87a74dc5b4b4e68988b60e71f36ecd343bccbd5188d7cf35f2",
-      "heading_line": 464
+      "heading_line": 464,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000483-O01-OPTIONAL",
@@ -24727,9 +24896,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "d031f4e5ccba3484c3d005f97c61ab76e81a64078188160e73ef26ae6f2d20cf",
-      "heading_line": 464
+      "heading_line": 464,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000485-O01-MAY",
@@ -24738,9 +24911,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "3ea662dd1f6ae181186cae9b11a93973a4a6c94455ebc554d04ab6906f84f7d8",
-      "heading_line": 464
+      "heading_line": 464,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000485-O02-MUST",
@@ -24749,9 +24926,13 @@
       "occurrence": 2,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "3ea662dd1f6ae181186cae9b11a93973a4a6c94455ebc554d04ab6906f84f7d8",
-      "heading_line": 464
+      "heading_line": 464,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000504-O01-REQUIRED",
@@ -24760,9 +24941,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "8bd421c23e1fc14fcb3b36ea9bf13824fc570de2ee905eb34e4b22c343658ff7",
-      "heading_line": 487
+      "heading_line": 487,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000505-O01-OPTIONAL",
@@ -24771,9 +24956,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "0d8771f70d00f8cd12ffbf2e125c2dbfd91e5362a4fbcdac2319578e50fc79cd",
-      "heading_line": 487
+      "heading_line": 487,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000506-O01-OPTIONAL",
@@ -24782,9 +24971,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "df31cc163131951e4a3cf35cf792cfcc3acb79241594f48118a25c7c3dbc1dd6",
-      "heading_line": 487
+      "heading_line": 487,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000508-O01-MAY",
@@ -24793,9 +24986,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "0ad15cd7a67a4188ed8ae02ad4b812d4def9fcd6f89784b5d0a960a3b079016f",
-      "heading_line": 487
+      "heading_line": 487,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000535-O01-MAY",
@@ -24804,9 +25001,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "6ad4f11d849f9b22eb5cc1ebc4b22ad209e4b2883ecb54bd20249388d2051287",
-      "heading_line": 533
+      "heading_line": 533,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000572-O01-REQUIRED",
@@ -24815,9 +25016,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "eeca549f47cd31f847188c716c159bb1153c96de6b808ca9dd4de97e93713ad0",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000573-O01-OPTIONAL",
@@ -24826,9 +25031,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "7f94dc1da70314a05ed6ea3e1ae554d03b843d0205e23ccd45b3e30ce8fd0b24",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000574-O01-OPTIONAL",
@@ -24837,9 +25046,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "28de391b6f747613ccf03b5ba27fd9756493cc219cf965a78a6f2e899b04c622",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000575-O01-OPTIONAL",
@@ -24848,9 +25061,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "756447af60d3eec6c585196599f569b5dec4a6a39a07eac53fe2570dad944adc",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000576-O01-OPTIONAL",
@@ -24859,9 +25076,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "3ebac64ace168f499db80bc8ed1ca9565334cb12aabeb12d2f0012661f57e118",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000577-O01-OPTIONAL",
@@ -24870,9 +25091,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "86a1fc7cd63570516079f3a82c29b4853b324d8a3e8869a26e92baa4c619a724",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000578-O01-OPTIONAL",
@@ -24881,9 +25106,13 @@
       "occurrence": 1,
       "strength": "OPTIONAL",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "648cd5daf5f45679a8f2363e9c02fc958baf6ddb2a2e6e7f34921b5be381b248",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000578-O02-MAY",
@@ -24892,9 +25121,13 @@
       "occurrence": 2,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "648cd5daf5f45679a8f2363e9c02fc958baf6ddb2a2e6e7f34921b5be381b248",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000578-O03-MUST_NOT",
@@ -24903,9 +25136,13 @@
       "occurrence": 3,
       "strength": "MUST NOT",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "648cd5daf5f45679a8f2363e9c02fc958baf6ddb2a2e6e7f34921b5be381b248",
-      "heading_line": 549
+      "heading_line": 549,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000582-O01-MAY",
@@ -24914,9 +25151,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "dad0c1fec00c73b284a154d4eb22223f21b561bcb3c794438381d87333601b7c",
-      "heading_line": 580
+      "heading_line": 580,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000584-O01-MAY",
@@ -24925,9 +25166,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "058f092e5d25fbe4a70190db4d4f790d9ba3309ec44ff3283b20f26184bd00d9",
-      "heading_line": 580
+      "heading_line": 580,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000599-O01-MAY",
@@ -24936,9 +25181,13 @@
       "occurrence": 1,
       "strength": "MAY",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "7873cab4eaf7726acc7544a553ece4ca09b3ceb6b4b70b2f5b097b232475d84f",
-      "heading_line": 580
+      "heading_line": 580,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000605-O01-SHOULD",
@@ -24947,9 +25196,13 @@
       "occurrence": 1,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "be8fc115c4052d9c57baab7b57dbb2f85d726c53142fdae7136153b3285e1496",
-      "heading_line": 580
+      "heading_line": 580,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000636-O01-REQUIRED",
@@ -24958,9 +25211,13 @@
       "occurrence": 1,
       "strength": "REQUIRED",
       "kind": "field_presence",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "2cd4a69938e8a2e84dc874d3dc88857db5f8c6ea209bb44d826e1fb6d3641090",
-      "heading_line": 625
+      "heading_line": 625,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000645-O01-SHOULD",
@@ -24969,9 +25226,13 @@
       "occurrence": 1,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "11b6ffc0cb7f25d7a24af14d2cd6507e587b9e037a2dbc8e7e0fb64e861f3a6d",
-      "heading_line": 643
+      "heading_line": 643,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000655-O01-MUST",
@@ -24980,9 +25241,13 @@
       "occurrence": 1,
       "strength": "MUST",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "027ac4744fd1c91a5c529301fe0c1f306b66c0c289268cf4bc50529a268c0fb3",
-      "heading_line": 653
+      "heading_line": 653,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000655-O02-SHOULD",
@@ -24991,9 +25256,13 @@
       "occurrence": 2,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "027ac4744fd1c91a5c529301fe0c1f306b66c0c289268cf4bc50529a268c0fb3",
-      "heading_line": 653
+      "heading_line": 653,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000659-O01-SHOULD",
@@ -25002,9 +25271,13 @@
       "occurrence": 1,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "3b0b3204dc55f82289ce0ea8f299842381e2fd59842b18da382cb7a55a95c93e",
-      "heading_line": 657
+      "heading_line": 657,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     },
     {
       "id": "SUPERVISION-L000669-O01-SHOULD",
@@ -25013,9 +25286,13 @@
       "occurrence": 1,
       "strength": "SHOULD",
       "kind": "bcp14",
-      "authority": "normative",
+      "authority": "informational",
       "line_sha256": "f10cb3a51d35b1e10f68de6e6b65efeadaf9a827872550a9405e3cede2b24e21",
-      "heading_line": 667
+      "heading_line": 667,
+      "dependencies": [
+        "core",
+        "signature_key"
+      ]
     }
   ]
 }

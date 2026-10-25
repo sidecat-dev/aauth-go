@@ -239,7 +239,9 @@ func requirementDependencies(source string, line int) []string {
 		return dependencies
 	case "events":
 		dependencies := []string{"core", "signature_key"}
-		if line >= 472 {
+		// Event Discovery through the AsyncAPI example. Later security,
+		// privacy, IANA, and rationale sections do not depend on R3 or AsyncAPI.
+		if 472 <= line && line <= 590 {
 			dependencies = append(dependencies, "r3", "asyncapi")
 		}
 		return dependencies
@@ -249,7 +251,7 @@ func requirementDependencies(source string, line int) []string {
 			dependencies = append(dependencies, "r3")
 		}
 		return dependencies
-	case "bootstrap", "interop":
+	case "bootstrap", "interop", "supervision":
 		return []string{"core", "signature_key"}
 	}
 	return nil

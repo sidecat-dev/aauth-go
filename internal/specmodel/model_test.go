@@ -73,7 +73,7 @@ func TestEmbeddedModelIsStructurallyComplete(t *testing.T) {
 	if got, want := len(model.Headings), 683; got != want {
 		t.Fatalf("heading count = %d, want %d", got, want)
 	}
-	if got, want := len(model.SourceTensions), 18; got != want {
+	if got, want := len(model.SourceTensions), 16; got != want {
 		t.Fatalf("source-tension count = %d, want %d", got, want)
 	}
 	if got, want := len(model.Requirements), 1313; got != want {
@@ -146,6 +146,115 @@ func TestVerifyManifestBindsEachSourceToOneRow(t *testing.T) {
 	if err := VerifyManifest(model, valuesScatteredAcrossRows); err == nil {
 		t.Fatal("manifest verification accepted source identity scattered across rows")
 	}
+}
+
+func TestRequirementDependenciesBoundEventsAndNameSupervision(t *testing.T) {
+	if got, want := requirementDependencies("supervision", 120), []string{"core", "signature_key"}; !reflectDeepEqual(got, want) {
+		t.Fatalf("supervision dependencies = %#v, want %#v", got, want)
+	}
+	discovery := requirementDependencies("events", 500)
+	if !containsAll(discovery, "core", "signature_key", "r3", "asyncapi") {
+		t.Fatalf("event discovery dependencies = %#v", discovery)
+	}
+	security := requirementDependencies("events", 591)
+	if containsAny(security, "r3", "asyncapi") || !containsAll(security, "core", "signature_key") {
+		t.Fatalf("events security dependencies = %#v", security)
+	}
+	rationale := requirementDependencies("events", 755)
+	if containsAny(rationale, "r3", "asyncapi") {
+		t.Fatalf("events rationale dependencies = %#v", rationale)
+	}
+}
+
+func TestEmbeddedModelDropsStaleEventTensionsAndSupervisionProofClaims(t *testing.T) {
+	model, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tension := range model.SourceTensions {
+		switch tension.ID {
+		case "MODEL-EVENT-EXPIRY-001", "MODEL-EVENT-DELIVERY-ID-001":
+			t.Fatalf("stale tension %s is still recorded", tension.ID)
+		}
+	}
+	backMatter := map[string]string{
+		"IANA Considerations":         "informational",
+		"Well-Known URI Registration": "informational",
+		"Implementation Status":       "informational",
+		"Design Rationale":            "rationale",
+	}
+	normativeDocumentation := 0
+	for _, heading := range model.Headings {
+		if heading.Source != "supervision" {
+			continue
+		}
+		if want, ok := backMatter[heading.Heading]; ok {
+			if heading.Classification != want || heading.ValuePackage != "none" {
+				t.Fatalf("%s classification = %s/%s, want %s/none", heading.Heading, heading.Classification, heading.ValuePackage, want)
+			}
+			delete(backMatter, heading.Heading)
+		}
+		if heading.Classification == "normative" && heading.ProofSeam == "documentation" && heading.ValuePackage == "aauth" {
+			normativeDocumentation++
+		}
+	}
+	if len(backMatter) != 0 {
+		t.Fatalf("missing supervision back-matter headings: %#v", backMatter)
+	}
+	if normativeDocumentation != 0 {
+		t.Fatalf("%d supervision headings are normative aauth documentation", normativeDocumentation)
+	}
+	for _, requirement := range model.Requirements {
+		switch requirement.Source {
+		case "supervision":
+			if !containsAll(requirement.Dependencies, "core", "signature_key") {
+				t.Fatalf("%s dependencies = %#v", requirement.ID, requirement.Dependencies)
+			}
+			if requirement.Authority == "normative" {
+				t.Fatalf("%s is still a normative obligation", requirement.ID)
+			}
+		case "events":
+			if requirement.Line > 590 && containsAny(requirement.Dependencies, "r3", "asyncapi") {
+				t.Fatalf("%s still depends on r3/asyncapi", requirement.ID)
+			}
+		}
+	}
+}
+
+func containsAll(values []string, want ...string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	for _, value := range want {
+		if _, ok := seen[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAny(values []string, want ...string) bool {
+	for _, value := range values {
+		for _, candidate := range want {
+			if value == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func reflectDeepEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestModelPinsMatchRecipientFacingManifest(t *testing.T) {
