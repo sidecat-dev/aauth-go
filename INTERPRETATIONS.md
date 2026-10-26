@@ -1193,8 +1193,11 @@ before dispatch. One atomic store operation binds the signed grant and context,
 increments token consumption, and posts the same amount to person accounting.
 The application runs only after that operation succeeds. Application failures
 are chargeable in this profile, as permitted by the Resource-owned failed-call
-policy. Variable-cost and streaming work require a later reservation and
-settlement profile.
+policy. `BudgetConfig.Maximum` reserves a finite bound before dispatch.
+`SettleBudget` after the header is written commits the spent part as a
+cost-only trailer. `SettleBudget` before the handler writes sends a fixed-price
+header and drops the trailer declaration. An unsettled written response
+commits the hold as the trailer.
 
 ## Budget step-up refusals omit current-request cost
 
@@ -1208,7 +1211,7 @@ insufficiency reports the remainder and may also report `required`.
 
 ## Uncharged Resource errors report the actual Budget remainder
 
-**Source:** AAuth Budgets at `a99d353`, `Sending Rules` and `AAuth-Budget Response Header`.
+**Source:** AAuth Budgets at `70d6737`, `Sending Rules` and `AAuth-Budget Response Header`.
 
 After verifying the Budget token, request proof, issuer role, Resource context,
 account/scope structure and revocation status, a Resource-generated route refusal
@@ -1333,9 +1336,17 @@ caller to poll explicitly for authorization state. Redirects and non-`2xx`
 responses remain failures. `AAG-F094` asks the editors to define this response
 contract.
 
-`updated_request` remains unsupported. Its current equality rule requires an
-`agent` claim that current Resource tokens do not carry; choosing a replacement
-binding here would hide the source problem recorded as `AAG-F008` (since resolved).
+A missionless clarification accepts `updated_request`. The replacement resource
+token and `presented_token` are verified. `iss`, `ps`, `sub`, `agent_jkt`,
+`mission_s256`, and `tenant` must match the pending ask. A parent-mediated ask
+matches the child key. Both replacement expiries cover the pending deadline,
+and the resource-token lifetime stays within the configured maximum. A retained
+person-token record must agree. A revoked Agent-person binding, or a revoked
+Agent or sub-agent token that started the wait, is refused. The retained
+scopes are replaced. Account, Budget, mission-bound, R3, and AS-relayed
+updated requests are not accepted. `AAG-F008` (since resolved) had required an
+`agent` claim current Resource tokens do not carry; the executed checks use
+the claims above.
 
 ### A mission adds context, not another continuation API
 

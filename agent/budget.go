@@ -112,6 +112,24 @@ func (result BudgetCallResult) Cost() (int64, bool) {
 	return result.feedback.Cost()
 }
 
+// ApplyTrailer merges a cost-only trailer after the caller has read the body.
+// An absent trailer leaves the reservation in place. A fixed-price result is
+// unchanged.
+func (result *BudgetCallResult) ApplyTrailer() error {
+	if result == nil || result.kind != budgetCallResultResponse || result.response == nil || !result.hasFeedback {
+		return errors.New("aauth agent: Budget trailer requires the call response")
+	}
+	if _, reserved := result.feedback.Reserved(); !reserved {
+		return nil
+	}
+	updated, err := budgets.ApplyTrailer(result.feedback, result.response.Trailer.Values("AAuth-Budget"))
+	if err != nil {
+		return err
+	}
+	result.feedback = updated
+	return nil
+}
+
 // AssumedCost is the exact cost when the Resource reported one, and otherwise
 // the full reservation. A response that omitted both is not a successful result.
 func (result BudgetCallResult) AssumedCost() (int64, bool) {

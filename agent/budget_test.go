@@ -383,6 +383,15 @@ func TestAgentAcceptsReservedBudgetFeedbackWithoutATrailer(t *testing.T) {
 	if !ok || assumed != 431_200 {
 		t.Fatalf("assumed cost = %d, %t", assumed, ok)
 	}
+	response.Trailer = make(http.Header)
+	response.Trailer.Set("AAuth-Budget", "cost=221200")
+	if err := result.ApplyTrailer(); err != nil {
+		t.Fatal(err)
+	}
+	cost, reported := result.Cost()
+	if !reported || cost != 221_200 {
+		t.Fatalf("settled cost = %d, %t", cost, reported)
+	}
 }
 
 func TestAgentDoBudgetReturnsTypedAuthorizationRequirementWithoutRetry(t *testing.T) {
@@ -648,6 +657,126 @@ func TestOptionalBudgetMetadataDoesNotBreakOrdinaryCoreUse(t *testing.T) {
 	response.Body.Close()
 	if applicationCalls != 1 {
 		t.Fatalf("application calls = %d, want 1", applicationCalls)
+	}
+}
+
+func TestSubagentRequestsItsOwnBudgetAndTheParentExchangesThatGrant(t *testing.T) {
+	t.Parallel()
+
+	protocol := newTestProtocol(t)
+	childKey := testSigningKey(t, "child-budget-key", 9)
+	childID := "aauth:reader+worker@ap.example"
+	childToken, err := aauth.MintAgentToken(protocol.agentProviderID, protocol.agentProviderKey, aauth.AgentTokenRequest{
+		Agent: childID, ParentAgent: protocol.agentID, PersonServer: protocol.personServerID,
+		PublicKey: childKey.PublicJWK(), Lifetime: 20 * time.Minute,
+	}, protocol.now, "child-budget-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := budgetUnit(t, "USD", 6)
+	requested := budgetValue(t, 5_000_000, unit)
+	offered := budgetValue(t, 5_000_000, unit)
+	granted := budgetValue(t, 2_000_000, unit)
+	personToken, err := aauth.MintPersonToken(protocol.personServerKey, aauth.PersonTokenClaims{
+		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+		Audience: protocol.resourceID, Subject: "person-123", Tenant: "tenant-1",
+		Confirmation: aauth.Confirmation{JWK: childKey.PublicJWK()},
+		JTI:          "child-budget-person", IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := childKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exchangedSubagent string
+	httpClient := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.String() {
+		case protocol.resourceID + "/.well-known/aauth-resource.json":
+			return jsonResponse(request, http.StatusOK, map[string]any{
+				"issuer": protocol.resourceID, "authorization_endpoint": protocol.authorizationEndpoint,
+				"scope_descriptions": map[string]string{"records.read": "Read records"},
+				"budget_units": []map[string]any{
+					{"unit": "USD", "decimals": 6, "max": 10_000_000},
+				},
+			}), nil
+		case protocol.authorizationEndpoint:
+			compact, mintErr := budgets.MintResourceToken(protocol.resourceKey, aauth.ResourceTokenClaims{
+				Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
+				Audience: protocol.personServerID, JTI: "child-budget-resource",
+				PersonServer: protocol.personServerID, Subject: "person-123", PresentedJTI: "child-budget-person",
+				AgentJKT: thumbprint, IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
+				Scope: "records.read", Tenant: "tenant-1",
+			}, offered, nil)
+			if mintErr != nil {
+				t.Fatal(mintErr)
+			}
+			return jsonResponse(request, http.StatusOK, map[string]string{"resource_token": compact}), nil
+		case protocol.personServerID + "/.well-known/aauth-person.json":
+			return jsonResponse(request, http.StatusOK, map[string]string{
+				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"auth_token_endpoint": protocol.authTokenEndpoint,
+			}), nil
+		case protocol.authTokenEndpoint:
+			var input struct {
+				ResourceToken  string   `json:"resource_token"`
+				PresentedToken string   `json:"presented_token"`
+				SubagentToken  string   `json:"subagent_token"`
+				Capabilities   []string `json:"capabilities"`
+			}
+			decodeRequest(t, request, &input)
+			exchangedSubagent = input.SubagentToken
+			compact, mintErr := budgets.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
+				Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+				Audience: protocol.resourceID, JTI: "child-budget-auth",
+				PersonServer: protocol.personServerID, Subject: "person-123",
+				Confirmation: aauth.Confirmation{JWK: childKey.PublicJWK()},
+				IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(10 * time.Minute).Unix(),
+				Scope: "records.read", Tenant: "tenant-1",
+			}, granted)
+			if mintErr != nil {
+				t.Fatal(mintErr)
+			}
+			return jsonResponse(request, http.StatusOK, map[string]any{
+				"auth_token": compact, "expires_in": int64((10 * time.Minute) / time.Second),
+			}), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL)
+			return nil, nil
+		}
+	})}
+	child, err := agent.New(context.Background(), agent.Config{
+		Identifier: childID, SigningKey: childKey, AgentToken: childToken,
+		KeyResolver: protocol.resolver, HTTPClient: httpClient, Clock: protocol.clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceToken, err := child.Authorize(context.Background(), agent.AuthorizeRequest{
+		Resource: protocol.resourceID, PersonToken: personToken,
+		Scopes: []string{"records.read"}, Budget: &requested,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := protocol.newClientWithHTTPClient(t, httpClient)
+	authToken, err := parent.Exchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken,
+		PresentedToken: personToken, SubagentToken: childToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exchangedSubagent != childToken {
+		t.Fatal("parent exchange did not present the child token")
+	}
+	claims, got, err := budgets.VerifyAuthToken(context.Background(), authToken, protocol.resolver, protocol.clock)
+	if err != nil || !sameBudget(got, granted) || !claims.Confirmation.JWK.Equal(childKey.PublicJWK()) {
+		t.Fatalf("child grant = %#v confirmation=%v err=%v", got, claims.Confirmation.JWK.Equal(childKey.PublicJWK()), err)
+	}
+	if claims.Confirmation.JWK.Equal(protocol.agentKey.PublicJWK()) {
+		t.Fatal("delegated budget grant is bound to the parent key")
 	}
 }
 

@@ -422,13 +422,16 @@ round identifier (`AAG-F095`). An exact same-state answer replay is idempotent;
 a changed replay conflicts. A signed `DELETE` cancels the active question and
 makes every later pending-URL request return `410 Gone`.
 
-Each clarification answer, cancellation, or poll sends one request. No method
-continues to another step on the caller's behalf. This profile deliberately
-defers `updated_request`:
-the current editor text requires equality of a Resource-token `agent` claim
-that current Resource tokens do not contain (`AAG-F008`, since resolved
-upstream in 28e8258 Core, "Updated Request"; lifting this deferral is a
-separate implementation change).
+Each clarification answer, cancellation, poll, or missionless `updated_request`
+sends one request. No method continues to another step on the caller's behalf.
+A missionless clarification accepts `updated_request` when the replacement
+resource token and `presented_token` match the pending ask on `iss`, `ps`,
+`sub`, `agent_jkt`, `mission_s256`, and `tenant`, a parent-mediated ask matches
+the child key, both expiries cover the pending deadline, and the resource-token
+lifetime stays within the configured maximum. A retained person-token record
+must agree. A revoked binding or a revoked token that started the wait is
+refused, and the retained scopes are replaced. Account, Budget, mission-bound,
+R3, and AS-relayed updated requests are not accepted.
 
 ### Hosted Agent bootstrap profiles
 
@@ -667,9 +670,18 @@ replaces that assumption and does not settle the allocation.
 store implements `BudgetUsageStore` publishes `usage_endpoint` and serves a
 signed `POST /usage`. The response is not signed. A streamed response can send `reserved` in the
 header and `cost` in an `AAuth-Budget` trailer. The fixed-price protected path
-still commits the known cost before dispatch and does not keep a reservation.
-The Agent treats a `reserved` header without `cost` as complete and assumes
-the reservation until a cost-only trailer arrives. Automatic reauthorization
+still commits the known cost before dispatch. `BudgetConfig.Maximum` reserves
+that bound first. `SettleBudget` after the header is written commits the spent
+part as a cost-only trailer. `SettleBudget` before the write sends a fixed-price
+header and no trailer. A handler that writes and does not settle commits the
+hold as the trailer; a handler that writes nothing gets that fixed-price header
+for the whole hold. The commit uses the resource clock as the charge time. A
+usage response reports the store's completeness time when the store sets one.
+A step-up record is committed spend and does not count other requests' holds.
+A direct Person Server sizes a sub-agent or one-hop call-chain auth token from
+that token's own offer; the grant is not a remainder of a parent or upstream
+budget. The Agent treats a `reserved` header without `cost` as
+complete and assumes the reservation until `ApplyTrailer` reads a cost-only trailer. Automatic reauthorization
 and reactive Resource-held or R3+Budget first calls are not part of these
 profiles.
 

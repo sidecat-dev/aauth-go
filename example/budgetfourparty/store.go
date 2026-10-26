@@ -118,10 +118,10 @@ func (store *budgetStore) Charge(
 	}
 	remaining := charge.Grant.Amount() - state.consumed
 	if remaining == 0 {
-		return resource.BudgetChargeResult{}, resource.ErrBudgetExhausted
+		return resource.BudgetChargeResult{Consumed: state.consumed}, resource.ErrBudgetExhausted
 	}
 	if charge.Cost > remaining {
-		return resource.BudgetChargeResult{Remaining: remaining}, resource.ErrBudgetInsufficient
+		return resource.BudgetChargeResult{Remaining: remaining, Consumed: state.consumed}, resource.ErrBudgetInsufficient
 	}
 	state.charge = cloneCharge(charge)
 	state.consumed += charge.Cost

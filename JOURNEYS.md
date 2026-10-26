@@ -213,9 +213,10 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     and `go run ./example/psconsent`.
   - Boundary: omitted capabilities on a mission-bound request use the exact
     values retained at mission approval; an explicit empty array remains
-    empty. Durable adapters, AS relay, `claims`, `payment`, and
-    `updated_request` remain missing. The safe limit is one question because
-    Core gives an answer no round identifier; see `AAG-F095` in
+    empty. A missionless clarification accepts `updated_request` with the
+    limits in [CONFORMANCE.md](CONFORMANCE.md). Durable adapters, AS relay,
+    `claims`, and `payment` remain missing. The safe limit is one question
+    because Core gives an answer no round identifier; see `AAG-F095` in
     [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
 - [ ] **Mission-governed authorization — Partial**
@@ -719,7 +720,7 @@ below is explicitly a repository profile.
 
 ## AAuth Budgets
 
-Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-budgets.md).
+Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-budgets.md).
 
 ### Runnable journey
 
@@ -811,16 +812,28 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
   - Boundary: a PS omission is not a grant. The AS issues no `budget` claim, and
     the PS rejects an Auth token that carries one. A step-up Resource token
     carries `budget_consumed` for the presented Auth token in that grant's
-    scale. Per-call R3 plus Budget, deferred interaction, delegation, call
-    chaining, variable cost, streaming, and usage queries remain excluded.
+    scale. Per-call R3 plus Budget and deferred interaction remain excluded.
+    Direct delegation and one-hop call chaining are a separate journey.
+    Variable-cost reservation is a separate journey.
 
 ### Not implemented
 
-- [ ] **Variable-cost reservation — Not implemented as a store.** The fixed-price
-  path still commits the known cost before dispatch. `WriteStreamingBudgetHeader`
-  and `WriteStreamingBudgetTrailer` send `reserved` and a cost-only trailer.
-  The Agent accepts a `reserved` header with no trailer and assumes that hold.
-  There is no reserve-commit-release store and no interrupted-stream journey.
+- [x] **Variable-cost reservation — Implemented as a store and protected path.**
+  `BudgetConfig.Maximum` reserves a finite bound before dispatch. The handler
+  calls `SettleBudget` with the actual cost; the unspent hold is released.
+  Settlement after the response header has been written sends a cost-only
+  trailer. Settlement before that write, including a handler that writes
+  nothing, sends a fixed-price header with `cost` and `remaining` and does not
+  declare a trailer. A handler that writes and does not settle commits the
+  whole hold as the trailer. The fixed-price path still commits the known cost before
+  dispatch. `WriteStreamingBudgetHeader` and `WriteStreamingBudgetTrailer`
+  remain available for a host that writes the fields itself. The Agent accepts
+  a `reserved` header with no trailer, assumes that hold, and applies a
+  cost-only trailer with `ApplyTrailer` after reading the body.
+  Evidence: [`resource/storetest/budget_reserve.go`](resource/storetest/budget_reserve.go),
+  [`resource/budget_reserve_test.go`](resource/budget_reserve_test.go), and
+  [`agent/budget_test.go`](agent/budget_test.go).
+  Boundary: no interrupted-stream journey. An abandoned request commits the hold.
 - [x] **Usage queries — Implemented as a Resource endpoint and issuer helper.**
   A store that implements `resource.BudgetUsageStore` publishes
   `usage_endpoint` and answers a signed Person Server or Access Server
@@ -841,9 +854,19 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     class R3 uses the AS issuance commit followed by the PS mission comparison
     and exact-token commit; a later mission race withholds the token even though
     the independent AS audit remains.
-- [ ] **Delegation, call chaining, and per-call mission R3 Budgets — Not implemented.**
-  The Agent, PS, and Resource fail closed rather than carrying a Budget through
-  these remaining compositions.
+- [x] **Delegation and one-hop call chaining — Each auth token carries its own Budget.**
+  A direct Person Server sizes the grant from that token's resource-token
+  offer. A second token for the same offer is not reduced by the first, and
+  the upstream token is not a balance to draw down. The parent mediates a
+  sub-agent exchange; the auth token is bound to the child. The child can
+  request its own budgeted resource token. Federated delegation and federated
+  call chaining stay refused.
+  Evidence: [`personserver/budget_delegation_test.go`](personserver/budget_delegation_test.go)
+  and [`agent/budget_test.go`](agent/budget_test.go).
+- [ ] **Per-call mission R3 Budgets — Not implemented.**
+  The Access Server refuses a fixed Budget that also grants per-call R3
+  operations. Mission-bound delegation and mission-bound call chaining stay
+  refused.
 
 ## AAuth interoperability demo profile
 

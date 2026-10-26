@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -13,7 +14,9 @@ var (
 	descriptionScript = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
 	descriptionStyle  = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
 	descriptionTag    = regexp.MustCompile(`(?is)<[^>]*>`)
-	descriptionScheme = regexp.MustCompile(`(?i)\]\(\s*(?:javascript|data):`)
+	descriptionEntity = regexp.MustCompile(`(?i)&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|lt|gt|amp|quot|colon|nbsp);`)
+	inlineLinkDest    = regexp.MustCompile(`\]\(([^)\r\n]*)\)`)
+	referenceLinkDest = regexp.MustCompile(`(?m)^[ ]{0,3}(\[[^\]\n]+\]:)[ \t]*<?([^>\s]+)>?`)
 )
 
 // FormatConsentAmount renders a budget the way a Person Server shows it to a
@@ -56,15 +59,109 @@ func formatScaled(amount, decimals int64) string {
 // SanitizeDescription removes active HTML and dangerous link schemes from a
 // resource-supplied Markdown unit description before a consent screen renders
 // it. The stored metadata value is unchanged; callers render the result.
+// Numeric character references and a small set of named entities are decoded
+// before the check, so an encoded scheme such as &#106;avascript: is not a
+// link. Reference-style definitions are checked as well as inline links.
+// javascript:, vbscript:, and data: are removed from those destinations.
 func SanitizeDescription(description string) (string, error) {
 	if !utf8.ValidString(description) {
 		return "", errors.New("budgets: unit description must be valid UTF-8")
 	}
-	cleaned := descriptionScript.ReplaceAllString(description, "")
+	cleaned := decodeDescriptionEntities(description)
+	cleaned = descriptionScript.ReplaceAllString(cleaned, "")
 	cleaned = descriptionStyle.ReplaceAllString(cleaned, "")
 	cleaned = descriptionTag.ReplaceAllString(cleaned, "")
-	cleaned = descriptionScheme.ReplaceAllString(cleaned, "](")
-	return cleaned, nil
+	return neutralizeDescriptionSchemes(cleaned), nil
+}
+
+func decodeDescriptionEntities(description string) string {
+	current := description
+	for range 3 {
+		next := descriptionEntity.ReplaceAllStringFunc(current, decodeDescriptionEntity)
+		if next == current {
+			return current
+		}
+		current = next
+	}
+	return current
+}
+
+func decodeDescriptionEntity(entity string) string {
+	switch strings.ToLower(entity) {
+	case "&lt;":
+		return "<"
+	case "&gt;":
+		return ">"
+	case "&amp;":
+		return "&"
+	case "&quot;":
+		return `"`
+	case "&colon;":
+		return ":"
+	case "&nbsp;":
+		return " "
+	}
+	body := entity[1 : len(entity)-1]
+	base := 10
+	digits := body[1:]
+	if len(body) > 2 && (body[1] == 'x' || body[1] == 'X') {
+		base = 16
+		digits = body[2:]
+	}
+	value, err := strconv.ParseInt(digits, base, 32)
+	if err != nil || value < 0 || value > unicodeMaxRune || (value >= 0xD800 && value <= 0xDFFF) {
+		return entity
+	}
+	return string(rune(value))
+}
+
+const unicodeMaxRune = 0x10FFFF
+
+func neutralizeDescriptionSchemes(description string) string {
+	description = inlineLinkDest.ReplaceAllStringFunc(description, func(match string) string {
+		stripped, ok := stripDangerousScheme(match[2 : len(match)-1])
+		if !ok {
+			return match
+		}
+		return "](" + stripped + ")"
+	})
+	return referenceLinkDest.ReplaceAllStringFunc(description, func(match string) string {
+		parts := referenceLinkDest.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		stripped, ok := stripDangerousScheme(parts[2])
+		if !ok {
+			return match
+		}
+		return parts[1] + " " + stripped
+	})
+}
+
+func stripDangerousScheme(destination string) (string, bool) {
+	trimmed := strings.TrimSpace(destination)
+	if len(trimmed) >= 2 && trimmed[0] == '<' && trimmed[len(trimmed)-1] == '>' {
+		trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	}
+	compact := compactDestination(trimmed)
+	lower := strings.ToLower(compact)
+	for _, scheme := range []string{"javascript:", "vbscript:", "data:"} {
+		if strings.HasPrefix(lower, scheme) {
+			return compact[len(scheme):], true
+		}
+	}
+	return "", false
+}
+
+func compactDestination(destination string) string {
+	var builder strings.Builder
+	for _, r := range destination {
+		if r <= 0x20 || r == 0x7f {
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
 }
 
 // AccountedSpend is what an issuer holds against one allocation until a usage

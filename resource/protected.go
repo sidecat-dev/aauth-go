@@ -385,13 +385,24 @@ func (server *Server) serveAuthTokenProtected(
 		Confirmation:     claims.Confirmation.JWK,
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
+	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
+	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
+	handlerWriter := applicationResponse
 	if metered {
 		var reference *r3.Reference
 		if authorization != nil {
 			value := authorization.reference
 			reference = &value
 		}
-		if !server.enforceFixedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference) {
+		if server.budget.maximum != nil {
+			settlement, ok := server.beginReservedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference)
+			if !ok {
+				return
+			}
+			defer settlement.finish()
+			protectedContext = context.WithValue(protectedContext, budgetSettlementKey{}, settlement)
+			handlerWriter = settlement.writer
+		} else if !server.enforceFixedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference) {
 			return
 		}
 	} else if budgetResponse != nil {
@@ -399,9 +410,7 @@ func (server *Server) serveAuthTokenProtected(
 		// route needs no charge, so the application can still serve it.
 		_ = budgetResponse.setUnchargedFeedback()
 	}
-	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
-	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
-	server.protected.ServeHTTP(applicationResponse, request.WithContext(protectedContext))
+	server.protected.ServeHTTP(handlerWriter, request.WithContext(protectedContext))
 }
 
 func (server *Server) verifyPreparedR3BudgetAuthRequest(
@@ -490,6 +499,20 @@ func (server *Server) enforceFixedBudget(
 		response.Header().Set("AAuth-Budget", formatted)
 		return true
 	}
+	return server.refuseBudget(response, request, claims, principal, grant, r3Reference, cost, result, err)
+}
+
+func (server *Server) refuseBudget(
+	response *budgetResponseWriter,
+	request *http.Request,
+	claims aauth.AuthTokenClaims,
+	principal AuthPrincipal,
+	grant budgets.Value,
+	r3Reference *r3.Reference,
+	cost int64,
+	result BudgetChargeResult,
+	err error,
+) bool {
 	if !errors.Is(err, ErrBudgetInsufficient) && !errors.Is(err, ErrBudgetExhausted) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return false
@@ -529,7 +552,7 @@ func (server *Server) enforceFixedBudget(
 	challengeToken, err := server.budget.challenge(request.Context(), BudgetChallengeRequest{
 		Token:     aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		Principal: cloneBudgetPrincipal(principal), Grant: grant,
-		Remaining: result.Remaining, Required: cost, Reason: reason,
+		Remaining: result.Remaining, Consumed: result.Consumed, Required: cost, Reason: reason,
 		R3Reference: cloneR3Reference(r3Reference),
 	})
 	if err != nil {
@@ -538,7 +561,7 @@ func (server *Server) enforceFixedBudget(
 	}
 	if err := server.validateBudgetChallenge(
 		request.Context(), challengeToken, claims.JTI, principal, r3Reference,
-		grant.Amount()-result.Remaining, grant.Unit(),
+		result.Consumed, grant.Unit(),
 	); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false

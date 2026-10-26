@@ -164,11 +164,12 @@ Person Server.
 - Section: `### Person Token Structure` at line 856 (the `exp` rule at line 863), `### Auth Token Structure` at line 1768 (the `exp` rule at line 1775), and `### Call Chaining` at line 1846 (the paragraph at line 1850).
 - SHA-256 of the whole file at that commit: `99ef2430c7babec7ea9cb2e9af40e3c3c57d18bce5a6e8501e9748063cfd9ab0`.
 
-Not adopted by this entry: `expired_upstream_token`, so an upstream token that
-fails only `exp` still returns `invalid_upstream_token`; person tokens as
-upstream tokens; mission- or account-bound upstream tokens; AS-issued upstream
-tokens and federated downstream issuance; and repeated hops or cascade. This
-overlay does not claim full call chaining.
+An upstream token that fails only `exp` returns `expired_upstream_token`. A
+malformed or untrusted upstream token remains `invalid_upstream_token`, and a
+revoked caller is `revoked_upstream_token`. Not adopted by this entry: person
+tokens as upstream tokens; mission- or account-bound upstream tokens;
+AS-issued upstream tokens and federated downstream issuance; and repeated hops
+or cascade. This overlay does not claim full call chaining.
 
 ## Executed behavior: deferred AS delivery
 
@@ -318,16 +319,31 @@ a Markdown unit description; this library does not render the consent screen.
 
 A streamed response may carry `reserved` and a cost-only `AAuth-Budget`
 trailer. The recipient does not require the trailer. The fixed-price path
-still commits before dispatch. There is no reserve-commit-release store.
+still commits before dispatch. `BudgetConfig.Maximum` reserves that bound
+first. `SettleBudget` after the response header has been written commits the
+actual cost and sets the cost-only trailer. `SettleBudget` before that write,
+including a handler that writes nothing, sends a fixed-price header with
+`cost` and `remaining` and does not declare a trailer. A handler that writes
+and does not settle commits the hold as the trailer. The commit records the
+resource clock as the charge time. A usage response reports the store's
+completeness time when the store sets one, and the resource clock otherwise.
+A step-up consumption record is committed spend. Other requests' in-flight
+holds reduce `remaining` and are not part of that record.
 
-Variable-cost settlement is not executed.
+An interrupted stream is not a separate journey.
+
+A direct Person Server sizes a sub-agent auth token, and a one-hop call-chain
+auth token, from that token's own resource-token offer. The grant is not a
+remainder of a parent or upstream budget. Federated delegation, federated call
+chaining, and per-call R3 stay outside this path.
 [CONFORMANCE.md](CONFORMANCE.md) names the evidence and the remaining gaps.
 
 - Document: AAuth Budgets, `draft-hardt-aauth-budgets.md`.
 - Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
 - Sections: PS-to-AS Token Request Extensions (542–572), Auth Token
-  Extensions (574–608), Unreported Allocations (827–857), and Usage Counters
-  (929–1075).
+  Extensions (574–608), AAuth-Budget Response Header (610–650), Trailer Rules
+  (695–704), The Budget Is a Hard Cap (908–915), Delegation (921–923),
+  Unreported Allocations (827–857), and Usage Counters (929–1075).
 - SHA-256: `f00d34c91576476cdb30b7aa1aa13a0bc9fc1d99fc43b4f0389ccb3e8bf2e150`.
 
 This note is a list, not a second manifest row.

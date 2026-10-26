@@ -53,8 +53,10 @@ type ConsumptionRecord struct {
 
 // ConsumptionForPresentedGrant is the consumption record for an Auth token
 // whose metered spend is the granted amount minus the uncommitted remainder.
-// The record uses that grant's scale. A caller that would restate the figure
-// in another scale omits the record instead of calling this function.
+// Remaining must be that uncommitted remainder. A figure already net of
+// in-flight holds makes this record count those holds as consumed. The record
+// uses the grant's scale. A caller that would restate the figure in another
+// scale omits the record instead of calling this function.
 func ConsumptionForPresentedGrant(jti string, grant Value, remaining int64) (ConsumptionRecord, error) {
 	if err := grant.validate(); err != nil {
 		return ConsumptionRecord{}, fmt.Errorf("budgets: presented grant: %w", err)
