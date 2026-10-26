@@ -552,7 +552,7 @@ func (server *Server) refuseBudget(
 	challengeToken, err := server.budget.challenge(request.Context(), BudgetChallengeRequest{
 		Token:     aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		Principal: cloneBudgetPrincipal(principal), Grant: grant,
-		Remaining: result.Remaining, Required: cost, Reason: reason,
+		Remaining: result.Remaining, Consumed: result.Consumed, Required: cost, Reason: reason,
 		R3Reference: cloneR3Reference(r3Reference),
 	})
 	if err != nil {
