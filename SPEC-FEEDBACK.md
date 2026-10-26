@@ -75,9 +75,9 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 59 (P1: 6, P2: 33, P3: 20; 46 submitted, 13 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 61 (P1: 6, P2: 35, P3: 20; 46 submitted, 15 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
-Findings AAG-F110 through AAG-F118 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
+Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -127,6 +127,8 @@ Findings AAG-F110 through AAG-F118 were read against AAuth Budgets `70d6737`, no
 | AAG-F116 | Age 0 is not a positive current_age | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
 | AAG-F117 | A trailer must carry only cost, while unknown members are ignored | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
 | AAG-F118 | Usage as_of cannot name a lagging store's completeness time | Budgets | missing-requirement | P3 | open | 2026-10-26 | Not submitted | — |
+| AAG-F119 | A budget object with an unknown member is rejected | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
+| AAG-F120 | An offer above the metadata maximum is invalid_budget | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -1498,6 +1500,48 @@ This library rejects any trailer member other than `cost`, including unrecognize
 This library reports `BudgetUsageResult.AsOf` when the store sets it, and the resource clock otherwise. It does not settle those in-flight holds early. A step-up consumption record is committed spend; outstanding holds reduce `remaining` and are not consumption.
 
 **Question:** May `as_of` be the store's completeness time rather than the resource clock, and does an in-flight hold whose token has expired by that time count as settled?
+
+### AAG-F119 — A budget object with an unknown member is rejected
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-26
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-26 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, the budget object. This library's check is `budgets.ParseValueJSON`.
+
+`amount`, `unit`, and `decimals` are required. The draft does not say what a recipient does with a budget member it does not recognize. This library rejects the object. `{"amount":1,"unit":"USD","decimals":6,"future":true}` does not parse. A header still ignores unrecognized `AAuth-Budget` members.
+
+An implementation that ignores unknown budget members will accept a token this library rejects.
+
+**Question:** Must a recipient ignore unrecognized members of a budget object, or reject the object?
+
+### AAG-F120 — An offer above the metadata maximum is invalid_budget
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-26
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-26 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, the resource-metadata maximum and the invalid-budget errors around 1097–1098.
+
+A resource declares an optional maximum for a unit. The listed `invalid_budget` cases are a scale mismatch and a malformed budget object. This library also returns `invalid_budget` when a signed offer exceeds that maximum. The Person Server, the Access Server, the Agent, and the resource offer guard all apply that check. A client request above the resource's own maximum is narrowed; this finding is about a signed offer that is already above the metadata maximum.
+
+**Question:** Is a signed offer above the resource's declared maximum `invalid_budget`, or must the resource never produce that offer?
 
 ## Against informative text
 
