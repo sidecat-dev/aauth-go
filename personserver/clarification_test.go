@@ -456,6 +456,94 @@ func TestAuthorizationClarificationActionRejectsInvalidActionAndWrongIdentity(t 
 	}
 }
 
+func TestUpdatedRequestRefusesABudgetTokenBeforePolicy(t *testing.T) {
+	protocol := newAuthorizationInteractionProtocol(t)
+	store := newMemoryDeferredAuthorizationStore()
+	config := protocol.config(store)
+	unit, err := budgets.NewUnit("USD", 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration, err := budgets.NewUnitDeclaration(unit, "US dollars")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Budget = &BudgetConfig{ResolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
+		return []budgets.UnitDeclaration{declaration}, nil
+	}}
+	server, err := NewPSAuthorization(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingResponse := protocol.exchange(t, server, []string{"interaction", "clarification"})
+	requirement, err := aauth.ParseInteractionRequirement(pendingResponse.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := strings.TrimPrefix(requirement.URL, protocol.interactionURL+"/")
+	interaction, err := server.ConsumeAuthorizationInteractionCode(context.Background(), reference, requirement.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.RequestAuthorizationClarification(context.Background(), interaction, AuthorizationClarificationRequest{
+		Question: "Why write?", Lifetime: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := protocol.agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer, err := budgets.NewValue(100, unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := budgets.NewConsumptionRecord("authorization-person-token-2", 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := aauth.ResourceTokenClaims{
+		Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument, Audience: protocol.personServerID,
+		JTI: "authorization-budget-resource-token", PersonServer: protocol.personServerID, Subject: protocol.subject,
+		PresentedJTI: "authorization-person-token-2", AgentJKT: thumbprint,
+		IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(5 * time.Minute).Unix(),
+		Scope: "records.read", Tenant: protocol.tenant,
+	}
+	budgetResource, err := budgets.MintResourceToken(protocol.resourceKey, claims, offer, &consumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainResource, err := aauth.MintResourceToken(protocol.resourceKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presented := protocol.personTokenForUpdate(t, "authorization-person-token-2", protocol.subject)
+	location := pendingResponse.Header().Get("Location")
+	policyCalls := protocol.policyCalls
+	refused := protocol.clarificationAction(
+		t, server, location, protocol.agentKey, protocol.agentToken,
+		updatedRequestBody(t, budgetResource, presented, "narrow the budget"),
+	)
+	assertAuthorizationInteractionProblem(t, refused, http.StatusBadRequest, "invalid_request")
+	if protocol.policyCalls != policyCalls {
+		t.Fatalf("policy calls = %d, want %d", protocol.policyCalls, policyCalls)
+	}
+	accepted := protocol.clarificationAction(
+		t, server, location, protocol.agentKey, protocol.agentToken,
+		updatedRequestBody(t, plainResource, presented, "read only"),
+	)
+	if accepted.Code != http.StatusNoContent {
+		t.Fatalf("same token without a Budget = %d %s", accepted.Code, accepted.Body.String())
+	}
+	resumed, err := server.ResumeAuthorizationInteraction(context.Background(), reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resumed.RequestedScopes(), []string{"records.read"}) {
+		t.Fatalf("scopes after the non-Budget update = %#v", resumed.RequestedScopes())
+	}
+}
+
 func TestUpdatedRequestReplacesThePendingAskWhenIdentityMatches(t *testing.T) {
 	protocol := newAuthorizationInteractionProtocol(t)
 	store := newMemoryDeferredAuthorizationStore()
