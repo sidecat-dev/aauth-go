@@ -1,11 +1,14 @@
 package resource
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
@@ -17,16 +20,75 @@ type budgetSettlementKey struct{}
 type budgetSettlement struct {
 	mu      sync.Mutex
 	settled bool
-	writer  http.ResponseWriter
+	writer  *budgetWriteState
 	store   BudgetReserver
 	id      string
 	token   aauth.TokenReference
 	hold    int64
+	grant   budgets.Value
+	now     func() time.Time
+}
+
+// budgetWriteState is the writer the reserved handler receives. Settlement
+// has to know whether that writer has already sent the header: Go promotes a
+// declared trailer from the live header map, so replacing AAuth-Budget before
+// the first write would send cost alone and repeat it in the trailer.
+type budgetWriteState struct {
+	http.ResponseWriter
+	mu    sync.Mutex
+	wrote bool
+}
+
+func (state *budgetWriteState) WriteHeader(status int) {
+	state.ResponseWriter.WriteHeader(status)
+	state.markWritten()
+}
+
+func (state *budgetWriteState) Write(body []byte) (int, error) {
+	n, err := state.ResponseWriter.Write(body)
+	state.markWritten()
+	return n, err
+}
+
+func (state *budgetWriteState) Flush() {
+	flusher, ok := state.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
+	}
+	flusher.Flush()
+	state.markWritten()
+}
+
+func (state *budgetWriteState) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := state.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("resource: Budget response does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (state *budgetWriteState) Unwrap() http.ResponseWriter { return state.ResponseWriter }
+
+func (state *budgetWriteState) markWritten() {
+	state.mu.Lock()
+	state.wrote = true
+	state.mu.Unlock()
+}
+
+func (state *budgetWriteState) written() bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.wrote
 }
 
 // SettleBudget commits the actual cost of the reservation on this request.
-// Cost must be between zero and the hold. The unspent remainder is released
-// and the cost-only trailer is set. Calling it again is an error.
+// Cost must be between zero and the hold. The unspent remainder is released.
+// After the handler has written the response header, the cost-only trailer is
+// set and the reserved header is left as it was sent. Before that write,
+// SettleBudget replaces the header with a fixed-price cost and remaining and
+// drops the trailer declaration, so the header stays parseable and cost is
+// not repeated. Calling it again is an error. Call it on the request goroutine
+// through the writer this request passed to the handler.
 func SettleBudget(ctx context.Context, cost int64) error {
 	if ctx == nil {
 		return errors.New("resource: Budget settlement requires a context")
@@ -44,17 +106,35 @@ func (settlement *budgetSettlement) settle(cost int64) error {
 	if settlement.settled {
 		return ErrBudgetReservation
 	}
+	chargedAt := time.Time{}
+	if settlement.now != nil {
+		chargedAt = settlement.now().UTC()
+	}
 	result, err := settlement.store.Commit(context.Background(), BudgetCommit{
-		Token: settlement.token, ID: settlement.id, Cost: cost,
+		Token: settlement.token, ID: settlement.id, Cost: cost, ChargedAt: chargedAt,
 	})
 	if err != nil {
 		return err
 	}
-	formatted, err := budgets.FormatTrailer(result.Cost)
-	if err != nil {
-		return err
+	if settlement.writer.written() {
+		formatted, err := budgets.FormatTrailer(result.Cost)
+		if err != nil {
+			return err
+		}
+		settlement.writer.Header().Set("AAuth-Budget", formatted)
+	} else {
+		feedback, err := budgets.NewSuccessFeedback(settlement.grant, result.Cost, result.Remaining)
+		if err != nil {
+			return err
+		}
+		formatted, err := budgets.FormatFeedback(feedback)
+		if err != nil {
+			return err
+		}
+		header := settlement.writer.Header()
+		header.Del("Trailer")
+		header.Set("AAuth-Budget", formatted)
 	}
-	settlement.writer.Header().Set("AAuth-Budget", formatted)
 	settlement.settled = true
 	return nil
 }
@@ -115,7 +195,7 @@ func (server *Server) beginReservedBudget(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return nil, false
 		}
-		server.refuseBudget(response, request, claims, principal, grant, r3Reference, hold, BudgetChargeResult{Remaining: reserved.Remaining}, err)
+		server.refuseBudget(response, request, claims, principal, grant, r3Reference, hold, BudgetChargeResult{Remaining: reserved.Remaining, Consumed: reserved.Consumed}, err)
 		return nil, false
 	}
 	feedback, err := budgets.NewReservedFeedback(grant, reserved.Remaining, reserved.Reserved)
@@ -132,8 +212,13 @@ func (server *Server) beginReservedBudget(
 	}
 	response.Header().Set("Trailer", "AAuth-Budget")
 	response.Header().Set("AAuth-Budget", formatted)
+	now := func() time.Time { return time.Time{} }
+	if server.clock != nil {
+		now = server.clock.Now
+	}
 	return &budgetSettlement{
-		writer: response.ResponseWriter, store: server.budget.reserver,
-		id: identifier, token: response.charge.Token, hold: hold,
+		writer: &budgetWriteState{ResponseWriter: response.ResponseWriter},
+		store:  server.budget.reserver,
+		id:     identifier, token: response.charge.Token, hold: hold, grant: grant, now: now,
 	}, true
 }

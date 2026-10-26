@@ -686,6 +686,114 @@ func TestBudgetRefusalRejectsConsumptionRestatedInAnotherUnit(t *testing.T) {
 	}
 }
 
+func TestResourceOfferGuardRejectsUndeclaredUnitsAndWrongScales(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := budgets.NewUnit("tokens", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongScale, err := budgets.NewUnit("USD", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name       string
+		unit       budgets.Unit
+		amount     int64
+		wantStatus int
+		wantAmount int64
+	}{
+		{name: "undeclared unit", unit: tokens, amount: 1, wantStatus: http.StatusInternalServerError},
+		{name: "wrong scale", unit: wrongScale, amount: 1, wantStatus: http.StatusInternalServerError},
+		{name: "declared narrowing", unit: budgets.Unit{}, amount: 100, wantStatus: http.StatusOK, wantAmount: 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			protocol := newBudgetResourceProtocol(t, 1, http.NotFoundHandler())
+			offerUnit := protocol.unit
+			if test.unit.Name() != "" {
+				offerUnit = test.unit
+			}
+			offered := budgetValue(t, test.amount, offerUnit)
+			protocol.config.Budget.Offer = func(context.Context, BudgetOfferRequest) (budgets.Value, error) {
+				return offered, nil
+			}
+			server := protocol.server(t)
+			personToken := mintPersonToken(
+				t, protocol.personKey, protocol.agentKey.PublicJWK(), protocol.now,
+				resourceIssuer, "offer-guard-"+test.name,
+			)
+			request := signedRequest(
+				t, protocol.clock, protocol.agentKey, personToken,
+				http.MethodPost, resourceIssuer+"/authorize",
+				`{"scope":"records.read","budget":{"amount":400000,"unit":"USD","decimals":6}}`,
+			)
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if test.wantStatus != http.StatusOK {
+				if strings.Contains(response.Body.String(), "resource_token") {
+					t.Fatalf("undeclared offer was issued: %s", response.Body.String())
+				}
+				var problem struct {
+					Error string `json:"error"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil || problem.Error != "server_error" {
+					t.Fatalf("problem = %#v, %v", problem, err)
+				}
+				return
+			}
+			var output struct {
+				ResourceToken string `json:"resource_token"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &output); err != nil {
+				t.Fatal(err)
+			}
+			_, offer, _, err := budgets.VerifyResourceToken(context.Background(), output.ResourceToken, protocol.resolver, protocol.clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if offer.Amount() != test.wantAmount || !offer.Unit().Equal(protocol.unit) {
+				t.Fatalf("issued = %d %s/%d", offer.Amount(), offer.Unit().Name(), offer.Unit().Decimals())
+			}
+		})
+	}
+}
+
+func TestBudgetAuthorizationRejectsABudgetMissingRequiredMembers(t *testing.T) {
+	t.Parallel()
+
+	protocol := newBudgetResourceProtocol(t, 1, http.NotFoundHandler())
+	server := protocol.server(t)
+	personToken := mintPersonToken(
+		t, protocol.personKey, protocol.agentKey.PublicJWK(), protocol.now,
+		resourceIssuer, "missing-budget-members",
+	)
+	for _, body := range []string{
+		`{"scope":"records.read","budget":{"unit":"USD","decimals":6}}`,
+		`{"scope":"records.read","budget":{"amount":1,"decimals":6}}`,
+		`{"scope":"records.read","budget":{"amount":1,"unit":"USD"}}`,
+		`{"scope":"records.read","budget":{}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			request := signedRequest(
+				t, protocol.clock, protocol.agentKey, personToken,
+				http.MethodPost, resourceIssuer+"/authorize", body,
+			)
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			var problem struct {
+				Error string `json:"error"`
+			}
+			if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &problem) != nil || problem.Error != "invalid_budget" {
+				t.Fatalf("status=%d problem=%#v body=%s", response.Code, problem, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestBudgetStoreBindsAnAuthTokenReferenceToOneGrantAndContext(t *testing.T) {
 	t.Parallel()
 
@@ -1058,7 +1166,7 @@ func (protocol *budgetResourceProtocol) challengeToken(
 	}
 	var consumed *budgets.ConsumptionRecord
 	if offer.Unit().Equal(request.Grant.Unit()) {
-		record, err := budgets.ConsumptionForPresentedGrant(request.Token.JTI, request.Grant, request.Remaining)
+		record, err := budgets.NewConsumptionRecord(request.Token.JTI, request.Consumed)
 		if err != nil {
 			return "", err
 		}
@@ -1130,12 +1238,13 @@ func budgetValue(t *testing.T, amount int64, unit budgets.Unit) budgets.Value {
 }
 
 type budgetMemoryStore struct {
-	mu      sync.Mutex
-	tokens  map[aauth.TokenReference]budgetTokenState
-	persons map[budgetPersonKey]int64
-	holds   map[string]budgetMemoryHold
-	failure error
-	charges int
+	mu         sync.Mutex
+	tokens     map[aauth.TokenReference]budgetTokenState
+	persons    map[budgetPersonKey]int64
+	holds      map[string]budgetMemoryHold
+	failure    error
+	charges    int
+	chargeTime time.Time
 }
 
 type budgetTokenState struct {
@@ -1176,10 +1285,10 @@ func (store *budgetMemoryStore) Charge(_ context.Context, charge BudgetCharge) (
 	}
 	remaining := charge.Grant.Amount() - state.consumed - state.reserved
 	if remaining == 0 {
-		return BudgetChargeResult{Remaining: 0}, ErrBudgetExhausted
+		return BudgetChargeResult{Remaining: 0, Consumed: state.consumed}, ErrBudgetExhausted
 	}
 	if charge.Cost > remaining {
-		return BudgetChargeResult{Remaining: remaining}, ErrBudgetInsufficient
+		return BudgetChargeResult{Remaining: remaining, Consumed: state.consumed}, ErrBudgetInsufficient
 	}
 	state.charge = cloneBudgetCharge(charge)
 	state.consumed += charge.Cost
@@ -1214,9 +1323,9 @@ func (store *budgetMemoryStore) Reserve(_ context.Context, reserve BudgetReserve
 	available := reserve.Grant.Amount() - state.consumed - state.reserved
 	if reserve.Hold > available {
 		if available == 0 {
-			return BudgetReserveResult{}, ErrBudgetExhausted
+			return BudgetReserveResult{Consumed: state.consumed}, ErrBudgetExhausted
 		}
-		return BudgetReserveResult{Remaining: available}, ErrBudgetInsufficient
+		return BudgetReserveResult{Remaining: available, Consumed: state.consumed}, ErrBudgetInsufficient
 	}
 	state.charge = cloneBudgetCharge(charge)
 	state.reserved += reserve.Hold
@@ -1241,8 +1350,17 @@ func (store *budgetMemoryStore) Commit(_ context.Context, commit BudgetCommit) (
 	state.consumed += commit.Cost
 	store.tokens[hold.token] = state
 	store.persons[budgetPersonKey{state.charge.PersonServer, state.charge.Subject, state.charge.Audience}] += commit.Cost
+	if !commit.ChargedAt.IsZero() {
+		store.chargeTime = commit.ChargedAt.UTC()
+	}
 	remaining := state.charge.Grant.Amount() - state.consumed - state.reserved
 	return BudgetChargeResult{Cost: commit.Cost, Remaining: remaining}, nil
+}
+
+func (store *budgetMemoryStore) committedAt() time.Time {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.chargeTime
 }
 
 func (store *budgetMemoryStore) Release(_ context.Context, release BudgetRelease) error {

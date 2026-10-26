@@ -95,7 +95,7 @@ func (store *budgetStore) Charge(_ context.Context, charge resource.BudgetCharge
 	}
 	remaining := charge.Grant.Amount() - store.consumed[charge.Token]
 	if charge.Cost > remaining {
-		result := resource.BudgetChargeResult{Remaining: remaining}
+		result := resource.BudgetChargeResult{Remaining: remaining, Consumed: store.consumed[charge.Token]}
 		if remaining == 0 {
 			return result, resource.ErrBudgetExhausted
 		}

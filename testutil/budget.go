@@ -52,7 +52,7 @@ func (store *budgetStore) Charge(
 	}
 	remaining := charge.Grant.Amount() - account.consumed - account.reserved
 	if charge.Cost > remaining {
-		result := resource.BudgetChargeResult{Remaining: remaining}
+		result := resource.BudgetChargeResult{Remaining: remaining, Consumed: account.consumed}
 		if remaining == 0 {
 			return result, resource.ErrBudgetExhausted
 		}
@@ -92,7 +92,7 @@ func (store *budgetStore) Reserve(_ context.Context, reserve resource.BudgetRese
 	}
 	available := reserve.Grant.Amount() - account.consumed - account.reserved
 	if reserve.Hold > available {
-		result := resource.BudgetReserveResult{Remaining: available}
+		result := resource.BudgetReserveResult{Remaining: available, Consumed: account.consumed}
 		if available == 0 {
 			return result, resource.ErrBudgetExhausted
 		}

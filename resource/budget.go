@@ -86,12 +86,15 @@ type BudgetCostRequest struct {
 // for a step-up. The agent presented the refused Auth token, so the fresh
 // token's presented_jti is Token.JTI. The Resource verifies that and the
 // returned token's other observable context before exposing it, but cannot
-// prove freshness.
+// prove freshness. Consumed is committed spend and excludes in-flight holds.
+// Remaining is net of those holds, so a record of Grant minus Remaining
+// counts uncommitted holds as consumed and is rejected.
 type BudgetChallengeRequest struct {
 	Token     aauth.TokenReference
 	Principal AuthPrincipal
 	Grant     budgets.Value
 	Remaining int64
+	Consumed  int64
 	Required  int64
 	Reason    budgets.Reason
 	// R3Reference is present when the refused Auth token also authorizes one
@@ -123,11 +126,13 @@ type BudgetCharge struct {
 }
 
 // BudgetChargeResult is the definitive result of one BudgetStore.Charge.
-// Cost must equal the requested charge on success. Remaining is net of the
-// committed charge, or the unchanged remainder on an insufficiency refusal.
+// Cost must equal the requested charge on success. Remaining is net of
+// committed spend and outstanding holds. Consumed is committed spend only;
+// a refusal's consumption record must match it, not Grant minus Remaining.
 type BudgetChargeResult struct {
 	Cost      int64
 	Remaining int64
+	Consumed  int64
 }
 
 // BudgetStore owns the Resource's atomic hard-cap and person-ledger
@@ -161,11 +166,14 @@ type BudgetReserve struct {
 	ReservedAt   time.Time
 }
 
-// BudgetReserveResult is a successful hold. Remaining is net of committed
-// spend and every outstanding hold, including this one.
+// BudgetReserveResult is one hold attempt. On success, Remaining is net of
+// committed spend and every outstanding hold, including this one. On a
+// refusal, Remaining has the same meaning and Consumed is committed spend
+// only, so other holds are not reported as consumption.
 type BudgetReserveResult struct {
 	Reserved  int64
 	Remaining int64
+	Consumed  int64
 }
 
 // BudgetCommit settles one hold. Cost must be between zero and the hold.
@@ -224,6 +232,9 @@ type BudgetUsageQuery struct {
 // caller has not metered, which the endpoint reports by omitting usage.
 // A false *OK field means that counter overflowed the 15-digit limit.
 // JKTs contains only thumbprints the store can answer.
+// AsOf, when non-zero, is the store's completeness time. The usage response
+// reports it instead of the resource clock so a lagging store can name how
+// current the counters are. In-flight holds are not settled by that time.
 type BudgetUsageResult struct {
 	Unit            budgets.Unit
 	HasUnit         bool
@@ -239,6 +250,7 @@ type BudgetUsageResult struct {
 	Year            int64
 	YearOK          bool
 	JKTs            map[string]int64
+	AsOf            time.Time
 }
 
 // BudgetUsageStore is the optional usage-query half of a Budget store. A
@@ -269,8 +281,11 @@ type BudgetConfig struct {
 	Cost          func(context.Context, BudgetCostRequest) (int64, error)
 	// Maximum, when set, is the finite bound reserved before a variable-cost
 	// request is served. Store must implement BudgetReserver. The handler
-	// settles the actual cost with SettleBudget; an unsettled request commits
-	// the whole hold.
+	// settles the actual cost with SettleBudget. Settlement after the response
+	// header has been written sends a cost-only trailer. Settlement before
+	// that write sends a fixed-price header and no trailer. An unsettled
+	// request commits the whole hold, as a trailer if the handler wrote and
+	// as that fixed-price header if it did not.
 	Maximum   func(context.Context, BudgetCostRequest) (int64, error)
 	Store     BudgetStore
 	Challenge func(context.Context, BudgetChallengeRequest) (string, error)

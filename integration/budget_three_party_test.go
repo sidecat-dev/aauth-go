@@ -559,7 +559,7 @@ func (store *integrationBudgetStore) Charge(
 	}
 	remaining := charge.Grant.Amount() - account.consumed
 	if charge.Cost > remaining {
-		result := resource.BudgetChargeResult{Remaining: remaining}
+		result := resource.BudgetChargeResult{Remaining: remaining, Consumed: account.consumed}
 		if remaining == 0 {
 			return result, resource.ErrBudgetExhausted
 		}

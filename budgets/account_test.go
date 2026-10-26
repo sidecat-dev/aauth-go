@@ -1,6 +1,7 @@
 package budgets
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,6 +50,27 @@ func TestSanitizeDescriptionRemovesActiveMarkup(t *testing.T) {
 	}
 	if cleaned != "Price  **USD** [x](alert(1))" {
 		t.Fatalf("sanitized = %q", cleaned)
+	}
+	encoded, err := SanitizeDescription("see [x](&#106;avascript:alert(1))\n[1]: javascript:alert(2)\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(encoded), "javascript:") || strings.Contains(strings.ToLower(encoded), "&#106;") {
+		t.Fatalf("encoded scheme survived: %q", encoded)
+	}
+	if !strings.Contains(encoded, "](alert(1))") || !strings.Contains(encoded, "[1]: alert(2)") {
+		t.Fatalf("sanitized links = %q", encoded)
+	}
+	script, err := SanitizeDescription("open [x](vbscript:msg) or [z](data:text/html,hi)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(script), "vbscript:") || strings.Contains(strings.ToLower(script), "data:") {
+		t.Fatalf("scheme survived: %q", script)
+	}
+	kept, err := SanitizeDescription("read [docs](https://example.com/javascript:not-a-scheme)")
+	if err != nil || !strings.Contains(kept, "https://example.com/javascript:not-a-scheme") {
+		t.Fatalf("ordinary link = %q, %v", kept, err)
 	}
 	if _, err := SanitizeDescription(string([]byte{0xff})); err == nil {
 		t.Fatal("invalid UTF-8 was accepted")

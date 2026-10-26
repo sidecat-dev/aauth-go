@@ -71,6 +71,9 @@ func (server *Server) serveUsage(response http.ResponseWriter, request *http.Req
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if !result.AsOf.IsZero() {
+		asOf = result.AsOf.UTC()
+	}
 	payload, err := usageResponseBody(server, query, caller, asOf.Unix(), result)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)

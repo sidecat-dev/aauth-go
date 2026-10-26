@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
@@ -119,6 +122,17 @@ func TestUsageEndpointAnswersTheSignedCallerAndRejectsABadBody(t *testing.T) {
 		}
 	}
 
+	lag := protocol.now.Add(-2 * time.Hour)
+	scripted.result = BudgetUsageResult{
+		Unit: protocol.unit, HasUnit: true, ScopeRecognized: true, AsOf: lag,
+		AllTime: 5, AllTimeOK: true, Day: 5, DayOK: true, Week: 5, WeekOK: true,
+		Month: 5, MonthOK: true, Year: 5, YearOK: true,
+	}
+	lagging := postUsage(t, server, protocol, protocol.personKey, personIssuer, aauth.PersonDiscoveryDocument, `{"sub":"person-1"}`)
+	if lagging.Code != http.StatusOK || !strings.Contains(lagging.Body.String(), fmt.Sprintf(`"as_of":%d`, lag.Unix())) {
+		t.Fatalf("lagging usage = %d %s", lagging.Code, lagging.Body.String())
+	}
+
 	unsigned := httptest.NewRequest(http.MethodPost, resourceIssuer+"/usage", strings.NewReader(`{"sub":"person-1"}`))
 	unsigned.Header.Set("Content-Type", "application/json")
 	unsignedResponse := httptest.NewRecorder()
@@ -138,6 +152,68 @@ type scriptedUsageStore struct {
 func (store *scriptedUsageStore) QueryUsage(_ context.Context, query BudgetUsageQuery) (BudgetUsageResult, error) {
 	store.seen = query
 	return store.result, store.err
+}
+
+func TestUsageEndpointRejectsASignatureThatOmitsContentTypeOrContentDigest(t *testing.T) {
+	t.Parallel()
+
+	protocol := newBudgetResourceProtocol(t, 1, http.NotFoundHandler())
+	protocol.config.Budget.Store = &scriptedUsageStore{budgetMemoryStore: protocol.store}
+	server := protocol.server(t)
+	const payload = `{"sub":"person-1"}`
+	sign := func(components []string) *http.Request {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, resourceIssuer+"/usage", strings.NewReader(payload))
+		request.Header.Set("Content-Type", "application/json")
+		if err := signaturekey.SignJWKSURIRequestWithOptions(
+			request, protocol.personKey, personIssuer, aauth.PersonDiscoveryDocument, protocol.clock,
+			signaturekey.SignOptions{AdditionalComponents: components, MaxBodyBytes: 1 << 20},
+		); err != nil {
+			t.Fatal(err)
+		}
+		return request
+	}
+	serve := func(request *http.Request) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	bare := httptest.NewRequest(http.MethodPost, resourceIssuer+"/usage", nil)
+	if err := signaturekey.SignJWKSURIRequestWithOptions(
+		bare, protocol.personKey, personIssuer, aauth.PersonDiscoveryDocument, protocol.clock,
+		signaturekey.SignOptions{MaxBodyBytes: 1 << 20},
+	); err != nil {
+		t.Fatal(err)
+	}
+	bare.Body = io.NopCloser(strings.NewReader(payload))
+	bare.ContentLength = int64(len(payload))
+	bare.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(payload)), nil
+	}
+	bare.Header.Set("Content-Type", "application/json")
+	omitted := serve(bare)
+	if omitted.Code != http.StatusUnauthorized {
+		t.Fatalf("signature without content-type and content-digest = %d %s", omitted.Code, omitted.Body.String())
+	}
+	wrongType := sign([]string{"content-type", "content-digest"})
+	wrongType.Header.Set("Content-Type", "text/plain")
+	changedType := serve(wrongType)
+	if changedType.Code != http.StatusUnauthorized {
+		t.Fatalf("replaced content-type = %d %s", changedType.Code, changedType.Body.String())
+	}
+	wrongDigest := sign([]string{"content-type", "content-digest"})
+	replacement := `{"sub":"other"}`
+	wrongDigest.Body = io.NopCloser(strings.NewReader(replacement))
+	wrongDigest.ContentLength = int64(len(replacement))
+	wrongDigest.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(replacement)), nil
+	}
+	changedBody := serve(wrongDigest)
+	if changedBody.Code != http.StatusUnauthorized {
+		t.Fatalf("replaced body = %d %s", changedBody.Code, changedBody.Body.String())
+	}
 }
 
 func postUsage(

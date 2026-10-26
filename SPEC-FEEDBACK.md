@@ -75,9 +75,9 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 58 (P1: 6, P2: 33, P3: 19; 46 submitted, 12 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 59 (P1: 6, P2: 33, P3: 20; 46 submitted, 13 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
-Findings AAG-F110 through AAG-F116 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
+Findings AAG-F110 through AAG-F118 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -126,6 +126,7 @@ Findings AAG-F110 through AAG-F116 were read against AAuth Budgets `70d6737`, no
 | AAG-F115 | A three-party issuer is not told to preserve an offered budget | Budgets | MUST/SHALL/REQUIRED | P2 | open | 2026-10-25 | Not submitted | — |
 | AAG-F116 | Age 0 is not a positive current_age | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
 | AAG-F117 | A trailer must carry only cost, while unknown members are ignored | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F118 | Usage as_of cannot name a lagging store's completeness time | Budgets | missing-requirement | P3 | open | 2026-10-26 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -1475,6 +1476,28 @@ Recipients must ignore `AAuth-Budget` members they do not recognize. A trailer m
 This library rejects any trailer member other than `cost`, including unrecognized names. A header still ignores unrecognized members.
 
 **Question:** Does the trailer rule override ignore-unknown for that field instance?
+
+### AAG-F118 — Usage as_of cannot name a lagging store's completeness time
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-26
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-26 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Usage Response` (around 997) and `Settlement` (around 831–857).
+
+`as_of` is required on every usage response. The draft does not say whether that instant is the resource clock or the time through which the store's counters are complete. A lagging store cannot name an earlier completeness time, and the settlement formula has the same gap: an in-flight hold whose token `exp` is at or before `as_of` is not a settled allocation and is not in the counters.
+
+This library reports `BudgetUsageResult.AsOf` when the store sets it, and the resource clock otherwise. It does not settle those in-flight holds early. A step-up consumption record is committed spend; outstanding holds reduce `remaining` and are not consumption.
+
+**Question:** May `as_of` be the store's completeness time rather than the resource clock, and does an in-flight hold whose token has expired by that time count as settled?
 
 ## Against informative text
 

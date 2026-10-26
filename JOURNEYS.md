@@ -213,9 +213,10 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     and `go run ./example/psconsent`.
   - Boundary: omitted capabilities on a mission-bound request use the exact
     values retained at mission approval; an explicit empty array remains
-    empty. Durable adapters, AS relay, `claims`, `payment`, and
-    `updated_request` remain missing. The safe limit is one question because
-    Core gives an answer no round identifier; see `AAG-F095` in
+    empty. A missionless clarification accepts `updated_request` with the
+    limits in [CONFORMANCE.md](CONFORMANCE.md). Durable adapters, AS relay,
+    `claims`, and `payment` remain missing. The safe limit is one question
+    because Core gives an answer no round identifier; see `AAG-F095` in
     [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
 - [ ] **Mission-governed authorization — Partial**
@@ -719,7 +720,7 @@ below is explicitly a repository profile.
 
 ## AAuth Budgets
 
-Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-budgets.md).
+Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-budgets.md).
 
 ### Runnable journey
 
@@ -818,9 +819,12 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
 
 - [x] **Variable-cost reservation — Implemented as a store and protected path.**
   `BudgetConfig.Maximum` reserves a finite bound before dispatch. The handler
-  calls `SettleBudget` with the actual cost; the unspent hold is released and
-  the trailer carries only that cost. A handler that does not settle commits
-  the whole hold. The fixed-price path still commits the known cost before
+  calls `SettleBudget` with the actual cost; the unspent hold is released.
+  Settlement after the response header has been written sends a cost-only
+  trailer. Settlement before that write, including a handler that writes
+  nothing, sends a fixed-price header with `cost` and `remaining` and does not
+  declare a trailer. A handler that writes and does not settle commits the
+  whole hold as the trailer. The fixed-price path still commits the known cost before
   dispatch. `WriteStreamingBudgetHeader` and `WriteStreamingBudgetTrailer`
   remain available for a host that writes the fields itself. The Agent accepts
   a `reserved` header with no trailer, assumes that hold, and applies a
