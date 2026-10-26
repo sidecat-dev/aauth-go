@@ -258,6 +258,7 @@ func TestAccessServerBudgetChecksTrustedResourceMetadata(t *testing.T) {
 	usd2, _ := budgets.NewUnit("USD", 2)
 	offer, _ := budgets.NewValue(450_000, usd6)
 	matching, _ := budgets.NewBoundedUnitDeclaration(usd6, 600_000, "")
+	tooSmall, _ := budgets.NewBoundedUnitDeclaration(usd6, 449_999, "")
 	wrongScale, _ := budgets.NewBoundedUnitDeclaration(usd2, 600_000, "")
 
 	for _, test := range []struct {
@@ -279,6 +280,9 @@ func TestAccessServerBudgetChecksTrustedResourceMetadata(t *testing.T) {
 		{name: "wrong decimals", config: &budgetConfig{resolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
 			return []budgets.UnitDeclaration{wrongScale}, nil
 		}}, wantErr: "different declared scale"},
+		{name: "offer exceeds metadata maximum", config: &budgetConfig{resolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
+			return []budgets.UnitDeclaration{tooSmall}, nil
+		}}, wantErr: "metadata maximum"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.config.validateOffer(context.Background(), "https://resource.example", offer)
