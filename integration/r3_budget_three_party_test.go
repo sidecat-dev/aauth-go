@@ -185,6 +185,14 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 					if err != nil {
 						return "", err
 					}
+					var consumed *budgets.ConsumptionRecord
+					if request.Grant.Unit().Equal(offeredBudget.Unit()) {
+						metered, meterErr := budgets.ConsumptionForPresentedGrant(request.Token.JTI, request.Grant, request.Remaining)
+						if meterErr != nil {
+							return "", meterErr
+						}
+						consumed = &metered
+					}
 					return compactResult(r3.MintBudgetResourceToken(
 						registry, resourceKey, aauth.ResourceTokenClaims{
 							Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument,
@@ -192,7 +200,7 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 							PersonServer: lineage.Person.Issuer, Subject: lineage.Person.Subject,
 							PresentedJTI: request.Token.JTI, AgentJKT: lineage.AgentJKT,
 							IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
-						}, request.R3Reference.URI(), record.ExactJSON, offeredBudget, nil,
+						}, request.R3Reference.URI(), record.ExactJSON, offeredBudget, consumed,
 					))
 				},
 			},
@@ -290,10 +298,18 @@ func TestR3BudgetDirectThreePartyConnectorCall(t *testing.T) {
 	}
 
 	deleteRequest, _ := http.NewRequestWithContext(ctx, http.MethodDelete, resourceID+"/messages/delete", nil)
-	_, err = client.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: deleteRequest, AuthToken: authToken})
-	var uncertain *clientagent.BudgetCallUncertainError
-	if !errors.As(err, &uncertain) {
-		t.Fatalf("ungranted operation error = %v", err)
+	refused, err := client.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: deleteRequest, AuthToken: authToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response, ok := refused.Response(); !ok || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("ungranted operation=%#v", refused)
+	} else {
+		response.Body.Close()
+	}
+	feedback := integrationBudgetFeedback(t, refused)
+	if cost, ok := feedback.Cost(); !ok || cost != 0 || feedback.Remaining() != grantedBudget.Amount() {
+		t.Fatalf("ungranted operation feedback=%#v", feedback)
 	}
 	if got := budgetStore.personTotal(personServerID, "person-123", resourceID); got != 0 || protectedCalls.Load() != 0 {
 		t.Fatalf("ungranted operation charged/dispatched = %d/%d", got, protectedCalls.Load())

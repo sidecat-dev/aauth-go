@@ -90,6 +90,7 @@ func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 		store := contract.New(t)
 		record := deferredTokenRecord(t, "delegated", "code-delegated")
 		record.Agent = "aauth:local+worker@agent.example"
+		record.AgentTokenJTI = "child-token"
 		record.ParentAgent = record.RequestingAgent
 		record.Confirmation = deferredTokenJWKFor(t, "storetest-child-key", 1)
 		record.AgentAdditionalClaims = map[string]json.RawMessage{
@@ -103,6 +104,7 @@ func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 		retained, err := store.LoadPendingPersonToken(context.Background(), record.ID)
 		if err != nil || retained.Record.Agent != "aauth:local+worker@agent.example" ||
 			retained.Record.RequestingAgent != "aauth:local@agent.example" ||
+			retained.Record.AgentTokenJTI != "child-token" || retained.Record.RequestingAgentTokenJTI != "agent-token" ||
 			string(retained.Record.AgentAdditionalClaims["workload"]) != `"records-worker"` ||
 			string(retained.Record.RequestingAgentAdditionalClaims["attestation"]) != `{"level":"example"}` {
 			t.Fatalf("delegated retained request = %#v, %v", retained, err)
@@ -305,12 +307,13 @@ func deferredTokenRecord(t testing.TB, id, code string) personserver.PendingPers
 	return personserver.PendingPersonTokenRecord{
 		ID: id, CodeSHA256: sha256.Sum256([]byte(code)),
 		PersonServer: "https://person.example", AgentProvider: "https://agent.example",
-		Agent: "aauth:local@agent.example", Resource: "https://resource.example",
+		Agent: "aauth:local@agent.example", AgentTokenJTI: "agent-token", Resource: "https://resource.example",
 		Confirmation: deferredTokenJWK(t), AgentExpiresAt: deferredTokenNow.Add(time.Hour),
 		AgentAdditionalClaims: map[string]json.RawMessage{
 			"attestation": json.RawMessage(`{"level":"example"}`),
 		},
 		RequestingAgent:                 "aauth:local@agent.example",
+		RequestingAgentTokenJTI:         "agent-token",
 		RequestingConfirmation:          deferredTokenJWK(t),
 		RequestingAgentExpiresAt:        deferredTokenNow.Add(time.Hour),
 		RequestingAgentAdditionalClaims: map[string]json.RawMessage{"attestation": json.RawMessage(`{"level":"example"}`)},

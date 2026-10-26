@@ -204,6 +204,42 @@ func TestAgentBeginBudgetCallIgnoresCachedBudgetFeedback(t *testing.T) {
 	}
 }
 
+func TestAgentBeginBudgetCallWithoutFeedbackRemainsUncertain(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			fixture := newBudgetCallFixture(t)
+			protocol := fixture.protocol
+			applicationCalls := 0
+			client := protocol.newClientWithHTTPClient(t, &http.Client{
+				Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+					if request.URL.Path == "/.well-known/aauth-resource.json" {
+						return fixture.metadata(request), nil
+					}
+					applicationCalls++
+					return jsonResponse(request, status, map[string]string{"result": "ordinary response"}), nil
+				}),
+			})
+			request, err := http.NewRequest(http.MethodGet, protocol.resourceID+"/records", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.BeginBudgetCall(context.Background(), agent.BudgetCall{
+				Request: request, AuthToken: fixture.authToken,
+			})
+			var uncertain *agent.BudgetCallUncertainError
+			if !errors.As(err, &uncertain) {
+				t.Fatalf("missing feedback error = %v, want BudgetCallUncertainError", err)
+			}
+			if assumed, ok := uncertain.AssumedCost(); !ok || !sameBudget(assumed, fixture.grant) {
+				t.Fatalf("assumed cost = %#v, %t, want the full signed grant", assumed, ok)
+			}
+			if applicationCalls != 1 {
+				t.Fatalf("application calls = %d, want one attempt without retry", applicationCalls)
+			}
+		})
+	}
+}
+
 type budgetCallFixture struct {
 	protocol  *testProtocol
 	unit      budgets.Unit
@@ -258,3 +294,84 @@ func (fixture budgetCallFixture) metadata(request *http.Request) *http.Response 
 func testInt64Pointer(value int64) *int64 { return &value }
 
 var _ io.ReadCloser = (*trackedBody)(nil)
+
+// Core Resource Token Claims and Budgets Exhaustion and Step-Up: aud names
+// the issuer of the Auth token being replaced, PS or AS according to topology.
+func TestBudgetStepUpBindsAudienceToAuthTokenIssuer(t *testing.T) {
+	for _, federated := range []bool{false, true} {
+		for _, audience := range []string{"issuer", "other role", "unrelated"} {
+			t.Run(fmt.Sprintf("federated=%t/%s", federated, audience), func(t *testing.T) {
+				fixture := newBudgetCallFixture(t)
+				protocol := fixture.protocol
+				claims, _, err := budgets.VerifyAuthToken(context.Background(), fixture.authToken, protocol.resolver, protocol.clock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				key := protocol.personServerKey
+				other := protocol.accessServerID
+				if federated {
+					claims.Issuer = protocol.accessServerID
+					claims.DWK = aauth.AccessDiscoveryDocument
+					key = protocol.accessServerKey
+					other = protocol.personServerID
+				}
+				authToken, err := budgets.MintAuthToken(key, claims, fixture.grant)
+				if err != nil {
+					t.Fatal(err)
+				}
+				challenge, offer, _, err := budgets.VerifyResourceToken(context.Background(), fixture.challenge, protocol.resolver, protocol.clock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				challenge.PresentedJTI = claims.JTI
+				challenge.Audience = claims.Issuer
+				if audience == "other role" {
+					challenge.Audience = other
+				}
+				if audience == "unrelated" {
+					challenge.Audience = "https://other.example"
+				}
+				compact, err := budgets.MintResourceToken(protocol.resourceKey, challenge, offer, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requirement, err := budgets.FormatAuthTokenRequirement(aauth.AuthTokenRequirement{ResourceToken: compact}, budgets.ReasonBudgetExhausted)
+				if err != nil {
+					t.Fatal(err)
+				}
+				feedback, err := budgets.NewRefusalFeedback(fixture.grant, 0, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				formatted, err := budgets.FormatFeedback(feedback)
+				if err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				body := &trackedBody{Reader: strings.NewReader("refusal")}
+				client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/.well-known/aauth-resource.json" {
+						return fixture.metadata(r), nil
+					}
+					calls++
+					return &http.Response{StatusCode: http.StatusUnauthorized, Request: r, Header: http.Header{"Aauth-Requirement": {requirement}, "Aauth-Budget": {formatted}}, Body: body}, nil
+				})})
+				request, _ := http.NewRequest(http.MethodGet, protocol.resourceID+"/records", nil)
+				result, err := client.BeginBudgetCall(context.Background(), agent.BudgetCall{Request: request, AuthToken: authToken})
+				if audience == "issuer" {
+					if _, ok := result.AuthorizationRequired(); err != nil || !ok {
+						t.Fatalf("step-up=%#v error=%v", result, err)
+					}
+				} else {
+					var uncertain *agent.BudgetCallUncertainError
+					if !errors.As(err, &uncertain) {
+						t.Fatalf("wrong audience accepted: %v", err)
+					}
+				}
+				if calls != 1 || !body.closed {
+					t.Fatalf("calls=%d body closed=%t", calls, body.closed)
+				}
+			})
+		}
+	}
+}

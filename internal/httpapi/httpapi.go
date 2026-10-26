@@ -65,9 +65,20 @@ func WriteJSON(response http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(response).Encode(value)
 }
 
-// WriteProblem writes an AAuth problem response. Diagnostic causes stay local;
-// only explicitly public Signature-Key detail crosses the wire.
-func WriteProblem(response http.ResponseWriter, status int, code string, cause error) {
+// ProblemFields carries explicitly public extensions supplied by the deciding
+// role. Diagnostic causes are never serialized into these fields.
+type ProblemFields struct {
+	// Detail is an explicitly public explanation; never copy a diagnostic cause.
+	Detail            string `json:"-"`
+	MissionStatus     string `json:"mission_status,omitempty"`
+	TerminationReason string `json:"termination_reason,omitempty"`
+}
+
+// WriteProblem writes an AAuth problem response with optional public fields.
+// Diagnostic causes stay local; only explicitly supplied public detail crosses
+// the wire.
+func WriteProblem(response http.ResponseWriter, status int, code string, cause error, fields ...ProblemFields) {
+	defer ReportProblem(response, status, code, cause)
 	detail := http.StatusText(status)
 	var signatureFailure *signaturekey.Error
 	if status == http.StatusUnauthorized {
@@ -97,11 +108,19 @@ func WriteProblem(response http.ResponseWriter, status int, code string, cause e
 	}
 	response.Header().Set("Content-Type", "application/problem+json")
 	response.WriteHeader(status)
+	var extensions ProblemFields
+	if len(fields) > 0 {
+		extensions = fields[0]
+	}
+	if extensions.Detail != "" {
+		detail = extensions.Detail
+	}
 	_ = json.NewEncoder(response).Encode(struct {
 		Type   string `json:"type,omitempty"`
 		Status int    `json:"status"`
 		Code   string `json:"error"`
 		Detail string `json:"detail,omitempty"`
+		ProblemFields
 	}{
 		Type: func() string {
 			if signatureFailure == nil {
@@ -110,5 +129,17 @@ func WriteProblem(response http.ResponseWriter, status int, code string, cause e
 			return signatureFailure.ProblemType()
 		}(),
 		Status: status, Code: code, Detail: detail,
+		ProblemFields: extensions,
 	})
+}
+
+// ReportProblem forwards a local diagnostic without changing the response.
+// Internal response wrappers forward this hook without exposing their underlying
+// transport or adding optional HTTP capabilities.
+func ReportProblem(response http.ResponseWriter, status int, code string, cause error) {
+	if reporter, ok := response.(interface {
+		ReportAAuthProblem(int, string, error)
+	}); ok {
+		reporter.ReportAAuthProblem(status, code, cause)
+	}
 }

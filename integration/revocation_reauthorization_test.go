@@ -18,7 +18,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-func TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition(t *testing.T) {
+func TestThreePartyRevocationAndPersonTokenRecoveryAcrossResourceRecomposition(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -72,7 +72,7 @@ func TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecompositi
 
 	personTokens := newMemoryPersonTokenStore()
 	issuedTokens := newMemoryIssuedAuthTokenStore()
-	personIDs := []string{"revocation-person-token", "revocation-auth-token-1", "revocation-auth-token-2"}
+	personIDs := []string{"revocation-person-token", "revocation-auth-token-1", "revocation-person-token-2", "revocation-auth-token-2"}
 	personConfig := func() personserver.PSAuthorizationConfig {
 		return personserver.PSAuthorizationConfig{
 			Issuer: personServerID, SigningKey: personServerKey, KeyResolver: keyResolver,
@@ -210,9 +210,9 @@ func TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecompositi
 		t.Fatal(err)
 	}
 	network.Handle(resourceID, protectedResource.Handler())
-	assertOldTokenRefused := func(path string) {
+	assertOldTokenRefused := func() {
 		t.Helper()
-		oldRequest, _ := http.NewRequest(http.MethodGet, resourceID+path, nil)
+		oldRequest, _ := http.NewRequest(http.MethodGet, resourceID+"/records", nil)
 		oldResponse, oldErr := reader.Do(ctx, clientagent.Call{Request: oldRequest, AuthToken: firstAuthToken})
 		var clientFailure *clientagent.Error
 		var signatureFailure *signaturekey.Error
@@ -220,20 +220,68 @@ func TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecompositi
 			signatureFailure.Code != signaturekey.ErrorRevokedJWT {
 			t.Fatalf("revoked use response=%#v error=%v client=%#v signature=%#v", oldResponse, oldErr, clientFailure, signatureFailure)
 		}
+		// Protocol -11, Presenting a Revoked Token: preserve the requirement
+		// to obtain a Person token and retry the original request with it.
+		var recovery interface{ Requirement() aauth.Requirement }
+		if !errors.As(oldErr, &recovery) || recovery.Requirement() != aauth.RequirementPersonToken {
+			t.Fatalf("revoked use lost the person-token requirement: %v", oldErr)
+		}
 		if requiredScopeCalls != 1 || resolveCalls != 1 || protectedCalls != 1 {
 			t.Fatalf("revoked use reached host callbacks: required=%d resolve=%d protected=%d", requiredScopeCalls, resolveCalls, protectedCalls)
 		}
 	}
-	assertOldTokenRefused("/records/after-lost-response")
+	assertOldTokenRefused()
 	now = now.Add(time.Second)
 	if err := people.RevokeIssuedAuthToken(ctx, reference); err != nil {
 		t.Fatalf("explicit revocation retry: %v", err)
 	}
-	assertOldTokenRefused("/records/after-explicit-retry")
+	assertOldTokenRefused()
 
-	_, secondResourceClaims, secondAuthToken, secondAuthClaims := authorizeAndExchange()
+	// Protocol -11, Person Token Required: obtain a fresh Person token and
+	// retry the original GET with it. Any subsequent Auth-token exchange
+	// must name this Person token, never the revoked Auth token.
+	personResult, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+		PersonServer: personServerID, Resource: resourceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshPersonToken, ok := personResult.Token()
+	if !ok || freshPersonToken == personToken {
+		t.Fatal("recovery did not obtain a new Person token")
+	}
+	freshPerson, err := aauth.VerifyPersonToken(ctx, freshPersonToken, keyResolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryRequest, _ := http.NewRequest(http.MethodGet, resourceID+"/records", nil)
+	retryResult, err := reader.Begin(ctx, clientagent.InitialCall{Request: retryRequest, PersonToken: freshPersonToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, ok := retryResult.AuthorizationRequired()
+	if !ok {
+		t.Fatal("Person-token retry did not return an Auth-token requirement")
+	}
+	secondResourceClaims, err := aauth.VerifyResourceToken(ctx, requirement.ResourceToken, keyResolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondResourceClaims.PresentedJTI != freshPerson.JTI || secondResourceClaims.PresentedJTI == firstAuthClaims.JTI {
+		t.Fatalf("recovery named %q, want fresh Person token %q", secondResourceClaims.PresentedJTI, freshPerson.JTI)
+	}
+	secondAuthToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: requirement.ResourceToken, PresentedToken: freshPersonToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAuthClaims, err := aauth.VerifyAuthToken(ctx, secondAuthToken, keyResolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if secondResourceClaims.JTI == firstResourceClaims.JTI || secondAuthClaims.JTI == firstAuthClaims.JTI {
-		t.Fatalf("re-authorization reused token identity: resource=%q auth=%q", secondResourceClaims.JTI, secondAuthClaims.JTI)
+		t.Fatalf("recovery reused token identity: resource=%q auth=%q", secondResourceClaims.JTI, secondAuthClaims.JTI)
 	}
 	secondRequest, _ := http.NewRequest(http.MethodGet, resourceID+"/records", nil)
 	secondResponse, err := reader.Do(ctx, clientagent.Call{Request: secondRequest, AuthToken: secondAuthToken})
@@ -241,7 +289,7 @@ func TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecompositi
 		t.Fatal(err)
 	}
 	secondResponse.Body.Close()
-	if secondResponse.StatusCode != http.StatusOK || requiredScopeCalls != 2 || resolveCalls != 2 || protectedCalls != 2 {
+	if secondResponse.StatusCode != http.StatusOK || requiredScopeCalls != 3 || resolveCalls != 2 || protectedCalls != 2 {
 		t.Fatalf("fresh use = %d; required=%d resolve=%d protected=%d", secondResponse.StatusCode, requiredScopeCalls, resolveCalls, protectedCalls)
 	}
 }

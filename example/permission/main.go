@@ -13,16 +13,15 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
-	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -80,7 +79,7 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	permissions := exampleutil.NewMissionPermissionStore()
+	permissions := testutil.NewMissionStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
 		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
@@ -96,7 +95,7 @@ func run(output io.Writer) error {
 	}, nil); err != nil {
 		return err
 	}
-	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+	config := personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,
 		Clock: clock, NewID: func() string { return "unused-token" },
 		Tokens: permissions,
@@ -130,7 +129,8 @@ func run(output io.Writer) error {
 				}}, nil
 			},
 		},
-	})
+	}
+	people, err := personserver.NewPSAuthorization(config)
 	if err != nil {
 		return err
 	}
@@ -164,15 +164,28 @@ func run(output io.Writer) error {
 	// The host authenticates the person independently. Before rendering the
 	// request, it sanitizes Description and validates Parameters for the named
 	// action. Possession of the opaque reference is not approval authority.
-	reference := strings.TrimPrefix(pending.Location(), personServerID+"/permission/pending/")
-	hostRequest, err := people.ResumePermission(ctx, reference)
+	// A recomposed host discovers references from retained state; the Agent's
+	// poll URL is not an application notification channel.
+	host, err := personserver.NewPSAuthorization(config)
+	if err != nil {
+		return err
+	}
+	references, err := host.PendingPermissionReferences(ctx, 10)
+	if err != nil {
+		return err
+	}
+	if len(references) != 1 {
+		return errors.New("expected one pending permission")
+	}
+	reference := references[0]
+	hostRequest, err := host.ResumePermission(ctx, reference)
 	if err != nil {
 		return err
 	}
 	if hostRequest.Action() != "messages.send" {
 		return errors.New("Person Server resumed an unexpected action")
 	}
-	if err := people.GrantPermission(ctx, hostRequest); err != nil {
+	if err := host.GrantPermission(ctx, hostRequest); err != nil {
 		return err
 	}
 	completion, err := operator.PollPermission(ctx, pending)
@@ -201,8 +214,15 @@ func run(output io.Writer) error {
 	if !ok {
 		return errors.New("Person Server did not defer the mission permission request")
 	}
-	missionReference := strings.TrimPrefix(missionPending.Location(), personServerID+"/permission/pending/")
-	missionRequest, err := people.ResumePermission(ctx, missionReference)
+	references, err = host.PendingPermissionReferences(ctx, 10)
+	if err != nil {
+		return err
+	}
+	if len(references) != 1 {
+		return errors.New("expected one pending mission permission")
+	}
+	missionReference := references[0]
+	missionRequest, err := host.ResumePermission(ctx, missionReference)
 	if err != nil {
 		return err
 	}
@@ -210,7 +230,7 @@ func run(output io.Writer) error {
 	if !ok || missionContext.S256 != mission.S256 {
 		return errors.New("Person Server resumed the wrong mission")
 	}
-	if err := people.GrantPermission(ctx, missionRequest); err != nil {
+	if err := host.GrantPermission(ctx, missionRequest); err != nil {
 		return err
 	}
 	missionCompletion, err := operator.PollPermission(ctx, missionPending)

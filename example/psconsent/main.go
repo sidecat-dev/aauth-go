@@ -24,6 +24,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -88,7 +89,7 @@ func run(output io.Writer) error {
 	}
 
 	personTokens := newMemoryTokenStore()
-	authorizations := newMemoryAuthorizationStore()
+	authorizations := testutil.NewDeferredAuthorizationStore()
 	issuedIDs := 0
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver,

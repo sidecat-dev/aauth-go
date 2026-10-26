@@ -106,6 +106,7 @@ type PendingExchange struct {
 	location             string
 	origin               string
 	retryAfter           time.Duration
+	waitReason           string
 	interactionURL       string
 	interactionCode      string
 	interacting          bool
@@ -122,6 +123,7 @@ type PendingExchange struct {
 	tokenExpiresAt       int64
 	tokenExpirySource    string
 	parentMediated       bool
+	budget               *budgets.Value
 }
 
 // PersonServer returns the Person Server that accepted the exchange.
@@ -141,12 +143,24 @@ func (pending PendingExchange) Location() string {
 }
 
 // RetryAfter returns the minimum interval the caller must respect before the
-// next explicit poll.
+// next explicit poll. A server may advertise zero; a caller that polls in a
+// loop still paces it, for example at one second.
 func (pending PendingExchange) RetryAfter() time.Duration {
 	if pending.kind != pendingExchangeVerified {
 		return 0
 	}
 	return pending.retryAfter
+}
+
+// WaitReason returns the optional pending_reason display hint supplied by the
+// PS: "awaiting_payment", "awaiting_approval", or empty when absent or unknown.
+// This library extension is not a protocol requirement or authority to pay.
+// A caller may translate it for the person; payment details remain with the PS.
+func (pending PendingExchange) WaitReason() string {
+	if pending.kind != pendingExchangeVerified {
+		return ""
+	}
+	return pending.waitReason
 }
 
 // Requirement returns the current generic requirement token. An empty value
@@ -205,9 +219,6 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		if verifiedResource.r3Reference != nil {
 			return ExchangeResult{}, fail(operation, errors.New("R3 exchange interaction is not implemented"))
 		}
-		if verifiedResource.budget != nil {
-			return ExchangeResult{}, fail(operation, errors.New("Budget exchange interaction is not implemented"))
-		}
 		resourceClaims := verifiedResource.claims
 		if input.UpstreamToken != "" {
 			return ExchangeResult{}, fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
@@ -221,6 +232,10 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		missionCapabilityFallback := resourceClaims.MissionS256 != "" && input.Capabilities == nil
 		pending.interactionCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "interaction")
 		pending.clarificationCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "clarification")
+		if verifiedResource.budget != nil {
+			offer := *verifiedResource.budget
+			pending.budget = &offer
+		}
 		if err := validatePendingExchangeRequirement(pending); err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
@@ -238,7 +253,7 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 }
 
 // PollExchange performs exactly one bodyless Agent-token-signed GET for a
-// verified pending exchange. A typed 410 invalid_code response is terminal and
+// verified pending exchange. A typed 410 response is terminal and
 // MUST NOT be retried.
 func (client *Client) PollExchange(ctx context.Context, pending PendingExchange) (ExchangeResult, error) {
 	const operation = "poll exchange"
@@ -297,7 +312,7 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 		token, err := client.verifiedExchangeResponse(
 			ctx,
 			response,
-			verifiedExchangeResource{claims: *pending.resourceClaims},
+			verifiedExchangeResource{claims: *pending.resourceClaims, budget: pending.budget},
 			personServerCredential{
 				requestKey: pending.tokenKey, expiresAt: pending.tokenExpiresAt,
 				expirySource: pending.tokenExpirySource, parentMediated: pending.parentMediated,
@@ -444,10 +459,6 @@ func (client *Client) finishExchangeRequest(
 	verifiedResource verifiedExchangeResource,
 ) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	resourceClaims := verifiedResource.claims
-	if verifiedResource.budget != nil &&
-		(input.SubagentToken != "" || input.UpstreamToken != "") {
-		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("delegated or call-chain Budget exchange is not implemented")
-	}
 	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")
 	}
@@ -487,10 +498,12 @@ func (client *Client) finishExchangeRequest(
 		PresentedToken string    `json:"presented_token"`
 		SubagentToken  string    `json:"subagent_token,omitempty"`
 		UpstreamToken  string    `json:"upstream_token,omitempty"`
+		LoginHint      string    `json:"login_hint,omitempty"`
 		Capabilities   *[]string `json:"capabilities,omitempty"`
 	}{
 		ResourceToken: input.ResourceToken, PresentedToken: input.PresentedToken,
-		SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken, Capabilities: capabilities,
+		SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken,
+		LoginHint: resourceClaims.LoginHint, Capabilities: capabilities,
 	})
 	if err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
@@ -547,17 +560,27 @@ func (client *Client) verifiedExchangeResponse(
 			ctx, output.AuthToken, resource.claims, *resource.r3Reference, credential,
 		)
 	} else if resource.budget != nil {
-		claims, granted, verifyErr := budgets.VerifyAuthToken(
-			ctx, output.AuthToken, client.keyResolver, client.clock,
-		)
-		if verifyErr != nil {
-			err = verifyErr
-		} else if validateErr := client.validateAuthTokenForResourceBinding(
-			claims, resource.claims, credential,
-		); validateErr != nil {
-			err = validateErr
-		} else if narrowErr := budgets.ValidateNarrowing(*resource.budget, granted); narrowErr != nil {
-			err = fmt.Errorf("auth-token Budget did not narrow the Resource offer: %w", narrowErr)
+		carriesBudget, carryErr := budgets.TokenCarriesClaims(output.AuthToken)
+		if carryErr != nil {
+			err = carryErr
+		} else if !carriesBudget {
+			// The issuer omitted the grant. The Resource offer is not a substitute,
+			// and the agent does not compare that offer with what it first requested.
+			_, err = client.verifyAuthTokenForResourceBinding(ctx, output.AuthToken, resource.claims, credential)
+		} else {
+			var claims aauth.AuthTokenClaims
+			var granted budgets.Value
+			claims, granted, err = budgets.VerifyAuthToken(
+				ctx, output.AuthToken, client.keyResolver, client.clock,
+			)
+			if err == nil {
+				err = client.validateAuthTokenForResourceBinding(claims, resource.claims, credential)
+			}
+			if err == nil {
+				if narrowErr := budgets.ValidateNarrowing(*resource.budget, granted); narrowErr != nil {
+					err = fmt.Errorf("auth-token Budget did not narrow the Resource offer: %w", narrowErr)
+				}
+			}
 		}
 	} else {
 		_, err = client.verifyAuthTokenForResourceBinding(ctx, output.AuthToken, resource.claims, credential)
@@ -603,13 +626,19 @@ func (client *Client) pendingExchangeResponse(
 		return PendingExchange{}, err
 	}
 	var commonBody struct {
-		Status string `json:"status"`
+		Status        string `json:"status"`
+		PendingReason string `json:"pending_reason"`
 	}
 	if err := decodePendingExchangeBody(encodedBody, &commonBody); err != nil {
 		return PendingExchange{}, err
 	}
 	if strings.TrimSpace(commonBody.Status) == "" {
 		return PendingExchange{}, errors.New("pending response status is required")
+	}
+	waitReason := ""
+	switch commonBody.PendingReason {
+	case "awaiting_payment", "awaiting_approval":
+		waitReason = commonBody.PendingReason
 	}
 	requirementValues := response.Header.Values("AAuth-Requirement")
 	var requirement aauth.Requirement
@@ -680,14 +709,14 @@ func (client *Client) pendingExchangeResponse(
 	claims := resourceClaims
 	return PendingExchange{
 		kind: pendingExchangeVerified, personServer: personServer,
-		location: location, origin: origin, retryAfter: retryAfter, interactionURL: interactionURL,
+		location: location, origin: origin, retryAfter: retryAfter, waitReason: waitReason, interactionURL: interactionURL,
 		interactionCode: interactionCode, interacting: prior.interacting || commonBody.Status == "interacting",
 		requirement: requirement, interactionCapable: prior.interactionCapable,
 		clarification: clarification, clarificationCapable: prior.clarificationCapable,
 		resourceToken: resourceToken, resourceClaims: &claims,
 		agentProvider: client.agentClaims.Issuer, agent: client.identifier, agentJKT: thumbprint,
 		tokenKey: tokenKey, tokenExpiresAt: tokenExpiresAt, tokenExpirySource: tokenExpirySource,
-		parentMediated: parentMediated,
+		parentMediated: parentMediated, budget: prior.budget,
 	}, nil
 }
 

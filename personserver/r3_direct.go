@@ -20,6 +20,7 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	verified *verifiedR3,
 	missionRecord *MissionRecord,
 	personTokenExpiresAt time.Time,
+	requestVerifiedAt time.Time,
 ) {
 	if server == nil || server.r3 == nil || server.r3.authorizeDocument == nil || server.r3.issuances == nil ||
 		verified == nil || verified.kind != r3.ArtifactDocument || len(verified.exactArtifact) == 0 {
@@ -41,6 +42,10 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	)
 	if err != nil {
 		writeAccessPolicyProblem(response, err)
+		return
+	}
+	if err := server.checkAgentBinding(request.Context(), agentBinding(requestingAgent), requestVerifiedAt); err != nil {
+		writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
 		return
 	}
 	grantedScopes, err := validateDirectR3Decision(decision, authorizationRequest.Scopes)

@@ -400,8 +400,18 @@ func testR3DirectFourPartyJourney(t *testing.T, vocabulary integrationR3Vocabula
 	}
 	if withBudget {
 		ungranted, _ := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/export", nil)
-		if _, err := agent.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: ungranted, AuthToken: authToken}); err == nil {
-			t.Fatal("ungranted R3 Budget operation reached the Resource")
+		refused, err := agent.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: ungranted, AuthToken: authToken})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response, ok := refused.Response(); !ok || response.StatusCode != http.StatusForbidden {
+			t.Fatalf("ungranted operation=%#v", refused)
+		} else {
+			response.Body.Close()
+		}
+		feedback := integrationBudgetFeedback(t, refused)
+		if cost, ok := feedback.Cost(); !ok || cost != 0 || feedback.Remaining() != accessGrant.Amount() {
+			t.Fatalf("ungranted operation feedback=%#v", feedback)
 		}
 		if total := budgetLedger.personTotal(personServerID, "person-123", resourceID); total != 0 || protectedCalls != 0 {
 			t.Fatalf("ungranted R3 Budget operation charged/dispatched = %d/%d", total, protectedCalls)

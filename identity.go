@@ -67,6 +67,16 @@ func ValidateEndpoint(endpoint string) error {
 	return nil
 }
 
+// ValidateHTTPSURL checks an optional metadata display URI. The drafts require
+// https and say nothing about query or fragment, so those are accepted.
+func ValidateHTTPSURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		return errors.New("aauth: URL must be absolute https")
+	}
+	return nil
+}
+
 // ValidateAgentIdentifier validates the AAuth URI identifier grammar.
 func ValidateAgentIdentifier(identifier string) error {
 	if !strings.HasPrefix(identifier, "aauth:") {

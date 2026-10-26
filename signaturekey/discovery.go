@@ -428,8 +428,13 @@ func (resolver *HTTPKeyResolver) fetch(
 		)
 	}
 	var metadata struct {
-		Issuer  string `json:"issuer"`
-		JWKSURI string `json:"jwks_uri"`
+		Issuer           string `json:"issuer"`
+		JWKSURI          string `json:"jwks_uri"`
+		LogoURI          string `json:"logo_uri"`
+		LogoDarkURI      string `json:"logo_dark_uri"`
+		DocumentationURI string `json:"documentation_uri"`
+		TosURI           string `json:"tos_uri"`
+		PolicyURI        string `json:"policy_uri"`
 	}
 	if err := jsonstrict.RejectCaseVariants(metadataBytes, &metadata); err != nil {
 		return discoveryCacheEntry{}, resolutionError(
@@ -459,6 +464,16 @@ func (resolver *HTTPKeyResolver) fetch(
 		return discoveryCacheEntry{}, resolutionError(
 			ResolutionInvalid,
 			fmt.Errorf("aauth: discovery jwks_uri: %w", err),
+		)
+	}
+	if err := validateOptionalDisplayURIs(map[string]string{
+		"logo_uri": metadata.LogoURI, "logo_dark_uri": metadata.LogoDarkURI,
+		"documentation_uri": metadata.DocumentationURI, "tos_uri": metadata.TosURI,
+		"policy_uri": metadata.PolicyURI,
+	}); err != nil {
+		return discoveryCacheEntry{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: discovery metadata: %w", err),
 		)
 	}
 	keySetBytes, keySetPolicy, err := resolver.fetchJSON(ctx, metadata.JWKSURI)
@@ -589,6 +604,19 @@ func (resolver *HTTPKeyResolver) fetchJSON(ctx context.Context, endpoint string)
 		)
 	}
 	return body, parseDiscoveryCachePolicy(strings.Join(response.Header.Values("Cache-Control"), ",")), nil
+}
+
+func validateOptionalDisplayURIs(fields map[string]string) error {
+	for name, value := range fields {
+		if value == "" {
+			continue
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			return fmt.Errorf("%s must be an absolute https URL", name)
+		}
+	}
+	return nil
 }
 
 func validateDiscoveryURL(endpoint string) error {

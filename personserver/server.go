@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
@@ -50,6 +52,8 @@ var errSubagentTokenSyntax = errors.New("personserver: subagent_token must be a 
 // person tokens, retains their lineage, and federates auth-token requests to an
 // Access Server.
 type FederatedAuthorizationConfig struct {
+	// Deferred enables host-driven AS approval and payment continuations.
+	Deferred    *FederatedDeferredConfig
 	Issuer      string
 	SigningKey  jose.SigningKey
 	KeyResolver signaturekey.KeyResolver
@@ -59,9 +63,15 @@ type FederatedAuthorizationConfig struct {
 	// MaximumResourceTokenLifetime bounds resource tokens derived from a
 	// retained person token. Zero selects DefaultMaximumResourceTokenLifetime.
 	MaximumResourceTokenLifetime time.Duration
-	AccessServerEndpoint         func(context.Context, string) (string, error)
-	Tokens                       TokenStore
-	BindPerson                   func(context.Context, PersonTokenRequest) (Person, error)
+	// AccessServerEndpoint maps a Resource token's Access Server issuer to
+	// that server's HTTPS token endpoint, typically from its metadata. An
+	// accessserver.Server serves it at the issuer's /token, and its pending
+	// URLs below /token/pending/.
+	AccessServerEndpoint func(context.Context, string) (string, error)
+	// Tokens retains issued Person tokens. Without missions any TokenStore
+	// serves; testutil.NewMissionStore provides one for tests either way.
+	Tokens     TokenStore
+	BindPerson func(context.Context, PersonTokenRequest) (Person, error)
 	// RequirePersonTokenInteraction optionally selects a host-authenticated
 	// interaction before BindPerson. A required interaction uses the deferred
 	// extension implemented by Tokens; with Missions, Tokens implements
@@ -93,6 +103,9 @@ type FederatedAuthorizationConfig struct {
 	// AgentTokenRevocations enables the Agent Provider's signed revocation
 	// endpoint and checks retained revocations before any person policy runs.
 	AgentTokenRevocations AgentTokenRevocationStore
+	// AgentBindingRevocations enables host-invoked RevokeAgentBinding and
+	// refuses issuance and pending delivery under a revoked binding.
+	AgentBindingRevocations AgentBindingRevocationStore
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -157,6 +170,9 @@ type PSAuthorizationConfig struct {
 	// AgentTokenRevocations enables the Agent Provider's signed revocation
 	// endpoint and checks retained revocations before any person policy runs.
 	AgentTokenRevocations AgentTokenRevocationStore
+	// AgentBindingRevocations enables host-invoked RevokeAgentBinding and
+	// refuses issuance and pending delivery under a revoked binding.
+	AgentBindingRevocations AgentBindingRevocationStore
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -168,8 +184,8 @@ type BudgetConfig struct {
 // FederatedBudgetConfig supplies the independent Resource-metadata lookup and
 // Person Server ceiling decision for four-party Budget authorization. Ceiling
 // runs after consent and receives an independent copy of the same verified
-// policy input. It may return nil to omit the request member; the Access Server
-// then uses the verified Resource offer as the Person Server ceiling.
+// policy input. It may return nil to omit the request member. Omission is not
+// a grant: the Access Server must not issue a budget claim.
 type FederatedBudgetConfig struct {
 	ResolveResourceUnits func(context.Context, string) ([]budgets.UnitDeclaration, error)
 	Ceiling              func(context.Context, AuthorizationRequest) (*budgets.Value, error)
@@ -209,6 +225,10 @@ type PersonTokenRequest struct {
 	// Upstream is nonnil only for explicit call chaining. It is an independent
 	// copy of the verified PS-issued auth-token claims.
 	Upstream *aauth.AuthTokenClaims
+	// Capabilities are the agent's declared interaction abilities. Omitted
+	// request members fall back to the mission's capabilities when a mission
+	// is bound.
+	Capabilities []string
 }
 
 // Person is the directed identity and lifetime selected by person-binding
@@ -234,7 +254,12 @@ type AuthorizationRequest struct {
 	Capabilities []string
 	// Budget is the verified Resource-token offer. The callback receives an
 	// independent copy and may return only an amount-narrowed value.
-	Budget                   *budgets.Value
+	Budget *budgets.Value
+	// BudgetConsumed is the resource token's consumption record when the
+	// Resource reported spend on the presented auth token. It is not a grant.
+	// The host joins PresentedJTI to its own ledger; this library does not
+	// retain grants in order to admit the record.
+	BudgetConsumed           *budgets.ConsumptionRecord
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
 	// Mission is nonnil when the retained person-token lineage names an active
@@ -283,6 +308,7 @@ type Server struct {
 	keyResolver                      signaturekey.KeyResolver
 	clock                            aauth.Clock
 	newID                            func() string
+	federatedDeferred                *FederatedDeferredConfig
 	httpClient                       *http.Client
 	maximumResourceTokenLifetime     time.Duration
 	accessServerEndpoint             func(context.Context, string) (string, error)
@@ -322,6 +348,7 @@ type Server struct {
 	interactionRelayStore            InteractionRelayStore
 	missionInteractionRelays         MissionInteractionRelayStore
 	agentTokenRevocations            AgentTokenRevocationStore
+	agentBindingRevocations          AgentBindingRevocationStore
 }
 
 type authorizationMode uint8
@@ -347,10 +374,14 @@ type serverConfig struct {
 	interactionQuestion           *InteractionQuestionConfig
 	interactionRelay              *InteractionRelayConfig
 	agentTokenRevocations         AgentTokenRevocationStore
+	agentBindingRevocations       AgentBindingRevocationStore
 }
 
 // NewFederatedAuthorization constructs a four-party Person Server.
 func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, error) {
+	if err := validateFederatedDeferredConfig(config.Deferred); err != nil {
+		return nil, err
+	}
 	if config.HTTPClient == nil {
 		return nil, errors.New("personserver: HTTP client is required")
 	}
@@ -380,6 +411,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		interactionQuestion:           config.InteractionQuestion,
 		interactionRelay:              config.InteractionRelay,
 		agentTokenRevocations:         config.AgentTokenRevocations,
+		agentBindingRevocations:       config.AgentBindingRevocations,
 	})
 	if err != nil {
 		return nil, err
@@ -389,6 +421,10 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		return http.ErrUseLastResponse
 	}
 	server.httpClient = &httpClient
+	if config.Deferred != nil {
+		v := *config.Deferred
+		server.federatedDeferred = &v
+	}
 	server.accessServerEndpoint = config.AccessServerEndpoint
 	server.consent = config.Consent
 	if config.Budget != nil {
@@ -447,6 +483,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		interactionQuestion:           config.InteractionQuestion,
 		interactionRelay:              config.InteractionRelay,
 		agentTokenRevocations:         config.AgentTokenRevocations,
+		agentBindingRevocations:       config.AgentBindingRevocations,
 	})
 	if err != nil {
 		return nil, err
@@ -654,6 +691,7 @@ func newServer(config serverConfig) (*Server, error) {
 		interactionRelayStore:       interactionRelayRecords,
 		missionInteractionRelays:    missionInteractionRelays,
 		agentTokenRevocations:       config.agentTokenRevocations,
+		agentBindingRevocations:     config.agentBindingRevocations,
 	}, nil
 }
 
@@ -664,6 +702,10 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /person", server.handlePerson)
 	mux.HandleFunc("GET /person/pending/{id}", server.handlePendingPersonToken)
 	mux.HandleFunc("POST /token", server.handleToken)
+	if server.federatedDeferred != nil {
+		mux.HandleFunc("GET /token/federated/{id}", server.handleFederatedPending)
+		mux.HandleFunc("DELETE /token/federated/{id}", server.handleFederatedCancellation)
+	}
 	mux.HandleFunc("/token/pending/{id}", server.handlePendingAuthorization)
 	mux.HandleFunc("GET /.well-known/aauth-person.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
@@ -727,11 +769,12 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"justification": input.Justification, "login_hint": input.LoginHint,
-		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
-		"platform": input.Platform, "device": input.Device, "capabilities": input.Capabilities,
-	}); err != nil {
+	if _, err := parseIgnoredPersonRequestHints(input.Justification, input.LoginHint, input.Tenant, input.DomainHint, input.Prompt, input.Platform, input.Device); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	capabilities, err := parseAuthorizationCapabilities(input.Capabilities)
+	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
@@ -787,10 +830,21 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
+	if upstream == nil {
+		// The signing Agent's binding authorizes it and every child it mediates.
+		if err := server.checkAgentBinding(request.Context(), agentBinding(agent), proof.VerifiedAt()); err != nil {
+			writeAgentBindingProblem(response, err, http.StatusForbidden, "person_token_denied")
+			return
+		}
+	}
+	if input.Capabilities == nil && missionRecord != nil {
+		capabilities = append([]string(nil), missionRecord.Capabilities...)
+	}
 	personRequest := PersonTokenRequest{
 		Agent: agent.Subject, Resource: input.Resource,
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		Mission:               missionContext,
+		Capabilities:          append([]string(nil), capabilities...),
 	}
 	if delegated {
 		personRequest.Subagent = credentialAgent.Subject
@@ -807,8 +861,12 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 		if required {
+			if !slices.Contains(capabilities, "interaction") && !slices.Contains(capabilities, "clarification") {
+				writeProblem(response, http.StatusForbidden, "user_unreachable", errors.New("personserver: agent did not declare interaction or clarification"))
+				return
+			}
 			if err := server.beginPersonTokenInteraction(
-				response, request, personRequest, agent, credentialAgent, policy, missionRecord,
+				response, request, personRequest, agent, credentialAgent, policy, missionRecord, proof.VerifiedAt(),
 			); err != nil {
 				writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			}
@@ -823,6 +881,12 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	if err != nil {
 		writeProblem(response, http.StatusForbidden, "person_token_denied", err)
 		return
+	}
+	if upstream == nil {
+		if err := server.checkAgentBinding(request.Context(), agentBinding(agent), proof.VerifiedAt()); err != nil {
+			writeAgentBindingProblem(response, err, http.StatusForbidden, "person_token_denied")
+			return
+		}
 	}
 	if upstream != nil && person.Subject == upstream.claims.Subject {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: downstream directed subject must differ from upstream subject"))
@@ -905,10 +969,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if supportsCapabilities {
 		unsupportedCapabilities = nil
 	}
+	if _, err := parseIgnoredPersonRequestHints(input.Justification, input.LoginHint, input.Tenant, input.DomainHint, input.Prompt, input.Platform, input.Device); err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
 	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"justification": input.Justification, "login_hint": input.LoginHint,
-		"tenant": input.Tenant, "domain_hint": input.DomainHint, "prompt": input.Prompt,
-		"platform": input.Platform, "device": input.Device, "capabilities": unsupportedCapabilities,
+		"capabilities": unsupportedCapabilities,
 	}); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
@@ -955,7 +1021,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	resourceToken, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
+	resourceToken, r3Context, budgetOffer, budgetConsumed, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err == nil {
@@ -999,8 +1065,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 		}
 	}
-	if budgetOffer != nil && (delegated || upstream != nil) {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: Budget does not compose with delegation or call chaining"))
+	// A direct Person Server sizes this token's own grant. A budget is not a
+	// sub-budget of a parent or upstream token, so delegation and one call-chain
+	// hop use the same offer and narrowing as any other auth token. Federated
+	// issuance still refuses the combination.
+	if budgetOffer != nil && (delegated || upstream != nil) && server.authorizationMode != authorizationModePersonServer {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: federated Budget does not compose with delegation or call chaining"))
 		return
 	}
 	resourceTokenExpiresAt := time.Unix(resourceToken.ExpiresAt, 0).UTC()
@@ -1108,6 +1178,21 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		server.writeUpstreamTokenProblem(response, errors.New("personserver: no retained record ties the presented token to the upstream token"))
 		return
 	}
+	if upstream == nil {
+		// Only a top-level Agent signs here, so its binding authorized the
+		// presented credential, whether it holds it or a child it mediates does.
+		// A credential issued before a replacement binding stays refused.
+		bindingSince := presentedTokenIssuedAt(presented)
+		if presented.Auth != nil && presented.Auth.DWK == aauth.AccessDiscoveryDocument {
+			// The AS clock cannot establish which PS binding authorized a token.
+			// After replacement, require a fresh PS Person token for this flow.
+			bindingSince = time.Time{}
+		}
+		if err := server.checkAgentBinding(request.Context(), agentBinding(agent), bindingSince); err != nil {
+			writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
+			return
+		}
+	}
 	if budgetOffer != nil {
 		if server.resolveBudgetResourceUnits == nil {
 			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: Budget authorization is not configured"))
@@ -1164,6 +1249,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		Scopes:                append([]string(nil), scopes...),
 		Capabilities:          append([]string(nil), capabilities...),
 		Budget:                cloneBudgetValue(budgetOffer),
+		BudgetConsumed:        cloneConsumptionRecord(budgetConsumed),
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		Mission:               missionContext,
 	}
@@ -1184,7 +1270,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 			server.issueDirectR3AuthorizationToken(
 				response, request, agent, credentialAgent, resourceToken,
-				authorizationRequest, r3Context, missionRecord, presented.ExpiresAt,
+				authorizationRequest, r3Context, missionRecord, presented.ExpiresAt, proof.VerifiedAt(),
 			)
 			return
 		}
@@ -1196,16 +1282,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 				return
 			}
 			if required {
-				if budgetOffer != nil {
-					writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: Budget authorization interaction is not implemented"))
-					return
-				}
 				if !slices.Contains(capabilities, "interaction") {
 					writeProblem(response, http.StatusForbidden, "user_unreachable", errors.New("Agent did not declare interaction capability"))
 					return
 				}
 				if err := server.beginAuthorizationInteraction(
-					response, request, authorizationRequest, agent, credentialAgent, resourceToken, missionRecord, policy, presented.ExpiresAt,
+					response, request, authorizationRequest, agent, credentialAgent, resourceToken, missionRecord, policy, presented.ExpiresAt, proof.VerifiedAt(),
 				); err != nil {
 					if missionRecord != nil {
 						writeMissionActionProblem(response, err)
@@ -1233,7 +1315,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 		server.issuePSAuthorizationToken(
 			response, request, agent, credentialAgent, resourceToken,
-			authorizationRequest, missionRecord, authorize, presented.ExpiresAt, upstream,
+			authorizationRequest, missionRecord, authorize, presented.ExpiresAt, upstream, proof.VerifiedAt(),
 		)
 		return
 	}
@@ -1315,6 +1397,29 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	defer accessResponse.Body.Close()
+	if accessResponse.StatusCode == 202 || accessResponse.StatusCode == 402 {
+		reason := ""
+		switch {
+		case server.federatedDeferred == nil:
+			reason = "not_configured"
+		case r3Context != nil:
+			reason = "r3"
+		case budgetOffer != nil:
+			reason = "budget"
+		case missionRecord != nil:
+			reason = "mission"
+		}
+		if reason != "" {
+			writeFederatedContinuationProblem(response, &DeferredCompositionError{reason: reason})
+			return
+		}
+		server.beginFederatedAuthorization(response, request, accessResponse, endpoint, federatedContinuationInput{
+			resourceToken: input.ResourceToken, agentToken: agentToken, presentedToken: input.PresentedToken,
+			subagentToken: subagentToken, agent: agent, credentialAgent: credentialAgent,
+			resource: resourceToken, presentedExpiresAt: presented.ExpiresAt, createdAt: proof.VerifiedAt(),
+		})
+		return
+	}
 	if accessResponse.StatusCode != http.StatusOK {
 		if relayAccessServerProblem(response, accessResponse) {
 			return
@@ -1323,119 +1428,8 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeAccessServerUnreachable(response, errors.New("access server returned no well-formed terminal error"))
 		return
 	}
-	accessBody, err := io.ReadAll(io.LimitReader(accessResponse.Body, maxRequestBytes+1))
-	if err != nil || len(accessBody) > maxRequestBytes {
-		writeAccessServerUnreachable(response, errors.New("access-server response is unavailable"))
-		return
-	}
-	var accessOutput struct {
-		AuthToken string `json:"auth_token"`
-		ExpiresIn int64  `json:"expires_in"`
-	}
-	if err := decodeJSON(bytes.NewReader(accessBody), &accessOutput); err != nil || accessOutput.AuthToken == "" {
-		writeAccessServerUnreachable(response, errors.New("access-server response is invalid"))
-		return
-	}
-	var authToken aauth.AuthTokenClaims
-	if r3Context != nil && budgetOffer != nil {
-		var grant budgets.Value
-		authToken, grant, err = server.verifyR3BudgetAccessResult(
-			request.Context(), accessOutput.AuthToken, r3Context,
-		)
-		if err == nil {
-			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
-		}
-	} else if r3Context != nil {
-		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
-	} else if budgetOffer != nil {
-		var grant budgets.Value
-		authToken, grant, err = budgets.VerifyAuthToken(
-			request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
-		)
-		if err == nil {
-			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
-		}
-	} else {
-		carriesBudget, budgetErr := budgets.TokenCarriesClaims(accessOutput.AuthToken)
-		if budgetErr != nil {
-			err = budgetErr
-		} else if carriesBudget {
-			err = errors.New("Access Server auth token invented a Budget")
-		} else {
-			authToken, err = aauth.VerifyAuthToken(
-				request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
-			)
-		}
-	}
-	if err != nil {
-		writeAccessServerUnreachable(response, err)
-		return
-	}
-	if authToken.Issuer != resourceToken.Audience ||
-		authToken.DWK != aauth.AccessDiscoveryDocument ||
-		authToken.ExpiresAt > agent.ExpiresAt ||
-		authToken.ExpiresAt > credentialAgent.ExpiresAt ||
-		authToken.ExpiresAt > presented.ExpiresAt.Unix() ||
-		authToken.MissionS256 != resourceToken.MissionS256 ||
-		authToken.Tenant != resourceToken.Tenant || !equalStringPointers(authToken.Account, resourceToken.Account) {
-		writeAccessServerUnreachable(response, errors.New("access-server auth token changed the authorized context"))
-		return
-	}
-	if err := aauth.ValidateCurrentAuthTokenContext(
-		authToken,
-		aauth.AuthTokenContext{
-			Issuer: resourceToken.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
-			Resource: resourceToken.Issuer, PersonServer: server.issuer, Subject: resourceToken.Subject,
-			RequestKey: credentialAgent.Confirmation.JWK,
-		},
-	); err != nil {
-		writeAccessServerUnreachable(response, err)
-		return
-	}
-	var grantedScopes []string
-	if authToken.Scope != "" {
-		grantedScopes, err = parseScopes(authToken.Scope)
-	} else if r3Context == nil {
-		err = errors.New("Access Server auth token has no authorization claim")
-	}
-	validScopeGrant := len(scopes) == 0 && len(grantedScopes) == 0 ||
-		len(scopes) > 0 && len(grantedScopes) > 0 && scopeSubset(grantedScopes, scopes)
-	if err != nil || !validScopeGrant {
-		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
-		return
-	}
-	if missionRecord != nil {
-		if authorizationRequest.Mission == nil || authorizationRequest.Mission.S256 != missionRecord.S256 {
-			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission record does not match federated authorization context"))
-			return
-		}
-		if !missionRecord.ExpiresAt.IsZero() && authToken.ExpiresAt > missionRecord.ExpiresAt.Unix() {
-			writeAccessServerUnreachable(response, errors.New("access-server auth token outlives the mission-bound authorization"))
-			return
-		}
-		issuedRecord, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
-		if err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			return
-		}
-		commitAt := server.clock.Now().UTC()
-		if err := server.missions.CommitMissionAuthToken(
-			request.Context(), *missionRecord, commitAt, issuedRecord,
-		); err != nil {
-			writeMissionReferenceProblem(response, err)
-			return
-		}
-	} else if authorizationRequest.Mission != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: federated mission authorization has no retained mission"))
-		return
-	}
-	writePrivateJSON(response, http.StatusOK, struct {
-		AuthToken string `json:"auth_token"`
-		ExpiresIn int64  `json:"expires_in"`
-	}{
-		AuthToken: accessOutput.AuthToken,
-		ExpiresIn: authToken.ExpiresAt - server.clock.Now().Unix(),
-	})
+	server.deliverFederatedAuthorization(response, request, accessResponse, resourceToken, agent, credentialAgent, presented.ExpiresAt, scopes, r3Context, budgetOffer, personBudgetCeiling, missionRecord, authorizationRequest, proof.VerifiedAt())
+
 }
 
 func equalStringPointers(first, second *string) bool {
@@ -1474,12 +1468,19 @@ func (server *Server) issuePSAuthorizationToken(
 	authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error),
 	personTokenExpiresAt time.Time,
 	upstream *verifiedUpstreamToken,
+	requestVerifiedAt time.Time,
 ) {
 	policyRequest := cloneAuthorizationRequest(authorizationRequest)
 	decision, err := authorize(request.Context(), policyRequest)
 	if err != nil {
 		writeAccessPolicyProblem(response, err)
 		return
+	}
+	if upstream == nil {
+		if err := server.checkAgentBinding(request.Context(), agentBinding(requestingAgent), requestVerifiedAt); err != nil {
+			writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
+			return
+		}
 	}
 	grantedScopes, err := validateAuthorizationDecision(decision, authorizationRequest.Scopes)
 	if err != nil {
@@ -1615,16 +1616,37 @@ func validateBudgetDecision(offered, granted *budgets.Value) (*budgets.Value, er
 	return cloneBudgetValue(granted), nil
 }
 
+// federatedBudgetOmitted reports a budget claim on an auth token the Person
+// Server did not grant. A PS that omits the PS-to-AS budget parameter, and a
+// PS whose resource token carried no budget, both require the claim to be absent.
+func federatedBudgetOmitted(compact string) error {
+	carriesBudget, err := budgets.TokenCarriesClaims(compact)
+	if err != nil {
+		return err
+	}
+	if carriesBudget {
+		return errors.New("Access Server auth token invented a Budget")
+	}
+	return nil
+}
+
+func (server *Server) verifyFederatedBudgetOmission(ctx context.Context, compact string) (aauth.AuthTokenClaims, error) {
+	if err := federatedBudgetOmitted(compact); err != nil {
+		return aauth.AuthTokenClaims{}, err
+	}
+	return aauth.VerifyAuthToken(ctx, compact, server.keyResolver, server.clock)
+}
+
 func validateFederatedBudgetGrant(
 	resourceOffer budgets.Value,
 	personCeiling *budgets.Value,
 	accessGrant budgets.Value,
 ) error {
+	if personCeiling == nil {
+		return errors.New("Access Server issued a Budget when the Person Server omitted the parameter")
+	}
 	if err := budgets.ValidateNarrowing(resourceOffer, accessGrant); err != nil {
 		return fmt.Errorf("Access Server Budget exceeds the Resource offer: %w", err)
-	}
-	if personCeiling == nil {
-		return nil
 	}
 	if err := budgets.ValidateNarrowing(*personCeiling, accessGrant); err != nil {
 		return fmt.Errorf("Access Server Budget exceeds the Person Server ceiling: %w", err)
@@ -1692,33 +1714,54 @@ func (server *Server) verifyOptionalSubagentToken(
 		return "", aauth.AgentTokenClaims{}, false, errSubagentTokenSyntax
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	child, err := aauth.VerifyAgentToken(ctx, compact, server.keyResolver, verificationClock)
+	child, err := aauth.VerifySubagentToken(ctx, compact, parent, server.keyResolver, verificationClock)
 	if err != nil {
-		return "", aauth.AgentTokenClaims{}, false, &requestTokenError{cause: err}
+		return "", aauth.AgentTokenClaims{}, false, err
 	}
 	if err := proof.CheckIssuedAt(time.Unix(child.IssuedAt, 0)); err != nil {
-		return "", aauth.AgentTokenClaims{}, false, &requestTokenError{cause: err}
+		return "", aauth.AgentTokenClaims{}, false, err
 	}
-	if child.ParentAgent == "" || child.ParentAgent != parent.Subject {
-		return "", aauth.AgentTokenClaims{}, false, errors.New("personserver: sub-agent token does not name the requesting parent")
-	}
-	if child.Confirmation.JWK.Equal(parent.Confirmation.JWK) {
-		return "", aauth.AgentTokenClaims{}, false, errors.New("personserver: sub-agent token must use a key distinct from the parent")
+	if err := server.checkSubagentTokenRevocation(ctx, child); err != nil {
+		return "", aauth.AgentTokenClaims{}, false, err
 	}
 	return compact, child, true, nil
 }
 
+// checkSubagentTokenRevocation applies the Agent Provider's retained
+// revocations to a sub-agent token, as for the signing Agent's own token.
+func (server *Server) checkSubagentTokenRevocation(ctx context.Context, child aauth.AgentTokenClaims) error {
+	if server.agentTokenRevocations == nil {
+		return nil
+	}
+	revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{Issuer: child.Issuer, JTI: child.JTI})
+	if err != nil {
+		return &agentTokenRevocationStoreError{cause: err}
+	}
+	if revoked {
+		return errSubagentTokenRevoked
+	}
+	return nil
+}
+
+var errSubagentTokenRevoked = errors.New("personserver: sub-agent token revoked by its Agent Provider")
+
+// writeSubagentTokenProblem maps a request-parameter sub-agent token failure
+// to Protocol -11's <invalid|expired|revoked>_subagent_token codes.
 func (server *Server) writeSubagentTokenProblem(response http.ResponseWriter, err error) {
-	var tokenFailure *requestTokenError
-	if errors.As(err, &tokenFailure) {
-		writeEndpointTokenProblem(response, tokenFailure.cause, "invalid_agent_token", "expired_agent_token")
-		return
-	}
-	if errors.Is(err, errSubagentTokenSyntax) {
+	var storeFailure *agentTokenRevocationStoreError
+	switch {
+	case errors.Is(err, errSubagentTokenSyntax):
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
-		return
+	case errors.As(err, &storeFailure):
+		writeProblem(response, http.StatusInternalServerError, "server_error", storeFailure.cause)
+	case writeParameterClockSkew(response, err):
+	case errors.Is(err, errSubagentTokenRevoked):
+		writeProblem(response, http.StatusBadRequest, "revoked_subagent_token", err)
+	case errors.Is(err, aauth.ErrExpiredSubagentToken):
+		writeProblem(response, http.StatusBadRequest, "expired_subagent_token", err)
+	default:
+		writeProblem(response, http.StatusBadRequest, "invalid_subagent_token", err)
 	}
-	writeProblem(response, http.StatusBadRequest, "invalid_agent_token", err)
 }
 
 func (server *Server) verifyAgentRequest(request *http.Request, requiredComponents []string) (string, aauth.AgentTokenClaims, signaturekey.VerifiedRequest, error) {
@@ -1932,6 +1975,77 @@ func decodeJSON(reader io.Reader, destination any) error {
 	return httpapi.DecodeJSON(reader, maxRequestBytes, destination)
 }
 
+func parseIgnoredPersonRequestHints(justification, loginHint, tenant, domainHint, prompt, platform, device json.RawMessage) (struct{}, error) {
+	for name, raw := range map[string]json.RawMessage{
+		"justification": justification, "login_hint": loginHint, "tenant": tenant, "domain_hint": domainHint,
+	} {
+		if _, err := parseOptionalRequestString(name, raw); err != nil {
+			return struct{}{}, err
+		}
+	}
+	promptValue, err := parseOptionalRequestString("prompt", prompt)
+	if err != nil {
+		return struct{}{}, err
+	}
+	if promptValue != "" {
+		switch promptValue {
+		case "none", "login", "consent", "select_account":
+		default:
+			return struct{}{}, fmt.Errorf("personserver: prompt %q is not registered", promptValue)
+		}
+	}
+	platformValue, err := parseOptionalRequestString("platform", platform)
+	if err != nil {
+		return struct{}{}, err
+	}
+	if platformValue != "" {
+		switch platformValue {
+		case "web", "mobile", "desktop", "workload", "self-hosted":
+		default:
+			return struct{}{}, fmt.Errorf("personserver: platform %q is not registered", platformValue)
+		}
+	}
+	deviceValue, err := parseOptionalRequestString("device", device)
+	if err != nil {
+		return struct{}{}, err
+	}
+	if deviceValue != "" {
+		if err := validatePersonRequestDevice(deviceValue); err != nil {
+			return struct{}{}, err
+		}
+	}
+	return struct{}{}, nil
+}
+
+func parseOptionalRequestString(name string, raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", fmt.Errorf("personserver: %s must be a string", name)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("personserver: %s must be a string", name)
+	}
+	if value == "" {
+		return "", fmt.Errorf("personserver: %s is empty", name)
+	}
+	return value, nil
+}
+
+func validatePersonRequestDevice(device string) error {
+	if utf8.RuneCountInString(device) > 64 {
+		return errors.New("personserver: device exceeds 64 characters")
+	}
+	for _, character := range device {
+		if !unicode.IsPrint(character) {
+			return errors.New("personserver: device must be printable UTF-8")
+		}
+	}
+	return nil
+}
+
 func rejectUnsupportedRequestMembers(members map[string]json.RawMessage) error {
 	for name, value := range members {
 		if value != nil {
@@ -1969,6 +2083,7 @@ func clonePersonTokenRequest(request PersonTokenRequest) PersonTokenRequest {
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
 	request.Mission = cloneMissionContext(request.Mission)
+	request.Capabilities = append([]string(nil), request.Capabilities...)
 	if request.Upstream != nil {
 		upstream := cloneAuthTokenClaims(*request.Upstream)
 		request.Upstream = &upstream
@@ -2002,6 +2117,7 @@ func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationReques
 	request.Scopes = append([]string(nil), request.Scopes...)
 	request.Capabilities = append([]string(nil), request.Capabilities...)
 	request.Budget = cloneBudgetValue(request.Budget)
+	request.BudgetConsumed = cloneConsumptionRecord(request.BudgetConsumed)
 	request.AgentAdditionalClaims = cloneClaims(request.AgentAdditionalClaims)
 	request.SubagentAdditionalClaims = cloneClaims(request.SubagentAdditionalClaims)
 	request.Mission = cloneMissionContext(request.Mission)
@@ -2017,6 +2133,14 @@ func cloneBudgetValue(value *budgets.Value) *budgets.Value {
 		return nil
 	}
 	cloned := *value
+	return &cloned
+}
+
+func cloneConsumptionRecord(record *budgets.ConsumptionRecord) *budgets.ConsumptionRecord {
+	if record == nil {
+		return nil
+	}
+	cloned := *record
 	return &cloned
 }
 
@@ -2051,4 +2175,129 @@ func writeAccessPolicyProblem(response http.ResponseWriter, err error) {
 func writeProblem(response http.ResponseWriter, status int, code string, cause error) {
 	response.Header().Set("Cache-Control", "no-store")
 	httpapi.WriteProblem(response, status, code, cause)
+}
+
+func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter, request *http.Request, accessResponse *http.Response,
+	resourceToken aauth.ResourceTokenClaims, agent, credentialAgent aauth.AgentTokenClaims, presentedExpiresAt time.Time,
+	scopes []string, r3Context *verifiedR3, budgetOffer, personBudgetCeiling *budgets.Value,
+	missionRecord *MissionRecord, authorizationRequest AuthorizationRequest, requestVerifiedAt time.Time) {
+	accessBody, err := io.ReadAll(io.LimitReader(accessResponse.Body, maxRequestBytes+1))
+	if err != nil || len(accessBody) > maxRequestBytes {
+		writeAccessServerUnreachable(response, errors.New("access-server response is unavailable"))
+		return
+	}
+	var accessOutput struct {
+		AuthToken string `json:"auth_token"`
+		ExpiresIn int64  `json:"expires_in"`
+	}
+	if err := decodeJSON(bytes.NewReader(accessBody), &accessOutput); err != nil || accessOutput.AuthToken == "" {
+		writeAccessServerUnreachable(response, errors.New("access-server response is invalid"))
+		return
+	}
+	var authToken aauth.AuthTokenClaims
+	switch {
+	case r3Context != nil && budgetOffer != nil && personBudgetCeiling != nil:
+		var grant budgets.Value
+		authToken, grant, err = server.verifyR3BudgetAccessResult(
+			request.Context(), accessOutput.AuthToken, r3Context,
+		)
+		if err == nil {
+			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
+		}
+	case r3Context != nil && budgetOffer != nil:
+		if err = federatedBudgetOmitted(accessOutput.AuthToken); err == nil {
+			authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
+		}
+	case r3Context != nil:
+		authToken, err = server.verifyR3AccessResult(request.Context(), accessOutput.AuthToken, r3Context)
+	case budgetOffer != nil && personBudgetCeiling != nil:
+		var grant budgets.Value
+		authToken, grant, err = budgets.VerifyAuthToken(
+			request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
+		)
+		if err == nil {
+			err = validateFederatedBudgetGrant(*budgetOffer, personBudgetCeiling, grant)
+		}
+	case budgetOffer != nil:
+		authToken, err = server.verifyFederatedBudgetOmission(request.Context(), accessOutput.AuthToken)
+	default:
+		if err = federatedBudgetOmitted(accessOutput.AuthToken); err == nil {
+			authToken, err = aauth.VerifyAuthToken(
+				request.Context(), accessOutput.AuthToken, server.keyResolver, server.clock,
+			)
+		}
+	}
+	if err != nil {
+		writeAccessServerUnreachable(response, err)
+		return
+	}
+	if authToken.Issuer != resourceToken.Audience ||
+		authToken.DWK != aauth.AccessDiscoveryDocument ||
+		authToken.ExpiresAt > agent.ExpiresAt ||
+		authToken.ExpiresAt > credentialAgent.ExpiresAt ||
+		authToken.ExpiresAt > presentedExpiresAt.Unix() ||
+		authToken.MissionS256 != resourceToken.MissionS256 ||
+		authToken.Tenant != resourceToken.Tenant || !equalStringPointers(authToken.Account, resourceToken.Account) {
+		writeAccessServerUnreachable(response, errors.New("access-server auth token changed the authorized context"))
+		return
+	}
+	if err := aauth.ValidateCurrentAuthTokenContext(
+		authToken,
+		aauth.AuthTokenContext{
+			Issuer: resourceToken.Audience, DiscoveryDocument: aauth.AccessDiscoveryDocument,
+			Resource: resourceToken.Issuer, PersonServer: server.issuer, Subject: resourceToken.Subject,
+			RequestKey: credentialAgent.Confirmation.JWK,
+		},
+	); err != nil {
+		writeAccessServerUnreachable(response, err)
+		return
+	}
+	var grantedScopes []string
+	if authToken.Scope != "" {
+		grantedScopes, err = parseScopes(authToken.Scope)
+	} else if r3Context == nil {
+		err = errors.New("Access Server auth token has no authorization claim")
+	}
+	validScopeGrant := len(scopes) == 0 && len(grantedScopes) == 0 ||
+		len(scopes) > 0 && len(grantedScopes) > 0 && scopeSubset(grantedScopes, scopes)
+	if err != nil || !validScopeGrant {
+		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
+		return
+	}
+	if missionRecord != nil {
+		if authorizationRequest.Mission == nil || authorizationRequest.Mission.S256 != missionRecord.S256 {
+			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission record does not match federated authorization context"))
+			return
+		}
+		if !missionRecord.ExpiresAt.IsZero() && authToken.ExpiresAt > missionRecord.ExpiresAt.Unix() {
+			writeAccessServerUnreachable(response, errors.New("access-server auth token outlives the mission-bound authorization"))
+			return
+		}
+		issuedRecord, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		commitAt := server.clock.Now().UTC()
+		if err := server.missions.CommitMissionAuthToken(
+			request.Context(), *missionRecord, commitAt, issuedRecord,
+		); err != nil {
+			writeMissionReferenceProblem(response, err)
+			return
+		}
+	} else if authorizationRequest.Mission != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: federated mission authorization has no retained mission"))
+		return
+	}
+	if err := server.checkAgentBinding(request.Context(), agentBinding(agent), requestVerifiedAt); err != nil {
+		writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
+		return
+	}
+	writePrivateJSON(response, http.StatusOK, struct {
+		AuthToken string `json:"auth_token"`
+		ExpiresIn int64  `json:"expires_in"`
+	}{
+		AuthToken: accessOutput.AuthToken,
+		ExpiresIn: authToken.ExpiresAt - server.clock.Now().Unix(),
+	})
 }

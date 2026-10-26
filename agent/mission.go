@@ -217,7 +217,9 @@ func (result MissionResult) Capabilities() []string {
 	return append([]string(nil), result.capabilities...)
 }
 
-// PersonToken returns the verified mission-bound token for one Resource.
+// PersonToken looks up the exact Resource identifier in the verified approval.
+// It returns ("", false) when that Resource has no returned token. PersonTokens
+// exposes a copy of the complete Resource-to-token mapping.
 func (result MissionResult) PersonToken(resource string) (string, bool) {
 	token, ok := result.personTokens[resource]
 	return token, ok && token != ""

@@ -21,10 +21,10 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
-	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -67,7 +67,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	enrollments := exampleutil.NewEnrollmentStore(clock)
+	enrollments := testutil.NewEnrollmentStore(clock)
 	// These literal checks demonstrate host policy injection, not platform or
 	// account attestation. A deployment validates its own trusted evidence.
 	service, err := agentprovider.NewEnrollmentService(agentprovider.EnrollmentServiceConfig{

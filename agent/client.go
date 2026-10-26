@@ -132,6 +132,11 @@ type PersonTokenRequest struct {
 	MissionS256   string
 	SubagentToken string
 	UpstreamToken string
+	// LoginHint is forwarded unchanged when the caller already has one.
+	// Exchange copies the resource token's login_hint itself.
+	LoginHint string
+	// Capabilities advertises interaction support. Nil omits the member.
+	Capabilities []string
 }
 
 // AuthorizeRequest asks a Resource to issue one token for the exact directed
@@ -157,12 +162,12 @@ type AuthorizeRequest struct {
 // request-body capabilities to its Person Server. PresentedToken is the person
 // token of a first exchange or the current auth token of a step-up or per-call
 // exchange; its jti must be the resource token's presented_jti. A top-level
-// parent sets SubagentToken
-// when the resource token is bound to that child. A Resource acting as an
-// Agent instead sets UpstreamToken; that verified token selects the Person
-// Server, so PersonServer may be empty or must name the same server. Exchange
-// remains immediate-only; BeginExchange exposes a verified pending
-// continuation only for a direct top-level request.
+// parent sets SubagentToken when the resource token is bound to that child. A
+// Resource acting as an Agent instead sets UpstreamToken; that verified token
+// selects the Person Server, so PersonServer may be empty or must name the same
+// server. Exchange remains immediate-only. BeginExchange exposes a verified
+// pending continuation for a top-level request and for one a parent mediates
+// for its sub-agent; a call-chained request remains immediate-only.
 type ExchangeRequest struct {
 	PersonServer   string
 	ResourceToken  string
@@ -270,12 +275,23 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
+	var capabilities *[]string
+	if input.Capabilities != nil {
+		values := append([]string(nil), input.Capabilities...)
+		capabilities = &values
+	}
 	body, err := json.Marshal(struct {
-		Resource      string `json:"resource"`
-		MissionS256   string `json:"mission_s256,omitempty"`
-		SubagentToken string `json:"subagent_token,omitempty"`
-		UpstreamToken string `json:"upstream_token,omitempty"`
-	}{Resource: input.Resource, MissionS256: input.MissionS256, SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken})
+		Resource      string    `json:"resource"`
+		MissionS256   string    `json:"mission_s256,omitempty"`
+		SubagentToken string    `json:"subagent_token,omitempty"`
+		UpstreamToken string    `json:"upstream_token,omitempty"`
+		LoginHint     string    `json:"login_hint,omitempty"`
+		Capabilities  *[]string `json:"capabilities,omitempty"`
+	}{
+		Resource: input.Resource, MissionS256: input.MissionS256,
+		SubagentToken: input.SubagentToken, UpstreamToken: input.UpstreamToken,
+		LoginHint: input.LoginHint, Capabilities: capabilities,
+	})
 	if err != nil {
 		return PersonTokenResult{}, fail(operation, err)
 	}
@@ -310,9 +326,6 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 	}
 	if input.PersonToken == "" {
 		return "", fail(operation, errors.New("person token is required"))
-	}
-	if input.Budget != nil && (input.UpstreamToken != "" || client.agentClaims.ParentAgent != "") {
-		return "", fail(operation, errors.New("delegated or call-chain Budget authorization is not implemented"))
 	}
 	if input.R3Operations != nil {
 		if client.r3 == nil {
@@ -520,9 +533,16 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	return token, nil
 }
 
+// ErrSubagentPersonServerCall reports a Person Server request or poll asked of
+// a sub-agent's client; no request is sent. The parent makes every Person
+// Server call for its sub-agents. A Person Server refuses a sub-agent's own
+// signed request with invalid_agent_token, and its poll of the parent's
+// pending URL with wrong_poller.
+var ErrSubagentPersonServerCall = errors.New("sub-agent must not call the Person Server directly")
+
 func (client *Client) requireDirectPersonServerCaller() error {
 	if client.agentClaims.ParentAgent != "" {
-		return errors.New("sub-agent must not call the Person Server directly")
+		return ErrSubagentPersonServerCall
 	}
 	if client.agentClaims.PersonServer == "" {
 		return errors.New("agent token does not name a person server")
@@ -540,7 +560,7 @@ func (client *Client) personServerRequestBinding(
 		return personServerCredential{}, errors.New("subagent_token and upstream_token are mutually exclusive")
 	}
 	if client.agentClaims.ParentAgent != "" {
-		return personServerCredential{}, errors.New("sub-agent must not call the Person Server directly")
+		return personServerCredential{}, ErrSubagentPersonServerCall
 	}
 	if upstreamToken != "" {
 		upstream, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
@@ -578,18 +598,11 @@ func (client *Client) personServerRequestBinding(
 			expirySource: "agent token",
 		}, nil
 	}
-	claims, err := aauth.VerifyAgentToken(ctx, subagentToken, client.keyResolver, client.clock)
+	// The same relationship the Person Server enforces, checked before any
+	// request: this client is the child's parent and issuer, with its own key.
+	claims, err := aauth.VerifySubagentToken(ctx, subagentToken, client.agentClaims, client.keyResolver, client.clock)
 	if err != nil {
 		return personServerCredential{}, fmt.Errorf("verify subagent token: %w", err)
-	}
-	if claims.ParentAgent == "" {
-		return personServerCredential{}, errors.New("subagent token does not identify a sub-agent")
-	}
-	if claims.ParentAgent != client.agentClaims.Subject {
-		return personServerCredential{}, errors.New("subagent token parent_agent does not match parent")
-	}
-	if claims.Confirmation.JWK.Equal(client.agentClaims.Confirmation.JWK) {
-		return personServerCredential{}, errors.New("subagent token must use a key distinct from the parent")
 	}
 	expiryCeiling := client.agentClaims.ExpiresAt
 	expirySource := "agent token"
@@ -744,6 +757,11 @@ type personServerMetadata struct {
 	AuditEndpoint       string `json:"audit_endpoint"`
 	InteractionEndpoint string `json:"interaction_endpoint"`
 	JWKSURI             string `json:"jwks_uri"`
+	LogoURI             string `json:"logo_uri"`
+	LogoDarkURI         string `json:"logo_dark_uri"`
+	DocumentationURI    string `json:"documentation_uri"`
+	TosURI              string `json:"tos_uri"`
+	PolicyURI           string `json:"policy_uri"`
 }
 
 type resourceMetadata struct {
@@ -755,6 +773,11 @@ type resourceMetadata struct {
 	AdditionalSignatureComponents []string          `json:"additional_signature_components"`
 	R3Vocabularies                map[string]string `json:"r3_vocabularies"`
 	BudgetUnits                   json.RawMessage   `json:"budget_units"`
+	LogoURI                       string            `json:"logo_uri"`
+	LogoDarkURI                   string            `json:"logo_dark_uri"`
+	DocumentationURI              string            `json:"documentation_uri"`
+	TosURI                        string            `json:"tos_uri"`
+	PolicyURI                     string            `json:"policy_uri"`
 	parsedBudgetUnits             []budgets.UnitDeclaration
 }
 
@@ -786,6 +809,9 @@ func (client *Client) personServerMetadata(ctx context.Context, issuer string) (
 	if err := aauth.ValidateEndpoint(metadata.AuthTokenEndpoint); err != nil {
 		return personServerMetadata{}, fmt.Errorf("person-server metadata auth_token_endpoint: %w", err)
 	}
+	if err := validateMetadataDisplayURIs(metadataDisplayURIs(metadata.LogoURI, metadata.LogoDarkURI, metadata.DocumentationURI, metadata.TosURI, metadata.PolicyURI)); err != nil {
+		return personServerMetadata{}, fmt.Errorf("person-server metadata: %w", err)
+	}
 	return metadata, nil
 }
 
@@ -802,7 +828,29 @@ func (client *Client) resourceMetadata(ctx context.Context, issuer string) (reso
 			return resourceMetadata{}, fmt.Errorf("resource metadata authorization_endpoint: %w", err)
 		}
 	}
+	if err := validateMetadataDisplayURIs(metadataDisplayURIs(metadata.LogoURI, metadata.LogoDarkURI, metadata.DocumentationURI, metadata.TosURI, metadata.PolicyURI)); err != nil {
+		return resourceMetadata{}, fmt.Errorf("resource metadata: %w", err)
+	}
 	return metadata, nil
+}
+
+func metadataDisplayURIs(logo, logoDark, documentation, tos, policy string) map[string]string {
+	return map[string]string{
+		"logo_uri": logo, "logo_dark_uri": logoDark, "documentation_uri": documentation,
+		"tos_uri": tos, "policy_uri": policy,
+	}
+}
+
+func validateMetadataDisplayURIs(fields map[string]string) error {
+	for name, value := range fields {
+		if value == "" {
+			continue
+		}
+		if err := aauth.ValidateHTTPSURL(value); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func validateRequestedBudget(requested budgets.Value, declarations []budgets.UnitDeclaration) error {
@@ -853,9 +901,9 @@ func (client *Client) signJSONRequest(request *http.Request, compact string) err
 }
 
 func (client *Client) signResourceRequest(request *http.Request, compact string, components []string) error {
-	options := signaturekey.SignOptions{AdditionalComponents: append([]string(nil), components...)}
-	if containsFold(components, "content-digest") {
-		options.MaxBodyBytes = client.maxSignedBodyBytes
+	options := signaturekey.SignOptions{
+		AdditionalComponents: append([]string(nil), components...),
+		MaxBodyBytes:         client.maxSignedBodyBytes,
 	}
 	return signaturekey.SignJWTRequestWithOptions(request, client.signingKey, compact, client.clock, options)
 }

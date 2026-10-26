@@ -222,6 +222,14 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 				if thumbprintErr != nil {
 					return "", thumbprintErr
 				}
+				var consumed *budgets.ConsumptionRecord
+				if challenge.Grant.Unit().Equal(resourceOffer.Unit()) {
+					record, recordErr := budgets.ConsumptionForPresentedGrant(challenge.Token.JTI, challenge.Grant, challenge.Remaining)
+					if recordErr != nil {
+						return "", recordErr
+					}
+					consumed = &record
+				}
 				return budgets.MintResourceToken(resourceKey, aauth.ResourceTokenClaims{
 					Issuer: resourceID, DWK: aauth.ResourceDiscoveryDocument,
 					Audience:     personServerID,
@@ -231,7 +239,7 @@ func TestBudgetDirectThreePartyProactiveAndReactiveFixedPriceJourneys(t *testing
 					IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 					Scope: scope, Tenant: retainedLineage.PersonContext.Tenant,
 					Account: cloneIntegrationString(challenge.Principal.Account),
-				}, resourceOffer, nil)
+				}, resourceOffer, consumed)
 			},
 		},
 		Protected: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -551,7 +559,7 @@ func (store *integrationBudgetStore) Charge(
 	}
 	remaining := charge.Grant.Amount() - account.consumed
 	if charge.Cost > remaining {
-		result := resource.BudgetChargeResult{Remaining: remaining}
+		result := resource.BudgetChargeResult{Remaining: remaining, Consumed: account.consumed}
 		if remaining == 0 {
 			return result, resource.ErrBudgetExhausted
 		}

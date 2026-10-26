@@ -100,7 +100,9 @@ func TestIssueCreatesCurrentAgentToken(t *testing.T) {
 	}
 }
 
-func TestIssueRejectsSubAgentUntilThatProfileIsImplemented(t *testing.T) {
+// Issue mints only top-level tokens. A sub-agent token needs IssueSubagent,
+// which verifies the actual parent first.
+func TestIssueRefusesSubAgentRequests(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 29, 12, 30, 0, 0, time.UTC)

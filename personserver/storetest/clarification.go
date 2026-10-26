@@ -231,6 +231,28 @@ func RunClarification(t *testing.T, contract Contract) {
 		}
 	})
 
+	t.Run("shorter replacement token leaves the pending deadline unchanged", func(t *testing.T) {
+		fixture := newClarificationFixture(t, contract, "short-update")
+		before := fixture.load(t, fixture.now)
+		replacement := personserver.UpdatedAuthorizationRequest{
+			Scopes:                 []string{"records.read"},
+			ResourceTokenExpiresAt: fixture.now.Add(30 * time.Minute),
+			PersonTokenExpiresAt:   fixture.now.Add(2 * time.Hour),
+		}
+		if err := fixture.store.ReplacePendingAuthorizationRequest(
+			fixture.ctx, fixture.record.ID, fixture.identity, replacement, fixture.now.Add(time.Minute),
+		); !errors.Is(err, personserver.ErrPendingAuthorizationConflict) {
+			t.Fatalf("short replacement = %v", err)
+		}
+		after := fixture.load(t, fixture.now.Add(time.Minute))
+		if !after.Record.ExpiresAt.Equal(before.Record.ExpiresAt) ||
+			!after.Record.ResourceTokenExpiresAt.Equal(before.Record.ResourceTokenExpiresAt) ||
+			!after.Record.PersonTokenExpiresAt.Equal(before.Record.PersonTokenExpiresAt) ||
+			!slices.Equal(after.Record.Scopes, before.Record.Scopes) {
+			t.Fatalf("short replacement mutated record = %#v", after.Record)
+		}
+	})
+
 	t.Run("cancellation remains host visible and agent gone", func(t *testing.T) {
 		fixture := newClarificationFixture(t, contract, "cancel")
 		if _, err := fixture.store.RequestPendingAuthorizationClarification(
@@ -348,7 +370,9 @@ func newClarificationFixture(t *testing.T, contract Contract, name string) clari
 		PersonServer:           "https://person.example",
 		AgentProvider:          "https://agents.example",
 		Agent:                  "aauth:storetest@agents.example",
+		AgentTokenJTI:          "storetest-parent-token",
 		Subagent:               "aauth:storetest+worker@agents.example",
+		SubagentTokenJTI:       "storetest-child-token",
 		Resource:               "https://resource.example",
 		Subject:                "person-123",
 		Tenant:                 "tenant-1",

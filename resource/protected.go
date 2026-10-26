@@ -253,12 +253,16 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token context does not match resource"))
 		return
 	}
-	if claims.Account != nil && server.validateAccount == nil {
-		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
+	if err := server.authTokenMatchesAsk(request, claims); err != nil {
+		writeAuthorizationAskProblem(response, err)
 		return
 	}
 	if !claims.Confirmation.JWK.Equal(proof.PublicKey()) {
 		writeProblem(response, http.StatusUnauthorized, "invalid_signature", errors.New("request key does not match auth token"))
+		return
+	}
+	if claims.Account != nil && server.validateAccount == nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("account is not supported by the immediate resource flow"))
 		return
 	}
 	var scopes []string
@@ -273,12 +277,22 @@ func (server *Server) serveAuthTokenProtected(
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("auth token has no authorization claim"))
 		return
 	}
-	if server.budget != nil {
-		switch {
-		case budgetGrant == nil:
-			writeProblem(response, http.StatusForbidden, "access_denied", errors.New("metered route requires a signed Budget grant"))
+	metered := server.budget != nil
+	if metered && server.budget.metered != nil {
+		policyRequest, finish, err := cloneScopePolicyRequest(request)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
+		metered = server.budget.metered(policyRequest)
+		if err := finish(); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	}
+	if metered && budgetGrant == nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("metered route requires a signed Budget grant"))
+		return
 	}
 	if err := server.observeAuthToken(request.Context(), compact, claims); err != nil {
 		switch {
@@ -291,6 +305,14 @@ func (server *Server) serveAuthTokenProtected(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 		return
+	}
+	// Balance observation requires a structurally valid, non-revoked credential.
+	// Route authorization can still refuse it without charging the request.
+	applicationResponse := response
+	var budgetResponse *budgetResponseWriter
+	if budgetGrant != nil {
+		budgetResponse = newBudgetResponseWriter(response, request.Context(), server.budget.store, claims, *budgetGrant, server.clock.Now())
+		response = budgetResponse
 	}
 	requiredScopes, err := server.authorizeScopes(request, scopes, authorization != nil)
 	if err != nil {
@@ -363,19 +385,32 @@ func (server *Server) serveAuthTokenProtected(
 		Confirmation:     claims.Confirmation.JWK,
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
-	if server.budget != nil {
+	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
+	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
+	handlerWriter := applicationResponse
+	if metered {
 		var reference *r3.Reference
 		if authorization != nil {
 			value := authorization.reference
 			reference = &value
 		}
-		if !server.enforceFixedBudget(response, request, claims, principal, *budgetGrant, reference) {
+		if server.budget.maximum != nil {
+			settlement, ok := server.beginReservedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference)
+			if !ok {
+				return
+			}
+			defer settlement.finish()
+			protectedContext = context.WithValue(protectedContext, budgetSettlementKey{}, settlement)
+			handlerWriter = settlement.writer
+		} else if !server.enforceFixedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference) {
 			return
 		}
+	} else if budgetResponse != nil {
+		// Sending Rules permits omitted feedback when the meter fails. This
+		// route needs no charge, so the application can still serve it.
+		_ = budgetResponse.setUnchargedFeedback()
 	}
-	protectedContext := context.WithValue(request.Context(), authPrincipalContextKey{}, principal)
-	protectedContext = context.WithValue(protectedContext, authTokenContextKey{}, compact)
-	server.protected.ServeHTTP(response, request.WithContext(protectedContext))
+	server.protected.ServeHTTP(handlerWriter, request.WithContext(protectedContext))
 }
 
 func (server *Server) verifyPreparedR3BudgetAuthRequest(
@@ -415,13 +450,16 @@ func (server *Server) verifyPreparedBudgetAuthRequest(
 }
 
 func (server *Server) enforceFixedBudget(
-	response http.ResponseWriter,
+	response *budgetResponseWriter,
 	request *http.Request,
 	claims aauth.AuthTokenClaims,
 	principal AuthPrincipal,
 	grant budgets.Value,
 	r3Reference *r3.Reference,
 ) bool {
+	// Pricing is part of metering. A pricing failure must not trigger a
+	// fallback balance observation or establish a ledger binding.
+	response.observationBlocked = true
 	policyRequest, finish, err := cloneScopePolicyRequest(request)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("prepare Resource Budget cost request: %w", err))
@@ -439,17 +477,9 @@ func (server *Server) enforceFixedBudget(
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget cost policy: %w", err))
 		return false
 	}
-	result, err := server.budget.store.Charge(request.Context(), BudgetCharge{
-		Token:        aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
-		PersonServer: claims.PersonServer,
-		Subject:      claims.Subject,
-		Audience:     claims.Audience,
-		MissionS256:  claims.MissionS256,
-		Tenant:       claims.Tenant,
-		Account:      cloneBudgetAccount(claims.Account),
-		Grant:        grant,
-		Cost:         cost,
-	})
+	charge := response.charge
+	charge.Cost = cost
+	result, err := server.budget.store.Charge(request.Context(), charge)
 	if err == nil {
 		if result.Cost != cost || result.Remaining < 0 || result.Remaining > grant.Amount() ||
 			result.Cost+result.Remaining > grant.Amount() {
@@ -469,6 +499,20 @@ func (server *Server) enforceFixedBudget(
 		response.Header().Set("AAuth-Budget", formatted)
 		return true
 	}
+	return server.refuseBudget(response, request, claims, principal, grant, r3Reference, cost, result, err)
+}
+
+func (server *Server) refuseBudget(
+	response *budgetResponseWriter,
+	request *http.Request,
+	claims aauth.AuthTokenClaims,
+	principal AuthPrincipal,
+	grant budgets.Value,
+	r3Reference *r3.Reference,
+	cost int64,
+	result BudgetChargeResult,
+	err error,
+) bool {
 	if !errors.Is(err, ErrBudgetInsufficient) && !errors.Is(err, ErrBudgetExhausted) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return false
@@ -493,6 +537,8 @@ func (server *Server) enforceFixedBudget(
 		value := cost
 		required = &value
 	}
+	response.remaining = &result.Remaining
+	response.observationBlocked = false
 	feedback, err := budgets.NewRefusalFeedback(grant, result.Remaining, required)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -506,14 +552,17 @@ func (server *Server) enforceFixedBudget(
 	challengeToken, err := server.budget.challenge(request.Context(), BudgetChallengeRequest{
 		Token:     aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI},
 		Principal: cloneBudgetPrincipal(principal), Grant: grant,
-		Remaining: result.Remaining, Required: cost, Reason: reason,
+		Remaining: result.Remaining, Consumed: result.Consumed, Required: cost, Reason: reason,
 		R3Reference: cloneR3Reference(r3Reference),
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
-	if err := server.validateBudgetChallenge(request.Context(), challengeToken, claims.JTI, principal, r3Reference); err != nil {
+	if err := server.validateBudgetChallenge(
+		request.Context(), challengeToken, claims.JTI, principal, r3Reference,
+		result.Consumed, grant.Unit(),
+	); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("Resource Budget challenge: %w", err))
 		return false
 	}
@@ -536,19 +585,22 @@ func (server *Server) validateBudgetChallenge(
 	presentedJTI string,
 	principal AuthPrincipal,
 	expectedR3Reference *r3.Reference,
+	metered int64,
+	meteredUnit budgets.Unit,
 ) error {
 	var claims aauth.ResourceTokenClaims
 	var offer budgets.Value
+	var consumed *budgets.ConsumptionRecord
 	if expectedR3Reference == nil {
 		var err error
-		claims, offer, _, err = budgets.VerifyResourceToken(ctx, compact, server.keyResolver, server.clock)
+		claims, offer, consumed, err = budgets.VerifyResourceToken(ctx, compact, server.keyResolver, server.clock)
 		if err != nil {
 			return err
 		}
 	} else {
 		var reference r3.Reference
 		var err error
-		claims, reference, offer, _, err = r3.VerifyBudgetResourceToken(
+		claims, reference, offer, consumed, err = r3.VerifyBudgetResourceToken(
 			ctx, server.r3.registry, compact, server.keyResolver, server.clock,
 		)
 		if err != nil {
@@ -558,12 +610,24 @@ func (server *Server) validateBudgetChallenge(
 			return errors.New("fresh Resource token changed the protected R3 reference")
 		}
 	}
+	if consumed != nil {
+		if !offer.Unit().Equal(meteredUnit) {
+			return errors.New("fresh Resource token states consumption in a different scale than the metered grant")
+		}
+		if consumed.Consumed() != metered {
+			return errors.New("fresh Resource token consumption record does not match metered spend")
+		}
+	}
 	thumbprint, err := principal.Confirmation.Thumbprint()
 	if err != nil {
 		return err
 	}
+	expectedAudience := principal.PersonServer
+	if server.authorizationTopology == authorizationTopologyFederated {
+		expectedAudience = server.accessServer
+	}
 	if claims.Issuer != server.issuer || claims.DWK != aauth.ResourceDiscoveryDocument ||
-		claims.Audience != principal.PersonServer || claims.PersonServer != principal.PersonServer ||
+		claims.Audience != expectedAudience || claims.PersonServer != principal.PersonServer ||
 		claims.Subject != principal.Subject || claims.AgentJKT != thumbprint || claims.PresentedJTI != presentedJTI ||
 		claims.MissionS256 != principal.MissionS256 || claims.Tenant != principal.Tenant ||
 		!sameBudgetAccount(claims.Account, principal.Account) {
@@ -628,12 +692,8 @@ func (server *Server) servePersonTokenChallenge(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if hold {
-		server.serveHeldChallenge(response, request, proof, claims, scopes)
-		return
-	}
 	var budgetOffer *budgets.Value
-	if server.budget != nil {
+	if !hold && server.budget != nil {
 		offer, present, err := server.budget.initialOfferFor(request.Context(), request, claims, scopes)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -643,8 +703,23 @@ func (server *Server) servePersonTokenChallenge(
 			budgetOffer = &offer
 		}
 	}
+	ask, err := server.checkedAuthorizationAsk(request, claims)
+	if err != nil {
+		writeAuthorizationAskProblem(response, err)
+		return
+	}
+	loginHint := ""
+	var askAccount *string
+	if ask != nil {
+		loginHint = ask.LoginHint
+		askAccount = cloneAuthorizationAccount(ask.Account)
+	}
+	if hold {
+		server.serveHeldChallenge(response, request, proof, claims, scopes, loginHint)
+		return
+	}
 	resourceToken, err := server.issueAuthorizationResourceToken(
-		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, nil, nil, budgetOffer,
+		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, askAccount, nil, budgetOffer, loginHint,
 	)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)

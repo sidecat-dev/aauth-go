@@ -174,7 +174,8 @@ func NewResourceManaged(config ResourceManagedConfig) (*ResourceManagedServer, e
 }
 
 // Handler returns the Resource metadata, pending interaction, and protected
-// application surface.
+// application surface. Requests for an authority other than the configured
+// Issuer receive HTTP 421 before routing or authentication.
 func (server *ResourceManagedServer) Handler() http.Handler {
 	if server == nil || server.handler == nil {
 		return http.NotFoundHandler()
@@ -188,7 +189,7 @@ func (server *ResourceManagedServer) newHandler() http.Handler {
 	mux.HandleFunc("/session/pending/{id}", server.serveSessionPoll)
 	mux.HandleFunc("/session/pending/", server.serveSessionPendingNamespace)
 	mux.Handle("/", http.HandlerFunc(server.serveResourceManaged))
-	return mux
+	return withResourceAuthority(server.issuer, mux)
 }
 
 func (server *ResourceManagedServer) serveMetadata(response http.ResponseWriter, _ *http.Request) {

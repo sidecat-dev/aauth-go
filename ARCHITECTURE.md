@@ -377,11 +377,13 @@ Interfaces live next to the code that consumes them.
 
 ### `agentprovider`
 
-The current package owns Agent-token issuance, AP metadata/JWKS, optional
-enrollment and refresh composition, host-managed enrollment state transitions,
-explicit Agent-token revocation clients for a PS or known direct Resource,
-subscribe-token issuance, and the Events inbox. It accepts host policy for
-enrollment, attestation, renewal, and AP-to-Agent event delivery.
+The current package owns Agent-token issuance, one-level sub-agent issuance
+from a parent token it verifies with its own key (directly or through the
+hosted `SubagentHandler`), AP metadata/JWKS, optional enrollment and refresh
+composition, host-managed enrollment state transitions, explicit Agent-token
+revocation clients for a PS or known direct Resource, subscribe-token
+issuance, and the Events inbox. It accepts host policy for enrollment,
+attestation, renewal, sub-agent issuance, and AP-to-Agent event delivery.
 
 ### `agent`
 
@@ -435,7 +437,22 @@ exact approved bytes before returning their digest.
 A configured Agent-token revocation store is checked across the Person
 Server's existing Agent-authenticated endpoints. The AP-signed `/revoke`
 request and later Agent request meet only at the exact token reference; a
-retained marker refuses use before person or authorization policy.
+retained marker refuses use before person or authorization policy. The same
+store also governs a sub-agent token carried as a request parameter, and the
+Agent and sub-agent tokens a PS-hosted or federated wait was started with:
+their pending records retain the token identifiers, so a revocation ends the
+wait with `revoked`.
+
+A separate, optional Agent-binding revocation store holds, by top-level Agent
+identity, each binding a host revoked and when it established a replacement.
+The PS consults it before Person, mission and Auth issuance, before a host
+approval, before releasing any pending Person-token, mission, consent or
+federated result, before each AS poll, and for the caller behind a call
+chain. A pending record's creation time, or a presented token's issuance
+time, must follow any replacement. The store holds no tokens and cascades
+nothing to Resources or ASes. Parent-mediated federated waits retain the exact
+sub-agent token in the PS continuation record; the parent alone polls or
+cancels it.
 
 Interactive Person-token issuance uses the same `PersonToken` and
 `PollPersonToken` Agent calls with or without a mission. For a mission-bound
@@ -465,7 +482,7 @@ artifact.
 
 The direct clarification path extends one already verified pending
 authorization rather than creating a second consent object. The ordinary
-`DeferredAuthorizationStore` continues to own interaction and terminal token
+`personserver.DeferredAuthorizationStore` continues to own interaction and terminal token
 state. Applications that enable chat additionally implement the focused
 `AuthorizationClarificationStore` over those same records. That extension
 retains a bounded question and an answer accepted through a signed Agent
@@ -560,6 +577,15 @@ not require a duplicate Core scope.
 
 ### `accessserver`
 
+The bounded deferred Core path retains an exact PS-authenticated request through
+`accessserver.DeferredAuthorizationStore`. The AS policy may request payment or
+wait for approval before granting. The PS owns its separate
+`FederatedAuthorizationStore`: it fences one explicit AS poll, verifies the
+result and retains it for authenticated Agent delivery. Payment settlement and
+billing relationships stay in host policy; there is no shared PS/AS store or
+implicit polling loop. Both roles consume terminal delivery conditionally.
+
+
 The target owns four-party PS authentication, Resource-token verification,
 policy, narrowing, Auth-token issuance, and R3 audit. An R3-capable issuer
 commits the mandatory audit record before publishing the token.
@@ -582,8 +608,8 @@ Examples include:
   state transition, and exact refresh result keyed by the verified identity
   and delegation JTI.
 - `PersonTokenStore`, `MissionStore`, `MissionProposalStore`, `MissionAuditStore`,
-  `PendingAuthorizationStore`, `PermissionStore`, and
-  `InteractionQuestionStore` at a PS.
+  `PendingAuthorizationStore`, `PermissionStore`, `InteractionQuestionStore`,
+  `FederatedAuthorizationStore`, and `AgentBindingRevocationStore` at a PS.
 - `SessionStore`, `HeldInvocationStore`, `R3DocumentStore`,
   `R3ProposalStore`, `SubscriptionStore`, and `BudgetStore` at a Resource.
 - `r3.IssuanceStore` at whichever PS or AS issues the R3 Auth token.

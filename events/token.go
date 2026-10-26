@@ -5,6 +5,8 @@ package events
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +53,7 @@ type SubscribeTokenClaims struct {
 type EventTokenRequest struct {
 	Agent    string
 	EventID  string
+	JTI      string
 	Lifetime time.Duration
 }
 
@@ -60,6 +63,7 @@ type EventTokenClaims struct {
 	DWK       string `json:"dwk"`
 	Audience  string `json:"aud"`
 	EventID   string `json:"eid"`
+	JTI       string `json:"jti"`
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 }
@@ -149,11 +153,20 @@ func MintEventToken(
 	now time.Time,
 ) (string, error) {
 	now = now.UTC().Truncate(time.Second)
+	jti := request.JTI
+	if jti == "" {
+		generated, err := newEventTokenID()
+		if err != nil {
+			return "", err
+		}
+		jti = generated
+	}
 	claims := EventTokenClaims{
 		Issuer:    issuer,
 		DWK:       aauth.ResourceDiscoveryDocument,
 		Audience:  request.Agent,
 		EventID:   request.EventID,
+		JTI:       jti,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(request.Lifetime).Unix(),
 	}
@@ -405,7 +418,18 @@ func validateEventClaims(claims EventTokenClaims, now time.Time) error {
 	if claims.EventID == "" {
 		return errors.New("aauth events: event-token eid is required")
 	}
+	if claims.JTI == "" {
+		return errors.New("aauth events: event-token jti is required")
+	}
 	return validateTimes("event-token", claims.IssuedAt, claims.ExpiresAt, now)
+}
+
+func newEventTokenID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("aauth events: event-token jti: %w", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
 }
 
 func validateTimes(name string, issuedAt, expiresAt int64, now time.Time) error {

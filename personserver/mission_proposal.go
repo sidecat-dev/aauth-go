@@ -311,7 +311,7 @@ func (server *Server) ApproveMissionProposal(ctx context.Context, review Mission
 		return err
 	}
 	agent := agentClaimsFromMissionProposalRecord(review.record)
-	approval, err := server.prepareMissionApproval(ctx, agent, decision, now)
+	approval, err := server.prepareMissionApproval(ctx, agent, decision, now, review.record.CreatedAt)
 	if err != nil {
 		return err
 	}
@@ -519,6 +519,18 @@ func (server *Server) handlePendingMissionProposal(response http.ResponseWriter,
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if snapshot.State == MissionProposalPending || snapshot.State == MissionProposalApproved {
+		// A revoked binding withholds an approval and ends a pending proposal;
+		// the poll above already consumed an approval's one delivery.
+		if err := server.checkAgentBinding(request.Context(), agentBinding(agent), snapshot.Record.CreatedAt); err != nil {
+			if errors.Is(err, ErrAgentBindingRevoked) && snapshot.State == MissionProposalPending &&
+				!server.endPendingMissionProposal(response, request, id, identity, snapshot) {
+				return
+			}
+			writeAgentBindingProblem(response, err, http.StatusForbidden, "person_token_denied")
+			return
+		}
+	}
 	switch snapshot.State {
 	case MissionProposalPending:
 		writePendingMissionProposal(response, request.URL.Path, snapshot.Record.RetryAfter)
@@ -530,6 +542,33 @@ func (server *Server) handlePendingMissionProposal(response http.ResponseWriter,
 		writeProblem(response, http.StatusRequestTimeout, "expired", ErrMissionProposalExpired)
 	default:
 		writeProblem(response, http.StatusInternalServerError, "server_error", ErrMissionProposalConflict)
+	}
+}
+
+// endPendingMissionProposal ends a pending proposal whose binding was revoked:
+// it retains a denial and consumes its one delivery, so the pending URL is
+// gone afterwards. It reports whether the caller may write its answer.
+func (server *Server) endPendingMissionProposal(
+	response http.ResponseWriter,
+	request *http.Request,
+	id string,
+	identity MissionProposalPollIdentity,
+	snapshot MissionProposalSnapshot,
+) bool {
+	now := server.clock.Now().UTC()
+	if err := server.missionProposals.DenyMissionProposal(request.Context(), cloneMissionProposalRecord(snapshot.Record), now); err != nil &&
+		!errors.Is(err, ErrMissionProposalConflict) && !errors.Is(err, ErrMissionProposalExpired) {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
+	}
+	_, err := server.missionProposals.PollMissionProposal(request.Context(), id, identity, now)
+	switch {
+	case err == nil, errors.Is(err, ErrMissionProposalGone), errors.Is(err, ErrMissionProposalNotFound),
+		errors.Is(err, ErrMissionProposalExpired):
+		return true
+	default:
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
 	}
 }
 

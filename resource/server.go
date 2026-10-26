@@ -1,11 +1,14 @@
 // Package resource implements direct Agent and Person identity access,
-// Resource-managed opaque sessions, and explicit PS-authorized or federated
-// auth-token access. It also implements direct Agent-token revocation,
-// immediate R3 class and per-call
-// documents and enforcement, exposes a verified auth token to a call-chain
-// intermediary, retains observed three-party revocation state, and supports
-// Resource-held delivery in the federated composition. A separate EventService
-// owns public Events registration and outbound delivery.
+// Resource-managed opaque sessions, and explicit Person-Server-authorized
+// or federated auth-token access.
+//
+// Start with [NewAgentIdentity] for Agent identity or [NewPersonIdentity] for
+// person identity without an authorization grant. Use [NewPSAuthorization]
+// when a Person Server issues Auth tokens directly, or
+// [NewFederatedAuthorization] when a separate Access Server issues them.
+// [NewResourceManaged] owns opaque sessions; [NewEventService] is a separate
+// subscription and delivery service. See USE-IN-YOUR-SERVICE.md for a short
+// handler example and CONFORMANCE.md for each constructor's supported limits.
 package resource
 
 import (
@@ -54,7 +57,12 @@ type FederatedAuthorizationConfig struct {
 	// ErrInvalidAccount for an intentional refusal and returns another error for
 	// an operational failure.
 	ValidateAccount func(context.Context, PersonIdentity, string) error
-	Protected       http.Handler
+	// AuthorizationAsk, when set, names the person this Resource asked for.
+	// The callback runs on the person-token challenge and on auth-token
+	// admission. A nil result means the request has no ask. A malformed ask
+	// is a host error and authorizes nobody.
+	AuthorizationAsk func(context.Context, *http.Request) (*AuthorizationAsk, error)
+	Protected        http.Handler
 	// R3 optionally enables registered R3 authorization on this HTTP Resource.
 	R3 *R3Config
 	// Budget optionally enables proactive four-party Budget offers and
@@ -100,7 +108,10 @@ type PSAuthorizationConfig struct {
 	// ErrInvalidAccount for an intentional refusal and returns another error for
 	// an operational failure.
 	ValidateAccount func(context.Context, PersonIdentity, string) error
-	Protected       http.Handler
+	// AuthorizationAsk, when set, names the person this Resource asked for.
+	// See FederatedAuthorizationConfig.AuthorizationAsk.
+	AuthorizationAsk func(context.Context, *http.Request) (*AuthorizationAsk, error)
+	Protected        http.Handler
 	// R3 optionally enables registered class authorization on this HTTP
 	// Resource. Per-call authorization remains a federated-only composition.
 	R3 *R3Config
@@ -115,7 +126,11 @@ type PSAuthorizationConfig struct {
 // AgentIdentityConfig constructs a Resource that authorizes application
 // requests from the verified Agent identity. It issues no Resource token and
 // needs no Resource signing key, Access Server, scope catalog, or person
-// resolver.
+// resolver. Nonempty content requires covered content-digest and, when present,
+// content-type; body verification precedes application dispatch.
+// MaxSignedBodyBytes bounds digest verification (default 1 MiB). Including
+// "content-digest" in AdditionalSignatureComponents also requires a digest on
+// empty requests.
 type AgentIdentityConfig struct {
 	Issuer                        string
 	KeyResolver                   signaturekey.KeyResolver
@@ -155,6 +170,48 @@ type PersonContext struct {
 	MissionS256      string
 	Tenant           string
 	AdditionalClaims map[string]json.RawMessage
+}
+
+// AuthorizationAsk is what a Resource asked a Person Server to authorize.
+// LoginHint is copied into the resource token and is not an auth subject.
+// Account and Tenant are exact expectations, including absence. Subject is
+// required; an empty subject is a host error and authorizes nobody.
+type AuthorizationAsk struct {
+	PersonServer string
+	LoginHint    string
+	Subject      string
+	Account      *string
+	Tenant       string
+}
+
+func (ask AuthorizationAsk) malformed() bool {
+	if aauth.ValidateServerIdentifier(ask.PersonServer) != nil || ask.Subject == "" {
+		return true
+	}
+	if ask.Account != nil && *ask.Account == "" {
+		return true
+	}
+	return false
+}
+
+func (ask AuthorizationAsk) matchesPerson(issuer, subject, tenant string) bool {
+	return ask.PersonServer == issuer && ask.Subject == subject && ask.Tenant == tenant
+}
+
+func (ask AuthorizationAsk) matchesAuth(personServer, subject, tenant string, account *string) bool {
+	return ask.PersonServer == personServer && ask.Subject == subject && ask.Tenant == tenant && sameAskAccount(ask.Account, account)
+}
+
+var (
+	errAuthorizationAskHost     = errors.New("aauth: authorization ask is invalid")
+	errAuthorizationAskMismatch = errors.New("aauth: credential does not match the authorization ask")
+)
+
+func sameAskAccount(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // AuthPrincipal is the person and scoped grant established by one current
@@ -270,6 +327,7 @@ type Server struct {
 	requiredScopes                func(*http.Request) []string
 	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	validateAccount               func(context.Context, PersonIdentity, string) error
+	authorizationAsk              func(context.Context, *http.Request) (*AuthorizationAsk, error)
 	protected                     http.Handler
 	authTokenStatuses             AuthTokenStatusStore
 	agentTokenRevocations         AgentTokenRevocationStore
@@ -389,9 +447,10 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		AdditionalSignatureComponents: config.AdditionalSignatureComponents,
 		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
-		ValidateAccount: config.ValidateAccount,
-		Protected:       config.Protected,
-		R3:              config.R3,
+		ValidateAccount:  config.ValidateAccount,
+		AuthorizationAsk: config.AuthorizationAsk,
+		Protected:        config.Protected,
+		R3:               config.R3,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
 }
 
@@ -444,6 +503,13 @@ func newAuthorizationServer(
 	validatedBudget, err := validateBudgetConfig(budget, topology)
 	if err != nil {
 		return nil, err
+	}
+	if validatedBudget != nil {
+		if _, queryable := validatedBudget.store.(BudgetUsageStore); queryable {
+			if err := aauth.ValidateEndpoint(config.Issuer + "/usage"); err != nil {
+				return nil, fmt.Errorf("aauth: Resource usage endpoint: %w", err)
+			}
+		}
 	}
 	retainsApplication := config.HeldInvocations != nil || validatedR3 != nil && validatedR3.perCall != nil
 	for _, bound := range []struct {
@@ -501,6 +567,7 @@ func newAuthorizationServer(
 		requiredScopes:                requiredScopes,
 		resolvePerson:                 config.ResolvePerson,
 		validateAccount:               config.ValidateAccount,
+		authorizationAsk:              config.AuthorizationAsk,
 		protected:                     config.Protected,
 		authTokenStatuses:             authTokenStatuses,
 		heldInvocations:               config.HeldInvocations,
@@ -532,7 +599,8 @@ func validateAdditionalSignatureComponents(components []string) ([]string, error
 }
 
 // Handler returns the Resource's discovery, authorization, optional revocation,
-// and protected request surface.
+// and protected request surface. Requests for an authority other than the
+// configured Issuer receive HTTP 421 before routing or authentication.
 func (server *Server) Handler() http.Handler {
 	if server == nil || server.handler == nil {
 		return http.NotFoundHandler()
@@ -552,6 +620,11 @@ func (server *Server) newHandler() http.Handler {
 	if server.authTokenStatuses != nil || server.agentTokenRevocations != nil {
 		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
+	if server.budget != nil {
+		if _, queryable := server.budget.store.(BudgetUsageStore); queryable {
+			mux.HandleFunc("POST /usage", server.serveUsage)
+		}
+	}
 	if server.r3 != nil {
 		mux.HandleFunc("/r3/{document}", server.serveR3Document)
 	}
@@ -560,7 +633,42 @@ func (server *Server) newHandler() http.Handler {
 		mux.HandleFunc("/pending/", server.serveHeldNamespace)
 	}
 	mux.Handle("/", http.HandlerFunc(server.serveProtected))
-	return mux
+	return withResourceAuthority(server.issuer, mux)
+}
+
+func withResourceAuthority(issuer string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !matchesRequestAuthority(issuer, request) {
+			response.Header().Set("Cache-Control", "private, no-store, no-transform")
+			http.Error(response, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(response, request)
+	})
+}
+
+func matchesRequestAuthority(issuer string, request *http.Request) bool {
+	if request == nil || request.URL == nil {
+		return false
+	}
+	// Host supplies HTTP/1 Host or HTTP/2 :authority. URL.Host is the same
+	// fallback used by Signature-Key for requests constructed in process.
+	// Forwarded headers are not an authenticated source of request identity.
+	authority := request.Host
+	if authority == "" {
+		authority = request.URL.Host
+	}
+	// AAuth identifiers are ASCII. Unicode case folding must not create
+	// additional aliases for the configured DNS name.
+	for _, character := range authority {
+		if character > 127 {
+			return false
+		}
+	}
+	// Construction validates Issuer as https://host with no explicit port.
+	// DNS case and the default HTTPS port do not change that authority.
+	expected := strings.TrimPrefix(issuer, "https://")
+	return strings.EqualFold(authority, expected) || strings.EqualFold(authority, expected+":443")
 }
 
 func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Request) {
@@ -577,6 +685,7 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		AdditionalSignatureComponents []string                  `json:"additional_signature_components,omitempty"`
 		R3Vocabularies                map[string]string         `json:"r3_vocabularies,omitempty"`
 		BudgetUnits                   []budgets.UnitDeclaration `json:"budget_units,omitempty"`
+		UsageEndpoint                 string                    `json:"usage_endpoint,omitempty"`
 	}{
 		Issuer:                        server.issuer,
 		JWKSURI:                       resourceJWKSURI(server),
@@ -587,6 +696,7 @@ func (server *Server) serveMetadata(response http.ResponseWriter, _ *http.Reques
 		AdditionalSignatureComponents: append([]string(nil), server.additionalSignatureComponents...),
 		R3Vocabularies:                resourceR3Vocabularies(server),
 		BudgetUnits:                   resourceBudgetUnits(server),
+		UsageEndpoint:                 resourceUsageEndpoint(server),
 	})
 }
 
@@ -595,6 +705,16 @@ func resourceBudgetUnits(server *Server) []budgets.UnitDeclaration {
 		return nil
 	}
 	return append([]budgets.UnitDeclaration(nil), server.budget.units...)
+}
+
+func resourceUsageEndpoint(server *Server) string {
+	if server == nil || server.budget == nil {
+		return ""
+	}
+	if _, queryable := server.budget.store.(BudgetUsageStore); !queryable {
+		return ""
+	}
+	return server.issuer + "/usage"
 }
 
 func resourceR3Vocabularies(server *Server) map[string]string {

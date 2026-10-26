@@ -38,6 +38,38 @@ func TestNewUsesCallerContextForTokenVerification(t *testing.T) {
 	}
 }
 
+func TestExchangeForwardsResourceLoginHintUnchanged(t *testing.T) {
+	t.Parallel()
+
+	const hint = "person@example.com"
+	protocol := newTestProtocol(t)
+	protocol.resourceLoginHint = hint
+	client := protocol.newClient(t)
+	personToken := requestImmediatePersonToken(t, client, agent.PersonTokenRequest{
+		PersonServer: protocol.personServerID,
+		Resource:     protocol.resourceID,
+		LoginHint:    "not-sent-on-the-token-request",
+		Capabilities: []string{"interaction"},
+	})
+	if protocol.personLoginHint != "not-sent-on-the-token-request" || len(protocol.personCapabilities) != 1 || protocol.personCapabilities[0] != "interaction" {
+		t.Fatalf("person request hint = %q capabilities = %#v", protocol.personLoginHint, protocol.personCapabilities)
+	}
+	resourceToken, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
+		Resource: protocol.resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Exchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: protocol.personServerID, ResourceToken: resourceToken, PresentedToken: personToken,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if protocol.exchangedLoginHint != hint {
+		t.Fatalf("token request login_hint = %q, want %q", protocol.exchangedLoginHint, hint)
+	}
+}
+
 func TestClientCompletesImmediateCoreCallsWithJWTProofs(t *testing.T) {
 	t.Parallel()
 
@@ -498,6 +530,50 @@ func TestClientRejectsInvalidRoleMetadata(t *testing.T) {
 		}
 	})
 
+	t.Run("display URI is not https", func(t *testing.T) {
+		for _, field := range []string{"logo_uri", "logo_dark_uri", "documentation_uri", "tos_uri", "policy_uri"} {
+			field := field
+			t.Run(field, func(t *testing.T) {
+				protocol := newTestProtocol(t)
+				protocol.personDisplayURIField = field
+				protocol.personDisplayURIValue = "http://insecure.example/" + field
+				_, err := protocol.newClient(t).PersonToken(context.Background(), agent.PersonTokenRequest{
+					PersonServer: protocol.personServerID, Resource: protocol.resourceID,
+				})
+				if err == nil || !strings.Contains(err.Error(), field) {
+					t.Fatalf("PersonToken error = %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("display URI may carry a query", func(t *testing.T) {
+		protocol := newTestProtocol(t)
+		protocol.personDisplayURIField = "logo_uri"
+		protocol.personDisplayURIValue = "https://ps.example/logo.svg?v=1"
+		if _, err := protocol.newClient(t).PersonToken(context.Background(), agent.PersonTokenRequest{
+			PersonServer: protocol.personServerID, Resource: protocol.resourceID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("resource display URI is not https", func(t *testing.T) {
+		protocol := newTestProtocol(t)
+		client := protocol.newClient(t)
+		personToken := requestImmediatePersonToken(t, client, agent.PersonTokenRequest{
+			PersonServer: protocol.personServerID, Resource: protocol.resourceID,
+		})
+		protocol.resourceDisplayURIField = "policy_uri"
+		protocol.resourceDisplayURIValue = "http://resource.example/policy"
+		_, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
+			Resource: protocol.resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "policy_uri") {
+			t.Fatalf("Authorize error = %v", err)
+		}
+	})
+
 	t.Run("authorization endpoint has a query", func(t *testing.T) {
 		protocol := newTestProtocol(t)
 		client := protocol.newClient(t)
@@ -828,6 +904,7 @@ type testProtocol struct {
 	resourceScope                 string
 	resourceAudience              string
 	resourceAccount               string
+	resourceLoginHint             string
 	resourceInteraction           *aauth.ResourceInteraction
 	resourceMissionS256           string
 	personTokenLifetime           time.Duration
@@ -849,6 +926,10 @@ type testProtocol struct {
 	signatureError                *signaturekey.Error
 	additionalSignatureComponents []string
 	metadataExtensions            bool
+	personDisplayURIField         string
+	personDisplayURIValue         string
+	resourceDisplayURIField       string
+	resourceDisplayURIValue       string
 	responseExtensions            bool
 	caseDistinctScopeNames        bool
 	protectedProblem              bool
@@ -857,6 +938,9 @@ type testProtocol struct {
 	authorizationHeaders          http.Header
 	authorizationComponents       []string
 	protectedComponents           []string
+	personLoginHint               string
+	personCapabilities            []string
+	exchangedLoginHint            string
 }
 
 func newTestProtocol(t *testing.T) *testProtocol {
@@ -1007,6 +1091,9 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 			metadata["logo_uri"] = "https://ps.example/logo.svg"
 			metadata["example_extension"] = map[string]any{"enabled": true}
 		}
+		if protocol.personDisplayURIField != "" {
+			metadata[protocol.personDisplayURIField] = protocol.personDisplayURIValue
+		}
 		return jsonResponse(request, http.StatusOK, metadata), nil
 	}
 	if request.Method == http.MethodGet && request.URL.String() == protocol.resourceID+"/.well-known/aauth-resource.json" {
@@ -1025,6 +1112,9 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 			metadata["documentation_uri"] = "https://resource.example/docs"
 			metadata["signature_window"] = 60
 			metadata["example_extension"] = []string{"one", "two"}
+		}
+		if protocol.resourceDisplayURIField != "" {
+			metadata[protocol.resourceDisplayURIField] = protocol.resourceDisplayURIValue
 		}
 		return jsonResponse(request, http.StatusOK, metadata), nil
 	}
@@ -1057,9 +1147,13 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 			protocol.t.Fatal(err)
 		}
 		var input struct {
-			Resource string `json:"resource"`
+			Resource     string   `json:"resource"`
+			LoginHint    string   `json:"login_hint"`
+			Capabilities []string `json:"capabilities"`
 		}
 		decodeRequest(protocol.t, request, &input)
+		protocol.personLoginHint = input.LoginHint
+		protocol.personCapabilities = append([]string(nil), input.Capabilities...)
 		if agentClaims.Subject != protocol.agentID || input.Resource != protocol.resourceID {
 			protocol.t.Fatalf("person request = %#v, agent = %#v", input, agentClaims)
 		}
@@ -1110,7 +1204,8 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 			AgentJKT: thumbprint, IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(protocol.resourceTokenLifetime).Unix(),
 			Scope: protocol.resourceScope, PersonServer: protocol.personServerID,
 			Subject: personClaims.Subject, PresentedJTI: personClaims.JTI,
-			Account: optionalTestStringPointer(protocol.resourceAccount), Interaction: protocol.resourceInteraction,
+			Account: optionalTestStringPointer(protocol.resourceAccount), LoginHint: protocol.resourceLoginHint,
+			Interaction: protocol.resourceInteraction,
 			MissionS256: protocol.resourceMissionS256,
 		})
 		if err != nil {
@@ -1130,8 +1225,10 @@ func (protocol *testProtocol) roundTrip(request *http.Request) (*http.Response, 
 		var input struct {
 			ResourceToken  string `json:"resource_token"`
 			PresentedToken string `json:"presented_token"`
+			LoginHint      string `json:"login_hint"`
 		}
 		decodeRequest(protocol.t, request, &input)
+		protocol.exchangedLoginHint = input.LoginHint
 		if input.ResourceToken == "" {
 			protocol.t.Fatal("token exchange did not present the resource token")
 		}

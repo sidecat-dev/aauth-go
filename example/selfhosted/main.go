@@ -20,10 +20,10 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
-	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -92,7 +92,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	localStore := exampleutil.NewMissionPermissionStore()
+	localStore := testutil.NewMissionStore()
 	people, err := personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 		Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver, Clock: clock,
 		NewID: func() string { return "unused-local-token" }, Tokens: localStore,

@@ -4,9 +4,11 @@ Findings from implementing the AAuth family of drafts, tracked against the
 current upstream editor sources. Source text and editor answers are
 authoritative.
 
-**Last reconciled:** 2026-10-01
+The findings below were reconciled on 2026-10-01 against these editor revisions.
+The implementation baseline and its targeted overlays are recorded separately
+in [SPECIFICATIONS.md](SPECIFICATIONS.md).
 
-| Source | Upstream commit |
+| Source | Revision used for these findings |
 | --- | --- |
 | AAuth (Core, R3, Events, Bootstrap, Budgets, interop profile) | [`dickhardt/AAuth` at `28e8258`](https://github.com/dickhardt/AAuth/tree/28e8258f8153a2a51a709c53ebc9618f941564e4) (`28e8258f8153a2a51a709c53ebc9618f941564e4`, 2026-09-28) |
 | HTTP Signature Keys | [`dickhardt/signature-key` at `69f5ba2`](https://github.com/dickhardt/signature-key/tree/69f5ba2647be848feed043fb6d8b0790e43cd0b6) (`69f5ba2647be848feed043fb6d8b0790e43cd0b6`, 2026-09-13) |
@@ -46,9 +48,36 @@ in the index at the end; their full text remains in this file's git history.
   wrong, delete its section and its tracking row, and add one line to the index
   at the end giving the fixing commit and section, or the reason.
 
+## Submission status
+
+The tracking table below identifies the findings covered by each submission.
+These checks record upstream discussion status, not a change to the source
+revision used for a finding.
+
+| Submission | Upstream status | Checked |
+| --- | --- | --- |
+| AAuth issues [#225](https://github.com/dickhardt/AAuth/issues/225)–[#254](https://github.com/dickhardt/AAuth/issues/254), filed 2026-10-01 | Open; no editor response | 2026-10-20 |
+| Signature-Key issues [#44](https://github.com/dickhardt/signature-key/issues/44) and [#45](https://github.com/dickhardt/signature-key/issues/45), filed 2026-10-01 | Open; no editor response | 2026-10-20 |
+| [Comment on #108: deferral expiry](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159708), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #108: key renewal before delivery](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159888), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #199: delegated token verification](https://github.com/dickhardt/AAuth/issues/199#issuecomment-5943160092), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #208: self-hosted providers](https://github.com/dickhardt/AAuth/issues/208#issuecomment-5943160270), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #215: person and tenant namespaces](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433), submitted 2026-10-01 | No editor response | 2026-10-20 |
+| [Comment on #221: upstream-token binding](https://github.com/dickhardt/AAuth/issues/221#issuecomment-5943160619), submitted 2026-10-01 | Issue author replied; no editor resolution | 2026-10-20 |
+| [Comment on #222: query binding](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827), submitted 2026-10-01 | No editor response | 2026-10-20 |
+
+Related discussions:
+
+| Discussion | Status | Checked |
+| --- | --- | --- |
+| [AAuth #255: OpenAPI operation identifiers](https://github.com/dickhardt/AAuth/issues/255) | Open; the editor favors a stable identifier; no draft change | 2026-10-20 |
+| [AAuth #261: denial reasons and alternatives](https://github.com/dickhardt/AAuth/issues/261) | Open; overlaps [#229](https://github.com/dickhardt/AAuth/issues/229) (AAG-F009, AAG-F070); no editor response | 2026-10-20 |
+
 ## Tracking
 
-Unresolved: 47 (P1: 6, P2: 27, P3: 14; 46 submitted). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 61 (P1: 6, P2: 35, P3: 20; 46 submitted, 15 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+
+Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
 | ID | Title | Spec | Targets | Priority | Status | First public here | Submitted | Venue |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -67,6 +96,8 @@ Unresolved: 47 (P1: 6, P2: 27, P3: 14; 46 submitted). Local implementation notes
 | AAG-F009 | Synchronous token-endpoint policy denial has no registered error | Core | missing-requirement | P2 | submitted | bb58b20 (2026-08-28) | 2026-10-01, GitHub | New issue [#229](https://github.com/dickhardt/AAuth/issues/229) |
 | AAG-F010a | Four-party tenant changes issuer namespace | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) |
 | AAG-F016 | The mandatory signature set does not bind a query | Core | missing-requirement | P2 | submitted | 92879d7 (2026-08-29) | 2026-10-01, GitHub | Comment on [#222](https://github.com/dickhardt/AAuth/issues/222#issuecomment-5943160827) |
+| AAG-F107 | Resource authority admission is not explicit | Core | missing-requirement | P2 | open | 2026-10-20 | Not submitted | — |
+| AAG-F108 | A waiting request has no polling error for a revoked binding, presented token or sub-agent token | Core | missing-requirement | P2 | open | 2026-10-20 | Not submitted | — |
 | AAG-F017 | Authorization endpoint body is not required to be signed | Core, R3 | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#230](https://github.com/dickhardt/AAuth/issues/230) |
 | AAG-F025 | Application 202 in a deferred result is indistinguishable from "keep polling" | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#231](https://github.com/dickhardt/AAuth/issues/231) |
 | AAG-F026 | Body signature components from resource metadata conflict with bodyless polls | Core | missing-requirement | P2 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#232](https://github.com/dickhardt/AAuth/issues/232) |
@@ -86,6 +117,18 @@ Unresolved: 47 (P1: 6, P2: 27, P3: 14; 46 submitted). Local implementation notes
 | AAG-F105 | Deferred mission approval does not define key renewal before token delivery | Core | missing-requirement | P2 | submitted | 4647768 (2026-08-31) | 2026-10-01, GitHub | Comment on [#108](https://github.com/dickhardt/AAuth/issues/108#issuecomment-5943159888) |
 | AAG-F106 | Events requires every event to transit the AP, with no AP-authorized local delivery component | Events | missing-requirement | P2 | submitted | not public before | Slack, thread with the editor on delegated event delivery; the original Slack date is not retained (transcript supplied 2026-08-03) | None now: we deferred the follow-up until a working delegated offline/local example exists |
 | AAG-F083 | Standard R3 vocabularies do not identify external specification revisions | R3 | missing-requirement | P3 | submitted | 83219c1 (2026-08-31) | 2026-10-01, GitHub | New issue [#249](https://github.com/dickhardt/AAuth/issues/249) |
+| AAG-F109 | Cancellation is defined only as an answer to clarification | Core | missing-requirement | P3 | open | 2026-10-20 | Not submitted | — |
+| AAG-F110 | An omitted usage object still requires a unit | Budgets | MUST/SHALL/REQUIRED | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F111 | A usage query that spans two metered units has no error | Budgets | missing-requirement | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F112 | all_time cannot be omitted when it overflows | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F113 | invalid_request does not cover a misplaced ps member | Budgets | missing-requirement | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F114 | A combined scope key and jkts query does not say whether per-key figures are scoped | Budgets | missing-requirement | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F115 | A three-party issuer is not told to preserve an offered budget | Budgets | MUST/SHALL/REQUIRED | P2 | open | 2026-10-25 | Not submitted | — |
+| AAG-F116 | Age 0 is not a positive current_age | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F117 | A trailer must carry only cost, while unknown members are ignored | Budgets | MUST/SHALL/REQUIRED | P3 | open | 2026-10-25 | Not submitted | — |
+| AAG-F118 | Usage as_of cannot name a lagging store's completeness time | Budgets | missing-requirement | P3 | open | 2026-10-26 | Not submitted | — |
+| AAG-F119 | A budget object with an unknown member is rejected | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
+| AAG-F120 | An offer above the metadata maximum is invalid_budget | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -545,6 +588,113 @@ The organization behind the first person token is (PS-A, "acme") but behind its 
 **Related upstream issues:** [#210](https://github.com/dickhardt/AAuth/issues/210) Trust Posture still treats tenant as part of the person's identifier (open, dickhardt 2026-09-25; same sentence, different point).
 
 **Venue:** Comment on [#215](https://github.com/dickhardt/AAuth/issues/215#issuecomment-5943160433) (one comment together with AAG-F010), posted 2026-10-01. Earlier plan: Comment on [#215](https://github.com/dickhardt/AAuth/issues/215). Together with AAG-F010. [#210](https://github.com/dickhardt/AAuth/issues/210) concerns the same sentence but a different point.
+
+### AAG-F107 — Resource authority admission is not explicit
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-20
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-20.
+
+**Source:** Core `28e8258`, `Agent Token Verification` (537–543), `Auth Token
+Verification` (1802–1814), `Server Identifiers` (1946–1954), `Covered Components`
+(2202–2216), `Verification (Server)` (2240–2250), and `Why These Covered
+Components` (3518–3522). The file is byte-identical at `70d6737`.
+
+The verification procedure requires a proof over the request's `@authority`
+and `@path`; RFC 9421 derives these from the received request. Auth-token
+verification separately compares `aud` with the Resource's identifier. Neither
+step explicitly compares the request authority with that identifier. The
+rationale says authority coverage prevents cross-host replay, which depends
+on the receiving service admitting the target host.
+
+**Evidence:** With an otherwise valid credential and a request signed for
+`https://other.example/records`, Go `5636c1b` dispatched both Agent-identity and
+Auth-token requests when delivered with `Host: other.example`. The Auth token's
+audience correctly named the configured Resource. Changing Host, path or query
+after signing failed verification.
+
+The [authority regression](resource/authority_test.go) and
+[session regression](resource/session_authority_test.go) now check the configured
+authority before dispatch. This is a local routing safeguard,
+documented in [INTERPRETATIONS.md](INTERPRETATIONS.md#resource-handlers-admit-their-configured-authority),
+not evidence that the earlier behavior violated an explicit AAuth comparison.
+RFC 9110 Section 7.4 already constrains HTTP origin handling; the open question
+is how that responsibility maps to AAuth's Resource identifier and verification
+procedure, including when HTTP routing is supplied by the embedding application.
+
+**Question:** Must a Resource admit the signed request authority against its
+configured identifier before dispatch, or may it rely on an explicitly required
+HTTP routing check? Please specify any permitted aliases and the rejection
+behavior. The identifier has no path; path authorization remains a separate
+application decision. This question is distinct from AAG-F016's query coverage.
+
+### AAG-F108 — A waiting request has no polling error for a revoked binding, presented token or sub-agent token
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-20
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-20.
+
+**Source:** Core `28e8258`, `Polling Error Codes` (2617–2630, the `revoked`
+row at 2624), `Revocation Cascade` (2752), `Presenting a Revoked Token`
+(2760–2767) and `Agent-Person Binding` (2916, 2925). The file is
+byte-identical at `70d6737`.
+
+The polling error `revoked` covers three tokens a pending request depends on:
+the Resource token, an upstream token, and the Agent token of the Agent that
+started the request. Three revocations that the same sections make terminal
+for a synchronous request are not covered while it waits. A Person token the
+PS revoked is answered `revoked_presented_token` at the token endpoint (2752).
+Revoking an agent's binding immediately prevents it from obtaining new auth
+tokens (2925), and a binding is revoked before a new one is established
+(2916), but no answer is assigned to a request already waiting on that
+binding. A sub-agent token its Agent Provider revoked is
+`revoked_subagent_token` synchronously, yet it is not the token of the Agent
+that started the request; the change log's "any token a pending request
+depends on" suggests it is covered, but the row does not name it.
+
+A replacement also needs an ordering boundary that delayed work cannot cross.
+In aauth-go, a policy callback or initial AS exchange could replace the binding
+before a pending record was created; using that later creation time admitted
+an old-subject request into the new binding. Regression tests retain the
+verified request's original time. Delayed store-operation retries likewise
+must not reopen a newer revocation. The draft defines no binding-generation
+or host-operation contract for these races. An AS-issued Auth token with an
+`iat` thirty seconds ahead of the PS clock also passed the old replacement
+fence despite being issued before revocation. The bounded implementation now
+requires fresh PS Person tokens after replacement instead of trusting AS
+issuance time; it cannot claim transparent Auth-token step-up across a new
+binding without retained binding-generation lineage.
+
+**Evidence:** aauth-go and aauth-rust both answer the next parent poll on a
+federated wait after the parent's binding is revoked with
+`400 revoked_presented_token`, the synchronous code; the shared harness's
+`revoked-pending` scenario pins it for both. aauth-go answers its PS-hosted
+consent wait the same way, and a PS-hosted Person-token wait with the
+synchronous `403 person_token_denied`, each with a `detail` naming the binding
+and then `410`. For a sub-agent token revoked while waiting, aauth-go answers
+`403 revoked` with a `detail` naming the sub-agent token, in federated and
+PS-hosted waits alike
+([INTERPRETATIONS.md](INTERPRETATIONS.md#a-ps-hosted-wait-ends-when-an-agent-token-it-depends-on-is-revoked)).
+
+**Question:** Should `revoked` also cover a revoked presented token, a revoked
+Agent-person binding and a revoked sub-agent token, or should a pending request
+end with the synchronous `revoked_<parameter>_token` code?
 
 ### AAG-F016 — The mandatory signature set does not bind a query
 
@@ -1114,6 +1264,284 @@ R3 assigns operation identities, discovery behavior, and annotation encodings to
 **Question:** Should R3 add normative references and a stated revision policy for each standard vocabulary, including how newer compatible revisions are admitted?
 
 **Venue:** New issue [#249](https://github.com/dickhardt/AAuth/issues/249), posted 2026-10-01. Earlier plan: Umbrella only. Raise it before format-specific questions such as AAG-F078.
+
+### AAG-F109 — Cancellation is defined only as an answer to clarification
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-20
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-20.
+
+**Source:** Core `28e8258`, `Agent Response to Clarification` (1076–1084),
+`Cancel Request` (1119–1121), `AS Response` (1610–1661) and `Deferred
+Responses` (2478–2568).
+
+A signed DELETE to the pending URL is one of the three answers to a
+clarification; the PS then terminates the consent session and later requests
+return `410`. The draft does not say whether an Agent may withdraw a request
+that waits for approval or payment, and when the PS federated it, whether the
+PS withdraws its own AS request. AAG-F094 separately asks for the success
+response of clarification actions.
+
+**Evidence:** aauth-go and aauth-rust both accept the parent's DELETE on a
+federated approval or payment wait, consume the PS record, forward one signed
+DELETE to the AS, and answer `200` with `{"status":"cancelled"}`; their ASes
+answer the PS the same way. aauth-rust's PS treats any AS answer other than
+`200` or `410` as unreachable, so the success answer is an interoperability
+choice the draft does not make. The shared harness accepts any `2xx` followed
+by `410`. aauth-go also withdraws the AS request when the PS ends a wait on
+its own, by expiry, revocation or an AS answer after the PS deadline, because
+the AS deadline is separate and an unattended payment request could still be
+paid.
+
+**Question:** Is DELETE a general way to withdraw any deferred request, and
+must a PS that federated a request withdraw it at the AS pending URL, both on
+the Agent's withdrawal and when the PS itself ends the request?
+
+### AAG-F110 — An omitted usage object still requires a unit
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Usage Response` (974–1002) and `One Unit Per Response` (1031–1035), `Authorization and Errors` (1061–1067).
+
+`unit` and `decimals` are required on every usage response. An unrecognized scope key returns 200 with `usage` omitted, so there is no metered figure whose unit the response can name. `One Unit Per Response` says the unit is the one the resource meters in, and there is no selector. A resource that declares more than one `budget_units` entry and has not metered the queried key has no metered unit.
+
+This library names `budget_units[0]` in that response. The scope key is still echoed, and `usage` is omitted, so the unit is not a claim that the key consumed that denomination.
+
+**Question:** When `usage` is omitted, which `unit` and `decimals` must the response carry if the resource declares more than one unit?
+
+### AAG-F111 — A usage query that spans two metered units has no error
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `One Unit Per Response` (1031–1035).
+
+Every figure in a response is one unit, and the request cannot select it. The draft does not say what a resource does when the same scope key, or the keys named by one `jkts` list, was metered in two units. Emitting one unit would drop or misstate the other.
+
+This library answers `500` with `server_error` and does not return a partial figure.
+
+**Question:** Should a mixed-unit usage query be a registered error, and must the resource refuse rather than choose a unit?
+
+### AAG-F112 — all_time cannot be omitted when it overflows
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Calendar Counters` (1004–1019).
+
+A counter that would exceed 15 digits is omitted rather than rounded. `all_time` is REQUIRED when the `usage` object is present. If `all_time` itself overflows, omitting only that member leaves an object the response schema does not allow.
+
+This library omits the whole `usage` object in that case. Other counters are omitted individually when they overflow and `all_time` still fits.
+
+**Question:** When `all_time` exceeds the 15-digit limit, is the `usage` object omitted, or is there another representation?
+
+### AAG-F113 — invalid_request does not cover a misplaced ps member
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Usage Request` (935–972) and `Authorization and Errors` (1061–1069).
+
+A Person Server omits `ps`. An Access Server sends `ps` when the request carries a scope key. `invalid_request` is defined for more than one scope key, neither a scope key nor `jkts`, a scope key from an Access Server without `ps`, or a malformed value. It does not mention a Person Server sending `ps`, or an Access Server sending `ps` on a `jkts`-only request.
+
+This library rejects both as `invalid_request`. `ps` then cannot retarget a query that the role is not supposed to namespace that way.
+
+**Question:** Are those two bodies `invalid_request`, or must the resource ignore `ps`?
+
+### AAG-F114 — A combined scope key and jkts query does not say whether per-key figures are scoped
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Per-Key Figures` (1021–1029) and the example at `Usage Response` (976–995).
+
+A `jkts` member is everything metered on auth tokens presented by that key, after the caller filter. The example's two key figures sum to the subject's `all_time`. The draft does not say whether a request that also carries `sub`, `tenant`, or `mission_s256` limits each key figure to that scope.
+
+This library does not intersect the key figure with the scope key. An Access Server request that carries a scope key still limits both figures to the request's `ps`. A key that presented tokens for two subjects of the same Person Server is reported as the sum.
+
+**Question:** Does a combined query restrict each thumbprint to the scope key, or is the thumbprint total independent of it?
+
+### AAG-F115 — A three-party issuer is not told to preserve an offered budget
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P2
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Auth Token Extensions` (574–608) and `PS-to-AS Token Request Extensions` (570–572).
+
+Four-party text says that when the resource token carries `budget` and the Person Server omits the parameter, the Access Server issues no `budget` claim, and omission is not a grant. The three-party path does not say the Person Server may omit the claim after the resource offered one. The resource rule says an auth token without `budget` carries no budget authorization and the resource applies its own default. A positive default can exceed the ceiling the person server would have set.
+
+This library's direct Person Server rejects an authorization decision that drops an offered budget, and a metered route refuses an auth token with no `budget` claim rather than applying a positive default. Four-party omission follows the draft: no claim is issued, and the metered route refuses.
+
+**Question:** May a three-party issuer omit `budget` when the resource token carried one, and must a resource's default for that token be no authorization rather than a positive amount?
+
+### AAG-F116 — Age 0 is not a positive current_age
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `AAuth-Budget Response Header` (650).
+
+Recipients must ignore `AAuth-Budget` on a response served from cache with a positive `current_age`. This library ignores the header whenever an `Age` header is present, including `Age: 0`. A zero age is fresh, so the draft would still have the agent read the header.
+
+**Question:** Is `Age: 0` current, and must a recipient read `AAuth-Budget` on that response?
+
+### AAG-F117 — A trailer must carry only cost, while unknown members are ignored
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-25
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-25 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `AAuth-Budget Response Header` (627) and `Trailer Rules` (695–702).
+
+Recipients must ignore `AAuth-Budget` members they do not recognize. A trailer must carry `cost` and nothing else, and must not restate a header member. An unrecognized trailer member is both an unknown member, which is ignored, and something other than `cost`, which is forbidden.
+
+This library rejects any trailer member other than `cost`, including unrecognized names. A header still ignores unrecognized members.
+
+**Question:** Does the trailer rule override ignore-unknown for that field instance?
+
+### AAG-F118 — Usage as_of cannot name a lagging store's completeness time
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-26
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-26 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, `Usage Response` (around 997) and `Settlement` (around 831–857).
+
+`as_of` is required on every usage response. The draft does not say whether that instant is the resource clock or the time through which the store's counters are complete. A lagging store cannot name an earlier completeness time, and the settlement formula has the same gap: an in-flight hold whose token `exp` is at or before `as_of` is not a settled allocation and is not in the counters.
+
+This library reports `BudgetUsageResult.AsOf` when the store sets it, and the resource clock otherwise. It does not settle those in-flight holds early. A step-up consumption record is committed spend; outstanding holds reduce `remaining` and are not consumption.
+
+**Question:** May `as_of` be the store's completeness time rather than the resource clock, and does an in-flight hold whose token has expired by that time count as settled?
+
+### AAG-F119 — A budget object with an unknown member is rejected
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-26
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-26 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, the budget object. This library's check is `budgets.ParseValueJSON`.
+
+`amount`, `unit`, and `decimals` are required. The draft does not say what a recipient does with a budget member it does not recognize. This library rejects the object. `{"amount":1,"unit":"USD","decimals":6,"future":true}` does not parse. A header still ignores unrecognized `AAuth-Budget` members.
+
+An implementation that ignores unknown budget members will accept a token this library rejects.
+
+**Question:** Must a recipient ignore unrecognized members of a budget object, or reject the object?
+
+### AAG-F120 — An offer above the metadata maximum is invalid_budget
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-26
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-26 against Budgets `70d6737`.
+
+**Source:** Budgets `70d6737`, the resource-metadata maximum and the invalid-budget errors around 1097–1098.
+
+A resource declares an optional maximum for a unit. The listed `invalid_budget` cases are a scale mismatch and a malformed budget object. This library also returns `invalid_budget` when a signed offer exceeds that maximum. The Person Server, the Access Server, the Agent, and the resource offer guard all apply that check. A client request above the resource's own maximum is narrowed; this finding is about a signed offer that is already above the metadata maximum.
+
+**Question:** Is a signed offer above the resource's declared maximum `invalid_budget`, or must the resource never produce that offer?
 
 ## Against informative text
 

@@ -106,6 +106,18 @@ Specifications:
 
 ## AAuth Protocol
 
+- [x] **Deferred four-party approval and payment — Implemented bounded path**
+  - Flow: Resource challenge → PS consent → AS `402` payment → host settlement
+    → PS-signed AS poll → `202` approval → grant → verified PS delivery → Resource.
+  - Read the [per-request composition limit](USE-IN-YOUR-SERVICE.md#continue-an-as-approval-or-payment-request), then run `go run ./example/federatedpayment`. Payment is simulated host
+    state; no payment provider is contacted.
+  - Evidence: [`example/federatedpayment/main_test.go`](example/federatedpayment/main_test.go)
+    and [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go).
+  - Boundary: top-level missionless Core, `WWW-Authenticate` challenge carrier,
+    explicit host-driven polling, separate in-memory role stores. No claims,
+    clarification, interaction forwarding or deferred companion combinations.
+
+
 Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md).
 
 ### Runnable journeys
@@ -201,9 +213,10 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     and `go run ./example/psconsent`.
   - Boundary: omitted capabilities on a mission-bound request use the exact
     values retained at mission approval; an explicit empty array remains
-    empty. Durable adapters, AS relay, `claims`, `payment`, and
-    `updated_request` remain missing. The safe limit is one question because
-    Core gives an answer no round identifier; see `AAG-F095` in
+    empty. A missionless clarification accepts `updated_request` with the
+    limits in [CONFORMANCE.md](CONFORMANCE.md). Durable adapters, AS relay,
+    `claims`, and `payment` remain missing. The safe limit is one question
+    because Core gives an answer no round identifier; see `AAG-F095` in
     [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
 - [ ] **Mission-governed authorization — Partial**
@@ -227,40 +240,64 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     delegation; call chaining; held delivery; and revocation.
 
 - [ ] **Parent-mediated sub-agents and one Resource call chain — Partial**
-  - Flow: parent → PS on behalf of one child → immediate issuance or standard
-    host interaction and explicit parent poll → credential bound to the child
-    key → child → Resource. Alternatively, Resource 1 receives an authorized
-    call → acts as its own Agent → PS → Resource 2.
-  - Start with: `PersonTokenRequest.SubagentToken`,
-    `ExchangeRequest.SubagentToken`, `PersonTokenRequest.UpstreamToken`,
-    `ExchangeRequest.UpstreamToken`, and `personserver.CallChainingConfig`.
+  - Flow: the parent's own AP issues the child from the parent's token →
+    parent → PS on behalf of the child → immediate issuance, standard host
+    interaction, or an AS approval or payment wait that only the parent polls
+    or cancels → credential bound to the child key → child → Resource.
+    Revoking the parent's binding stops the next issuance, missions and any
+    pending delivery; re-establishing it admits only later requests.
+    Alternatively, Resource 1 receives an authorized call → acts as its own
+    Agent → PS → Resource 2.
+  - Start with: `agentprovider.Server.IssueSubagent` or `SubagentHandler` with
+    `agent.Client.RequestSubagentToken`; `PersonTokenRequest.SubagentToken`,
+    `ExchangeRequest.SubagentToken`, `BeginExchange`, `PollExchange`,
+    `CancelExchange`; `personserver.Server.RevokeAgentBinding` and
+    `ReestablishAgentBinding`;
+    `PersonTokenRequest.UpstreamToken`, `ExchangeRequest.UpstreamToken`, and
+    `personserver.CallChainingConfig`.
   - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go),
+    [`integration/subagent_federated_deferred_test.go`](integration/subagent_federated_deferred_test.go),
     [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go),
     [`integration/call_chaining_test.go`](integration/call_chaining_test.go),
-    `go run ./example/subagent`, and `go run ./example/callchaining`.
-  - Missing: recursive or remote delegation, repeated chain depth, federated
-    downstream chaining, and mission composition.
+    [`personserver/agent_binding_lifecycle_test.go`](personserver/agent_binding_lifecycle_test.go),
+    `go run ./example/subagent` (the hosted sub-agent request through the AS
+    wait), and `go run ./example/callchaining`. The shared
+    harness's `authorization.subagent` slice measures the same native roles.
+  - Missing: recursive delegation, repeated chain depth, federated downstream
+    chaining, sub-agent call chaining, mission composition, and Agent-token
+    revocation cascades.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
   - Flow: AP signs an exact Agent-token reference → PS or a known direct
     Agent-identity Resource retains it and refuses later requests before policy
     or application dispatch. Separately, PS retains issued-token routing →
     signed revocation → Resource marks the exact Auth token revoked → later use
-    fails → Agent explicitly performs a fresh authorization.
+    fails → caller obtains a fresh Person token → retries the original request
+    with it → exchanges the resulting Resource token for a new Auth token.
   - Start with: `personserver.AuthTokenRevocationConfig`,
     `personserver.IssuedAuthTokenStore`,
     `personserver.Server.RevokeIssuedAuthToken`, and
-    `resource.AuthTokenStatusStore`; for Agent tokens, start with
+    `resource.AuthTokenStatusStore`; the calling Agent receives
+    `agent.PersonTokenRequiredError` when a refused Auth token carries a
+    valid `person-token` requirement. For Agent tokens, start with
     `agentprovider.RevocationClient`,
     `personserver.AgentTokenRevocationStore`, and
     `resource.AgentTokenRevocationStore`.
   - Evidence: [`integration/revocation_reauthorization_test.go`](integration/revocation_reauthorization_test.go),
+    [`agent/reauthorization_test.go`](agent/reauthorization_test.go),
+    [`agent/call_test.go`](agent/call_test.go),
     [`integration/agent_token_revocation_test.go`](integration/agent_token_revocation_test.go),
     [`personserver/storetest/issued_auth_token.go`](personserver/storetest/issued_auth_token.go),
     [`resource/storetest/auth_token_status.go`](resource/storetest/auth_token_status.go),
     and `go run ./example/revocation`.
   - Revoked tokens: a revoked Agent or Auth token is refused `401` with
     `Signature-Error: error=revoked_jwt` before any host callback.
+    For Auth-token calls, `errors.As` finds both the person-token requirement error
+    and the original `*signaturekey.Error`. Ordinary calls, Budget calls,
+    pending Auth-token polls and R3 calls preserve this requirement, close the
+    refused response and leave recovery to the caller. The draft's Person Token
+    Required procedure is not automatic: the caller must obtain the Person
+    token and retry the original request with it.
   - Rate-limited feedback: when a recipient answers `429` `rate_limited` with
     one valid `Retry-After`, `agentprovider.RevocationClient` and
     `personserver.Server.RevokeIssuedAuthToken` return `*aauth.RateLimitedError`
@@ -379,12 +416,11 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
   bounded stores retain approval, accepted updates, mission-bound permission,
   Audit, and completion, but there is no single ordered log across all required
   PS interactions or complete governance-policy history.
-- [ ] **Third-party login — Blocked by the current Core flow.** The Login Flow
-  tells the recipient to create a Resource token and post it directly to the
-  Person Server, but a current Resource token requires person-derived `sub` and
-  `presented_jti`. The user has not yet authenticated and no Person-token step
-  appears in the flow, so the repository does not invent a login-only token
-  profile. See `AAG-F103` (since resolved).
+- [ ] **Third-party login — Not implemented; removed upstream.** The baseline
+  Login Flow did not supply the person context required by a Resource token.
+  Protocol -11 removed Third-Party Login and `login_endpoint` rather than
+  defining a login-only token. See the resolved `AAG-F103` entry in
+  [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 - [ ] **General deferred composition — Not implemented.** Existing pending
   paths do not yet compose AS deferral, mission deferral, correlated
   multi-round clarification, updated requests, claims, and payment through one
@@ -508,7 +544,8 @@ Start definition work with `r3.NewDefinitionRegistry`,
   - Evidence: [`integration/r3_direct_three_party_test.go`](integration/r3_direct_three_party_test.go)
     and `go run ./example/r3threeparty`.
   - Missing: direct three-party per-call authorization and composition with
-    missions, sub-agents, call chaining, or deferral.
+    sub-agents, call chaining, or deferral. See the separate mission variant
+    under class authorization with a fixed Budget below.
 
 - [x] **Class authorization with a fixed Budget — Implemented in both topologies**
   - Flow: Agent requests exact MCP operations and a Budget → Resource retains
@@ -524,6 +561,9 @@ Start definition work with `r3.NewDefinitionRegistry`,
     [`integration/r3_direct_four_party_test.go`](integration/r3_direct_four_party_test.go),
     [`token_r3_external_test.go`](token_r3_external_test.go), and
     `go run ./example/budget`.
+  - Mission evidence: `go run ./example/hostedservice` (three-party) and
+    [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go)
+    (four-party).
   - Mission variant: either topology may carry the same class grant and fixed
     Budget under an active mission. In federation, the AS commits its mandatory
     R3 audit before responding; the PS then atomically compares the unchanged
@@ -680,7 +720,7 @@ below is explicitly a repository profile.
 
 ## AAuth Budgets
 
-Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-aauth-budgets.md).
+Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/70d67375deb0bb002af7da0711fc58f6e8926e7e/draft-hardt-aauth-budgets.md).
 
 ### Runnable journey
 
@@ -713,7 +753,8 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     reason, validated feedback, and a host-selected replacement Resource token
     → Agent returns `BudgetAuthorization` → application explicitly exchanges
     that token, obtains a fresh narrowed grant, and retries once against the
-    new cap.
+    new cap. The replacement audience is the PS in three-party access and
+    the AS in four-party access.
   - Start with: `resource.BudgetConfig.RetainLineage`,
     `resource.BudgetConfig.Challenge`, `Client.BeginBudgetCall`, and
     `BudgetCallResult.AuthorizationRequired`, `BudgetCallResult.Feedback`,
@@ -721,6 +762,7 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
   - Evidence: [`agent/budget_call_test.go`](agent/budget_call_test.go),
     [`resource/budget_test.go`](resource/budget_test.go),
     [`integration/budget_three_party_test.go`](integration/budget_three_party_test.go),
+    [`integration/budget_four_party_test.go`](integration/budget_four_party_test.go),
     and `go run ./example/budget`. The runnable combined challenge preserves
     its R3 reference across replacement exchange and retry.
   - Boundary: insufficiency's alternative same-token shrink-and-retry remains
@@ -767,20 +809,38 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     into the Resource token. PS and AS policy receive it, the AS copies it into
     the Auth token, and Agent verification, Resource pricing, charging, and
     dispatch preserve it.
-  - Boundary: a PS omission means the Resource offer at the AS as the source
-    requires. A successful AS response must still carry an explicit signed
-    Budget. Per-call R3 plus Budget, deferred interaction, delegation, call chaining, consumption
-    history, variable cost, streaming, and usage queries remain excluded.
+  - Boundary: a PS omission is not a grant. The AS issues no `budget` claim, and
+    the PS rejects an Auth token that carries one. A step-up Resource token
+    carries `budget_consumed` for the presented Auth token in that grant's
+    scale. Per-call R3 plus Budget and deferred interaction remain excluded.
+    Direct delegation and one-hop call chaining are a separate journey.
+    Variable-cost reservation is a separate journey.
 
 ### Not implemented
 
-- [ ] **Variable-cost and streaming calls — Not implemented.** There is no
-  reservation/settlement store contract, trailer reconciliation, or safe
-  interrupted-stream journey.
-- [ ] **Consumption history and usage queries — Not implemented as role journeys.**
-  `budgets.NewConsumptionRecord` and token helpers cover the carrier, while the
-  direct PS refuses nonempty history until retained prior-grant resolution
-  exists. There is no usage endpoint or counter-response journey.
+- [x] **Variable-cost reservation — Implemented as a store and protected path.**
+  `BudgetConfig.Maximum` reserves a finite bound before dispatch. The handler
+  calls `SettleBudget` with the actual cost; the unspent hold is released.
+  Settlement after the response header has been written sends a cost-only
+  trailer. Settlement before that write, including a handler that writes
+  nothing, sends a fixed-price header with `cost` and `remaining` and does not
+  declare a trailer. A handler that writes and does not settle commits the
+  whole hold as the trailer. The fixed-price path still commits the known cost before
+  dispatch. `WriteStreamingBudgetHeader` and `WriteStreamingBudgetTrailer`
+  remain available for a host that writes the fields itself. The Agent accepts
+  a `reserved` header with no trailer, assumes that hold, and applies a
+  cost-only trailer with `ApplyTrailer` after reading the body.
+  Evidence: [`resource/storetest/budget_reserve.go`](resource/storetest/budget_reserve.go),
+  [`resource/budget_reserve_test.go`](resource/budget_reserve_test.go), and
+  [`agent/budget_test.go`](agent/budget_test.go).
+  Boundary: no interrupted-stream journey. An abandoned request commits the hold.
+- [x] **Usage queries — Implemented as a Resource endpoint and issuer helper.**
+  A store that implements `resource.BudgetUsageStore` publishes
+  `usage_endpoint` and answers a signed Person Server or Access Server
+  `POST /usage`. Counters are UTC calendar totals plus per-key figures.
+  `budgets.PostUsage` sends the query. The response is not signed. A step-up
+  Resource token may carry `budget_consumed`; the direct PS and the AS verify
+  it and deliver the record to policy without retaining the prior grant.
 - [x] **Mission-bound fixed Budget — Implemented in both authorization topologies**
   - Flow: host-reviewed mission and mission Person token → proactive Resource
     Budget offer → PS policy receives the exact active mission and narrows the
@@ -794,9 +854,19 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/a
     class R3 uses the AS issuance commit followed by the PS mission comparison
     and exact-token commit; a later mission race withholds the token even though
     the independent AS audit remains.
-- [ ] **Delegation, call chaining, and per-call mission R3 Budgets — Not implemented.**
-  The Agent, PS, and Resource fail closed rather than carrying a Budget through
-  these remaining compositions.
+- [x] **Delegation and one-hop call chaining — Each auth token carries its own Budget.**
+  A direct Person Server sizes the grant from that token's resource-token
+  offer. A second token for the same offer is not reduced by the first, and
+  the upstream token is not a balance to draw down. The parent mediates a
+  sub-agent exchange; the auth token is bound to the child. The child can
+  request its own budgeted resource token. Federated delegation and federated
+  call chaining stay refused.
+  Evidence: [`personserver/budget_delegation_test.go`](personserver/budget_delegation_test.go)
+  and [`agent/budget_test.go`](agent/budget_test.go).
+- [ ] **Per-call mission R3 Budgets — Not implemented.**
+  The Access Server refuses a fixed Budget that also grants per-call R3
+  operations. Mission-bound delegation and mission-bound call chaining stay
+  refused.
 
 ## AAuth interoperability demo profile
 
@@ -845,40 +915,44 @@ sentences.
   - Consent: in direct-PS mode, either PS call may return a pending
     interaction. The host sees parent and child separately; the parent retains,
     restores, and polls the handle; the approved token remains child-bound.
-  - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go)
+  - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go),
+    [`integration/subagent_federated_deferred_test.go`](integration/subagent_federated_deferred_test.go)
     and `go run ./example/subagent`.
-  - Missing: mission-bound composition and Access Server deferred mediation.
+  - Missing: mission-bound composition.
 
-- [x] **Agent identity at an independent Resource — Implemented and qualified**
+- [x] **Agent identity at an independent Resource — Historical qualification (2026-09-01)**
   - Flow: AAuth Go Agent Provider metadata and JWKS → Go-minted Agent token →
     Go-signed identity request → the AAuth project's live TypeScript `whoami`
     Resource → exact provider issuer and Agent identifier returned.
   - Start with: [`walkthrough/interop`](walkthrough/interop).
-  - Qualification: published AAuth Go source
+  - Qualification (2026-09-01): published AAuth Go source
     `00eb6f0a2a3000ff96a44b988059acea3c2babf0` called
     [`aauth-dev/whoami`](https://github.com/aauth-dev/whoami) revision
     `9f023d27ba51e0c11018e416b23140fbea14c9ff` over public HTTPS and received
     HTTP 200 with the exact generated identity.
-  - Boundary: this is one independently parsed and verified Core identity
-    surface. It is not bidirectional and does not exercise person identity,
-    authorization, an Access Server, R3, or the five profile surfaces.
+  - Boundary: this historical run is one independently parsed and verified
+    Core identity surface. It is not bidirectional and does not exercise person identity,
+    authorization, an Access Server, R3, or the five profile surfaces. It does
+    not qualify the current checkout.
 
-- [x] **Official TypeScript Agent at Go authorization roles — Implemented and qualified**
+- [x] **Official TypeScript Agent at Go authorization roles — Historical qualification (2026-09-01)**
   - Flow: official `@aauth/agent` → Go Person Server for a directed Person
     token → Go Resource for a Resource token → Go Person Server for an Auth
     token → Go Resource for one durable protected note.
   - Start with: [`walkthrough/interop`](walkthrough/interop), including its
     pinned `typescript-agent` module.
-  - Qualification: repository revision
+  - Qualification (2026-09-01): repository revision
     `8283d98718220973100c197818e512a42be179c1` used AAuth Go
     `32eab26ea255e99d97b5b407b3b1f9f76163c954` and
     [`aauth-dev/packages-js`](https://github.com/aauth-dev/packages-js)
     `7bd31a502904272267812e2cd26c231d0f950555` over public TLS. Same-key
     replay, changed-input conflict, service restart, and post-restart recovery
     all left one durable note.
-  - Boundary: this proves one independent Agent implementation against Go PS
-    and Resource roles. It does not prove an independent PS or AS, R3, or all
-    five demo-profile surfaces.
+  - Boundary: this historical run tested one independent Agent implementation
+    against Go PS and Resource roles. It does not prove an independent PS or AS, R3, or all
+    five demo-profile surfaces. It does not qualify the current checkout.
+    The standalone module retains its older Go pin; its JavaScript unit test
+    uses a stubbed `fetch` and does not call the Go roles.
 
 - [ ] **Independent five-surface profile interoperability — Not implemented**
   - Existing internal Surfaces 1–5 have not crossed an independent role

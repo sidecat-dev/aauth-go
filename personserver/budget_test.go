@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,7 +145,7 @@ func TestDirectPSRejectsMalformedBudgetBeforeAuthorizationPolicy(t *testing.T) {
 	}
 }
 
-func TestDirectPSRejectsBudgetHistoryWithoutRetainedGrantResolution(t *testing.T) {
+func TestDirectPSDeliversBudgetConsumptionWithoutRetainingTheGrant(t *testing.T) {
 	t.Parallel()
 
 	protocol := newBudgetAuthorizationProtocol(t)
@@ -162,15 +163,18 @@ func TestDirectPSRejectsBudgetHistoryWithoutRetainedGrantResolution(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	policyCalls := 0
-	server := protocol.server(t, func(context.Context, AuthorizationRequest) (AuthorizationDecision, error) {
-		policyCalls++
+	var seen *budgets.ConsumptionRecord
+	server := protocol.server(t, func(_ context.Context, request AuthorizationRequest) (AuthorizationDecision, error) {
+		seen = request.BudgetConsumed
 		return AuthorizationDecision{Scopes: []string{"records.read"}, Lifetime: time.Minute, Budget: &offer}, nil
 	})
 
 	response := protocol.exchange(t, server, compact)
-	if response.Code != http.StatusBadRequest || policyCalls != 0 {
-		t.Fatalf("Budget history = %d %s; policy calls=%d", response.Code, response.Body.String(), policyCalls)
+	if response.Code != http.StatusOK {
+		t.Fatalf("Budget history = %d %s", response.Code, response.Body.String())
+	}
+	if seen == nil || seen.JTI() != "budget-person-token" || seen.Consumed() != 431_200 {
+		t.Fatalf("policy consumption = %#v", seen)
 	}
 }
 
@@ -415,4 +419,94 @@ func decodeBudgetAuthorizationOutput(t *testing.T, response *httptest.ResponseRe
 
 func sameBudgetValue(left, right budgets.Value) bool {
 	return left.Amount() == right.Amount() && left.Unit().Equal(right.Unit())
+}
+
+func TestBudgetAuthorizationInteractionIsARequestTimeLimit(t *testing.T) {
+	protocol := newBudgetAuthorizationProtocol(t)
+	offer := protocol.value(t, 5_000_000, "USD", 6)
+	declaration, err := budgets.NewBoundedUnitDeclaration(offer.Unit(), 10_000_000, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferred := false
+	authorized := 0
+	interactions := newMemoryDeferredAuthorizationStore()
+	grant := protocol.value(t, 2_000_000, "USD", 6)
+	server, err := NewPSAuthorization(PSAuthorizationConfig{
+		Issuer: "https://person.example", SigningKey: protocol.personKey, KeyResolver: protocol.resolver, Clock: protocol.clock,
+		NewID: func() string { return "budget-interaction-limit" }, Tokens: protocol.store,
+		BindPerson: func(context.Context, PersonTokenRequest) (Person, error) { return Person{}, nil },
+		Authorize: func(context.Context, AuthorizationRequest) (AuthorizationDecision, error) {
+			authorized++
+			return AuthorizationDecision{Scopes: []string{"records.read"}, Lifetime: time.Minute, Budget: &offer}, nil
+		},
+		RequireAuthorizationInteraction: func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error) {
+			if !deferred {
+				return AuthorizationInteractionPolicy{}, false, nil
+			}
+			return AuthorizationInteractionPolicy{
+				URL: "https://person.example/authorize", Lifetime: 2 * time.Minute, RetryAfter: time.Second,
+			}, true, nil
+		},
+		AuthorizationInteractions: interactions,
+		Budget: &BudgetConfig{ResolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) {
+			return []budgets.UnitDeclaration{declaration}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	immediate := protocol.exchange(t, server, protocol.resourceToken(t, "immediate-budget-offer", &offer))
+	if immediate.Code != http.StatusOK {
+		t.Fatalf("immediate Budget response=%d %s", immediate.Code, immediate.Body.String())
+	}
+	deferred = true
+	unreachable := protocol.exchange(t, server, protocol.resourceToken(t, "unreachable-budget-offer", &offer))
+	if unreachable.Code != http.StatusForbidden || !strings.Contains(unreachable.Body.String(), "user_unreachable") || authorized != 1 || len(interactions.pending) != 0 {
+		t.Fatalf("unreachable Budget response=%d %s authorizations=%d pending=%d", unreachable.Code, unreachable.Body.String(), authorized, len(interactions.pending))
+	}
+	presented := testPresentedPersonToken(t, protocol.personKey, protocol.resourceToken(t, "deferred-budget-offer", &offer), protocol.agentKey.PublicJWK(), protocol.now, protocol.now.Add(40*time.Minute))
+	body, err := json.Marshal(map[string]any{
+		"resource_token": protocol.resourceToken(t, "deferred-budget-offer", &offer), "presented_token": presented, "capabilities": []string{"interaction"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://person.example/token", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	if err := signPersonServerTestRequest(request, protocol.agentKey, protocol.agentToken, protocol.clock); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || authorized != 1 || len(interactions.pending) != 1 {
+		t.Fatalf("deferred Budget response=%d %s authorizations=%d pending=%d", response.Code, response.Body.String(), authorized, len(interactions.pending))
+	}
+	requirement, err := aauth.ParseInteractionRequirement(response.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	interaction, err := server.ConsumeAuthorizationInteractionCode(context.Background(), strings.TrimPrefix(requirement.URL, "https://person.example/authorize/"), requirement.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.ApproveAuthorizationInteraction(context.Background(), interaction, AuthorizationDecision{
+		Scopes: []string{"records.read"}, Lifetime: time.Minute, Budget: &grant,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	poll := httptest.NewRecorder()
+	pollRequest := httptest.NewRequest(http.MethodGet, "https://person.example"+response.Header().Get("Location"), nil)
+	if err := signaturekey.SignJWTRequest(pollRequest, protocol.agentKey, protocol.agentToken, protocol.clock); err != nil {
+		t.Fatal(err)
+	}
+	server.Handler().ServeHTTP(poll, pollRequest)
+	if poll.Code != http.StatusOK {
+		t.Fatalf("approved Budget poll = %d %s", poll.Code, poll.Body.String())
+	}
+	approved := decodeBudgetAuthorizationOutput(t, poll)
+	_, got, err := budgets.VerifyAuthToken(context.Background(), approved.AuthToken, protocol.resolver, protocol.clock)
+	if err != nil || !sameBudgetValue(got, grant) {
+		t.Fatalf("approved Budget grant = %v %v", got, err)
+	}
 }

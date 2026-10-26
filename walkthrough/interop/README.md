@@ -4,7 +4,7 @@ This standalone module has an AAuth Go Agent call the AAuth project's live
 [`whoami.aauth.dev`](https://whoami.aauth.dev/) Resource. That Resource is an
 independent TypeScript implementation.
 
-The qualified walkthrough proves one deliberately small boundary:
+The 2026-09-01 qualification recorded below exercised one small boundary:
 
 1. AAuth Go mints an `aa-agent+jwt` for a generated Agent key;
 2. ordinary HTTPS hosting exposes only the Agent Provider metadata and JWKS;
@@ -15,9 +15,11 @@ The qualified walkthrough proves one deliberately small boundary:
 It does not exercise person identity, authorization, an Access Server, R3, or
 the five-surface interoperability demo profile.
 
-The same module also proves the reverse direction: the official TypeScript
+The same date's authorization qualification exercised the reverse direction: the official TypeScript
 `@aauth/agent` package obtains Person and Auth tokens from a Go Person Server
-and creates one durable note at a Go Resource.
+and creates one durable note at a Go Resource. Both qualifications name their
+exact revisions below. This module pins an older published Go version and does
+not establish interoperability for the current root checkout.
 
 ## Build
 
@@ -168,9 +170,11 @@ npm ci
 npm test
 ```
 
-The automated test proves the generated metadata, JWKS, token, HTTP Message
-Signature, and identity-response check. The independent claim requires the
-live call above; a same-implementation local test cannot establish it.
+The Go tests check generated metadata, JWKS, token, HTTP Message Signature,
+and the identity-response check. The JavaScript unit test stubs `fetch` and
+checks the Agent script's response handling; it does not call the Go roles.
+Neither check establishes current cross-implementation interoperability.
+Repeating a live qualification requires the public-TLS setup above.
 
 ## External qualification
 

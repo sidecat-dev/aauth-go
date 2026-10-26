@@ -96,6 +96,7 @@ func (p *subagentPersonServerProtocol) personRequest(t *testing.T, server *Serve
 	body, err := json.Marshal(map[string]any{
 		"resource":       "https://resource.example",
 		"subagent_token": childToken,
+		"capabilities":   []string{"interaction"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +131,9 @@ func (p *subagentPersonServerProtocol) tokenRequestWithCapabilities(
 	requestBody := map[string]any{
 		"resource_token":  resourceToken,
 		"presented_token": p.presentedToken(t, resourceToken),
-		"subagent_token":  childToken,
+	}
+	if childToken != "" {
+		requestBody["subagent_token"] = childToken
 	}
 	if len(capabilities) > 0 {
 		requestBody["capabilities"] = capabilities
@@ -873,7 +876,8 @@ func TestValidatePendingAuthorizationRecordRequiresSeparateParentAndChildBinding
 	valid := PendingAuthorizationRecord{
 		ID: "pending-subagent", CodeSHA256: sha256.Sum256([]byte("pending-subagent-code")),
 		PersonServer: "https://ps.example", AgentProvider: "https://ap.example",
-		Agent: "aauth:planner@ap.example", Subagent: "aauth:planner+search@ap.example",
+		Agent: "aauth:planner@ap.example", AgentTokenJTI: "parent-token",
+		Subagent: "aauth:planner+search@ap.example", SubagentTokenJTI: "child-token",
 		Resource: "https://resource.example", Subject: "person-123", Scopes: []string{"records.read"},
 		Confirmation: p.parentKey.PublicJWK(), AgentExpiresAt: p.now.Add(40 * time.Minute),
 		SubagentConfirmation: p.childKey.PublicJWK(), SubagentExpiresAt: p.now.Add(10 * time.Minute),
@@ -891,6 +895,8 @@ func TestValidatePendingAuthorizationRecordRequiresSeparateParentAndChildBinding
 		func(record *PendingAuthorizationRecord) { record.SubagentExpiresAt = time.Time{} },
 		func(record *PendingAuthorizationRecord) { record.SubagentExpiresAt = record.CreatedAt },
 		func(record *PendingAuthorizationRecord) { record.Subagent = "" },
+		func(record *PendingAuthorizationRecord) { record.SubagentTokenJTI = "" },
+		func(record *PendingAuthorizationRecord) { record.AgentTokenJTI = "" },
 	} {
 		record := clonePendingAuthorizationRecord(valid)
 		change(&record)

@@ -75,29 +75,30 @@ scheme if they can recover and enforce the same PS/AS-only fetch boundary.
 
 ## Event replay identity is distinct from subscription identity
 
-**Source:** Events, `Subscribe Token`, `Event Token`, and `Agent
-Verification`.
+**Source:** Events, `Structure` and `Agent Verification` at the pinned
+`70d67375` text.
 
-The draft uses `eid` as the subscription identifier and permits multiple or
-unlimited deliveries, then tells the Agent to deduplicate events by `(iss,
-eid)`. Applying that literally discards every legitimate delivery after the
-first.
+`eid` identifies the subscription. Each event token carries a required `jti`,
+and `(iss, jti)` is the deduplication key at the Agent Provider and the Agent.
+The earlier `(iss, eid)` reading would discard later events on the same
+subscription; that sentence is not in this pin.
 
-The implementation keeps `(iss, eid)` as subscription and routing
-context. It derives a local delivery fingerprint as SHA-256 over the exact
-compact Event token bytes, a separator, the signed content type, another
-separator, and the exact payload bytes. An exact replay is ignored; a different
-authenticated token, content type, or payload on the same subscription is a
-different delivery. The fingerprint is local state, not a new wire claim.
+The implementation keeps `eid` as subscription and routing context. It derives
+a local delivery fingerprint as SHA-256 over the exact compact Event token
+bytes, a separator, the signed content type, another separator, and the exact
+payload bytes. An exact replay is ignored; a different authenticated token,
+content type, or payload on the same subscription is a different delivery.
+The fingerprint is local state, not a new wire claim. Minting and verifying
+an event token requires `jti`; the fingerprint still distinguishes a changed
+body under a reused identifier.
 
-## Events uses the stricter normative expiry rule
+## Event-token expiry is MUST NOT in both sections
 
-**Source:** Events, `Subscribe Token`, `Event Token`, and `Agent
-Verification`.
+**Source:** Events, `Structure` (the `exp` claim) and `Agent Verification`.
 
-The draft says both `MUST NOT` and `SHOULD NOT` act after Event-token expiry.
-The implementation applies `MUST NOT`. The inconsistency remains recorded for
-editor feedback.
+Both sections say the Agent MUST NOT act on an event token whose `exp` has
+passed. There is no MUST versus SHOULD NOT conflict in the pinned text.
+Verification rejects an expired event token.
 
 ## Events registration has exact retry and delivery-time endpoint resolution
 
@@ -266,11 +267,13 @@ that same key. Each issued token is capped by the earlier of the parent and
 child Agent-token expirations.
 
 The child token's optional `ps` claim does not select this flow; the parent
-selects and authenticates to its Person Server. The Person Server retains the
-child's Agent Provider, child, parent, and child key with the person-token
-record. A later token request must match that record before policy runs. The
-parent and child keys must be distinct, and the Resource receives none of the
-relationship fields.
+selects and authenticates to its Person Server. When present it must equal the
+parent's `ps`, because Bootstrap issues the child with its parent's value;
+another value is `invalid_subagent_token` at the PS and AS, as in aauth-rust.
+The Person Server retains the child's Agent Provider, child, parent, and child
+key with the person-token record. A later token request must match that record
+before policy runs. The parent and child keys must be distinct, and the
+Resource receives none of the relationship fields.
 
 The record binds the stable relationship, not one compact child token. A later
 valid child token may rotate `jti`, expiry, or additional policy claims when
@@ -281,7 +284,9 @@ The Person Server verifies the HTTP proof before applying the top-level-only
 request rule. A correctly signed direct request from a child returns
 `400 invalid_agent_token` without `Signature-Error`; a forged proof returns
 `401` with its Signature-Key failure. Core requires the direct-child refusal
-but does not assign it an error code.
+but does not assign it an error code (AAG-F045). A refused `subagent_token`
+parameter instead uses Protocol -11's `invalid_subagent_token`,
+`expired_subagent_token` or `revoked_subagent_token`.
 
 **Executable examples:**
 `personserver/subagent_test.go:TestServerIssuesImmediatePersonAndAuthTokensForSubagent`
@@ -401,11 +406,13 @@ the missing error contract.
 The source sends both tokens to the Access Server but does not explicitly say
 whether the AS verifies them itself. This implementation does. The AS verifies
 the parent and child tokens at the Person Server proof's fixed instant,
-confirms their relationship, and requires the parent token to name the signing
-Person Server. The child's optional `ps` claim does not select the flow. Policy
-receives both identities, and issuance uses only the child key. The Person
-Server then verifies the returned auth token against the child key before
-returning it to the parent.
+confirms their relationship (one issuer, and a child `ps` equal to the
+parent's when present), and requires the parent token to name the signing
+Person Server. A deferred request repeats all of this on every Person Server
+poll from the retained request bytes. The child's optional `ps` claim does not
+select the flow. Policy receives both identities, and issuance uses only the
+child key. The Person Server then verifies the returned auth token against the
+child key before returning it to the parent.
 
 **Executable example:**
 `integration/subagent_authorization_test.go:TestCurrentCoreParentMediatedSubagentImmediateASAuthorization`.
@@ -447,6 +454,45 @@ The implementation returns HTTP `403` with
 This is a provisional extension, not a registered AAuth error. Clients must
 treat an unknown terminal `403` as denial. The name can change when the Core
 specification defines this result.
+
+## Resource handlers admit their configured authority
+
+**Source:** AAuth Core `a99d353` and `28e8258`, `Covered Components` and
+`Verification (Server)`; RFC 9421 Section 2.2.3;
+[RFC 9110 Sections 7.4 and 15.5.20](https://www.rfc-editor.org/rfc/rfc9110.html#name-421-misdirected-request).
+
+The draft requires coverage and verification of the received request's
+authority. It does not explicitly compare that authority with the Resource's
+configured identifier. Its cross-host replay rationale assumes correct HTTP
+routing. This check is a local routing safeguard, not a claim that the draft
+already specifies this comparison or its error response. AAG-F107 in
+[SPEC-FEEDBACK.md](SPEC-FEEDBACK.md) asks where that responsibility belongs.
+
+A valid signature binds the request's target host, but does not prove that the
+receiving handler serves that host. An Auth token's audience check is also
+insufficient: its audience can match the Resource while the signed request
+names another host.
+
+`resource.Server.Handler` and `resource.ResourceManagedServer.Handler` therefore
+admit only their configured Issuer's authority before routing or authentication.
+The check uses `Request.Host`, falling back to `URL.Host`, accepts DNS case differences and the default HTTPS port
+443, and ignores forwarding headers. A foreign authority receives HTTP 421
+with `no-store`, without `Signature-Error`: the request is misdirected, not
+necessarily incorrectly signed. This also makes foreign-host R3 document
+fetches return 421 before their document-access checks.
+
+The issuer has no path. Application routing and authorization decide which
+correctly signed paths it serves; changing a path after signing still fails
+signature verification. Reverse proxies must preserve the public authority
+and signed target. The Resource-managed session service applies the same check
+to initial authorization, session use, discovery and pending routes. Event
+services have their own endpoint binding checks.
+
+**Evidence:** `resource/authority_test.go:TestResourceBindsRequestAuthorityToIssuer`
+covers Agent identity, Person identity, PS-issued Auth tokens and AS-issued
+Auth tokens, including host/path mutations and forwarding-header controls.
+`resource/session_authority_test.go:TestResourceManagedRejectsForeignAuthorityBeforeSessionAccess`
+checks the session service before authorization policy, store access or dispatch.
 
 ## Query-bearing requests cover `@query`
 
@@ -525,11 +571,58 @@ solve this for Resources that also have bodyless protected routes.
 
 This implementation always signs and requires `content-type` and
 `content-digest` at `/authorize`, then adds the Resource's advertised
-components. Advertised components alone govern ordinary protected routes. A
+components. Ordinary protected routes use the nonempty-content default below
+alongside their advertised components. A
 transport-mutation test proves that changing `scope` after signing is refused.
 
 **Executable example:**
 `integration/core_four_party_test.go:TestCurrentCoreFourParty`.
+
+## Nonempty request content is covered by default
+
+**Source:** AAuth Core `a99d353`, `Covered Components` and `Verification`,
+step 2; RFC 9530, `Content-Digest`.
+
+Core mandates body digest and media-type coverage at PS/AS endpoints but
+explicitly lets Resources declare their requirements for arbitrary APIs,
+including large and streamed payloads. It permits further component
+requirements through metadata and `invalid_input` / `required_input`.
+It does not impose a universal Resource-body digest requirement.
+
+This library chooses a bounded profile: signing nonempty content computes and
+covers SHA-256 `content-digest`, and covers `content-type` when that field is
+present. Verification requires the same coverage and checks the actual content
+before role policy. An uncovered body or media type returns `invalid_input`
+with the required components; a covered digest or field that no longer matches
+returns `invalid_signature`. Body detection inspects bytes, not Content-Length.
+
+Before signing, a positive Go `Request.ContentLength` must match the buffered
+content size. A mismatch is a local input error: no proof headers are attached
+and the body remains readable. Zero and `-1` with nonempty content are allowed.
+This prevents HTTP framing from sending fewer bytes than the digest covers;
+the verifier still checks actual content rather than trusting Content-Length.
+
+Empty content retains the existing component profile, including non-nil empty
+transport readers. Explicitly requiring `content-digest` still covers the
+SHA-256 digest of zero bytes. Advertised components remain unconditional;
+metadata does not imply that the conditional default applies to empty content.
+
+This changes the default for body-bearing Resource calls. Signing and
+verification buffer within their configured bound (1 MiB by default); larger
+payloads require explicit limits. Unchecked body pass-through and streaming
+digest trailers are not supported. The proof does not prevent replay within
+its freshness window.
+
+**Evidence:** `signaturekey/body_default_test.go`,
+`signaturekey/body_limit_external_test.go` and
+`resource/body_coverage_test.go` execute bounded signing, preserved content,
+unspecified and unknown lengths, and rejection of added/changed/removed bodies
+and changed media types before Agent/Person identity or PS/AS Auth policy.
+The signing tests also exercise HTTP serialization, mismatched positive
+lengths, and the maximum `int64` body limit without overflow or content loss.
+`agent/body_default_test.go` checks the client's configured bound before
+transport in Agent-identity, initial Person-token, Auth-token and Budget calls,
+even when Resource metadata declares no additional components.
 
 ## A bodyless poll can cover the digest of empty content
 
@@ -939,7 +1032,7 @@ interaction code.
 and
 `integration/deferred_ps_authorization_test.go:TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition`.
 
-## Three choices for bounded three-party revocation
+## Bounded three-party revocation
 
 **Source:** AAuth Core, `Token Revocation`, `Keying Material`, `Covered
 Components`, `Authentication Errors`, and `Verification (Server)`.
@@ -966,6 +1059,28 @@ Auth token also carries `AAuth-Requirement: requirement=person-token`, never
 as a sub-agent token get no revocation lookup. An Auth-token identity conflict
 stays `403 access_denied`. This check stops a request only when the store reports revocation before host
 callbacks; it does not cancel an already-admitted in-flight request.
+
+The Agent returns `*agent.PersonTokenRequiredError` when an Auth-token
+call receives that `401 revoked_jwt` with a valid `person-token` requirement.
+This includes ordinary, Budget, pending-poll and R3 calls. The error preserves
+the original `*signaturekey.Error` through `errors.As`; the response body is
+closed and no automatic retry or exchange occurs. A missing, malformed or
+different requirement leaves the original signature error intact. The same
+hint on a call presenting an Agent or Person token does not acquire Auth-token
+recovery semantics.
+
+The referenced **Person Token Required** section (Protocol -11, lines
+615–624) calls for obtaining a Person token and retrying the original request
+with it. The client methods leave those steps explicit; returning the error
+does not complete the draft's Agent procedure. The example obtains a fresh
+Person token, retries the original GET, then exchanges the Resource token
+returned by that retry. It never exchanges a Resource token naming the revoked
+Auth token. This differs from **Re-authorization** after expiry or key rotation
+(lines 1289–1305).
+
+**Executable evidence:** `agent/reauthorization_test.go`,
+`agent/call_test.go:TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem`,
+and `integration/revocation_reauthorization_test.go`.
 
 ### Refused revocation caller uses `unsupported_iss`
 
@@ -996,7 +1111,7 @@ duration in the protocol library.
 
 **Executable examples:**
 `resource/revocation_test.go:TestRevocationEndpointRequiresBoundPersonServerProof`
-`integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndExplicitReauthorizationAcrossResourceRecomposition`,
+`integration/revocation_reauthorization_test.go:TestThreePartyRevocationAndPersonTokenRecoveryAcrossResourceRecomposition`,
 `personserver/agent_token_revocation_test.go`,
 `resource/agent_token_revocation_test.go`, and
 `integration/agent_token_revocation_test.go`.
@@ -1057,11 +1172,16 @@ The draft permits an Auth-token issuer to omit an offered Budget and then asks
 the Resource to apply a default. A positive default would bypass Person Server
 narrowing. The fixed-price profiles therefore treat omission from the Auth
 token as no metering authorization and refuse the operation; they do not
-construct a synthetic zero-valued grant. In four-party Core, the distinct
-PS-to-AS omission rule is implemented exactly as written: the AS uses the
-verified Resource offer as the PS ceiling. It must still issue an explicit
-equal-or-lower Budget for metered protected use. An unmetered Resource remains
-unchanged.
+construct a synthetic zero-valued grant. In four-party Core, PS-to-AS omission
+is not a grant: the AS does not substitute the Resource offer, and it must not
+issue a `budget` claim. A metered route then refuses that Auth token. When the
+PS does send a ceiling, the AS may only lower its amount. `BudgetConfig.Metered` lets
+host routing policy distinguish priced operations from free ones. Its absence
+meters every protected route, preserving the existing default. A free route
+accepts an otherwise valid Core Auth token without consulting pricing or the
+Budget store; a Budget token receives zero-cost feedback, even when exhausted.
+This selector governs protected Auth-token use, not initial-offer policy.
+Evidence: `TestBudgetResourceSelectsMeteredRoutes`.
 
 ## Fixed-price calls charge atomically before application execution
 
@@ -1073,10 +1193,13 @@ before dispatch. One atomic store operation binds the signed grant and context,
 increments token consumption, and posts the same amount to person accounting.
 The application runs only after that operation succeeds. Application failures
 are chargeable in this profile, as permitted by the Resource-owned failed-call
-policy. Variable-cost and streaming work require a later reservation and
-settlement profile.
+policy. `BudgetConfig.Maximum` reserves a finite bound before dispatch.
+`SettleBudget` after the header is written commits the spent part as a
+cost-only trailer. `SettleBudget` before the handler writes sends a fixed-price
+header and drops the trailer declaration. An unsettled written response
+commits the hold as the trailer.
 
-## A refused Budget request reports no current-request cost
+## Budget step-up refusals omit current-request cost
 
 **Source:** AAuth Budgets, `Budget Exhaustion` and `AAuth-Budget Response
 Header`.
@@ -1085,6 +1208,32 @@ The draft says an insufficient or exhausted request consumes nothing, while
 one example reports a nonzero `cost`. This implementation omits `cost` on both
 refusals. Exhaustion reports `remaining=0` and may report the denomination;
 insufficiency reports the remainder and may also report `required`.
+
+## Uncharged Resource errors report the actual Budget remainder
+
+**Source:** AAuth Budgets at `70d6737`, `Sending Rules` and `AAuth-Budget Response Header`.
+
+After verifying the Budget token, request proof, issuer role, Resource context,
+account/scope structure and revocation status, a Resource-generated route refusal
+carries `cost=0` and the current remainder when its meter is available. This differs from the step-up challenge above:
+an ordinary error is a completed request with no charge. Application failures
+after an atomic charge retain the charged cost.
+
+The Resource observes its own store through `Charge` with zero cost, which may
+establish the token binding but must not increase either consumption ledger.
+An exhausted result supplies a zero remainder. A failed or inconsistent meter
+result supplies no feedback; the implementation never substitutes the signed
+cap for an unknown balance. Invalid or revoked credentials never reach the
+Budget store. Pricing failures also omit feedback without observing the
+ledger; pricing is part of metering. No second observation follows a failed
+charge. A free route still dispatches when its zero-cost observation fails.
+The Agent continues to classify missing feedback as uncertain, even on a
+problem response, because that body does not establish consumption.
+Evidence: `TestBudgetScopeRefusalReportsUnchargedBalance`,
+`TestBudgetRefusalDoesNotInventBalance`, `TestBudgetFeedbackRequiresVerifiedRequestAndResourceContext`,
+`TestBudgetFeedbackRejectsInvalidCredentialBeforeMetering`,
+`TestBudgetCostPolicyFailureDoesNotObserveBalance`,
+`TestUnmeteredBudgetCallSurvivesMeterFailure` and `storetest.RunBudget`.
 
 ## The host selects retained lineage for a Budget step-up token
 
@@ -1101,7 +1250,13 @@ callback; the example no longer obtains this state from the Agent side. The
 Resource and Agent verify every context field they can observe, including a
 nonempty `presented_jti`; neither library claims to prove that the host selected
 the exact prior Person-token record. The Agent returns the verified step-up and
-performs no automatic exchange or retry.
+performs no automatic exchange or retry. For three-party access the fresh
+Resource token names the PS as audience; for four-party access it names the
+Resource's AS, matching the issuer of the refused Auth token. The independent
+`ps` claim still identifies the Person Server. Both role checks and the full
+four-party replacement exchange execute in `TestBudgetStepUpBindsAudienceToAuthTokenIssuer`,
+`TestFederatedBudgetStepUpRejectsWrongAudience` and
+`TestBudgetImmediateFourPartyFixedPriceJourney`.
 
 On a step-up, the fresh Resource token's `presented_jti` names the Auth token
 the Agent presented, and the Agent sends that Auth token as `presented_token`.
@@ -1181,9 +1336,17 @@ caller to poll explicitly for authorization state. Redirects and non-`2xx`
 responses remain failures. `AAG-F094` asks the editors to define this response
 contract.
 
-`updated_request` remains unsupported. Its current equality rule requires an
-`agent` claim that current Resource tokens do not carry; choosing a replacement
-binding here would hide the source problem recorded as `AAG-F008` (since resolved).
+A missionless clarification accepts `updated_request`. The replacement resource
+token and `presented_token` are verified. `iss`, `ps`, `sub`, `agent_jkt`,
+`mission_s256`, and `tenant` must match the pending ask. A parent-mediated ask
+matches the child key. Both replacement expiries cover the pending deadline,
+and the resource-token lifetime stays within the configured maximum. A retained
+person-token record must agree. A revoked Agent-person binding, or a revoked
+Agent or sub-agent token that started the wait, is refused. The retained
+scopes are replaced. Account, Budget, mission-bound, R3, and AS-relayed
+updated requests are not accepted. `AAG-F008` (since resolved) had required an
+`agent` claim current Resource tokens do not carry; the executed checks use
+the claims above.
 
 ### A mission adds context, not another continuation API
 
@@ -1447,3 +1610,332 @@ future-`iat` refusal.
 Events is excluded. Subscribe-token and event-token validation keep their own
 `validateTimes` in `events/token.go`, which still refuses any future `iat`;
 neither was changed.
+
+## Deferred federation keeps payment and progress with the PS host
+
+**Source:** Protocol `28e8258`, AS Response, Auth Token Delivery, PS-AS Trust
+Establishment, Deferred Responses and Pending URL Security.
+
+The AS retains the exact verified token request before publishing a pending
+URL. The PS retains a separate continuation before returning its own pending
+URL to the Agent. Both URLs use 256-bit random references. PS polls use the
+server's `jwks_uri` identity; Agent polls remain bound to the original Agent
+issuer, identifier and key. No payment credentials or AS payment challenge are
+forwarded to the Agent.
+
+`AdvanceFederation` performs one explicit AS GET. The host calls it after
+settling the indicated payment or when approval polling is due. Hosts own
+payment-protocol interpretation, settlement and billing-relationship caches
+per AS/PS; policy callbacks inspect that state without charging on a poll.
+The library currently carries one `WWW-Authenticate` challenge with optional
+opaque content. It does not implement a payment protocol or other payment
+header formats. AS claims, clarification and interaction forwarding remain
+separate unimplemented branches.
+
+Each pending deadline is the earliest of its configured lifetime, the original
+Resource-token expiry, Agent-token expiry and presented-token expiry. A wait
+cannot extend any credential that justified it. An expired request returns one
+`408 expired`, then `410 request_consumed`. The continuation error choices are
+recorded below. A retained grant is reverified at actual Agent
+delivery, and `expires_in` is recomputed then.
+
+The PS conditionally marks an AS call in progress before sending it. If the
+process or completion write fails after handoff, the call remains fenced until
+expiry. It is not automatically retried: the AS may already have consumed its
+terminal response. This bounds ambiguous delivery without pretending that two
+servers share a transaction. Hosts must monitor pending records and store
+errors. The lifetime bounds processing, not store retention or queue capacity.
+
+**Evidence:** `integration/federated_deferred_test.go`, the two role-specific
+federation `storetest` contracts, and `example/federatedpayment`.
+
+## Deferred federation host visibility and Agent hints
+
+**Source:** Protocol `28e8258`, AS Response, Pending Response Format, Polling
+with GET, Error Response Format and Token Endpoint Error Codes.
+
+A local request-composition refusal uses `500 server_error` with a bounded
+public explanation; `DeferredCompositionError` identifies the reason to the
+host through diagnostics. A valid pending envelope asking for unsupported
+claims, clarification or interaction uses the same typed refusal, both on the
+initial response and a later AS poll. Its reason identifies that branch.
+On a later AS poll, the PS retains the bounded reason with the terminal response;
+`AdvanceFederation` reports successful retention, and Agent delivery reconstructs
+the typed diagnostic. The store carries neither a Go error nor an arbitrary AS
+cause. The reason survives serialization and server recomposition.
+`as_unreachable` is reserved for the federation failures described by Auth Token
+Delivery, rather than local missing support.
+
+Host queue listing is a library API, not a new endpoint. It is scoped to one
+PS, ordered by next poll time then ID, and includes in-flight records for
+monitoring. It neither reserves nor advances requests. The optional
+`FederatedAuthorizationQueueStore` extends the base continuation store, matching
+the permission and question listing pattern; adapters without it can still
+complete exchanges. Agent `Retry-After` is
+the remaining interval until the retained AS poll time, rounded up to whole
+seconds, and at least one second. Once the AS poll is due only the host can
+advance it, so advertising zero would invite an Agent that follows the hint to
+poll in a busy loop until the host's next pass.
+
+The optional `pending_reason` response field is a library display extension,
+not a draft-defined requirement. The PS maps AS `402` to `awaiting_payment` and
+approval `202` to `awaiting_approval`, while keeping `status: pending` and
+`requirement=approval`. Other retained statuses omit the hint. The Agent
+exposes recognized values through `PendingExchange.WaitReason()` and ignores
+unknown values; absence clears an earlier hint. No AS challenge, payment body
+or credentials are copied to the Agent. The hint grants no payment authority.
+
+**Evidence:** `TestDeferredCompositionRefusalHasLocalReason`,
+`TestDeferredCompositionRefusesR3AndBudget`,
+`TestFederatedStoreWithoutQueueStillDelivers`,
+`TestPendingFederatedReferencesValidateStoreResults`,
+`TestFederatedPendingReferencesAcrossRecomposition`,
+`TestFederatedAgentRetryAfterTracksASSchedule`,
+`TestFederatedWaitingRoundsUpRemainingRetryAfter`,
+`TestFederatedWaitingExposesOnlySafeHint`,
+`TestPendingExchangeWaitReasonIsOptionalDisplayHint`,
+`TestFederatedAgentWaitReasonPaymentThenApproval`,
+`TestFederatedUnsupportedRequirementIsLocalRefusal`, and the PS federation store
+contracts in `personserver/storetest/federated.go`.
+
+## Federated grants have no exchange identifier
+
+**Source:** Protocol `28e8258`, Auth Token Delivery, Auth Token Structure,
+Common JWT Claims and HTTP Message Signatures Profile / Verification (Server).
+
+Auth Token Delivery specifies signature, issuer, audience, confirmation key,
+subject, scope and expiry checks. Auth Token Structure carries no Resource-token
+ID, presented-token ID or pending-request ID. Common JWT Claims describes `jti`
+as a unique token identifier for replay detection, audit and revocation; it
+neither makes each delivery a new token nor requires a PS cache of previously
+delivered grant JTIs. Verification (Server) also explicitly does not require
+PS or AS replay caches for Resource tokens.
+
+The PS therefore accepts an identical, still-valid AS grant in separate Core
+exchanges when it satisfies each exchange's full authorization context and
+expiry bounds. This does not prove that the AS made a fresh approval or billing
+decision for the second exchange. Single terminal delivery is scoped to each
+retained continuation, not to a token across all continuations. The library
+adds no cross-exchange JTI cache or private request-binding claim. An AS remains
+the authority that can issue an equivalent fresh grant in any event.
+
+**Evidence:** `TestFederatedEquivalentGrantHasNoCrossExchangeBinding` in
+`integration/federated_deferred_test.go` creates distinct pending, Resource and
+presented-token references, delivers the same grant bytes for both, and refuses
+another delivery from either consumed continuation. The adjacent altered-grant
+tests execute signature and scope refusals.
+
+## Federation pending-URL error names and competing polls
+
+**Source:** Protocol `28e8258`, Pending URL Security, Polling Error Codes and
+Error Response Format.
+
+The draft requires authentication at pending URLs and `410` after terminal
+delivery. Its `invalid_code` names an interaction code; `denied` names an
+approver's decision. Neither describes these opaque federation references or
+a different authenticated poller. The AS and PS federation endpoints use these
+library error-code extensions, without claiming that the draft registers them:
+
+| Status and error | Meaning |
+| --- | --- |
+| `410 unknown_request` | No retained continuation for that reference. |
+| `410 request_consumed` | The retained continuation has already delivered its terminal result. |
+| `403 wrong_poller` | The authenticated PS, Agent identity or Agent key does not own the continuation. |
+| `409 request_conflict` | Another AS poll changed a still-pending record before this poll could publish. |
+
+An explicit AS policy denial remains `403 denied`; expiry remains one
+`408 expired` before consumption. These choices apply only to AS and federated
+PS token continuations. Interaction-code endpoints retain their own mappings.
+
+An AS record has no in-flight policy lock. Concurrent polls may each run policy
+and sign a Core token before one conditional store replacement wins. Only that
+winner publishes its buffered result; losing signed tokens are discarded. A
+loser reloads the record to distinguish consumption from a nonterminal update.
+Hosts must not rely on exactly-once policy execution or charge on a poll. The
+PS's separate in-flight fence normally prevents overlapping AS polls from that
+host, but is not an AS-wide lock.
+
+**Evidence:** `TestFederatedPendingErrorsDistinguishUnknownAndConsumed`,
+`TestFederatedDeferredPollIdentityAndSingleDelivery`,
+`TestFederatedDeferredDenialRetainsPollingError`, and
+`TestFederatedASConcurrentPollsPublishOneResult` in
+`integration/federated_deferred_test.go`. The last test overlaps native AS
+polls at store replacement, asserting one published wait or grant and the
+corresponding conflict or consumed response from its competitor.
+
+## Parent-mediated federated waits stay with the parent
+
+**Source:** Protocol `28e8258`, Sub-Agents (Parent-Mediated Authorization),
+AS Response, Deferred Responses, Polling Error Codes, Agent Response to
+Clarification (Cancel Request) and Pending URL Security.
+
+Parent-Mediated Authorization has the parent make every Person Server call
+and says consent surfaces for the parent; it does not describe an AS that
+defers a sub-agent's request. This implementation treats the wait as the
+parent's request. The PS retains the exact sub-agent token beside the parent's
+token, and only the parent's identity and key may poll or cancel. A child that
+signs a poll or cancellation receives `403 wrong_poller` and changes nothing,
+before or after the AS completes. Both waits end at the earliest of their
+configured lifetime and the Resource, parent, sub-agent and presented-token
+expiries, using the sub-agent token actually presented. Both Agent tokens and
+their relationship are verified again before each AS poll and before release,
+and the released grant must be bound to the child key.
+
+The polling error `revoked` names the Agent token of the Agent that started the
+request. A sub-agent token its Agent Provider revoked while the request waits
+also ends it with `403 revoked`; the public `detail` says which token was
+revoked. Neither token is presented to the AS again.
+
+DELETE on a pending URL is defined as an answer to a clarification. A parent
+may also withdraw an approval or payment wait with a bodyless signed DELETE.
+The PS consumes its own record first, so nothing retained can be released
+later, answers `200` with `{"status":"cancelled"}`, and sends the AS one signed
+DELETE. A withdrawal that loses its compare-and-swap to a host advance reloads
+and consumes again, so it still wins and any grant the advance retained is
+withheld; only a request another poll or cancellation consumed first is
+answered `410 request_consumed`. The AS consumes its record for its owning PS
+with the same answer (another PS receives `403 wrong_poller`), and later polls
+receive `410 request_consumed`. A withdrawal after the deadline consumes the
+record and answers `408 expired`. The PS-hosted consent wait answers its own
+cancellation the same way. These answers match aauth-rust, whose PS accepts
+only `200` or `410` from an AS DELETE, so either PS can withdraw at either AS.
+
+The two deadlines are configured separately, so a wait the PS ends on its own,
+because of its deadline, a revocation or an AS answer that arrives after the
+PS deadline, may still be live at the AS, where an unattended payment request
+could still be paid. The PS therefore sends the AS the same best-effort DELETE
+whenever it ends a wait the AS has not finished. A missed AS DELETE leaves the
+AS record only until its deadline; the PS does not retry it (AAG-F109).
+
+**Evidence:** `integration/subagent_federated_deferred_test.go`, including
+`TestSubagentFederatedWaitsEndWithThePresentedChildToken`,
+`TestSubagentFederatedCancellationClosesBothContinuations`,
+`TestSubagentFederatedCancellationWinsAConcurrentAdvance`,
+`TestSubagentFederatedLateASAnswerIsWithdrawn`,
+`TestSubagentFederatedCancellationAfterExpiryIsExpired`,
+`TestAccessServerCancellationBelongsToTheRequestingPersonServer` and
+`TestSubagentFederatedRevokedChildTokenEndsTheWait`; the shared harness
+`authorization.subagent` slice exercises the same answers against aauth-rust.
+
+## A revoked Agent-person binding ends issuance and pending delivery
+
+**Source:** Protocol `28e8258`, Agent-Person Binding, Upstream Token
+Verification step 4, Revocation Cascade, Presenting a Revoked Token, Polling
+Error Codes and Pending URL Security.
+
+Agent-Person Binding says a changed association is handled by revoking the
+existing binding and establishing a new one, and that revocation immediately
+prevents the agent from obtaining new auth tokens. It defines no operation or
+answers for it outside call chaining. Here the host revokes a binding through
+`Server.RevokeAgentBinding`, keyed by the top-level Agent's provider and
+identifier, after authenticating its administrator. The binding belongs to the
+Agent that signs Person Server requests, so a parent's revocation also covers
+every child it mediates. This is distinct from the parent's per-scope consent
+that Parent-Mediated Authorization says the parent can withdraw: host policy
+already reevaluates that consent on every child request.
+
+While the binding is revoked, the PS answers as the synchronous request would
+be answered: a Person-token request, a mission proposal (whose approval issues
+Person tokens) and a pending Person-token interaction or mission proposal
+receive `403 person_token_denied`; a token request and a pending consent or
+federated wait receive `400 revoked_presented_token`; a chained request whose
+caller, or the caller's mediating parent, holds the binding receives
+`400 revoked_upstream_token`. Each refusal carries a public `detail` naming
+the revoked binding, so a caller can tell it from a denial. The pending answer
+is not the polling code `revoked`, whose table names only the Resource,
+upstream and Agent tokens (AAG-F108). It is terminal: the PS ends the wait
+first, so its pending URL answers `410` afterwards, as Pending URL Security
+requires. A federated wait is consumed and withdrawn at the AS; a PS-hosted
+wait is failed, cancelled or consumed through its store's own transitions,
+and an undelivered mission approval is withheld. Host approval and mission
+approval are refused with `ErrAgentBindingRevoked`. Delivered Person and Auth
+tokens are not revoked at Resources or ASes; they expire normally. The
+permission, audit and interaction endpoints issue no credential and are not
+gated by this state.
+
+`Server.ReestablishAgentBinding` records that the host has established the new
+binding. Requests made after it are admitted under the host's `BindPerson`
+policy, while every pending request created, and every presented or upstream
+token issued, at or before that instant stays refused. The revocation entry is
+the fence, so the host keeps it, and the replacement needs no waiting period
+for the old binding's credentials to expire. The comparison uses the Person
+Server's clock. Distinct lifecycle changes use strictly increasing instants;
+store retries retain their original instant. A stale revocation leaves a later
+replacement alone, and a replacement at or before the latest revocation is
+refused with `ErrAgentBindingStale`. Hosts coordinate this clock and binding
+policy across instances.
+
+A pending record retains the original verified request time, before any host
+policy or Access Server round trip. Those operations cannot move an old
+request past a replacement fence. The same binding is checked again after
+host policy before immediate credential issuance, and before federated
+delivery. An Agent poll checks retained Agent-token revocations even when no
+host has advanced the Access Server wait.
+
+An AS-issued presented Auth token has no retained binding generation in this
+profile, and its `iat` belongs to the AS's clock. After replacement the PS
+therefore refuses that presentation with `revoked_presented_token`, including
+new AS tokens, and requires a fresh PS Person token for the next authorization
+or step-up. A never-revoked binding still accepts AS Auth-token step-up.
+Locally issued JWTs use whole-second `iat`, which must be strictly later than
+the replacement instant; a request in that same second can be refused safely.
+`TestReplacementDoesNotAdmitOldASAuthTokenWithAheadClock` reproduces the old
+credential being admitted without this rule.
+
+**Evidence:** `personserver/subagent_profile_test.go`
+(`TestRevokedAgentBindingRefusesNewPersonTokens`,
+`TestRevokedAgentBindingRefusesTokenRequests`,
+`TestCallChainingRefusesARevokedCallerBinding`),
+`personserver/agent_binding_lifecycle_test.go`
+(`TestRevokedAgentBindingEndsPSHostedConsentInEveryState`,
+`TestRevokedAgentBindingEndsPersonTokenInteractionsInEveryState`,
+`TestReestablishedAgentBindingAdmitsOnlyLaterRequests`,
+`TestRevokedAgentBindingRefusesMissionApproval`),
+`TestSubagentFederatedBindingRevocationEndsTheWait`, the
+`storetest.RunAgentBindingRevocation` contract, and the shared harness's
+`revoked-binding` and `revoked-pending` scenarios, which aauth-rust answers the
+same way.
+
+## A PS-hosted wait ends when an Agent token it depends on is revoked
+
+**Source:** Protocol `28e8258`, Presenting a Revoked Token and Polling Error
+Codes.
+
+Presenting a Revoked Token says a pending request whose agent's agent token is
+revoked while it waits terminates with `revoked`, `detail` saying which. A
+PS-hosted consent or Person-token wait retains the identifiers of the Agent
+token that started it and, for a parent-mediated request, of the sub-agent
+token. The parent re-authenticates on every poll, but the child never calls the
+Person Server, so only the Person Server can refuse to bind a credential to a
+child key its Agent Provider withdrew. A revocation of either token, recorded
+through the Person Server's Agent-token revocation store, ends the wait with
+`403 revoked` and a `detail` naming the token, and later polls receive `410`;
+host approval is refused with an error matching `ErrAgentTokenRevoked`. The
+federated wait applies the same rule before each AS poll and before release.
+
+**Evidence:** `TestRevokedAgentTokenEndsPSHostedWaits` in
+`personserver/agent_binding_lifecycle_test.go` and
+`TestSubagentFederatedRevokedChildTokenEndsTheWait`.
+
+## A sub-agent token comes from the parent's own provider
+
+**Source:** Bootstrap `28e8258`, Sub-Agent Tokens; Protocol `28e8258`,
+Sub-Agent Identity.
+
+`IssueSubagent` authenticates the parent token with only the provider's own
+signing key, not a general resolver, because a sub-agent's `iss` must equal its
+parent's. Bootstrap says a sub-agent's `exp` should not exceed, or is no later
+than, the parent's; the provider caps a longer requested lifetime at the
+parent's `exp` rather than refusing it. The host supplies the discriminator and
+owns its uniqueness. The hosted handler accepts the draft's illustrative `jwk`
+and `discriminator` members, ignores other members rather than letting them
+reach the token, and answers a sub-agent signer or policy refusal with
+`403 subagent_denied`; Bootstrap defines no error codes for this request.
+Bootstrap has the provider record which parent requested each live
+sub-agent, which only host policy can do, so the handler refuses a request it
+could not issue, the parent's own key or a malformed suggested discriminator,
+with `400 invalid_request` before policy sees it. It keeps no replay cache: an exact replay inside the signature window yields
+another token for the same sub-agent key, which only that key's holder can use.
+
+**Evidence:** `agentprovider/subagent_test.go` and
+`agentprovider/subagent_http_test.go`.

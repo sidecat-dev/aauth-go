@@ -244,6 +244,12 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	// Mission approval issues Person tokens for the Agent's person, so a
+	// revoked binding refuses the proposal before any policy sees it.
+	if err := server.checkAgentBinding(request.Context(), agentBinding(agent), proof.VerifiedAt()); err != nil {
+		writeAgentBindingProblem(response, err, http.StatusForbidden, "person_token_denied")
+		return
+	}
 	policyRequest := MissionApprovalRequest{
 		Agent: agent.Subject, Proposal: cloneMissionProposal(proposal),
 		ExactJSON:             append([]byte(nil), exactJSON...),
@@ -314,12 +320,16 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	approval, err := server.prepareMissionApproval(request.Context(), agent, decision, approvedAt)
+	approval, err := server.prepareMissionApproval(request.Context(), agent, decision, approvedAt, proof.VerifiedAt())
 	if err != nil {
 		var binding *missionPersonBindingError
-		if errors.As(err, &binding) {
+		var bindingStore *agentBindingStoreError
+		switch {
+		case errors.Is(err, ErrAgentBindingRevoked), errors.As(err, &bindingStore):
+			writeAgentBindingProblem(response, err, http.StatusForbidden, "person_token_denied")
+		case errors.As(err, &binding):
 			writeProblem(response, http.StatusForbidden, "person_token_denied", err)
-		} else {
+		default:
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		}
 		return
@@ -393,12 +403,19 @@ func (failure *missionPersonBindingError) Error() string {
 
 func (failure *missionPersonBindingError) Unwrap() error { return failure.cause }
 
+// prepareMissionApproval mints the Mission and its Person tokens. The Agent's
+// binding is checked here for both the immediate and the deferred decision;
+// proposedAt is when the proposal was made.
 func (server *Server) prepareMissionApproval(
 	ctx context.Context,
 	agent aauth.AgentTokenClaims,
 	decision MissionDecision,
 	approvedAt time.Time,
+	proposedAt time.Time,
 ) (MissionProposalApproval, error) {
+	if err := server.checkAgentBinding(ctx, agentBinding(agent), proposedAt); err != nil {
+		return MissionProposalApproval{}, err
+	}
 	blob := aauth.MissionBlob{
 		Approver: server.issuer, Agent: agent.Subject, ApprovedAt: approvedAt,
 		ExpiresAt: decision.ExpiresAt, Description: decision.Description,
@@ -427,6 +444,9 @@ func (server *Server) prepareMissionApproval(
 		person, err := server.bindPerson(ctx, clonePersonTokenRequest(personRequest))
 		if err != nil {
 			return MissionProposalApproval{}, &missionPersonBindingError{cause: fmt.Errorf("Resource %q: %w", resource, err)}
+		}
+		if err := server.checkAgentBinding(ctx, agentBinding(agent), proposedAt); err != nil {
+			return MissionProposalApproval{}, err
 		}
 		issuedAt := server.clock.Now().UTC()
 		if !record.ExpiresAt.IsZero() && !issuedAt.Before(record.ExpiresAt) {
@@ -893,7 +913,7 @@ func cloneMissionBlob(blob aauth.MissionBlob) aauth.MissionBlob {
 func writeMissionReferenceProblem(response http.ResponseWriter, err error) {
 	var terminated *MissionTerminatedError
 	if errors.As(err, &terminated) {
-		writeMissionTerminatedProblem(response, terminated.TerminationReason)
+		writeMissionTerminatedProblem(response, terminated.TerminationReason, err)
 		return
 	}
 	if errors.Is(err, ErrMissionNotFound) {
@@ -914,7 +934,7 @@ func writeMissionPolicyProblem(response http.ResponseWriter, denialCode string, 
 func writeMissionActionProblem(response http.ResponseWriter, err error) {
 	var terminated *MissionTerminatedError
 	if errors.As(err, &terminated) {
-		writeMissionTerminatedProblem(response, terminated.TerminationReason)
+		writeMissionTerminatedProblem(response, terminated.TerminationReason, err)
 		return
 	}
 	if errors.Is(err, ErrMissionNotFound) {
@@ -924,18 +944,9 @@ func writeMissionActionProblem(response http.ResponseWriter, err error) {
 	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
-func writeMissionTerminatedProblem(response http.ResponseWriter, reason string) {
+func writeMissionTerminatedProblem(response http.ResponseWriter, reason string, cause error) {
 	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Type", "application/problem+json")
-	response.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(response).Encode(struct {
-		Status            int    `json:"status"`
-		Code              string `json:"error"`
-		Detail            string `json:"detail"`
-		MissionStatus     string `json:"mission_status"`
-		TerminationReason string `json:"termination_reason,omitempty"`
-	}{
-		Status: http.StatusForbidden, Code: "mission_terminated", Detail: http.StatusText(http.StatusForbidden),
+	httpapi.WriteProblem(response, http.StatusForbidden, "mission_terminated", cause, httpapi.ProblemFields{
 		MissionStatus: "terminated", TerminationReason: reason,
 	})
 }

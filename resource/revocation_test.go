@@ -367,10 +367,20 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 			}
 		}
 		request.Header.Set("X-Revocation-Context", "audit-1")
+		body, length := request.Body, request.ContentLength
+		if omitted == "content-type" {
+			request.Header.Del("Content-Type")
+		} else {
+			request.Body, request.ContentLength = http.NoBody, 0
+		}
 		if err := signaturekey.SignJWKSURIRequestWithOptions(request, personKey, personIssuer, aauth.PersonDiscoveryDocument, clock,
 			signaturekey.SignOptions{AdditionalComponents: components}); err != nil {
 			t.Fatalf("sign without %s: %v", omitted, err)
 		}
+		if omitted == "content-digest" {
+			request.Body, request.ContentLength = body, length
+		}
+		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
 		if response.Code != http.StatusUnauthorized || response.Header().Get("Signature-Error") == "" {

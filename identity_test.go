@@ -97,3 +97,16 @@ func TestEndpointAllowsPathsButNotQueryOrFragment(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPSURLAllowsQueryAndFragment(t *testing.T) {
+	t.Parallel()
+
+	if err := auth.ValidateHTTPSURL("https://server.example/logo.svg?v=1#mark"); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"http://server.example/logo.svg", "https://", "https://user@server.example/logo.svg", "not a url"} {
+		if err := auth.ValidateHTTPSURL(value); err == nil {
+			t.Errorf("ValidateHTTPSURL(%q) succeeded", value)
+		}
+	}
+}

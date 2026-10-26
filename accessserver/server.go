@@ -1,8 +1,9 @@
-// Package accessserver implements the Access Server role for immediate
-// four-party AAuth Core and R3 class and per-call authorization.
+// Package accessserver implements four-party AAuth Core authorization and
+// immediate R3 class and per-call authorization.
 package accessserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -41,6 +42,8 @@ type Config struct {
 	Authorize         func(context.Context, AuthorizationRequest) (Decision, error)
 	Budget            *BudgetConfig
 	R3                *R3Config
+	// Deferred enables retained Core approval and payment continuations.
+	Deferred *DeferredConfig
 }
 
 // Agent is the verified agent identity presented to authorization policy.
@@ -67,14 +70,23 @@ type AuthorizationRequest struct {
 	// Subagent is present only for a parent-mediated request. Agent remains
 	// the top-level parent whose grant the policy evaluates.
 	Subagent *Agent
-	// Budget is the verified Resource offer narrowed by the Person Server. When
-	// the signed request omits a ceiling, it is the Resource offer itself.
+	// Budget is the Person Server ceiling when the PS-to-AS request carried one.
+	// It is nil when that request omitted budget, including when the Resource
+	// token offered a budget. Omission is not a grant.
 	Budget *budgets.Value
+	// BudgetConsumed is the resource token's consumption record when the
+	// Resource reported spend on the presented auth token. It is not a grant.
+	BudgetConsumed *budgets.ConsumptionRecord
+	// Claims are values the Person Server posted for a requirement=claims wait.
+	// Keys are claim names. sub is never present.
+	Claims map[string]json.RawMessage
 }
 
 // Decision is the requested Core-scope subset and lifetime granted by Core
 // policy. R3 policy decisions are returned through R3Config callbacks.
 type Decision struct {
+	// Pending defers Core authorization instead of granting scopes.
+	Pending  *PendingDecision
 	Scopes   []string
 	Lifetime time.Duration
 	// Budget is required when AuthorizationRequest.Budget is present and may
@@ -82,7 +94,7 @@ type Decision struct {
 	Budget *budgets.Value
 }
 
-// Server is an immediate AAuth Access Server.
+// Server is an AAuth Access Server.
 type Server struct {
 	issuer            string
 	signingKey        jose.SigningKey
@@ -93,9 +105,10 @@ type Server struct {
 	authorize         func(context.Context, AuthorizationRequest) (Decision, error)
 	budget            *budgetConfig
 	r3                *r3Config
+	deferred          *DeferredConfig
 }
 
-// New constructs an immediate Access Server.
+// New constructs an Access Server.
 func New(config Config) (*Server, error) {
 	if err := aauth.ValidateServerIdentifier(config.Issuer); err != nil {
 		return nil, fmt.Errorf("accessserver: issuer: %w", err)
@@ -126,18 +139,28 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateDeferredConfig(config.Deferred); err != nil {
+		return nil, err
+	}
 	return &Server{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
 		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize,
-		budget: budgetConfiguration, r3: r3Configuration,
+		budget: budgetConfiguration, r3: r3Configuration, deferred: cloneDeferredConfig(config.Deferred),
 	}, nil
 }
 
-// Handler serves the token, metadata, and JWKS endpoints.
+// Handler serves POST /token, the metadata and JWKS documents, and with
+// Deferred the pending URLs GET, POST, and DELETE /token/pending/{id}, where id
+// is the PendingAuthorizationRecord ID. POST delivers claims.
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", server.handleToken)
+	if server.deferred != nil {
+		mux.HandleFunc("GET /token/pending/{id}", server.handlePendingToken)
+		mux.HandleFunc("POST /token/pending/{id}", server.handlePendingClaims)
+		mux.HandleFunc("DELETE /token/pending/{id}", server.handlePendingCancellation)
+	}
 	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
 	return mux
@@ -168,6 +191,16 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 
+	server.authorizeToken(response, request, personServer, proof, nil)
+}
+
+func (server *Server) authorizeToken(response http.ResponseWriter, request *http.Request, personServer string, proof signaturekey.VerifiedRequest, pending *PendingAuthorizationRecord) {
+	encoded, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
+	if err != nil || len(encoded) > maxRequestBytes {
+		writeProblem(response, 400, "invalid_request", err)
+		return
+	}
+
 	var input struct {
 		ResourceToken  string          `json:"resource_token"`
 		AgentToken     string          `json:"agent_token"`
@@ -176,7 +209,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		UpstreamToken  json.RawMessage `json:"upstream_token"`
 		Budget         json.RawMessage `json:"budget"`
 	}
-	if err := decodeJSON(request.Body, &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
+	if err := decodeJSON(bytes.NewReader(encoded), &input); err != nil || input.ResourceToken == "" || input.AgentToken == "" {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
@@ -197,7 +230,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
 		return
 	}
-	resourceClaims, r3Context, budgetOffer, err := server.verifyResourceTokenForAuthorization(
+	resourceClaims, r3Context, budgetOffer, budgetConsumed, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err == nil {
@@ -224,20 +257,14 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: subagent_token must be a non-empty compact token string"))
 			return
 		}
-		verified, err := aauth.VerifyAgentToken(request.Context(), compact, server.keyResolver, verificationClock)
+		// The AS verifies the relationship itself rather than trusting the PS:
+		// the child names this parent, shares its issuer and holds its own key.
+		verified, err := aauth.VerifySubagentToken(request.Context(), compact, agentClaims, server.keyResolver, verificationClock)
 		if err == nil {
 			err = proof.CheckIssuedAt(time.Unix(verified.IssuedAt, 0))
 		}
 		if err != nil {
-			writeTokenProblem(response, err, "invalid_agent_token", "expired_agent_token")
-			return
-		}
-		if verified.ParentAgent != agentClaims.Subject {
-			writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("sub-agent token does not name the requesting parent"))
-			return
-		}
-		if verified.Confirmation.JWK.Equal(agentClaims.Confirmation.JWK) {
-			writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("sub-agent token must use a key distinct from the parent"))
+			writeSubagentTokenProblem(response, err)
 			return
 		}
 		confirmation = verified.Confirmation.JWK
@@ -319,7 +346,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			ExpiresAt:        time.Unix(agentClaims.ExpiresAt, 0).UTC(),
 			AdditionalClaims: cloneClaims(agentClaims.AdditionalClaims),
 		},
-		Budget: cloneBudgetValue(budgetCeiling),
+		Budget:         cloneBudgetValue(budgetCeiling),
+		BudgetConsumed: cloneConsumptionRecord(budgetConsumed),
+		Claims:         cloneClaims(pendingClaims(pending)),
 	}
 	if subagentClaims != nil {
 		policyRequest.Subagent = &Agent{
@@ -372,7 +401,19 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if err != nil {
-		writeAccessPolicyProblem(response, err)
+		if pending != nil && errors.Is(err, ErrAccessDenied) {
+			writeProblem(response, 403, "denied", err)
+		} else {
+			writeAccessPolicyProblem(response, err)
+		}
+		return
+	}
+	if decision.Pending != nil {
+		if r3Context != nil || budgetOffer != nil || resourceClaims.MissionS256 != "" {
+			writeProblem(response, 500, "server_error", errors.New("accessserver: deferred authorization supports missionless Core requests only"))
+			return
+		}
+		server.deferAuthorization(response, request, personServer, encoded, resourceClaims, credentialExpiresAt, presented, decision, pending)
 		return
 	}
 	if err := validateDecision(decision, requestedScopes, r3Context != nil); err != nil {
@@ -502,6 +543,13 @@ func writeAccessPolicyProblem(response http.ResponseWriter, err error) {
 	writeProblem(response, http.StatusInternalServerError, "server_error", err)
 }
 
+func pendingClaims(pending *PendingAuthorizationRecord) map[string]json.RawMessage {
+	if pending == nil {
+		return nil
+	}
+	return pending.Claims
+}
+
 func cloneClaims(claims map[string]json.RawMessage) map[string]json.RawMessage {
 	if len(claims) == 0 {
 		return nil
@@ -591,6 +639,20 @@ func writePresentedTokenProblem(response http.ResponseWriter, err error) {
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 	default:
 		writeProblem(response, http.StatusBadRequest, "invalid_presented_token", err)
+	}
+}
+
+// writeSubagentTokenProblem maps a subagent_token failure to Protocol -11's
+// <invalid|expired>_subagent_token codes, keeping parameter clock_skew.
+func writeSubagentTokenProblem(response http.ResponseWriter, err error) {
+	var skew *signaturekey.Error
+	switch {
+	case errors.As(err, &skew) && skew.Code == signaturekey.ErrorClockSkew:
+		writeProblem(response, http.StatusBadRequest, string(signaturekey.ErrorClockSkew), err)
+	case errors.Is(err, aauth.ErrExpiredSubagentToken):
+		writeProblem(response, http.StatusBadRequest, "expired_subagent_token", err)
+	default:
+		writeProblem(response, http.StatusBadRequest, "invalid_subagent_token", err)
 	}
 }
 

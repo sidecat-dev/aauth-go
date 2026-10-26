@@ -19,10 +19,10 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
-	"gitlab.com/sidecat-dev/aauth-go/internal/exampleutil"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -80,7 +80,7 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	relayStore := exampleutil.NewMissionInteractionRelayStore()
+	relayStore := testutil.NewMissionInteractionRelayStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
 		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),

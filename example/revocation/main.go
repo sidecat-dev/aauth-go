@@ -1,5 +1,5 @@
 // The revocation example runs issuer-driven Agent- and Auth-token revocation,
-// caller-controlled retry, and explicit re-authorization in process.
+// caller-controlled retry, and explicit Person-token recovery in process.
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 const (
@@ -71,10 +72,10 @@ func run(output io.Writer) error {
 		return err
 	}
 	personTokens := newPersonTokenStore()
-	issuedTokens := newIssuedAuthTokenStore()
+	issuedTokens := testutil.NewIssuedAuthTokenStore()
 	personAgentRevocations := newAgentTokenRevocationStore()
 	resourceAgentRevocations := newAgentTokenRevocationStore()
-	personIDs := []string{"person-token-1", "auth-token-1", "auth-token-2"}
+	personIDs := []string{"person-token-1", "auth-token-1", "person-token-2", "auth-token-2"}
 	newPersonServer := func() (*personserver.Server, error) {
 		return personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
 			Issuer: personServerID, SigningKey: personKey, KeyResolver: resolver, Clock: clock,
@@ -103,7 +104,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	statuses := newAuthTokenStatusStore()
+	statuses := testutil.NewAuthTokenStatusStore()
 	resourceIDs := []string{"resource-token-1", "resource-token-2"}
 	newResource := func() (*resource.Server, error) {
 		return resource.NewPSAuthorization(resource.PSAuthorizationConfig{
@@ -246,16 +247,51 @@ func run(output io.Writer) error {
 	if !errors.As(err, &signatureFailure) || signatureFailure.Code != signaturekey.ErrorRevokedJWT {
 		return fmt.Errorf("revoked token returned %v", err)
 	}
+	var recovery *clientagent.PersonTokenRequiredError
+	if !errors.As(err, &recovery) || recovery.Requirement() != aauth.RequirementPersonToken {
+		return fmt.Errorf("revoked token omitted the person-token requirement: %v", err)
+	}
 	fmt.Fprintf(output, "%s refused: 401 %s\n", firstClaims.JTI, signatureFailure.Code)
 
-	secondToken, secondClaims, err := authorize()
+	// Person Token Required: obtain a Person token for the Resource, then
+	// retry the original request with it. Do does not perform these steps.
+	personResult, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+		PersonServer: personServerID, Resource: resourceID,
+	})
+	if err != nil {
+		return err
+	}
+	freshPersonToken, ok := personResult.Token()
+	if !ok {
+		return errors.New("recovery unexpectedly required Person Server interaction")
+	}
+	retryRequest, _ := http.NewRequestWithContext(ctx, http.MethodGet, resourceID+"/records/42", nil)
+	retryResult, err := reader.Begin(ctx, clientagent.InitialCall{Request: retryRequest, PersonToken: freshPersonToken})
+	if err != nil {
+		return err
+	}
+	requirement, ok := retryResult.AuthorizationRequired()
+	if !ok {
+		return errors.New("Person-token retry did not return an Auth-token requirement")
+	}
+	fmt.Fprintln(output, "person-token-2 obtained; original request retried with it")
+
+	// The new Resource token names the fresh Person token. The revoked Auth
+	// token must not be used as presented_token in this exchange.
+	secondToken, err := reader.Exchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: personServerID, ResourceToken: requirement.ResourceToken, PresentedToken: freshPersonToken,
+	})
+	if err != nil {
+		return err
+	}
+	secondClaims, err := aauth.VerifyAuthToken(ctx, secondToken, resolver, clock)
 	if err != nil {
 		return err
 	}
 	if err := use(secondToken); err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "%s accepted after explicit re-authorization\n", secondClaims.JTI)
+	fmt.Fprintf(output, "%s accepted after Person-token recovery\n", secondClaims.JTI)
 
 	agentClaims, err := aauth.VerifyAgentToken(ctx, agentToken, resolver, clock)
 	if err != nil {

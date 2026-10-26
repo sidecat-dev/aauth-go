@@ -11,7 +11,6 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
-	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 // BudgetCall supplies one fixed-price protected request and its Budget Auth
@@ -111,6 +110,36 @@ func (result BudgetCallResult) Cost() (int64, bool) {
 		return 0, false
 	}
 	return result.feedback.Cost()
+}
+
+// ApplyTrailer merges a cost-only trailer after the caller has read the body.
+// An absent trailer leaves the reservation in place. A fixed-price result is
+// unchanged.
+func (result *BudgetCallResult) ApplyTrailer() error {
+	if result == nil || result.kind != budgetCallResultResponse || result.response == nil || !result.hasFeedback {
+		return errors.New("aauth agent: Budget trailer requires the call response")
+	}
+	if _, reserved := result.feedback.Reserved(); !reserved {
+		return nil
+	}
+	updated, err := budgets.ApplyTrailer(result.feedback, result.response.Trailer.Values("AAuth-Budget"))
+	if err != nil {
+		return err
+	}
+	result.feedback = updated
+	return nil
+}
+
+// AssumedCost is the exact cost when the Resource reported one, and otherwise
+// the full reservation. A response that omitted both is not a successful result.
+func (result BudgetCallResult) AssumedCost() (int64, bool) {
+	if cost, ok := result.Cost(); ok {
+		return cost, true
+	}
+	if result.kind == 0 || !result.hasFeedback {
+		return 0, false
+	}
+	return result.feedback.Reserved()
 }
 
 // BudgetCallUncertainError reports an attempted Budget request whose exact
@@ -231,15 +260,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 			}
 		}()
 	}
-	signOptions := signaturekey.SignOptions{
-		AdditionalComponents: append([]string(nil), metadata.AdditionalSignatureComponents...),
-	}
-	if containsFold(metadata.AdditionalSignatureComponents, "content-digest") {
-		signOptions.MaxBodyBytes = client.maxSignedBodyBytes
-	}
-	if err := signaturekey.SignJWTRequestWithOptions(
-		request, client.signingKey, call.AuthToken, client.clock, signOptions,
-	); err != nil {
+	if err := client.signResourceRequest(request, call.AuthToken, metadata.AdditionalSignatureComponents); err != nil {
 		return BudgetCallResult{}, fail(operation, err)
 	}
 	handedOff = true
@@ -254,7 +275,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		closeResponse(response)
-		return BudgetCallResult{}, fail(operation, responseFailure(response))
+		return BudgetCallResult{}, fail(operation, authTokenResponseFailure(response))
 	}
 	cached, err := responseCarriesAge(response.Header.Values("Age"))
 	if err != nil {
@@ -294,10 +315,14 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 		}, nil
 	}
 	if _, present := feedback.Cost(); !present {
-		closeResponse(response)
-		return BudgetCallResult{}, fail(operation, newBudgetUncertain(
-			errors.New("fixed-price Budget response omitted cost"), grant,
-		))
+		if _, reserved := feedback.Reserved(); !reserved {
+			closeResponse(response)
+			return BudgetCallResult{}, fail(operation, newBudgetUncertain(
+				errors.New("fixed-price Budget response omitted cost"), grant,
+			))
+		}
+		// reserved without cost is complete. A declared trailer is not required;
+		// until one arrives the request is assumed to have cost the reservation.
 	}
 	if _, present := feedback.Required(); present {
 		closeResponse(response)
@@ -444,7 +469,7 @@ func (client *Client) verifyBudgetCallAuthorization(
 		return BudgetAuthorization{}, err
 	}
 	if challenge.Issuer != resource || challenge.DWK != aauth.ResourceDiscoveryDocument ||
-		challenge.Audience != current.PersonServer || challenge.PersonServer != current.PersonServer ||
+		challenge.Audience != current.Issuer || challenge.PersonServer != current.PersonServer ||
 		challenge.Subject != current.Subject || challenge.AgentJKT != thumbprint || challenge.PresentedJTI != current.JTI ||
 		challenge.MissionS256 != current.MissionS256 || challenge.Tenant != current.Tenant ||
 		!equalStringPointers(challenge.Account, current.Account) ||

@@ -394,6 +394,31 @@ func (client *Client) CancelClarification(ctx context.Context, pending PendingEx
 	return nil
 }
 
+// CancelExchange performs exactly one bodyless Agent-token-signed DELETE for a
+// verified pending exchange, such as an Access Server approval or payment
+// wait. A 2xx answer means the Person Server closed the continuation; later
+// polls are 410. It does not poll or retry.
+func (client *Client) CancelExchange(ctx context.Context, pending PendingExchange) error {
+	const operation = "cancel exchange"
+	if client == nil {
+		return fail(operation, errors.New("client is required"))
+	}
+	if err := client.validatePendingExchange(ctx, pending); err != nil {
+		return fail(operation, err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, pending.location, nil)
+	if err != nil {
+		return fail(operation, err)
+	}
+	if err := signaturekey.SignJWTRequest(request, client.signingKey, client.agentToken, client.clock); err != nil {
+		return fail(operation, err)
+	}
+	if err := client.performClarificationAction(request); err != nil {
+		return fail(operation, err)
+	}
+	return nil
+}
+
 func (client *Client) performClarificationAction(request *http.Request) error {
 	response, err := client.httpClient.Do(request)
 	if err != nil {
