@@ -130,8 +130,10 @@ default). The token in the `Signature-Key` header is answered `401` with
 (the Resource, upstream and sub-agent tokens at the PS and AS token endpoints)
 is answered `400` with body error `clock_skew` and no `Signature-Error`. A
 verifier with no request, such as a response-token consumer, applies no
-future-`iat` refusal. The Events subscribe-token and event-token checks are
-unchanged; both still refuse a future `iat`.
+future-`iat` refusal. Events follows the same rule: the Resource registration
+handlers and the AP event endpoint apply `CheckIssuedAt` to the subscribe or
+Event token in `Signature-Key`, and an Agent verifying a forwarded Event token
+applies none.
 
 - Document: AAuth Protocol, editor source `draft-hardt-oauth-aauth-protocol.md`.
 - Repository commit: [AAuth `70d6737`](https://github.com/dickhardt/AAuth/commit/70d67375deb0bb002af7da0711fc58f6e8926e7e).
