@@ -82,8 +82,8 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	}
 
 	keyResolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient,
-		Clock:  clock,
+		Client: httpClient, TransportEnforcesEgress: true,
+		Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if strings.HasSuffix(endpoint, ".example/.well-known/aauth-agent.json") ||
 				strings.HasSuffix(endpoint, ".example/.well-known/aauth-person.json") ||
@@ -498,10 +498,11 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	// before replay. The invocation and its result belong to the host store,
 	// not one in-process Server value.
 	network.Handle(resourceID, newHeldResource().Handler())
-	heldResponse, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
+	heldResponseResult, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
 	}
+	heldResponse, _ := heldResponseResult.Response()
 	heldBody, err := io.ReadAll(heldResponse.Body)
 	heldResponse.Body.Close()
 	if err != nil {
@@ -512,10 +513,11 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	}
 
 	network.Handle(resourceID, newHeldResource().Handler())
-	replayed, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
+	replayedResult, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
 	}
+	replayed, _ := replayedResult.Response()
 	replayedBody, err := io.ReadAll(replayed.Body)
 	replayed.Body.Close()
 	if err != nil {
@@ -642,15 +644,16 @@ func newSigningKey(t *testing.T, id string) jose.SigningKey {
 }
 
 type memoryPersonTokenStore struct {
-	mu       sync.Mutex
-	records  map[string]personserver.PersonTokenRecord
-	missions map[string]personserver.MissionRecord
-	auth     map[string]personserver.IssuedAuthTokenRecord
-	pending  map[string]*memoryPendingPersonToken
-	byCode   map[[32]byte]string
-	last     personserver.PersonTokenRecord
-	commits  int
-	loads    int
+	mu            sync.Mutex
+	records       map[string]personserver.PersonTokenRecord
+	missions      map[string]personserver.MissionRecord
+	auth          map[string]personserver.IssuedAuthTokenRecord
+	pending       map[string]*memoryPendingPersonToken
+	byCode        map[[32]byte]string
+	last          personserver.PersonTokenRecord
+	commits       int
+	loads         int
+	presentations map[string][]string
 }
 
 func newMemoryPersonTokenStore() *memoryPersonTokenStore {
@@ -857,10 +860,11 @@ func cloneIntegrationMissionCompletionDocument(document aauth.MissionCompletionD
 }
 
 type memoryPendingPersonToken struct {
-	record   personserver.PendingPersonTokenRecord
-	state    personserver.PersonTokenPollState
-	approval personserver.PersonTokenApproval
-	denied   bool
+	record         personserver.PendingPersonTokenRecord
+	state          personserver.PersonTokenPollState
+	approval       personserver.PersonTokenApproval
+	denied         bool
+	failedAttempts int
 }
 
 func (store *memoryPersonTokenStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
@@ -887,6 +891,27 @@ func (store *memoryPersonTokenStore) Load(_ context.Context, issuer, jti string)
 	return record, nil
 }
 
+// RecordPersonTokenPresentation retains one presentation per Access Server.
+func (store *memoryPersonTokenStore) RecordPersonTokenPresentation(_ context.Context, presentation personserver.PersonTokenPresentation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := presentation.PersonServer + "\x00" + presentation.JTI
+	if store.presentations == nil {
+		store.presentations = make(map[string][]string)
+	}
+	if !slices.Contains(store.presentations[key], presentation.AccessServer) {
+		store.presentations[key] = append(store.presentations[key], presentation.AccessServer)
+	}
+	return nil
+}
+
+// LoadPersonTokenPresentations returns the recorded Access Servers in order.
+func (store *memoryPersonTokenStore) LoadPersonTokenPresentations(_ context.Context, personServer, jti string) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.presentations[personServer+"\x00"+jti]), nil
+}
+
 func (store *memoryPersonTokenStore) observation() (personserver.PersonTokenRecord, int, int) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -909,14 +934,24 @@ func (store *memoryPersonTokenStore) CreatePendingPersonToken(_ context.Context,
 	return nil
 }
 
-func (store *memoryPersonTokenStore) ConsumePersonTokenInteractionCode(_ context.Context, personServer, reference string, code [32]byte, now time.Time) (personserver.PendingPersonTokenRecord, error) {
+func (store *memoryPersonTokenStore) ConsumePersonTokenInteractionCode(_ context.Context, personServer, reference string, presentation personserver.PersonTokenCodePresentation, now time.Time) (personserver.PendingPersonTokenRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	pending, ok := store.pending[reference]
-	if !ok {
+	if !ok || pending.record.PersonServer != personServer {
 		return personserver.PendingPersonTokenRecord{}, personserver.ErrInteractionCodeInvalid
 	}
-	if pending.record.PersonServer != personServer || pending.record.CodeSHA256 != code {
+	if pending.failedAttempts >= personserver.MaximumPersonTokenCodeAttempts {
+		return personserver.PendingPersonTokenRecord{}, personserver.ErrPendingPersonTokenGone
+	}
+	if !presentation.SyntacticallyValid || pending.record.CodeSHA256 != presentation.CodeSHA256 {
+		if pending.state == personserver.PersonTokenPollWaiting && now.Before(pending.record.ExpiresAt) {
+			pending.failedAttempts++
+			if pending.failedAttempts >= personserver.MaximumPersonTokenCodeAttempts {
+				pending.state = personserver.PersonTokenPollGone
+				return personserver.PendingPersonTokenRecord{}, personserver.ErrPendingPersonTokenGone
+			}
+		}
 		return personserver.PendingPersonTokenRecord{}, personserver.ErrInteractionCodeInvalid
 	}
 	if pending.state != personserver.PersonTokenPollWaiting {

@@ -174,7 +174,7 @@ func newDeferredFederation(t *testing.T) *deferredFederation {
 	apKey, agentKey, psKey, asKey, resourceKey := newSigningKey(t, "ap"), newSigningKey(t, "agent"), newSigningKey(t, "ps"), newSigningKey(t, "as"), newSigningKey(t, "resource")
 	f.agentKey, f.psKey, f.asKey = agentKey, psKey, asKey
 	// Discovery runs through each role's public HTTP handler.
-	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{Client: httpClient, Clock: clock, Admit: func(context.Context, string) error { return nil }})
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{Client: httpClient, TransportEnforcesEgress: true, Clock: clock, Admit: func(context.Context, string) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +744,7 @@ func (r *delayedDeliveryResolver) ResolveKey(ctx context.Context, issuer, dwk, k
 }
 func TestFederatedDeferredPSDeadlineAfterDeliveryVerification(t *testing.T) {
 	f := newDeferredFederation(t)
-	base, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{Client: &http.Client{Transport: f.network}, Clock: f.clock, Admit: func(context.Context, string) error { return nil }})
+	base, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{Client: &http.Client{Transport: f.network}, TransportEnforcesEgress: true, Clock: f.clock, Admit: func(context.Context, string) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}

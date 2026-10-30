@@ -33,7 +33,7 @@ func TestCurrentCoreMissionBoundPermissionAcrossPersonServerRecomposition(t *tes
 	network := newLogicalTransport()
 	httpClient := &http.Client{Transport: network}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if strings.HasSuffix(endpoint, ".example/.well-known/aauth-agent.json") ||
 				strings.HasSuffix(endpoint, ".example/.well-known/aauth-person.json") ||
@@ -64,7 +64,7 @@ func TestCurrentCoreMissionBoundPermissionAcrossPersonServerRecomposition(t *tes
 	store := exampleutil.NewMissionPermissionStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Prepare and send the reviewed incident update.",
 	})
 	if err != nil {

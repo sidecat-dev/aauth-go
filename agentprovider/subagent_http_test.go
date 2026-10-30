@@ -50,7 +50,7 @@ func newHostedSubagentFixture(t *testing.T) *hostedSubagentFixture {
 	f.routes["https://ap.example"] = mux
 	client := &http.Client{Transport: f}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: client, Clock: f.clock, Admit: func(context.Context, string) error { return nil },
+		Client: client, TransportEnforcesEgress: true, Clock: f.clock, Admit: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)

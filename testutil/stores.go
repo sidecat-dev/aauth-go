@@ -22,6 +22,7 @@ type MissionStore interface {
 	personserver.PermissionQueueStore
 	personserver.MissionAuditStore
 	personserver.MissionR3IssuanceStore
+	personserver.PersonTokenPresentationStore
 	// LoadAuthToken and LoadR3Issuance are read-only observations for storetest
 	// fixtures. They return independent copies and do not enforce expiry.
 	LoadAuthToken(aauth.TokenReference) (personserver.IssuedAuthTokenRecord, bool)

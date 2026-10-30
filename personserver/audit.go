@@ -124,12 +124,8 @@ func (server *Server) loadActiveMissionForAudit(
 	if record.Agent != agent || record.S256 != s256 {
 		return MissionRecord{}, errors.New("personserver: mission audit store returned a different mission")
 	}
-	mission, err := validateMissionRecord(record)
-	if err != nil {
+	if _, err := validateMissionRecord(record); err != nil {
 		return MissionRecord{}, err
-	}
-	if mission.Blob.Approver != server.issuer {
-		return MissionRecord{}, errors.New("personserver: retained mission approver is not this Person Server")
 	}
 	if record.State == MissionTerminated {
 		return MissionRecord{}, &MissionTerminatedError{TerminationReason: record.TerminationReason}

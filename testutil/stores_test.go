@@ -34,7 +34,7 @@ func TestExportedMissionStore(t *testing.T) {
 		tb.Helper()
 		store := testutil.NewMissionStore()
 		expires := now.Add(time.Hour)
-		mission, err := aauth.EncodeMission(aauth.MissionBlob{Approver: "https://person.example", Agent: "aauth:operator@provider.example",
+		mission, err := aauth.EncodeMission(aauth.MissionBlob{Agent: "aauth:operator@provider.example",
 			ApprovedAt: now, ExpiresAt: &expires, Description: "Public store contract."})
 		if err != nil {
 			tb.Fatal(err)

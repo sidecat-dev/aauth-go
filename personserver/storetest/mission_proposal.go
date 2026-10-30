@@ -525,7 +525,7 @@ func missionProposalApproval(
 ) personserver.MissionProposalApproval {
 	t.Helper()
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: record.PersonServer, Agent: record.Agent, ApprovedAt: approvedAt,
+		Agent: record.Agent, ApprovedAt: approvedAt,
 		ExpiresAt: &missionExpiresAt, Description: description,
 		ApprovedResources: []string{missionProposalResource},
 	})

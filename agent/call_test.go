@@ -853,7 +853,8 @@ func TestPollAuthTokenPerformsOneSignedGETForHeldInvocation(t *testing.T) {
 		t.Fatal("Begin did not return pending call")
 	}
 	pathsBeforePoll := len(protocol.paths)
-	response, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+	pollResult, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+	response, _ := pollResult.Response()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -872,7 +873,8 @@ func TestPollAuthTokenPerformsOneSignedGETForHeldInvocation(t *testing.T) {
 	if !pollBody.closed {
 		t.Fatal("caller close did not close the poll response body")
 	}
-	if response, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending}); response != nil || err == nil {
+	pollResult, err = client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending})
+	if response, _ := pollResult.Response(); response != nil || err == nil {
 		t.Fatalf("empty auth-token poll response = %#v, error = %v", response, err)
 	}
 	if pollCalls != 1 {
@@ -880,7 +882,8 @@ func TestPollAuthTokenPerformsOneSignedGETForHeldInvocation(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if response, err := client.PollAuthToken(canceled, agent.AuthTokenPoll{Pending: pending, AuthToken: authToken}); response != nil || !errors.Is(err, context.Canceled) {
+	pollResult, err = client.PollAuthToken(canceled, agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+	if response, _ := pollResult.Response(); response != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled poll response = %#v, error = %v", response, err)
 	}
 	if pollCalls != 1 {
@@ -979,7 +982,8 @@ func TestPollAuthTokenRejectsUnboundAuthTokensBeforeNetwork(t *testing.T) {
 			}
 			authToken := mintPendingAuthToken(t, protocol, resourceClaims, scenario.change)
 			callsBefore := httpCalls
-			response, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+			pollResult, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+			response, _ := pollResult.Response()
 			var clientFailure *agent.Error
 			if response != nil || !errors.As(err, &clientFailure) || clientFailure.Operation != "poll auth token" {
 				t.Fatalf("PollAuthToken response = %#v, error = %v, typed error = %#v", response, err, clientFailure)
@@ -1057,7 +1061,8 @@ func TestPollAuthTokenRejectsPendingValueFromAnotherClientBeforeNetwork(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := other.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+	pollResult, err := other.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+	response, _ := pollResult.Response()
 	if response != nil || err == nil || !strings.Contains(err.Error(), "signing key") {
 		t.Fatalf("cross-client PollAuthToken response = %#v, error = %v", response, err)
 	}
@@ -1087,7 +1092,8 @@ func TestPollAuthTokenValidatesInputBeforeNetwork(t *testing.T) {
 	} {
 		scenario := scenario
 		t.Run(scenario.name, func(t *testing.T) {
-			response, err := scenario.client.PollAuthToken(scenario.ctx, scenario.input)
+			pollResult, err := scenario.client.PollAuthToken(scenario.ctx, scenario.input)
+			response, _ := pollResult.Response()
 			var clientFailure *agent.Error
 			if response != nil || !errors.As(err, &clientFailure) || clientFailure.Operation != "poll auth token" {
 				t.Fatalf("PollAuthToken response = %#v, error = %v, typed error = %#v", response, err, clientFailure)
@@ -1157,7 +1163,8 @@ func TestPollAuthTokenRejectsTokenThatOutlivesAgentBeforeNetwork(t *testing.T) {
 		claims.ExpiresAt = protocol.now.Add(25 * time.Minute).Unix()
 	})
 	callsBefore := httpCalls
-	response, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+	pollResult, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+	response, _ := pollResult.Response()
 	if response != nil || err == nil || !strings.Contains(err.Error(), "lifetime exceeds the agent token") {
 		t.Fatalf("PollAuthToken response = %#v, error = %v", response, err)
 	}
@@ -1215,12 +1222,19 @@ func TestPollAuthTokenReturnsRetryableResponsesRaw(t *testing.T) {
 			if !ok {
 				t.Fatal("Begin did not return pending call")
 			}
-			response, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+			pollResult, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+			response, _ := pollResult.Response()
 			if err != nil {
 				t.Fatal(err)
 			}
 			if response.StatusCode != status || response.Header.Get("Retry-After") != "7" || pollCalls != 1 {
 				t.Fatalf("response = %d Retry-After %q, poll calls = %d", response.StatusCode, response.Header.Get("Retry-After"), pollCalls)
+			}
+			// A 202 that names no pending URL is not this held invocation;
+			// 429 and 503 keep it pending with the 7-second Retry-After.
+			next, held := pollResult.Pending()
+			if held != (status != http.StatusAccepted) || held && (next.Location() != pending.Location() || next.RetryAfter() != 7*time.Second) {
+				t.Fatalf("pending = %t %q after %s", held, next.Location(), next.RetryAfter())
 			}
 			if pollBody.closed {
 				t.Fatal("PollAuthToken closed raw retryable response")
@@ -1336,7 +1350,8 @@ func TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem(t *testing.T) {
 			if !ok {
 				t.Fatal("Begin did not return pending call")
 			}
-			response, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+			pollResult, err := client.PollAuthToken(context.Background(), agent.AuthTokenPoll{Pending: pending, AuthToken: authToken})
+			response, _ := pollResult.Response()
 			var clientFailure *agent.Error
 			if response != nil || !errors.As(err, &clientFailure) || clientFailure.Operation != "poll auth token" {
 				t.Fatalf("PollAuthToken response = %#v, error = %v, typed error = %#v", response, err, clientFailure)

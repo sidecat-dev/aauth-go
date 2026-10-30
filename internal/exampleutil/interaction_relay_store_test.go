@@ -26,7 +26,7 @@ func TestMissionInteractionRelayStoreContract(t *testing.T) {
 			now := time.Date(2026, 9, 1, 3, 0, 0, 0, time.UTC)
 			expiresAt := now.Add(time.Hour)
 			mission, err := aauth.EncodeMission(aauth.MissionBlob{
-				Approver: "https://ps.example", Agent: "aauth:operator@ap.example",
+				Agent:      "aauth:operator@ap.example",
 				ApprovedAt: now, ExpiresAt: &expiresAt, Description: "Relay contract mission.",
 			})
 			if err != nil {

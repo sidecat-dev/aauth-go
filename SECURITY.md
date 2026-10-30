@@ -27,10 +27,16 @@ the normal issue tracker.
 
 URL admission is not a network sandbox. The HTTP key resolver validates
 metadata, issuer identity, JWKS documents, and response bounds and rejects
-redirects, but the caller-supplied transport must resolve and pin the admitted
-host, reject forbidden addresses, and prevent DNS rebinding. Give every
-outbound operation a finite context and apply the same destination controls to
-Agent and Person Server clients.
+redirects. It also checks every discovery connection: it dials through a clone
+of the caller's `*http.Transport`, resolves the host once, refuses private,
+loopback, link-local, and other non-public addresses unless
+`AllowDestination` admits them, and connects to the exact address it checked,
+which defeats DNS rebinding. A transport it cannot dial through (another
+`RoundTripper`, a proxy, or a custom TLS dialer) is refused unless
+`TransportEnforcesEgress` states that the transport applies the same controls
+itself. Give every outbound operation a finite context and apply the same
+destination controls to Agent and Person Server clients, which use the
+caller's transport as given.
 
 Keep signing keys outside this module and use HTTPS at the process boundary. A
 valid signature authenticates protocol input; it does not replace application

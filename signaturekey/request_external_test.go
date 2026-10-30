@@ -787,7 +787,10 @@ func TestJWTCredentialRejectsInvalidCacheAndOtherParameters(t *testing.T) {
 	}
 }
 
-func TestPrepareRequestClassifiesMissingProofFieldsAsInvalidRequest(t *testing.T) {
+// A request missing Signature, Signature-Input, or Signature-Key fails with
+// invalid_signature (AAuth Core "Verification (Server)" step 1; Signature-Key
+// "invalid_signature").
+func TestPrepareRequestClassifiesMissingProofFieldsAsInvalidSignature(t *testing.T) {
 	now := time.Date(2026, 8, 29, 21, 0, 0, 0, time.UTC)
 	key, err := jose.NewEd25519SigningKey(
 		"request-key",
@@ -816,8 +819,8 @@ func TestPrepareRequestClassifiesMissingProofFieldsAsInvalidRequest(t *testing.T
 				signaturekey.VerifyOptions{AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeHWK}},
 			)
 			var failure *signaturekey.Error
-			if !errors.As(err, &failure) || failure.Code != signaturekey.ErrorInvalidRequest {
-				t.Fatalf("error = %T %v, want invalid_request Signature-Key error", err, err)
+			if !errors.As(err, &failure) || failure.Code != signaturekey.ErrorInvalidSignature {
+				t.Fatalf("error = %T %v, want invalid_signature Signature-Key error", err, err)
 			}
 		})
 	}

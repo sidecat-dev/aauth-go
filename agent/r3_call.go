@@ -309,47 +309,90 @@ func (client *Client) RetryR3Call(ctx context.Context, input R3Retry) (*http.Res
 	return client.finishR3Response(operation, response)
 }
 
+// R3PollResult is the caller-owned response to one per-call poll. When the
+// Resource still holds the invocation (202 naming the same pending URL), asks
+// the agent to slow down (429), or is temporarily unavailable (503), Pending
+// also returns the held invocation with its next polling interval.
+type R3PollResult struct {
+	response *http.Response
+	pending  PendingR3Call
+}
+
+// Response returns the poll response. The caller owns its body.
+func (result R3PollResult) Response() (*http.Response, bool) {
+	return result.response, result.response != nil
+}
+
+// Pending returns the held invocation to poll again, when the response did
+// not end it. Its interval is the 202's Retry-After, or five seconds when
+// absent; after a 429, five seconds more than before, or the 429's
+// Retry-After when longer; after a 503, its Retry-After, or five seconds.
+func (result R3PollResult) Pending() (PendingR3Call, bool) {
+	if result.pending.kind != pendingR3CallVerified {
+		return PendingR3Call{}, false
+	}
+	return result.pending, true
+}
+
 // PollR3Call verifies one proposal Auth token and performs exactly one
 // signed GET to the trusted pending URL. It never sleeps, retries, exchanges a
 // token, or resends the original application request.
-func (client *Client) PollR3Call(ctx context.Context, input R3Poll) (*http.Response, error) {
+func (client *Client) PollR3Call(ctx context.Context, input R3Poll) (R3PollResult, error) {
 	const operation = "poll R3 call"
 	if client == nil {
-		return nil, fail(operation, errors.New("client is required"))
+		return R3PollResult{}, fail(operation, errors.New("client is required"))
 	}
 	if ctx == nil {
-		return nil, fail(operation, errors.New("context is required"))
+		return R3PollResult{}, fail(operation, errors.New("context is required"))
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fail(operation, err)
+		return R3PollResult{}, fail(operation, err)
 	}
 	if input.Pending.kind != pendingR3CallVerified {
-		return nil, fail(operation, errors.New("verified pending R3 call is required"))
+		return R3PollResult{}, fail(operation, errors.New("verified pending R3 call is required"))
 	}
 	if input.AuthToken == "" {
-		return nil, fail(operation, errors.New("auth token is required"))
+		return R3PollResult{}, fail(operation, errors.New("auth token is required"))
 	}
 	if err := client.verifyR3ProposalAuthToken(ctx, input.AuthToken, input.Pending.proposal); err != nil {
-		return nil, fail(operation, err)
+		return R3PollResult{}, fail(operation, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, input.Pending.location, nil)
 	if err != nil {
-		return nil, fail(operation, err)
+		return R3PollResult{}, fail(operation, err)
 	}
 	if err := signaturekey.SignJWTRequestWithOptions(
 		request, client.signingKey, input.AuthToken, client.clock, signaturekey.SignOptions{},
 	); err != nil {
-		return nil, fail(operation, err)
+		return R3PollResult{}, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return nil, fail(operation, err)
+		return R3PollResult{}, fail(operation, err)
 	}
 	if err := validateCallResponseOrigin(response, input.Pending.proposal.resourceClaims.Issuer); err != nil {
 		closeResponse(response)
-		return nil, fail(operation, err)
+		return R3PollResult{}, fail(operation, err)
 	}
-	return client.finishR3Response(operation, response)
+	if response.StatusCode == http.StatusAccepted || response.StatusCode == http.StatusTooManyRequests ||
+		response.StatusCode == http.StatusServiceUnavailable {
+		next := input.Pending
+		interval, held, err := nextHeldPollInterval(input.Pending.location, input.Pending.retryAfter, response, client.clock.Now())
+		if err != nil {
+			response.Body.Close()
+			return R3PollResult{}, fail(operation, err)
+		}
+		if !held {
+			return R3PollResult{response: response}, nil
+		}
+		next.retryAfter = interval
+		return R3PollResult{response: response, pending: next}, nil
+	}
+	response, err = client.finishR3Response(operation, response)
+	if err != nil {
+		return R3PollResult{}, err
+	}
+	return R3PollResult{response: response}, nil
 }
 
 func (client *Client) verifyR3CallAuthContext(

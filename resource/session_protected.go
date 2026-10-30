@@ -17,7 +17,7 @@ func (server *ResourceManagedServer) serveResourceManaged(response http.Response
 	if !hasAAuthRequestProof(request) {
 		if len(request.Header.Values("Authorization")) != 0 {
 			writeCredentialProblem(response, "invalid_signature", &requestTokenError{cause: &signaturekey.Error{
-				Code:  signaturekey.ErrorInvalidRequest,
+				Code:  signaturekey.ErrorInvalidSignature,
 				Cause: errors.New("session Authorization requires Signature, Signature-Input, and Signature-Key"),
 			}})
 			return

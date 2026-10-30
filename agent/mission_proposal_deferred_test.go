@@ -97,7 +97,7 @@ func TestPendingMissionProposalSnapshotRestoresWithSameAgentAndKey(t *testing.T)
 		Resources:   []string{protocol.resourceID},
 	}
 	mission := mustEncodeMission(t, aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID, ApprovedAt: protocol.now,
+		Agent: protocol.agentID, ApprovedAt: protocol.now,
 		Description: proposal.Description, ApprovedResources: []string{protocol.resourceID},
 	})
 	httpClient := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
@@ -355,7 +355,7 @@ func TestClientPollMissionProposalReturnsVerifiedApproval(t *testing.T) {
 	}
 	expiresAt := protocol.now.Add(15 * time.Minute)
 	mission := mustEncodeMission(t, aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID, ApprovedAt: protocol.now,
+		Agent: protocol.agentID, ApprovedAt: protocol.now,
 		ExpiresAt: &expiresAt, Description: proposal.Description,
 		ApprovedResources: []string{protocol.resourceID},
 	})

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,10 @@ func TestStaticKeyResolverClassifiesAlgorithmKeyTypeMismatchAsInvalid(t *testing
 	}
 }
 
+// allowLoopbackDiscovery admits the loopback address of an httptest server,
+// as deployment configuration would admit an internal issuer.
+func allowLoopbackDiscovery(address netip.Addr) bool { return address.IsLoopback() }
+
 func testDiscoverySigningKey(t *testing.T, id string, fill byte) jose.SigningKey {
 	t.Helper()
 	key, err := jose.NewEd25519SigningKey(id, ed25519.NewKeyFromSeed(bytes.Repeat([]byte{fill}, ed25519.SeedSize)))
@@ -93,8 +98,8 @@ func TestHTTPKeyResolverUsesAdmittedTwoHopDiscoveryAndCache(t *testing.T) {
 
 	var admitted []string
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: server.Client(),
-		Clock:  fixedClock(now),
+		Client: server.Client(), AllowDestination: allowLoopbackDiscovery,
+		Clock: fixedClock(now),
 		Admit: func(_ context.Context, endpoint string) error {
 			admitted = append(admitted, endpoint)
 			return nil
@@ -130,9 +135,10 @@ func TestHTTPKeyResolverBoundsEveryFetch(t *testing.T) {
 			<-request.Context().Done()
 			return nil, request.Context().Err()
 		})},
-		Clock:   fixedClock(time.Date(2026, 8, 29, 22, 0, 0, 0, time.UTC)),
-		Admit:   func(context.Context, string) error { return nil },
-		Timeout: 10 * time.Millisecond,
+		TransportEnforcesEgress: true,
+		Clock:                   fixedClock(time.Date(2026, 8, 29, 22, 0, 0, 0, time.UTC)),
+		Admit:                   func(context.Context, string) error { return nil },
+		Timeout:                 10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +201,7 @@ func TestTokenVerificationRefreshesRotatedSameIDKeyAfterTheFloor(t *testing.T) {
 	})}
 
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: client, Clock: clock,
+		Client: client, TransportEnforcesEgress: true, Clock: clock,
 		Admit: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
@@ -268,7 +274,7 @@ func TestHTTPKeyResolverUsesStaleCacheOnlyWithinCoreDiscardBound(t *testing.T) {
 		}, nil
 	})}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: client, Clock: clock, Admit: func(context.Context, string) error { return nil },
+		Client: client, TransportEnforcesEgress: true, Clock: clock, Admit: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -346,9 +352,9 @@ func TestHTTPKeyResolverDoesNotReuseOrImmediatelyRefetchNoStoreResponses(t *test
 	defer server.Close()
 
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: server.Client(),
-		Clock:  fixedClock(now),
-		Admit:  func(context.Context, string) error { return nil },
+		Client: server.Client(), AllowDestination: allowLoopbackDiscovery,
+		Clock: fixedClock(now),
+		Admit: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -405,9 +411,9 @@ func TestHTTPKeyResolverNoStoreDominatesNoCacheInAnyOrder(t *testing.T) {
 				}, nil
 			})}
 			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-				Client: client,
-				Clock:  fixedClock(time.Date(2026, 8, 29, 20, 0, 0, 0, time.UTC)),
-				Admit:  func(context.Context, string) error { return nil },
+				Client: client, TransportEnforcesEgress: true,
+				Clock: fixedClock(time.Date(2026, 8, 29, 20, 0, 0, 0, time.UTC)),
+				Admit: func(context.Context, string) error { return nil },
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -461,7 +467,7 @@ func TestHTTPKeyResolverStoresImmediatelyStaleResponsesForBoundedRevalidation(t 
 				}, nil
 			})}
 			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-				Client: client, Clock: clock, Admit: func(context.Context, string) error { return nil },
+				Client: client, TransportEnforcesEgress: true, Clock: clock, Admit: func(context.Context, string) error { return nil },
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -600,9 +606,9 @@ func TestHTTPKeyResolverRejectsAmbiguousDiscoveryJSONNames(t *testing.T) {
 			defer server.Close()
 
 			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-				Client: server.Client(),
-				Clock:  fixedClock(now),
-				Admit:  func(context.Context, string) error { return nil },
+				Client: server.Client(), AllowDestination: allowLoopbackDiscovery,
+				Clock: fixedClock(now),
+				Admit: func(context.Context, string) error { return nil },
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -635,9 +641,9 @@ func TestHTTPKeyResolverRejectsNonHTTPSDisplayURIs(t *testing.T) {
 	}))
 	defer server.Close()
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: server.Client(),
-		Clock:  fixedClock(now),
-		Admit:  func(context.Context, string) error { return nil },
+		Client: server.Client(), AllowDestination: allowLoopbackDiscovery,
+		Clock: fixedClock(now),
+		Admit: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)

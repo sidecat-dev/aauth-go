@@ -27,7 +27,7 @@ func TestMissionPermissionStoreContract(t *testing.T) {
 			now := time.Date(2026, 8, 31, 23, 0, 0, 0, time.UTC)
 			expiresAt := now.Add(time.Hour)
 			mission, err := aauth.EncodeMission(aauth.MissionBlob{
-				Approver: "https://person.example", Agent: "aauth:operator@provider.example",
+				Agent:      "aauth:operator@provider.example",
 				ApprovedAt: now, ExpiresAt: &expiresAt, Description: "Permission store contract mission.",
 			})
 			if err != nil {

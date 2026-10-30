@@ -58,7 +58,7 @@ func TestAgentProviderRevokesAgentTokenAtPersonServerAcrossRecomposition(t *test
 	httpClient := &http.Client{Transport: network}
 	admit := func(context.Context, string) error { return nil }
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock, Admit: admit,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock, Admit: admit,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestAgentProviderRevokesAgentTokenAtDirectResourceAcrossRecomposition(t *te
 	httpClient := &http.Client{Transport: network}
 	admit := func(context.Context, string) error { return nil }
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock, Admit: admit,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock, Admit: admit,
 	})
 	if err != nil {
 		t.Fatal(err)

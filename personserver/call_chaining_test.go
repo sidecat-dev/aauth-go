@@ -167,19 +167,11 @@ func TestCallChainingRejectsUnacceptableUpstreamBeforePolicyOrRetention(t *testi
 			},
 		},
 		{
+			// An upstream token is a person token or an auth token; an agent
+			// token is neither.
 			name: "wrong token type",
 			token: func(t *testing.T, protocol *callChainingProtocol) string {
-				compact, err := aauth.MintPersonToken(protocol.personServerKey, aauth.PersonTokenClaims{
-					Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
-					Audience: protocol.resourceOneID, Subject: protocol.upstreamClaims.Subject,
-					Confirmation: aauth.Confirmation{JWK: protocol.originalAgentKey.PublicJWK()},
-					JTI:          "wrong-type", IssuedAt: protocol.now.Unix(),
-					ExpiresAt: protocol.now.Add(10 * time.Minute).Unix(),
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				return compact
+				return protocol.resourceOneIDToken
 			},
 		},
 		{

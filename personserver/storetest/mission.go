@@ -448,7 +448,7 @@ func missionRecord(t *testing.T, label string) personserver.MissionRecord {
 	expiresAt := approvedAt.Add(time.Hour)
 	agent := "aauth:worker@provider.example"
 	document, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: "https://person.example", Agent: agent, ApprovedAt: approvedAt, ExpiresAt: &expiresAt,
+		Agent: agent, ApprovedAt: approvedAt, ExpiresAt: &expiresAt,
 		Description:       "Store contract " + label,
 		ApprovedTools:     []aauth.MissionTool{{Name: "files.write", Description: "Write one report."}},
 		ApprovedResources: []string{"https://resource.example"},

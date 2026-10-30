@@ -16,7 +16,6 @@ func TestMissionApprovalPreservesAndVerifiesExactBlob(t *testing.T) {
 	approvedAt := time.Date(2026, 8, 30, 20, 15, 0, 0, time.UTC)
 	expiresAt := approvedAt.Add(2 * time.Hour)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver:    "https://person.example",
 		Agent:       "aauth:planner@agents.example",
 		ApprovedAt:  approvedAt,
 		ExpiresAt:   &expiresAt,
@@ -43,10 +42,53 @@ func TestMissionApprovalPreservesAndVerifiesExactBlob(t *testing.T) {
 	if string(decoded.ExactJSON) != string(mission.ExactJSON) || decoded.S256 != mission.S256 || decoded.Encoded != mission.Encoded {
 		t.Fatalf("decoded mission = %#v, want exact bytes %q", decoded, mission.ExactJSON)
 	}
-	if decoded.Blob.Approver != "https://person.example" || decoded.Blob.Agent != "aauth:planner@agents.example" ||
+	if decoded.Blob.Agent != "aauth:planner@agents.example" ||
 		!decoded.Blob.ApprovedAt.Equal(approvedAt) || decoded.Blob.ExpiresAt == nil || !decoded.Blob.ExpiresAt.Equal(expiresAt) ||
 		decoded.Blob.Description != "# Publish the report\n\nPrepare and publish the reviewed report." {
 		t.Fatalf("decoded blob = %#v", decoded.Blob)
+	}
+}
+
+// The mission blob carries no approver member; the approver is always the
+// Person Server. A blob written by another Person Server in the draft's shape
+// decodes, EncodeMission writes no approver member, and an approver member a
+// Person Server adds anyway is an unrecognized member: ignored, and retained
+// byte-for-byte under s256.
+func TestMissionBlobCarriesNoApproverMember(t *testing.T) {
+	t.Parallel()
+
+	draft := []byte(`{"agent":"aauth:assistant@agent.example","approved_at":"2026-04-07T14:30:00Z","expires_at":"2026-05-07T14:30:00Z","description":"# Plan Japan Vacation\n\nPlan and book a trip to Japan next month for 2 adults.","approved_tools":[{"name":"WebSearch","description":"Search the web"},{"name":"Read","description":"Read files and web pages"}],"approved_resources":["https://flights.example","https://hotels.example"]}`)
+	decoded, err := aauth.DecodeMission(aauth.MissionS256(draft), base64.RawURLEncoding.EncodeToString(draft))
+	if err != nil {
+		t.Fatalf("draft-shaped mission blob was refused: %v", err)
+	}
+	if decoded.Blob.Agent != "aauth:assistant@agent.example" || len(decoded.Blob.ApprovedResources) != 2 ||
+		string(decoded.ExactJSON) != string(draft) {
+		t.Fatalf("decoded draft blob = %#v", decoded)
+	}
+
+	encoded, err := aauth.EncodeMission(aauth.MissionBlob{
+		Agent: "aauth:assistant@agent.example", ApprovedAt: time.Date(2026, 4, 7, 14, 30, 0, 0, time.UTC),
+		Description: "Plan the trip",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(encoded.ExactJSON, &members); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := members["approver"]; present {
+		t.Fatalf("encoded mission blob carries an approver member: %s", encoded.ExactJSON)
+	}
+
+	withApprover := []byte(`{"approver":"https://other-ps.example","agent":"aauth:assistant@agent.example","approved_at":"2026-04-07T14:30:00Z","description":"Plan the trip"}`)
+	retained, err := aauth.DecodeMission(aauth.MissionS256(withApprover), base64.RawURLEncoding.EncodeToString(withApprover))
+	if err != nil {
+		t.Fatalf("blob with an unrecognized approver member was refused: %v", err)
+	}
+	if string(retained.ExactJSON) != string(withApprover) {
+		t.Fatalf("exact JSON changed: %q", retained.ExactJSON)
 	}
 }
 
@@ -54,7 +96,6 @@ func TestApprovedMissionMatchesOnlyExactApprovedToolNames(t *testing.T) {
 	t.Parallel()
 
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver:    "https://person.example",
 		Agent:       "aauth:planner@agents.example",
 		ApprovedAt:  time.Date(2026, 9, 1, 18, 0, 0, 0, time.UTC),
 		Description: "Read the reviewed report inputs.",
@@ -95,7 +136,7 @@ func TestEncodeMissionDoesNotAliasCallerValues(t *testing.T) {
 	expiresAt := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
 	wantExpiry := expiresAt
 	blob := aauth.MissionBlob{
-		Approver: "https://person.example", Agent: "aauth:planner@agents.example",
+		Agent:      "aauth:planner@agents.example",
 		ApprovedAt: expiresAt.Add(-time.Hour), ExpiresAt: &expiresAt, Description: "Work",
 		ApprovedTools:     []aauth.MissionTool{{Name: "Read", Description: "Read inputs"}},
 		ApprovedResources: []string{"https://resource.example"},
@@ -116,7 +157,7 @@ func TestEncodeMissionDoesNotAliasCallerValues(t *testing.T) {
 func TestDecodeMissionRejectsSubstitutionAndMalformedBlob(t *testing.T) {
 	t.Parallel()
 
-	valid := []byte(`{"approver":"https://person.example","agent":"aauth:planner@agents.example","approved_at":"2026-08-30T20:15:00Z","description":"Do the work","extension":{"retained":true}}`)
+	valid := []byte(`{"agent":"aauth:planner@agents.example","approved_at":"2026-08-30T20:15:00Z","description":"Do the work","extension":{"retained":true}}`)
 	identifier := aauth.MissionS256(valid)
 	encoded := base64.RawURLEncoding.EncodeToString(valid)
 	mission, err := aauth.DecodeMission(identifier, encoded)
@@ -135,7 +176,7 @@ func TestDecodeMissionRejectsSubstitutionAndMalformedBlob(t *testing.T) {
 		{name: "changed identifier", identifier: aauth.MissionS256([]byte("other")), encoded: encoded},
 		{name: "padded encoding", identifier: identifier, encoded: encoded + "="},
 		{name: "invalid JSON", identifier: aauth.MissionS256([]byte("not json")), encoded: base64.RawURLEncoding.EncodeToString([]byte("not json"))},
-		{name: "ambiguous member", identifier: aauth.MissionS256([]byte(`{"approver":"https://person.example","Approver":"https://other.example","agent":"aauth:planner@agents.example","approved_at":"2026-08-30T20:15:00Z","description":"Do the work"}`)), encoded: base64.RawURLEncoding.EncodeToString([]byte(`{"approver":"https://person.example","Approver":"https://other.example","agent":"aauth:planner@agents.example","approved_at":"2026-08-30T20:15:00Z","description":"Do the work"}`))},
+		{name: "ambiguous member", identifier: aauth.MissionS256([]byte(`{"agent":"aauth:planner@agents.example","Agent":"aauth:other@agents.example","approved_at":"2026-08-30T20:15:00Z","description":"Do the work"}`)), encoded: base64.RawURLEncoding.EncodeToString([]byte(`{"agent":"aauth:planner@agents.example","Agent":"aauth:other@agents.example","approved_at":"2026-08-30T20:15:00Z","description":"Do the work"}`))},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := aauth.DecodeMission(test.identifier, test.encoded); err == nil {
@@ -169,14 +210,13 @@ func TestMissionValuesValidateOnlyProtocolConstraints(t *testing.T) {
 
 	approvedAt := time.Date(2026, 8, 30, 20, 15, 0, 0, time.UTC)
 	validBlob := aauth.MissionBlob{
-		Approver: "https://person.example", Agent: "aauth:planner@agents.example",
+		Agent:      "aauth:planner@agents.example",
 		ApprovedAt: approvedAt, Description: "Prepare the report",
 	}
 	if _, err := aauth.EncodeMission(validBlob); err != nil {
 		t.Fatal(err)
 	}
 	for _, change := range []func(*aauth.MissionBlob){
-		func(blob *aauth.MissionBlob) { blob.Approver = "" },
 		func(blob *aauth.MissionBlob) { blob.Agent = "" },
 		func(blob *aauth.MissionBlob) { blob.ApprovedAt = time.Time{} },
 		func(blob *aauth.MissionBlob) { blob.Description = "" },

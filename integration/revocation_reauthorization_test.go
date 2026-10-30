@@ -50,7 +50,7 @@ func TestThreePartyRevocationAndPersonTokenRecoveryAcrossResourceRecomposition(t
 		return errors.New("unexpected egress endpoint: " + endpoint)
 	}
 	keyResolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock, Admit: admitEgress,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock, Admit: admitEgress,
 	})
 	if err != nil {
 		t.Fatal(err)

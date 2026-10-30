@@ -247,7 +247,7 @@ func TestAuthorizationEndpointIssuesCurrentResourceToken(t *testing.T) {
 		}
 	})
 
-	t.Run("expired person token uses authorization-endpoint error", func(t *testing.T) {
+	t.Run("expired person token is answered with Signature-Error", func(t *testing.T) {
 		expired, err := aauth.MintPersonToken(psKey, aauth.PersonTokenClaims{
 			Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument, Audience: resourceIssuer,
 			Subject: "person-1", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
@@ -265,11 +265,13 @@ func TestAuthorizationEndpointIssuesCurrentResourceToken(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
 			t.Fatal(err)
 		}
-		if response.Code != http.StatusBadRequest || problem.Code != "invalid_person_token" {
+		// A person token that fails verification is answered with 401 and
+		// Signature-Error, not with an authorization-endpoint error code.
+		if response.Code != http.StatusUnauthorized || problem.Code == "invalid_person_token" {
 			t.Fatalf("status = %d, problem = %#v", response.Code, problem)
 		}
-		if header := response.Header().Get("Signature-Error"); header != "" {
-			t.Fatalf("Signature-Error = %q on a valid request proof", header)
+		if header := response.Header().Get("Signature-Error"); header != "error=expired_jwt" {
+			t.Fatalf("Signature-Error = %q, want error=expired_jwt", header)
 		}
 	})
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -338,6 +339,55 @@ func TestDeferredPersonTokenUncertainDecisionRetriesRecoverRetainedOutcome(t *te
 			}
 		})
 	}
+}
+
+// The Person Server rate-limits code-validation attempts at the interaction
+// URL itself: after MaximumPersonTokenCodeAttempts failed codes, malformed or
+// wrong, the pending interaction is terminally failed, later presentations
+// fail even with the right code, and the Agent's poll answers invalid_code.
+func TestDeferredPersonTokenTerminallyFailsAfterFailedCodeAttemptBound(t *testing.T) {
+	t.Parallel()
+
+	protocol := newPersonInteractionProtocol(t)
+	store := newMemoryDeferredTokenStore()
+	server := protocol.newServer(t, store, true)
+	initial := httptest.NewRecorder()
+	server.Handler().ServeHTTP(initial, protocol.personTokenRequest(t))
+	if initial.Code != http.StatusAccepted {
+		t.Fatalf("initial status = %d, body = %s", initial.Code, initial.Body.String())
+	}
+	requirement, err := aauth.ParseInteractionRequirement(initial.Header().Values("AAuth-Requirement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := personInteractionReference(t, requirement.URL)
+	failed := []string{"not a code!", "ZZZZ-ZZZZ", "YYYY-YYYY"}
+	if len(failed) != MaximumPersonTokenCodeAttempts {
+		t.Fatalf("test covers %d attempts, bound is %d", len(failed), MaximumPersonTokenCodeAttempts)
+	}
+	for index, code := range failed {
+		_, err := server.ConsumePersonTokenInteractionCode(context.Background(), reference, code)
+		if index < len(failed)-1 {
+			if !errors.Is(err, ErrInteractionCodeInvalid) {
+				t.Fatalf("failed attempt %d = %v", index+1, err)
+			}
+			poll := httptest.NewRecorder()
+			server.Handler().ServeHTTP(poll, protocol.pollRequest(t, initial.Header().Get("Location"), protocol.agentKey, protocol.agentToken))
+			if poll.Code != http.StatusAccepted {
+				t.Fatalf("poll below the bound = %d %s", poll.Code, poll.Body.String())
+			}
+			continue
+		}
+		if !errors.Is(err, ErrPendingPersonTokenGone) {
+			t.Fatalf("attempt %d reaching the bound = %v", index+1, err)
+		}
+	}
+	if _, err := server.ConsumePersonTokenInteractionCode(context.Background(), reference, requirement.Code); !errors.Is(err, ErrPendingPersonTokenGone) {
+		t.Fatalf("correct code after the bound = %v", err)
+	}
+	poll := httptest.NewRecorder()
+	server.Handler().ServeHTTP(poll, protocol.pollRequest(t, initial.Header().Get("Location"), protocol.agentKey, protocol.agentToken))
+	assertPersonInteractionProblem(t, poll, http.StatusGone, "invalid_code")
 }
 
 func TestDeferredPersonTokenHostCanInvalidateAfterFailedCodeAttemptBound(t *testing.T) {
@@ -884,13 +934,15 @@ type memoryDeferredTokenStore struct {
 	consumeChange    func(*PendingPersonTokenRecord)
 	pollErr          error
 	pollOverride     *PersonTokenPollRecord
+	presentations    map[string][]string
 }
 
 type memoryPendingPersonToken struct {
-	record   PendingPersonTokenRecord
-	state    PersonTokenPollState
-	approval PersonTokenApproval
-	deniedAt time.Time
+	record         PendingPersonTokenRecord
+	state          PersonTokenPollState
+	approval       PersonTokenApproval
+	deniedAt       time.Time
+	failedAttempts int
 }
 
 func newMemoryDeferredTokenStore() *memoryDeferredTokenStore {
@@ -917,6 +969,27 @@ func (store *memoryDeferredTokenStore) Load(_ context.Context, issuer, jti strin
 	return record, nil
 }
 
+// RecordPersonTokenPresentation retains one presentation per Access Server.
+func (store *memoryDeferredTokenStore) RecordPersonTokenPresentation(_ context.Context, presentation PersonTokenPresentation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := presentation.PersonServer + "\x00" + presentation.JTI
+	if store.presentations == nil {
+		store.presentations = make(map[string][]string)
+	}
+	if !slices.Contains(store.presentations[key], presentation.AccessServer) {
+		store.presentations[key] = append(store.presentations[key], presentation.AccessServer)
+	}
+	return nil
+}
+
+// LoadPersonTokenPresentations returns the recorded Access Servers in order.
+func (store *memoryDeferredTokenStore) LoadPersonTokenPresentations(_ context.Context, personServer, jti string) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.presentations[personServer+"\x00"+jti]), nil
+}
+
 func (store *memoryDeferredTokenStore) CreatePendingPersonToken(_ context.Context, record PendingPersonTokenRecord) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -934,14 +1007,24 @@ func (store *memoryDeferredTokenStore) CreatePendingPersonToken(_ context.Contex
 	return nil
 }
 
-func (store *memoryDeferredTokenStore) ConsumePersonTokenInteractionCode(_ context.Context, personServer, reference string, code [32]byte, now time.Time) (PendingPersonTokenRecord, error) {
+func (store *memoryDeferredTokenStore) ConsumePersonTokenInteractionCode(_ context.Context, personServer, reference string, presentation PersonTokenCodePresentation, now time.Time) (PendingPersonTokenRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	pending, ok := store.pending[reference]
-	if !ok {
+	if !ok || pending.record.PersonServer != personServer {
 		return PendingPersonTokenRecord{}, ErrInteractionCodeInvalid
 	}
-	if pending.record.PersonServer != personServer || pending.record.CodeSHA256 != code {
+	if pending.failedAttempts >= MaximumPersonTokenCodeAttempts {
+		return PendingPersonTokenRecord{}, ErrPendingPersonTokenGone
+	}
+	if !presentation.SyntacticallyValid || pending.record.CodeSHA256 != presentation.CodeSHA256 {
+		if pending.state == PersonTokenPollWaiting && now.Before(pending.record.ExpiresAt) {
+			pending.failedAttempts++
+			if pending.failedAttempts >= MaximumPersonTokenCodeAttempts {
+				pending.state = PersonTokenPollGone
+				return PendingPersonTokenRecord{}, ErrPendingPersonTokenGone
+			}
+		}
 		return PendingPersonTokenRecord{}, ErrInteractionCodeInvalid
 	}
 	if pending.state != PersonTokenPollWaiting {

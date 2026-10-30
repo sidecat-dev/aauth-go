@@ -53,6 +53,9 @@ func run(output io.Writer) error {
 	httpClient := &http.Client{Transport: transport}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: httpClient, Clock: clock, Admit: network.Admit,
+		// The in-memory network makes no connection. Leave this unset with a
+		// network transport, so the resolver checks every destination.
+		TransportEnforcesEgress: true,
 	})
 	if err != nil {
 		return err

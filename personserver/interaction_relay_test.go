@@ -62,7 +62,7 @@ func TestMissionInteractionRelayPolicyAndHostUseExactActiveMission(t *testing.T)
 	}
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Complete the approved payment.",
 	})
@@ -151,7 +151,7 @@ func TestMissionInteractionRelayIsAvailableInFederatedMode(t *testing.T) {
 	}
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Complete the approved confirmation.",
 	})

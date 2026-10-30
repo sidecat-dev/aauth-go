@@ -77,7 +77,8 @@ func (decision PermissionDecision) Reason() string {
 
 // PermissionResult is exactly one decision, verified pending continuation, or
 // caller-owned 429/503 response. A response body returned by Response remains
-// open and must be closed by the caller.
+// open and must be closed by the caller. A poll's 429/503 response also
+// carries the pending continuation with its next polling interval.
 type PermissionResult struct {
 	kind     permissionResultKind
 	decision PermissionDecision
@@ -93,9 +94,13 @@ func (result PermissionResult) Decision() (PermissionDecision, bool) {
 	return result.decision, true
 }
 
-// Pending returns the verified continuation, when present.
+// Pending returns the verified continuation, when present. After a poll
+// answered with 429 its interval is five seconds more than before, or the
+// 429's Retry-After when longer; after a 503, its Retry-After, or five
+// seconds.
 func (result PermissionResult) Pending() (PendingPermission, bool) {
-	if result.kind != permissionResultPending || result.pending.kind != pendingPermissionVerified {
+	if (result.kind != permissionResultPending && result.kind != permissionResultResponse) ||
+		result.pending.kind != pendingPermissionVerified {
 		return PendingPermission{}, false
 	}
 	return result.pending, true
@@ -445,7 +450,18 @@ func (client *Client) permissionResponse(
 		return PermissionResult{}, errors.New("permission response is required")
 	}
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
-		return PermissionResult{kind: permissionResultResponse, response: response}, nil
+		result := PermissionResult{kind: permissionResultResponse, response: response}
+		if polling {
+			next := prior
+			retryAfter, err := retryPollInterval(prior.retryAfter, response, client.clock.Now())
+			if err != nil {
+				response.Body.Close()
+				return PermissionResult{}, err
+			}
+			next.retryAfter = retryAfter
+			result.pending = next
+		}
+		return result, nil
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {

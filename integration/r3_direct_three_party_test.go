@@ -43,7 +43,7 @@ func TestR3DirectThreePartyClassAuthorization(t *testing.T) {
 	transport := &oneShotR3DigestSubstitutionTransport{base: baseNetwork}
 	httpClient := &http.Client{Transport: transport}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if strings.HasSuffix(endpoint, ".example/.well-known/aauth-agent.json") ||
 				strings.HasSuffix(endpoint, ".example/.well-known/aauth-person.json") ||

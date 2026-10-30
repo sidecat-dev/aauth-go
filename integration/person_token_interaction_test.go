@@ -50,7 +50,7 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 		t.Fatal(err)
 	}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if strings.HasSuffix(endpoint, ".example/.well-known/aauth-agent.json") ||
 				strings.HasSuffix(endpoint, ".example/.well-known/aauth-person.json") ||
@@ -66,7 +66,7 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	store := newMemoryPersonTokenStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Read the approved records.",
 	})
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -69,20 +70,81 @@ func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 		}
 		wrong := sha256.Sum256([]byte("wrong-code"))
 		if _, err := store.ConsumePersonTokenInteractionCode(
-			context.Background(), record.PersonServer, record.ID, wrong, deferredTokenNow,
+			context.Background(), record.PersonServer, record.ID, deferredTokenCode(wrong), deferredTokenNow,
 		); !errors.Is(err, personserver.ErrInteractionCodeInvalid) {
 			t.Fatalf("wrong code = %v", err)
 		}
 		consumed, err := store.ConsumePersonTokenInteractionCode(
-			context.Background(), record.PersonServer, record.ID, record.CodeSHA256, deferredTokenNow,
+			context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
 		)
 		if err != nil || consumed.ID != record.ID || consumed.Agent != record.Agent {
 			t.Fatalf("consumed = %#v, %v", consumed, err)
 		}
 		if _, err := store.ConsumePersonTokenInteractionCode(
-			context.Background(), record.PersonServer, record.ID, record.CodeSHA256, deferredTokenNow,
+			context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
 		); !errors.Is(err, personserver.ErrInteractionCodeUsed) {
 			t.Fatalf("reused code = %v", err)
+		}
+	})
+
+	t.Run("failed code attempts terminally fail the interaction", func(t *testing.T) {
+		store := contract.New(t)
+		record := deferredTokenRecord(t, "attempts", "code-attempts")
+		if err := store.CreatePendingPersonToken(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+		// A malformed presentation counts as a failed attempt, as a wrong
+		// code does.
+		failed := []personserver.PersonTokenCodePresentation{{}}
+		for len(failed) < personserver.MaximumPersonTokenCodeAttempts {
+			failed = append(failed, deferredTokenCode(sha256.Sum256([]byte(fmt.Sprintf("wrong-%d", len(failed))))))
+		}
+		for index, presentation := range failed {
+			_, err := store.ConsumePersonTokenInteractionCode(
+				context.Background(), record.PersonServer, record.ID, presentation, deferredTokenNow,
+			)
+			last := index == len(failed)-1
+			if !last && !errors.Is(err, personserver.ErrInteractionCodeInvalid) {
+				t.Fatalf("failed attempt %d = %v", index+1, err)
+			}
+			if last && !errors.Is(err, personserver.ErrPendingPersonTokenGone) {
+				t.Fatalf("attempt %d reaching the bound = %v", index+1, err)
+			}
+		}
+		if _, err := store.ConsumePersonTokenInteractionCode(
+			context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
+		); !errors.Is(err, personserver.ErrPendingPersonTokenGone) {
+			t.Fatalf("correct code after the bound = %v", err)
+		}
+		snapshot, err := store.LoadPendingPersonToken(context.Background(), record.ID)
+		if err != nil || snapshot.State != personserver.PersonTokenPollGone {
+			t.Fatalf("snapshot after the bound = %#v, %v", snapshot.State, err)
+		}
+		if _, err := store.PollPendingPersonToken(
+			context.Background(), record.ID, deferredTokenIdentity(t, record), deferredTokenNow,
+		); !errors.Is(err, personserver.ErrPendingPersonTokenGone) {
+			t.Fatalf("poll after the bound = %v", err)
+		}
+	})
+
+	t.Run("failed code attempts below the bound leave the code usable", func(t *testing.T) {
+		store := contract.New(t)
+		record := deferredTokenRecord(t, "below-bound", "code-below-bound")
+		if err := store.CreatePendingPersonToken(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+		for attempt := 1; attempt < personserver.MaximumPersonTokenCodeAttempts; attempt++ {
+			if _, err := store.ConsumePersonTokenInteractionCode(
+				context.Background(), record.PersonServer, record.ID,
+				deferredTokenCode(sha256.Sum256([]byte(fmt.Sprintf("wrong-%d", attempt)))), deferredTokenNow,
+			); !errors.Is(err, personserver.ErrInteractionCodeInvalid) {
+				t.Fatalf("failed attempt %d = %v", attempt, err)
+			}
+		}
+		if consumed, err := store.ConsumePersonTokenInteractionCode(
+			context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
+		); err != nil || consumed.ID != record.ID {
+			t.Fatalf("correct code below the bound = %#v, %v", consumed, err)
 		}
 	})
 
@@ -119,7 +181,7 @@ func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 			t.Fatalf("child poll = %v", err)
 		}
 		consumed, err := store.ConsumePersonTokenInteractionCode(
-			context.Background(), record.PersonServer, record.ID, record.CodeSHA256, deferredTokenNow,
+			context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -234,7 +296,7 @@ func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 				t.Fatal(err)
 			}
 			if _, err := store.ConsumePersonTokenInteractionCode(
-				context.Background(), record.PersonServer, record.ID, record.CodeSHA256, record.ExpiresAt,
+				context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), record.ExpiresAt,
 			); !errors.Is(err, personserver.ErrPendingPersonTokenExpired) {
 				t.Fatalf("consume at deadline = %v", err)
 			}
@@ -333,7 +395,7 @@ func createAndConsumeDeferredToken(
 		t.Fatal(err)
 	}
 	consumed, err := store.ConsumePersonTokenInteractionCode(
-		context.Background(), record.PersonServer, record.ID, record.CodeSHA256, deferredTokenNow,
+		context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +415,8 @@ func deferredTokenApproval(
 			JTI: "person-token-" + subject, PersonServer: record.PersonServer,
 			Resource: record.Resource, Subject: subject, AgentProvider: record.AgentProvider,
 			Agent: record.Agent, ParentAgent: record.ParentAgent, Confirmation: record.Confirmation,
-			ExpiresAt: deferredTokenNow.Add(20 * time.Minute), RetainUntil: deferredTokenNow.Add(time.Hour),
+			AgentTokenJTI: record.AgentTokenJTI,
+			ExpiresAt:     deferredTokenNow.Add(20 * time.Minute), RetainUntil: deferredTokenNow.Add(time.Hour),
 		},
 		ExpiresIn: 1200, DecidedAt: deferredTokenNow,
 	}
@@ -420,4 +483,8 @@ func deferredTokenJWKFor(t testing.TB, id string, firstSeedByte byte) jose.JWK {
 		t.Fatal(err)
 	}
 	return signingKey.PublicJWK()
+}
+
+func deferredTokenCode(digest [32]byte) personserver.PersonTokenCodePresentation {
+	return personserver.PersonTokenCodePresentation{CodeSHA256: digest, SyntacticallyValid: true}
 }

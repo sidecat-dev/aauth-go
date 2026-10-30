@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -41,20 +42,22 @@ func newMissionStore() *missionStore {
 }
 
 type missionStore struct {
-	mu          sync.Mutex
-	missions    map[string]personserver.MissionRecord
-	tokens      map[string]personserver.PersonTokenRecord
-	auth        map[string]personserver.IssuedAuthTokenRecord
-	r3Issuances map[aauth.TokenReference]r3.IssuanceRecord
-	audits      map[string][]personserver.MissionAuditRecord
-	permissions map[string]personserver.PermissionRecord
-	proposals   map[string]personserver.MissionProposalSnapshot
+	mu            sync.Mutex
+	missions      map[string]personserver.MissionRecord
+	tokens        map[string]personserver.PersonTokenRecord
+	auth          map[string]personserver.IssuedAuthTokenRecord
+	r3Issuances   map[aauth.TokenReference]r3.IssuanceRecord
+	audits        map[string][]personserver.MissionAuditRecord
+	permissions   map[string]personserver.PermissionRecord
+	proposals     map[string]personserver.MissionProposalSnapshot
+	presentations map[string][]string
 }
 
 var _ personserver.MissionAuditStore = (*missionStore)(nil)
 var _ personserver.MissionPermissionStore = (*missionStore)(nil)
 var _ personserver.MissionProposalStore = (*missionStore)(nil)
 var _ personserver.MissionR3IssuanceStore = (*missionStore)(nil)
+var _ personserver.PersonTokenPresentationStore = (*missionStore)(nil)
 
 // LoadAuthToken observes a retained Auth-token record for store contracts.
 func (store *missionStore) LoadAuthToken(reference aauth.TokenReference) (personserver.IssuedAuthTokenRecord, bool) {
@@ -285,6 +288,27 @@ func (store *missionStore) Load(_ context.Context, issuer, jti string) (personse
 		return personserver.PersonTokenRecord{}, personserver.ErrPersonTokenNotFound
 	}
 	return record, nil
+}
+
+// RecordPersonTokenPresentation retains one presentation per Access Server.
+func (store *missionStore) RecordPersonTokenPresentation(_ context.Context, presentation personserver.PersonTokenPresentation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := presentation.PersonServer + "\x00" + presentation.JTI
+	if store.presentations == nil {
+		store.presentations = make(map[string][]string)
+	}
+	if !slices.Contains(store.presentations[key], presentation.AccessServer) {
+		store.presentations[key] = append(store.presentations[key], presentation.AccessServer)
+	}
+	return nil
+}
+
+// LoadPersonTokenPresentations returns the recorded Access Servers in order.
+func (store *missionStore) LoadPersonTokenPresentations(_ context.Context, personServer, jti string) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.presentations[personServer+"\x00"+jti]), nil
 }
 
 func (store *missionStore) CommitMission(

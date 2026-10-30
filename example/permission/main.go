@@ -60,6 +60,9 @@ func run(output io.Writer) error {
 	httpClient := &http.Client{Transport: network}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: httpClient, Clock: clock, Admit: network.Admit,
+		// The in-memory network makes no connection. Leave this unset with a
+		// network transport, so the resolver checks every destination.
+		TransportEnforcesEgress: true,
 	})
 	if err != nil {
 		return err
@@ -82,7 +85,7 @@ func run(output io.Writer) error {
 	permissions := testutil.NewMissionStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Archive the reviewed incident report.",
 	})
 	if err != nil {

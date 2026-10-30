@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1026,12 +1027,15 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 }
 
 type memoryTokenStore struct {
-	mu        sync.Mutex
-	records   map[string]PersonTokenRecord
-	last      PersonTokenRecord
-	commits   int
-	loads     int
-	commitErr error
+	mu                    sync.Mutex
+	records               map[string]PersonTokenRecord
+	last                  PersonTokenRecord
+	commits               int
+	loads                 int
+	commitErr             error
+	presentations         map[string][]string
+	presentationRetention map[string]time.Time
+	presentationErr       error
 }
 
 func directPersonTokenRecord(
@@ -1078,6 +1082,34 @@ func (store *memoryTokenStore) Load(_ context.Context, personServer, jti string)
 		return PersonTokenRecord{}, ErrPersonTokenNotFound
 	}
 	return record, nil
+}
+
+// RecordPersonTokenPresentation retains one presentation per Access Server.
+func (store *memoryTokenStore) RecordPersonTokenPresentation(_ context.Context, presentation PersonTokenPresentation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.presentationErr != nil {
+		return store.presentationErr
+	}
+	key := presentation.PersonServer + "\x00" + presentation.JTI
+	if store.presentations == nil {
+		store.presentations = make(map[string][]string)
+		store.presentationRetention = make(map[string]time.Time)
+	}
+	if presentation.RetainUntil.After(store.presentationRetention[key]) {
+		store.presentationRetention[key] = presentation.RetainUntil
+	}
+	if !slices.Contains(store.presentations[key], presentation.AccessServer) {
+		store.presentations[key] = append(store.presentations[key], presentation.AccessServer)
+	}
+	return nil
+}
+
+// LoadPersonTokenPresentations returns the recorded Access Servers in order.
+func (store *memoryTokenStore) LoadPersonTokenPresentations(_ context.Context, personServer, jti string) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.presentations[personServer+"\x00"+jti]), nil
 }
 
 func (store *memoryTokenStore) observation() (PersonTokenRecord, int, int) {

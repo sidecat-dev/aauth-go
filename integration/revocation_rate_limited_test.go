@@ -129,7 +129,7 @@ func TestRevocationClientsReturnRateLimitedFeedbackOverHTTP(t *testing.T) {
 	t.Cleanup(httpClient.CloseIdleConnections)
 	admit := func(context.Context, string) error { return nil }
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock, Admit: admit,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock, Admit: admit,
 	})
 	if err != nil {
 		t.Fatal(err)

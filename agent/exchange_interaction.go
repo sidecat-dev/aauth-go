@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -276,19 +275,10 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 	}
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
 		next := pending
-		if response.StatusCode == http.StatusTooManyRequests {
-			if next.retryAfter > time.Duration(math.MaxInt64)-5*time.Second {
-				response.Body.Close()
-				return ExchangeResult{}, fail(operation, errors.New("poll retry interval overflows"))
-			}
-			next.retryAfter += 5 * time.Second
-		} else {
-			retryAfter, err := parseHTTPRetryAfter(response.Header.Values("Retry-After"), client.clock.Now())
-			if err != nil {
-				response.Body.Close()
-				return ExchangeResult{}, fail(operation, err)
-			}
-			next.retryAfter = retryAfter
+		next.retryAfter, err = retryPollInterval(pending.retryAfter, response, client.clock.Now())
+		if err != nil {
+			response.Body.Close()
+			return ExchangeResult{}, fail(operation, err)
 		}
 		result := pendingExchangeResult(next)
 		result.kind, result.response = exchangeResultResponse, response

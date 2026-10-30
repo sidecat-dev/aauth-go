@@ -39,10 +39,13 @@ func writeCredentialProblem(response http.ResponseWriter, code string, err error
 	writeProblem(response, http.StatusUnauthorized, code, signaturekey.NormalizeError(cause, signaturekey.ErrorInvalidJWT))
 }
 
+// writeAuthorizationProblem answers a request proof or person token that fails
+// verification at the authorization endpoint with 401 and Signature-Error,
+// not with a code from the authorization-endpoint error table.
 func writeAuthorizationProblem(response http.ResponseWriter, err error) {
 	var tokenFailure *requestTokenError
 	if errors.As(err, &tokenFailure) {
-		writeProblem(response, http.StatusBadRequest, "invalid_person_token", tokenFailure.cause)
+		writeCredentialProblem(response, "invalid_token", err)
 		return
 	}
 	writeProblem(response, http.StatusUnauthorized, "invalid_signature", err)

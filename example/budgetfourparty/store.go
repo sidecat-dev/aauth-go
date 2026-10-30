@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
@@ -13,8 +14,9 @@ import (
 )
 
 type personTokenStore struct {
-	mu      sync.Mutex
-	records map[string]personserver.PersonTokenRecord
+	mu            sync.Mutex
+	records       map[string]personserver.PersonTokenRecord
+	presentations map[string][]string
 }
 
 func newPersonTokenStore() *personTokenStore {
@@ -42,7 +44,31 @@ func (store *personTokenStore) Load(_ context.Context, issuer, tokenID string) (
 	return record, nil
 }
 
-var _ personserver.TokenStore = (*personTokenStore)(nil)
+// RecordPersonTokenPresentation retains one presentation per Access Server.
+func (store *personTokenStore) RecordPersonTokenPresentation(_ context.Context, presentation personserver.PersonTokenPresentation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := presentation.PersonServer + "\x00" + presentation.JTI
+	if store.presentations == nil {
+		store.presentations = make(map[string][]string)
+	}
+	if !slices.Contains(store.presentations[key], presentation.AccessServer) {
+		store.presentations[key] = append(store.presentations[key], presentation.AccessServer)
+	}
+	return nil
+}
+
+// LoadPersonTokenPresentations returns the recorded Access Servers in order.
+func (store *personTokenStore) LoadPersonTokenPresentations(_ context.Context, personServer, jti string) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.presentations[personServer+"\x00"+jti]), nil
+}
+
+var (
+	_ personserver.TokenStore                   = (*personTokenStore)(nil)
+	_ personserver.PersonTokenPresentationStore = (*personTokenStore)(nil)
+)
 
 type lineageStore struct {
 	mu       sync.Mutex

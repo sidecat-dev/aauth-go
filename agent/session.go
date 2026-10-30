@@ -164,6 +164,10 @@ func (result ResourceSessionResult) Session() (ResourceSession, bool) {
 }
 
 // Pending returns the verified interaction, when the response is still 202.
+// A poll answered with 429 or 503 also returns it, alongside Response, with
+// the next polling interval: after a 429, five seconds more than before, or
+// the 429's Retry-After when longer; after a 503, its Retry-After, or five
+// seconds.
 func (result ResourceSessionResult) Pending() (PendingResourceSession, bool) {
 	return result.pending, result.pending.kind == pendingResourceSessionVerified
 }
@@ -345,6 +349,14 @@ func (client *Client) pollResourceSession(
 			return ResourceSessionResult{}, fail(operation, err)
 		}
 		result.session = session
+		next := pending
+		next.components = append([]string(nil), pending.components...)
+		next.retryAfter, err = retryPollInterval(pending.retryAfter, response, client.clock.Now())
+		if err != nil {
+			response.Body.Close()
+			return ResourceSessionResult{}, fail(operation, err)
+		}
+		result.pending = next
 		return result, nil
 	}
 	return client.resourceSessionTerminal(operation, response, pending.resource)

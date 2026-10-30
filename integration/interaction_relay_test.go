@@ -33,8 +33,8 @@ func TestCurrentCoreMissionlessAndMissionBoundInteractionRelay(t *testing.T) {
 	network := newLogicalTransport()
 	httpClient := &http.Client{Transport: network}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient,
-		Clock:  clock,
+		Client: httpClient, TransportEnforcesEgress: true,
+		Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if strings.Contains(endpoint, ".example/.well-known/") {
 				return nil
@@ -63,7 +63,7 @@ func TestCurrentCoreMissionlessAndMissionBoundInteractionRelay(t *testing.T) {
 	store := exampleutil.NewMissionInteractionRelayStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Complete the approved confirmation.",
 	})
 	if err != nil {

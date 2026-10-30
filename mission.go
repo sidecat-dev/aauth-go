@@ -78,9 +78,11 @@ func (proposal MissionProposal) Validate() error {
 
 // MissionBlob is the Person Server-approved mission content. Its encoded JSON
 // bytes, rather than a re-encoding of this value, are the object identified by
-// s256.
+// s256. The blob carries no approver member: the approver is always the Person
+// Server that returns or serves the mission, named beside s256 by the iss of a
+// person token, the ps claim of a resource or auth token, or the Person Server
+// a request is made to.
 type MissionBlob struct {
-	Approver          string        `json:"approver"`
 	Agent             string        `json:"agent"`
 	ApprovedAt        time.Time     `json:"approved_at"`
 	ExpiresAt         *time.Time    `json:"expires_at,omitempty"`
@@ -281,9 +283,6 @@ func DecodeMission(s256, encoded string) (ApprovedMission, error) {
 }
 
 func validateMissionBlob(blob MissionBlob) error {
-	if err := ValidateServerIdentifier(blob.Approver); err != nil {
-		return fmt.Errorf("aauth: mission approver: %w", err)
-	}
 	if err := ValidateAgentIdentifier(blob.Agent); err != nil {
 		return fmt.Errorf("aauth: mission agent: %w", err)
 	}

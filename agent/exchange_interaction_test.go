@@ -1273,7 +1273,9 @@ func TestExchangeInteractionRetryResponsesContinuePendingState(t *testing.T) {
 		retryAfter string
 		want       time.Duration
 	}{
-		{status: http.StatusTooManyRequests, retryAfter: "99", want: 12 * time.Second},
+		{status: http.StatusTooManyRequests, retryAfter: "", want: 12 * time.Second},
+		{status: http.StatusTooManyRequests, retryAfter: "9", want: 12 * time.Second},
+		{status: http.StatusTooManyRequests, retryAfter: "99", want: 99 * time.Second},
 		{status: http.StatusServiceUnavailable, retryAfter: "", want: 5 * time.Second},
 		{status: http.StatusServiceUnavailable, retryAfter: "11", want: 11 * time.Second},
 	} {
