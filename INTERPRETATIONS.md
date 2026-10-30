@@ -2373,3 +2373,82 @@ a caller whose metadata document names no role the endpoint accepts
 revocations from is `403 unsupported_iss`.
 
 **Evidence:** `TestThreePartyWithdrawnResourceTokenAndRateLimitedRevocation`.
+
+## Interaction callbacks are honored only after the code correlates
+
+**Source:** AAuth Core `70d6737`, User Interaction, Interaction Callback
+Errors, Endpoint and Other URLs, and Agent Provider Metadata.
+
+Core makes the callback a user-experience aid with no security role, and says
+an Agent builds it from its `callback_endpoint`. It does not say whether a
+host compares the callback with that metadata, or whether a host redirects
+for a visit whose code does not correlate. The library helpers accept a
+callback only as an HTTPS URL with a lowercase host and no userinfo, query or
+fragment, so `?error=` is always its only query; a loopback `http` callback is
+accepted only when the host opts in after checking
+`localhost_callback_allowed`. Roles hand a callback back only through a
+correlated interaction: an unknown, used or rate-limited code produces an
+error and no redirect, so an interaction page cannot become an open
+redirector for an arbitrary link. Comparing the callback with the Agent's
+`callback_endpoint` is left to the host (`AAG-F131`). A callback whose `error`
+is unregistered, repeated or unreadable is read as `server_error`, never as
+completion.
+
+**Evidence:** `interaction_callback_test.go`,
+`integration/resource_initiated_interaction_test.go` and
+`integration/interaction_chaining_test.go`.
+
+## Resource-initiated interaction is three-party, missionless and deferred
+
+**Source:** AAuth Core `70d6737`, Resource Token Structure, Resource-Initiated
+Interaction, Interaction Callback Errors, and Polling Error Codes.
+
+The section has the Person Server issue the Auth token after its own consent,
+which describes three-party access; it does not say what a federated Person
+Server or an Access Server does with the claim (`AAG-F130`). A Resource puts
+the claim only in Core Resource tokens it issues against a Person token, and
+retains only the code's digest, until the Resource token expires. A Person
+Server accepts the claim only with `ResourceInteractionConfig`, only on the
+three-party path, and refuses it for call chaining, R3 and mission-bound
+requests. A request that carries it always takes the deferred path, because
+the person must visit the Resource, and an Agent that did not declare
+`interaction` receives `user_unreachable`. The person is sent to the Resource
+once, after the host's interstitial, to `{interaction.url}?code=...&callback=...`
+where the callback ends in a fresh 128-bit flow value; only its digest is
+retained, and a callback with any other value is refused. The interaction URL
+is checked for HTTPS and passed to the host's egress admission before the
+redirect, although the person's browser, not the Person Server, makes that
+request (`AAG-F133`). Consent cannot be approved until the Resource returned
+the person without an error. An error callback ends the request in the mapped
+terminal state, which the next poll delivers once. When the Resource withdraws
+the Resource token, the person is not sent on, the Resource's callback is
+refused, and the next poll ends the request with `revoked`.
+
+**Evidence:** `integration/resource_initiated_interaction_test.go`.
+
+## Interaction chaining binds polls to the caller's key
+
+**Source:** AAuth Core `70d6737`, Interaction Chaining, Interaction Chaining
+(detailed flow), Deferred Responses, and Pending URL Security.
+
+The section requires the intermediary to answer with its own code and
+`Location` and to complete the original request there, but does not say which
+credential the original Agent presents on that pending URL (`AAG-F132`). The
+Agent polls with the Auth token it made the call with, and the Resource
+answers only a poll whose verified key has the thumbprint retained when the
+interaction was chained and whose person matches; any other caller receives
+an empty `404`. The deadline never passes that Auth token's expiry, so only
+Core Auth tokens are chained, and a revoked one is refused with
+`revoked_jwt` like any other request. A downstream request that ends with a
+polling error, `revoked` included, is relayed to the caller with that error. The result, a final status other than `202` with
+its body and media type, is delivered once and the pending URL is `410`
+afterwards. The detailed flow shows the intermediary sending the person on to
+the downstream interaction with its own callback; the library builds that
+link with a per-flow callback value, as for Resource-initiated interaction,
+and an error that comes back ends the chained request with the mapped polling
+error. The library's own Person Server does not defer a call-chaining request,
+so a chained `202` comes from another server; the Agent keeps polling the
+Person Server the upstream token names.
+
+**Evidence:** `integration/interaction_chaining_test.go` and
+`agent/call_chaining_test.go`.

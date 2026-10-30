@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 69 (P1: 6, P2: 36, P3: 27; 46 submitted, 23 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 73 (P1: 6, P2: 38, P3: 29; 46 submitted, 27 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -129,6 +129,8 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F118 | Usage as_of cannot name a lagging store's completeness time | Budgets | missing-requirement | P3 | open | 2026-10-26 | Not submitted | — |
 | AAG-F119 | A budget object with an unknown member is rejected | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
 | AAG-F120 | An offer above the metadata maximum is invalid_budget | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
+| AAG-F130 | Resource-initiated interaction does not say what happens in four-party access | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
+| AAG-F131 | An interaction host is not told how a callback relates to the Agent's `callback_endpoint` | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
 | AAG-F141 | The replay-cache tuple refuses a second, different request in the same second | Core | informative | P2 | open | 2026-10-30 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
@@ -146,6 +148,8 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F121 | The jkt-jwt example `iss` is not the thumbprint of its header key | Signature-Key | informative | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F122 | `revoked_jwt` is reserved for unexpired JWTs, while a revoked token must not be reported as expired | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F123 | A revocation hold that ends before a downstream answers has no defined outcome | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F132 | Interaction chaining does not name the credential that polls the intermediary | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F133 | Egress admission is required for a URL the Person Server never fetches | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F140 | No revocation reaches an Access Server that received a person token as upstream_token | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F142 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F143 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
@@ -494,6 +498,26 @@ Our implementation falls back to the full signed grant when no interoperable bou
 **Question:** Should the protocol say how an Agent learns the Resource's maximum for ambiguous-failure accounting? Alternatively, should it explicitly require the full remaining grant as the conservative fallback when no `reserved` was seen and no interoperable bound exists?
 
 **Venue:** New issue [#250](https://github.com/dickhardt/AAuth/issues/250), posted 2026-10-01. Earlier plan: New issue. A Budgets issue on ambiguous failures, with the full-grant fallback as implementation evidence.
+
+### AAG-F133 — Egress admission is required for a URL the Person Server never fetches
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Resource-Initiated Interaction, line 997.
+
+"The PS MUST validate this before redirecting and MUST apply its egress admission policy to it." Egress admission elsewhere governs connections a server opens itself, such as metadata and JWKS fetches. Here the Person Server only returns a redirect, and the person's browser makes the request, so a server-side admission policy for its own connections says nothing about what the browser may reach. Implementations may apply a fetch policy that does not fit, or skip the step because they make no connection.
+
+**Question:** Is this admission meant as a policy on where the Person Server may send a person, and should it be named as such?
 
 ## Missing requirements
 
@@ -1570,6 +1594,66 @@ A resource declares an optional maximum for a unit. The listed `invalid_budget` 
 The Signed Response says the usage-response signature MUST cover `@status`, `content-type` and `content-digest`, and the request's `@authority` and `@path` with `req`, and its example `Signature-Input` covers exactly those five. Signature-Key Integrity says the `Signature-Key` header MUST be a covered component and that verifiers MUST reject a signature where it is not, because otherwise its `id` can be substituted. That section is written for requests; neither document says whether a response signature carrying `Signature-Key` must cover it. This library signs exactly the five listed components, so a verifier that rebuilds the base from the Budgets list accepts it, and its verifier pins the signer to the Resource it asked instead of reading the identity from the uncovered header.
 
 **Question:** Must a signed usage response also cover `signature-key`, and should Signature-Key Integrity say whether it applies to response signatures?
+
+### AAG-F130 — Resource-initiated interaction does not say what happens in four-party access
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Resource-Initiated Interaction, lines 986–997, and Resource Token Structure, line 757.
+
+Steps 1 to 6 have the Person Server resolve the Resource's interaction, run its own consent, and then "issue the auth token". In four-party access the Resource token's `aud` is the Access Server, which issues the Auth token, and the Person Server reaches it through a PS-to-AS token request. The section does not say whether a federated Person Server resolves the Resource's interaction before it federates, whether the Access Server must also see that the interaction completed, or whether the claim is three-party only. A federated Person Server and an Access Server that read it differently either skip the Resource's flow or refuse the token. aauth-go refuses the claim outside three-party access.
+
+**Question:** Does a federated Person Server resolve the Resource's interaction before its PS-to-AS token request, and is the Access Server told that it did?
+
+### AAG-F131 — An interaction host is not told how a callback relates to the Agent's `callback_endpoint`
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, User Interaction, lines 1003–1009; Endpoint and Other URLs, lines 1973–1975; Agent Provider Metadata, line 2027.
+
+An Agent "MAY append a `callback` parameter, constructed from its `callback_endpoint` metadata", and the server "redirects the user's browser to the `callback` URL". Nothing says whether the server compares the callback with the requesting Agent's `callback_endpoint`, exactly or by prefix, or what it does when they differ; a Person Server sending the person to a Resource uses a callback of its own, which matches no Agent metadata. Without a rule, any party holding a live interaction code can make the interaction host redirect to an HTTPS URL of its choice, and hosts that do compare reject callbacks that others accept. The `localhost_callback_allowed` exception has the same gap: the host must fetch the Agent's metadata to apply it.
+
+**Question:** Must an interaction host check an Agent's callback against that Agent's `callback_endpoint` (and `localhost_callback_allowed`), and by what comparison?
+
+### AAG-F132 — Interaction chaining does not name the credential that polls the intermediary
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Interaction Chaining, line 1886, and the detailed flow, lines 3347–3416.
+
+The intermediary "MUST provide its own `Location` URL for the original agent to poll" and returns the original request's result there. Pending URLs are bound to the identity that started the request, but this one was started by a call carrying an Auth token at a Resource, and the section does not say whether the poll presents that Auth token, the Agent token, or either, nor whether the poll is refused after the Auth token expires while the person is still interacting. Agents and intermediaries that choose differently cannot poll each other. aauth-go polls with the call's Auth token, binds the poll to its key, and ends the wait at that token's expiry.
+
+**Question:** Which credential does the original Agent present on an intermediary's pending URL, and does the wait outlive the Auth token the call carried?
 
 ## Against informative text
 

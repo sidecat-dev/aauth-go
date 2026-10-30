@@ -883,6 +883,122 @@ refuses an expired token, an `aud` other than the Agent's own identifier, and a
 body that does not match `body_s256`. Act on an event only after it returns
 without error and with `Duplicate` false.
 
+## Return the person after an interaction
+
+Every interaction URL accepts `?code={code}` and, from a party with a browser
+flow of its own, `&callback={callback}`. The library never renders pages or
+redirects by itself; your interaction page does, with these helpers:
+
+```go
+visit, err := aauth.ParseInteractionVisit(r.URL.RawQuery, aauth.InteractionVisitOptions{})
+if err != nil {
+	http.Error(w, "bad interaction link", http.StatusBadRequest)
+	return
+}
+// Correlate visit.Code with the role that issued it, authenticate the person,
+// and run your flow. Then, when there is a callback:
+target, err := aauth.InteractionCallbackURL(visit.Callback, aauth.InteractionCallbackAccessDenied)
+```
+
+`InteractionCallbackURL` returns the callback itself when the interaction
+completed (pass an empty error) and `{callback}?error={error}` when it could
+not, with one of `access_denied`, `user_abandoned`, `server_error`,
+`temporarily_unavailable` or `interaction_expired`. Redirect only after the
+code correlates; for an unknown, used or rate-limited code, show an error page
+instead, so your page cannot be used as an open redirector. A callback must be
+an HTTPS URL without query or fragment. Set `AllowLoopbackCallback` only when
+you checked that the Agent's metadata sets `localhost_callback_allowed`.
+
+**Agent.** To send the person yourself with a callback, build the link with
+`aauth.FormatInteractionVisitURL(pending.InteractionURL(), pending.InteractionCode(), callback)`.
+Publish the base of your callbacks with `agentprovider.Config.CallbackEndpoint`
+(and `LocalhostCallbackAllowed` for a loopback callback). At your callback
+endpoint, `aauth.ReadInteractionCallback(r.URL.RawQuery)` returns nil, or an
+`aauth.InteractionCallbackError` you must surface: do not treat the pending
+request as completable. Its pending URL stays authoritative and reports the
+same outcome as a polling error, which `PollingError()` names.
+
+### Resolve a Resource's own interaction before consent
+
+A Resource that needs its own flow first, such as an OAuth authorization at a
+third-party service, sets `resource.PSAuthorizationConfig.InitiatedInteraction`:
+`URL` (its HTTPS interaction page), `Require` (decides per verified
+Person-token challenge) and `Store` (`testutil.NewInitiatedInteractionStore`
+in tests). The Resource token then carries an `interaction` claim naming
+`{URL}/{reference}` and a fresh code. Your page calls
+`ConsumeInitiatedInteraction(ctx, reference, visit)`, runs the flow for
+`Person()`, and redirects to `CompletionURL()`, or to `FailureURL(err)` when
+the flow cannot finish. The code is single use, allows three failed attempts,
+and dies with the Resource token.
+
+The Person Server sets `personserver.PSAuthorizationConfig.ResourceInteraction`
+with `Policy` (its own interaction page, lifetime and polling interval),
+`CallbackURL` and `Admit` (egress admission for the Resource's URL), plus an
+`AuthorizationInteractions` store that implements
+`personserver.ResourceInteractionAuthorizationStore`
+(`testutil.NewDeferredAuthorizationStore` does). A token request carrying the
+claim always gets a `202`; an Agent that did not declare `interaction` gets
+`403 user_unreachable`. The Agent uses `BeginExchange` and `PollExchange`;
+`Exchange` refuses such a Resource token. Your Person Server pages then:
+
+1. On the interaction page, call `ConsumeAuthorizationInteractionCode`,
+   show the interstitial saying the Resource needs additional permissions, and
+   redirect to `RedirectToResourceInteraction(ctx, interaction, visit.Callback)`.
+   An interaction URL that is not HTTPS or that `Admit` refuses ends the
+   request with `server_error` (`ErrResourceInteractionRefused`).
+2. On `{CallbackURL}/{reference}/{flow}`, call
+   `ReceiveResourceInteractionCallback(ctx, reference, flow, r.URL.RawQuery)`.
+   An error callback ends the request with the mapped polling error
+   (`access_denied` → `denied`, `user_abandoned` → `abandoned`,
+   `interaction_expired` → `expired`, the others → `server_error`) and is
+   returned as an `aauth.InteractionCallbackError`. Otherwise show your consent
+   and call `ApproveAuthorizationInteraction` or `DenyAuthorizationInteraction`;
+   approval before the Resource returned the person is
+   `ErrResourceInteractionPending`. Once the Resource withdraws its Resource
+   token, both steps refuse with `ErrResourceTokenRevoked` and the Agent's
+   next poll receives `revoked`.
+3. Redirect to `AuthorizationCallbackURL(ctx, reference)`, the Agent's own
+   callback with the outcome, or show a completion page when it is empty.
+
+The flow is three-party and missionless. Call chaining, R3, missions and a
+federated Person Server refuse the claim. See
+[the end-to-end test](integration/resource_initiated_interaction_test.go).
+
+### Chain a downstream interaction to your caller
+
+A Resource that calls another server as an Agent may meet a `202` with
+`requirement=interaction`. Set `ChainedInteractions` on
+`resource.PSAuthorizationConfig` or `FederatedAuthorizationConfig` with `URL`,
+`CallbackURL`, `Lifetime`, `RetryAfter` and `Store`
+(`testutil.NewChainedInteractionStore` in tests). In your Protected handler,
+pass the downstream requirement to `ChainInteraction(w, r, downstream)`. It
+answers your caller with your own `202`, your own code, and your own pending
+URL under `/chain/pending/`. It writes nothing and returns
+`ErrChainedInteractionUndeclared` when the caller did not send
+`AAuth-Capabilities: interaction`. Keep the downstream pending value with
+`Reference()`; the library does not hold it for you.
+
+On `{URL}/{reference}`, `VisitChainedInteraction(ctx, reference, visit)` returns
+the downstream interaction link with your own per-flow callback. On
+`{CallbackURL}/{reference}/{flow}`, `ReceiveChainedInteractionCallback` returns
+the interaction, or ends it with the mapped polling error when the downstream
+host sent an error. Poll your downstream request, which stays authoritative,
+finish the original request, and call `CompleteChainedInteraction` with its
+result (or `FailChainedInteraction` with the downstream polling error). Then
+redirect to `ChainedInteractionCallbackURL`. Your caller receives the result
+once; a later poll is `410`, and a poll signed by any other key is an empty
+`404`. The deadline never passes the caller's Auth token, and only Core Auth
+tokens can be chained.
+
+The original Agent reads the `202` from `Do` with `ReadInteractionCall`, sends
+the person to the interaction, and polls with `PollInteractionCall` and the
+same Auth token. An intermediary whose own call-chaining exchange meets an
+interaction gets a pending exchange from `BeginExchange` and polls the Person
+Server its upstream token names; such a pending exchange cannot be
+snapshotted. A call-chained Person-token request that meets an interaction
+still returns `CallChainingInteractionUnsupportedError`. See
+[the end-to-end test](integration/interaction_chaining_test.go).
+
 ## Use in-memory stores in examples and tests
 
 `testutil` provides concurrency-safe stores for examples, tests and local
@@ -903,7 +1019,8 @@ fixture discards its identities and decisions and is not a cleanup strategy.
 | `NewMissionInteractionRelayStore` | The same mission state plus interaction relays, sharing one transaction boundary |
 | `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |
 | `NewEnrollmentStore`, `NewAgentTokenRevocationStore` | AP enrollment or Resource revocation, respectively |
-| `NewDeferredAuthorizationStore` | PS consent and clarification, sharing one transaction boundary |
+| `NewDeferredAuthorizationStore` | PS consent, clarification and Resource-initiated interaction progress, sharing one transaction boundary |
+| `NewInitiatedInteractionStore`, `NewChainedInteractionStore` | Resource-initiated interaction codes, or chained interactions and their results, respectively |
 | `NewAccessAuthorizationStore`, `NewFederatedAuthorizationStore` | Separate AS request retention and PS federation continuation |
 | `NewBudgetStore` | Resource fixed-price token consumption and person totals |
 | `NewR3DocumentStore`, `NewR3IssuanceStore` | Resource documents or role-local issuance audit, respectively |
