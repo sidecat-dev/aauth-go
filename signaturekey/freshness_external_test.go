@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,11 +17,19 @@ import (
 
 func signedFreshnessRequest(t *testing.T, key jose.SigningKey, path string, created time.Time, expires time.Time) *http.Request {
 	t.Helper()
+	return signedFreshnessBody(t, key, path, created, expires, "")
+}
+
+func signedFreshnessBody(t *testing.T, key jose.SigningKey, path string, created time.Time, expires time.Time, body string) *http.Request {
+	t.Helper()
 	credential, err := signaturekey.NewHWKCredential(key.PublicJWK())
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "https://resource.example"+path, nil)
+	request := httptest.NewRequest(http.MethodPost, "https://resource.example"+path, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	if err := signaturekey.SignRequest(request, key, credential, aauth.ClockFunc(func() time.Time { return created }), signaturekey.SignOptions{ExpiresAt: expires}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +127,23 @@ func TestDelayedVerifierAnchorsOnCreatedAndItsReplayCacheSpansTheDelay(t *testin
 	}
 	if err := cache.Check(third); !errors.Is(err, signaturekey.ErrReplayCacheFull) {
 		t.Fatalf("full cache = %v", err)
+	}
+
+	// The tuple the draft names leaves out the body and the signature, so a
+	// second, different request from the same key to the same path in the
+	// same second is refused too (SPEC-FEEDBACK.md AAG-F141).
+	bodies, err := signaturekey.NewReplayCache(signaturekey.ReplayCacheConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, body := range []string{`{"order":1}`, `{"order":2}`} {
+		proof, err := verifyFreshness(signedFreshnessBody(t, key, "/orders", signedAt, time.Time{}, body), key, signedAt, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bodies.Check(proof); (err != nil) != (index == 1) {
+			t.Fatalf("request %d with its own body: %v", index, err)
+		}
 	}
 
 	// An online verifier's entries last its window; once that span has ended

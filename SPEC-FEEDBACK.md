@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 62 (P1: 6, P2: 35, P3: 21; 46 submitted, 16 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 66 (P1: 6, P2: 36, P3: 24; 46 submitted, 20 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -129,6 +129,7 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F118 | Usage as_of cannot name a lagging store's completeness time | Budgets | missing-requirement | P3 | open | 2026-10-26 | Not submitted | — |
 | AAG-F119 | A budget object with an unknown member is rejected | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
 | AAG-F120 | An offer above the metadata maximum is invalid_budget | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
+| AAG-F141 | The replay-cache tuple refuses a second, different request in the same second | Core | informative | P2 | open | 2026-10-30 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -143,6 +144,9 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F104 | Core both permits and forbids a self-hosted Agent Provider | Core | informative | P3 | submitted | 2b7909b (2026-08-31) | 2026-10-01, GitHub | Comment on [#208](https://github.com/dickhardt/AAuth/issues/208#issuecomment-5943160270) |
 | AAG-H003 | Recommended justification sections | Core | informative | P3 | submitted | 3afa429 (2026-08-28) | Slack, four-party implementation round with the editor, item 5 (a concrete proposal for the `justification` sections); the original Slack date is not retained (transcript supplied 2026-08-03) | None now: the editor deferred it to a later revision |
 | AAG-F121 | The jkt-jwt example `iss` is not the thumbprint of its header key | Signature-Key | informative | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F140 | No revocation reaches an Access Server that received a person token as upstream_token | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F142 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F143 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 
 An earlier plan of "umbrella only" meant raising the item only inside one combined
 issue of small editorial items. On 2026-10-01 each such item was posted as its own issue instead.
@@ -1937,6 +1941,86 @@ Our consent interface renders `justification` as agent-asserted, sanitized Markd
 The example JWT header carries an EC P-256 `jwk` with `x` `f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU` and `y` `x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0`. Its RFC 7638 SHA-256 thumbprint is `oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`. The payload's `iss`, and the identity named after it, is `urn:jkt:sha-256:NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs`, which is the thumbprint of the RSA example key in RFC 7638, Section 3.1. A verifier following steps 5 to 7 of the verification procedure rejects the example. This library's thumbprint test computes both values.
 
 **Question:** Should the example `iss` be `urn:jkt:sha-256:oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`?
+
+### AAG-F140 — No revocation reaches an Access Server that received a person token as upstream_token
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Upstream Token Verification step 1 (line 1832), Who Revokes What (lines 2692-2699) and Revocation Cascade (line 2752).
+
+Step 1 has the recipient of an `upstream_token`, the Access Server included, answer `revoked_upstream_token` "when the recipient holds a revocation for it". Who Revokes What has the Person Server revoke a person token at the resource in its `aud` "and each AS the PS presented it to (#ps-to-as-token-request)", and the cascade says the same. A person token the intermediary's caller presented is passed to the downstream Access Server as `upstream_token`, never as `presented_token`, so a Person Server that records only `presented_token` presentations never revokes it there, and that Access Server can never hold the revocation step 1 checks. The cascade's SHOULD revokes the downstream person tokens at their Access Servers, which stops further issuance against them, so the effect is that `revoked_upstream_token` at an Access Server is unreachable rather than that a revoked chain continues. aauth-go records presentations of `presented_token` only and its Access Server keeps no revocation records.
+
+**Question:** Does "presented that person token to" include an Access Server the Person Server passed it to as `upstream_token`? If so, should the Records paragraph say that the Person Server records those Access Servers too?
+
+### AAG-F141 — The replay-cache tuple refuses a second, different request in the same second
+
+**Status:** open
+
+**Targets:** informative
+
+**Priority:** P2
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Freshness and Replay (lines 2270-2274).
+
+The optional replay cache is keyed by `(signing-key-thumbprint, created, @method, @authority, @path)`, and the delayed-verifier sentence requires such a cache to span the skew it accepts. `created` is a whole number of seconds and the tuple has no body, query or signature. Two different requests one Agent signs in the same second to the same path, such as two `POST /token` requests carrying different resource tokens, or two `GET`s that differ only in `@query`, share the tuple, so a verifier following the text refuses the second as a replay. `signaturekey/freshness_external_test.go` shows it with two `POST /orders` bodies. A digest of the signature base, or the signature itself, identifies one signed request exactly.
+
+**Question:** Should the tuple be the signature (or the signature base), or include `@query` and `content-digest`, so that only a repeated signed request is refused?
+
+### AAG-F142 — A delayed verifier is not told when `expires` is judged
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Freshness and Replay (lines 2270-2274).
+
+Servers "MUST honor [`expires`] when present and MUST reject requests where `expires` is in the past". A verifier that first sees a signed artifact after a delay uses `created` as the anchor and verifies the presented token at `created`. The text does not say whether that verifier judges `expires` at `created`, where it can never have passed, or at the time it verifies, where any `expires` shorter than the pipeline's delay makes the artifact unverifiable. aauth-go judges it at the time of verification, because the rejection rule has no exception.
+
+**Question:** Is `expires` a deadline for any verifier, delayed ones included, as the signer's way to refuse store-and-forward, or is it judged against the same anchor as the presented token?
+
+### AAG-F143 — A relative `aauth-resource` href is not addressed
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Resource Metadata Link Relation (lines 2136-2158).
+
+An HTML document "MAY carry the same relation as a `link` element in its `head`", and "The target MUST be a server identifier followed by `/.well-known/aauth-resource.json`". In HTML and in RFC 8288 a relative reference is resolved against the document's URL, so `<link rel="aauth-resource" href="/.well-known/aauth-resource.json">` on `https://api.example/docs` names `https://api.example/.well-known/aauth-resource.json`. The text does not say whether the target form applies before or after resolution. aauth-go admits only an absolute target as written, so that page's link is ignored.
+
+**Question:** Is the target form judged on the reference as written, so a relative `href` is never followed, or on the resolved URL?
 
 ## Local implementation notes (not upstream feedback)
 
