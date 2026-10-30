@@ -1516,6 +1516,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
+	if err := server.recordUpstreamPresentation(request.Context(), upstream, resourceToken.Audience); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
 	if err := signaturekey.SignJWKSURIRequestWithOptions(
 		accessRequest, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock,
 		signaturekey.SignOptions{

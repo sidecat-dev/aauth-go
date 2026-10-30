@@ -37,6 +37,8 @@ type revocationFixture struct {
 	t           *testing.T
 	ctx         context.Context
 	clock       aauth.Clock
+	nowMu       sync.Mutex
+	now         time.Time
 	network     *logicalTransport
 	observer    *pendingObserver
 	httpClient  *http.Client
@@ -63,12 +65,16 @@ type revocationFixture struct {
 
 func newRevocationFixture(t *testing.T, fourParty bool, resourceLimits aauth.RevocationLimits, accessHold time.Duration) *revocationFixture {
 	t.Helper()
-	now := time.Date(2026, 10, 30, 18, 0, 0, 0, time.UTC)
 	fixture := &revocationFixture{
-		t: t, ctx: context.Background(), clock: aauth.ClockFunc(func() time.Time { return now }),
+		t: t, ctx: context.Background(), now: time.Date(2026, 10, 30, 18, 0, 0, 0, time.UTC),
 		network: newLogicalTransport(), personTokens: newMemoryPersonTokenStore(),
 		personServerKey: newSigningKey(t, "cascade-ps"), resourceKey: newSigningKey(t, "cascade-resource"),
 	}
+	fixture.clock = aauth.ClockFunc(func() time.Time {
+		fixture.nowMu.Lock()
+		defer fixture.nowMu.Unlock()
+		return fixture.now
+	})
 	fixture.observer = &pendingObserver{base: contextTransport{base: fixture.network}}
 	fixture.httpClient = &http.Client{Transport: fixture.observer}
 	fixture.admit = func(_ context.Context, endpoint string) error {
@@ -213,6 +219,12 @@ func (fixture *revocationFixture) route(origin string, handler http.Handler) {
 		}
 		handler.ServeHTTP(response, request)
 	}))
+}
+
+func (fixture *revocationFixture) advance(delay time.Duration) {
+	fixture.nowMu.Lock()
+	defer fixture.nowMu.Unlock()
+	fixture.now = fixture.now.Add(delay)
 }
 
 func (fixture *revocationFixture) count(request string) int {
@@ -442,7 +454,7 @@ func TestFourPartyRevocationCascadesFromPersonServerThroughAccessServer(t *testi
 // 404, and once the terminal response is returned the URL is 410.
 func TestRevocationCascadeIsDeferredAndPolledByItsCaller(t *testing.T) {
 	t.Parallel()
-	fixture := newRevocationFixture(t, true, aauth.RevocationLimits{}, 50*time.Millisecond)
+	fixture := newRevocationFixture(t, true, aauth.RevocationLimits{}, time.Second)
 	ctx := fixture.ctx
 
 	personToken := fixture.personToken()
@@ -506,6 +518,16 @@ func TestRevocationCascadeIsDeferredAndPolledByItsCaller(t *testing.T) {
 	}
 
 	close(release)
+	// The Person Server polls once the Access Server's Retry-After has passed.
+	early, err := fixture.people.RevokePersonToken(ctx, personJTI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireAttempts(t, "revocation before Retry-After", early.Attempts, cascadeResource+" recorded", cascadeAccessServer+" pending")
+	if fixture.count("GET "+location) != 0 {
+		t.Fatal("the Person Server polled before Retry-After")
+	}
+	fixture.advance(revoked.RetryAfter())
 	completed, err := fixture.people.RevokePersonToken(ctx, personJTI)
 	if err != nil {
 		t.Fatal(err)
@@ -514,7 +536,7 @@ func TestRevocationCascadeIsDeferredAndPolledByItsCaller(t *testing.T) {
 	if report := completed.Attempts[1].Downstream; len(report) != 1 || report[0] != (aauth.DownstreamRevocation{Recipient: cascadeResource}) {
 		t.Fatalf("Access Server downstream report = %#v", report)
 	}
-	if fixture.count("GET "+cascadeAccessServer+strings.TrimPrefix(location, cascadeAccessServer)) != 1 {
+	if fixture.count("GET "+location) != 1 {
 		t.Fatal("the Person Server did not poll the pending URL once")
 	}
 	if response := poll(fixture.personServerKey, cascadePersonServer, aauth.PersonDiscoveryDocument); response.Code != http.StatusGone {
@@ -578,16 +600,25 @@ func TestThreePartyWithdrawnResourceTokenAndRateLimitedRevocation(t *testing.T) 
 		t.Fatal(err)
 	}
 	requireAttempts(t, "first person-token revocation", first.Attempts, cascadeResource+" recorded")
-	second, err := fixture.people.RevokePersonToken(ctx, claimString(t, tokenClaims(t, fixture.personToken()), "jti"))
+	secondJTI := claimString(t, tokenClaims(t, fixture.personToken()), "jti")
+	second, err := fixture.people.RevokePersonToken(ctx, secondJTI)
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireAttempts(t, "rate-limited person-token revocation", second.Attempts, cascadeResource+" revocation_unavailable")
+	// rate_limited is not terminal: the revocation stays pending until the
+	// Resource's Retry-After has passed, and is then made again.
+	requireAttempts(t, "rate-limited person-token revocation", second.Attempts, cascadeResource+" pending")
 	var limited *aauth.RateLimitedError
 	if !errors.As(second.Attempts[0].Cause, &limited) || limited.Problem.Status != http.StatusTooManyRequests ||
 		limited.Problem.Code != "rate_limited" || limited.RetryAfter <= 0 || second.Attempts[0].RetryAfter != limited.RetryAfter {
 		t.Fatalf("rate-limited attempt = %#v", second.Attempts[0])
 	}
+	fixture.advance(limited.RetryAfter)
+	retried, err := fixture.people.RevokePersonToken(ctx, secondJTI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireAttempts(t, "person-token revocation after Retry-After", retried.Attempts, cascadeResource+" recorded")
 }
 
 // contextTransport ends a round trip when its request context ends, as a

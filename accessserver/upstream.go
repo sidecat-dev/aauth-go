@@ -27,6 +27,14 @@ func (upstream *verifiedUpstream) expiresAt() time.Time {
 	return time.Unix(upstream.auth.ExpiresAt, 0).UTC()
 }
 
+// reference is the upstream token's (iss, jti), the key of any revocation of it.
+func (upstream *verifiedUpstream) reference() aauth.TokenReference {
+	if upstream.person != nil {
+		return aauth.TokenReference{Issuer: upstream.person.Issuer, JTI: upstream.person.JTI}
+	}
+	return aauth.TokenReference{Issuer: upstream.auth.Issuer, JTI: upstream.auth.JTI}
+}
+
 func (upstream *verifiedUpstream) issuedAt() time.Time {
 	if upstream.person != nil {
 		return time.Unix(upstream.person.IssuedAt, 0)

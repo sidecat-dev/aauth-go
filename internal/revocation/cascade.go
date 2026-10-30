@@ -17,6 +17,10 @@ import (
 // URL is then 404 and its caller revokes again, which is idempotent.
 const maximumCascades = 4096
 
+// maximumConcurrentAttempts bounds how many revocations one step has in
+// flight at once.
+const maximumConcurrentAttempts = 8
+
 // Tracker remembers, for each revoked token, which downstream revocations it
 // has made and how each ended, and the pending URL a caller polls while any
 // has not. It holds soft state only: the revocation itself is recorded in the
@@ -102,6 +106,11 @@ func (tracker *Tracker) Step(ctx context.Context, sender *Sender, run Run) Resul
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	for key, outcome := range attempted {
+		if outcome.Pending {
+			// A pending revocation is not attempted again before the delay
+			// its recipient asked for.
+			outcome.retryAt = run.Now.Add(outcome.RetryAfter)
+		}
 		current.outcomes[key] = outcome
 	}
 	result := Result{Targets: targets, Outcomes: make([]Outcome, len(targets))}
@@ -110,13 +119,19 @@ func (tracker *Tracker) Step(ctx context.Context, sender *Sender, run Run) Resul
 		if !known {
 			outcome = Outcome{Pending: true}
 		}
-		result.Outcomes[index] = outcome
 		if outcome.Pending {
-			result.Pending = true
-			if outcome.RetryAfter > result.RetryAfter {
-				result.RetryAfter = outcome.RetryAfter
+			// The caller is told the soonest time another step can make progress.
+			wait := DefaultRetryAfter
+			if outcome.RetryAfter > 0 {
+				wait = outcome.retryAt.Sub(run.Now)
 			}
+			if !result.Pending || wait < result.RetryAfter {
+				result.RetryAfter = wait
+			}
+			result.Pending = true
+			outcome.RetryAfter = wait
 		}
+		result.Outcomes[index] = outcome
 	}
 	if result.Pending {
 		if current.pendingID == "" {
@@ -126,7 +141,7 @@ func (tracker *Tracker) Step(ctx context.Context, sender *Sender, run Run) Resul
 		current.delivered = false
 		result.PendingID = current.pendingID
 		if result.RetryAfter <= 0 {
-			result.RetryAfter = DefaultRetryAfter
+			result.RetryAfter = time.Second
 		}
 	} else if current.pendingID != "" {
 		// The terminal response is now being delivered on the pending URL.
@@ -186,6 +201,10 @@ func attempt(ctx context.Context, sender *Sender, targets []Target, previous map
 		outcome Outcome
 	}
 	answers := make(chan answer, len(targets))
+	slots := make(chan struct{}, maximumConcurrentAttempts)
+	// A recipient that answers rate_limited is sent nothing more this step.
+	var limitedMu sync.Mutex
+	limited := make(map[string]Outcome)
 	started := 0
 	for _, target := range targets {
 		prior, known := previous[target.key()]
@@ -194,17 +213,38 @@ func attempt(ctx context.Context, sender *Sender, targets []Target, previous map
 			continue
 		case known && !prior.Pending && !run.Retry:
 			continue
+		case known && prior.Pending && run.Now.Before(prior.retryAt):
+			continue
 		}
 		started++
 		go func(target Target, prior Outcome) {
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			case <-holdContext.Done():
+				answers <- answer{key: target.key(), outcome: Outcome{Pending: true, Location: prior.Location, Cause: holdContext.Err()}}
+				return
+			}
+			limitedMu.Lock()
+			refusal, isLimited := limited[target.Recipient]
+			limitedMu.Unlock()
+			if isLimited {
+				answers <- answer{key: target.key(), outcome: refusal}
+				return
+			}
 			var outcome Outcome
 			if prior.Pending && prior.Location != "" {
 				outcome = sender.Poll(holdContext, prior.Location, remaining(holdContext))
 			} else {
 				outcome = sender.Send(holdContext, target, remaining(holdContext))
 			}
-			if !outcome.Recorded && !outcome.Pending && holdContext.Err() != nil && ctx.Err() == nil &&
-				errors.Is(outcome.Cause, context.DeadlineExceeded) {
+			switch {
+			case outcome.rateLimited:
+				limitedMu.Lock()
+				limited[target.Recipient] = Outcome{Pending: true, RetryAfter: outcome.RetryAfter, Cause: outcome.Cause}
+				limitedMu.Unlock()
+			case !outcome.Recorded && !outcome.Pending && holdContext.Err() != nil && ctx.Err() == nil &&
+				errors.Is(outcome.Cause, context.DeadlineExceeded):
 				// The hold ended before the recipient answered. Its answer is not
 				// terminal, so the attempt stays pending and is made again.
 				outcome = Outcome{Pending: true, Location: prior.Location, Cause: outcome.Cause}
@@ -268,6 +308,9 @@ func Aggregate(result Result) []aauth.RevocationAttempt {
 		case outcome.Pending:
 			attempt.Pending = true
 			attempt.Error = ""
+			if outcome.Cause != nil {
+				attempt.Cause = outcome.Cause
+			}
 		case attempt.Pending:
 		case outcome.Error == aauth.RevocationUnavailable:
 			attempt.Error, attempt.Cause = outcome.Error, outcome.Cause

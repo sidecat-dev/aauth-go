@@ -37,7 +37,9 @@ type Target struct {
 
 func (target Target) key() string { return target.Recipient + "\x00" + target.JTI }
 
-// Outcome is how one revocation exchange ended.
+// Outcome is how one revocation exchange ended. A recipient that answered
+// 202, or 429 rate_limited, has not reached a terminal outcome: the
+// revocation is pending and is attempted again after RetryAfter.
 type Outcome struct {
 	Recorded   bool
 	Error      aauth.RevocationError
@@ -46,6 +48,9 @@ type Outcome struct {
 	RetryAfter time.Duration
 	Downstream []aauth.DownstreamRevocation
 	Cause      error
+
+	rateLimited bool
+	retryAt     time.Time
 }
 
 func unavailable(cause error) Outcome {
@@ -220,14 +225,19 @@ func (sender *Sender) exchange(request *http.Request) Outcome {
 			if problem.Code == "unsupported_iss" {
 				return unsupported(problem)
 			}
-			outcome := unavailable(problem)
-			if problem.Code == "rate_limited" {
-				if delay, ok := httpapi.ParseRetryAfter(response.Header.Values("Retry-After"), sender.clock.Now()); ok {
-					outcome.RetryAfter = delay
-					outcome.Cause = &aauth.RateLimitedError{Problem: problem, RetryAfter: delay}
+			if problem.Status == http.StatusTooManyRequests && problem.Code == "rate_limited" {
+				// rate_limited asks the caller to come back later; it is not one of
+				// the two terminal failures, so the revocation stays pending.
+				delay, ok := httpapi.ParseRetryAfter(response.Header.Values("Retry-After"), sender.clock.Now())
+				if !ok || delay <= 0 {
+					delay = DefaultRetryAfter
+				}
+				return Outcome{
+					Pending: true, RetryAfter: delay, rateLimited: true,
+					Cause: &aauth.RateLimitedError{Problem: problem, RetryAfter: delay},
 				}
 			}
-			return outcome
+			return unavailable(problem)
 		}
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumResponseBytes))

@@ -157,12 +157,16 @@ if result.Pending() {
 
 Each call makes one attempt at each recipient that has not recorded the
 revocation, and waits at most `Hold` (20 seconds by default). A recipient that
-answers `202` is reported pending, and the next call polls its pending URL with
-a signed `GET`. A failed recipient is `revocation_unavailable` or
+answers `202` or `429 rate_limited` is reported pending, and a call after its
+`RetryAfter` polls its pending URL with a signed `GET`, or sends the revocation
+again. A failed recipient is `revocation_unavailable` or
 `revocation_unsupported` and is attempted again on the next call. Repeating the
 call is safe. When `Tokens` also implements `personserver.ChainedPersonTokenStore`,
 the person tokens a call-chaining intermediary obtained with the revoked token as
 `upstream_token`, and those obtained from them, are revoked in the same cascade.
+A person token passed to an Access Server as `upstream_token` counts as
+presented to it, so it is revoked there too and the Access Server refuses it
+with `revoked_upstream_token`.
 
 An Access Server with `accessserver.Config.Revocation` serves `POST /revoke` and
 advertises `revocation_endpoint`. It retains each auth token it issues in
@@ -203,9 +207,10 @@ The Agent treats `revoked_resource_token` as terminal for that token.
 `*agent.RevokedResourceTokenError`, which matches `agent.ErrResourceTokenRevoked`.
 Call the Resource again for a fresh one.
 
-Every revocation endpoint accepts 60 requests a minute from one caller by
+Every revocation endpoint accepts 600 requests a minute from one caller by
 default and answers `429 rate_limited` with `Retry-After` beyond that; set
-`Limits` to change it. A store may return `aauth.ErrRevocationLimitReached` to
+`Limits` to change it. A cascade that meets a recipient's limit is not lost:
+that revocation stays pending until the `Retry-After` has passed. A store may return `aauth.ErrRevocationLimitReached` to
 bound how many entries one issuer holds. An `exp` more than 24 hours ahead is
 `invalid_request`. The [revocation cascade tests](integration/revocation_cascade_test.go)
 run these paths through the real role handlers.

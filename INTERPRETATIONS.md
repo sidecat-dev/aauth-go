@@ -2284,7 +2284,11 @@ own hold ends first. Here the hold is the caller's `Prefer: wait`, capped at
 pending: the recipient answers `202` and attempts it again on the next poll,
 which is safe because a repeated revocation records nothing new. A downstream
 whose own request fails or times out under the HTTP client is
-`revocation_unavailable`. The cascade's progress is process memory, bounded,
+`revocation_unavailable`. A downstream that answers `429 rate_limited` has not
+reached either terminal outcome the draft names, so it stays pending and is not
+attempted again before its `Retry-After`, nor is anything else sent to that
+recipient in the same step; a pending downstream URL is likewise not polled
+before its `Retry-After`. The cascade's progress is process memory, bounded,
 while the revocation itself is in the host store before anyone is called; a
 pending URL the recipient no longer holds is `404`, and the caller revokes
 again. After the terminal response a poll is `410` with `invalid_code`, the code
@@ -2308,7 +2312,10 @@ revoked person token and, in three-party access, as a revoked auth token. An
 Access Server accepts person-token revocations only from Person Servers its
 `TrustPersonServer` policy admits and answers others `unsupported_iss`; a
 four-party Resource accepts auth-token revocations only from its configured
-Access Server. When a person token is revoked the Access Server revokes every
+Access Server. A Person Server counts an Access Server it passed a person token
+to as `upstream_token` among those it presented the token to, so a revocation
+reaches it and it can answer `revoked_upstream_token`
+([AAG-F140](SPEC-FEEDBACK.md#aag-f140--no-revocation-reaches-an-access-server-that-received-a-person-token-as-upstream_token)). When a person token is revoked the Access Server revokes every
 unexpired auth token issued against it and, on a step-up, against those auth
 tokens in turn, and records each as revoked itself so a later step-up presenting
 one is refused.
@@ -2353,9 +2360,12 @@ token again.
 
 A recipient that accepts revocations from any verified issuer should bound what
 one issuer can hold, in entries and in rate, and may reject an `exp` beyond the
-longest lifetime it accepts. Every revocation endpoint here admits 60 requests a
+longest lifetime it accepts. Every revocation endpoint here admits 600 requests a
 minute from one verified caller by default, polls excluded, and answers
-`429 rate_limited` with `Retry-After` beyond that. An `exp` more than 24 hours
+`429 rate_limited` with `Retry-After` beyond that. A cascade sends one
+revocation per token, so the default of 600 a minute is high enough that a
+legitimate cascade meets it only rarely, and when it does the sender keeps the
+revocation pending rather than failing it. An `exp` more than 24 hours
 ahead, the longest lifetime of an Agent token, is `invalid_request`. The entry
 bound belongs to the store, which returns `aauth.ErrRevocationLimitReached`;
 the endpoint then answers `rate_limited` and records nothing. A revocation from

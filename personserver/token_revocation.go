@@ -306,6 +306,24 @@ func (server *Server) chainedPersonTokens(ctx context.Context, root PersonTokenR
 	return records, nil
 }
 
+// recordUpstreamPresentation records that a person token this Person Server
+// issued is passed to an Access Server as upstream_token. Revoking that
+// person token then reaches the Access Server, which refuses it as an
+// upstream_token from then on.
+func (server *Server) recordUpstreamPresentation(ctx context.Context, upstream *verifiedUpstreamToken, accessServer string) error {
+	if upstream == nil || upstream.person == nil || upstream.person.Issuer != server.issuer {
+		return nil
+	}
+	err := server.personTokenPresentations.RecordPersonTokenPresentation(ctx, PersonTokenPresentation{
+		PersonServer: server.issuer, JTI: upstream.person.JTI, AccessServer: accessServer,
+		RetainUntil: time.Unix(upstream.person.ExpiresAt, 0).UTC().Add(server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime),
+	})
+	if err != nil {
+		return fmt.Errorf("personserver: record upstream person-token presentation: %w", err)
+	}
+	return nil
+}
+
 // recordIssuedAuthTokenRevocation retains a revocation of an auth token this
 // Person Server issued, so it is refused as a presented_token too.
 func (server *Server) recordIssuedAuthTokenRevocation(ctx context.Context, record IssuedAuthTokenRecord) error {

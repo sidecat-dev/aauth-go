@@ -40,16 +40,16 @@ type DownstreamRevocation struct {
 // RevocationAttempt reports how one revocation a server sent to one recipient
 // ended. Exactly one of three outcomes holds: Error is empty and Pending is
 // false when the recipient recorded the revocation; Pending is true when the
-// recipient answered 202, or had not answered when the sender stopped
-// waiting, so its cascade is not yet terminal; otherwise Error names why it
-// did not record. Revoking again continues a pending attempt and re-attempts a
-// failed one.
+// recipient answered 202 or 429 rate_limited, or had not answered when the
+// sender stopped waiting, so the revocation there is not yet terminal;
+// otherwise Error names why it did not record. Revoking again after
+// RetryAfter continues a pending attempt and re-attempts a failed one.
 type RevocationAttempt struct {
 	Recipient string
 	Error     RevocationError
 	Pending   bool
-	// RetryAfter is the delay the recipient asked for before the next attempt,
-	// on a pending attempt or a rate_limited refusal.
+	// RetryAfter is the delay before a pending attempt can progress: the one
+	// the recipient asked for, or the default polling interval.
 	RetryAfter time.Duration
 	// Downstream is the recipient's own report of the revocations it made.
 	Downstream []DownstreamRevocation
@@ -68,7 +68,7 @@ func (attempt RevocationAttempt) Recorded() bool {
 // answers rate_limited beyond either bound.
 type RevocationLimits struct {
 	// Requests is how many revocation requests one caller may send in each
-	// Window. Polls of a pending revocation are not counted. Zero selects 60.
+	// Window. Polls of a pending revocation are not counted. Zero selects 600.
 	Requests int
 	// Window is the length of the rate window. Zero selects one minute.
 	Window time.Duration

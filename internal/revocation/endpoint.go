@@ -33,7 +33,7 @@ const (
 	// revocation, so a presentation verified with a slower clock is refused.
 	Skew = time.Minute
 
-	defaultRequests    = 60
+	defaultRequests    = 600
 	defaultWindow      = time.Minute
 	defaultMaxLifetime = 24 * time.Hour
 )

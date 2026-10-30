@@ -286,6 +286,10 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 			writeUpstreamTokenProblem(response, err)
 			return
 		}
+		upstreamReference := upstream.reference()
+		if server.refuseRevokedParameter(response, request.Context(), "", &upstreamReference, nil, "revoked_upstream_token", pending != nil) {
+			return
+		}
 		// Downstream access does not outlive the upstream token, and neither
 		// does a wait for it.
 		if expiresAt := upstream.expiresAt(); expiresAt.Before(credentialExpiresAt) {

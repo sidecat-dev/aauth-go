@@ -287,8 +287,8 @@ func (server *Server) commitIssuedAuthToken(ctx context.Context, claims aauth.Au
 	})
 }
 
-// refuseRevokedParameter answers a token request whose resource_token or
-// presented_token is revoked, and reports whether it did. A token that also
+// refuseRevokedParameter answers a token request whose resource_token,
+// presented_token or upstream_token is revoked, and reports whether it did. A token that also
 // failed verification by expiry alone is still reported as revoked. On a
 // pending request the answer is the polling error revoked.
 func (server *Server) refuseRevokedParameter(
@@ -323,8 +323,11 @@ func (server *Server) refuseRevokedParameter(
 		return false
 	}
 	detail := "The resource token was withdrawn by the Resource that issued it."
-	if code == "revoked_presented_token" {
+	switch code {
+	case "revoked_presented_token":
 		detail = "The presented token was revoked by the server that issued it."
+	case "revoked_upstream_token":
+		detail = "The upstream token of this request was revoked."
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	if pending {
