@@ -17,15 +17,20 @@ import (
 )
 
 var (
-	// ErrEventSubscriptionNotFound reports an unknown or inactive event ID.
+	// ErrEventSubscriptionNotFound reports an unknown event ID. The inbox
+	// answers 404.
 	ErrEventSubscriptionNotFound = errors.New("aauth: event subscription not found")
-	// ErrEventSubscriptionInactive reports a host-disabled or completed subscription.
+	// ErrEventSubscriptionInactive reports a host-disabled, expired, or
+	// completed subscription. The inbox answers 404.
 	ErrEventSubscriptionInactive = errors.New("aauth: event subscription is inactive")
-	// ErrEventResourceMismatch reports delivery by a Resource other than the subscribed Resource.
+	// ErrEventResourceMismatch reports delivery by a Resource other than the
+	// subscribed Resource. The inbox answers 403.
 	ErrEventResourceMismatch = errors.New("aauth: event resource does not match subscription")
-	// ErrEventAgentMismatch reports an event audience other than the subscribed Agent.
+	// ErrEventAgentMismatch reports an event audience other than the
+	// subscribed Agent. The inbox answers 401 with Signature-Error invalid_jwt.
 	ErrEventAgentMismatch = errors.New("aauth: event agent does not match subscription")
-	// ErrEventUsesExceeded reports delivery after a bounded subscription is exhausted.
+	// ErrEventUsesExceeded reports delivery after a bounded subscription is
+	// exhausted. The inbox answers 404, as for an unknown subscription.
 	ErrEventUsesExceeded = errors.New("aauth: event subscription use limit exceeded")
 	// ErrEventDeliveryConflict reports a retained delivery whose bytes do not
 	// match the supplied delivery fingerprint.
@@ -125,7 +130,9 @@ type EventAcceptance struct {
 // AcceptEvent must atomically load the subscription, compare EventID,
 // Resource and Agent, enforce active state and atomically increment the use
 // count, and retain an independent copy of the exact token, content type, and
-// payload before returning. An exact Fingerprint replay returns the first
+// payload before returning. A Resource or Agent mismatch consumes no use. The
+// retained token and payload bytes are what the host's AP-to-Agent transport
+// hands to the Agent, unchanged, so the Agent can check body_s256. An exact Fingerprint replay returns the first
 // EventAcceptance without incrementing use count and with the first retained
 // RemainingUses.
 // Another fingerprint, including the same token with another content type or
@@ -207,14 +214,22 @@ func (server *Server) IssueSubscribeToken(ctx context.Context, request Subscribe
 	}, nil
 }
 
+// handleEvent validates one Resource delivery in the order the Events source
+// gives: event-token profile and signature, HTTP proof with the same key,
+// body_s256, then the atomic subscription check in the inbox store. Token and
+// proof failures are 401 with Signature-Error, a Resource other than the
+// subscribed one is 403, and an unknown, inactive, or exhausted subscription
+// is 404.
 func (server *Server) handleEvent(response http.ResponseWriter, request *http.Request) {
 	if !strings.EqualFold(request.Host, server.events.authority) || request.URL.EscapedPath() != server.events.path || request.URL.RawQuery != "" {
 		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", errors.New("aauth: event delivery target is invalid"))
 		return
 	}
-	requiredComponents := []string{"content-digest"}
+	// A request with content must cover content-digest; PrepareRequest adds
+	// that requirement. A signed Content-Type is required whenever one is sent.
+	var requiredComponents []string
 	if request.Header.Get("Content-Type") != "" {
-		requiredComponents = append([]string{"content-type"}, requiredComponents...)
+		requiredComponents = []string{"content-type"}
 	}
 	prepared, err := signaturekey.PrepareRequest(request, server.clock, signaturekey.VerifyOptions{
 		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
@@ -222,16 +237,20 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 		MaxBodyBytes:       server.events.maxSignedBodyBytes,
 	})
 	if err != nil {
-		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", err)
+		writeSignatureProblem(response, err)
 		return
 	}
 	compact, ok := prepared.Credential().SelfJWT()
 	if !ok {
-		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", errors.New("aauth: event delivery requires self-jwt"))
+		writeSignatureProblem(response, &signaturekey.Error{
+			Code:            signaturekey.ErrorUnsupportedScheme,
+			AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeSelfJWT},
+			Cause:           errors.New("aauth: event delivery requires self-jwt"),
+		})
 		return
 	}
 	if err := events.ValidateEventTokenProfile(compact, prepared.VerifiedAt()); err != nil {
-		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_event_token", err)
+		writeEventTokenProblem(response, err)
 		return
 	}
 	proof, assertion, err := prepared.VerifySelfJWT(request.Context(), server.events.keyResolver, events.EventTokenType)
@@ -245,7 +264,15 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 	}
 	claims, err := events.EventTokenFromAssertion(assertion, proof.VerifiedAt())
 	if err != nil {
-		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_event_token", err)
+		writeEventTokenProblem(response, err)
+		return
+	}
+	if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
+		writeSignatureProblem(response, err)
+		return
+	}
+	if err := events.VerifyEventBody(claims, proof.ExactBody()); err != nil {
+		writeEventTokenProblem(response, err)
 		return
 	}
 	delivery := EventDelivery{
@@ -258,12 +285,13 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 	accepted, err := server.events.store.AcceptEvent(request.Context(), delivery)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrEventSubscriptionNotFound), errors.Is(err, ErrEventSubscriptionInactive):
+		case errors.Is(err, ErrEventSubscriptionNotFound), errors.Is(err, ErrEventSubscriptionInactive),
+			errors.Is(err, ErrEventUsesExceeded):
 			httpapi.WriteProblem(response, http.StatusNotFound, "event_subscription_not_found", err)
-		case errors.Is(err, ErrEventResourceMismatch), errors.Is(err, ErrEventAgentMismatch):
+		case errors.Is(err, ErrEventResourceMismatch):
 			httpapi.WriteProblem(response, http.StatusForbidden, "event_delivery_denied", err)
-		case errors.Is(err, ErrEventUsesExceeded):
-			httpapi.WriteProblem(response, http.StatusTooManyRequests, "event_uses_exceeded", err)
+		case errors.Is(err, ErrEventAgentMismatch):
+			writeEventTokenProblem(response, err)
 		case errors.Is(err, ErrEventDeliveryConflict):
 			httpapi.WriteProblem(response, http.StatusBadRequest, "event_delivery_conflict", err)
 		default:
@@ -285,6 +313,14 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 		return
 	}
 	response.WriteHeader(http.StatusAccepted)
+}
+
+// writeEventTokenProblem answers an event token that fails verification:
+// 401 with Signature-Error invalid_jwt unless the failure names a more
+// specific code, such as expired_jwt.
+func writeEventTokenProblem(response http.ResponseWriter, err error) {
+	failure := signaturekey.NormalizeError(err, signaturekey.ErrorInvalidJWT)
+	httpapi.WriteProblem(response, http.StatusUnauthorized, string(failure.Code), failure)
 }
 
 func eventEndpoint(server *Server) string {

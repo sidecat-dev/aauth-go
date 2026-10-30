@@ -207,10 +207,11 @@ func (client *Client) registerEventSubscription(
 	if err != nil {
 		return subscription, fail(operation, err)
 	}
-	components := []string{"content-digest"}
+	// SignJWTRequestWithOptions covers content-digest for nonempty parameters.
+	var components []string
 	if input.ContentType != "" {
 		request.Header.Set("Content-Type", input.ContentType)
-		components = append([]string{"content-type"}, components...)
+		components = []string{"content-type"}
 	}
 	if err := signaturekey.SignJWTRequestWithOptions(
 		request,
@@ -236,8 +237,13 @@ func (client *Client) registerEventSubscription(
 	return EventSubscription{EventID: claims.EventID, Resource: claims.Audience}, nil
 }
 
-// AcceptEvent verifies and correlates one AP-forwarded event. Store success is
-// required before the caller may act on a new event.
+// AcceptEvent verifies and correlates one AP-forwarded event, as Events Agent
+// Verification requires: the token's type, discovery document, signature and
+// expiry; its aud against this Agent's identifier, exactly and
+// case-sensitively; and the delivered payload against body_s256, so that a
+// body altered, added, or dropped on the way through the Agent Provider is
+// refused. Store success is required before the caller may act on a new
+// event.
 func (client *Client) AcceptEvent(ctx context.Context, input EventDeliveryInput) (ReceivedEvent, error) {
 	const operation = "accept event"
 	var received ReceivedEvent
@@ -264,6 +270,9 @@ func (client *Client) AcceptEvent(ctx context.Context, input EventDeliveryInput)
 	}
 	if claims.Audience != client.identifier {
 		return received, fail(operation, errors.New("event-token audience does not match Agent"))
+	}
+	if err := events.VerifyEventBody(claims, input.Payload); err != nil {
+		return received, fail(operation, err)
 	}
 	candidate := AcceptedEvent{
 		Fingerprint: events.Fingerprint(input.EventToken, input.ContentType, input.Payload),

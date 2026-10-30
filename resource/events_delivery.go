@@ -19,7 +19,9 @@ import (
 )
 
 // PrepareEvent creates one exact event token and owns copies of its payload.
-// It performs no network consequence.
+// The token's aud and eid come from the retained subscription, so eid is the
+// one the subscribe token carried, and a nonempty Payload sets body_s256 to
+// its digest. It performs no network consequence.
 func (service *EventService) PrepareEvent(ctx context.Context, input EventInput) (PreparedEvent, error) {
 	var prepared PreparedEvent
 	if service == nil {
@@ -61,7 +63,7 @@ func (service *EventService) PrepareEvent(ctx context.Context, input EventInput)
 		return prepared, ErrEventSubscriptionExpired
 	}
 	compact, err := events.MintEventToken(service.issuer, service.signingKey, events.EventTokenRequest{
-		Agent: subscription.Agent, EventID: subscription.EventID, Lifetime: input.Lifetime,
+		Agent: subscription.Agent, EventID: subscription.EventID, Payload: input.Payload, Lifetime: input.Lifetime,
 	}, now)
 	if err != nil {
 		return prepared, err
@@ -73,7 +75,9 @@ func (service *EventService) PrepareEvent(ctx context.Context, input EventInput)
 	}, nil
 }
 
-// DeliverEvent performs one explicit delivery attempt. It never retries.
+// DeliverEvent performs one explicit delivery attempt. It never retries. The
+// signature covers the base components and, when the event carries a body,
+// content-type and content-digest.
 func (service *EventService) DeliverEvent(ctx context.Context, event PreparedEvent) (EventDeliveryResult, error) {
 	var result EventDeliveryResult
 	if service == nil {
@@ -116,10 +120,11 @@ func (service *EventService) DeliverEvent(ctx context.Context, event PreparedEve
 	if err != nil {
 		return result, err
 	}
-	components := []string{"content-digest"}
+	// SignSelfJWTRequestWithOptions covers content-digest for a nonempty body.
+	var components []string
 	if event.contentType != "" {
 		request.Header.Set("Content-Type", event.contentType)
-		components = append([]string{"content-type"}, components...)
+		components = []string{"content-type"}
 	}
 	if err := signaturekey.SignSelfJWTRequestWithOptions(request, service.signingKey, event.compact, service.clock, signaturekey.SignOptions{
 		AdditionalComponents: components,
