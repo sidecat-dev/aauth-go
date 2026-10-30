@@ -2077,3 +2077,27 @@ gets `invalid_signature`, never `cache_miss`. Caching requires `iss`, `jti`,
 `exp` and `cnf.jwk`.
 
 **Evidence:** `signaturekey/cache_external_test.go`.
+
+## An `aauth-resource` link is read leniently and admitted strictly
+
+**Source:** Protocol `70d6737`, Resource Metadata Link Relation (lines
+2136-2158), Link Relation Security (2858-2862), and Link Relation Type
+Registration (3012-3019).
+
+The draft fixes the admissible target, a server identifier followed by
+`/.well-known/aauth-resource.json`, and says the HTML relation is carried in
+`head`. It does not say how an Agent reads the relation. `ResourceLinksFromHTML`
+reads every `link` element, in `head` or not, decodes attribute entities as
+HTML does, and does not resolve a relative `href` against the page, so only an
+absolute target can be admitted. A relation token is matched case-insensitively
+among the space-separated values of `rel`. An `anchor` parameter is ignored. A
+Link field longer than 8 KiB in total, or a page larger than 1 MiB, is not
+scanned. Duplicate targets are reported once. Whatever is read, only the one
+target form is admitted, and `ResolveResourceLink` checks that form again
+before it fetches anything. A document reached through a link is verified like
+any metadata document, with `issuer` compared byte for byte against the target
+minus the suffix. The library never follows a link on its own: an Agent passes
+the links it found, with where it found them, to `ResolveResourceLink`.
+
+**Evidence:** `resource_link_test.go` and
+`integration/resource_link_test.go`.

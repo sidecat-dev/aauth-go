@@ -710,6 +710,49 @@ until its own deadline. The [permission](example/permission/main.go) and
 without extracting references from the Agent's poll URL. Mission proposals
 have a separate [pending queue](personserver/mission_proposal_deferred_test.go).
 
+## Point Agents at your metadata
+
+An Agent that lands on your developer portal or API host may not know your
+resource identifier yet. The `aauth-resource` link relation names your
+metadata document from any response or page. Wrap the handlers that serve those
+pages, and the Resource itself if you like:
+
+```go
+portal.Handle("/docs/", server.WithResourceLink(docs))
+api := server.WithResourceLink(server.Handler())
+```
+
+Each response then carries
+`Link: <https://api.example/.well-known/aauth-resource.json>; rel="aauth-resource"`.
+In an HTML template, put `aauth.ResourceLinkElement(issuer)` in the `head` of
+the page at your `documentation_uri`. `aauth.AddResourceLinks` adds the field
+to any header, with one link for each resource a page describes. The link says
+nothing about the response it rides on: a `401` still states its requirement in
+`AAuth-Requirement`.
+
+An Agent reads links with `agent.ResourceLinksFromResponse` and
+`agent.ResourceLinksFromHTML`. Both keep only targets of the one admissible
+form, a server identifier followed by `/.well-known/aauth-resource.json`, and
+record where each link was found and how. Keep that record: a resource that a
+third-party page introduced is not one the person named. Then fetch and verify
+the document:
+
+```go
+links := agent.ResourceLinksFromHTML(pageURL, page)
+linked, err := agent.ResolveResourceLink(ctx, keyResolver, links[0])
+// linked.Resource is the verified resource identifier.
+```
+
+`ResolveResourceLink` refuses any other target form before fetching. A
+`signaturekey.HTTPKeyResolver` fetches with your `Admit` callback, its
+destination checks and size bound, and without following redirects. The
+document's `issuer` must equal the target minus the well-known suffix, or the
+result is `issuer_missing` or `issuer_mismatch`. A link authorizes nothing and
+is never used to find keys: the person still approves the resource at the
+person token endpoint, and verifiers discover keys from `iss` and `dwk`. The
+HTML scan treats the page as untrusted input, reads at most 1 MiB, and uses
+only absolute targets.
+
 ## Verify other Signature-Key schemes
 
 The role handlers accept the Signature-Key schemes their protocol step needs,

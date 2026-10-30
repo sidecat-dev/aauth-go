@@ -487,59 +487,14 @@ func (resolver *HTTPKeyResolver) fetch(ctx context.Context, cacheKey discoveryCa
 	if err != nil {
 		return discoveryCacheEntry{}, err
 	}
-	if err := jsonstrict.RejectAmbiguousNames(metadataBytes); err != nil {
-		return discoveryCacheEntry{}, resolutionError(
-			ResolutionInvalid,
-			fmt.Errorf("aauth: validate discovery metadata JSON: %w", err),
-		)
-	}
-	var metadata struct {
-		Issuer           string `json:"issuer"`
-		JWKSURI          string `json:"jwks_uri"`
-		LogoURI          string `json:"logo_uri"`
-		LogoDarkURI      string `json:"logo_dark_uri"`
-		DocumentationURI string `json:"documentation_uri"`
-		TosURI           string `json:"tos_uri"`
-		PolicyURI        string `json:"policy_uri"`
-	}
-	if err := jsonstrict.RejectCaseVariants(metadataBytes, &metadata); err != nil {
-		return discoveryCacheEntry{}, resolutionError(
-			ResolutionInvalid,
-			fmt.Errorf("aauth: validate discovery metadata fields: %w", err),
-		)
-	}
-	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
-		return discoveryCacheEntry{}, resolutionError(
-			ResolutionInvalid,
-			fmt.Errorf("aauth: decode discovery metadata: %w", err),
-		)
-	}
-	if metadata.Issuer == "" {
-		return discoveryCacheEntry{}, resolutionError(
-			ResolutionIssuerMissing,
-			errors.New("aauth: discovery metadata issuer is required"),
-		)
-	}
-	if metadata.Issuer != issuer {
-		return discoveryCacheEntry{}, resolutionError(
-			ResolutionIssuerMismatch,
-			fmt.Errorf("aauth: discovery metadata issuer %q does not match %q", metadata.Issuer, issuer),
-		)
+	metadata, err := verifyMetadataDocument(metadataBytes, issuer)
+	if err != nil {
+		return discoveryCacheEntry{}, err
 	}
 	if err := validateDiscoveryURL(metadata.JWKSURI); err != nil {
 		return discoveryCacheEntry{}, resolutionError(
 			ResolutionInvalid,
 			fmt.Errorf("aauth: discovery jwks_uri: %w", err),
-		)
-	}
-	if err := validateOptionalDisplayURIs(map[string]string{
-		"logo_uri": metadata.LogoURI, "logo_dark_uri": metadata.LogoDarkURI,
-		"documentation_uri": metadata.DocumentationURI, "tos_uri": metadata.TosURI,
-		"policy_uri": metadata.PolicyURI,
-	}); err != nil {
-		return discoveryCacheEntry{}, resolutionError(
-			ResolutionInvalid,
-			fmt.Errorf("aauth: discovery metadata: %w", err),
 		)
 	}
 	keySetBytes, keySetPolicy, err := resolver.fetchJSON(ctx, metadata.JWKSURI)
@@ -551,6 +506,94 @@ func (resolver *HTTPKeyResolver) fetch(ctx context.Context, cacheKey discoveryCa
 		freshness = keySetPolicy.freshness
 	}
 	return resolver.keySetEntry(keySetBytes, freshness, metadataPolicy.storable && keySetPolicy.storable)
+}
+
+// FetchMetadata fetches the metadata document {issuer}/.well-known/{document}
+// under the same egress admission, destination checks, size bound and refusal
+// of redirects as key discovery, and verifies it as a metadata document: it
+// must be unambiguous JSON whose issuer member is present and equals issuer
+// byte for byte, and whose display URIs are absolute https URLs. It returns
+// the exact document bytes. A missing issuer is ResolutionIssuerMissing and a
+// different one ResolutionIssuerMismatch. The document is not cached.
+func (resolver *HTTPKeyResolver) FetchMetadata(ctx context.Context, issuer, document string) ([]byte, error) {
+	if resolver == nil {
+		return nil, errors.New("aauth: HTTP key resolver is required")
+	}
+	if ctx == nil {
+		return nil, errors.New("aauth: metadata fetch context is required")
+	}
+	if issuer == "" || strings.ContainsAny(issuer, "?#") || strings.HasSuffix(issuer, "/") {
+		return nil, resolutionError(ResolutionInvalid, fmt.Errorf("aauth: metadata issuer %q is not an origin", issuer))
+	}
+	if err := ValidateDiscoveryName(document); err != nil {
+		return nil, resolutionError(ResolutionInvalid, err)
+	}
+	metadataBytes, _, err := resolver.fetchJSON(ctx, issuer+"/.well-known/"+document)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := verifyMetadataDocument(metadataBytes, issuer); err != nil {
+		return nil, err
+	}
+	return metadataBytes, nil
+}
+
+type metadataDocument struct {
+	Issuer           string `json:"issuer"`
+	JWKSURI          string `json:"jwks_uri"`
+	LogoURI          string `json:"logo_uri"`
+	LogoDarkURI      string `json:"logo_dark_uri"`
+	DocumentationURI string `json:"documentation_uri"`
+	TosURI           string `json:"tos_uri"`
+	PolicyURI        string `json:"policy_uri"`
+}
+
+// verifyMetadataDocument checks the members every metadata document shares:
+// unambiguous JSON, an issuer equal to the URL it was fetched from minus the
+// well-known suffix, and https display URIs.
+func verifyMetadataDocument(metadataBytes []byte, issuer string) (metadataDocument, error) {
+	if err := jsonstrict.RejectAmbiguousNames(metadataBytes); err != nil {
+		return metadataDocument{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: validate discovery metadata JSON: %w", err),
+		)
+	}
+	var metadata metadataDocument
+	if err := jsonstrict.RejectCaseVariants(metadataBytes, &metadata); err != nil {
+		return metadataDocument{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: validate discovery metadata fields: %w", err),
+		)
+	}
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		return metadataDocument{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: decode discovery metadata: %w", err),
+		)
+	}
+	if metadata.Issuer == "" {
+		return metadataDocument{}, resolutionError(
+			ResolutionIssuerMissing,
+			errors.New("aauth: discovery metadata issuer is required"),
+		)
+	}
+	if metadata.Issuer != issuer {
+		return metadataDocument{}, resolutionError(
+			ResolutionIssuerMismatch,
+			fmt.Errorf("aauth: discovery metadata issuer %q does not match %q", metadata.Issuer, issuer),
+		)
+	}
+	if err := validateOptionalDisplayURIs(map[string]string{
+		"logo_uri": metadata.LogoURI, "logo_dark_uri": metadata.LogoDarkURI,
+		"documentation_uri": metadata.DocumentationURI, "tos_uri": metadata.TosURI,
+		"policy_uri": metadata.PolicyURI,
+	}); err != nil {
+		return metadataDocument{}, resolutionError(
+			ResolutionInvalid,
+			fmt.Errorf("aauth: discovery metadata: %w", err),
+		)
+	}
+	return metadata, nil
 }
 
 // keySetEntry decodes one fetched JWKS into a cache entry. Keys are indexed
