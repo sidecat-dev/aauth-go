@@ -23,6 +23,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -108,6 +109,9 @@ type FederatedAuthorizationConfig struct {
 	AgentBindingRevocations AgentBindingRevocationStore
 	// CallChaining optionally serves Resources acting as Agents.
 	CallChaining *FederatedCallChainingConfig
+	// TokenRevocation enables RevokePersonToken and resource-token
+	// revocations at the revocation endpoint.
+	TokenRevocation *TokenRevocationConfig
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -178,6 +182,9 @@ type PSAuthorizationConfig struct {
 	// AgentBindingRevocations enables host-invoked RevokeAgentBinding and
 	// refuses issuance and pending delivery under a revoked binding.
 	AgentBindingRevocations AgentBindingRevocationStore
+	// TokenRevocation enables RevokePersonToken and resource-token
+	// revocations at the revocation endpoint.
+	TokenRevocation *TokenRevocationConfig
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -414,6 +421,9 @@ type Server struct {
 	missionInteractionRelays         MissionInteractionRelayStore
 	agentTokenRevocations            AgentTokenRevocationStore
 	agentBindingRevocations          AgentBindingRevocationStore
+	tokenRevocation                  *tokenRevocationState
+	revocationLimits                 aauth.RevocationLimits
+	revocationLimiter                *revocation.Limiter
 }
 
 type authorizationMode uint8
@@ -489,6 +499,9 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 		return nil, errors.New("personserver: four-party authorization requires Tokens to implement PersonTokenPresentationStore")
 	}
 	server.personTokenPresentations = presentations
+	if err := server.configureTokenRevocation(config.TokenRevocation); err != nil {
+		return nil, err
+	}
 	httpClient := *config.HTTPClient
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -594,6 +607,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		server.authorizationInteractions = config.AuthorizationInteractions
 	}
 	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
+		return nil, err
+	}
+	if err := server.configureTokenRevocation(config.TokenRevocation); err != nil {
 		return nil, err
 	}
 	if config.Revocation == nil {
@@ -809,9 +825,7 @@ func (server *Server) Handler() http.Handler {
 	if server.interactionRelayStore != nil {
 		mux.HandleFunc("GET /interaction/relay/{id}", server.handlePendingInteractionRelay)
 	}
-	if server.agentTokenRevocations != nil {
-		mux.HandleFunc("POST /revoke", server.handleAgentTokenRevocation)
-	}
+	server.handleRevocationRoutes(mux)
 	return mux
 }
 
@@ -1105,11 +1119,18 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		err = proof.CheckIssuedAt(time.Unix(resourceToken.IssuedAt, 0))
 	}
 	if err != nil {
+		if server.refuseRevokedParameter(response, request.Context(), input.ResourceToken, nil, err, "revoked_resource_token") {
+			return
+		}
 		if budgets.IsTokenClaimError(err) {
 			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
 		} else {
 			writeEndpointTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
 		}
+		return
+	}
+	resourceReference := aauth.TokenReference{Issuer: resourceToken.Issuer, JTI: resourceToken.JTI}
+	if server.refuseRevokedParameter(response, request.Context(), input.ResourceToken, &resourceReference, nil, "revoked_resource_token") {
 		return
 	}
 	if err := server.validateResourceTokenTopology(resourceToken); err != nil {
@@ -1181,7 +1202,16 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		err = proof.CheckIssuedAt(presentedTokenIssuedAt(presented))
 	}
 	if err != nil {
+		if server.refuseRevokedParameter(response, request.Context(), input.PresentedToken, nil, err, "revoked_presented_token") {
+			return
+		}
 		writePresentedTokenProblem(response, err)
+		return
+	}
+	// A revoked person token is never presented to an Access Server, and no
+	// auth token is issued against one.
+	presentedReference := aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI}
+	if server.refuseRevokedParameter(response, request.Context(), input.PresentedToken, &presentedReference, nil, "revoked_presented_token") {
 		return
 	}
 	// A verified presented token is accepted on its own. A retained person
@@ -2011,8 +2041,8 @@ func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Reque
 	if server.interactionQuestionPolicy != nil || server.interactionRelayPolicy != nil {
 		metadata["interaction_endpoint"] = server.issuer + "/interaction"
 	}
-	if server.agentTokenRevocations != nil {
-		metadata["revocation_endpoint"] = server.issuer + "/revoke"
+	if endpoint := server.revocationEndpoint(); endpoint != "" {
+		metadata["revocation_endpoint"] = endpoint
 	}
 	writeJSON(response, http.StatusOK, metadata)
 }

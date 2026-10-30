@@ -179,6 +179,9 @@ func (server *Server) RevokeIssuedAuthTokenWithHeaders(
 	if err := validateIssuedAuthTokenRecord(record); err != nil || record.Reference != reference {
 		return fmt.Errorf("%w: invalid loaded record", ErrIssuedAuthTokenConflict)
 	}
+	if err := server.recordIssuedAuthTokenRevocation(ctx, record); err != nil {
+		return fmt.Errorf("personserver: record auth-token revocation: %w", err)
+	}
 	endpoint, additionalComponents, err := server.resourceRevocationProfile(ctx, record.Resource)
 	if err != nil {
 		return err

@@ -44,6 +44,9 @@ type Config struct {
 	R3                *R3Config
 	// Deferred enables retained Core approval and payment continuations.
 	Deferred *DeferredConfig
+	// Revocation enables the revocation endpoint and refusal of revoked
+	// person and resource tokens.
+	Revocation *RevocationConfig
 }
 
 // Agent is the verified agent identity presented to authorization policy.
@@ -115,6 +118,7 @@ type Server struct {
 	budget            *budgetConfig
 	r3                *r3Config
 	deferred          *DeferredConfig
+	revocation        *revocationState
 }
 
 // New constructs an Access Server.
@@ -151,17 +155,22 @@ func New(config Config) (*Server, error) {
 	if err := validateDeferredConfig(config.Deferred); err != nil {
 		return nil, err
 	}
-	return &Server{
+	server := &Server{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
 		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize,
 		budget: budgetConfiguration, r3: r3Configuration, deferred: cloneDeferredConfig(config.Deferred),
-	}, nil
+	}
+	if err := server.configureRevocation(config.Revocation); err != nil {
+		return nil, err
+	}
+	return server, nil
 }
 
 // Handler serves POST /token, the metadata and JWKS documents, and with
 // Deferred the pending URLs GET, POST, and DELETE /token/pending/{id}, where id
-// is the PendingAuthorizationRecord ID. POST delivers claims.
+// is the PendingAuthorizationRecord ID. POST delivers claims. With Revocation
+// it also serves POST /revoke and its pending URLs GET /revoke/pending/{id}.
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", server.handleToken)
@@ -170,6 +179,7 @@ func (server *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /token/pending/{id}", server.handlePendingClaims)
 		mux.HandleFunc("DELETE /token/pending/{id}", server.handlePendingCancellation)
 	}
+	server.handleRevocationRoutes(mux)
 	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
 	return mux
@@ -246,11 +256,18 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		err = proof.CheckIssuedAt(time.Unix(resourceClaims.IssuedAt, 0))
 	}
 	if err != nil {
+		if server.refuseRevokedParameter(response, request.Context(), input.ResourceToken, nil, err, "revoked_resource_token", pending != nil) {
+			return
+		}
 		if budgets.IsTokenClaimError(err) {
 			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
 		} else {
 			writeTokenProblem(response, err, "invalid_resource_token", "expired_resource_token")
 		}
+		return
+	}
+	resourceReference := aauth.TokenReference{Issuer: resourceClaims.Issuer, JTI: resourceClaims.JTI}
+	if server.refuseRevokedParameter(response, request.Context(), input.ResourceToken, &resourceReference, nil, "revoked_resource_token", pending != nil) {
 		return
 	}
 	// An intermediary's own ps, if any, names its own Person Server, not the
@@ -322,7 +339,14 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		err = proof.CheckIssuedAt(presentedTokenIssuedAt(presented))
 	}
 	if err != nil {
+		if server.refuseRevokedParameter(response, request.Context(), input.PresentedToken, nil, err, "revoked_presented_token", pending != nil) {
+			return
+		}
 		writePresentedTokenProblem(response, err)
+		return
+	}
+	presentedReference := aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI}
+	if server.refuseRevokedParameter(response, request.Context(), input.PresentedToken, &presentedReference, nil, "revoked_presented_token", pending != nil) {
 		return
 	}
 	var budgetCeiling *budgets.Value
@@ -547,6 +571,10 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 			return
 		}
 	}
+	if err := server.commitIssuedAuthToken(request.Context(), claims, presented); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
@@ -614,11 +642,15 @@ func validateDecision(decision Decision, requested []string, hasR3 bool) error {
 }
 
 func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Request) {
-	httpapi.WriteJSON(response, http.StatusOK, map[string]string{
+	metadata := map[string]string{
 		"issuer":              server.issuer,
 		"auth_token_endpoint": strings.TrimRight(server.issuer, "/") + "/token",
 		"jwks_uri":            strings.TrimRight(server.issuer, "/") + "/.well-known/jwks.json",
-	})
+	}
+	if endpoint := server.revocationEndpoint(); endpoint != "" {
+		metadata["revocation_endpoint"] = endpoint
+	}
+	httpapi.WriteJSON(response, http.StatusOK, metadata)
 }
 
 func (server *Server) handleJWKS(response http.ResponseWriter, _ *http.Request) {

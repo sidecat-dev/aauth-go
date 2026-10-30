@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -286,15 +287,24 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 		t, clock, personKey, personIssuer, aauth.AccessDiscoveryDocument, reference,
 		map[string]string{"X-Revocation-Context": "audit-1"}, []string{"x-revocation-context"},
 	)
-	assertSignatureFailure("wrong server role", wrongRole)
+	// The signature verifies, but a Resource accepts no revocation from an
+	// Access Server role it does not federate with: 403, never Signature-Error.
+	wrongRoleResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wrongRoleResponse, wrongRole)
+	if wrongRoleResponse.Code != http.StatusForbidden || wrongRoleResponse.Header().Get("Signature-Error") != "" ||
+		!strings.Contains(wrongRoleResponse.Body.String(), `"error":"unsupported_iss"`) {
+		t.Fatalf("wrong server role = %d %s headers=%v", wrongRoleResponse.Code, wrongRoleResponse.Body.String(), wrongRoleResponse.Header())
+	}
 
 	for name, body := range map[string]string{
-		"missing exp":     `{"jti":"` + reference.JTI + `"}`,
-		"string exp":      `{"jti":"` + reference.JTI + `","exp":"soon"}`,
-		"zero exp":        `{"jti":"` + reference.JTI + `","exp":0}`,
-		"fractional exp":  `{"jti":"` + reference.JTI + `","exp":1.5}`,
-		"duplicate jti":   `{"jti":"a","jti":"b","exp":2000000000}`,
-		"trailing value":  `{"jti":"a","exp":2000000000} {}`,
+		"missing exp":    `{"jti":"` + reference.JTI + `"}`,
+		"string exp":     `{"jti":"` + reference.JTI + `","exp":"soon"}`,
+		"zero exp":       `{"jti":"` + reference.JTI + `","exp":0}`,
+		"fractional exp": `{"jti":"` + reference.JTI + `","exp":1.5}`,
+		"duplicate jti":  `{"jti":"a","jti":"b","exp":2000000000}`,
+		"trailing value": `{"jti":"a","exp":2000000000} {}`,
+		"exp beyond any token lifetime": `{"jti":"` + reference.JTI + `","exp":` +
+			strconv.FormatInt(clock.Now().Add(25*time.Hour).Unix(), 10) + `}`,
 		"non-object body": `["a"]`,
 		"empty body":      ``,
 	} {
@@ -348,7 +358,7 @@ func TestRevocationEndpointRequiresBoundPersonServerProof(t *testing.T) {
 
 	// A body iss is an ignored extension member: the issuer is the verified signer.
 	withIss := signedRevocationBody(t, clock, personKey, personIssuer, aauth.PersonDiscoveryDocument,
-		[]byte(`{"iss":"https://other-person.example","jti":"`+reference.JTI+`","exp":2000000000}`),
+		[]byte(`{"iss":"https://other-person.example","jti":"`+reference.JTI+`","exp":1788128100}`),
 		map[string]string{"X-Revocation-Context": "audit-1"}, []string{"x-revocation-context"})
 	withIssResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(withIssResponse, withIss)

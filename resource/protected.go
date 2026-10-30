@@ -797,6 +797,9 @@ func (server *Server) verifyPreparedPersonRequest(
 	if err == nil {
 		err = verifiedProof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0))
 	}
+	if err == nil {
+		err = server.checkPersonTokenRevoked(request.Context(), claims)
+	}
 	return verifiedProof, claims, err
 }
 

@@ -120,6 +120,10 @@ type PendingAuthorizationRecord struct {
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
 	RetryAfter  time.Duration
+	// ResourceTokenJTI is the jti of the resource token the request was
+	// started for, in the namespace of Resource. A withdrawn resource token
+	// ends the request with revoked. A record without it is not checked.
+	ResourceTokenJTI string
 }
 
 // AuthorizationApproval is the canonical host decision and PS-issued token
@@ -565,6 +569,7 @@ func (server *Server) beginAuthorizationInteraction(
 			Capabilities:          append([]string(nil), authorization.Capabilities...),
 			BudgetOffer:           cloneBudgetValue(authorization.Budget),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
+			ResourceTokenJTI: resourceToken.JTI,
 		}
 		if authorization.Subagent != "" {
 			record.Subagent = authorization.Subagent
@@ -727,6 +732,11 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	// token the request was made with refuses the decision too.
 	if err := server.checkPendingRevocations(ctx, value.record.AgentProvider, value.record.Agent,
 		value.record.AgentTokenJTI, value.record.SubagentTokenJTI, value.record.CreatedAt); err != nil {
+		return err
+	}
+	if err := server.revokedPendingResourceToken(ctx, aauth.TokenReference{
+		Issuer: value.record.Resource, JTI: value.record.ResourceTokenJTI,
+	}); err != nil {
 		return err
 	}
 	// The pending deadline bounds only when approval may happen; it does not
@@ -1147,8 +1157,14 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 		// A revoked Agent token or binding ends a live request and withholds a
 		// retained token. The answer is terminal, so the request is ended first.
 		pending := result.Pending
-		if err := server.checkPendingRevocations(request.Context(), pending.AgentProvider, pending.Agent,
-			pending.AgentTokenJTI, pending.SubagentTokenJTI, pending.CreatedAt); err != nil {
+		err := server.checkPendingRevocations(request.Context(), pending.AgentProvider, pending.Agent,
+			pending.AgentTokenJTI, pending.SubagentTokenJTI, pending.CreatedAt)
+		if err == nil {
+			err = server.revokedPendingResourceToken(request.Context(), aauth.TokenReference{
+				Issuer: pending.Resource, JTI: pending.ResourceTokenJTI,
+			})
+		}
+		if err != nil {
 			if pendingRevoked(err) && !server.endPendingAuthorization(response, request, id, identity, result, mission) {
 				return
 			}

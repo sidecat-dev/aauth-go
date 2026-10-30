@@ -70,7 +70,7 @@ func TestDirectAgentResourceRevocationRequiresIssuingProviderAndRetainsMarker(t 
 	// A body iss is ignored; the revocation is recorded under the verified signer.
 	bodyIssuer := signedRevocationBody(
 		t, clock, providerKey, "https://provider.example", aauth.AgentDiscoveryDocument,
-		[]byte(`{"iss":"https://other.example","jti":"agent-token-2","exp":2000000000}`), nil, nil,
+		[]byte(`{"iss":"https://other.example","jti":"agent-token-2","exp":1788256800}`), nil, nil,
 	)
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, bodyIssuer)

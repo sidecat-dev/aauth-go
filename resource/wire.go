@@ -26,14 +26,26 @@ type requestTokenError struct{ cause error }
 func (failure *requestTokenError) Error() string { return failure.cause.Error() }
 func (failure *requestTokenError) Unwrap() error { return failure.cause }
 
+// revocationStoreError is a failure of the Resource's own revocation store,
+// answered as server_error rather than as a credential failure.
+type revocationStoreError struct{ cause error }
+
+func (failure *revocationStoreError) Error() string { return failure.cause.Error() }
+func (failure *revocationStoreError) Unwrap() error { return failure.cause }
+
 func writeCredentialProblem(response http.ResponseWriter, code string, err error) {
+	var storeFailure *revocationStoreError
+	if errors.As(err, &storeFailure) {
+		writeProblem(response, http.StatusInternalServerError, "server_error", storeFailure.cause)
+		return
+	}
 	var tokenFailure *requestTokenError
 	if !errors.As(err, &tokenFailure) {
 		writeProblem(response, http.StatusUnauthorized, code, err)
 		return
 	}
 	cause := tokenFailure.cause
-	if errors.Is(cause, ErrAgentTokenRevoked) {
+	if errors.Is(cause, ErrAgentTokenRevoked) || errors.Is(cause, ErrPersonTokenRevoked) {
 		cause = signaturekey.NewError(signaturekey.ErrorRevokedJWT, cause)
 	}
 	writeProblem(response, http.StatusUnauthorized, code, signaturekey.NormalizeError(cause, signaturekey.ErrorInvalidJWT))
@@ -44,7 +56,8 @@ func writeCredentialProblem(response http.ResponseWriter, code string, err error
 // not with a code from the authorization-endpoint error table.
 func writeAuthorizationProblem(response http.ResponseWriter, err error) {
 	var tokenFailure *requestTokenError
-	if errors.As(err, &tokenFailure) {
+	var storeFailure *revocationStoreError
+	if errors.As(err, &tokenFailure) || errors.As(err, &storeFailure) {
 		writeCredentialProblem(response, "invalid_token", err)
 		return
 	}

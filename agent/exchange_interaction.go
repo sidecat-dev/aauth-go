@@ -449,6 +449,10 @@ func (client *Client) finishExchangeRequest(
 	verifiedResource verifiedExchangeResource,
 ) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	resourceClaims := verifiedResource.claims
+	// A withdrawn resource token is terminal: it is never submitted again.
+	if err := client.refuseWithdrawnResourceToken(input.ResourceToken); err != nil {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, err
+	}
 	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")
 	}
@@ -508,6 +512,9 @@ func (client *Client) finishExchangeRequest(
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, err
+	}
+	if err := client.observeWithdrawnResourceToken(response, input.ResourceToken, resourceClaims); err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
 	}
 	return response, verifiedResource, credential, nil

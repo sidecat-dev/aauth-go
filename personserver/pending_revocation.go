@@ -14,13 +14,22 @@ import (
 // revoked Agent-person binding causes, so a caller can tell it from a denial.
 const agentBindingRevokedDetail = "The Agent-person binding that authorized this request was revoked."
 
-// revokedPendingTokenError reports that an Agent token a pending request was
-// started with has been revoked. Detail is public and names the token. It
-// matches ErrAgentTokenRevoked for a host decision refused on that ground.
-type revokedPendingTokenError struct{ detail string }
+// revokedPendingTokenError reports that a token a pending request depends on
+// has been revoked. Detail is public and names the token. It matches
+// ErrAgentTokenRevoked, or ErrResourceTokenRevoked for a withdrawn resource
+// token, for a host decision refused on that ground.
+type revokedPendingTokenError struct {
+	detail string
+	reason error
+}
 
 func (failure *revokedPendingTokenError) Error() string { return "personserver: " + failure.detail }
-func (failure *revokedPendingTokenError) Unwrap() error { return ErrAgentTokenRevoked }
+func (failure *revokedPendingTokenError) Unwrap() error {
+	if failure.reason != nil {
+		return failure.reason
+	}
+	return ErrAgentTokenRevoked
+}
 
 // checkPendingRevocations applies the Agent Provider's revocations to the
 // Agent token that started a pending request and, for a parent-mediated

@@ -144,6 +144,9 @@ func (server *Server) verifyOptionalUpstreamToken(
 			cause: fmt.Errorf("personserver: upstream token typ %q is neither a person token nor an auth token", header.Type),
 		}
 	}
+	if err := server.checkUpstreamRevoked(ctx, upstream.reference); err != nil {
+		return nil, err
+	}
 	if err := server.identifyUpstreamCaller(ctx, upstream); err != nil {
 		return nil, err
 	}

@@ -21,6 +21,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -91,6 +92,11 @@ type FederatedAuthorizationConfig struct {
 	// FurtherSchemes optionally accepts clients outside AAuth under
 	// Signature-Key schemes AAuth does not use, on the protected routes.
 	FurtherSchemes *FurtherSchemesConfig
+	// AuthTokenStatuses enables observation of accepted auth tokens and their
+	// revocation by the Access Server that issued them.
+	AuthTokenStatuses AuthTokenStatusStore
+	// Revocation optionally adds person-token revocation and RevokeResourceToken.
+	Revocation *RevocationConfig
 }
 
 // PSAuthorizationConfig supplies a PS-authorization Resource's identity,
@@ -129,6 +135,8 @@ type PSAuthorizationConfig struct {
 	// FurtherSchemes optionally accepts clients outside AAuth under
 	// Signature-Key schemes AAuth does not use, on the protected routes.
 	FurtherSchemes *FurtherSchemesConfig
+	// Revocation optionally adds person-token revocation and RevokeResourceToken.
+	Revocation *RevocationConfig
 }
 
 // AgentIdentityConfig constructs a Resource that authorizes application
@@ -168,6 +176,9 @@ type PersonIdentityConfig struct {
 	// FurtherSchemes optionally accepts clients outside AAuth under
 	// Signature-Key schemes AAuth does not use, on the protected routes.
 	FurtherSchemes *FurtherSchemesConfig
+	// Revocation optionally adds person-token revocation. A request
+	// presenting a revoked person token is refused.
+	Revocation *RevocationConfig
 }
 
 // PersonIdentity is the stable person reference asserted to this Resource.
@@ -353,6 +364,11 @@ type Server struct {
 	r3                            *r3Config
 	budget                        *budgetConfig
 	furtherSchemes                *furtherSchemes
+	personTokenRevocations        PersonTokenRevocationStore
+	revocationLimits              aauth.RevocationLimits
+	revocationLimiter             *revocation.Limiter
+	resourceTokenSender           *revocation.Sender
+	resourceTokenCascades         *revocation.Tracker
 	handler                       http.Handler
 }
 
@@ -374,6 +390,7 @@ type directIdentityConfig struct {
 	protected                     http.Handler
 	agentTokenRevocations         AgentTokenRevocationStore
 	furtherSchemes                *FurtherSchemesConfig
+	revocation                    *RevocationConfig
 }
 
 // NewAgentIdentity constructs an identity-only Resource that accepts verified
@@ -402,6 +419,7 @@ func NewPersonIdentity(config PersonIdentityConfig) (*Server, error) {
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		resolvePerson:                 config.ResolvePerson, protected: config.Protected,
 		furtherSchemes: config.FurtherSchemes,
+		revocation:     config.Revocation,
 	})
 }
 
@@ -438,6 +456,12 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 		agentTokenRevocations: config.agentTokenRevocations,
 		furtherSchemes:        further,
 	}
+	if config.revocation != nil && (config.revocation.HTTPClient != nil || config.revocation.Admit != nil) {
+		return nil, errors.New("aauth: an identity-only Resource issues no resource tokens to revoke")
+	}
+	if err := server.configureRevocation(config.revocation); err != nil {
+		return nil, err
+	}
 	server.handler = server.newHandler()
 	return server, nil
 }
@@ -452,7 +476,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if config.Budget != nil && config.Budget.InitialOffer != nil {
 		return nil, errors.New("aauth: reactive four-party Budget authorization is not implemented")
 	}
-	return newAuthorizationServer(config, authorizationTopologyFederated, nil, config.Budget)
+	return newAuthorizationServer(config, authorizationTopologyFederated, config.AuthTokenStatuses, config.Budget)
 }
 
 // NewPSAuthorization constructs a Resource that challenges person-token
@@ -472,6 +496,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		Protected:        config.Protected,
 		R3:               config.R3,
 		FurtherSchemes:   config.FurtherSchemes,
+		Revocation:       config.Revocation,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
 }
 
@@ -604,6 +629,9 @@ func newAuthorizationServer(
 		budget:                        validatedBudget,
 		furtherSchemes:                further,
 	}
+	if err := server.configureRevocation(config.Revocation); err != nil {
+		return nil, err
+	}
 	server.handler = server.newHandler()
 	return server, nil
 }
@@ -643,7 +671,7 @@ func (server *Server) newHandler() http.Handler {
 	if server.accessMode == aauth.AccessModeAuthToken {
 		mux.HandleFunc("POST /authorize", server.serveAuthorization)
 	}
-	if server.authTokenStatuses != nil || server.agentTokenRevocations != nil {
+	if server.acceptsRevocations() {
 		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
 	if server.budget != nil {
@@ -769,7 +797,7 @@ func resourceAuthorizationEndpoint(server *Server) string {
 }
 
 func resourceRevocationEndpoint(server *Server) string {
-	if server.authTokenStatuses == nil && server.agentTokenRevocations == nil {
+	if !server.acceptsRevocations() {
 		return ""
 	}
 	return server.issuer + "/revoke"

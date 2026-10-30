@@ -118,7 +118,7 @@ func TestAgentTokenRevocationMutationFailureIsServerError(t *testing.T) {
 	providerKey := personServerTestKey(t, "mutation-failure-provider-key")
 	store := &testAgentTokenRevocationStore{revokeErr: errors.New("revocation write unavailable")}
 	server := newAgentRevocationTestServer(t, clock, providerKey, store)
-	request := httptest.NewRequest(http.MethodPost, "https://person.example/revoke", bytes.NewBufferString(`{"jti":"agent-token-1","exp":2000000000}`))
+	request := httptest.NewRequest(http.MethodPost, "https://person.example/revoke", bytes.NewBufferString(`{"jti":"agent-token-1","exp":1788253200}`))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signaturekey.SignJWKSURIRequestWithOptions(request, providerKey, "https://provider.example", aauth.AgentDiscoveryDocument, clock, signaturekey.SignOptions{
 		AdditionalComponents: []string{"content-type", "content-digest"}, MaxBodyBytes: maxRequestBytes,
@@ -293,7 +293,7 @@ func TestAgentTokenRevocationIgnoresBodyIssuerAndRecordsExp(t *testing.T) {
 	server := newAgentRevocationTestServer(t, clock, providerKey, store)
 
 	request := httptest.NewRequest(http.MethodPost, "https://person.example/revoke",
-		bytes.NewBufferString(`{"iss":"https://other.example","jti":"agent-token-1","exp":2000000000}`))
+		bytes.NewBufferString(`{"iss":"https://other.example","jti":"agent-token-1","exp":1788253200}`))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signaturekey.SignJWKSURIRequestWithOptions(request, providerKey, "https://provider.example", aauth.AgentDiscoveryDocument, clock, signaturekey.SignOptions{
 		AdditionalComponents: []string{"content-type", "content-digest"}, MaxBodyBytes: maxRequestBytes,
@@ -304,7 +304,7 @@ func TestAgentTokenRevocationIgnoresBodyIssuerAndRecordsExp(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	want := aauth.RevocationRequest{
 		Reference: aauth.TokenReference{Issuer: "https://provider.example", JTI: "agent-token-1"},
-		ExpiresAt: time.Unix(2000000000, 0),
+		ExpiresAt: time.Unix(1788253200, 0),
 	}
 	if response.Code != http.StatusOK || store.revokes != 1 || store.last.Reference != want.Reference || !store.last.ExpiresAt.Equal(want.ExpiresAt) {
 		t.Fatalf("response=%d revokes=%d last=%#v", response.Code, store.revokes, store.last)

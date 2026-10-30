@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -511,7 +513,17 @@ func (server *Server) checkFederatedRevocations(ctx context.Context, record Fede
 	if credential.ParentAgent != "" {
 		child = credential.JTI
 	}
-	return server.checkPendingRevocations(ctx, agent.Issuer, agent.Subject, agent.JTI, child, record.CreatedAt)
+	if err := server.checkPendingRevocations(ctx, agent.Issuer, agent.Subject, agent.JTI, child, record.CreatedAt); err != nil {
+		return err
+	}
+	if server.tokenRevocation == nil {
+		return nil
+	}
+	reference, err := revocation.TokenReference(record.ResourceToken)
+	if err != nil {
+		return &agentTokenRevocationStoreError{cause: fmt.Errorf("personserver: retained resource token: %w", err)}
+	}
+	return server.revokedPendingResourceToken(ctx, reference)
 }
 
 func (server *Server) writeFederatedWaiting(w http.ResponseWriter, record FederatedAuthorizationRecord) {

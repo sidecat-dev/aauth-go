@@ -50,7 +50,9 @@ type R3Config struct {
 }
 
 // Client performs explicit protocol calls. It does not cache, sleep, retry,
-// or automatically follow requirements or deferred responses.
+// or automatically follow requirements or deferred responses. It remembers
+// only the resource tokens a Person Server refused as withdrawn, so that it
+// never submits one again.
 type Client struct {
 	identifier         string
 	signingKey         jose.SigningKey
@@ -62,6 +64,8 @@ type Client struct {
 	maxSignedBodyBytes int64
 	r3                 *R3Config
 	events             *eventsClientConfig
+	// refusedResourceTokens is shared by every copy of the Client.
+	refusedResourceTokens *refusedResourceTokens
 }
 
 type personServerCredential struct {
@@ -234,7 +238,8 @@ func New(ctx context.Context, config Config) (*Client, error) {
 		identifier: config.Identifier, signingKey: config.SigningKey,
 		agentToken: config.AgentToken, agentClaims: claims,
 		keyResolver: config.KeyResolver, httpClient: &httpClient, clock: config.Clock,
-		maxSignedBodyBytes: config.MaxSignedBodyBytes,
+		maxSignedBodyBytes:    config.MaxSignedBodyBytes,
+		refusedResourceTokens: newRefusedResourceTokens(),
 	}
 	if config.R3 != nil {
 		client.r3 = &R3Config{Registry: config.R3.Registry}
