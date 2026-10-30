@@ -97,6 +97,9 @@ type FederatedAuthorizationConfig struct {
 	AuthTokenStatuses AuthTokenStatusStore
 	// Revocation optionally adds person-token revocation and RevokeResourceToken.
 	Revocation *RevocationConfig
+	// ChainedInteractions optionally lets this Resource, acting as an Agent
+	// downstream, answer its caller with its own interaction.
+	ChainedInteractions *ChainedInteractionConfig
 }
 
 // PSAuthorizationConfig supplies a PS-authorization Resource's identity,
@@ -140,6 +143,9 @@ type PSAuthorizationConfig struct {
 	// InitiatedInteraction optionally puts this Resource's own user-facing
 	// flow in the Resource tokens of Person-token challenges.
 	InitiatedInteraction *InitiatedInteractionConfig
+	// ChainedInteractions optionally lets this Resource, acting as an Agent
+	// downstream, answer its caller with its own interaction.
+	ChainedInteractions *ChainedInteractionConfig
 }
 
 // AgentIdentityConfig constructs a Resource that authorizes application
@@ -373,6 +379,7 @@ type Server struct {
 	resourceTokenSender           *revocation.Sender
 	resourceTokenCascades         *revocation.Tracker
 	initiatedInteraction          *InitiatedInteractionConfig
+	chainedInteractions           *chainedInteractionConfig
 	handler                       http.Handler
 }
 
@@ -498,12 +505,13 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		AdditionalSignatureComponents: config.AdditionalSignatureComponents,
 		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
-		ValidateAccount:  config.ValidateAccount,
-		AuthorizationAsk: config.AuthorizationAsk,
-		Protected:        config.Protected,
-		R3:               config.R3,
-		FurtherSchemes:   config.FurtherSchemes,
-		Revocation:       config.Revocation,
+		ValidateAccount:     config.ValidateAccount,
+		AuthorizationAsk:    config.AuthorizationAsk,
+		Protected:           config.Protected,
+		R3:                  config.R3,
+		FurtherSchemes:      config.FurtherSchemes,
+		Revocation:          config.Revocation,
+		ChainedInteractions: config.ChainedInteractions,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
 	if err != nil {
 		return nil, err
@@ -617,6 +625,10 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
+	chainedInteractions, err := newChainedInteractionConfig(config.ChainedInteractions)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		issuer:                        config.Issuer,
 		accessMode:                    aauth.AccessModeAuthToken,
@@ -643,6 +655,7 @@ func newAuthorizationServer(
 		r3:                            validatedR3,
 		budget:                        validatedBudget,
 		furtherSchemes:                further,
+		chainedInteractions:           chainedInteractions,
 	}
 	if err := server.configureRevocation(config.Revocation); err != nil {
 		return nil, err
@@ -700,6 +713,10 @@ func (server *Server) newHandler() http.Handler {
 	if server.heldInvocations != nil {
 		mux.HandleFunc("GET /pending/{id}", server.serveHeldPoll)
 		mux.HandleFunc("/pending/", server.serveHeldNamespace)
+	}
+	if server.chainedInteractions != nil {
+		mux.HandleFunc("GET "+chainedInteractionPendingPath+"{id}", server.serveChainedInteractionPoll)
+		mux.HandleFunc(chainedInteractionPendingPath, serveChainedInteractionNamespace)
 	}
 	mux.Handle("/", http.HandlerFunc(server.serveProtected))
 	return withResourceAuthority(server.issuer, mux)

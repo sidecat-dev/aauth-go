@@ -314,68 +314,101 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestCallChainingRejectsPendingInteractionWithTypedError(t *testing.T) {
+func TestCallChainingRejectsPendingPersonTokenInteractionWithTypedError(t *testing.T) {
 	t.Parallel()
 
-	for _, operation := range []string{"person-token issuance", "auth-token exchange"} {
-		t.Run(operation, func(t *testing.T) {
-			protocol := newTestProtocol(t)
-			upstreamToken, err := aauth.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
-				Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
-				Audience: protocol.agentProviderID, JTI: "pending-upstream",
-				PersonServer: protocol.personServerID, Subject: "person-123",
-				Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
-				IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-				switch {
-				case operation == "person-token issuance" && request.URL.String() == protocol.personTokenEndpoint:
-					return validPersonTokenPendingResponse(request, "0", "pending"), nil
-				case operation == "auth-token exchange" && request.URL.String() == protocol.authTokenEndpoint:
-					return validExchangePendingResponse(request, "/pending/exchange-1", "0", "pending"), nil
-				default:
-					return protocol.roundTrip(request)
-				}
-			})
-			client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: transport})
-			if operation == "person-token issuance" {
-				_, err = client.PersonToken(context.Background(), agent.PersonTokenRequest{
-					Resource: protocol.resourceID, UpstreamToken: upstreamToken,
-				})
-			} else {
-				agentJKT, thumbprintErr := protocol.agentKey.PublicJWK().Thumbprint()
-				if thumbprintErr != nil {
-					t.Fatal(thumbprintErr)
-				}
-				resourceToken, mintErr := aauth.MintResourceToken(protocol.resourceKey, aauth.ResourceTokenClaims{
-					Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
-					Audience: protocol.personServerID, JTI: "pending-resource-token",
-					PersonServer: protocol.personServerID, Subject: "person-123",
-					PresentedJTI: "pending-person-token", AgentJKT: agentJKT,
-					IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(), Scope: "records.read",
-				})
-				if mintErr != nil {
-					t.Fatal(mintErr)
-				}
-				resourceClaims, verifyErr := aauth.VerifyResourceToken(
-					context.Background(), resourceToken, protocol.resolver, protocol.clock,
-				)
-				if verifyErr != nil {
-					t.Fatal(verifyErr)
-				}
-				_, err = client.BeginExchange(context.Background(), agent.ExchangeRequest{
-					ResourceToken: resourceToken, UpstreamToken: upstreamToken,
-					PresentedToken: protocol.presentedPersonToken(t, resourceClaims, protocol.agentKey.PublicJWK()),
-					Capabilities:   []string{"interaction"},
-				})
-			}
-			var unsupported *agent.CallChainingInteractionUnsupportedError
-			if !errors.As(err, &unsupported) || unsupported.Operation == "" {
-				t.Fatalf("error = %v, want typed unsupported call-chain interaction", err)
-			}
-		})
+	protocol := newTestProtocol(t)
+	upstreamToken := callChainPendingUpstreamToken(t, protocol)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == protocol.personTokenEndpoint {
+			return validPersonTokenPendingResponse(request, "0", "pending"), nil
+		}
+		return protocol.roundTrip(request)
+	})
+	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: transport})
+	_, err := client.PersonToken(context.Background(), agent.PersonTokenRequest{
+		Resource: protocol.resourceID, UpstreamToken: upstreamToken,
+	})
+	var unsupported *agent.CallChainingInteractionUnsupportedError
+	if !errors.As(err, &unsupported) || unsupported.Operation == "" {
+		t.Fatalf("error = %v, want typed unsupported call-chain interaction", err)
 	}
+}
+
+// A call-chaining exchange that meets an interaction stays pending at the
+// Person Server the upstream token names, so the intermediary can chain the
+// interaction to its caller and keep polling (Core, Interaction Chaining).
+func TestCallChainingExchangeReturnsPendingInteractionAndPollsItsPersonServer(t *testing.T) {
+	t.Parallel()
+
+	protocol := newTestProtocol(t)
+	upstreamToken := callChainPendingUpstreamToken(t, protocol)
+	var polls []string
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.URL.String() == protocol.authTokenEndpoint:
+			return validExchangePendingResponse(request, "/pending/exchange-1", "0", "pending"), nil
+		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+"/pending/exchange-1":
+			polls = append(polls, request.URL.String())
+			return problemResponse(request, &aauth.ProblemError{Status: http.StatusForbidden, Code: "denied", Title: "Forbidden"}), nil
+		default:
+			return protocol.roundTrip(request)
+		}
+	})
+	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: transport})
+	agentJKT, err := protocol.agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceToken, err := aauth.MintResourceToken(protocol.resourceKey, aauth.ResourceTokenClaims{
+		Issuer: protocol.resourceID, DWK: aauth.ResourceDiscoveryDocument,
+		Audience: protocol.personServerID, JTI: "pending-resource-token",
+		PersonServer: protocol.personServerID, Subject: "person-123",
+		PresentedJTI: "pending-person-token", AgentJKT: agentJKT,
+		IssuedAt: protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(), Scope: "records.read",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceClaims, err := aauth.VerifyResourceToken(context.Background(), resourceToken, protocol.resolver, protocol.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.BeginExchange(context.Background(), agent.ExchangeRequest{
+		ResourceToken: resourceToken, UpstreamToken: upstreamToken,
+		PresentedToken: protocol.presentedPersonToken(t, resourceClaims, protocol.agentKey.PublicJWK()),
+		Capabilities:   []string{"interaction"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok || pending.Requirement() != aauth.RequirementInteraction ||
+		pending.InteractionURL() != exchangeInteractionURL || pending.InteractionCode() != exchangeInteractionCode ||
+		pending.PersonServer() != protocol.personServerID {
+		t.Fatalf("pending = %+v, %v", pending, ok)
+	}
+	if _, err := pending.Snapshot(); err == nil {
+		t.Fatal("a call-chaining pending exchange was snapshotted")
+	}
+	_, err = client.PollExchange(context.Background(), pending)
+	var problem *aauth.ProblemError
+	if !errors.As(err, &problem) || problem.Code != "denied" || len(polls) != 1 {
+		t.Fatalf("poll error = %v, polls = %v", err, polls)
+	}
+}
+
+func callChainPendingUpstreamToken(t *testing.T, protocol *testProtocol) string {
+	t.Helper()
+	upstreamToken, err := aauth.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
+		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+		Audience: protocol.agentProviderID, JTI: "pending-upstream",
+		PersonServer: protocol.personServerID, Subject: "person-123",
+		Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
+		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return upstreamToken
 }

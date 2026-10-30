@@ -126,6 +126,9 @@ func (pending PendingExchange) Snapshot() (PendingExchangeSnapshot, error) {
 	if pending.retryAfter < 0 || pending.retryAfter%time.Second != 0 {
 		return PendingExchangeSnapshot{}, errors.New("aauth agent: pending retry interval must be whole nonnegative seconds")
 	}
+	if pending.chained {
+		return PendingExchangeSnapshot{}, errors.New("aauth agent: a call-chaining pending exchange cannot be snapshotted")
+	}
 	if err := validatePendingExchangeLocation(pending); err != nil {
 		return PendingExchangeSnapshot{}, fmt.Errorf("aauth agent: snapshot pending exchange: %w", err)
 	}
