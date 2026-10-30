@@ -201,7 +201,7 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 	if client == nil {
 		return ExchangeResult{}, fail(operation, errors.New("client is required"))
 	}
-	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input)
+	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input, true)
 	if err != nil {
 		return ExchangeResult{}, fail(operation, err)
 	}
@@ -359,9 +359,13 @@ func (client *Client) validatePendingExchange(ctx context.Context, pending Pendi
 	return nil
 }
 
+// exchangeRequest sends one PS token request. deferred is true for callers
+// that can return a pending exchange; a Resource token that carries an
+// interaction claim always meets one.
 func (client *Client) exchangeRequest(
 	ctx context.Context,
 	input ExchangeRequest,
+	deferred bool,
 ) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	if ctx == nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("context is required")
@@ -406,7 +410,7 @@ func (client *Client) exchangeRequest(
 		if !slices.Contains(input.Capabilities, "budget") {
 			input.Capabilities = append(append([]string(nil), input.Capabilities...), "budget")
 		}
-		return client.finishExchangeRequest(ctx, input, credential, verifiedResource)
+		return client.finishExchangeRequest(ctx, input, credential, verifiedResource, deferred)
 	}
 	verifiedResource := verifiedExchangeResource{}
 	if carriesR3 {
@@ -439,7 +443,7 @@ func (client *Client) exchangeRequest(
 		}
 		verifiedResource.claims = claims
 	}
-	return client.finishExchangeRequest(ctx, input, credential, verifiedResource)
+	return client.finishExchangeRequest(ctx, input, credential, verifiedResource, deferred)
 }
 
 func (client *Client) finishExchangeRequest(
@@ -447,6 +451,7 @@ func (client *Client) finishExchangeRequest(
 	input ExchangeRequest,
 	credential personServerCredential,
 	verifiedResource verifiedExchangeResource,
+	deferred bool,
 ) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	resourceClaims := verifiedResource.claims
 	// A withdrawn resource token is terminal: it is never submitted again.
@@ -456,8 +461,8 @@ func (client *Client) finishExchangeRequest(
 	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")
 	}
-	if resourceClaims.Interaction != nil {
-		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource-token interaction requires the deferred flow")
+	if resourceClaims.Interaction != nil && !deferred {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource-token interaction requires BeginExchange")
 	}
 	thumbprint, err := credential.requestKey.Thumbprint()
 	if err != nil {

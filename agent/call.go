@@ -583,9 +583,6 @@ func (client *Client) validateResourceTokenContext(
 	requestedScopes []string,
 	expectedAccount *string,
 ) error {
-	if claims.Interaction != nil {
-		return errors.New("resource-token interaction requires the deferred flow")
-	}
 	if !equalStringPointers(claims.Account, expectedAccount) {
 		return errors.New("resource-token account does not match the request")
 	}

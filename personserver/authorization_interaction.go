@@ -117,9 +117,13 @@ type PendingAuthorizationRecord struct {
 	// BudgetOffer is the verified resource-token offer. Approval must narrow
 	// it; a nil offer forbids a Budget on the decision.
 	BudgetOffer *budgets.Value
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-	RetryAfter  time.Duration
+	// ResourceInteraction is the Resource token's interaction claim, which the
+	// person completes at the Resource before consent. It is zero when the
+	// Resource token carried none.
+	ResourceInteraction aauth.ResourceInteraction
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	RetryAfter          time.Duration
 	// ResourceTokenJTI is the jti of the resource token the request was
 	// started for, in the namespace of Resource. A withdrawn resource token
 	// ends the request with revoked. A record without it is not checked.
@@ -194,6 +198,9 @@ type PendingAuthorizationSnapshot struct {
 	Clarifications []AuthorizationClarificationRound
 	CancelledAt    time.Time
 	Approval       AuthorizationApproval
+	// ResourceInteraction is the progress of the Resource's own interaction.
+	// It is zero unless the record carries one and the person was sent to it.
+	ResourceInteraction ResourceInteractionProgress
 }
 
 // DeferredAuthorizationStore owns only PS auth-token interaction state. It is
@@ -482,6 +489,11 @@ func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error
 	} else if !record.MissionExpiresAt.IsZero() {
 		return errors.New("personserver: missionless pending authorization has a mission expiry")
 	}
+	if record.ResourceInteraction != (aauth.ResourceInteraction{}) {
+		if _, err := aauth.FormatInteractionVisitURL(record.ResourceInteraction.URL, record.ResourceInteraction.Code, ""); err != nil {
+			return fmt.Errorf("personserver: pending Resource interaction: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -570,6 +582,9 @@ func (server *Server) beginAuthorizationInteraction(
 			BudgetOffer:           cloneBudgetValue(authorization.Budget),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
 			ResourceTokenJTI: resourceToken.JTI,
+		}
+		if resourceToken.Interaction != nil {
+			record.ResourceInteraction = *resourceToken.Interaction
 		}
 		if authorization.Subagent != "" {
 			record.Subagent = authorization.Subagent
@@ -719,7 +734,10 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollInteracting:
-		// Continue below.
+		// The Resource's own interaction is resolved before consent.
+		if value.record.ResourceInteraction != (aauth.ResourceInteraction{}) && snapshot.ResourceInteraction.CompletedAt.IsZero() {
+			return ErrResourceInteractionPending
+		}
 	default:
 		return ErrPendingAuthorizationConflict
 	}
@@ -1013,6 +1031,9 @@ func (server *Server) validatePendingAuthorizationSnapshot(ctx context.Context, 
 	if err := validateAuthorizationClarificationHistory(snapshot.Record, snapshot.State, snapshot.Clarifications); err != nil {
 		return err
 	}
+	if err := validateResourceInteractionProgress(snapshot.Record, snapshot.State, snapshot.ResourceInteraction); err != nil {
+		return err
+	}
 	switch snapshot.State {
 	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollDenied,
 		AuthorizationPollAbandoned, AuthorizationPollServerError, AuthorizationPollExpired, AuthorizationPollGone:
@@ -1060,7 +1081,8 @@ func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bo
 		reflect.DeepEqual(left.SubagentAdditionalClaims, right.SubagentAdditionalClaims) &&
 		reflect.DeepEqual(left.Capabilities, right.Capabilities) && left.CreatedAt.Equal(right.CreatedAt) &&
 		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetryAfter == right.RetryAfter &&
-		budgetPointersEqual(left.BudgetOffer, right.BudgetOffer)
+		budgetPointersEqual(left.BudgetOffer, right.BudgetOffer) &&
+		left.ResourceInteraction == right.ResourceInteraction && left.ResourceTokenJTI == right.ResourceTokenJTI
 }
 
 func optionalAuthorizationJWKEqual(left, right jose.JWK) bool {

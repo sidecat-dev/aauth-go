@@ -734,15 +734,6 @@ func TestClientRefusesResourceTokenBranchesOutsideTheImmediateFlow(t *testing.T)
 			errorDetail: "account does not match the request",
 		},
 		{
-			name: "interaction",
-			configure: func(protocol *testProtocol) {
-				protocol.resourceInteraction = &aauth.ResourceInteraction{
-					URL: "https://resource.example/interaction", Code: "ABCD-EFGH",
-				}
-			},
-			errorDetail: "requires the deferred flow",
-		},
-		{
 			name: "mission substitution",
 			configure: func(protocol *testProtocol) {
 				protocol.resourceMissionS256 = strings.Repeat("A", 43)

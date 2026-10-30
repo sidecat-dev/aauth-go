@@ -137,6 +137,9 @@ type PSAuthorizationConfig struct {
 	FurtherSchemes *FurtherSchemesConfig
 	// Revocation optionally adds person-token revocation and RevokeResourceToken.
 	Revocation *RevocationConfig
+	// InitiatedInteraction optionally puts this Resource's own user-facing
+	// flow in the Resource tokens of Person-token challenges.
+	InitiatedInteraction *InitiatedInteractionConfig
 }
 
 // AgentIdentityConfig constructs a Resource that authorizes application
@@ -369,6 +372,7 @@ type Server struct {
 	revocationLimiter             *revocation.Limiter
 	resourceTokenSender           *revocation.Sender
 	resourceTokenCascades         *revocation.Tracker
+	initiatedInteraction          *InitiatedInteractionConfig
 	handler                       http.Handler
 }
 
@@ -484,7 +488,10 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 // presented person token, and accepts scoped or class-R3 auth tokens from that
 // PS.
 func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
-	return newAuthorizationServer(FederatedAuthorizationConfig{
+	if err := validateInitiatedInteractionConfig(config.InitiatedInteraction); err != nil {
+		return nil, err
+	}
+	server, err := newAuthorizationServer(FederatedAuthorizationConfig{
 		Issuer: config.Issuer, SigningKey: config.SigningKey,
 		KeyResolver: config.KeyResolver, Clock: config.Clock, NewID: config.NewID,
 		ScopeDescriptions:             config.ScopeDescriptions,
@@ -498,6 +505,14 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		FurtherSchemes:   config.FurtherSchemes,
 		Revocation:       config.Revocation,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
+	if err != nil {
+		return nil, err
+	}
+	if config.InitiatedInteraction != nil {
+		initiated := *config.InitiatedInteraction
+		server.initiatedInteraction = &initiated
+	}
+	return server, nil
 }
 
 func newAuthorizationServer(

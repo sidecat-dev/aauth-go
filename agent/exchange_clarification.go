@@ -257,7 +257,7 @@ func (client *Client) RestorePendingExchange(ctx context.Context, snapshot Pendi
 	if currentAgent.ExpiresAt < credentialExpiresAt {
 		credentialExpiresAt = currentAgent.ExpiresAt
 	}
-	if claims.Interaction != nil || claims.Account != nil {
+	if claims.Account != nil {
 		return PendingExchange{}, fail(operation, errors.New("Resource token is outside the direct pending-exchange profile"))
 	}
 	metadata, err := client.personServerMetadata(ctx, snapshot.PersonServer)

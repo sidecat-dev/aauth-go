@@ -264,9 +264,6 @@ func TestBeginRejectsInvalidAuthTokenRequirement(t *testing.T) {
 		{name: "wrong agent jkt", change: func(claims *aauth.ResourceTokenClaims) { claims.AgentJKT = strings.Repeat("A", 43) }},
 		{name: "wrong tenant", change: func(claims *aauth.ResourceTokenClaims) { claims.Tenant = "other-tenant" }},
 		{name: "issued before person token", change: func(claims *aauth.ResourceTokenClaims) { claims.IssuedAt-- }},
-		{name: "interaction", change: func(claims *aauth.ResourceTokenClaims) {
-			claims.Interaction = &aauth.ResourceInteraction{URL: "https://resource.example/interaction", Code: "ABCD-EFGH"}
-		}},
 		{name: "account", change: func(claims *aauth.ResourceTokenClaims) { claims.Account = testStringPointer("primary") }},
 		{name: "mission", change: func(claims *aauth.ResourceTokenClaims) { claims.MissionS256 = strings.Repeat("A", 43) }},
 		{name: "expired resource token", change: func(claims *aauth.ResourceTokenClaims) {

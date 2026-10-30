@@ -502,7 +502,7 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	if client == nil {
 		return "", fail(operation, errors.New("client is required"))
 	}
-	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input)
+	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input, false)
 	if err != nil {
 		return "", fail(operation, err)
 	}

@@ -468,9 +468,6 @@ func TestRestorePendingExchangeStillRejectsUnrelatedResourceProfiles(t *testing.
 		name   string
 		change func(*aauth.ResourceTokenClaims)
 	}{
-		{name: "interaction", change: func(claims *aauth.ResourceTokenClaims) {
-			claims.Interaction = &aauth.ResourceInteraction{URL: exchangeInteractionURL, Code: exchangeInteractionCode}
-		}},
 		{name: "account", change: func(claims *aauth.ResourceTokenClaims) {
 			account := "account-123"
 			claims.Account = &account

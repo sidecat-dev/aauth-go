@@ -160,6 +160,10 @@ type PSAuthorizationConfig struct {
 	// DeferredAuthorizationStore plus MissionDeferredAuthorizationStore through
 	// Tokens to enable both missionless and mission-bound requests atomically.
 	AuthorizationInteractions DeferredAuthorizationStore
+	// ResourceInteraction optionally accepts Resource tokens that carry an
+	// interaction claim and runs the Resource's own flow before consent. It
+	// requires AuthorizationInteractions.
+	ResourceInteraction *ResourceInteractionConfig
 	// Revocation optionally retains issued auth-token routing and enables one
 	// explicit Resource revocation attempt.
 	Revocation *AuthTokenRevocationConfig
@@ -406,6 +410,7 @@ type Server struct {
 	requireAuthorizationInteraction  func(context.Context, AuthorizationRequest) (AuthorizationInteractionPolicy, bool, error)
 	authorizationInteractions        DeferredAuthorizationStore
 	missionAuthorizationInteractions MissionDeferredAuthorizationStore
+	resourceInteraction              *resourceInteractionConfig
 	issuedAuthTokens                 IssuedAuthTokenStore
 	revocationHTTPClient             *http.Client
 	revocationAdmit                  signaturekey.EgressAdmitter
@@ -534,8 +539,11 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 // immediate Core authorization, R3 supplies immediate class authorization,
 // and a paired interaction policy and store may supply the deferred Core path.
 func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
-	if config.RequireAuthorizationInteraction == nil && config.AuthorizationInteractions != nil {
+	if config.RequireAuthorizationInteraction == nil && config.ResourceInteraction == nil && config.AuthorizationInteractions != nil {
 		return nil, errors.New("personserver: authorization interaction store requires a policy")
+	}
+	if config.ResourceInteraction != nil && config.AuthorizationInteractions == nil {
+		return nil, errors.New("personserver: Resource interaction requires an authorization interaction store")
 	}
 	if config.RequireAuthorizationInteraction != nil && config.Missions == nil && config.AuthorizationInteractions == nil {
 		return nil, errors.New("personserver: authorization interaction policy and store must be configured together")
@@ -543,7 +551,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	if config.R3 != nil && config.RequireAuthorizationInteraction != nil {
 		return nil, errors.New("personserver: direct R3 does not compose with deferred Core authorization")
 	}
-	if config.Authorize == nil && config.R3 == nil && config.RequireAuthorizationInteraction == nil {
+	if config.Authorize == nil && config.R3 == nil && config.RequireAuthorizationInteraction == nil && config.ResourceInteraction == nil {
 		return nil, errors.New("personserver: Core, R3, or deferred authorization policy is required")
 	}
 	if config.Budget != nil {
@@ -605,6 +613,10 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		server.authorizationInteractions = missionInteractions
 	} else {
 		server.authorizationInteractions = config.AuthorizationInteractions
+	}
+	server.resourceInteraction, err = newResourceInteractionConfig(config.ResourceInteraction, config.AuthorizationInteractions)
+	if err != nil {
+		return nil, err
 	}
 	if err := server.configureAuthTokenRevocation(config.Revocation); err != nil {
 		return nil, err
@@ -1137,8 +1149,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", err)
 		return
 	}
-	if resourceToken.Interaction != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource-token interaction requires the deferred flow"))
+	if !server.admitResourceInteractionClaim(response, resourceToken, upstream, r3Context != nil) {
 		return
 	}
 	if resourceToken.MissionS256 != "" && (input.SubagentToken != nil || input.UpstreamToken != nil) {
@@ -1376,6 +1387,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			server.issueDirectR3AuthorizationToken(
 				response, request, agent, credentialAgent, resourceToken,
 				authorizationRequest, r3Context, missionRecord, presented.ExpiresAt, proof.VerifiedAt(),
+			)
+			return
+		}
+		if resourceToken.Interaction != nil {
+			server.beginResourceInteraction(
+				response, request, authorizationRequest, agent, credentialAgent, resourceToken, presented.ExpiresAt, proof.VerifiedAt(),
 			)
 			return
 		}
