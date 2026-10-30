@@ -298,9 +298,9 @@ func CheckUsageResponse(request UsageRequest, caller string, response UsageRespo
 	return nil
 }
 
-// PostUsage sends one signed usage query and parses the success body. The
-// response is not signed: signing a usage response is recommended, and this
-// client does not require it. A nil client refuses redirects.
+// PostUsage sends one signed usage query and parses the success body. It
+// does not check a response signature; PostUsageChecked does. A nil client
+// refuses redirects.
 func PostUsage(
 	ctx context.Context,
 	endpoint string,
@@ -311,22 +311,58 @@ func PostUsage(
 	request UsageRequest,
 	client *http.Client,
 ) (UsageResponse, error) {
-	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+	exchange, err := postUsage(ctx, endpoint, key, caller, discoveryDocument, clock, request, client)
+	if err != nil {
 		return UsageResponse{}, err
+	}
+	return exchange.parse(request, caller)
+}
+
+// usageExchange is one usage query and the success response it received.
+type usageExchange struct {
+	request *http.Request
+	status  int
+	header  http.Header
+	body    []byte
+}
+
+func (exchange usageExchange) parse(request UsageRequest, caller string) (UsageResponse, error) {
+	parsed, err := ParseUsageResponse(exchange.body)
+	if err != nil {
+		return UsageResponse{}, err
+	}
+	if err := CheckUsageResponse(request, caller, parsed); err != nil {
+		return UsageResponse{}, err
+	}
+	return parsed, nil
+}
+
+func postUsage(
+	ctx context.Context,
+	endpoint string,
+	key jose.SigningKey,
+	caller string,
+	discoveryDocument string,
+	clock aauth.Clock,
+	request UsageRequest,
+	client *http.Client,
+) (usageExchange, error) {
+	if err := aauth.ValidateEndpoint(endpoint); err != nil {
+		return usageExchange{}, err
 	}
 	if err := request.validate(); err != nil {
-		return UsageResponse{}, err
+		return usageExchange{}, err
 	}
 	if clock == nil {
-		return UsageResponse{}, errors.New("budgets: clock is required")
+		return usageExchange{}, errors.New("budgets: clock is required")
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {
-		return UsageResponse{}, err
+		return usageExchange{}, err
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return UsageResponse{}, err
+		return usageExchange{}, err
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	if err := signaturekey.SignJWKSURIRequestWithOptions(
@@ -336,31 +372,27 @@ func PostUsage(
 			MaxBodyBytes:         1 << 20,
 		},
 	); err != nil {
-		return UsageResponse{}, err
+		return usageExchange{}, err
 	}
 	if client == nil {
 		client = &http.Client{CheckRedirect: refuseUsageRedirect}
 	}
 	httpResponse, err := client.Do(httpRequest)
 	if err != nil {
-		return UsageResponse{}, err
+		return usageExchange{}, err
 	}
 	defer httpResponse.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(httpResponse.Body, 1<<20))
 	if err != nil {
-		return UsageResponse{}, err
+		return usageExchange{}, err
 	}
 	if httpResponse.StatusCode != http.StatusOK {
-		return UsageResponse{}, fmt.Errorf("budgets: usage endpoint returned %d", httpResponse.StatusCode)
+		return usageExchange{}, fmt.Errorf("budgets: usage endpoint returned %d", httpResponse.StatusCode)
 	}
-	parsed, err := ParseUsageResponse(body)
-	if err != nil {
-		return UsageResponse{}, err
-	}
-	if err := CheckUsageResponse(request, caller, parsed); err != nil {
-		return UsageResponse{}, err
-	}
-	return parsed, nil
+	return usageExchange{
+		request: httpRequest, status: httpResponse.StatusCode,
+		header: httpResponse.Header.Clone(), body: body,
+	}, nil
 }
 
 func refuseUsageRedirect(*http.Request, []*http.Request) error {

@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 66 (P1: 6, P2: 36, P3: 24; 46 submitted, 20 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 67 (P1: 6, P2: 36, P3: 25; 46 submitted, 21 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -147,6 +147,7 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F140 | No revocation reaches an Access Server that received a person token as upstream_token | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F142 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F143 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F150 | A signed usage response is not required to cover `signature-key` | Budgets, Signature-Key | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 
 An earlier plan of "umbrella only" meant raising the item only inside one combined
 issue of small editorial items. On 2026-10-01 each such item was posted as its own issue instead.
@@ -1547,6 +1548,26 @@ An implementation that ignores unknown budget members will accept a token this l
 A resource declares an optional maximum for a unit. The listed `invalid_budget` cases are a scale mismatch and a malformed budget object. This library also returns `invalid_budget` when a signed offer exceeds that maximum. The Person Server, the Access Server, the Agent, and the resource offer guard all apply that check. A client request above the resource's own maximum is narrowed; this finding is about a signed offer that is already above the metadata maximum.
 
 **Question:** Is a signed offer above the resource's declared maximum `invalid_budget`, or must the resource never produce that offer?
+
+### AAG-F150 — A signed usage response is not required to cover `signature-key`
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Budgets `70d6737` and Signature-Key `69f5ba2`.
+
+**Source:** Budgets `70d6737`, The Signed Response, lines 1039–1052; Signature-Key `69f5ba2`, Signature-Key Integrity, lines 1287–1301.
+
+The Signed Response says the usage-response signature MUST cover `@status`, `content-type` and `content-digest`, and the request's `@authority` and `@path` with `req`, and its example `Signature-Input` covers exactly those five. Signature-Key Integrity says the `Signature-Key` header MUST be a covered component and that verifiers MUST reject a signature where it is not, because otherwise its `id` can be substituted. That section is written for requests; neither document says whether a response signature carrying `Signature-Key` must cover it. This library signs exactly the five listed components, so a verifier that rebuilds the base from the Budgets list accepts it, and its verifier pins the signer to the Resource it asked instead of reading the identity from the uncovered header.
+
+**Question:** Must a signed usage response also cover `signature-key`, and should Signature-Key Integrity say whether it applies to response signatures?
 
 ## Against informative text
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -49,12 +50,17 @@ func TestUsageEndpointAnswersTheSignedCallerAndRejectsABadBody(t *testing.T) {
 		t.Fatalf("usage_endpoint = %q", metadata.UsageEndpoint)
 	}
 
-	response := postUsage(t, server, protocol, protocol.personKey, personIssuer, aauth.PersonDiscoveryDocument, `{"sub":"person-1"}`)
+	usageRequest := signedUsageRequest(t, protocol, protocol.personKey, personIssuer, aauth.PersonDiscoveryDocument, `{"sub":"person-1"}`)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, usageRequest)
 	if response.Code != http.StatusOK {
 		t.Fatalf("usage status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if response.Header().Get("Signature") != "" {
-		t.Fatal("usage response was signed")
+	if _, err := budgets.VerifyUsageResponse(
+		context.Background(), usageRequest, response.Code, response.Header(), response.Body.Bytes(),
+		resourceIssuer, protocol.resolver, protocol.clock,
+	); err != nil {
+		t.Fatalf("usage response signature = %v", err)
 	}
 	var body struct {
 		AsOf     int64  `json:"as_of"`
@@ -224,6 +230,18 @@ func postUsage(
 	issuer, document, payload string,
 ) *httptest.ResponseRecorder {
 	t.Helper()
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, signedUsageRequest(t, protocol, key, issuer, document, payload))
+	return response
+}
+
+func signedUsageRequest(
+	t *testing.T,
+	protocol *budgetResourceProtocol,
+	key jose.SigningKey,
+	issuer, document, payload string,
+) *http.Request {
+	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, resourceIssuer+"/usage", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	if err := signaturekey.SignJWKSURIRequestWithOptions(
@@ -235,7 +253,5 @@ func postUsage(
 	); err != nil {
 		t.Fatal(err)
 	}
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	return response
+	return request
 }

@@ -250,6 +250,37 @@ means the approval contains no token for that exact Resource identifier.
 use its keys when reporting the available Resources. [Mission tests](agent/mission_test.go)
 cover present and absent Resources and protect the retained mapping from mutation.
 
+## Sign and verify Budget usage
+
+A Resource whose `BudgetStore` implements `BudgetUsageStore` serves the
+`usage_endpoint` and signs each answer with its own key, as AAuth Budgets
+recommends: the signature covers `@status`, `content-type` and
+`content-digest`, and binds the answer to the query with `@authority` and
+`@path` under `req`. A Resource configured without a key ID answers unsigned.
+
+A Person Server or Access Server asks with `budgets.PostUsageChecked`:
+
+```go
+result, err := budgets.PostUsageChecked(ctx, usageEndpoint, psKey, psIssuer,
+	aauth.PersonDiscoveryDocument, clock, budgets.UsageRequest{Subject: sub},
+	budgets.UsageSignatureCheck{Resource: resourceIssuer, KeyResolver: keys})
+if err != nil {
+	return err
+}
+if result.Signed {
+	keepEvidence(result.ExactBody, result.Header)
+}
+```
+
+A signature must verify under a key from the Resource's own metadata and for
+this query; one that does not is refused. An unsigned answer is read and
+reported with `Signed` false, because the draft recommends signing rather than
+requiring it; set `RequireSignature` to refuse it. Keep `ExactBody` and
+`Header` when you want a statement the Resource cannot later disown.
+`budgets.VerifyUsageResponse` checks a response you fetched yourself, and
+`signaturekey.SignResponse` and `signaturekey.VerifyResponse` sign and verify
+other server responses the same way.
+
 ## Continue an AS approval or payment request
 
 For missionless Core, top-level or parent-mediated for a

@@ -2187,3 +2187,25 @@ serve only AAuth parties. A Resource-managed session Resource has no further
 schemes.
 
 **Evidence:** `resource/further_schemes_test.go`.
+
+## A signed usage response covers what Budgets lists
+
+**Source:** Budgets `70d6737`, The Signed Response (lines 1039–1061);
+Signature-Key `69f5ba2`, Signature-Key Integrity.
+
+Budgets lists the components a signed usage response covers: `@status`,
+`content-type`, `content-digest`, and the request's `@authority` and `@path`
+under `req`. Signature-Key requires every request signature to cover
+`signature-key`, and says nothing about responses. The Resource covers exactly
+the five listed components, in that order, under the label `sig`, so any
+verifier that rebuilds the base from the Budgets list accepts it. Leaving
+`signature-key` uncovered does not let a third party re-attribute the
+response, because `VerifyUsageResponse` does not take the signer from the
+header: it requires the jwks_uri `id` to be the Resource the caller asked and
+`dwk` to be `aauth-resource.json`, and it applies the request signature window
+to `created`. A response with a signature that does not verify is refused even
+when the caller does not require one; an unsigned response is reported as
+unsigned. See AAG-F150.
+
+**Evidence:** `resource/usage_signature_test.go` and
+`signaturekey/response_external_test.go`.

@@ -837,37 +837,41 @@ func signatureParams(components []string, created int64, expires time.Time, nonc
 func signatureBase(request *http.Request, components []string, params string) (string, error) {
 	lines := make([]string, 0, len(components)+1)
 	for _, component := range components {
-		var value string
-		switch component {
-		case "@method":
-			value = request.Method
-		case "@authority":
-			var err error
-			value, err = normalizedRequestAuthority(request)
-			if err != nil {
-				return "", err
-			}
-		case "@path":
-			value = request.URL.EscapedPath()
-			if value == "" {
-				value = "/"
-			}
-		case "@query":
-			value = "?" + request.URL.RawQuery
-		default:
-			if strings.HasPrefix(component, "@") {
-				return "", fmt.Errorf("aauth: unsupported derived signature component %q", component)
-			}
-			values := request.Header.Values(http.CanonicalHeaderKey(component))
-			if len(values) == 0 {
-				return "", fmt.Errorf("aauth: covered header %q is absent", component)
-			}
-			value = strings.Join(values, ", ")
+		value, err := requestComponentValue(request, component)
+		if err != nil {
+			return "", err
 		}
 		lines = append(lines, strconv.Quote(component)+": "+value)
 	}
 	lines = append(lines, `"@signature-params": `+params)
 	return strings.Join(lines, "\n"), nil
+}
+
+// requestComponentValue returns one covered request component's value for a
+// signature base.
+func requestComponentValue(request *http.Request, component string) (string, error) {
+	switch component {
+	case "@method":
+		return request.Method, nil
+	case "@authority":
+		return normalizedRequestAuthority(request)
+	case "@path":
+		if path := request.URL.EscapedPath(); path != "" {
+			return path, nil
+		}
+		return "/", nil
+	case "@query":
+		return "?" + request.URL.RawQuery, nil
+	default:
+		if strings.HasPrefix(component, "@") {
+			return "", fmt.Errorf("aauth: unsupported derived signature component %q", component)
+		}
+		values := request.Header.Values(http.CanonicalHeaderKey(component))
+		if len(values) == 0 {
+			return "", fmt.Errorf("aauth: covered header %q is absent", component)
+		}
+		return strings.Join(values, ", "), nil
+	}
 }
 
 func normalizedRequestAuthority(request *http.Request) (string, error) {
