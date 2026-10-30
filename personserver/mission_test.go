@@ -761,6 +761,7 @@ type memoryMissionStore struct {
 	commitMissionError   error
 	appendMissionError   error
 	completeMissionError error
+	presentations        map[string][]string
 }
 
 func newMemoryMissionStore() *memoryMissionStore {
@@ -789,6 +790,27 @@ func (store *memoryMissionStore) Load(_ context.Context, issuer, jti string) (Pe
 		return PersonTokenRecord{}, ErrPersonTokenNotFound
 	}
 	return record, nil
+}
+
+// RecordPersonTokenPresentation retains one presentation per Access Server.
+func (store *memoryMissionStore) RecordPersonTokenPresentation(_ context.Context, presentation PersonTokenPresentation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := presentation.PersonServer + "\x00" + presentation.JTI
+	if store.presentations == nil {
+		store.presentations = make(map[string][]string)
+	}
+	if !slices.Contains(store.presentations[key], presentation.AccessServer) {
+		store.presentations[key] = append(store.presentations[key], presentation.AccessServer)
+	}
+	return nil
+}
+
+// LoadPersonTokenPresentations returns the recorded Access Servers in order.
+func (store *memoryMissionStore) LoadPersonTokenPresentations(_ context.Context, personServer, jti string) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.presentations[personServer+"\x00"+jti]), nil
 }
 
 func (store *memoryMissionStore) CommitMission(_ context.Context, mission MissionRecord, tokens []PersonTokenRecord) error {

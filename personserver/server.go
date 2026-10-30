@@ -301,6 +301,31 @@ type TokenStore interface {
 	Load(context.Context, string, string) (PersonTokenRecord, error)
 }
 
+// PersonTokenPresentation records that this Person Server presented a person
+// token it issued to one Access Server in a PS-to-AS token request. With the
+// person-token record it serves revocation: a revoked person token is revoked
+// at its Resource and at each Access Server it was presented to.
+type PersonTokenPresentation struct {
+	PersonServer string
+	JTI          string
+	AccessServer string
+	RetainUntil  time.Time
+}
+
+// PersonTokenPresentationStore retains which Access Servers each person token
+// was presented to. A four-party Person Server requires its TokenStore to
+// implement it, and records each presentation before it sends the token.
+//
+// RecordPersonTokenPresentation retains one presentation at least through
+// RetainUntil and is idempotent for the same PersonServer, JTI and
+// AccessServer. LoadPersonTokenPresentations returns the Access Servers
+// recorded for one person token in the order first recorded, and none for a
+// token with no recorded presentation.
+type PersonTokenPresentationStore interface {
+	RecordPersonTokenPresentation(context.Context, PersonTokenPresentation) error
+	LoadPersonTokenPresentations(ctx context.Context, personServer, jti string) ([]string, error)
+}
+
 // Server is an AAuth Person Server.
 type Server struct {
 	issuer                           string
@@ -313,6 +338,7 @@ type Server struct {
 	maximumResourceTokenLifetime     time.Duration
 	accessServerEndpoint             func(context.Context, string) (string, error)
 	tokens                           TokenStore
+	personTokenPresentations         PersonTokenPresentationStore
 	deferredTokens                   DeferredTokenStore
 	missionDeferredTokens            MissionDeferredTokenStore
 	bindPerson                       func(context.Context, PersonTokenRequest) (Person, error)
@@ -416,6 +442,11 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if err != nil {
 		return nil, err
 	}
+	presentations, ok := config.Tokens.(PersonTokenPresentationStore)
+	if !ok {
+		return nil, errors.New("personserver: four-party authorization requires Tokens to implement PersonTokenPresentationStore")
+	}
+	server.personTokenPresentations = presentations
 	httpClient := *config.HTTPClient
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -1386,6 +1417,17 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	// and the Resource token are checked again just before they are sent.
 	if !server.authorizationInputsCurrent(response, resourceToken, presented.ExpiresAt, server.clock.Now().UTC()) {
 		return
+	}
+	// Record which Access Server the person token is presented to, so that a
+	// revocation of the token can reach it, before presenting it.
+	if presented.Person != nil {
+		if err := server.personTokenPresentations.RecordPersonTokenPresentation(request.Context(), PersonTokenPresentation{
+			PersonServer: presented.Issuer, JTI: presented.JTI, AccessServer: resourceToken.Audience,
+			RetainUntil: presented.ExpiresAt.UTC().Add(server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime),
+		}); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("personserver: record person-token presentation: %w", err))
+			return
+		}
 	}
 	if err := signaturekey.SignJWKSURIRequestWithOptions(
 		accessRequest, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock,

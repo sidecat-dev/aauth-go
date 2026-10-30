@@ -642,15 +642,16 @@ func newSigningKey(t *testing.T, id string) jose.SigningKey {
 }
 
 type memoryPersonTokenStore struct {
-	mu       sync.Mutex
-	records  map[string]personserver.PersonTokenRecord
-	missions map[string]personserver.MissionRecord
-	auth     map[string]personserver.IssuedAuthTokenRecord
-	pending  map[string]*memoryPendingPersonToken
-	byCode   map[[32]byte]string
-	last     personserver.PersonTokenRecord
-	commits  int
-	loads    int
+	mu            sync.Mutex
+	records       map[string]personserver.PersonTokenRecord
+	missions      map[string]personserver.MissionRecord
+	auth          map[string]personserver.IssuedAuthTokenRecord
+	pending       map[string]*memoryPendingPersonToken
+	byCode        map[[32]byte]string
+	last          personserver.PersonTokenRecord
+	commits       int
+	loads         int
+	presentations map[string][]string
 }
 
 func newMemoryPersonTokenStore() *memoryPersonTokenStore {
@@ -885,6 +886,27 @@ func (store *memoryPersonTokenStore) Load(_ context.Context, issuer, jti string)
 		return personserver.PersonTokenRecord{}, personserver.ErrPersonTokenNotFound
 	}
 	return record, nil
+}
+
+// RecordPersonTokenPresentation retains one presentation per Access Server.
+func (store *memoryPersonTokenStore) RecordPersonTokenPresentation(_ context.Context, presentation personserver.PersonTokenPresentation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := presentation.PersonServer + "\x00" + presentation.JTI
+	if store.presentations == nil {
+		store.presentations = make(map[string][]string)
+	}
+	if !slices.Contains(store.presentations[key], presentation.AccessServer) {
+		store.presentations[key] = append(store.presentations[key], presentation.AccessServer)
+	}
+	return nil
+}
+
+// LoadPersonTokenPresentations returns the recorded Access Servers in order.
+func (store *memoryPersonTokenStore) LoadPersonTokenPresentations(_ context.Context, personServer, jti string) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.presentations[personServer+"\x00"+jti]), nil
 }
 
 func (store *memoryPersonTokenStore) observation() (personserver.PersonTokenRecord, int, int) {
