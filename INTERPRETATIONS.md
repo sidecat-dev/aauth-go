@@ -2271,3 +2271,95 @@ else, because a held Core or per-call completion carries no meter. A refused
 token that carries R3 claims is answered `401`, as before.
 
 **Evidence:** `resource/held_budget_test.go`.
+
+## A revocation hold that ends before a downstream answers is pending
+
+**Source:** Protocol `70d6737`, Revocation Response.
+
+The draft answers `202` when the cascade takes longer than the recipient will
+hold the connection, and makes a downstream that did not respond or timed out
+`revocation_unavailable`. It does not say which applies when the recipient's
+own hold ends first. Here the hold is the caller's `Prefer: wait`, capped at
+20 seconds by default. A downstream still unanswered when it ends stays
+pending: the recipient answers `202` and attempts it again on the next poll,
+which is safe because a repeated revocation records nothing new. A downstream
+whose own request fails or times out under the HTTP client is
+`revocation_unavailable`. The cascade's progress is process memory, bounded,
+while the revocation itself is in the host store before anyone is called; a
+pending URL the recipient no longer holds is `404`, and the caller revokes
+again. After the terminal response a poll is `410` with `invalid_code`, the code
+this library uses for every consumed pending URL. Repeated revocations
+re-attempt both `revocation_unavailable` and `revocation_unsupported`
+recipients, since neither succeeded.
+
+**Evidence:** `TestRevocationCascadeIsDeferredAndPolledByItsCaller` and
+`TestFourPartyRevocationCascadesFromPersonServerThroughAccessServer` in
+`integration/revocation_cascade_test.go`.
+
+## A Person Server's revocation names a person token or an auth token
+
+**Source:** Protocol `70d6737`, Revocation Request, Who Revokes What and
+Revocation Cascade.
+
+A revocation carries only `jti` and `exp`, and a Person Server issues both
+person tokens and, in three-party access, auth tokens under one `iss`. A
+Resource cannot tell which one a revocation names, so it records the pair as a
+revoked person token and, in three-party access, as a revoked auth token. An
+Access Server accepts person-token revocations only from Person Servers its
+`TrustPersonServer` policy admits and answers others `unsupported_iss`; a
+four-party Resource accepts auth-token revocations only from its configured
+Access Server. When a person token is revoked the Access Server revokes every
+unexpired auth token issued against it and, on a step-up, against those auth
+tokens in turn, and records each as revoked itself so a later step-up presenting
+one is refused.
+
+**Evidence:** `TestFourPartyRevocationCascadesFromPersonServerThroughAccessServer`.
+
+## A revoked request-parameter token is reported revoked even when expired
+
+**Source:** Protocol `70d6737`, Presenting a Revoked Token and Verification
+(Server).
+
+Presenting a Revoked Token requires a recipient to say a revoked token was
+revoked, not that it is expired, while step 5 of Verification gives
+`revoked_jwt` only to a JWT that is unexpired. This library follows step 5 for a
+token in `Signature-Key`, which is `expired_jwt` once expired. For a
+`resource_token` or `presented_token`, whose signature was verified before its
+lifetime, a revocation still on record is reported as
+`revoked_resource_token` or `revoked_presented_token`. A pending request is
+answered `403 revoked` instead, with a `detail` naming the token.
+
+**Evidence:** `TestWithdrawnResourceTokenEndsPSHostedConsent` in
+`personserver/resource_token_revocation_test.go`.
+
+## The Agent keeps refused resource tokens until they expire
+
+**Source:** Protocol `70d6737`, Token Endpoint Error Codes.
+
+`revoked_resource_token` is terminal for that token, and the Agent must not
+resubmit it. `agent.Client` does not otherwise retain state, but it remembers
+the digest of each resource token a Person Server refused this way, up to 1024
+tokens, until the token's `exp`, and refuses to send it again with a
+`*RevokedResourceTokenError` whose `Problem` is nil. After `exp` the Client's
+own verification refuses the token. The memory is per process; a host that
+recreates the Client after a restart relies on the Person Server refusing the
+token again.
+
+**Evidence:** `TestThreePartyWithdrawnResourceTokenAndRateLimitedRevocation`.
+
+## Revocation endpoints bound each caller by rate and lifetime
+
+**Source:** Protocol `70d6737`, Revocation Request and Revocation Response.
+
+A recipient that accepts revocations from any verified issuer should bound what
+one issuer can hold, in entries and in rate, and may reject an `exp` beyond the
+longest lifetime it accepts. Every revocation endpoint here admits 60 requests a
+minute from one verified caller by default, polls excluded, and answers
+`429 rate_limited` with `Retry-After` beyond that. An `exp` more than 24 hours
+ahead, the longest lifetime of an Agent token, is `invalid_request`. The entry
+bound belongs to the store, which returns `aauth.ErrRevocationLimitReached`;
+the endpoint then answers `rate_limited` and records nothing. A revocation from
+a caller whose metadata document names no role the endpoint accepts
+revocations from is `403 unsupported_iss`.
+
+**Evidence:** `TestThreePartyWithdrawnResourceTokenAndRateLimitedRevocation`.

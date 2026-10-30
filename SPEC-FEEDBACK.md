@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 67 (P1: 6, P2: 36, P3: 25; 46 submitted, 21 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 69 (P1: 6, P2: 36, P3: 27; 46 submitted, 23 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -144,6 +144,8 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F104 | Core both permits and forbids a self-hosted Agent Provider | Core | informative | P3 | submitted | 2b7909b (2026-08-31) | 2026-10-01, GitHub | Comment on [#208](https://github.com/dickhardt/AAuth/issues/208#issuecomment-5943160270) |
 | AAG-H003 | Recommended justification sections | Core | informative | P3 | submitted | 3afa429 (2026-08-28) | Slack, four-party implementation round with the editor, item 5 (a concrete proposal for the `justification` sections); the original Slack date is not retained (transcript supplied 2026-08-03) | None now: the editor deferred it to a later revision |
 | AAG-F121 | The jkt-jwt example `iss` is not the thumbprint of its header key | Signature-Key | informative | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F122 | `revoked_jwt` is reserved for unexpired JWTs, while a revoked token must not be reported as expired | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F123 | A revocation hold that ends before a downstream answers has no defined outcome | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F140 | No revocation reaches an Access Server that received a person token as upstream_token | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F142 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F143 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
@@ -1962,6 +1964,46 @@ Our consent interface renders `justification` as agent-asserted, sanitized Markd
 The example JWT header carries an EC P-256 `jwk` with `x` `f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU` and `y` `x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0`. Its RFC 7638 SHA-256 thumbprint is `oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`. The payload's `iss`, and the identity named after it, is `urn:jkt:sha-256:NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs`, which is the thumbprint of the RSA example key in RFC 7638, Section 3.1. A verifier following steps 5 to 7 of the verification procedure rejects the example. This library's thumbprint test computes both values.
 
 **Question:** Should the example `iss` be `urn:jkt:sha-256:oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`?
+
+### AAG-F122 — `revoked_jwt` is reserved for unexpired JWTs, while a revoked token must not be reported as expired
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Verification (Server), step 5, line 2248; Presenting a Revoked Token, line 2762.
+
+Step 5 returns `expired_jwt` if the JWT has expired and `revoked_jwt` "if the JWT verifies and is unexpired but the server holds a revocation for it". Presenting a Revoked Token says "A recipient MUST say that a revoked token was revoked, not that it is malformed or expired." A recipient keeps a revocation until the token's `exp` plus its clock skew, so a token in `Signature-Key` presented after `exp` while the revocation is still held gets `expired_jwt` under step 5 and must not be reported as expired under the second rule. This library follows step 5 for `Signature-Key` tokens, and reports a revoked request-parameter token as revoked even after its `exp`.
+
+**Question:** Should step 5 give `revoked_jwt` precedence over `expired_jwt` while the recipient holds the revocation, or should Presenting a Revoked Token exempt a token that has also expired?
+
+### AAG-F123 — A revocation hold that ends before a downstream answers has no defined outcome
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Revocation Response, lines 2706–2730.
+
+A downstream revocation is terminal when it was recorded or ended `revocation_unavailable`, which covers a party that "did not respond, timed out". Deferred completion answers `202` "if the cascade takes longer than the recipient will hold the connection", and a recipient "MAY hold for less than the caller asked for and answer `202` at its own cap". When the hold ends while a downstream request is still in flight, the draft does not say whether that downstream has timed out, and is reported `revocation_unavailable` in a `200`, or is still pending, and the recipient answers `202` and continues. The two choices give the caller different answers for the same cascade. This library answers `202` and attempts the downstream again on the next poll.
+
+**Question:** Should the draft say that a downstream still unanswered when the recipient's hold ends is pending, so the recipient answers `202`, and that `revocation_unavailable` is for a downstream whose own request failed or timed out?
 
 ### AAG-F140 — No revocation reaches an Access Server that received a person token as upstream_token
 

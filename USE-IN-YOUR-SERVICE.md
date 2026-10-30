@@ -125,6 +125,91 @@ need application idempotency. A stale proof returns `invalid_signature`;
 a proof too far ahead returns `clock_skew`, as the pinned draft requires
 ([tests](signaturekey/clock_skew_external_test.go)).
 
+## Revoke person and resource tokens
+
+Each role records a revocation under `(iss, jti)`, where `iss` is the server
+that signed the revocation request, before it calls anyone downstream.
+`testutil.NewTokenRevocationStore()` is an in-memory store that satisfies every
+role's revocation store interface. Production stores keep each marker at least
+until the revoked token's `exp` plus clock skew, and survive restarts.
+
+A Person Server revokes a person token it issued with `RevokePersonToken`. It
+revokes the token at the Resource named in its `aud` and at every Access Server
+it was presented to, and from then on refuses it as a `presented_token` with
+`revoked_presented_token`:
+
+```go
+people, err := personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
+	// ...
+	TokenRevocation: &personserver.TokenRevocationConfig{
+		Revocations: revocations, HTTPClient: client, Admit: admit,
+	},
+})
+
+result, err := people.RevokePersonToken(ctx, personTokenJTI)
+for _, attempt := range result.Attempts {
+	// attempt.Recorded(), attempt.Pending or attempt.Error per recipient
+}
+if result.Pending() {
+	// Call RevokePersonToken again after result.RetryAfter().
+}
+```
+
+Each call makes one attempt at each recipient that has not recorded the
+revocation, and waits at most `Hold` (20 seconds by default). A recipient that
+answers `202` is reported pending, and the next call polls its pending URL with
+a signed `GET`. A failed recipient is `revocation_unavailable` or
+`revocation_unsupported` and is attempted again on the next call. Repeating the
+call is safe. When `Tokens` also implements `personserver.ChainedPersonTokenStore`,
+the person tokens a call-chaining intermediary obtained with the revoked token as
+`upstream_token`, and those obtained from them, are revoked in the same cascade.
+
+An Access Server with `accessserver.Config.Revocation` serves `POST /revoke` and
+advertises `revocation_endpoint`. It retains each auth token it issues in
+`IssuedTokens`, with the token presented for it. When its Person Server revokes
+a person token, it revokes every auth token issued against it, step-ups
+included, at the Resource each names. It answers `200` with a `downstream`
+report, or `202` with a pending URL that only the revoking Person Server may
+poll. It refuses a revoked person token or resource token in a later token
+request, and ends a waiting request with `revoked`.
+
+A Resource withdraws a resource token with `RevokeResourceToken`. In
+three-party access it revokes the token at the Person Server in its `aud`; in
+four-party access at the Access Server and at its `ps`. Each recipient refuses
+it with `revoked_resource_token` and ends a request waiting on it with
+`revoked`:
+
+```go
+protected, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
+	// ...
+	AuthTokenStatuses: authTokens,
+	Revocation: &resource.RevocationConfig{
+		PersonTokens: revocations, HTTPClient: client, Admit: admit,
+	},
+})
+
+result, err := protected.RevokeResourceToken(ctx, resource.ResourceTokenRevocation{
+	JTI: jti, ExpiresAt: expiresAt, Audience: accessServer, PersonServer: personServer,
+})
+```
+
+`PersonTokens` makes the Resource refuse a revoked person token with
+`Signature-Error: error=revoked_jwt`, so it issues no resource token naming it.
+`AuthTokenStatuses` on a four-party Resource accepts revocations from its Access
+Server.
+
+The Agent treats `revoked_resource_token` as terminal for that token.
+`agent.Client` remembers the refused token and refuses to submit it again with
+`*agent.RevokedResourceTokenError`, which matches `agent.ErrResourceTokenRevoked`.
+Call the Resource again for a fresh one.
+
+Every revocation endpoint accepts 60 requests a minute from one caller by
+default and answers `429 rate_limited` with `Retry-After` beyond that; set
+`Limits` to change it. A store may return `aauth.ErrRevocationLimitReached` to
+bound how many entries one issuer holds. An `exp` more than 24 hours ahead is
+`invalid_request`. The [revocation cascade tests](integration/revocation_cascade_test.go)
+run these paths through the real role handlers.
+
 ## Check a token without an HTTP request
 
 When you already have a compact Agent JWT, the Core call is:
