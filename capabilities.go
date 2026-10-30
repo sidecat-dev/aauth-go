@@ -3,14 +3,14 @@ package aauth
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/dunglas/httpsfv"
 )
 
-// ParseCapabilities parses the AAuth-Capabilities field as an RFC 8941 List
+// ParseCapabilities parses the AAuth-Capabilities field as an RFC 9651 List
 // of Tokens. Parameters on capability items are extension data and are
-// ignored. An absent field means that the Agent declared no capabilities.
+// ignored, whatever their type. An absent field means that the Agent declared
+// no capabilities.
 func ParseCapabilities(values []string) ([]string, error) {
 	if len(values) == 0 {
 		return nil, nil
@@ -31,13 +31,6 @@ func ParseCapabilities(values []string) ([]string, error) {
 		value, ok := item.Value.(httpsfv.Token)
 		if !ok || value == "" {
 			return nil, errors.New("aauth: AAuth-Capabilities members must be non-empty tokens")
-		}
-		for _, name := range item.Params.Names() {
-			parameter, _ := item.Params.Get(name)
-			switch parameter.(type) {
-			case time.Time, httpsfv.DisplayString:
-				return nil, fmt.Errorf("aauth: AAuth-Capabilities parameter %q uses a type outside RFC 8941", name)
-			}
 		}
 		capabilities = append(capabilities, string(value))
 	}
