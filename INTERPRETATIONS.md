@@ -2008,3 +2008,72 @@ another token for the same sub-agent key, which only that key's holder can use.
 
 **Evidence:** `agentprovider/subagent_test.go` and
 `agentprovider/subagent_http_test.go`.
+
+## Request-key algorithms are an endpoint choice
+
+**Source:** Signature-Key `69f5ba2`, Algorithm Determination, Header Web Key
+(hwk), Algorithm Selection, and `unsupported_algorithm`.
+
+The draft requires a verifier to refuse an `alg` it does not support with
+`unsupported_algorithm`, and `Accept-Signature-Alg` to state exactly the set
+it accepts. It does not say whether that set belongs to the library or to
+each endpoint. `VerifyOptions.AcceptedAlgorithms` makes it the endpoint's
+choice and defaults to Ed25519, so existing roles keep their Ed25519 profile.
+An `hwk` or `x509` key may use `ES256`, `ES384`, `RS256` or `PS256` when the
+endpoint lists it, and every `unsupported_algorithm` from a prepared request
+names exactly that list. The `jwt`, `jkt-jwt`, `self-jwt`, `jwks` and
+`jwks_uri` keys, AAuth tokens, and compact JWS remain Ed25519. `RS256` and
+`PS256` keys need a 2048- to 8192-bit modulus and an odd exponent no larger
+than 2^31-1. `PS256` uses a salt as long as the hash. An `hwk` member refuses
+`kid`, private members and members of another key type, checking them before
+`alg`, and ignores other parameters as RFC 7517 requires of JWK members.
+
+**Evidence:** `signaturekey/hwk_algorithms_external_test.go` and
+`jose/signature_algorithms_external_test.go`.
+
+## An x509 proof needs a host-supplied chain, anchors and CRLs
+
+**Source:** Signature-Key `69f5ba2`, X.509 Certificates (x509), Key
+Validation, and Scheme-Specific Risks.
+
+The draft lists fetching `x5u` and checking revocation as verification steps
+but defines neither egress rules for `x5u` nor a revocation mechanism.
+`VerifyX509` does not fetch: the host supplies the PEM chain it fetched, its
+trust anchors, and CRLs. Every certificate on the path below the anchor must
+be covered by a current CRL that its issuer signed. A certificate that a CRL
+lists, or that no usable CRL covers, is refused. Delta CRLs, CRLs with an
+issuing distribution point, and CRLs with other critical extensions are not
+used, so a partitioned CRL leaves its certificates uncovered. Chain and
+revocation failures, and an `x5t` that does not match, are `invalid_key`.
+The end-entity key selects Ed25519, ES256 (P-256) or ES384 (P-384). An RSA
+subject public key names neither padding nor hash, so choosing `RS256` or
+`PS256` for it would be the polymorphic selection the draft forbids: it is
+`unsupported_algorithm`. Certificate signatures in the chain are checked with
+the Go standard library's algorithms.
+
+**Evidence:** `signaturekey/x509_external_test.go`.
+
+## Assertion caching seals its identifiers and refuses long-lived assertions
+
+**Source:** Signature-Key `69f5ba2`, Cached Assertion (cached),
+Signature-Key-Cache Response Header, Presenting and Resolving a Cached
+Assertion, `cache_miss`, and Cache Identifiers.
+
+The draft leaves the identifier's form, the retention policy, and the meaning
+of "long-lived" to the verifier. `AssertionCache` seals each identifier with
+AES-256-GCM under a key derived by HKDF-SHA-256 from the fleet key and a fresh
+192-bit salt, so no key and nonce pair repeats. The seal carries the scheme,
+`iss`, `sub`, `jti`, the assertion's SHA-256, its `exp`, its confirmation key
+and the entry's own expiry. An identifier that does not open is `cache_miss`.
+The issuing node also retains the exact assertion, and only an identifier in
+its index resolves unless `Fleet` is set. An entry is honored through its
+`expires` second, which is never later than the assertion's `exp`. A
+configured retention longer than the assertion is shortened to it rather than
+refused. An assertion with more than 24 hours left is not cached, since the
+cache keeps no revocation state. `VerifyCached` checks the HTTP signature
+against the resolved confirmation key before the assertion's expiry, so a
+held but expired assertion is `expired_jwt`. A caller without the private key
+gets `invalid_signature`, never `cache_miss`. Caching requires `iss`, `jti`,
+`exp` and `cnf.jwk`.
+
+**Evidence:** `signaturekey/cache_external_test.go`.

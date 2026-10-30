@@ -18,6 +18,7 @@ const (
 	ErrorInvalidInput         ErrorCode = "invalid_input"
 	ErrorUnsupportedAlgorithm ErrorCode = "unsupported_algorithm"
 	ErrorUnsupportedScheme    ErrorCode = "unsupported_scheme"
+	ErrorCacheMiss            ErrorCode = "cache_miss"
 	ErrorInvalidSignature     ErrorCode = "invalid_signature"
 	ErrorInvalidKey           ErrorCode = "invalid_key"
 	ErrorUnknownKey           ErrorCode = "unknown_key"

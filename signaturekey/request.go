@@ -3,8 +3,6 @@ package signaturekey
 import (
 	"bytes"
 	"context"
-	"crypto"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -40,10 +38,21 @@ type SignOptions struct {
 // one endpoint. Nonempty content additionally requires content-digest and, when
 // present, content-type coverage. MaxBodyBytes bounds content verification and
 // defaults to 1 MiB.
+//
+// AcceptedSchemes defaults to jwt. A member whose scheme is not listed is
+// refused with unsupported_scheme before any of its parameters are read.
+//
+// AcceptedAlgorithms lists the fully specified algorithms, from
+// jose.SignatureAlgorithms, that a request key may use. It defaults to
+// Ed25519. A key whose alg is not listed is refused with
+// unsupported_algorithm, and that error names exactly this list for
+// Accept-Signature-Alg. ES256, ES384, RS256, and PS256 apply to hwk and x509
+// keys; JWT-carried and discovered keys use the Ed25519 profile.
 type VerifyOptions struct {
 	RequiredComponents     []string
 	RequireExactComponents bool
 	AcceptedSchemes        []Scheme
+	AcceptedAlgorithms     []string
 	SignatureLabel         string
 	SignatureWindow        time.Duration
 	MaxBodyBytes           int64
@@ -53,7 +62,9 @@ type VerifyOptions struct {
 // key has been verified.
 type PreparedRequest struct {
 	initialized bool
+	label       string
 	credential  Credential
+	algorithms  []string
 	base        string
 	signature   []byte
 	components  []string
@@ -68,6 +79,7 @@ type PreparedRequest struct {
 
 // VerifiedRequest contains one prepared request verified under one public key.
 type VerifiedRequest struct {
+	label      string
 	credential Credential
 	publicKey  jose.JWK
 	signer     string
@@ -120,7 +132,8 @@ func SignSelfJWTRequestWithOptions(
 	return SignRequest(request, key, credential, clock, options)
 }
 
-// SignHWKRequest signs with an inline pseudonymous Ed25519 JWK.
+// SignHWKRequest signs with the key's own public JWK carried inline. The key
+// may use any algorithm from jose.SignatureAlgorithms.
 func SignHWKRequest(request *http.Request, key jose.SigningKey, clock Clock) error {
 	credential, err := NewHWKCredential(key.PublicJWK())
 	if err != nil {
@@ -153,25 +166,61 @@ func SignJWKSURIRequestWithOptions(
 }
 
 // SignRequest signs one request with the exact supplied Signature-Key
-// credential. It reads nonempty content within MaxBodyBytes (default 1 MiB),
-// computes SHA-256 Content-Digest and covers it and any Content-Type. The caller
-// can still read the request body after signing succeeds or fails. A positive
-// ContentLength must match the buffered body size; zero and -1 impose no length.
+// credential under the label sig. It reads nonempty content within
+// MaxBodyBytes (default 1 MiB), computes SHA-256 Content-Digest and covers it
+// and any Content-Type. The caller can still read the request body after
+// signing succeeds or fails. A positive ContentLength must match the buffered
+// body size; zero and -1 impose no length.
 func SignRequest(request *http.Request, key jose.SigningKey, credential Credential, clock Clock, options SignOptions) error {
+	return SignRequests(request, []RequestSignature{{Label: "sig", Key: key, Credential: credential}}, clock, options)
+}
+
+// RequestSignature is one labeled HTTP Message Signature for SignRequests.
+// Label names the signature in Signature-Key, Signature-Input, and
+// Signature; Key signs it; Credential is its Signature-Key member.
+type RequestSignature struct {
+	Label      string
+	Key        jose.SigningKey
+	Credential Credential
+}
+
+// SignRequests signs one request with several labeled signatures. It writes
+// the complete Signature-Key dictionary, holding every member, before it
+// creates any signature, and every signature covers signature-key, so each
+// one protects all of the key material. All signatures cover the same
+// components and share one created time. Labels must be unique lowercase
+// structured-field keys. Body handling and options are as for SignRequest.
+func SignRequests(request *http.Request, signatures []RequestSignature, clock Clock, options SignOptions) error {
 	if request == nil || request.URL == nil {
 		return errors.New("aauth: request URL is required")
 	}
 	if clock == nil {
 		return errors.New("aauth: clock is required")
 	}
-	if credential.scheme == "" || credential.header == "" {
-		return errors.New("aauth: Signature-Key credential is required")
+	if len(signatures) == 0 {
+		return errors.New("aauth: at least one request signature is required")
 	}
-	if credential.scheme == SchemeHWK {
-		inline, ok := credential.InlineJWK()
-		if !ok || !inline.Equal(key.PublicJWK()) {
-			return errors.New("aauth: hwk credential does not match the request signing key")
+	members := make([]string, 0, len(signatures))
+	labels := make(map[string]struct{}, len(signatures))
+	for _, signature := range signatures {
+		if !isStructuredFieldKey(signature.Label) {
+			return fmt.Errorf("aauth: signature label %q is not a lowercase structured-field key", signature.Label)
 		}
+		if _, duplicate := labels[signature.Label]; duplicate {
+			return fmt.Errorf("aauth: signature label %q is repeated", signature.Label)
+		}
+		labels[signature.Label] = struct{}{}
+		credential := signature.Credential
+		if credential.scheme == "" || credential.member == "" {
+			return errors.New("aauth: Signature-Key credential is required")
+		}
+		if credential.scheme == SchemeHWK {
+			inline, ok := credential.InlineJWK()
+			if !ok || !inline.Equal(signature.Key.PublicJWK()) {
+				return errors.New("aauth: hwk credential does not match the request signing key")
+			}
+		}
+		members = append(members, signature.Label+"="+credential.member)
 	}
 	if options.MaxBodyBytes < 0 {
 		return errors.New("aauth: maximum request body size must not be negative")
@@ -181,7 +230,7 @@ func SignRequest(request *http.Request, key jose.SigningKey, credential Credenti
 	if candidate.Header == nil {
 		candidate.Header = make(http.Header)
 	}
-	candidate.Header.Set("Signature-Key", credential.header)
+	candidate.Header.Set("Signature-Key", strings.Join(members, ", "))
 	components := []string{"@method", "@authority", "@path"}
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
 		components = append(components, "@query")
@@ -242,14 +291,37 @@ func SignRequest(request *http.Request, key jose.SigningKey, credential Credenti
 	if err != nil {
 		return err
 	}
-	signature, err := key.Sign(rand.Reader, []byte(base), crypto.Hash(0))
-	if err != nil {
-		return err
+	inputs := make([]string, 0, len(signatures))
+	values := make([]string, 0, len(signatures))
+	for _, signature := range signatures {
+		value, err := signature.Key.SignMessage(rand.Reader, []byte(base))
+		if err != nil {
+			return err
+		}
+		inputs = append(inputs, signature.Label+"="+params)
+		values = append(values, signature.Label+"=:"+base64.StdEncoding.EncodeToString(value)+":")
 	}
-	candidate.Header.Set("Signature-Input", "sig="+params)
-	candidate.Header.Set("Signature", "sig=:"+base64.StdEncoding.EncodeToString(signature)+":")
+	candidate.Header.Set("Signature-Input", strings.Join(inputs, ", "))
+	candidate.Header.Set("Signature", strings.Join(values, ", "))
 	request.Header = candidate.Header
 	return nil
+}
+
+// isStructuredFieldKey reports whether label is an RFC 8941 dictionary key:
+// a lowercase letter or "*", then lowercase letters, digits, "_", "-", ".",
+// or "*".
+func isStructuredFieldKey(label string) bool {
+	if label == "" || !(label[0] >= 'a' && label[0] <= 'z' || label[0] == '*') {
+		return false
+	}
+	for index := 1; index < len(label); index++ {
+		character := label[index]
+		if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' ||
+			strings.IndexByte("_-.*", character) >= 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // copyRequestBodyForSigning gives the temporary signing request an independent
@@ -421,26 +493,55 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	if len(accepted) == 0 {
 		accepted = []Scheme{SchemeJWT}
 	}
-	credential, err := parseCredentialForLabel(credentialHeaders, label)
+	algorithms, err := acceptedAlgorithms(options.AcceptedAlgorithms)
+	if err != nil {
+		return prepared, newError(ErrorInvalidRequest, err)
+	}
+	unsupportedScheme := func(cause error) error {
+		return &Error{Code: ErrorUnsupportedScheme, AcceptedSchemes: append([]Scheme(nil), accepted...), Cause: cause}
+	}
+	// The scheme token is judged before any scheme-specific parameter, so a
+	// scheme this endpoint does not accept always has the same defined answer.
+	member, segment, err := selectCredentialMember(credentialHeaders, label)
+	if err != nil {
+		return prepared, &Error{Code: ErrorInvalidKey, Cause: err}
+	}
+	if scheme := Scheme(member.Value.(httpsfv.Token)); !containsScheme(accepted, scheme) {
+		return prepared, unsupportedScheme(fmt.Errorf("aauth: Signature-Key type %q is not accepted", scheme))
+	}
+	credential, err := parseCredentialMember(member, segment)
 	if err != nil {
 		var failure *Error
 		if errors.As(err, &failure) {
-			if failure.Code == ErrorUnsupportedScheme {
-				return prepared, &Error{
-					Code:            failure.Code,
-					AcceptedSchemes: append([]Scheme(nil), accepted...),
-					Cause:           failure.Cause,
-				}
+			switch failure.Code {
+			case ErrorUnsupportedScheme:
+				return prepared, unsupportedScheme(failure.Cause)
+			case ErrorUnsupportedAlgorithm:
+				return prepared, unsupportedAlgorithm(algorithms, failure.Cause)
 			}
 			return prepared, err
 		}
 		return prepared, &Error{Code: ErrorInvalidKey, Cause: err}
 	}
-	if !containsScheme(accepted, credential.scheme) {
-		return prepared, &Error{
-			Code:            ErrorUnsupportedScheme,
-			AcceptedSchemes: append([]Scheme(nil), accepted...),
-			Cause:           fmt.Errorf("aauth: Signature-Key type %q is not accepted", credential.scheme),
+	acceptsSignatureSize := func(size int) bool { return algorithmsAcceptSignatureSize(algorithms, size) }
+	switch credential.scheme {
+	case SchemeHWK:
+		inline, _ := credential.InlineJWK()
+		if !contains(algorithms, inline.Alg) {
+			return prepared, unsupportedAlgorithm(algorithms, fmt.Errorf("aauth: hwk algorithm %q is not accepted", inline.Alg))
+		}
+		size, err := inline.SignatureSize()
+		if err != nil {
+			return prepared, &Error{Code: ErrorInvalidKey, Cause: err}
+		}
+		acceptsSignatureSize = func(candidate int) bool { return candidate == size }
+	case SchemeX509:
+		// The algorithm is known only after the certificate is checked. Any
+		// length an x509 key can produce is admitted here, including an RSA
+		// modulus, so an RSA certificate is still refused as
+		// unsupported_algorithm rather than as a malformed signature.
+		acceptsSignatureSize = func(size int) bool {
+			return size == 64 || size == 96 || rsaSignatureSize(size)
 		}
 	}
 	var exactBody []byte
@@ -458,7 +559,7 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	if err != nil {
 		return prepared, newError(ErrorInvalidSignature, err)
 	}
-	signature, err := parseSignature(signatureHeaders, label)
+	signature, err := parseSignature(signatureHeaders, label, acceptsSignatureSize)
 	if err != nil {
 		return prepared, newError(ErrorInvalidSignature, err)
 	}
@@ -472,7 +573,9 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	}
 	return PreparedRequest{
 		initialized: true,
+		label:       label,
 		credential:  credential,
+		algorithms:  algorithms,
 		base:        base,
 		signature:   append([]byte(nil), signature...),
 		components:  append([]string(nil), components...),
@@ -488,17 +591,11 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 
 // Credential returns an independent projection of the prepared credential.
 func (prepared PreparedRequest) Credential() Credential {
-	parameters := make(map[string]string, len(prepared.credential.parameters))
-	for name, value := range prepared.credential.parameters {
-		parameters[name] = value
-	}
-	return Credential{
-		scheme:         prepared.credential.scheme,
-		parameters:     parameters,
-		cacheRequested: prepared.credential.cacheRequested,
-		header:         prepared.credential.header,
-	}
+	return prepared.credential.clone()
 }
+
+// Label returns the selected HTTP Message Signature label.
+func (prepared PreparedRequest) Label() string { return prepared.label }
 
 // Created returns the trusted created time parsed from Signature-Input.
 func (prepared PreparedRequest) Created() time.Time { return prepared.created }
@@ -518,36 +615,60 @@ func (prepared PreparedRequest) CheckIssuedAt(issuedAt time.Time) error {
 }
 
 // Verify verifies the prepared HTTP Message Signature with the selected key.
+// The key's alg must be one of the endpoint's AcceptedAlgorithms. An x509
+// proof is verified only by VerifyX509, which validates the certificate
+// chain first, and a cached proof only by VerifyCached, which resolves the
+// cache identifier to the assertion whose key must verify it.
 func (prepared PreparedRequest) Verify(key jose.JWK) (VerifiedRequest, error) {
+	switch prepared.credential.scheme {
+	case SchemeX509:
+		return VerifiedRequest{}, errors.New("aauth: an x509 proof is verified with VerifyX509, which validates its certificate chain")
+	case SchemeCached:
+		return VerifiedRequest{}, errors.New("aauth: a cached proof is verified with VerifyCached, which resolves its cache identifier")
+	}
+	return prepared.verifyWithKey(key)
+}
+
+func (prepared PreparedRequest) verifyWithKey(key jose.JWK) (VerifiedRequest, error) {
 	if !prepared.initialized || prepared.base == "" || len(prepared.signature) == 0 {
 		return VerifiedRequest{}, errors.New("aauth: prepared request is not initialized")
 	}
-	publicKey, err := key.PublicKey()
+	if !contains(prepared.algorithms, key.Alg) {
+		return VerifiedRequest{}, unsupportedAlgorithm(
+			prepared.algorithms,
+			fmt.Errorf("aauth: request key algorithm %q is not accepted", key.Alg),
+		)
+	}
+	size, err := key.SignatureSize()
 	if err != nil {
-		if key.Alg != jose.Ed25519Algorithm {
-			return VerifiedRequest{}, &Error{Code: ErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{jose.Ed25519Algorithm}, Cause: err}
+		var unsupported interface{ UnsupportedAlgorithm() string }
+		if errors.As(err, &unsupported) {
+			return VerifiedRequest{}, unsupportedAlgorithm(prepared.algorithms, err)
 		}
 		return VerifiedRequest{}, newError(ErrorInvalidKey, err)
 	}
-	ed25519Key, ok := publicKey.(ed25519.PublicKey)
-	if !ok {
-		return VerifiedRequest{}, &Error{Code: ErrorUnsupportedAlgorithm, AcceptedAlgorithms: []string{jose.Ed25519Algorithm}, Cause: errors.New("aauth: request confirmation key is not Ed25519")}
+	if len(prepared.signature) != size {
+		return VerifiedRequest{}, newError(ErrorInvalidSignature, fmt.Errorf("aauth: %s HTTP signature has %d bytes, want %d", key.Alg, len(prepared.signature), size))
 	}
-	if !ed25519.Verify(ed25519Key, []byte(prepared.base), prepared.signature) {
+	if err := key.VerifySignature([]byte(prepared.base), prepared.signature); err != nil {
 		return VerifiedRequest{}, newError(ErrorInvalidSignature, errors.New("aauth: HTTP message signature is invalid"))
 	}
 	replayMaterial := append([]byte(prepared.base), prepared.signature...)
 	replayDigest := sha256.Sum256(replayMaterial)
 	signer := ""
-	if prepared.credential.scheme == SchemeHWK {
+	switch prepared.credential.scheme {
+	case SchemeHWK:
 		signer, err = key.ThumbprintURI()
 		if err != nil {
 			return VerifiedRequest{}, err
 		}
-	} else if prepared.credential.scheme == SchemeJWKSURI {
+	case SchemeJWKSURI:
 		signer, _, _, _ = prepared.credential.JWKSURI()
+	case SchemeJWKS:
+		signer, _, _ = prepared.credential.JWKS()
 	}
 	return VerifiedRequest{
+		label:      prepared.label,
 		credential: prepared.Credential(),
 		publicKey:  key,
 		signer:     signer,
@@ -602,6 +723,12 @@ func (prepared PreparedRequest) VerifyJWKSURI(
 	}
 	return prepared.Verify(refreshed)
 }
+
+// Label returns the HTTP Message Signature label that was verified.
+func (verified VerifiedRequest) Label() string { return verified.label }
+
+// Credential returns an independent projection of the verified credential.
+func (verified VerifiedRequest) Credential() Credential { return verified.credential.clone() }
 
 func (verified VerifiedRequest) Scheme() Scheme        { return verified.credential.scheme }
 func (verified VerifiedRequest) Signer() string        { return verified.signer }
@@ -794,7 +921,9 @@ func parseSignatureInput(values []string, selectedLabel string) (string, []strin
 	return label, components, created, expires, params, nil
 }
 
-func parseSignature(values []string, expectedLabel string) ([]byte, error) {
+// parseSignature returns the selected label's signature bytes when their
+// length is one that acceptsSize admits.
+func parseSignature(values []string, expectedLabel string, acceptsSize func(int) bool) ([]byte, error) {
 	dictionary, members, err := parseDictionaryMembers(values, "Signature")
 	if err != nil {
 		return nil, err
@@ -814,10 +943,60 @@ func parseSignature(values []string, expectedLabel string) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("aauth: Signature member must be a byte sequence")
 	}
-	if len(signature) != ed25519.SignatureSize {
-		return nil, fmt.Errorf("aauth: Ed25519 HTTP signature has %d bytes", len(signature))
+	if !acceptsSize(len(signature)) {
+		return nil, fmt.Errorf("aauth: no accepted algorithm produces a %d-byte HTTP signature", len(signature))
 	}
 	return append([]byte(nil), signature...), nil
+}
+
+// acceptedAlgorithms returns an endpoint's accepted request-key algorithms,
+// defaulting to Ed25519.
+func acceptedAlgorithms(configured []string) ([]string, error) {
+	if len(configured) == 0 {
+		return []string{jose.Ed25519Algorithm}, nil
+	}
+	supported := jose.SignatureAlgorithms()
+	for index, algorithm := range configured {
+		if !contains(supported, algorithm) {
+			return nil, fmt.Errorf("aauth: accepted algorithm %q is not implemented", algorithm)
+		}
+		if contains(configured[:index], algorithm) {
+			return nil, fmt.Errorf("aauth: accepted algorithm %q is repeated", algorithm)
+		}
+	}
+	return append([]string(nil), configured...), nil
+}
+
+func unsupportedAlgorithm(accepted []string, cause error) *Error {
+	return &Error{Code: ErrorUnsupportedAlgorithm, AcceptedAlgorithms: append([]string(nil), accepted...), Cause: cause}
+}
+
+// algorithmsAcceptSignatureSize reports whether any accepted algorithm
+// produces a signature of size bytes.
+func algorithmsAcceptSignatureSize(algorithms []string, size int) bool {
+	for _, algorithm := range algorithms {
+		switch algorithm {
+		case jose.Ed25519Algorithm, jose.ES256Algorithm:
+			if size == 64 {
+				return true
+			}
+		case jose.ES384Algorithm:
+			if size == 96 {
+				return true
+			}
+		case jose.RS256Algorithm, jose.PS256Algorithm:
+			if rsaSignatureSize(size) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rsaSignatureSize reports whether size is the length of a 2048- to 8192-bit
+// RSA modulus.
+func rsaSignatureSize(size int) bool {
+	return size >= 2048/8 && size <= 8192/8
 }
 
 func verifyContentDigest(request *http.Request, maxBodyBytes int64) ([]byte, error) {

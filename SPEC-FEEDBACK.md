@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 61 (P1: 6, P2: 35, P3: 20; 46 submitted, 15 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 62 (P1: 6, P2: 35, P3: 21; 46 submitted, 16 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -142,6 +142,7 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F094 | Clarification actions have no success-response contract | Core | informative | P3 | submitted | caf7310 (2026-08-31) | 2026-10-01, GitHub | New issue [#239](https://github.com/dickhardt/AAuth/issues/239) |
 | AAG-F104 | Core both permits and forbids a self-hosted Agent Provider | Core | informative | P3 | submitted | 2b7909b (2026-08-31) | 2026-10-01, GitHub | Comment on [#208](https://github.com/dickhardt/AAuth/issues/208#issuecomment-5943160270) |
 | AAG-H003 | Recommended justification sections | Core | informative | P3 | submitted | 3afa429 (2026-08-28) | Slack, four-party implementation round with the editor, item 5 (a concrete proposal for the `justification` sections); the original Slack date is not retained (transcript supplied 2026-08-03) | None now: the editor deferred it to a later revision |
+| AAG-F121 | The jkt-jwt example `iss` is not the thumbprint of its header key | Signature-Key | informative | P3 | open | 2026-10-30 | Not submitted | — |
 
 An earlier plan of "umbrella only" meant raising the item only inside one combined
 issue of small editorial items. On 2026-10-01 each such item was posted as its own issue instead.
@@ -1916,6 +1917,26 @@ Our consent interface renders `justification` as agent-asserted, sanitized Markd
 **Question:** When the Markdown section structures are defined, should `justification` use stakes-proportional sections such as purpose, scope and magnitude, and effect and reversibility, with the same convention reused for the other Markdown parameters?
 
 **Venue:** None now: the editor deferred it to a later revision. The editor replied in the Slack round that more real-world experience is needed, and an editor's note in 28e8258 Core defers recommended section structures for Markdown-valued parameters to a later revision. Recheck then, and offer the earlier proposal as input rather than as a new item.
+
+### AAG-F121 — The jkt-jwt example `iss` is not the thumbprint of its header key
+
+**Status:** open
+
+**Targets:** informative
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Signature-Key `69f5ba2`.
+
+**Source:** Signature-Key `69f5ba2`, JKT JWT Self-Issued Key Delegation (jkt-jwt), Example, lines 374–406.
+
+The example JWT header carries an EC P-256 `jwk` with `x` `f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU` and `y` `x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0`. Its RFC 7638 SHA-256 thumbprint is `oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`. The payload's `iss`, and the identity named after it, is `urn:jkt:sha-256:NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs`, which is the thumbprint of the RSA example key in RFC 7638, Section 3.1. A verifier following steps 5 to 7 of the verification procedure rejects the example. This library's thumbprint test computes both values.
+
+**Question:** Should the example `iss` be `urn:jkt:sha-256:oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`?
 
 ## Local implementation notes (not upstream feedback)
 
