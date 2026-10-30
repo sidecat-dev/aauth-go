@@ -132,6 +132,9 @@ func SignCompactProtected(key SigningKey, protected, payload []byte) (string, er
 	if key.ID() == "" {
 		return "", errors.New("aauth: signing key is not initialized")
 	}
+	if key.Algorithm() != Ed25519Algorithm {
+		return "", fmt.Errorf("aauth: compact JWS requires an Ed25519 signing key, not %q", key.Algorithm())
+	}
 	header, embeddedJWK, hasKeyID, err := decodeProtectedHeader(protected)
 	if err != nil {
 		return "", fmt.Errorf("aauth: parse token header: %w", err)

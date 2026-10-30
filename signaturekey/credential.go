@@ -1,6 +1,9 @@
 package signaturekey
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -30,35 +33,66 @@ const (
 	SchemeJWT     Scheme = "jwt"
 	SchemeJKTJWT  Scheme = "jkt-jwt"
 	SchemeJWKSURI Scheme = "jwks_uri"
+	SchemeJWKS    Scheme = "jwks"
 	SchemeHWK     Scheme = "hwk"
 	SchemeSelfJWT Scheme = "self-jwt"
+	SchemeX509    Scheme = "x509"
+	SchemeCached  Scheme = "cached"
 )
+
+// schemeParameters lists the parameters each scheme requires. hwk is absent
+// because its parameters depend on the key type.
+var schemeParameters = map[Scheme][]string{
+	SchemeJWT:     {"jwt"},
+	SchemeJKTJWT:  {"jwt"},
+	SchemeSelfJWT: {"jwt"},
+	SchemeJWKSURI: {"id", "dwk", "kid"},
+	SchemeJWKS:    {"url", "kid"},
+	SchemeX509:    {"x5u", "x5t"},
+	SchemeCached:  {"cid"},
+}
+
+// hwkParameters lists the inline JWK members an hwk member carries for each
+// key type, in the order this package writes them.
+var hwkParameters = map[string][]string{
+	"OKP": {"kty", "crv", "x", "alg"},
+	"EC":  {"kty", "crv", "x", "y", "alg"},
+	"RSA": {"kty", "n", "e", "alg"},
+}
 
 // Credential is one parsed Signature-Key member. Its parameters are copied
 // and can be interpreted only through scheme-specific accessors.
 type Credential struct {
 	scheme         Scheme
 	parameters     map[string]string
+	thumbprint     []byte
 	cacheRequested bool
-	header         string
+	// member is the serialized member value without its label.
+	member string
 }
 
-// NewHWKCredential constructs the selected inline Ed25519 JWK profile.
+// NewHWKCredential constructs an inline public key. The key must carry a
+// fully specified alg that jose.JWK.SignaturePublicKey accepts. The member
+// carries exactly the JWK members its key type requires and never a kid.
 func NewHWKCredential(key jose.JWK) (Credential, error) {
-	if _, err := key.PublicKey(); err != nil {
+	if _, err := key.SignaturePublicKey(); err != nil {
 		return Credential{}, fmt.Errorf("aauth: hwk signing key: %w", err)
 	}
-	parameters := map[string]string{
-		"kty": key.Kty,
-		"crv": key.Crv,
-		"x":   key.X,
-		"alg": key.Alg,
+	values := inlineJWKMembers(key)
+	parameters := make(map[string]string, len(hwkParameters[key.Kty]))
+	member := string(SchemeHWK)
+	for _, name := range hwkParameters[key.Kty] {
+		parameters[name] = values[name]
+		member += ";" + name + "=" + strconv.Quote(values[name])
 	}
-	header := `sig=hwk;kty=` + strconv.Quote(key.Kty) +
-		`;crv=` + strconv.Quote(key.Crv) +
-		`;x=` + strconv.Quote(key.X) +
-		`;alg=` + strconv.Quote(key.Alg)
-	return Credential{scheme: SchemeHWK, parameters: parameters, header: header}, nil
+	return Credential{scheme: SchemeHWK, parameters: parameters, member: member}, nil
+}
+
+func inlineJWKMembers(key jose.JWK) map[string]string {
+	return map[string]string{
+		"kty": key.Kty, "crv": key.Crv, "x": key.X, "y": key.Y,
+		"n": key.N, "e": key.E, "alg": key.Alg,
+	}
 }
 
 // NewJWTCredential carries an opaque compact JWT. The caller remains
@@ -73,13 +107,14 @@ func NewJWTCredential(compact string) (Credential, error) {
 	return Credential{
 		scheme:     SchemeJWT,
 		parameters: map[string]string{"jwt": compact},
-		header:     `sig=jwt;jwt=` + strconv.Quote(compact),
+		member:     `jwt;jwt=` + strconv.Quote(compact),
 	}, nil
 }
 
 // WithCache asks a verifier to retain a jwt or jkt-jwt assertion. The
-// parameter is the bare boolean `;cache`. Servers in this module do not
-// answer with a Signature-Key-Cache header.
+// parameter is the bare boolean `;cache`. The assertion must carry a jti for
+// a verifier to issue a cache identifier; AssertionCache issues one, and
+// CachingCredential presents it on later requests.
 func (credential Credential) WithCache() (Credential, error) {
 	if credential.scheme != SchemeJWT && credential.scheme != SchemeJKTJWT {
 		return Credential{}, fmt.Errorf("aauth: %s does not accept cache", credential.scheme)
@@ -88,7 +123,7 @@ func (credential Credential) WithCache() (Credential, error) {
 		return credential, nil
 	}
 	credential.cacheRequested = true
-	credential.header += ";cache"
+	credential.member += ";cache"
 	return credential, nil
 }
 
@@ -104,7 +139,7 @@ func NewJKTJWTCredential(compact string) (Credential, error) {
 	return Credential{
 		scheme:     SchemeJKTJWT,
 		parameters: map[string]string{"jwt": compact},
-		header:     `sig=jkt-jwt;jwt=` + strconv.Quote(compact),
+		member:     `jkt-jwt;jwt=` + strconv.Quote(compact),
 	}, nil
 }
 
@@ -120,7 +155,7 @@ func NewSelfJWTCredential(compact string) (Credential, error) {
 	return Credential{
 		scheme:     SchemeSelfJWT,
 		parameters: map[string]string{"jwt": compact},
-		header:     `sig=self-jwt;jwt=` + strconv.Quote(compact),
+		member:     `self-jwt;jwt=` + strconv.Quote(compact),
 	}, nil
 }
 
@@ -149,9 +184,72 @@ func NewJWKSURICredential(identifier, discoveryDocument, keyID string) (Credenti
 			"dwk": discoveryDocument,
 			"kid": keyID,
 		},
-		header: `sig=jwks_uri;id=` + strconv.Quote(identifier) +
+		member: `jwks_uri;id=` + strconv.Quote(identifier) +
 			`;dwk=` + strconv.Quote(discoveryDocument) +
 			`;kid=` + strconv.Quote(keyID),
+	}, nil
+}
+
+// NewJWKSCredential constructs a direct JWKS key reference. keySetURL is
+// both the signer identity and the HTTPS location of its JWKS. It is carried
+// byte for byte as given, so a signer must pass the same bytes wherever it
+// intends the same identity.
+func NewJWKSCredential(keySetURL, keyID string) (Credential, error) {
+	if err := validateDiscoveryURL(keySetURL); err != nil {
+		return Credential{}, fmt.Errorf("aauth: jwks url: %w", err)
+	}
+	if keyID == "" {
+		return Credential{}, errors.New("aauth: jwks signing key is required")
+	}
+	for name, value := range map[string]string{"url": keySetURL, "signing key": keyID} {
+		if err := validateStructuredFieldString(value); err != nil {
+			return Credential{}, fmt.Errorf("aauth: jwks %s: %w", name, err)
+		}
+	}
+	return Credential{
+		scheme:     SchemeJWKS,
+		parameters: map[string]string{"url": keySetURL, "kid": keyID},
+		member:     `jwks;url=` + strconv.Quote(keySetURL) + `;kid=` + strconv.Quote(keyID),
+	}, nil
+}
+
+// NewX509Credential references an X.509 certificate chain published as PEM
+// at the HTTPS URL certificateURL. endEntity is the first certificate of
+// that chain; x5t is the SHA-256 of its DER encoding.
+func NewX509Credential(certificateURL string, endEntity *x509.Certificate) (Credential, error) {
+	if err := validateDiscoveryURL(certificateURL); err != nil {
+		return Credential{}, fmt.Errorf("aauth: x509 x5u: %w", err)
+	}
+	if err := validateStructuredFieldString(certificateURL); err != nil {
+		return Credential{}, fmt.Errorf("aauth: x509 x5u: %w", err)
+	}
+	if endEntity == nil || len(endEntity.Raw) == 0 {
+		return Credential{}, errors.New("aauth: x509 end-entity certificate is required")
+	}
+	thumbprint := sha256.Sum256(endEntity.Raw)
+	return Credential{
+		scheme:     SchemeX509,
+		parameters: map[string]string{"x5u": certificateURL},
+		thumbprint: thumbprint[:],
+		member: `x509;x5u=` + strconv.Quote(certificateURL) +
+			`;x5t=:` + base64.StdEncoding.EncodeToString(thumbprint[:]) + `:`,
+	}, nil
+}
+
+// NewCachedCredential presents the cache identifier a verifier issued in
+// Signature-Key-Cache. The identifier is carried exactly as received; there
+// is deliberately no way to build one from a string.
+func NewCachedCredential(grant CacheGrant) (Credential, error) {
+	if grant.identifier == "" {
+		return Credential{}, errors.New("aauth: cached credential requires an issued cache identifier")
+	}
+	if err := validateStructuredFieldString(grant.identifier); err != nil {
+		return Credential{}, fmt.Errorf("aauth: cache identifier: %w", err)
+	}
+	return Credential{
+		scheme:     SchemeCached,
+		parameters: map[string]string{"cid": grant.identifier},
+		member:     `cached;cid=` + strconv.Quote(grant.identifier),
 	}, nil
 }
 
@@ -204,6 +302,9 @@ func (credential Credential) InlineJWK() (jose.JWK, bool) {
 		Kty: credential.parameters["kty"],
 		Crv: credential.parameters["crv"],
 		X:   credential.parameters["x"],
+		Y:   credential.parameters["y"],
+		N:   credential.parameters["n"],
+		E:   credential.parameters["e"],
 		Alg: credential.parameters["alg"],
 	}, true
 }
@@ -249,94 +350,225 @@ func (credential Credential) JWKSURI() (string, string, string, bool) {
 	return identifier, document, keyID, true
 }
 
+// JWKS returns the exact JWKS URL and key id carried by a jwks credential.
+// The URL is the signer identity as presented, without normalization.
+func (credential Credential) JWKS() (string, string, bool) {
+	if credential.scheme != SchemeJWKS || credential.parameters == nil {
+		return "", "", false
+	}
+	keySetURL, keyID := credential.parameters["url"], credential.parameters["kid"]
+	if keySetURL == "" || keyID == "" {
+		return "", "", false
+	}
+	return keySetURL, keyID, true
+}
+
+// X509 returns the exact certificate URL and an independent copy of the
+// SHA-256 end-entity thumbprint carried by an x509 credential. Trust is
+// established only by PreparedRequest.VerifyX509.
+func (credential Credential) X509() (string, []byte, bool) {
+	if credential.scheme != SchemeX509 || credential.parameters == nil ||
+		credential.parameters["x5u"] == "" || len(credential.thumbprint) != sha256.Size {
+		return "", nil, false
+	}
+	return credential.parameters["x5u"], append([]byte(nil), credential.thumbprint...), true
+}
+
+// CacheIdentifier returns the opaque identifier carried by a cached
+// credential, exactly as presented.
+func (credential Credential) CacheIdentifier() (string, bool) {
+	if credential.scheme != SchemeCached || credential.parameters == nil || credential.parameters["cid"] == "" {
+		return "", false
+	}
+	return credential.parameters["cid"], true
+}
+
+func (credential Credential) clone() Credential {
+	parameters := make(map[string]string, len(credential.parameters))
+	for name, value := range credential.parameters {
+		parameters[name] = value
+	}
+	credential.parameters = parameters
+	credential.thumbprint = append([]byte(nil), credential.thumbprint...)
+	return credential
+}
+
 func parseCredentialForLabel(values []string, label string) (Credential, error) {
-	dictionary, members, err := parseDictionaryMembers(values, "Signature-Key")
+	item, segment, err := selectCredentialMember(values, label)
 	if err != nil {
 		return Credential{}, err
 	}
+	return parseCredentialMember(item, segment)
+}
+
+// selectCredentialMember returns the Signature-Key member for label and its
+// exact field text. Only its scheme token is checked, so a caller can apply
+// scheme acceptance before any scheme-specific parsing.
+func selectCredentialMember(values []string, label string) (httpsfv.Item, string, error) {
+	dictionary, members, err := parseDictionaryMembers(values, "Signature-Key")
+	if err != nil {
+		return httpsfv.Item{}, "", err
+	}
 	member, ok := dictionary.Get(label)
 	if !ok {
-		return Credential{}, fmt.Errorf("aauth: Signature-Key has no member for signature label %q", label)
+		return httpsfv.Item{}, "", fmt.Errorf("aauth: Signature-Key has no member for signature label %q", label)
 	}
 	item, ok := member.(httpsfv.Item)
 	if !ok {
-		return Credential{}, fmt.Errorf("aauth: Signature-Key member %q must be an Item", label)
+		return httpsfv.Item{}, "", fmt.Errorf("aauth: Signature-Key member %q must be an Item", label)
 	}
 	scheme, ok := item.Value.(httpsfv.Token)
 	if !ok || scheme == "" {
-		return Credential{}, errors.New("aauth: Signature-Key scheme must be a token")
+		return httpsfv.Item{}, "", errors.New("aauth: Signature-Key scheme must be a token")
 	}
-	parsed := Credential{scheme: Scheme(scheme), parameters: make(map[string]string)}
-	required := map[Scheme][]string{
-		SchemeJWT:     {"jwt"},
-		SchemeJKTJWT:  {"jwt"},
-		SchemeJWKSURI: {"id", "dwk", "kid"},
-		SchemeHWK:     {"kty", "crv", "x", "alg"},
-		SchemeSelfJWT: {"jwt"},
-	}[parsed.scheme]
-	if required == nil {
+	return item, members[label], nil
+}
+
+func parseCredentialMember(item httpsfv.Item, segment string) (Credential, error) {
+	scheme := Scheme(item.Value.(httpsfv.Token))
+	required, known := schemeParameters[scheme]
+	if !known && scheme != SchemeHWK {
 		return Credential{}, newError(
 			ErrorUnsupportedScheme,
-			fmt.Errorf("aauth: unsupported Signature-Key scheme %q", parsed.scheme),
+			fmt.Errorf("aauth: unsupported Signature-Key scheme %q", scheme),
 		)
 	}
-	selectedMember := members[label]
-	if countTopLevelDelimiters(selectedMember, ';') != len(item.Params.Names()) {
-		return Credential{}, fmt.Errorf("aauth: Signature-Key member %q has duplicate parameters", label)
+	if countTopLevelDelimiters(segment, ';') != len(item.Params.Names()) {
+		return Credential{}, fmt.Errorf("aauth: Signature-Key %s member has duplicate parameters", scheme)
+	}
+	parsed := Credential{scheme: scheme, parameters: make(map[string]string)}
+	if _, value, found := strings.Cut(segment, "="); found {
+		parsed.member = strings.TrimSpace(value)
+	}
+	if scheme == SchemeHWK {
+		parameters, err := parseHWKParameters(item.Params)
+		if err != nil {
+			return Credential{}, err
+		}
+		parsed.parameters = parameters
+		return parsed, nil
 	}
 	allowed := make(map[string]struct{}, len(required)+1)
 	for _, name := range required {
 		allowed[name] = struct{}{}
 	}
-	if parsed.scheme == SchemeJWT || parsed.scheme == SchemeJKTJWT {
+	if scheme == SchemeJWT || scheme == SchemeJKTJWT {
 		allowed["cache"] = struct{}{}
 	}
 	for _, name := range item.Params.Names() {
 		if _, ok := allowed[name]; !ok {
-			return Credential{}, fmt.Errorf("aauth: Signature-Key %s has unexpected parameter %q", parsed.scheme, name)
+			return Credential{}, fmt.Errorf("aauth: Signature-Key %s has unexpected parameter %q", scheme, name)
 		}
 		value, _ := item.Params.Get(name)
-		if name == "cache" {
+		switch name {
+		case "cache":
 			cache, ok := value.(bool)
-			if !ok || !cache || strings.Contains(selectedMember, ";cache=") {
-				return Credential{}, fmt.Errorf("aauth: Signature-Key %s cache parameter must be bare true", parsed.scheme)
+			if !ok || !cache || strings.Contains(segment, ";cache=") {
+				return Credential{}, fmt.Errorf("aauth: Signature-Key %s cache parameter must be bare true", scheme)
 			}
 			parsed.cacheRequested = true
+		case "x5t":
+			thumbprint, ok := value.([]byte)
+			if !ok || len(thumbprint) != sha256.Size {
+				return Credential{}, errors.New("aauth: Signature-Key x509 x5t must be a 32-byte SHA-256 byte sequence")
+			}
+			parsed.thumbprint = append([]byte(nil), thumbprint...)
+		default:
+			text, ok := value.(string)
+			if !ok || text == "" {
+				return Credential{}, fmt.Errorf("aauth: Signature-Key parameter %q must be a non-empty string", name)
+			}
+			parsed.parameters[name] = text
+		}
+	}
+	for _, name := range required {
+		present := parsed.parameters[name] != ""
+		if name == "x5t" {
+			present = parsed.thumbprint != nil
+		}
+		if !present {
+			return Credential{}, fmt.Errorf("aauth: Signature-Key %s requires %s", scheme, name)
+		}
+	}
+	switch scheme {
+	case SchemeJWKS:
+		if err := validateDiscoveryURL(parsed.parameters["url"]); err != nil {
+			return Credential{}, fmt.Errorf("aauth: Signature-Key jwks url: %w", err)
+		}
+	case SchemeX509:
+		if err := validateDiscoveryURL(parsed.parameters["x5u"]); err != nil {
+			return Credential{}, fmt.Errorf("aauth: Signature-Key x509 x5u: %w", err)
+		}
+	}
+	return parsed, nil
+}
+
+// parseHWKParameters reads an inline key under Algorithm Determination: alg
+// selects the algorithm, kty and crv must agree with it, and the members
+// required for the key type must be present. kid, private members, and
+// members of another key type are refused; other parameters are ignored, as
+// RFC 7517 requires of JWK members a reader does not understand. A missing
+// alg, or an alg or kty this package does not implement, is
+// unsupported_algorithm.
+func parseHWKParameters(params *httpsfv.Params) (map[string]string, error) {
+	unsupported := func(cause error) error {
+		return &Error{Code: ErrorUnsupportedAlgorithm, AcceptedAlgorithms: jose.SignatureAlgorithms(), Cause: cause}
+	}
+	for _, name := range params.Names() {
+		if name == "kid" {
+			return nil, errors.New("aauth: Signature-Key hwk must not carry kid")
+		}
+		if jose.IsPrivateJWKMember(name) {
+			return nil, fmt.Errorf("aauth: Signature-Key hwk must not carry private member %q", name)
+		}
+	}
+	parameters := make(map[string]string)
+	for _, name := range []string{"kty", "crv", "x", "y", "n", "e", "alg"} {
+		value, present := params.Get(name)
+		if !present {
 			continue
 		}
 		text, ok := value.(string)
 		if !ok || text == "" {
-			return Credential{}, fmt.Errorf("aauth: Signature-Key parameter %q must be a non-empty string", name)
+			return nil, fmt.Errorf("aauth: Signature-Key parameter %q must be a non-empty string", name)
 		}
-		parsed.parameters[name] = text
+		parameters[name] = text
 	}
-	if parsed.scheme == SchemeHWK && parsed.parameters["alg"] == "" {
-		return Credential{}, &Error{
-			Code:               ErrorUnsupportedAlgorithm,
-			AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
-			Cause:              errors.New("aauth: Signature-Key hwk requires alg"),
-		}
+	if parameters["alg"] == "" {
+		return nil, unsupported(errors.New("aauth: Signature-Key hwk requires alg"))
 	}
-	for _, name := range required {
-		if parsed.parameters[name] == "" {
-			return Credential{}, fmt.Errorf("aauth: Signature-Key %s requires %s", parsed.scheme, name)
-		}
+	keyType := parameters["kty"]
+	if keyType == "" {
+		return nil, errors.New("aauth: Signature-Key hwk requires kty")
 	}
-	if parsed.scheme == SchemeHWK {
-		key, _ := parsed.InlineJWK()
-		if _, err := key.PublicKey(); err != nil {
-			if key.Alg != jose.Ed25519Algorithm {
-				return Credential{}, &Error{
-					Code:               ErrorUnsupportedAlgorithm,
-					AcceptedAlgorithms: []string{jose.Ed25519Algorithm},
-					Cause:              err,
-				}
-			}
-			return Credential{}, &Error{Code: ErrorInvalidKey, Cause: fmt.Errorf("aauth: Signature-Key hwk: %w", err)}
+	expected, known := hwkParameters[keyType]
+	if !known {
+		return nil, unsupported(fmt.Errorf("aauth: Signature-Key hwk key type %q is not implemented", keyType))
+	}
+	allowed := make(map[string]struct{}, len(expected))
+	for _, name := range expected {
+		allowed[name] = struct{}{}
+		if parameters[name] == "" {
+			return nil, fmt.Errorf("aauth: Signature-Key hwk %s key requires %s", keyType, name)
 		}
 	}
-	parsed.header = strings.Join(values, ", ")
-	return parsed, nil
+	for name := range parameters {
+		if _, ok := allowed[name]; !ok {
+			return nil, fmt.Errorf("aauth: Signature-Key hwk %s key carries %q, a member of another key type", keyType, name)
+		}
+	}
+	key := jose.JWK{
+		Kty: keyType, Crv: parameters["crv"], X: parameters["x"], Y: parameters["y"],
+		N: parameters["n"], E: parameters["e"], Alg: parameters["alg"],
+	}
+	if _, err := key.SignaturePublicKey(); err != nil {
+		var unsupportedAlgorithm interface{ UnsupportedAlgorithm() string }
+		if errors.As(err, &unsupportedAlgorithm) {
+			return nil, unsupported(err)
+		}
+		return nil, &Error{Code: ErrorInvalidKey, Cause: fmt.Errorf("aauth: Signature-Key hwk: %w", err)}
+	}
+	return parameters, nil
 }
 
 func parseDictionaryMembers(values []string, field string) (*httpsfv.Dictionary, map[string]string, error) {

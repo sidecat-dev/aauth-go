@@ -72,8 +72,8 @@ type HTTPKeyResolverLimits struct {
 }
 
 // HTTPKeyResolver performs the Signature-Key two-hop metadata/JWKS discovery
-// path with explicit egress admission, bounded reads, caching, and the AAuth
-// one-minute unknown-kid refresh floor.
+// path, and the one-hop fetch of a direct jwks URL, with explicit egress
+// admission, bounded reads, caching, and the one-minute refresh floor.
 type HTTPKeyResolver struct {
 	client  *http.Client
 	clock   Clock
@@ -87,6 +87,10 @@ type HTTPKeyResolver struct {
 	attempts map[discoveryCacheKey]discoveryAttempt
 }
 
+// discoveryCacheKey names one cached key set. A jwks_uri key set is cached
+// by issuer and metadata document. A direct JWKS has no metadata document:
+// its exact URL is the issuer and document is empty, which no jwks_uri
+// reference can have.
 type discoveryCacheKey struct {
 	issuer   string
 	document string
@@ -179,6 +183,30 @@ func (resolver *HTTPKeyResolver) RefreshKey(
 	return resolver.resolveKey(ctx, issuer, discoveryDocument, keyID, true)
 }
 
+// ResolveJWKSKey fetches the JWKS at the exact direct jwks URL after egress
+// admission and selects keyID. The URL is used as presented: the cache is
+// keyed by its exact bytes and the same refresh floor applies as for
+// jwks_uri.
+func (resolver *HTTPKeyResolver) ResolveJWKSKey(ctx context.Context, keySetURL, keyID string) (jose.JWK, error) {
+	return resolver.resolveJWKSKey(ctx, keySetURL, keyID, false)
+}
+
+// RefreshJWKSKey deliberately re-checks a direct JWKS after a verification
+// failure, while retaining the same one-minute refresh floor.
+func (resolver *HTTPKeyResolver) RefreshJWKSKey(ctx context.Context, keySetURL, keyID string) (jose.JWK, error) {
+	return resolver.resolveJWKSKey(ctx, keySetURL, keyID, true)
+}
+
+func (resolver *HTTPKeyResolver) resolveJWKSKey(ctx context.Context, keySetURL, keyID string, forceRefresh bool) (jose.JWK, error) {
+	if err := validateDiscoveryURL(keySetURL); err != nil {
+		return jose.JWK{}, resolutionError(ResolutionInvalid, fmt.Errorf("aauth: jwks url: %w", err))
+	}
+	if keyID == "" {
+		return jose.JWK{}, resolutionError(ResolutionInvalid, errors.New("aauth: jwks key id is required"))
+	}
+	return resolver.resolveCachedKey(ctx, discoveryCacheKey{issuer: keySetURL}, keyID, forceRefresh)
+}
+
 func (resolver *HTTPKeyResolver) resolveKey(
 	ctx context.Context,
 	issuer string,
@@ -204,8 +232,16 @@ func (resolver *HTTPKeyResolver) resolveKey(
 			errors.New("aauth: discovery key id is required"),
 		)
 	}
-	cacheKey := discoveryCacheKey{issuer: issuer, document: discoveryDocument}
+	return resolver.resolveCachedKey(ctx, discoveryCacheKey{issuer: issuer, document: discoveryDocument}, keyID, forceRefresh)
+}
 
+func (resolver *HTTPKeyResolver) resolveCachedKey(
+	ctx context.Context,
+	cacheKey discoveryCacheKey,
+	keyID string,
+	forceRefresh bool,
+) (jose.JWK, error) {
+	issuer := cacheKey.issuer
 	for {
 		now := resolver.clock.Now()
 		resolver.mu.Lock()
@@ -291,7 +327,7 @@ func (resolver *HTTPKeyResolver) resolveKey(
 		resolver.inflight[cacheKey] = pending
 		resolver.mu.Unlock()
 
-		fetched, fetchErr := resolver.fetch(ctx, issuer, discoveryDocument)
+		fetched, fetchErr := resolver.fetch(ctx, cacheKey)
 
 		resolver.mu.Lock()
 		delete(resolver.inflight, cacheKey)
@@ -437,12 +473,16 @@ func discoveryCacheKeyBefore(left, right discoveryCacheKey) bool {
 	return left.document < right.document
 }
 
-func (resolver *HTTPKeyResolver) fetch(
-	ctx context.Context,
-	issuer string,
-	discoveryDocument string,
-) (discoveryCacheEntry, error) {
-	metadataEndpoint := issuer + "/.well-known/" + discoveryDocument
+func (resolver *HTTPKeyResolver) fetch(ctx context.Context, cacheKey discoveryCacheKey) (discoveryCacheEntry, error) {
+	if cacheKey.document == "" {
+		keySetBytes, keySetPolicy, err := resolver.fetchJSON(ctx, cacheKey.issuer)
+		if err != nil {
+			return discoveryCacheEntry{}, err
+		}
+		return resolver.keySetEntry(keySetBytes, keySetPolicy.freshness, keySetPolicy.storable)
+	}
+	issuer := cacheKey.issuer
+	metadataEndpoint := issuer + "/.well-known/" + cacheKey.document
 	metadataBytes, metadataPolicy, err := resolver.fetchJSON(ctx, metadataEndpoint)
 	if err != nil {
 		return discoveryCacheEntry{}, err
@@ -506,6 +546,21 @@ func (resolver *HTTPKeyResolver) fetch(
 	if err != nil {
 		return discoveryCacheEntry{}, err
 	}
+	freshness := metadataPolicy.freshness
+	if keySetPolicy.freshness < freshness {
+		freshness = keySetPolicy.freshness
+	}
+	return resolver.keySetEntry(keySetBytes, freshness, metadataPolicy.storable && keySetPolicy.storable)
+}
+
+// keySetEntry decodes one fetched JWKS into a cache entry. Keys are indexed
+// by kid without being validated, so a key the verifier cannot use does not
+// prevent selecting another; a repeated kid selects nothing.
+func (resolver *HTTPKeyResolver) keySetEntry(
+	keySetBytes []byte,
+	freshness time.Duration,
+	cacheable bool,
+) (discoveryCacheEntry, error) {
 	if err := jsonstrict.RejectAmbiguousNames(keySetBytes); err != nil {
 		return discoveryCacheEntry{}, resolutionError(
 			ResolutionInvalid,
@@ -550,15 +605,11 @@ func (resolver *HTTPKeyResolver) fetch(
 		keys[key.Kid] = key
 	}
 
-	freshness := metadataPolicy.freshness
-	if keySetPolicy.freshness < freshness {
-		freshness = keySetPolicy.freshness
-	}
 	now := resolver.clock.Now()
 	return discoveryCacheEntry{
 		keys:          keys,
 		duplicateKeys: duplicateKeys,
-		cacheable:     metadataPolicy.storable && keySetPolicy.storable,
+		cacheable:     cacheable,
 		fetchedAt:     now,
 		freshUntil:    now.Add(freshness),
 		discardAt:     now.Add(maximumDiscoveryRetention),

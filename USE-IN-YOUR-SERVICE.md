@@ -710,6 +710,118 @@ until its own deadline. The [permission](example/permission/main.go) and
 without extracting references from the Agent's poll URL. Mission proposals
 have a separate [pending queue](personserver/mission_proposal_deferred_test.go).
 
+## Verify other Signature-Key schemes
+
+The role handlers accept the Signature-Key schemes their protocol step needs,
+with Ed25519 keys, and answer any other scheme with `unsupported_scheme`. An
+endpoint of your own can use the `signaturekey` package directly. Name the
+schemes and algorithms it accepts, then finish with the verifier for the
+selected scheme:
+
+```go
+func verifyCaller(ctx context.Context, request *http.Request, clock signaturekey.Clock,
+	keys signaturekey.JWKSKeyResolver, chain func(x5u string) (signaturekey.X509VerifyOptions, error),
+) (signaturekey.VerifiedRequest, error) {
+	prepared, err := signaturekey.PrepareRequest(request, clock, signaturekey.VerifyOptions{
+		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeHWK, signaturekey.SchemeJWKS, signaturekey.SchemeX509},
+		AcceptedAlgorithms: []string{jose.Ed25519Algorithm, jose.ES256Algorithm},
+	})
+	if err != nil {
+		return signaturekey.VerifiedRequest{}, err
+	}
+	credential := prepared.Credential()
+	switch credential.Scheme() {
+	case signaturekey.SchemeHWK:
+		key, _ := credential.InlineJWK()
+		return prepared.Verify(key)
+	case signaturekey.SchemeJWKS:
+		return prepared.VerifyJWKS(ctx, keys)
+	default:
+		x5u, _, _ := credential.X509()
+		options, err := chain(x5u)
+		if err != nil {
+			return signaturekey.VerifiedRequest{}, err
+		}
+		proof, _, err := prepared.VerifyX509(options)
+		return proof, err
+	}
+}
+```
+
+A protocol refusal is a `*signaturekey.Error`. Its `Code` goes in `Signature-Error`,
+and `AcceptedSchemes` or `AcceptedAlgorithms` in `Accept-Signature-Scheme` or
+`Accept-Signature-Alg` (see `FormatError`, `FormatAcceptSchemes` and
+`FormatAcceptAlgorithms`).
+
+**Algorithms.** `AcceptedAlgorithms` defaults to Ed25519. An `hwk` or `x509`
+key may also use `ES256`, `ES384`, `RS256` or `PS256` when you list it. Every
+key must carry a fully specified `alg`, and `kty` and `crv` must agree with it.
+A key whose `alg` you did not list is `unsupported_algorithm`, and the error
+names exactly your list. JWT-carried and discovered keys, and AAuth tokens,
+remain Ed25519. A client signs with another algorithm through
+`jose.NewSigningKeyForAlgorithm` and `signaturekey.SignHWKRequest`.
+
+**Direct JWKS.** In `jwks`, the `url` is both the signer's identity and the
+location of its keys. It is compared byte for byte and never normalized, and
+`proof.Signer()` returns it unchanged. `signaturekey.HTTPKeyResolver`
+implements `JWKSKeyResolver`: it admits the URL through your `Admit` callback
+and fetches it under the same destination checks, cache and one-minute refresh
+floor as `jwks_uri`. `StaticJWKSResolver` is an exact in-memory alternative.
+
+**X.509.** This package does not fetch `x5u`. Your host fetches that exact
+URL after its own egress checks and passes the PEM chain, the trust anchors
+it accepts, and current CRLs for the end entity and each intermediate. The
+chain and revocation are always checked before the `x5t` thumbprint and the
+signature. A revoked certificate, or one that no current CRL covers, is
+`invalid_key`. The end-entity key selects Ed25519, ES256 or ES384. An RSA
+certificate names neither padding nor hash, so it is `unsupported_algorithm`.
+OCSP, delta CRLs and partitioned CRLs are not supported.
+
+**Several signatures.** `signaturekey.SignRequests` signs one request with
+several labeled signatures. It writes every `Signature-Key` member before it
+signs, and each signature covers `signature-key`. A verifier selects one label
+with `VerifyOptions.SignatureLabel`.
+
+### Cache an assertion
+
+A caller that presents a `jwt` or `jkt-jwt` assertion with the `cache` signal
+asks the verifier to issue a short **cache identifier** that later requests
+present instead. Caching is optional: an endpoint that does not accept
+`cached` answers it with `unsupported_scheme`, and the caller resends the full
+assertion.
+
+To cache, create one `signaturekey.AssertionCache` per verifier with a 32-byte
+secret shared by your verifier fleet. After you verify a request that asked to
+be cached, issue an identifier and return it in `Signature-Key-Cache`:
+
+```go
+grant, issued, err := cache.Issue(proof)
+if err == nil && issued {
+	if field, err := signaturekey.FormatCacheGrants(grant); err == nil {
+		response.Header().Set("Signature-Key-Cache", field)
+	}
+}
+```
+
+Accept `signaturekey.SchemeCached` on later requests and verify them with
+`prepared.VerifyCached(cache)`. An identifier the cache cannot resolve is
+`cache_miss`; answer `401` so the caller resends the assertion in full. A
+resolved identifier still needs a valid HTTP signature from the assertion's
+confirmation key. An assertion that has expired is `expired_jwt`, not
+`cache_miss`. Then validate the returned `CachedAssertion` as you would the
+assertion presented in full: on the issuing node, `Compact` returns its exact
+bytes. `Issue` never caches a `self-jwt`, an assertion without `jti`, or one
+with more than 24 hours left to live. An identifier's `expires` never outlives
+the assertion.
+
+On the client, wrap the full credential in `signaturekey.NewCachingCredential`.
+Present `Credential()` on each request, and pass each response to
+`HandleResponse`. The client presents the cached identifier only after a
+verifier issued it. After a `cache_miss` it presents the full assertion again,
+whatever the advisory `expires` said. `signaturekey.SelectScheme` picks a
+scheme from a server's `Accept-Signature-Scheme`. It skips `cached` until an
+identifier has been issued.
+
 ## Diagnose a refused request
 
 Wrap the role handler directly with `diagnostics.Handler` to observe the original
