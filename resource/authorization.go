@@ -13,19 +13,57 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
-	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 const maximumAuthorizationRequestBytes = 64 << 10
 
 func (server *Server) serveAuthorization(response http.ResponseWriter, request *http.Request) {
-	proof, claims, err := server.verifyAuthorizationPersonRequest(request)
+	// A request that carries no person token is answered with the
+	// person-token requirement, never with an authorization-endpoint error.
+	if !hasAAuthRequestProof(request) {
+		server.writeCredentialRequirement(response)
+		return
+	}
+	prepared, compact, err := server.prepareJWTRequest(
+		request,
+		authorizationSignatureComponents(server.additionalSignatureComponents),
+	)
+	if err != nil {
+		writeAuthorizationProblem(response, err)
+		return
+	}
+	// The header is untrusted dispatch input only. Each branch runs the exact
+	// token verifier before answering.
+	header, err := jose.PeekHeader(compact)
+	if err != nil {
+		writeAuthorizationProblem(response, &requestTokenError{cause: err})
+		return
+	}
+	switch header.Type {
+	case aauth.PersonTokenType:
+	case aauth.AgentTokenType:
+		server.serveAgentTokenPersonChallenge(response, request, prepared, compact)
+		return
+	case aauth.AuthTokenType:
+		if _, _, err := server.verifyPreparedAuthRequest(request, prepared, compact); err != nil {
+			writeAuthorizationProblem(response, err)
+			return
+		}
+		server.writeCredentialRequirement(response)
+		return
+	default:
+		writeAuthorizationProblem(response, &requestTokenError{
+			cause: fmt.Errorf("aauth: authorization request token typ %q is not a person token", header.Type),
+		})
+		return
+	}
+	proof, claims, err := server.verifyPreparedPersonRequest(request, prepared, compact)
 	if err != nil {
 		writeAuthorizationProblem(response, err)
 		return
 	}
 	if err := aauth.ValidatePersonTokenContext(claims, server.issuer, proof.PublicKey()); err != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_person_token", err)
+		writeAuthorizationProblem(response, &requestTokenError{cause: err})
 		return
 	}
 	var input struct {
@@ -111,7 +149,7 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 			account = cloneAuthorizationAccount(ask.Account)
 		}
 	}
-	compact, err := server.issueAuthorizationResourceToken(
+	resourceToken, err := server.issueAuthorizationResourceToken(
 		request, proof.VerifiedAt(), proof.PublicKey(), claims, scopes, account, operations, budgetOffer, loginHint,
 	)
 	if err != nil {
@@ -120,20 +158,7 @@ func (server *Server) serveAuthorization(response http.ResponseWriter, request *
 	}
 	writeJSON(response, http.StatusOK, struct {
 		ResourceToken string `json:"resource_token"`
-	}{ResourceToken: compact})
-}
-
-func (server *Server) verifyAuthorizationPersonRequest(
-	request *http.Request,
-) (signaturekey.VerifiedRequest, aauth.PersonTokenClaims, error) {
-	prepared, compact, err := server.prepareJWTRequest(
-		request,
-		authorizationSignatureComponents(server.additionalSignatureComponents),
-	)
-	if err != nil {
-		return signaturekey.VerifiedRequest{}, aauth.PersonTokenClaims{}, err
-	}
-	return server.verifyPreparedPersonRequest(request, prepared, compact)
+	}{ResourceToken: resourceToken})
 }
 
 func authorizationSignatureComponents(additional []string) []string {
