@@ -1131,6 +1131,24 @@ Auth token. This differs from **Re-authorization** after expiry or key rotation
 `agent/call_test.go:TestPollAuthTokenPreservesSignatureErrorAndAAuthProblem`,
 and `integration/revocation_reauthorization_test.go`.
 
+### Re-authorization verifies the prior auth token as of its issuance
+
+**Source:** AAuth Core, `Re-authorization`.
+
+`agent.Client.Reauthorize` replaces one Core auth token after the Agent's key
+rotated or the token expired. Either way the prior token no longer verifies
+for the current key and clock, yet it is what says which authorization to
+renew. The client therefore verifies its signature and claims as of its own
+`iat`, then asks the Resource's authorization endpoint for a fresh resource
+token for the same scope and account, presenting a person token bound to the
+current key, and submits that resource token to the Person Server the prior
+token named. It refuses a person token for another Resource, Person Server,
+person, or mission. The Resource and Person Server decide again on current
+policy, so the new scope may differ.
+
+**Executable evidence:**
+`integration/key_rotation_reauthorization_test.go:TestKeyRotationReauthorizesWithFreshResourceTokensAtThePersonServer`.
+
 ### Refused revocation caller uses `unsupported_iss`
 
 Protocol -11 (AAuth 28e8258f, Token Revocation, Errors table) answers `403
