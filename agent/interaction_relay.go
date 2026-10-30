@@ -53,9 +53,13 @@ func (result InteractionRelayResult) Fallback() (aauth.InteractionRelayDocument,
 	return cloneInteractionRelayDocument(result.fallback), true
 }
 
-// Pending returns the verified Person Server relay continuation.
+// Pending returns the verified Person Server relay continuation. A poll
+// answered with 429 or 503 also returns it, alongside Response, with the next
+// polling interval: after a 429, five seconds more than before, or the 429's
+// Retry-After when longer; after a 503, its Retry-After, or five seconds.
 func (result InteractionRelayResult) Pending() (PendingInteractionRelay, bool) {
-	if result.kind != interactionRelayResultPending || result.pending.kind != pendingInteractionRelayVerified {
+	if (result.kind != interactionRelayResultPending && result.kind != interactionRelayResultResponse) ||
+		result.pending.kind != pendingInteractionRelayVerified {
 		return PendingInteractionRelay{}, false
 	}
 	return result.pending, true
@@ -225,7 +229,18 @@ func (client *Client) interactionRelayResponse(
 		return InteractionRelayResult{}, errors.New("interaction relay response is required")
 	}
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
-		return InteractionRelayResult{kind: interactionRelayResultResponse, response: response}, nil
+		result := InteractionRelayResult{kind: interactionRelayResultResponse, response: response}
+		if prior.kind == pendingInteractionRelayVerified {
+			next := prior
+			retryAfter, err := retryPollInterval(prior.retryAfter, response, client.clock.Now())
+			if err != nil {
+				response.Body.Close()
+				return InteractionRelayResult{}, err
+			}
+			next.retryAfter = retryAfter
+			result.pending = next
+		}
+		return result, nil
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {

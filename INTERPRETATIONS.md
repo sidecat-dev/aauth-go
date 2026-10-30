@@ -278,6 +278,23 @@ it is absent. The receiver implements the explicit fallback. A present header
 must still contain one valid nonnegative delay. The contradiction remains in
 [SPEC-FEEDBACK.md](SPEC-FEEDBACK.md).
 
+## A `429` poll answer honors both the backoff and its own `Retry-After`
+
+**Source:** AAuth Core, `Polling with GET` and `Deferred Response State
+Machine`.
+
+Core requires the agent to respect `Retry-After` values and to increase its
+polling interval by five seconds on a `429`. When a `429` also carries a
+`Retry-After` longer than the increased interval, both cannot hold with an
+increase of exactly five seconds. Every agent poll keeps the larger of the
+two, so it never polls sooner than the server asked and never backs off by
+less than five seconds. A `503` takes its `Retry-After`, or five seconds when
+absent. Each poll method returns the continuation carrying that interval
+alongside the caller-owned `429` or `503` response.
+
+**Executable example:**
+`agent/poll_interval_test.go:TestEveryAgentPollAppliesTheDefaultIntervalAndLinearBackoff`.
+
 ## Parent-mediated credentials use the child key and the earlier expiry
 
 **Source:** AAuth Core, `Person Token Endpoint`, `Resource Token

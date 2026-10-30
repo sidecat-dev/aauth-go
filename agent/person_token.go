@@ -241,7 +241,10 @@ func (client *Client) verifiedPersonToken(
 
 // PollPersonToken performs exactly one signed bodyless GET for a verified
 // pending interaction. It never sleeps, loops, opens a browser, or resends the
-// original request body.
+// original request body. A 429 or 503 answer returns the same pending
+// interaction with its next polling interval: after a 429, five seconds more
+// than before, or the 429's Retry-After when longer; after a 503, its
+// Retry-After, or five seconds.
 func (client *Client) PollPersonToken(ctx context.Context, pending PendingPersonToken) (PersonTokenResult, error) {
 	const operation = "poll person token"
 	if client == nil {
@@ -292,6 +295,14 @@ func (client *Client) PollPersonToken(ctx context.Context, pending PendingPerson
 		return PersonTokenResult{}, fail(operation, err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
+		next := pending
+		next.retryAfter, err = retryPollInterval(pending.retryAfter, response, client.clock.Now())
+		if err != nil {
+			return PersonTokenResult{}, fail(operation, err)
+		}
+		return PersonTokenResult{kind: personTokenResultPending, pending: next}, nil
+	}
 	input := PersonTokenRequest{
 		PersonServer: pending.personServer, Resource: pending.resource, MissionS256: pending.missionS256,
 	}

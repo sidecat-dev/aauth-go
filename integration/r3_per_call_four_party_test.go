@@ -633,9 +633,13 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 	descriptionsBeforePoll, presentationsBeforePoll := adapterCounts("held-a")
 	installResource()
 	before = traffic.count()
-	heldResponse, err := agent.PollR3Call(ctx, clientagent.R3Poll{Pending: pendingA, AuthToken: heldAuthToken})
+	heldResponseResult, err := agent.PollR3Call(ctx, clientagent.R3Poll{Pending: pendingA, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
+	}
+	heldResponse, ok := heldResponseResult.Response()
+	if !ok {
+		t.Fatal("held poll returned no response")
 	}
 	heldBody := readAndCloseR3PerCallResponse(t, heldResponse)
 	pollTraffic := requireSingleR3PerCallTraffic(t, traffic.since(before), resourceID, http.MethodGet, strings.TrimPrefix(pendingA.Location(), resourceID))
@@ -651,9 +655,13 @@ func testR3PerCallFourPartyJourney(t *testing.T, registry r3.Registry, vocabular
 
 	installResource()
 	before = traffic.count()
-	heldReplay, err := agent.PollR3Call(ctx, clientagent.R3Poll{Pending: pendingA, AuthToken: heldAuthToken})
+	heldReplayResult, err := agent.PollR3Call(ctx, clientagent.R3Poll{Pending: pendingA, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
+	}
+	heldReplay, ok := heldReplayResult.Response()
+	if !ok {
+		t.Fatal("held poll returned no response")
 	}
 	heldReplayBody := readAndCloseR3PerCallResponse(t, heldReplay)
 	requireSingleR3PerCallTraffic(t, traffic.since(before), resourceID, http.MethodGet, strings.TrimPrefix(pendingA.Location(), resourceID))

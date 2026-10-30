@@ -376,17 +376,9 @@ func (client *Client) PollMissionProposal(ctx context.Context, pending PendingMi
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
 		next := pending
-		if response.StatusCode == http.StatusTooManyRequests {
-			if next.retryAfter > time.Duration(math.MaxInt64)-5*time.Second {
-				return MissionProposalResult{}, fail(operation, errors.New("poll retry interval overflows"))
-			}
-			next.retryAfter += 5 * time.Second
-		} else {
-			retryAfter, err := parseHTTPRetryAfter(response.Header.Values("Retry-After"), client.clock.Now())
-			if err != nil {
-				return MissionProposalResult{}, fail(operation, err)
-			}
-			next.retryAfter = retryAfter
+		next.retryAfter, err = retryPollInterval(pending.retryAfter, response, client.clock.Now())
+		if err != nil {
+			return MissionProposalResult{}, fail(operation, err)
 		}
 		return MissionProposalResult{kind: missionProposalPending, pending: next}, nil
 	}

@@ -708,7 +708,7 @@ func TestPollResourceSessionRejectsChangedInteractionAndSurfacesTerminalStatuses
 	}
 }
 
-func TestPollResourceSessionReturnsRetryableResponsesRaw(t *testing.T) {
+func TestPollResourceSessionReturnsRetryableResponsesWithNextInterval(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 		status := status
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -723,7 +723,7 @@ func TestPollResourceSessionReturnsRetryableResponsesRaw(t *testing.T) {
 					return resourceSessionMetadataResponseWithComponents(request, protocol.resourceID, nil), nil
 				case protocol.resourceID + "/records":
 					verifyProofWithComponents(t, request, protocol.resolver, protocol.clock, aauth.AgentTokenType, nil)
-					return validResourceSessionPendingResponse(request, "0", "pending", true), nil
+					return validResourceSessionPendingResponse(request, "7", "pending", true), nil
 				case protocol.resourceID + resourceSessionLocation:
 					pollCalls++
 					verifyProof(t, request, protocol.resolver, protocol.clock, aauth.AgentTokenType)
@@ -766,8 +766,15 @@ func TestPollResourceSessionReturnsRetryableResponsesRaw(t *testing.T) {
 			if !ok || response != returned || response.StatusCode != status || response.Header.Get("Retry-After") != "11" {
 				t.Fatalf("retryable response = %#v, present = %t", response, ok)
 			}
-			if _, ok := result.Pending(); ok {
-				t.Fatal("retryable response also produced a pending handle")
+			// A 429 adds five seconds to the current seven-second interval,
+			// which already exceeds its Retry-After; a 503 takes Retry-After.
+			want := 11 * time.Second
+			if status == http.StatusTooManyRequests {
+				want = 12 * time.Second
+			}
+			next, ok := result.Pending()
+			if !ok || next.Location() != pending.Location() || next.RetryAfter() != want {
+				t.Fatalf("retryable pending = %q after %s, present = %t; want %s", next.Location(), next.RetryAfter(), ok, want)
 			}
 			replacement, ok := result.Session()
 			if !ok || replacement.Resource() != protocol.resourceID || replacement.Token() != resourceSessionTokenTwo {

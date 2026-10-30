@@ -676,13 +676,20 @@ func TestBeginR3CallReturnsPendingThatPollsWithoutResendingBody(t *testing.T) {
 	}
 	assertAgentR3OriginalUnchanged(t, original, body)
 
-	response, err := client.PollR3Call(context.Background(), agent.R3Poll{
+	polled, err := client.PollR3Call(context.Background(), agent.R3Poll{
 		Pending: pending, AuthToken: completionToken,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	response, ok := polled.Response()
+	if !ok {
+		t.Fatal("PollR3Call returned no response")
+	}
 	defer response.Body.Close()
+	if _, ok := polled.Pending(); ok {
+		t.Fatal("completed poll still returned a pending call")
+	}
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("poll status = %d, want %d", response.StatusCode, http.StatusOK)
 	}

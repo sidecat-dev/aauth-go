@@ -52,9 +52,14 @@ func (result InteractionQuestionResult) Answer() (aauth.InteractionAnswerDocumen
 	return cloneInteractionAnswerDocument(result.answer), true
 }
 
-// Pending returns the verified continuation when the question was deferred.
+// Pending returns the verified continuation when the question was deferred. A
+// poll answered with 429 or 503 also returns it, alongside Response, with the
+// next polling interval: after a 429, five seconds more than before, or the
+// 429's Retry-After when longer; after a 503, its Retry-After, or five
+// seconds.
 func (result InteractionQuestionResult) Pending() (PendingInteractionQuestion, bool) {
-	if result.kind != interactionQuestionResultPending || result.pending.kind != pendingInteractionQuestionVerified {
+	if (result.kind != interactionQuestionResultPending && result.kind != interactionQuestionResultResponse) ||
+		result.pending.kind != pendingInteractionQuestionVerified {
 		return PendingInteractionQuestion{}, false
 	}
 	return result.pending, true
@@ -217,7 +222,18 @@ func (client *Client) interactionQuestionResponse(response *http.Response, perso
 		return InteractionQuestionResult{}, errors.New("interaction question response is required")
 	}
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
-		return InteractionQuestionResult{kind: interactionQuestionResultResponse, response: response}, nil
+		result := InteractionQuestionResult{kind: interactionQuestionResultResponse, response: response}
+		if prior.kind == pendingInteractionQuestionVerified {
+			next := prior
+			retryAfter, err := retryPollInterval(prior.retryAfter, response, client.clock.Now())
+			if err != nil {
+				response.Body.Close()
+				return InteractionQuestionResult{}, err
+			}
+			next.retryAfter = retryAfter
+			result.pending = next
+		}
+		return result, nil
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {

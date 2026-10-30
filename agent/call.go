@@ -469,6 +469,37 @@ func parseRetryAfter(values []string) (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
+// retryPollInterval returns the polling interval that follows a 429 or 503
+// answer to a poll. A 429 increases the current interval by five seconds, or
+// to the response's Retry-After when that is longer. A 503 takes the
+// response's Retry-After, or the five-second default when the header is
+// absent. An HTTP-date is rounded up to whole seconds, so the interval never
+// polls sooner than the server asked and remains representable in a snapshot.
+func retryPollInterval(current time.Duration, response *http.Response, now time.Time) (time.Duration, error) {
+	values := response.Header.Values("Retry-After")
+	retryAfter, err := parseHTTPRetryAfter(values, now)
+	if err != nil {
+		return 0, err
+	}
+	if fraction := retryAfter % time.Second; fraction != 0 {
+		if retryAfter > time.Duration(math.MaxInt64)-time.Second {
+			return 0, errors.New("poll retry interval overflows")
+		}
+		retryAfter += time.Second - fraction
+	}
+	if response.StatusCode != http.StatusTooManyRequests {
+		return retryAfter, nil
+	}
+	if current > time.Duration(math.MaxInt64)-5*time.Second {
+		return 0, errors.New("poll retry interval overflows")
+	}
+	next := current + 5*time.Second
+	if len(values) == 0 {
+		return next, nil
+	}
+	return max(next, retryAfter), nil
+}
+
 func hasNoStore(values []string) bool {
 	for _, value := range values {
 		for _, directive := range strings.Split(value, ",") {
@@ -587,43 +618,69 @@ func (client *Client) validateResourceTokenContext(
 	return nil
 }
 
+// AuthTokenPollResult is the caller-owned response to one auth-token poll.
+// When the Resource still holds the invocation (202 naming the same pending
+// URL), asks the agent to slow down (429), or is temporarily unavailable
+// (503), Pending also returns the held invocation with its next polling
+// interval.
+type AuthTokenPollResult struct {
+	response *http.Response
+	pending  PendingAuthTokenCall
+}
+
+// Response returns the poll response. The caller owns its body.
+func (result AuthTokenPollResult) Response() (*http.Response, bool) {
+	return result.response, result.response != nil
+}
+
+// Pending returns the held invocation to poll again, when the response did
+// not end it. Its interval is the 202's Retry-After, or five seconds when
+// absent; after a 429, five seconds more than before, or the 429's
+// Retry-After when longer; after a 503, its Retry-After, or five seconds.
+func (result AuthTokenPollResult) Pending() (PendingAuthTokenCall, bool) {
+	if result.pending.kind != pendingAuthTokenCallVerified {
+		return PendingAuthTokenCall{}, false
+	}
+	return result.pending, true
+}
+
 // PollAuthToken presents one locally verified auth token in one signed GET to
 // the trusted pending URL. It does not sleep, retry, exchange, or resend the
 // original invocation.
-func (client *Client) PollAuthToken(ctx context.Context, input AuthTokenPoll) (*http.Response, error) {
+func (client *Client) PollAuthToken(ctx context.Context, input AuthTokenPoll) (AuthTokenPollResult, error) {
 	const operation = "poll auth token"
 	if client == nil {
-		return nil, fail(operation, errors.New("client is required"))
+		return AuthTokenPollResult{}, fail(operation, errors.New("client is required"))
 	}
 	if ctx == nil {
-		return nil, fail(operation, errors.New("context is required"))
+		return AuthTokenPollResult{}, fail(operation, errors.New("context is required"))
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fail(operation, err)
+		return AuthTokenPollResult{}, fail(operation, err)
 	}
 	if input.Pending.kind != pendingAuthTokenCallVerified {
-		return nil, fail(operation, errors.New("pending auth-token call is required"))
+		return AuthTokenPollResult{}, fail(operation, errors.New("pending auth-token call is required"))
 	}
 	if input.AuthToken == "" {
-		return nil, fail(operation, errors.New("auth token is required"))
+		return AuthTokenPollResult{}, fail(operation, errors.New("auth token is required"))
 	}
 	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
-		return nil, fail(operation, err)
+		return AuthTokenPollResult{}, fail(operation, err)
 	}
 	if input.Pending.resourceClaims.AgentJKT != thumbprint {
-		return nil, fail(operation, errors.New("pending resource token does not match client signing key"))
+		return AuthTokenPollResult{}, fail(operation, errors.New("pending resource token does not match client signing key"))
 	}
 	authClaims, err := client.verifyAuthTokenForResource(ctx, input.AuthToken, input.Pending.resourceClaims)
 	if err != nil {
-		return nil, fail(operation, err)
+		return AuthTokenPollResult{}, fail(operation, err)
 	}
 	if !sameScopeSet(strings.Fields(authClaims.Scope), strings.Fields(input.Pending.resourceClaims.Scope)) {
-		return nil, fail(operation, errors.New("auth-token scope does not exactly match held resource-token scope"))
+		return AuthTokenPollResult{}, fail(operation, errors.New("auth-token scope does not exactly match held resource-token scope"))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, input.Pending.location, nil)
 	if err != nil {
-		return nil, fail(operation, err)
+		return AuthTokenPollResult{}, fail(operation, err)
 	}
 	if err := signaturekey.SignJWTRequestWithOptions(
 		request,
@@ -632,32 +689,64 @@ func (client *Client) PollAuthToken(ctx context.Context, input AuthTokenPoll) (*
 		client.clock,
 		signaturekey.SignOptions{},
 	); err != nil {
-		return nil, fail(operation, err)
+		return AuthTokenPollResult{}, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return nil, fail(operation, err)
+		return AuthTokenPollResult{}, fail(operation, err)
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		response.Body.Close()
-		return nil, fail(operation, authTokenResponseFailure(response))
+		return AuthTokenPollResult{}, fail(operation, authTokenResponseFailure(response))
 	}
 	if response.StatusCode == http.StatusAccepted || response.StatusCode == http.StatusTooManyRequests ||
 		response.StatusCode == http.StatusServiceUnavailable {
-		return response, nil
+		next := input.Pending
+		interval, held, err := nextHeldPollInterval(input.Pending.location, input.Pending.retryAfter, response, client.clock.Now())
+		if err != nil {
+			response.Body.Close()
+			return AuthTokenPollResult{}, fail(operation, err)
+		}
+		if !held {
+			return AuthTokenPollResult{response: response}, nil
+		}
+		next.retryAfter = interval
+		return AuthTokenPollResult{response: response, pending: next}, nil
 	}
 	if isProblemResponse(response) {
 		problem, isAAuth, err := inspectAAuthProblem(response)
 		if err != nil {
 			response.Body.Close()
-			return nil, fail(operation, err)
+			return AuthTokenPollResult{}, fail(operation, err)
 		}
 		if isAAuth {
 			response.Body.Close()
-			return nil, fail(operation, problem)
+			return AuthTokenPollResult{}, fail(operation, problem)
 		}
 	}
-	return response, nil
+	return AuthTokenPollResult{response: response}, nil
+}
+
+// nextHeldPollInterval returns the interval before the next poll of a
+// Resource-held invocation: a 202's Retry-After or the five-second default,
+// or the retry interval of a 429 or 503. A 202 that names another pending URL
+// is the held application's own deferred result, not this invocation still
+// pending, so it reports false and the caller continues that operation.
+func nextHeldPollInterval(
+	location string,
+	current time.Duration,
+	response *http.Response,
+	now time.Time,
+) (time.Duration, bool, error) {
+	if response.StatusCode != http.StatusAccepted {
+		interval, err := retryPollInterval(current, response, now)
+		return interval, err == nil, err
+	}
+	if next, err := parsePendingLocation(response); err != nil || next != location {
+		return 0, false, nil
+	}
+	interval, err := parseRetryAfter(response.Header.Values("Retry-After"))
+	return interval, err == nil, err
 }
 
 // Do verifies an auth token for the exact request resource, signs that request,

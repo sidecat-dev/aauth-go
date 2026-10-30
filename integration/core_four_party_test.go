@@ -498,10 +498,11 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	// before replay. The invocation and its result belong to the host store,
 	// not one in-process Server value.
 	network.Handle(resourceID, newHeldResource().Handler())
-	heldResponse, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
+	heldResponseResult, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
 	}
+	heldResponse, _ := heldResponseResult.Response()
 	heldBody, err := io.ReadAll(heldResponse.Body)
 	heldResponse.Body.Close()
 	if err != nil {
@@ -512,10 +513,11 @@ func TestCurrentCoreFourParty(t *testing.T) {
 	}
 
 	network.Handle(resourceID, newHeldResource().Handler())
-	replayed, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
+	replayedResult, err := reader.PollAuthToken(ctx, clientagent.AuthTokenPoll{Pending: pending, AuthToken: heldAuthToken})
 	if err != nil {
 		t.Fatal(err)
 	}
+	replayed, _ := replayedResult.Response()
 	replayedBody, err := io.ReadAll(replayed.Body)
 	replayed.Body.Close()
 	if err != nil {
