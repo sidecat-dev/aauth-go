@@ -753,6 +753,38 @@ person token endpoint, and verifiers discover keys from `iss` and `dwk`. The
 HTML scan treats the page as untrusted input, reads at most 1 MiB, and uses
 only absolute targets.
 
+## Verify a signed request after a delay
+
+A role handler verifies each request as it arrives, within the signature
+window. A batch pipeline or a store-and-forward hop first sees a signed
+request later. Set `VerifyOptions.MaxDelay` to the delay you accept; the signed
+`created` is then the anchor, and any token presented with the request must
+have been valid at that instant:
+
+```go
+prepared, err := signaturekey.PrepareRequest(stored, clock, signaturekey.VerifyOptions{
+	MaxDelay: 24 * time.Hour,
+})
+// handle err
+compact, _ := prepared.Credential().JWT()
+claims, err := aauth.VerifyAgentToken(ctx, compact, keys, aauth.ClockFunc(prepared.ValidAt))
+// handle err, then prepared.CheckIssuedAt and prepared.Verify(claims.Confirmation.JWK)
+```
+
+`created` may be up to `MaxDelay` old, but not further ahead of your clock than
+the signature window (`clock_skew`). A signature whose `expires` has passed is
+refused whatever the delay. Your key resolver must still hold the issuer keys
+that were current at `created`.
+
+To refuse a request presented twice, keep one `signaturekey.ReplayCache` per
+verifier and call `cache.Check(proof)` after verifying. It keys each entry by
+the signing key's thumbprint, `created`, method, authority and path, and holds
+it until `created` plus `proof.MaxAge()`: the signature window online, or the
+whole delay a delayed verifier accepts. A repeat is `invalid_signature`. A full
+cache returns `ErrReplayCacheFull` rather than forget an entry early. Two
+requests from one key to the same path in the same second share a tuple, so
+only use the cache where that cannot happen legitimately.
+
 ## Verify other Signature-Key schemes
 
 The role handlers accept the Signature-Key schemes their protocol step needs,

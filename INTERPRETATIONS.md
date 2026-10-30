@@ -2101,3 +2101,28 @@ the links it found, with where it found them, to `ResolveResourceLink`.
 
 **Evidence:** `resource_link_test.go` and
 `integration/resource_link_test.go`.
+
+## A delayed verifier's bound and replay span come from its own options
+
+**Source:** Protocol `70d6737`, Freshness and Replay (lines 2268-2274) and
+Verification (Server), step 3 (lines 2240-2254).
+
+The draft lets a verifier that first sees a signed artifact after a delay
+anchor on `created`, verify the presented token at `created`, and choose how
+much delay it accepts, and it requires such a verifier's replay cache to span
+that delay. It does not say how the delay relates to the signature window or to
+`expires`. `VerifyOptions.MaxDelay` is the accepted delay. A request may then be
+up to the larger of `MaxDelay` and the window old; `created` further ahead than
+the window is still `clock_skew`; and `expires` is judged at the time of
+verification, because the draft's rule to reject a past `expires` has no
+exception. `ValidAt` is `created` for a delayed verifier, and `CheckIssuedAt`
+judges a token's `iat` against it. `ReplayCache` keys entries by the tuple the
+draft names, `(signing-key thumbprint, created, @method, @authority, @path)`,
+and holds each until `created` plus the request's own `MaxAge`, so its span
+follows the verifier's options rather than a separate setting. A replay is
+`invalid_signature`, the code the Signature-Key draft gives a replayed
+`created`. A full cache refuses with `ErrReplayCacheFull` rather than evict an
+entry whose span has not ended.
+
+**Evidence:** `signaturekey/freshness_external_test.go` and
+`freshness_external_test.go`.

@@ -48,6 +48,15 @@ type SignOptions struct {
 // unsupported_algorithm, and that error names exactly this list for
 // Accept-Signature-Alg. ES256, ES384, RS256, and PS256 apply to hwk and x509
 // keys; JWT-carried and discovered keys use the Ed25519 profile.
+//
+// MaxDelay makes the verifier a delayed one, such as a batch pipeline or a
+// store-and-forward hop that first sees a signed request after it was made.
+// Zero is an online verifier: created must lie within SignatureWindow of the
+// verification time. A positive MaxDelay is the created-to-verification skew
+// the verifier accepts: created may be up to the larger of MaxDelay and
+// SignatureWindow old, and tokens presented with the request are judged at
+// created (see ValidAt). A created further ahead than SignatureWindow is
+// clock_skew either way, and expires is always judged at the verification time.
 type VerifyOptions struct {
 	RequiredComponents     []string
 	RequireExactComponents bool
@@ -55,6 +64,7 @@ type VerifyOptions struct {
 	AcceptedAlgorithms     []string
 	SignatureLabel         string
 	SignatureWindow        time.Duration
+	MaxDelay               time.Duration
 	MaxBodyBytes           int64
 }
 
@@ -71,6 +81,8 @@ type PreparedRequest struct {
 	created     time.Time
 	verifiedAt  time.Time
 	window      time.Duration
+	maxAge      time.Duration
+	delayed     bool
 	method      string
 	authority   string
 	path        string
@@ -88,6 +100,8 @@ type VerifiedRequest struct {
 	created    time.Time
 	verifiedAt time.Time
 	window     time.Duration
+	maxAge     time.Duration
+	delayed    bool
 	method     string
 	authority  string
 	path       string
@@ -478,13 +492,17 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	if window < 0 {
 		return prepared, newError(ErrorInvalidRequest, errors.New("aauth: signature window must not be negative"))
 	}
+	if options.MaxDelay < 0 {
+		return prepared, newError(ErrorInvalidRequest, errors.New("aauth: maximum signature delay must not be negative"))
+	}
+	maxAge := max(window, options.MaxDelay)
 	createdAt := time.Unix(created, 0)
 	age := verifiedAt.Sub(createdAt)
 	if age < -window {
 		return prepared, newError(ErrorClockSkew, errors.New("aauth: signature created time is ahead of the validity window"))
 	}
-	if age > window {
-		return prepared, newError(ErrorInvalidSignature, errors.New("aauth: signature created time is older than the validity window"))
+	if age > maxAge {
+		return prepared, newError(ErrorInvalidSignature, errors.New("aauth: signature created time is older than the verifier accepts"))
 	}
 	if expires != nil && !time.Unix(*expires, 0).After(verifiedAt) {
 		return prepared, newError(ErrorInvalidSignature, errors.New("aauth: signature expires time is in the past"))
@@ -582,6 +600,8 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		created:     createdAt,
 		verifiedAt:  verifiedAt,
 		window:      window,
+		maxAge:      maxAge,
+		delayed:     options.MaxDelay > 0,
 		method:      request.Method,
 		authority:   authority,
 		path:        path,
@@ -607,11 +627,19 @@ func (prepared PreparedRequest) VerifiedAt() time.Time { return prepared.verifie
 // during preparation.
 func (prepared PreparedRequest) SignatureWindow() time.Duration { return prepared.window }
 
-// CheckIssuedAt judges a request-carried JWT iat against the captured
-// verification time and effective signature window. An iat further ahead than
-// the window is clock_skew.
+// ValidAt returns the instant at which a token presented with this request
+// must be valid: the verification time for an online verifier, and the signed
+// created for a delayed one (VerifyOptions.MaxDelay). Verify such a token with
+// a clock that returns this instant.
+func (prepared PreparedRequest) ValidAt() time.Time {
+	return validAt(prepared.delayed, prepared.created, prepared.verifiedAt)
+}
+
+// CheckIssuedAt judges a request-carried JWT iat against ValidAt and the
+// effective signature window. An iat further ahead than the window is
+// clock_skew.
 func (prepared PreparedRequest) CheckIssuedAt(issuedAt time.Time) error {
-	return checkIssuedAt(issuedAt, prepared.verifiedAt, prepared.window)
+	return checkIssuedAt(issuedAt, prepared.ValidAt(), prepared.window)
 }
 
 // Verify verifies the prepared HTTP Message Signature with the selected key.
@@ -677,6 +705,8 @@ func (prepared PreparedRequest) verifyWithKey(key jose.JWK) (VerifiedRequest, er
 		created:    prepared.created,
 		verifiedAt: prepared.verifiedAt,
 		window:     prepared.window,
+		maxAge:     prepared.maxAge,
+		delayed:    prepared.delayed,
 		method:     prepared.method,
 		authority:  prepared.authority,
 		path:       prepared.path,
@@ -744,11 +774,30 @@ func (verified VerifiedRequest) Path() string          { return verified.path }
 // when the request was prepared.
 func (verified VerifiedRequest) SignatureWindow() time.Duration { return verified.window }
 
-// CheckIssuedAt judges a request-carried JWT iat against the captured
-// verification time and effective signature window. An iat further ahead than
-// the window is clock_skew.
+// ValidAt returns the instant at which a token presented with this request
+// must be valid; see PreparedRequest.ValidAt.
+func (verified VerifiedRequest) ValidAt() time.Time {
+	return validAt(verified.delayed, verified.created, verified.verifiedAt)
+}
+
+// MaxAge returns how old created could be when this request was accepted: the
+// signature window for an online verifier, or the larger of it and MaxDelay
+// for a delayed one. A replay cache must hold the request at least this long
+// after created.
+func (verified VerifiedRequest) MaxAge() time.Duration { return verified.maxAge }
+
+// CheckIssuedAt judges a request-carried JWT iat against ValidAt and the
+// effective signature window. An iat further ahead than the window is
+// clock_skew.
 func (verified VerifiedRequest) CheckIssuedAt(issuedAt time.Time) error {
-	return checkIssuedAt(issuedAt, verified.verifiedAt, verified.window)
+	return checkIssuedAt(issuedAt, verified.ValidAt(), verified.window)
+}
+
+func validAt(delayed bool, created, verifiedAt time.Time) time.Time {
+	if delayed && !verifiedAt.IsZero() {
+		return created
+	}
+	return verifiedAt
 }
 
 func checkIssuedAt(issuedAt, verifiedAt time.Time, window time.Duration) error {
