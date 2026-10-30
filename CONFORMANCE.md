@@ -13,6 +13,29 @@ auth-token requirement. It is not a complete implementation of AAuth Core,
 HTTP Signature Keys, or the companion drafts. It does not claim official or
 certified status.
 
+Changes on 2026-10-30. A review of the MUST-level rows against the pinned
+drafts found these behaviors failing, and they now conform:
+
+- `/authorize` with no person token answers the `401` person-token challenge,
+  and a person token that fails verification is `401` with `Signature-Error`.
+- A request missing a signature header is `invalid_signature`.
+- Unrecognized `AAuth-Capabilities` parameters of any RFC 9651 type are ignored.
+- On the four-party path the PS rechecks presented-token expiry after consent.
+- The PS records which Access Server each person token was presented to.
+- The PS ends a person-token interaction after three failed codes.
+- The key resolver refuses private, loopback and link-local destinations and
+  connects only to the address it checked.
+- Agent polls back off on `429` and honor `Retry-After` on `503`.
+  `Reauthorize` obtains a fresh resource token after a key rotation; the host
+  calls it.
+- Mission data no longer carries the `approver` member the draft removed.
+- Call chaining accepts an upstream person token.
+
+Still open: chaining an upstream auth token issued by an Access Server, which
+needs four-party call chaining. Also open: about ten agent flows that do not
+yet poll a `202` response, among them R3 and call-chain exchanges, mission
+update and completion, `/authorize`, sub-agents, events, audit and bootstrap.
+
 For a first integration, start with [Use it in your service](USE-IN-YOUR-SERVICE.md)
 and the [glossary](GLOSSARY.md). This matrix is a bounded reference: behavior
 not stated here is not claimed.
