@@ -38,42 +38,11 @@ func (service *EventService) handlePublicSubscription(response http.ResponseWrit
 			return
 		}
 	}
-	requiredComponents := []string{"content-digest"}
-	if request.Header.Get("Content-Type") != "" {
-		requiredComponents = append([]string{"content-type"}, requiredComponents...)
-	}
-	prepared, err := signaturekey.PrepareRequest(request, service.clock, signaturekey.VerifyOptions{
-		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeJWT},
-		RequiredComponents: requiredComponents,
-		MaxBodyBytes:       service.maxRegistrationBytes,
-	})
-	if err != nil {
-		writeEventSignatureProblem(response, err)
-		return
-	}
-	compact, ok := prepared.Credential().JWT()
+	verified, ok := service.verifySubscribeRegistration(response, request)
 	if !ok {
-		writeEventSignatureProblem(response, errors.New("resource: subscribe-token JWT is required"))
 		return
 	}
-	claims, err := events.VerifySubscribeToken(request.Context(), compact, service.keyResolver, service.clock)
-	if err != nil {
-		writeEventSignatureProblem(response, err)
-		return
-	}
-	proof, err := prepared.Verify(claims.Confirmation.JWK)
-	if err != nil {
-		writeEventSignatureProblem(response, err)
-		return
-	}
-	if request.Header.Get("Content-Type") == "" && len(proof.ExactBody()) > 0 {
-		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", errors.New("resource: nonempty subscription parameters require content-type"))
-		return
-	}
-	if err := events.ValidateSubscribeRegistration(claims, service.issuer, proof.PublicKey()); err != nil {
-		httpapi.WriteProblem(response, http.StatusForbidden, "event_subscription_denied", err)
-		return
-	}
+	compact, claims, proof := verified.compact, verified.claims, verified.proof
 	decision, err := service.registerPublic(request.Context(), PublicSubscriptionRequest{
 		Token: claims, Parameters: proof.ExactBody(), ContentType: request.Header.Get("Content-Type"),
 		VerifiedAt: proof.VerifiedAt(),
@@ -115,6 +84,69 @@ func (service *EventService) handlePublicSubscription(response http.ResponseWrit
 	response.WriteHeader(http.StatusOK)
 }
 
+// subscribeRegistration is one verified registration request and its
+// subscribe token.
+type subscribeRegistration struct {
+	compact string
+	claims  events.SubscribeTokenClaims
+	proof   signaturekey.VerifiedRequest
+}
+
+// verifySubscribeRegistration verifies one signed registration request and
+// its subscribe token as Events Subscribe Token Verification requires: the
+// token's type, discovery document, signature and expiry; its aud against
+// this Resource; its cnf.jwk as the key that signed the request; and a
+// nonempty eid. Every failure is answered 401 with Signature-Error, and false
+// means the response was written.
+func (service *EventService) verifySubscribeRegistration(
+	response http.ResponseWriter,
+	request *http.Request,
+) (subscribeRegistration, bool) {
+	// A request with content must cover content-digest; PrepareRequest adds
+	// that requirement. A signed Content-Type is required whenever one is sent.
+	var requiredComponents []string
+	if request.Header.Get("Content-Type") != "" {
+		requiredComponents = []string{"content-type"}
+	}
+	prepared, err := signaturekey.PrepareRequest(request, service.clock, signaturekey.VerifyOptions{
+		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeJWT},
+		RequiredComponents: requiredComponents,
+		MaxBodyBytes:       service.maxRegistrationBytes,
+	})
+	if err != nil {
+		writeEventSignatureProblem(response, err)
+		return subscribeRegistration{}, false
+	}
+	compact, ok := prepared.Credential().JWT()
+	if !ok {
+		writeSubscribeTokenProblem(response, errors.New("resource: subscribe-token JWT is required"))
+		return subscribeRegistration{}, false
+	}
+	claims, err := events.VerifySubscribeToken(request.Context(), compact, service.keyResolver, service.clock)
+	if err != nil {
+		writeSubscribeTokenProblem(response, err)
+		return subscribeRegistration{}, false
+	}
+	proof, err := prepared.Verify(claims.Confirmation.JWK)
+	if err != nil {
+		writeEventSignatureProblem(response, err)
+		return subscribeRegistration{}, false
+	}
+	if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
+		writeEventSignatureProblem(response, err)
+		return subscribeRegistration{}, false
+	}
+	if request.Header.Get("Content-Type") == "" && len(proof.ExactBody()) > 0 {
+		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", errors.New("resource: nonempty subscription parameters require content-type"))
+		return subscribeRegistration{}, false
+	}
+	if err := events.ValidateSubscribeRegistration(claims, service.issuer, proof.PublicKey()); err != nil {
+		writeSubscribeTokenProblem(response, err)
+		return subscribeRegistration{}, false
+	}
+	return subscribeRegistration{compact: compact, claims: claims, proof: proof}, true
+}
+
 func eventRegistrationSHA256(compactToken, contentType string, parameters []byte) [sha256.Size]byte {
 	digest := sha256.New()
 	_, _ = digest.Write([]byte(compactToken))
@@ -148,5 +180,13 @@ func requestTargetsEndpoint(request *http.Request, endpoint *url.URL) bool {
 
 func writeEventSignatureProblem(response http.ResponseWriter, err error) {
 	failure := signaturekey.NormalizeError(err, signaturekey.ErrorInvalidSignature)
+	httpapi.WriteProblem(response, http.StatusUnauthorized, string(failure.Code), failure)
+}
+
+// writeSubscribeTokenProblem answers a subscribe token that fails
+// verification: 401 with Signature-Error invalid_jwt unless the failure names
+// a more specific code, such as expired_jwt or unknown_key.
+func writeSubscribeTokenProblem(response http.ResponseWriter, err error) {
+	failure := signaturekey.NormalizeError(err, signaturekey.ErrorInvalidJWT)
 	httpapi.WriteProblem(response, http.StatusUnauthorized, string(failure.Code), failure)
 }

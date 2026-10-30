@@ -335,16 +335,19 @@ The current `events` package owns reusable token and delivery semantics shared
 by public and protected subscription paths:
 
 - AP metadata extension.
-- Subscribe and Event token types and validation.
+- Subscribe and Event token types and validation, including the `body_s256`
+  binding between an Event token and its delivery body.
 - Exact token, signed-content-type, and payload delivery identity.
 - Agent-side event verification and duplicate identity.
+- The AsyncAPI `aauth_subscribe` security-scheme declaration check.
 
 Role packages own registration, subscription, use-limit, and delivery state.
 The Resource role separately owns the protected ticket because the source
 defines it as opaque and Resource-controlled; its store contract atomically
 consumes that ticket with registration. The package does not define AP-to-Agent
 transport or automatically validate payloads against AsyncAPI. A complete
-Events-specific AsyncAPI discovery surface is not implemented.
+Events-specific AsyncAPI discovery surface is not implemented; a Resource can
+serve one validated AsyncAPI document through its Events service.
 
 ### Bootstrap and interoperability
 

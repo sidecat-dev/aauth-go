@@ -566,6 +566,72 @@ sub-agent call chaining, and no cascade from an Agent-token revocation to the
 child's credentials. See [CONFORMANCE.md](CONFORMANCE.md) and
 [the interpretations](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery).
 
+## Deliver events to an Agent
+
+AAuth Events lets a Resource notify an Agent that has no public URL: the
+Resource posts to the Agent Provider (AP), which holds the event for the Agent.
+[`example/events`](example/events) runs the whole path in one process.
+
+**Agent Provider.** Set `agentprovider.Config.Events` to publish
+`event_endpoint` (an HTTPS URL) in `/.well-known/aauth-agent.json` and to serve
+the inbox there. `Server.IssueSubscribeToken` retains the subscription and
+then returns the token. The inbox verifies each delivery and answers as Events
+requires: `401` with `Signature-Error` for a token or proof failure, including
+a body that does not match the token's `body_s256`; `403` for a Resource
+other than the subscribed one; `404` for an unknown, inactive, or exhausted
+subscription; and `202` only after your `EventInboxStore` retains the exact
+token and body. Check your store with `agentprovider/storetest.RunEventInbox`.
+Your own transport then hands the retained token and body bytes to the Agent
+unchanged; Events leaves that mechanism to you.
+
+**Resource.** `resource.NewEventService` returns the service, `eventService`
+below, that serves subscription registration and prepares and sends events:
+
+```go
+prepared, err := eventService.PrepareEvent(ctx, resource.EventInput{
+	AgentProvider: subscription.AgentProvider, EventID: subscription.EventID,
+	ContentType: "application/json", Payload: body, Lifetime: 5 * time.Minute,
+})
+if err != nil {
+	return err
+}
+result, err := eventService.DeliverEvent(ctx, prepared)
+```
+
+The Event token's `eid` and `aud` come from the registration, and a nonempty
+`Payload` sets `body_s256`. `DeliverEvent` resolves the AP's current
+`event_endpoint`, admits it through `AdmitEventEndpoint`, and reports
+`RemainingUses` for a bounded subscription. To publish your AsyncAPI document,
+set `EventServiceConfig.AsyncAPIDocument` and mount `AsyncAPIHandler`; the
+service refuses a document that does not declare the `aauth_subscribe`
+security scheme (`type: http`, `scheme: aauth-subscribe`).
+`events.ValidateAsyncAPIDocument` applies the same check to a document you
+serve yourself.
+
+For a protected channel, call `IssueProtectedSubscriptionTicket` while serving
+a request you verified with a person token or auth token, and pass that
+token's key:
+
+```go
+principal, _ := resource.AuthPrincipalFromContext(request.Context())
+ticket, err := eventService.IssueProtectedSubscriptionTicket(request.Context(), resource.ProtectedSubscriptionTicketRequest{
+	ConfirmationKey: principal.Confirmation,
+	Context:         []byte(`{"appointment":"a-17"}`),
+	Lifetime:        2 * time.Minute,
+})
+```
+
+The ticket records that key's JWK Thumbprint. Only a subscribe token whose
+`cnf.jwk` has the same thumbprint can register at `ticket.URL`, once and
+before it expires. Check your store with `resource/storetest.RunProtectedEvents`.
+
+**Agent.** `Client.RegisterPublicSubscription` and
+`Client.RegisterProtectedSubscription` present the subscribe token.
+`Client.AcceptEvent` takes the token and body your AP transport delivered, and
+refuses an expired token, an `aud` other than the Agent's own identifier, and a
+body that does not match `body_s256`. Act on an event only after it returns
+without error and with `Duplicate` false.
+
 ## Use in-memory stores in examples and tests
 
 `testutil` provides concurrency-safe stores for examples, tests and local
@@ -609,8 +675,9 @@ store also implements the optional `personserver.AuthorizationClarificationStore
 extension, which the Person Server discovers when configured with the store.
 
 Durable adapters must satisfy the
-[Resource](resource/storetest), [Access Server](accessserver/storetest) and [Person Server](personserver/storetest)
-contracts and the [R3 issuance contract](r3/storetest).
+[Resource](resource/storetest), [Access Server](accessserver/storetest), [Person Server](personserver/storetest)
+and [Agent Provider](agentprovider/storetest) contracts and the
+[R3 issuance contract](r3/storetest).
 The public mission fixture exposes `LoadAuthToken` and `LoadR3Issuance` for
 the observation callbacks required by `RunMission` and `RunMissionR3Issuance`.
 Use the [public-constructor contract tests](testutil/mission_contracts_test.go)

@@ -3,6 +3,7 @@ package agent_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -72,13 +73,13 @@ func TestAgentRegistersContextBeforePublicSubscriptionAndAcceptsDistinctEvents(t
 		t.Fatal("Agent event context aliases caller memory")
 	}
 
+	firstPayload := []byte(`{"event_type":"slot.available","slot":"10:00"}`)
 	firstToken, err := events.MintEventToken(protocol.resourceID, protocol.resourceKey, events.EventTokenRequest{
-		Agent: protocol.agentID, EventID: "event-1", Lifetime: 5 * time.Minute,
+		Agent: protocol.agentID, EventID: "event-1", Payload: firstPayload, Lifetime: 5 * time.Minute,
 	}, protocol.now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstPayload := []byte(`{"event_type":"slot.available","slot":"10:00"}`)
 	first, err := client.AcceptEvent(context.Background(), agent.EventDeliveryInput{
 		EventToken: firstToken, Payload: firstPayload, ContentType: "application/json",
 	})
@@ -100,13 +101,13 @@ func TestAgentRegistersContextBeforePublicSubscriptionAndAcceptsDistinctEvents(t
 	}
 
 	protocol.now = protocol.now.Add(time.Second)
+	secondPayload := []byte(`{"event_type":"slot.available","slot":"11:00"}`)
 	secondToken, err := events.MintEventToken(protocol.resourceID, protocol.resourceKey, events.EventTokenRequest{
-		Agent: protocol.agentID, EventID: "event-1", Lifetime: 5 * time.Minute,
+		Agent: protocol.agentID, EventID: "event-1", Payload: secondPayload, Lifetime: 5 * time.Minute,
 	}, protocol.now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondPayload := []byte(`{"event_type":"slot.available","slot":"11:00"}`)
 	second, err := client.AcceptEvent(context.Background(), agent.EventDeliveryInput{
 		EventToken: secondToken, Payload: secondPayload, ContentType: "application/json",
 	})
@@ -158,6 +159,121 @@ func TestAgentRegistersProtectedSubscriptionAtOpaqueTicketURL(t *testing.T) {
 	}
 	if result.EventID != "event-protected" || result.Resource != protocol.resourceID || calls != 1 {
 		t.Fatalf("subscription = %#v, calls=%d", result, calls)
+	}
+}
+
+func TestAgentRefusesEventsItMustNotActOn(t *testing.T) {
+	t.Parallel()
+
+	protocol := newTestProtocol(t)
+	store := &agentEventStore{}
+	client, err := agent.New(context.Background(), agent.Config{
+		Identifier: protocol.agentID, SigningKey: protocol.agentKey,
+		AgentToken: protocol.agentToken, KeyResolver: protocol.resolver,
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+		})},
+		Clock: protocol.clock, Events: &agent.EventsConfig{Store: store},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribeToken, err := events.MintSubscribeToken(protocol.agentProviderID, protocol.agentProviderKey, events.SubscribeTokenRequest{
+		Agent: protocol.agentID, Resource: protocol.resourceID,
+		ConfirmationKey: protocol.agentKey.PublicJWK(), EventID: "event-1", Lifetime: time.Hour,
+	}, protocol.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RegisterPublicSubscription(context.Background(), agent.PublicSubscriptionInput{
+		Endpoint: protocol.resourceID + "/events/subscribe", SubscribeToken: subscribeToken,
+		Context: []byte(`{"purpose":"appointment waitlist"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"event_type":"slot.available","slot":"10:00"}`)
+	mint := func(agentID string, payload []byte, at time.Time) string {
+		t.Helper()
+		compact, err := events.MintEventToken(protocol.resourceID, protocol.resourceKey, events.EventTokenRequest{
+			Agent: agentID, EventID: "event-1", Payload: payload, Lifetime: 5 * time.Minute,
+		}, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return compact
+	}
+	tests := []struct {
+		name    string
+		input   agent.EventDeliveryInput
+		wantErr error
+	}{
+		{
+			name: "expired event token",
+			input: agent.EventDeliveryInput{
+				EventToken: mint(protocol.agentID, payload, protocol.now.Add(-5*time.Minute)), Payload: payload, ContentType: "application/json",
+			},
+		},
+		{
+			name: "audience differs only in case",
+			input: agent.EventDeliveryInput{
+				EventToken: mint("aauth:Reader@ap.example", payload, protocol.now), Payload: payload, ContentType: "application/json",
+			},
+		},
+		{
+			name: "audience names another Agent",
+			input: agent.EventDeliveryInput{
+				EventToken: mint("aauth:other@ap.example", payload, protocol.now), Payload: payload, ContentType: "application/json",
+			},
+		},
+		{
+			name: "payload altered after the Resource signed it",
+			input: agent.EventDeliveryInput{
+				EventToken: mint(protocol.agentID, payload, protocol.now),
+				Payload:    []byte(`{"event_type":"slot.available","slot":"11:00"}`), ContentType: "application/json",
+			},
+			wantErr: events.ErrEventBodyMismatch,
+		},
+		{
+			name: "declared payload not delivered",
+			input: agent.EventDeliveryInput{
+				EventToken: mint(protocol.agentID, payload, protocol.now),
+			},
+			wantErr: events.ErrEventBodyMismatch,
+		},
+		{
+			name: "payload added to a bodyless event",
+			input: agent.EventDeliveryInput{
+				EventToken: mint(protocol.agentID, nil, protocol.now), Payload: payload, ContentType: "application/json",
+			},
+			wantErr: events.ErrEventBodyMismatch,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := store.acceptedCount
+			received, err := client.AcceptEvent(context.Background(), test.input)
+			if err == nil {
+				t.Fatalf("AcceptEvent() = %#v; want refusal", received)
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("AcceptEvent() error = %v, want %v", err, test.wantErr)
+			}
+			if store.acceptedCount != before || len(received.Payload) != 0 || received.EventID != "" {
+				t.Fatalf("refused event reached the store or the caller: %#v, accepted=%d", received, store.acceptedCount)
+			}
+		})
+	}
+	accepted, err := client.AcceptEvent(context.Background(), agent.EventDeliveryInput{
+		EventToken: mint(protocol.agentID, payload, protocol.now), Payload: payload, ContentType: "application/json",
+	})
+	if err != nil || accepted.Duplicate || !bytes.Equal(accepted.Payload, payload) || store.acceptedCount != 1 {
+		t.Fatalf("verified event = %#v, %v, accepted=%d", accepted, err, store.acceptedCount)
+	}
+	bodyless, err := client.AcceptEvent(context.Background(), agent.EventDeliveryInput{
+		EventToken: mint(protocol.agentID, nil, protocol.now),
+	})
+	if err != nil || bodyless.Duplicate || len(bodyless.Payload) != 0 || store.acceptedCount != 2 {
+		t.Fatalf("verified bodyless event = %#v, %v, accepted=%d", bodyless, err, store.acceptedCount)
 	}
 }
 

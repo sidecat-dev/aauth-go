@@ -99,7 +99,7 @@ func run(output io.Writer) error {
 			EndpointPrefix: resourceID + "/events/protected/", NewTicketID: func() string { return "ticket-1" },
 			MaximumTicketLifetime: 5 * time.Minute,
 			Register: func(_ context.Context, request resource.ProtectedSubscriptionRequest) (resource.PublicSubscriptionDecision, error) {
-				if request.Ticket.Agent != agentID || string(request.Ticket.Context) != "created appointment" {
+				if string(request.Ticket.Context) != "created appointment" {
 					return resource.PublicSubscriptionDecision{}, resource.ErrEventSubscriptionDenied
 				}
 				return resource.PublicSubscriptionDecision{ExpiresAt: now.Add(24 * time.Hour)}, nil
@@ -108,6 +108,7 @@ func run(output io.Writer) error {
 		ResolveEventEndpoint: endpointResolver,
 		AdmitEventEndpoint:   network.Admit,
 		HTTPClient:           httpClient,
+		AsyncAPIDocument:     []byte(asyncAPIDocument),
 	})
 	if err != nil {
 		return err
@@ -116,6 +117,10 @@ func run(output io.Writer) error {
 	network.Handle(resourceID, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if strings.HasPrefix(request.URL.Path, "/events/protected/") {
 			eventService.ProtectedSubscriptionHandler().ServeHTTP(response, request)
+			return
+		}
+		if request.URL.Path == "/asyncapi.json" {
+			eventService.AsyncAPIHandler().ServeHTTP(response, request)
 			return
 		}
 		eventService.PublicSubscriptionHandler().ServeHTTP(response, request)
@@ -150,8 +155,11 @@ func run(output io.Writer) error {
 	}); err != nil {
 		return err
 	}
+	// A real Resource issues the ticket while serving a request it verified
+	// with a person token or auth token, binding the ticket to that token's
+	// cnf.jwk. The Agent signs with the same key here.
 	ticket, err := eventService.IssueProtectedSubscriptionTicket(ctx, resource.ProtectedSubscriptionTicketRequest{
-		Agent: agentID, Context: []byte("created appointment"), Lifetime: 2 * time.Minute,
+		ConfirmationKey: agentKey.PublicJWK(), Context: []byte("created appointment"), Lifetime: 2 * time.Minute,
 	})
 	if err != nil {
 		return err
@@ -225,6 +233,45 @@ func run(output io.Writer) error {
 	_, err = fmt.Fprintf(output, "AAuth protected event complete: %s\n", protectedReceived.Payload)
 	return err
 }
+
+// asyncAPIDocument describes the Resource's event channels. Events requires it
+// to declare the aauth_subscribe security scheme.
+const asyncAPIDocument = `{
+  "asyncapi": "3.0.0",
+  "info": {"title": "Calendar Events", "version": "1.0.0"},
+  "channels": {
+    "waitlist": {
+      "address": "/events/subscribe",
+      "messages": {"slotAvailable": {"$ref": "#/components/messages/SlotAvailable"}}
+    }
+  },
+  "operations": {
+    "subscribeWaitlist": {
+      "action": "receive",
+      "channel": {"$ref": "#/channels/waitlist"},
+      "security": [{"$ref": "#/components/securitySchemes/aauth_subscribe"}]
+    }
+  },
+  "components": {
+    "messages": {
+      "SlotAvailable": {
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {"event_type": {"type": "string", "const": "slot.available"}, "slot": {"type": "string"}},
+          "required": ["event_type"]
+        }
+      }
+    },
+    "securitySchemes": {
+      "aauth_subscribe": {
+        "type": "http",
+        "scheme": "aauth-subscribe",
+        "description": "AAuth Subscribe Token as Signature-Key JWT"
+      }
+    }
+  }
+}`
 
 func newSigningKey(id string) (jose.SigningKey, error) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)

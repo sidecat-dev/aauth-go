@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"mime"
@@ -14,12 +15,20 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
 var (
+	// ErrProtectedSubscriptionNotFound reports an unknown ticket or one bound
+	// to another key. The handler answers 404 for both.
 	ErrProtectedSubscriptionNotFound = errors.New("resource: protected subscription ticket not found")
-	ErrProtectedSubscriptionExpired  = errors.New("resource: protected subscription ticket expired")
+	// ErrProtectedSubscriptionExpired reports an unused ticket past its
+	// deadline. The handler answers 410.
+	ErrProtectedSubscriptionExpired = errors.New("resource: protected subscription ticket expired")
+	// ErrProtectedSubscriptionConflict reports a used ticket presented with a
+	// different registration, or retained state that changed. The handler
+	// answers 409.
 	ErrProtectedSubscriptionConflict = errors.New("resource: protected subscription ticket conflicts with retained state")
 )
 
@@ -41,11 +50,15 @@ type protectedSubscriptionConfig struct {
 }
 
 // ProtectedSubscriptionTicketRequest carries the verified prior interaction
-// selected by the Resource application.
+// selected by the Resource application. ConfirmationKey is the key the
+// Resource verified on that interaction: the cnf.jwk of the person token or
+// auth token it accepted (Confirmation in PersonPrincipal or AuthPrincipal).
+// The ticket is bound to that key's JWK Thumbprint, not to an Agent
+// identifier, because none of those tokens carries one.
 type ProtectedSubscriptionTicketRequest struct {
-	Agent    string
-	Context  []byte
-	Lifetime time.Duration
+	ConfirmationKey jose.JWK
+	Context         []byte
+	Lifetime        time.Duration
 }
 
 // IssuedProtectedSubscriptionTicket is the retained opaque URL and deadline.
@@ -55,11 +68,13 @@ type IssuedProtectedSubscriptionTicket struct {
 }
 
 // ProtectedSubscriptionTicket is the complete Resource-retained authorization
-// context for one opaque ticket URL.
+// context for one opaque ticket URL. KeyThumbprint is the RFC 7638 SHA-256
+// JWK Thumbprint of the key that established the ticket; only a subscribe
+// token whose cnf.jwk has the same thumbprint can use it.
 type ProtectedSubscriptionTicket struct {
 	ID                 string
 	Resource           string
-	Agent              string
+	KeyThumbprint      string
 	Context            []byte
 	CreatedAt          time.Time
 	ExpiresAt          time.Time
@@ -78,7 +93,10 @@ type ProtectedSubscriptionRequest struct {
 }
 
 // ProtectedSubscriptionStore owns tickets and Resource subscriptions in one
-// atomic boundary. Load must cloak Agent mismatch as not found. Commit must
+// atomic boundary. LoadProtectedSubscriptionTicket receives the ticket ID,
+// the JWK Thumbprint of the calling subscribe token's cnf.jwk, and the
+// verification time; it must cloak a thumbprint mismatch as not found and
+// report an unused ticket at or past its deadline as expired. Commit must
 // atomically consume an unused, unexpired expected ticket and retain the
 // candidate subscription. Load must keep a successfully used ticket available
 // after its issuance expiry so an exact retry can recover the first retained
@@ -146,8 +164,9 @@ func (service *EventService) IssueProtectedSubscriptionTicket(
 	if ctx == nil {
 		return IssuedProtectedSubscriptionTicket{}, errors.New("resource: protected ticket context is required")
 	}
-	if err := aauth.ValidateAgentIdentifier(request.Agent); err != nil {
-		return IssuedProtectedSubscriptionTicket{}, fmt.Errorf("resource: protected ticket Agent: %w", err)
+	thumbprint, err := request.ConfirmationKey.Thumbprint()
+	if err != nil {
+		return IssuedProtectedSubscriptionTicket{}, fmt.Errorf("resource: protected ticket confirmation key: %w", err)
 	}
 	if len(request.Context) == 0 {
 		return IssuedProtectedSubscriptionTicket{}, errors.New("resource: protected ticket authorization context is required")
@@ -161,7 +180,7 @@ func (service *EventService) IssueProtectedSubscriptionTicket(
 	}
 	now := service.clock.Now().UTC().Truncate(time.Second)
 	ticket := ProtectedSubscriptionTicket{
-		ID: id, Resource: service.issuer, Agent: request.Agent,
+		ID: id, Resource: service.issuer, KeyThumbprint: thumbprint,
 		Context:   append([]byte(nil), request.Context...),
 		CreatedAt: now, ExpiresAt: now.Add(request.Lifetime),
 	}
@@ -193,50 +212,34 @@ func (service *EventService) handleProtectedSubscription(response http.ResponseW
 			return
 		}
 	}
-	required := []string{"content-digest"}
-	if request.Header.Get("Content-Type") != "" {
-		required = append([]string{"content-type"}, required...)
-	}
-	prepared, err := signaturekey.PrepareRequest(request, service.clock, signaturekey.VerifyOptions{
-		AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeJWT}, RequiredComponents: required,
-		MaxBodyBytes: service.maxRegistrationBytes,
-	})
-	if err != nil {
-		writeEventSignatureProblem(response, err)
-		return
-	}
-	compact, ok := prepared.Credential().JWT()
+	verified, ok := service.verifySubscribeRegistration(response, request)
 	if !ok {
-		writeEventSignatureProblem(response, errors.New("resource: subscribe-token JWT is required"))
 		return
 	}
-	claims, err := events.VerifySubscribeToken(request.Context(), compact, service.keyResolver, service.clock)
+	compact, claims, proof := verified.compact, verified.claims, verified.proof
+	// The subscribe token's cnf.jwk is the key that signed this request; its
+	// thumbprint must equal the one recorded when the ticket was issued.
+	thumbprint, err := proof.PublicKey().Thumbprint()
 	if err != nil {
-		writeEventSignatureProblem(response, err)
-		return
-	}
-	proof, err := prepared.Verify(claims.Confirmation.JWK)
-	if err != nil {
-		writeEventSignatureProblem(response, err)
-		return
-	}
-	if request.Header.Get("Content-Type") == "" && len(proof.ExactBody()) > 0 {
-		httpapi.WriteProblem(response, http.StatusBadRequest, "invalid_request", errors.New("resource: nonempty subscription parameters require content-type"))
-		return
-	}
-	if err := events.ValidateSubscribeRegistration(claims, service.issuer, proof.PublicKey()); err != nil {
-		httpapi.WriteProblem(response, http.StatusForbidden, "event_subscription_denied", err)
+		writeEventSignatureProblem(response, signaturekey.NewError(signaturekey.ErrorInvalidKey, err))
 		return
 	}
 	ticket, err := service.protected.store.LoadProtectedSubscriptionTicket(
-		request.Context(), ticketID, claims.Subject, proof.VerifiedAt(),
+		request.Context(), ticketID, thumbprint, proof.VerifiedAt(),
 	)
 	if err != nil {
 		service.writeProtectedSubscriptionError(response, err)
 		return
 	}
-	if validateProtectedSubscriptionTicket(ticket) != nil || ticket.ID != ticketID ||
-		ticket.Resource != service.issuer || ticket.Agent != claims.Subject {
+	if ticket.KeyThumbprint != thumbprint {
+		service.writeProtectedSubscriptionError(response, ErrProtectedSubscriptionNotFound)
+		return
+	}
+	if ticket.UsedAt.IsZero() && !proof.VerifiedAt().Before(ticket.ExpiresAt) {
+		service.writeProtectedSubscriptionError(response, ErrProtectedSubscriptionExpired)
+		return
+	}
+	if validateProtectedSubscriptionTicket(ticket) != nil || ticket.ID != ticketID || ticket.Resource != service.issuer {
 		httpapi.WriteProblem(response, http.StatusInternalServerError, "server_error", ErrProtectedSubscriptionConflict)
 		return
 	}
@@ -327,11 +330,11 @@ func (service *EventService) protectedTicketID(request *http.Request) (string, e
 }
 
 func validateProtectedSubscriptionTicket(ticket ProtectedSubscriptionTicket) error {
-	if ticket.ID == "" || ticket.Resource == "" || ticket.Agent == "" || len(ticket.Context) == 0 ||
+	if ticket.ID == "" || ticket.Resource == "" || len(ticket.Context) == 0 ||
 		ticket.CreatedAt.IsZero() || !ticket.ExpiresAt.After(ticket.CreatedAt) {
 		return ErrProtectedSubscriptionConflict
 	}
-	if aauth.ValidateServerIdentifier(ticket.Resource) != nil || aauth.ValidateAgentIdentifier(ticket.Agent) != nil {
+	if aauth.ValidateServerIdentifier(ticket.Resource) != nil || !validKeyThumbprint(ticket.KeyThumbprint) {
 		return ErrProtectedSubscriptionConflict
 	}
 	used := !ticket.UsedAt.IsZero()
@@ -340,6 +343,12 @@ func validateProtectedSubscriptionTicket(ticket ProtectedSubscriptionTicket) err
 		return ErrProtectedSubscriptionConflict
 	}
 	return nil
+}
+
+// validKeyThumbprint accepts one canonical unpadded base64url SHA-256 digest.
+func validKeyThumbprint(value string) bool {
+	digest, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	return err == nil && len(digest) == sha256.Size && base64.RawURLEncoding.EncodeToString(digest) == value
 }
 
 func cloneProtectedSubscriptionTicket(ticket ProtectedSubscriptionTicket) ProtectedSubscriptionTicket {

@@ -15,8 +15,9 @@ type ProtectedEventsContract struct {
 	New func(testing.TB) resource.ProtectedSubscriptionStore
 }
 
-// RunProtectedEvents checks ticket retention, Agent cloaking, expiry,
-// single-use registration, and exact-result recovery.
+// RunProtectedEvents checks ticket retention, cloaking of a ticket presented
+// by another key, expiry, single-use registration under concurrency, and
+// exact-result recovery.
 func RunProtectedEvents(t *testing.T, contract ProtectedEventsContract) {
 	t.Helper()
 	if contract.New == nil {
@@ -25,8 +26,12 @@ func RunProtectedEvents(t *testing.T, contract ProtectedEventsContract) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 1, 1, 30, 0, 0, time.UTC)
 	store := contract.New(t)
+	const (
+		keyThumbprint   = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
+		otherThumbprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	)
 	ticket := resource.ProtectedSubscriptionTicket{
-		ID: "ticket-1", Resource: "https://resource.example", Agent: "aauth:agent@ap.example",
+		ID: "ticket-1", Resource: "https://resource.example", KeyThumbprint: keyThumbprint,
 		Context:   []byte(`{"operation":"appointments.create"}`),
 		CreatedAt: now, ExpiresAt: now.Add(time.Minute),
 	}
@@ -34,19 +39,19 @@ func RunProtectedEvents(t *testing.T, contract ProtectedEventsContract) {
 		t.Fatal(err)
 	}
 	ticket.Context[0] = 'x'
-	loaded, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.Agent, now)
+	loaded, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.KeyThumbprint, now)
 	if err != nil || loaded.Context[0] != '{' {
 		t.Fatalf("loaded ticket = %#v, %v", loaded, err)
 	}
-	if _, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, "aauth:other@ap.example", now); !errors.Is(err, resource.ErrProtectedSubscriptionNotFound) {
-		t.Fatalf("wrong Agent load = %v", err)
+	if _, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, otherThumbprint, now); !errors.Is(err, resource.ErrProtectedSubscriptionNotFound) {
+		t.Fatalf("load with another key thumbprint = %v", err)
 	}
-	if _, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.Agent, loaded.ExpiresAt); !errors.Is(err, resource.ErrProtectedSubscriptionExpired) {
+	if _, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.KeyThumbprint, loaded.ExpiresAt); !errors.Is(err, resource.ErrProtectedSubscriptionExpired) {
 		t.Fatalf("expired load = %v", err)
 	}
 
 	candidate := resource.EventSubscription{
-		EventID: "event-1", AgentProvider: "https://ap.example", Agent: ticket.Agent,
+		EventID: "event-1", AgentProvider: "https://ap.example", Agent: "aauth:agent@ap.example",
 		RegistrationSHA256: sha256.Sum256([]byte("registration")),
 		RegisteredAt:       now.Add(time.Second), ExpiresAt: now.Add(time.Hour),
 	}
@@ -54,11 +59,11 @@ func RunProtectedEvents(t *testing.T, contract ProtectedEventsContract) {
 	if err != nil || retained.RegistrationSHA256 != candidate.RegistrationSHA256 {
 		t.Fatalf("first commit = %#v, %v", retained, err)
 	}
-	used, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.Agent, now.Add(2*time.Second))
+	used, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.KeyThumbprint, now.Add(2*time.Second))
 	if err != nil || used.UsedAt.IsZero() || used.RegistrationSHA256 != candidate.RegistrationSHA256 {
 		t.Fatalf("used ticket = %#v, %v", used, err)
 	}
-	usedAfterExpiry, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.Agent, loaded.ExpiresAt)
+	usedAfterExpiry, err := store.LoadProtectedSubscriptionTicket(ctx, ticket.ID, ticket.KeyThumbprint, loaded.ExpiresAt)
 	if err != nil || usedAfterExpiry.RegistrationSHA256 != candidate.RegistrationSHA256 {
 		t.Fatalf("used ticket after expiry = %#v, %v", usedAfterExpiry, err)
 	}
@@ -86,7 +91,7 @@ func RunProtectedEvents(t *testing.T, contract ProtectedEventsContract) {
 		t.Fatal(err)
 	}
 	concurrentTicket, err = concurrentStore.LoadProtectedSubscriptionTicket(
-		ctx, concurrentTicket.ID, concurrentTicket.Agent, now,
+		ctx, concurrentTicket.ID, concurrentTicket.KeyThumbprint, now,
 	)
 	if err != nil {
 		t.Fatal(err)

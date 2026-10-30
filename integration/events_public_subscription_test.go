@@ -3,7 +3,6 @@ package integration_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	agentstoretest "gitlab.com/sidecat-dev/aauth-go/agentprovider/storetest"
 	"gitlab.com/sidecat-dev/aauth-go/events"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -28,11 +28,13 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	agentID := "aauth:events@ap.example"
 	providerKey := newSigningKey(t, "events-provider-key")
 	resourceKey := newSigningKey(t, "events-resource-key")
+	otherResourceKey := newSigningKey(t, "events-other-resource-key")
 	agentKey := newSigningKey(t, "events-agent-key")
 	eventIDs := []string{"event-1", "event-2"}
 	resolver := signaturekey.StaticKeyResolver{
-		{Issuer: providerID, DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}:    providerKey.PublicJWK(),
-		{Issuer: resourceID, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+		{Issuer: providerID, DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}:                               providerKey.PublicJWK(),
+		{Issuer: resourceID, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}:                            resourceKey.PublicJWK(),
+		{Issuer: "https://other-resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: otherResourceKey.ID()}: otherResourceKey.PublicJWK(),
 	}
 	providerStore := newMemoryEventInboxStore()
 	provider, err := agentprovider.New(agentprovider.Config{
@@ -187,9 +189,10 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	transport.Handle(providerID, providerV2.Handler())
+	firstPayload := []byte(`{"event_type":"slot.available","slot":"10:00"}`)
 	firstPrepared, err := resourceEvents.PrepareEvent(context.Background(), resource.EventInput{
 		AgentProvider: providerID, EventID: issued.EventID, ContentType: "application/json",
-		Payload: []byte(`{"event_type":"slot.available","slot":"10:00"}`), Lifetime: 5 * time.Minute,
+		Payload: firstPayload, Lifetime: 5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -204,19 +207,34 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	if metadataAdmissions != 1 || deliveryAdmissions != 1 {
 		t.Fatalf("admissions after first delivery: metadata=%d delivery=%d", metadataAdmissions, deliveryAdmissions)
 	}
+	// The AP retained the exact bytes the Resource sent; the host transport
+	// hands them to the Agent unchanged, and the Agent checks body_s256.
 	firstDelivery := providerStore.deliveryAt(t, 0)
+	if !bytes.Equal(firstDelivery.Payload, firstPayload) || firstDelivery.ContentType != "application/json" {
+		t.Fatalf("AP-retained delivery = %#v", firstDelivery)
+	}
 	firstReceived, err := agentClient.AcceptEvent(context.Background(), clientagent.EventDeliveryInput{
 		EventToken: firstDelivery.Token, Payload: firstDelivery.Payload, ContentType: firstDelivery.ContentType,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstReceived.Duplicate || string(firstReceived.Context) != `{"purpose":"appointment waitlist"}` {
+	if firstReceived.Duplicate || string(firstReceived.Context) != `{"purpose":"appointment waitlist"}` ||
+		!bytes.Equal(firstReceived.Payload, firstPayload) {
 		t.Fatalf("first Agent event = %#v", firstReceived)
 	}
+	alteredPayload := []byte(`{"event_type":"slot.available","slot":"altered"}`)
+	if _, err := agentClient.AcceptEvent(context.Background(), clientagent.EventDeliveryInput{
+		EventToken: firstDelivery.Token, Payload: alteredPayload, ContentType: firstDelivery.ContentType,
+	}); !errors.Is(err, events.ErrEventBodyMismatch) {
+		t.Fatalf("Agent accepted a body altered on the way through the AP: %v", err)
+	}
+
+	// A resigned delivery that pairs the first token with another body fails
+	// body_s256 at the AP and consumes no use.
 	alteredRequest, err := http.NewRequestWithContext(
 		context.Background(), http.MethodPost, "https://ap.example/events-v2",
-		bytes.NewReader([]byte(`{"event_type":"slot.available","slot":"altered"}`)),
+		bytes.NewReader(alteredPayload),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -226,28 +244,67 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := signaturekey.SignRequest(alteredRequest, resourceKey, alteredCredential, clock, signaturekey.SignOptions{
-		AdditionalComponents: []string{"content-type", "content-digest"},
-	}); err != nil {
+	if err := signaturekey.SignRequest(alteredRequest, resourceKey, alteredCredential, clock, signaturekey.SignOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	alteredResponse, err := httpClient.Do(alteredRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var alteredFeedback struct {
-		RemainingUses int64 `json:"remaining_uses"`
+	_ = alteredResponse.Body.Close()
+	alteredFailure, err := signaturekey.ParseError(alteredResponse.Header.Get("Signature-Error"))
+	if alteredResponse.StatusCode != http.StatusUnauthorized || err != nil || alteredFailure.Code != signaturekey.ErrorInvalidJWT ||
+		providerStore.deliveryCount() != 1 {
+		t.Fatalf("altered-payload response = %d %q, retained deliveries = %d",
+			alteredResponse.StatusCode, alteredResponse.Header.Get("Signature-Error"), providerStore.deliveryCount())
 	}
-	if err := json.NewDecoder(alteredResponse.Body).Decode(&alteredFeedback); err != nil {
-		_ = alteredResponse.Body.Close()
+
+	// Another Resource cannot deliver on this eid, even with a valid
+	// signature of its own.
+	foreignToken, err := events.MintEventToken("https://other-resource.example", otherResourceKey, events.EventTokenRequest{
+		Agent: agentID, EventID: issued.EventID, Payload: firstPayload, Lifetime: time.Minute,
+	}, now)
+	if err != nil {
 		t.Fatal(err)
 	}
-	_ = alteredResponse.Body.Close()
-	if alteredResponse.StatusCode != http.StatusAccepted || providerStore.deliveryCount() != 2 {
-		t.Fatalf("altered-payload response = %d, retained deliveries = %d", alteredResponse.StatusCode, providerStore.deliveryCount())
+	foreignRequest, err := http.NewRequestWithContext(
+		context.Background(), http.MethodPost, "https://ap.example/events-v2", bytes.NewReader(firstPayload),
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if alteredFeedback.RemainingUses != 1 {
-		t.Fatalf("altered-payload feedback = %#v", alteredFeedback)
+	foreignRequest.Header.Set("Content-Type", "application/json")
+	foreignCredential, err := signaturekey.NewSelfJWTCredential(foreignToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signaturekey.SignRequest(foreignRequest, otherResourceKey, foreignCredential, clock, signaturekey.SignOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	foreignResponse, err := httpClient.Do(foreignRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = foreignResponse.Body.Close()
+	if foreignResponse.StatusCode != http.StatusForbidden || foreignResponse.Header.Get("Signature-Error") != "" ||
+		providerStore.deliveryCount() != 1 {
+		t.Fatalf("delivery by another Resource = %d, retained deliveries = %d", foreignResponse.StatusCode, providerStore.deliveryCount())
+	}
+
+	secondPayload := []byte(`{"event_type":"slot.available","slot":"11:00"}`)
+	secondPrepared, err := resourceEvents.PrepareEvent(context.Background(), resource.EventInput{
+		AgentProvider: providerID, EventID: issued.EventID, ContentType: "application/json",
+		Payload: secondPayload, Lifetime: 5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResult, err := resourceEvents.DeliverEvent(context.Background(), secondPrepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondResult.RemainingUses != 1 || providerStore.deliveryCount() != 2 {
+		t.Fatalf("second delivery = %#v, retained deliveries = %d", secondResult, providerStore.deliveryCount())
 	}
 	secondDelivery := providerStore.deliveryAt(t, 1)
 	secondReceived, err := agentClient.AcceptEvent(context.Background(), clientagent.EventDeliveryInput{
@@ -311,7 +368,7 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	}
 	_, err = resourceEvents.DeliverEvent(context.Background(), fourthPrepared)
 	var deliveryFailure *resource.EventDeliveryError
-	if !errors.As(err, &deliveryFailure) || deliveryFailure.StatusCode != http.StatusTooManyRequests ||
+	if !errors.As(err, &deliveryFailure) || deliveryFailure.StatusCode != http.StatusNotFound ||
 		providerStore.deliveryCount() != 3 {
 		t.Fatalf("fourth delivery error = %#v, retained deliveries = %d", err, providerStore.deliveryCount())
 	}
@@ -340,6 +397,20 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	if unlimitedReceived.Duplicate || string(unlimitedReceived.Context) != `{"purpose":"bodyless status signal"}` {
 		t.Fatalf("unlimited Agent event = %#v", unlimitedReceived)
 	}
+}
+
+func TestMemoryEventInboxStoreContract(t *testing.T) {
+	t.Parallel()
+	agentstoretest.RunEventInbox(t, agentstoretest.EventInboxContract{
+		New: func(testing.TB) agentprovider.EventInboxStore { return newMemoryEventInboxStore() },
+		Delivery: func(
+			_ testing.TB,
+			store agentprovider.EventInboxStore,
+			fingerprint events.DeliveryFingerprint,
+		) (agentprovider.EventDelivery, error) {
+			return store.(*memoryEventInboxStore).delivery(fingerprint)
+		},
+	})
 }
 
 type memoryEventInboxStore struct {
@@ -416,6 +487,17 @@ func (store *memoryEventInboxStore) AcceptEvent(_ context.Context, delivery agen
 	accepted := agentprovider.EventAcceptance{MaximumUses: subscription.MaxUses, RemainingUses: remaining}
 	store.acceptances[fingerprint] = accepted
 	return accepted, nil
+}
+
+func (store *memoryEventInboxStore) delivery(fingerprint events.DeliveryFingerprint) (agentprovider.EventDelivery, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	record, ok := store.deliveries[fingerprint]
+	if !ok {
+		return agentprovider.EventDelivery{}, errors.New("no accepted delivery")
+	}
+	record.Payload = append([]byte(nil), record.Payload...)
+	return record, nil
 }
 
 func (store *memoryEventInboxStore) subscriptionCount() int {

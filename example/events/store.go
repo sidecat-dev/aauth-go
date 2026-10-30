@@ -88,6 +88,20 @@ func (store *providerEventStore) AcceptEvent(_ context.Context, delivery agentpr
 	return accepted, nil
 }
 
+// deliveryFor reads one accepted delivery by fingerprint, as the host's
+// AP-to-Agent transport would, returning an independent copy of its exact
+// token and payload.
+func (store *providerEventStore) deliveryFor(fingerprint events.DeliveryFingerprint) (agentprovider.EventDelivery, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	delivery, ok := store.deliveries[fingerprint]
+	if !ok {
+		return agentprovider.EventDelivery{}, errors.New("events example: Agent Provider has no such delivery")
+	}
+	delivery.Payload = append([]byte(nil), delivery.Payload...)
+	return delivery, nil
+}
+
 func (store *providerEventStore) Delivery(eventID string) (agentprovider.EventDelivery, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -129,13 +143,13 @@ func (store *resourceEventStore) CreateProtectedSubscriptionTicket(
 func (store *resourceEventStore) LoadProtectedSubscriptionTicket(
 	_ context.Context,
 	id string,
-	agent string,
+	keyThumbprint string,
 	at time.Time,
 ) (resource.ProtectedSubscriptionTicket, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	ticket, exists := store.tickets[id]
-	if !exists || ticket.Agent != agent {
+	if !exists || ticket.KeyThumbprint != keyThumbprint {
 		return resource.ProtectedSubscriptionTicket{}, resource.ErrProtectedSubscriptionNotFound
 	}
 	if !at.Before(ticket.ExpiresAt) && ticket.UsedAt.IsZero() {

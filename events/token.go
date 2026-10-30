@@ -6,6 +6,9 @@ package events
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,12 +29,14 @@ const (
 )
 
 // SubscribeTokenRequest is the issuer-validated input to subscribe-token
-// creation. Zero MaxUses means the token carries no use limit.
+// creation. Zero MaxUses means the token carries no use limit. An empty JTI
+// asks MintSubscribeToken to generate a random token identifier.
 type SubscribeTokenRequest struct {
 	Agent           string
 	Resource        string
 	ConfirmationKey jose.JWK
 	EventID         string
+	JTI             string
 	Lifetime        time.Duration
 	MaxUses         int64
 }
@@ -44,29 +49,41 @@ type SubscribeTokenClaims struct {
 	Audience     string             `json:"aud"`
 	Confirmation aauth.Confirmation `json:"cnf"`
 	EventID      string             `json:"eid"`
+	JTI          string             `json:"jti"`
 	IssuedAt     int64              `json:"iat"`
 	ExpiresAt    int64              `json:"exp"`
 	MaxUses      int64              `json:"max_uses,omitempty"`
 }
 
 // EventTokenRequest is the Resource-validated input to event-token creation.
+// Payload is the exact delivery body the token will accompany: a nonempty
+// Payload sets body_s256 to its digest, and an empty one leaves body_s256
+// absent. An empty JTI asks MintEventToken to generate one.
 type EventTokenRequest struct {
 	Agent    string
 	EventID  string
 	JTI      string
+	Payload  []byte
 	Lifetime time.Duration
 }
 
-// EventTokenClaims are the claims of an aa-event+jwt.
+// EventTokenClaims are the claims of an aa-event+jwt. BodySHA256 is the
+// body_s256 claim: empty when the delivery carries no body.
 type EventTokenClaims struct {
-	Issuer    string `json:"iss"`
-	DWK       string `json:"dwk"`
-	Audience  string `json:"aud"`
-	EventID   string `json:"eid"`
-	JTI       string `json:"jti"`
-	IssuedAt  int64  `json:"iat"`
-	ExpiresAt int64  `json:"exp"`
+	Issuer     string `json:"iss"`
+	DWK        string `json:"dwk"`
+	Audience   string `json:"aud"`
+	EventID    string `json:"eid"`
+	JTI        string `json:"jti"`
+	BodySHA256 string `json:"body_s256,omitempty"`
+	IssuedAt   int64  `json:"iat"`
+	ExpiresAt  int64  `json:"exp"`
 }
+
+// ErrEventBodyMismatch reports a delivered body that does not match the
+// event token's body_s256 claim, including a body delivered with a token that
+// declares none and a missing body for a token that declares one.
+var ErrEventBodyMismatch = errors.New("aauth events: event body does not match body_s256")
 
 // MintSubscribeToken creates one AP-signed subscribe token.
 func MintSubscribeToken(
@@ -76,6 +93,14 @@ func MintSubscribeToken(
 	now time.Time,
 ) (string, error) {
 	now = now.UTC().Truncate(time.Second)
+	jti := request.JTI
+	if jti == "" {
+		generated, err := newTokenID("subscribe-token")
+		if err != nil {
+			return "", err
+		}
+		jti = generated
+	}
 	claims := SubscribeTokenClaims{
 		Issuer:       issuer,
 		DWK:          aauth.AgentDiscoveryDocument,
@@ -83,6 +108,7 @@ func MintSubscribeToken(
 		Audience:     request.Resource,
 		Confirmation: aauth.Confirmation{JWK: request.ConfirmationKey},
 		EventID:      request.EventID,
+		JTI:          jti,
 		IssuedAt:     now.Unix(),
 		ExpiresAt:    now.Add(request.Lifetime).Unix(),
 		MaxUses:      request.MaxUses,
@@ -95,7 +121,9 @@ func MintSubscribeToken(
 
 // VerifySubscribeToken verifies an AP-issued subscribe token and its claims.
 // A Resource must separately bind Audience to itself and Confirmation to the
-// key that verified the subscription-registration request.
+// key that verified the subscription-registration request. Expiry is judged
+// by clock; iat is not a validity check, so a verifier holding the signed
+// request applies its own bound with signaturekey.PreparedRequest.CheckIssuedAt.
 func VerifySubscribeToken(
 	ctx context.Context,
 	compact string,
@@ -145,7 +173,8 @@ func ValidateSubscribeRegistration(
 }
 
 // MintEventToken creates one Resource-signed event token. Event-specific data
-// belongs in the delivery body, not in this token.
+// belongs in the delivery body, not in this token; the token carries only the
+// body's digest in body_s256. The token never carries cnf.
 func MintEventToken(
 	issuer string,
 	key jose.SigningKey,
@@ -155,20 +184,21 @@ func MintEventToken(
 	now = now.UTC().Truncate(time.Second)
 	jti := request.JTI
 	if jti == "" {
-		generated, err := newEventTokenID()
+		generated, err := newTokenID("event-token")
 		if err != nil {
 			return "", err
 		}
 		jti = generated
 	}
 	claims := EventTokenClaims{
-		Issuer:    issuer,
-		DWK:       aauth.ResourceDiscoveryDocument,
-		Audience:  request.Agent,
-		EventID:   request.EventID,
-		JTI:       jti,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(request.Lifetime).Unix(),
+		Issuer:     issuer,
+		DWK:        aauth.ResourceDiscoveryDocument,
+		Audience:   request.Agent,
+		EventID:    request.EventID,
+		JTI:        jti,
+		BodySHA256: BodySHA256(request.Payload),
+		IssuedAt:   now.Unix(),
+		ExpiresAt:  now.Add(request.Lifetime).Unix(),
 	}
 	if err := validateEventClaims(claims, time.Time{}); err != nil {
 		return "", err
@@ -177,7 +207,9 @@ func MintEventToken(
 }
 
 // VerifyEventToken verifies a Resource-issued event token received by an
-// Agent after local AP delivery.
+// Agent after local AP delivery. It refuses an expired token. The caller must
+// still compare Audience with its own identifier and check the delivered body
+// with VerifyEventBody before acting on the event.
 func VerifyEventToken(
 	ctx context.Context,
 	compact string,
@@ -200,9 +232,10 @@ func VerifyEventToken(
 
 // ValidateEventTokenProfile checks the untrusted compact token's explicit
 // Events shape and time window without establishing signature trust. It lets
-// an HTTP endpoint distinguish malformed input from later cryptographic
-// authentication failure. Callers must still use VerifyEventToken or a
-// verified self-jwt assertion before accepting the claims.
+// an HTTP endpoint refuse a token of the wrong type, discovery document, or
+// claim shape before resolving any key. Callers must still use
+// VerifyEventToken or a verified self-jwt assertion before accepting the
+// claims.
 func ValidateEventTokenProfile(compact string, at time.Time) error {
 	parsed, err := jose.ParseCompact(compact)
 	if err != nil {
@@ -213,7 +246,10 @@ func ValidateEventTokenProfile(compact string, at time.Time) error {
 		return fmt.Errorf("aauth events: event-token typ is %q, want %q", header.Type, EventTokenType)
 	}
 	if header.Algorithm != jose.Ed25519Algorithm {
-		return fmt.Errorf("aauth events: event-token algorithm is %q, want %q", header.Algorithm, jose.Ed25519Algorithm)
+		return &aauth.TokenValidationError{
+			Code:  aauth.TokenValidationUnsupportedAlgorithm,
+			Cause: fmt.Errorf("aauth events: event-token algorithm is %q, want %q", header.Algorithm, jose.Ed25519Algorithm),
+		}
 	}
 	if header.KeyID == "" {
 		return errors.New("aauth events: event-token kid is required")
@@ -243,6 +279,38 @@ func EventTokenFromAssertion(
 		return EventTokenClaims{}, err
 	}
 	return claims, nil
+}
+
+// BodySHA256 returns the body_s256 value for exact delivery body bytes: the
+// unpadded base64url SHA-256 digest, or the empty string when there is no
+// body.
+func BodySHA256(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+// VerifyEventBody checks the exact delivered body against verified event-token
+// claims. A token with body_s256 requires a nonempty body with that digest; a
+// token without body_s256 requires no body. Every mismatch is
+// ErrEventBodyMismatch, and neither the Agent Provider nor the Agent may act
+// on such a delivery.
+func VerifyEventBody(claims EventTokenClaims, body []byte) error {
+	if claims.BodySHA256 == "" {
+		if len(body) != 0 {
+			return fmt.Errorf("%w: a body was delivered with a token that declares none", ErrEventBodyMismatch)
+		}
+		return nil
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("%w: the token declares a body and none was delivered", ErrEventBodyMismatch)
+	}
+	if subtle.ConstantTimeCompare([]byte(BodySHA256(body)), []byte(claims.BodySHA256)) != 1 {
+		return ErrEventBodyMismatch
+	}
+	return nil
 }
 
 func signToken(key jose.SigningKey, tokenType string, claims any) (string, error) {
@@ -376,6 +444,9 @@ func validateSubscribeClaims(claims SubscribeTokenClaims, now time.Time, hasMaxU
 	if claims.EventID == "" {
 		return errors.New("aauth events: subscribe-token eid is required")
 	}
+	if claims.JTI == "" {
+		return errors.New("aauth events: subscribe-token jti is required")
+	}
 	if hasMaxUses && claims.MaxUses <= 0 {
 		return errors.New("aauth events: subscribe-token max_uses must be a positive integer")
 	}
@@ -402,6 +473,9 @@ func decodeEventClaims(payload []byte, claims *EventTokenClaims) error {
 	if err := json.Unmarshal(payload, claims); err != nil {
 		return fmt.Errorf("aauth events: decode event-token claims: %w", err)
 	}
+	if _, present := members["body_s256"]; present && claims.BodySHA256 == "" {
+		return errors.New("aauth events: event-token body_s256 must not be empty")
+	}
 	return nil
 }
 
@@ -421,26 +495,33 @@ func validateEventClaims(claims EventTokenClaims, now time.Time) error {
 	if claims.JTI == "" {
 		return errors.New("aauth events: event-token jti is required")
 	}
+	if claims.BodySHA256 != "" {
+		digest, err := base64.RawURLEncoding.Strict().DecodeString(claims.BodySHA256)
+		if err != nil || len(digest) != sha256.Size ||
+			base64.RawURLEncoding.EncodeToString(digest) != claims.BodySHA256 {
+			return errors.New("aauth events: event-token body_s256 must be an unpadded base64url SHA-256 digest")
+		}
+	}
 	return validateTimes("event-token", claims.IssuedAt, claims.ExpiresAt, now)
 }
 
-func newEventTokenID() (string, error) {
+func newTokenID(name string) (string, error) {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("aauth events: event-token jti: %w", err)
+		return "", fmt.Errorf("aauth events: %s jti: %w", name, err)
 	}
 	return hex.EncodeToString(buf[:]), nil
 }
 
+// validateTimes checks the positive lifetime and, when now is set, expiry by
+// the verifier's own clock. iat is not a validity check; a verifier holding a
+// signed request bounds it with that request's signature window.
 func validateTimes(name string, issuedAt, expiresAt int64, now time.Time) error {
 	if issuedAt <= 0 || expiresAt <= issuedAt {
 		return fmt.Errorf("aauth events: %s iat and exp must define a positive lifetime", name)
 	}
 	if now.IsZero() {
 		return nil
-	}
-	if issuedAt > now.Unix() {
-		return fmt.Errorf("aauth events: %s iat is in the future", name)
 	}
 	if expiresAt <= now.Unix() {
 		return &aauth.TokenValidationError{

@@ -618,27 +618,32 @@ Pinned source: [Events editor source](https://github.com/dickhardt/AAuth/blob/a9
 - [x] **Public subscription and event delivery — Implemented**
   - Flow: Agent → AP for a retained subscribe token → Agent retains context
     and registers with Resource → Resource resolves and admits the AP event
-    endpoint → Resource sends a `self-jwt` event → AP retains before `202` →
-    host transport gives the delivery to Agent → Agent verifies context and
+    endpoint → Resource sends a `self-jwt` event whose `body_s256` binds the
+    payload → AP verifies the token, the proof, and `body_s256`, then retains
+    the exact bytes before `202` → host transport gives the delivery to Agent
+    → Agent verifies the token, its own identifier, `body_s256`, context, and
     exact replay.
   - Start with: `agentprovider.EventsConfig`,
     `agentprovider.Server.IssueSubscribeToken`, `agent.EventsConfig`,
     `Client.RegisterPublicSubscription`, `Client.AcceptEvent`,
     `resource.NewEventService`, `resource.EventService.PublicSubscriptionHandler`,
     `resource.EventService.PrepareEvent`, `resource.EventService.DeliverEvent`,
-    and `resource.NewHTTPEventEndpointResolver`.
-  - Evidence: [`integration/events_public_subscription_test.go`](integration/events_public_subscription_test.go)
+    `resource.NewHTTPEventEndpointResolver`, and
+    `agentprovider/storetest.RunEventInbox`.
+  - Evidence: [`integration/events_public_subscription_test.go`](integration/events_public_subscription_test.go),
+    [`agentprovider/storetest/events.go`](agentprovider/storetest/events.go),
     and `go run ./example/events`.
   - Host boundary: the specification leaves AP-to-Agent transport
     platform-defined; the host supplies the queue, push channel, or other
     durable delivery adapter.
 
 - [x] **Protected subscription ticket and event delivery — Implemented**
-  - Flow: authenticated Agent interaction → Resource retains an opaque ticket
-    bound to the verified Agent and application context → AP issues a subscribe
-    token → Agent signs one POST to the ticket URL → Resource verifies the
-    Agent, expiry, and single use and atomically commits registration → ordinary
-    Events delivery continues.
+  - Flow: authenticated interaction → Resource retains an opaque ticket bound
+    to the JWK Thumbprint of the key it verified and to application context →
+    AP issues a subscribe token → Agent signs one POST to the ticket URL →
+    Resource verifies that the subscribe token's `cnf.jwk` has the recorded
+    thumbprint, expiry, and single use and atomically commits registration →
+    ordinary Events delivery continues.
   - Start with: `resource.ProtectedSubscriptionConfig`,
     `EventService.IssueProtectedSubscriptionTicket`,
     `EventService.ProtectedSubscriptionHandler`,
@@ -655,9 +660,15 @@ Pinned source: [Events editor source](https://github.com/dickhardt/AAuth/blob/a9
 
 - [ ] **AsyncAPI event discovery — Partial helper coverage**
   - `asyncapi.ParseDefinition` derives bounded R3 operations and sparse hints.
-    It does not acquire the document, choose a subscription endpoint, register
-    a subscription, or validate event payloads.
-  - Evidence: [`r3/vocab/asyncapi/definition_test.go`](r3/vocab/asyncapi/definition_test.go).
+    `events.ValidateAsyncAPIDocument` checks that a Resource's JSON document
+    declares the `aauth_subscribe` security scheme, and
+    `resource.EventService.AsyncAPIHandler` serves only such a document. The
+    library does not acquire the document for an Agent, choose a
+    subscription endpoint from it, or validate event payloads against its
+    message schemas.
+  - Evidence: [`r3/vocab/asyncapi/definition_test.go`](r3/vocab/asyncapi/definition_test.go),
+    [`events/asyncapi_test.go`](events/asyncapi_test.go), and
+    [`resource/events_verification_test.go`](resource/events_verification_test.go).
 
 ## AAuth Bootstrap Guidance
 

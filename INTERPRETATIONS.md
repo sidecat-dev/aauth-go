@@ -123,9 +123,13 @@ record; changed bytes under that `eid` conflict.
 Replay`.
 
 Events defines the protected ticket as an opaque, short-lived, single-use URL
-bound to the Agent and context of a prior authenticated interaction. It leaves
-the ticket representation, lifetime, and Resource policy undefined. This
-implementation therefore retains a host-generated path segment and opaque
+bound to the signing key of a prior authenticated interaction: the Resource
+records the JWK Thumbprint of the `cnf` key it verified and compares it with
+the thumbprint of the subscribe token's `cnf.jwk`. No token the Resource
+verified then carries an Agent identifier, so the subscribe token's `sub` does
+not bind the ticket. Events leaves the ticket representation, lifetime, and
+Resource policy undefined. This implementation therefore retains a
+host-generated path segment, the RFC 7638 SHA-256 thumbprint, and opaque
 context rather than defining another token. The Resource host chooses a
 same-origin URL prefix, an explicit maximum lifetime, and the policy that
 interprets the retained context.
@@ -135,24 +139,43 @@ While the original subscribe token remains valid, an exact retry returns the
 retained registration even after the unused-ticket deadline and does not rerun
 host policy; a changed retry conflicts. An unused ticket still expires at its
 deadline.
-A request whose subscribe-token `sub` does not match the retained Agent is
-cloaked as a missing ticket, and an expired ticket returns a distinct terminal
-refusal. These are repository storage and HTTP-response choices around the
+A request whose subscribe-token `cnf.jwk` has another thumbprint is cloaked as
+a missing ticket, and an expired ticket returns a distinct terminal refusal.
+The handler repeats both checks on the ticket the store returns, so a store
+that loaded by ID alone could not weaken them. These are repository storage and HTTP-response choices around the
 source-defined binding, not new Events wire fields.
 
-## Bodyless Events deliveries sign the exact empty body
+## Events requests cover body components only when a body is present
 
-**Source:** Events, `Event Delivery: Resource to AP`; HTTP Signature Keys,
-`Covered Components`.
+**Source:** Events, `Event Delivery: Resource to AP` (`Request` and `AP
+Validation`); Protocol, `Covered Components`.
 
-Events makes the payload optional but shows only a body-bearing signature. The
-bodyless profile here omits `content-type` and still covers a
-`content-digest` for zero bytes. That preserves the distinction between an
-intentional empty payload and bytes injected after signing without inventing a
-wire field. The same profile requires both `content-type` and
-`content-digest` when registration parameters or an event payload are present;
-that body-binding requirement is an implementation hardening recorded as
-`AAG-F084` (since withdrawn), not a claim that the current Events text already requires it.
+An event delivery with a body covers `content-digest` and `content-type`, as
+Events requires; a bodyless delivery covers only the base components. The
+Event token's `body_s256` binds the body: it is present exactly when there is
+a body, so the AP and the Agent both refuse bytes added to a bodyless delivery
+or removed from a body-bearing one. Registration requests follow the same
+rule. `signaturekey.PrepareRequest` already requires `content-digest` for any
+request with content, and these handlers additionally require a signed
+`content-type` whenever one is sent. The Events registration example covers
+`content-type` without `content-digest`; this library's verifier, like its
+other Resource endpoints, still requires `content-digest` on a request with a
+body, which the Core lets a server require.
+
+## Events delivery failures follow the AP Validation status codes
+
+**Source:** Events, `AP Validation`.
+
+Every Event-token and HTTP-proof failure is `401` with `Signature-Error`:
+`expired_jwt` for an expired token, `invalid_jwt` for a token of the wrong
+type, discovery document, or claim shape, a `body_s256` mismatch, or an `aud`
+that is not the subscribed Agent, and `clock_skew` for an `iat` beyond the
+signature window. A Resource other than the subscribed one is `403` without
+`Signature-Error`. An unknown, inactive, or exhausted subscription is `404`.
+Only a request for another delivery target or a body without `Content-Type`
+is `400`. The inbox store checks the subscribed Agent before it consumes a
+use, although Events lists that check after the use-count increment, so a
+refused delivery never spends the subscription.
 
 ## Mission-bound Resource and federated Auth tokens inherit upstream expiry ceilings
 
@@ -1607,9 +1630,10 @@ answered `400` with body error `clock_skew` (see the Protocol -11 JWT `iat`
 section of `SPECIFICATIONS.md`). A verifier with no request applies no
 future-`iat` refusal.
 
-Events is excluded. Subscribe-token and event-token validation keep their own
-`validateTimes` in `events/token.go`, which still refuses any future `iat`;
-neither was changed.
+Events follows the same rule. `validateTimes` in `events/token.go` checks the
+positive lifetime and expiry only. The Resource registration handlers and the
+AP event endpoint call `CheckIssuedAt`, answering `clock_skew`; an Agent
+verifying a forwarded Event token has no request and applies no bound.
 
 ## Deferred federation keeps payment and progress with the PS host
 

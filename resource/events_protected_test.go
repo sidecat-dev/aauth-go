@@ -18,12 +18,16 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
-func TestProtectedEventTicketBindsPriorAgentAndRegistersOnce(t *testing.T) {
+func TestProtectedEventTicketBindsPriorKeyAndRegistersOnce(t *testing.T) {
 	now := time.Date(2026, 9, 1, 1, 0, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	resourceKey := testSigningKey(t, "protected-event-resource", 0xd1)
 	providerKey := testSigningKey(t, "protected-event-provider", 0xd2)
 	agentKey := testSigningKey(t, "protected-event-agent", 0xd3)
+	agentThumbprint, err := agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := newProtectedEventStore()
 	policyCalls := 0
 	service, err := NewEventService(EventServiceConfig{
@@ -44,7 +48,7 @@ func TestProtectedEventTicketBindsPriorAgentAndRegistersOnce(t *testing.T) {
 				if policyCalls > 1 {
 					return PublicSubscriptionDecision{}, ErrEventSubscriptionDenied
 				}
-				if request.Ticket.Agent != "aauth:agent@ap.example" || string(request.Ticket.Context) != `{"operation":"appointments.create"}` ||
+				if request.Ticket.KeyThumbprint != agentThumbprint || string(request.Ticket.Context) != `{"operation":"appointments.create"}` ||
 					request.Token.EventID != "event-1" {
 					t.Fatalf("protected request = %#v", request)
 				}
@@ -62,13 +66,16 @@ func TestProtectedEventTicketBindsPriorAgentAndRegistersOnce(t *testing.T) {
 	}
 	contextValue := []byte(`{"operation":"appointments.create"}`)
 	ticket, err := service.IssueProtectedSubscriptionTicket(context.Background(), ProtectedSubscriptionTicketRequest{
-		Agent: "aauth:agent@ap.example", Context: contextValue, Lifetime: 2 * time.Minute,
+		ConfirmationKey: agentKey.PublicJWK(), Context: contextValue, Lifetime: 2 * time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ticket.URL != resourceIssuer+"/events/protected/ticket-1" || !ticket.ExpiresAt.Equal(now.Add(2*time.Minute)) || store.createCalls != 1 {
 		t.Fatalf("ticket = %#v, create calls=%d", ticket, store.createCalls)
+	}
+	if store.ticket.KeyThumbprint != agentThumbprint {
+		t.Fatalf("retained ticket thumbprint = %q, want %q", store.ticket.KeyThumbprint, agentThumbprint)
 	}
 	contextValue[0] = 'x'
 	if store.ticket.Context[0] != '{' {
@@ -108,9 +115,20 @@ func TestProtectedEventTicketBindsPriorAgentAndRegistersOnce(t *testing.T) {
 	if changed.Code != http.StatusConflict {
 		t.Fatalf("changed replay = %d %s", changed.Code, changed.Body.String())
 	}
+	secondToken, err := events.MintSubscribeToken("https://ap.example", providerKey, events.SubscribeTokenRequest{
+		Agent: "aauth:agent@ap.example", Resource: resourceIssuer,
+		ConfirmationKey: agentKey.PublicJWK(), EventID: "event-2", Lifetime: time.Hour,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reuse := register(secondToken, agentKey, body)
+	if reuse.Code != http.StatusConflict || store.commitCalls != 1 || policyCalls != 1 {
+		t.Fatalf("second registration on a used ticket = %d %s, commits=%d policy=%d", reuse.Code, reuse.Body.String(), store.commitCalls, policyCalls)
+	}
 }
 
-func TestProtectedEventTicketCloaksWrongAgentAndRefusesExpiry(t *testing.T) {
+func TestProtectedEventTicketCloaksAnotherKeyAndRefusesExpiry(t *testing.T) {
 	now := time.Date(2026, 9, 1, 1, 15, 0, 0, time.UTC)
 	clock := aauth.ClockFunc(func() time.Time { return now })
 	resourceKey := testSigningKey(t, "protected-event-resource-errors", 0xd4)
@@ -146,7 +164,7 @@ func TestProtectedEventTicketCloaksWrongAgentAndRefusesExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	ticket, err := service.IssueProtectedSubscriptionTicket(context.Background(), ProtectedSubscriptionTicketRequest{
-		Agent: "aauth:agent@ap.example", Context: []byte("authorized interaction"), Lifetime: time.Minute,
+		ConfirmationKey: agentKey.PublicJWK(), Context: []byte("authorized interaction"), Lifetime: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -160,19 +178,22 @@ func TestProtectedEventTicketCloaksWrongAgentAndRefusesExpiry(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := httptest.NewRequest(http.MethodPost, ticket.URL, nil)
-		if err := signaturekey.SignJWTRequestWithOptions(
-			request, key, compact, clock,
-			signaturekey.SignOptions{AdditionalComponents: []string{"content-digest"}},
-		); err != nil {
+		if err := signaturekey.SignJWTRequest(request, key, compact, clock); err != nil {
 			t.Fatal(err)
 		}
 		response := httptest.NewRecorder()
 		service.ProtectedSubscriptionHandler().ServeHTTP(response, request)
 		return response
 	}
-	wrongAgent := register("aauth:other@ap.example", otherKey)
-	if wrongAgent.Code != http.StatusNotFound || !strings.Contains(wrongAgent.Body.String(), `"error":"event_ticket_not_found"`) {
-		t.Fatalf("wrong Agent registration = %d %s", wrongAgent.Code, wrongAgent.Body.String())
+	// The ticket binds the key, not the Agent identifier: the same sub with
+	// another cnf.jwk cannot use it.
+	sameAgentOtherKey := register("aauth:agent@ap.example", otherKey)
+	if sameAgentOtherKey.Code != http.StatusNotFound || !strings.Contains(sameAgentOtherKey.Body.String(), `"error":"event_ticket_not_found"`) {
+		t.Fatalf("registration by the same Agent with another key = %d %s", sameAgentOtherKey.Code, sameAgentOtherKey.Body.String())
+	}
+	otherAgentOtherKey := register("aauth:other@ap.example", otherKey)
+	if otherAgentOtherKey.Code != http.StatusNotFound {
+		t.Fatalf("registration by another Agent and key = %d %s", otherAgentOtherKey.Code, otherAgentOtherKey.Body.String())
 	}
 	now = now.Add(time.Minute)
 	expired := register("aauth:agent@ap.example", agentKey)
@@ -182,6 +203,91 @@ func TestProtectedEventTicketCloaksWrongAgentAndRefusesExpiry(t *testing.T) {
 	if policyCalls != 0 {
 		t.Fatalf("policy calls = %d, want 0", policyCalls)
 	}
+}
+
+func TestProtectedEventTicketBindingDoesNotDependOnTheStore(t *testing.T) {
+	now := time.Date(2026, 9, 1, 1, 30, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	resourceKey := testSigningKey(t, "protected-event-resource-careless", 0xd8)
+	providerKey := testSigningKey(t, "protected-event-provider-careless", 0xd9)
+	agentKey := testSigningKey(t, "protected-event-agent-careless", 0xda)
+	otherKey := testSigningKey(t, "protected-event-other-careless", 0xdb)
+	store := &carelessProtectedEventStore{protectedEventStore: newProtectedEventStore()}
+	policyCalls := 0
+	service, err := NewEventService(EventServiceConfig{
+		Issuer: resourceIssuer, SigningKey: resourceKey,
+		KeyResolver: signaturekey.StaticKeyResolver{
+			{Issuer: "https://ap.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}: providerKey.PublicJWK(),
+		},
+		Clock: clock, SubscriptionEndpoint: resourceIssuer + "/events/public", Store: store,
+		RegisterPublic: func(context.Context, PublicSubscriptionRequest) (PublicSubscriptionDecision, error) {
+			return PublicSubscriptionDecision{}, nil
+		},
+		Protected: &ProtectedSubscriptionConfig{
+			EndpointPrefix: resourceIssuer + "/events/protected/", NewTicketID: func() string { return "ticket-careless" },
+			MaximumTicketLifetime: time.Minute,
+			Register: func(context.Context, ProtectedSubscriptionRequest) (PublicSubscriptionDecision, error) {
+				policyCalls++
+				return PublicSubscriptionDecision{}, nil
+			},
+		},
+		ResolveEventEndpoint: EventEndpointResolverFunc(func(context.Context, string) (string, error) {
+			return "https://ap.example/events", nil
+		}),
+		AdmitEventEndpoint: func(context.Context, string) error { return nil },
+		HTTPClient:         &http.Client{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := service.IssueProtectedSubscriptionTicket(context.Background(), ProtectedSubscriptionTicketRequest{
+		ConfirmationKey: agentKey.PublicJWK(), Context: []byte("authorized interaction"), Lifetime: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	register := func(key jose.SigningKey) *httptest.ResponseRecorder {
+		compact, err := events.MintSubscribeToken("https://ap.example", providerKey, events.SubscribeTokenRequest{
+			Agent: "aauth:agent@ap.example", Resource: resourceIssuer, ConfirmationKey: key.PublicJWK(),
+			EventID: "event-careless", Lifetime: time.Hour,
+		}, time.Date(2026, 9, 1, 1, 30, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, ticket.URL, nil)
+		if err := signaturekey.SignJWTRequest(request, key, compact, clock); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		service.ProtectedSubscriptionHandler().ServeHTTP(response, request)
+		return response
+	}
+	if response := register(otherKey); response.Code != http.StatusNotFound {
+		t.Fatalf("another key through a store that ignores the thumbprint = %d %s", response.Code, response.Body.String())
+	}
+	now = now.Add(time.Minute)
+	if response := register(agentKey); response.Code != http.StatusGone {
+		t.Fatalf("expired ticket through a store that ignores expiry = %d %s", response.Code, response.Body.String())
+	}
+	if policyCalls != 0 || store.commitCalls != 0 {
+		t.Fatalf("policy calls = %d, commits = %d; want 0", policyCalls, store.commitCalls)
+	}
+}
+
+// carelessProtectedEventStore loads a ticket by ID alone, ignoring the
+// thumbprint and expiry it is given, so the test sees the handler's own
+// checks.
+type carelessProtectedEventStore struct {
+	*protectedEventStore
+}
+
+func (store *carelessProtectedEventStore) LoadProtectedSubscriptionTicket(_ context.Context, id, _ string, _ time.Time) (ProtectedSubscriptionTicket, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.ticket.ID != id {
+		return ProtectedSubscriptionTicket{}, ErrProtectedSubscriptionNotFound
+	}
+	return cloneProtectedSubscriptionTicket(store.ticket), nil
 }
 
 type protectedEventStore struct {
@@ -205,10 +311,10 @@ func (store *protectedEventStore) CreateProtectedSubscriptionTicket(_ context.Co
 	return nil
 }
 
-func (store *protectedEventStore) LoadProtectedSubscriptionTicket(_ context.Context, id, agent string, at time.Time) (ProtectedSubscriptionTicket, error) {
+func (store *protectedEventStore) LoadProtectedSubscriptionTicket(_ context.Context, id, keyThumbprint string, at time.Time) (ProtectedSubscriptionTicket, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.ticket.ID != id || store.ticket.Agent != agent {
+	if store.ticket.ID != id || store.ticket.KeyThumbprint != keyThumbprint {
 		return ProtectedSubscriptionTicket{}, ErrProtectedSubscriptionNotFound
 	}
 	if !at.Before(store.ticket.ExpiresAt) && store.ticket.UsedAt.IsZero() {

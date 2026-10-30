@@ -47,6 +47,12 @@ func (function EventEndpointResolverFunc) ResolveEventEndpoint(ctx context.Conte
 // EventServiceConfig composes one Resource's public Events registration and
 // explicit outbound-delivery steps. AP metadata acquisition remains behind a
 // bounded host-supplied resolver.
+//
+// AsyncAPIDocument is the Resource's optional AsyncAPI JSON document
+// describing its event channels. NewEventService refuses a document that does
+// not declare the subscribe-token security scheme Events requires (see
+// events.ValidateAsyncAPIDocument), and AsyncAPIHandler serves the exact
+// bytes.
 type EventServiceConfig struct {
 	Issuer               string
 	SigningKey           jose.SigningKey
@@ -61,6 +67,7 @@ type EventServiceConfig struct {
 	HTTPClient           *http.Client
 	MaxRegistrationBytes int64
 	MaxEventPayloadBytes int64
+	AsyncAPIDocument     []byte
 }
 
 // PublicSubscriptionRequest contains the fully verified registration inputs
@@ -189,6 +196,7 @@ type EventService struct {
 	registrationHandler  http.Handler
 	protected            *protectedSubscriptionConfig
 	protectedHandler     http.Handler
+	asyncAPIDocument     []byte
 }
 
 // NewEventService constructs the configured public and optional protected
@@ -240,6 +248,12 @@ func NewEventService(config EventServiceConfig) (*EventService, error) {
 	service.registrationHandler = http.HandlerFunc(service.handlePublicSubscription)
 	if err := service.configureProtectedSubscriptions(config.Protected); err != nil {
 		return nil, err
+	}
+	if len(config.AsyncAPIDocument) > 0 {
+		if err := events.ValidateAsyncAPIDocument(config.AsyncAPIDocument); err != nil {
+			return nil, fmt.Errorf("resource: Events AsyncAPI document: %w", err)
+		}
+		service.asyncAPIDocument = append([]byte(nil), config.AsyncAPIDocument...)
 	}
 	return service, nil
 }
