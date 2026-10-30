@@ -21,4 +21,9 @@ func TestEventInboxStoreContract(t *testing.T) {
 			return store.(*providerEventStore).deliveryFor(fingerprint)
 		},
 	})
+	storetest.RunEventInboxReader(t, storetest.EventInboxReaderContract{
+		New: func(testing.TB) storetest.EventInboxReaderStore {
+			return newProviderEventStore()
+		},
+	})
 }

@@ -615,8 +615,34 @@ a body that does not match the token's `body_s256`; `403` for a Resource
 other than the subscribed one; `404` for an unknown, inactive, or exhausted
 subscription; and `202` only after your `EventInboxStore` retains the exact
 token and body. Check your store with `agentprovider/storetest.RunEventInbox`.
-Your own transport then hands the retained token and body bytes to the Agent
-unchanged; Events leaves that mechanism to you.
+
+Events leaves the hop from the AP to the Agent to you, but whatever carries it
+must hand the Agent the token and body bytes unchanged. Implement
+`agentprovider.EventInboxReader` on your store and read through the server:
+
+```go
+pending, err := provider.PendingEvents(ctx, agentID)
+if err != nil {
+	return err
+}
+for _, delivery := range pending {
+	// Carry delivery.Token, delivery.Payload and delivery.ContentType to
+	// the Agent, which calls Client.AcceptEvent with them.
+	if err := sendToAgent(ctx, delivery); err != nil {
+		return err
+	}
+	if err := provider.AcknowledgeEvent(ctx, agentID, delivery.Fingerprint); err != nil {
+		return err
+	}
+}
+```
+
+`PendingEvents` returns the Agent's unacknowledged deliveries, oldest first,
+and refuses one whose bytes no longer match the digests and fingerprint the AP
+recorded when it accepted it. Acknowledge only after the Agent accepted the
+event; an acknowledged delivery is not returned again, but an exact replay of
+it from the Resource is still a duplicate. Check the read path with
+`agentprovider/storetest.RunEventInboxReader`.
 
 **Resource.** `resource.NewEventService` returns the service, `eventService`
 below, that serves subscription registration and prepares and sends events:

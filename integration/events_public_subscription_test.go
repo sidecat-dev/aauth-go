@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -207,9 +208,17 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	if metadataAdmissions != 1 || deliveryAdmissions != 1 {
 		t.Fatalf("admissions after first delivery: metadata=%d delivery=%d", metadataAdmissions, deliveryAdmissions)
 	}
-	// The AP retained the exact bytes the Resource sent; the host transport
-	// hands them to the Agent unchanged, and the Agent checks body_s256.
-	firstDelivery := providerStore.deliveryAt(t, 0)
+	// The AP reads the exact bytes the Resource sent from its inbox; the host
+	// transport hands them to the Agent unchanged, and the Agent checks
+	// body_s256.
+	pending, err := providerV2.PendingEvents(context.Background(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending deliveries = %d, want 1", len(pending))
+	}
+	firstDelivery := pending[0]
 	if !bytes.Equal(firstDelivery.Payload, firstPayload) || firstDelivery.ContentType != "application/json" {
 		t.Fatalf("AP-retained delivery = %#v", firstDelivery)
 	}
@@ -218,6 +227,12 @@ func TestCurrentPublicEventsJourney(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := providerV2.AcknowledgeEvent(context.Background(), agentID, firstDelivery.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := providerV2.PendingEvents(context.Background(), agentID); err != nil || len(pending) != 0 {
+		t.Fatalf("pending deliveries after acknowledgment = %d, %v", len(pending), err)
 	}
 	if firstReceived.Duplicate || string(firstReceived.Context) != `{"purpose":"appointment waitlist"}` ||
 		!bytes.Equal(firstReceived.Payload, firstPayload) {
@@ -411,6 +426,9 @@ func TestMemoryEventInboxStoreContract(t *testing.T) {
 			return store.(*memoryEventInboxStore).delivery(fingerprint)
 		},
 	})
+	agentstoretest.RunEventInboxReader(t, agentstoretest.EventInboxReaderContract{
+		New: func(testing.TB) agentstoretest.EventInboxReaderStore { return newMemoryEventInboxStore() },
+	})
 }
 
 type memoryEventInboxStore struct {
@@ -419,6 +437,7 @@ type memoryEventInboxStore struct {
 	deliveries    map[events.DeliveryFingerprint]agentprovider.EventDelivery
 	acceptances   map[events.DeliveryFingerprint]agentprovider.EventAcceptance
 	order         []events.DeliveryFingerprint
+	pending       map[string][]events.DeliveryFingerprint
 	uses          map[string]int64
 }
 
@@ -427,6 +446,7 @@ func newMemoryEventInboxStore() *memoryEventInboxStore {
 		subscriptions: make(map[string]agentprovider.EventSubscription),
 		deliveries:    make(map[events.DeliveryFingerprint]agentprovider.EventDelivery),
 		acceptances:   make(map[events.DeliveryFingerprint]agentprovider.EventAcceptance),
+		pending:       make(map[string][]events.DeliveryFingerprint),
 		uses:          make(map[string]int64),
 	}
 }
@@ -479,6 +499,7 @@ func (store *memoryEventInboxStore) AcceptEvent(_ context.Context, delivery agen
 	delivery.Payload = append([]byte(nil), delivery.Payload...)
 	store.deliveries[fingerprint] = delivery
 	store.order = append(store.order, fingerprint)
+	store.pending[delivery.Agent] = append(store.pending[delivery.Agent], fingerprint)
 	store.uses[delivery.EventID]++
 	remaining := int64(0)
 	if subscription.MaxUses > 0 {
@@ -487,6 +508,27 @@ func (store *memoryEventInboxStore) AcceptEvent(_ context.Context, delivery agen
 	accepted := agentprovider.EventAcceptance{MaximumUses: subscription.MaxUses, RemainingUses: remaining}
 	store.acceptances[fingerprint] = accepted
 	return accepted, nil
+}
+
+func (store *memoryEventInboxStore) PendingEvents(_ context.Context, agent string) ([]agentprovider.EventDelivery, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending := make([]agentprovider.EventDelivery, 0, len(store.pending[agent]))
+	for _, fingerprint := range store.pending[agent] {
+		record := store.deliveries[fingerprint]
+		record.Payload = append([]byte(nil), record.Payload...)
+		pending = append(pending, record)
+	}
+	return pending, nil
+}
+
+func (store *memoryEventInboxStore) AcknowledgeEvent(_ context.Context, agent string, fingerprint events.DeliveryFingerprint) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.pending[agent] = slices.DeleteFunc(store.pending[agent], func(candidate events.DeliveryFingerprint) bool {
+		return candidate == fingerprint
+	})
+	return nil
 }
 
 func (store *memoryEventInboxStore) delivery(fingerprint events.DeliveryFingerprint) (agentprovider.EventDelivery, error) {
