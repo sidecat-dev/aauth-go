@@ -80,6 +80,15 @@ type AuthorizationRequest struct {
 	// Claims are values the Person Server posted for a requirement=claims wait.
 	// Keys are claim names. sub is never present.
 	Claims map[string]json.RawMessage
+	// Upstream or UpstreamPerson is set when an intermediary chains this
+	// request: the verified auth token or person token the calling Agent
+	// presented to it. It names the person the intermediary acts for and
+	// grants nothing by itself; Agent is then the intermediary, whose own
+	// Agent token need not name this Person Server. The issued auth token
+	// expires no later than it, and its sub is Subject, never the upstream
+	// token's.
+	Upstream       *aauth.AuthTokenClaims
+	UpstreamPerson *aauth.PersonTokenClaims
 }
 
 // Decision is the requested Core-scope subset and lifetime granted by Core
@@ -217,8 +226,8 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: presented_token is required"))
 		return
 	}
-	if input.UpstreamToken != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: request member \"upstream_token\" is not supported by the immediate flow"))
+	if input.UpstreamToken != nil && input.SubagentToken != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: sub-agent and call-chain authorization cannot be combined"))
 		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
@@ -244,12 +253,28 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		}
 		return
 	}
-	if agentClaims.ParentAgent != "" || agentClaims.PersonServer != personServer {
+	// An intermediary's own ps, if any, names its own Person Server, not the
+	// person's; a chained request is tied to the signing Person Server by the
+	// upstream token instead.
+	if agentClaims.ParentAgent != "" || input.UpstreamToken == nil && agentClaims.PersonServer != personServer {
 		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("agent token context does not match the person server"))
 		return
 	}
 	confirmation := agentClaims.Confirmation.JWK
 	credentialExpiresAt := time.Unix(agentClaims.ExpiresAt, 0).UTC()
+	var upstream *verifiedUpstream
+	if input.UpstreamToken != nil {
+		upstream, err = verifyUpstreamToken(request.Context(), input.UpstreamToken, agentClaims, personServer, server.keyResolver, proof)
+		if err != nil {
+			writeUpstreamTokenProblem(response, err)
+			return
+		}
+		// Downstream access does not outlive the upstream token, and neither
+		// does a wait for it.
+		if expiresAt := upstream.expiresAt(); expiresAt.Before(credentialExpiresAt) {
+			credentialExpiresAt = expiresAt
+		}
+	}
 	var subagentClaims *aauth.AgentTokenClaims
 	if input.SubagentToken != nil {
 		var compact string
@@ -350,6 +375,7 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		BudgetConsumed: cloneConsumptionRecord(budgetConsumed),
 		Claims:         cloneClaims(pendingClaims(pending)),
 	}
+	policyRequest.Upstream, policyRequest.UpstreamPerson = upstream.policyClaims()
 	if subagentClaims != nil {
 		policyRequest.Subagent = &Agent{
 			Identifier: subagentClaims.Subject, Confirmation: subagentClaims.Confirmation.JWK,

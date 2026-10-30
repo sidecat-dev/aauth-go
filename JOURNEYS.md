@@ -254,18 +254,19 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `CancelExchange`; `personserver.Server.RevokeAgentBinding` and
     `ReestablishAgentBinding`;
     `PersonTokenRequest.UpstreamToken`, `ExchangeRequest.UpstreamToken`, and
-    `personserver.CallChainingConfig`.
+    `personserver.CallChainingConfig` or `FederatedCallChainingConfig`.
   - Evidence: [`integration/subagent_authorization_test.go`](integration/subagent_authorization_test.go),
     [`integration/subagent_federated_deferred_test.go`](integration/subagent_federated_deferred_test.go),
     [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go),
     [`integration/call_chaining_test.go`](integration/call_chaining_test.go),
+    [`integration/call_chaining_four_party_test.go`](integration/call_chaining_four_party_test.go),
     [`personserver/agent_binding_lifecycle_test.go`](personserver/agent_binding_lifecycle_test.go),
     `go run ./example/subagent` (the hosted sub-agent request through the AS
     wait), and `go run ./example/callchaining`. The shared
     harness's `authorization.subagent` slice measures the same native roles.
-  - Missing: recursive delegation, repeated chain depth, federated downstream
-    chaining, sub-agent call chaining, mission composition, and Agent-token
-    revocation cascades.
+  - Missing: recursive delegation, repeated chain depth, a federated
+    upstream auth token, deferred or R3 federated chaining, sub-agent call
+    chaining, mission composition, and Agent-token revocation cascades.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
   - Flow: AP signs an exact Agent-token reference → PS or a known direct

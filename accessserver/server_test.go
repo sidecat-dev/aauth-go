@@ -577,20 +577,17 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 	}
 	decision = Decision{Scopes: []string{"records.read"}, Lifetime: 30 * time.Minute}
 
-	for _, name := range []string{"upstream_token"} {
-		name := name
-		t.Run("known unsupported request "+name, func(t *testing.T) {
-			beforeAuthorize := authorizeCalls
-			assertAccessProblemStatus(t, callTokenEndpointWith(map[string]any{
-				"resource_token": resourceToken,
-				"agent_token":    agentToken,
-				name:             "token",
-			}), http.StatusBadRequest, "invalid_request")
-			if authorizeCalls != beforeAuthorize {
-				t.Fatal("unsupported request reached authorization policy")
-			}
-		})
-	}
+	t.Run("malformed upstream_token", func(t *testing.T) {
+		beforeAuthorize := authorizeCalls
+		assertAccessProblemStatus(t, callTokenEndpointWith(map[string]any{
+			"resource_token": resourceToken,
+			"agent_token":    agentToken,
+			"upstream_token": "token",
+		}), http.StatusBadRequest, "invalid_upstream_token")
+		if authorizeCalls != beforeAuthorize {
+			t.Fatal("malformed upstream token reached authorization policy")
+		}
+	})
 
 	for _, test := range []struct {
 		name   string

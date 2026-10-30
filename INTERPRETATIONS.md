@@ -428,8 +428,9 @@ and
 and `Token Endpoint Error Codes`.
 
 The first evidenced call-chain path is immediate, missionless, accountless,
-and PS-authorized. Missions, accounts, sub-agents, and Access Server federation
-are not partially processed. Once their otherwise valid context is recognized,
+and PS-authorized; the four-party path is described in "An Access Server
+verifies the upstream token of a chained request itself". Missions, accounts,
+and sub-agents are not partially processed. Once their otherwise valid context is recognized,
 the Person Server returns `500 server_error` before chain policy,
 pending-state creation, or issuance. Ordinary interaction selectors are never
 called for a chained request; `CallChaining` is an explicitly immediate policy
@@ -2126,3 +2127,38 @@ entry whose span has not ended.
 
 **Evidence:** `signaturekey/freshness_external_test.go` and
 `freshness_external_test.go`.
+
+## An Access Server verifies the upstream token of a chained request itself
+
+**Source:** Protocol `70d6737`, PS-to-AS Token Request (lines 1577-1608),
+Call Chaining (1846-1858), Intermediary Agent Identity (1860-1866), Directed
+Identifiers Across a Chain (1868-1880), and Upstream Token Verification
+(1826-1836).
+
+A four-party Person Server with `FederatedCallChainingConfig` passes the
+Agent's exact `upstream_token` to the Access Server, with the intermediary's
+Agent token as `agent_token`. The Access Server applies steps 1 to 3 of
+Upstream Token Verification before policy: `typ` selects the person-token or
+auth-token verifier and any other is `invalid_upstream_token`; `aud` must equal
+the `iss` of the intermediary's Agent token; `cnf` is not compared; a person
+token's `iss`, or an auth token's `ps`, must be the Person Server that signed
+the request, and an auth token's `iss` is not checked beyond its signature. An
+expired token is `expired_upstream_token`, and an `iat` beyond the signature
+window is `clock_skew`. The intermediary's own Agent token is not required to
+name the signing Person Server, since its `ps` names the intermediary's own.
+The issued auth token takes `sub` from the Resource token and expires no later
+than the upstream token, and a deferred wait for it ends with `expired` by
+then. The Access Server keeps no revocation records, so it never answers
+`revoked_upstream_token`.
+
+The four-party Person Server accepts only upstream person tokens it issued.
+It keeps no record of the auth tokens an Access Server issues, so step 4
+cannot identify the calling Agent behind one, and such a token is
+`invalid_upstream_token`. It refuses chained R3 and Budget
+requests, and answers a `202` or `402` from the Access Server for a chained
+request with `DeferredCompositionError` reason `call_chaining`. A three-party
+Person Server refuses a Resource token naming an Access Server with
+`invalid_resource_token`, chained or not.
+
+**Evidence:** `accessserver/upstream_external_test.go` and
+`integration/call_chaining_four_party_test.go`.

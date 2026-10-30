@@ -27,6 +27,8 @@ type verifiedUpstreamToken struct {
 	auth      *aauth.AuthTokenClaims
 	reference aauth.TokenReference
 	digest    [32]byte
+	// compact is the exact token, passed through to an Access Server.
+	compact string
 }
 
 func (upstream *verifiedUpstreamToken) subject() string {
@@ -68,8 +70,12 @@ func (server *Server) verifyOptionalUpstreamToken(
 	if raw == nil {
 		return nil, nil
 	}
-	if server.authorizationMode != authorizationModePersonServer ||
-		server.bindChainedPerson == nil || server.authorizeChained == nil {
+	switch {
+	case server.bindChainedPerson == nil:
+		return nil, errUpstreamTokenUnsupported
+	case server.authorizationMode == authorizationModePersonServer && server.authorizeChained == nil:
+		return nil, errUpstreamTokenUnsupported
+	case server.authorizationMode == authorizationModeFederated && server.consentChained == nil:
 		return nil, errUpstreamTokenUnsupported
 	}
 	if intermediary.ParentAgent != "" {
@@ -86,7 +92,7 @@ func (server *Server) verifyOptionalUpstreamToken(
 		return nil, &upstreamTokenFailure{cause: err}
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	upstream := &verifiedUpstreamToken{digest: sha256.Sum256([]byte(compact))}
+	upstream := &verifiedUpstreamToken{digest: sha256.Sum256([]byte(compact)), compact: compact}
 	switch header.Type {
 	case aauth.PersonTokenType:
 		claims, err := aauth.VerifyPersonToken(ctx, compact, server.keyResolver, verificationClock)
@@ -117,8 +123,9 @@ func (server *Server) verifyOptionalUpstreamToken(
 		if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
 			return nil, &upstreamTokenFailure{cause: err}
 		}
-		// This Person Server presents no person token to an Access Server, so
-		// the only auth token it can verify the issuer of is its own.
+		// Only an auth token this Person Server issued has an issuance record
+		// that identifies the calling Agent. A four-party Person Server keeps
+		// none for the auth tokens an Access Server issues.
 		if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != server.issuer ||
 			claims.PersonServer != server.issuer {
 			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token was not issued by this Person Server")}

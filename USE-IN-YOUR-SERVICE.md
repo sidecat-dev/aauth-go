@@ -566,6 +566,40 @@ sub-agent call chaining, and no cascade from an Agent-token revocation to the
 child's credentials. See [CONFORMANCE.md](CONFORMANCE.md) and
 [the interpretations](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery).
 
+## Chain a call through an Access Server
+
+A Resource that calls another Resource for its caller acts as its own Agent
+Provider and Agent (the intermediary). When the downstream Resource has an
+Access Server, give the four-party Person Server a chaining policy:
+
+```go
+personserver.FederatedAuthorizationConfig{
+	// ...
+	CallChaining: &personserver.FederatedCallChainingConfig{
+		BindPerson: mapUpstreamPersonToDownstreamPerson,
+		Consent:    decideDownstreamRequest,
+	},
+}
+```
+
+The intermediary passes the person token its caller presented as
+`UpstreamToken` in `PersonTokenRequest`, `AuthorizeRequest`,
+`ExchangeRequest` and `Call`. The Person Server verifies it, calls
+`BindPerson` for a new directed person and `Consent` for the downstream
+request, and posts the exact `upstream_token` with the intermediary's Agent
+token to the Access Server. The Access Server verifies it again: `typ`, an
+`aud` equal to the intermediary's Agent-token `iss`, and a person token issued
+by, or an auth token naming, the Person Server that signed. Its policy sees the
+token in `AuthorizationRequest.UpstreamPerson` or `Upstream`, and the
+intermediary in `Agent`. The auth token it issues has the downstream `sub` and
+expires no later than the upstream token, and so does any wait for it. A bad
+token is `400 invalid_upstream_token`, an expired one `expired_upstream_token`.
+
+Limits: the four-party Person Server accepts only person tokens it issued as
+upstream tokens, because it keeps no record of auth tokens an Access Server
+issued. It refuses chained R3 and Budget requests, and a `202` or `402` from
+the Access Server for a chained request is `500 server_error`.
+
 ## Deliver events to an Agent
 
 AAuth Events lets a Resource notify an Agent that has no public URL: the

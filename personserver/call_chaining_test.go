@@ -640,7 +640,11 @@ func TestCallChainingRefusesUnsupportedValidBranchesAndIsolatesOrdinaryInteracti
 		}
 	})
 
-	t.Run("access-server federation", func(t *testing.T) {
+	// A three-party Person Server issues every auth token itself, so a
+	// Resource token naming an Access Server is refused, chained or not. A
+	// four-party Person Server passes chained requests to the Access Server
+	// (integration TestFourPartyCallChainPassesTheUpstreamTokenToTheAccessServer).
+	t.Run("resource token naming an Access Server", func(t *testing.T) {
 		protocol := newCallChainingProtocol(t)
 		server := protocol.newServer(t, protocol.config())
 		personClaims := decodeCallChainingPersonToken(
@@ -648,7 +652,7 @@ func TestCallChainingRefusesUnsupportedValidBranchesAndIsolatesOrdinaryInteracti
 		)
 		resourceToken := protocol.resourceToken(t, personClaims, protocol.accessServerID, "payments.charge", nil)
 		response := protocol.tokenRequest(t, server, resourceToken, protocol.upstreamToken, "")
-		assertCallChainingProblem(t, response, http.StatusInternalServerError, "server_error")
+		assertCallChainingProblem(t, response, http.StatusBadRequest, "invalid_resource_token")
 		_, commits, _ := protocol.store.observation()
 		if protocol.chainBindCalls != 1 || protocol.chainAuthorizeCalls != 0 || commits != 1 {
 			t.Fatalf("federation calls/commits = %d/%d/%d", protocol.chainBindCalls, protocol.chainAuthorizeCalls, commits)
