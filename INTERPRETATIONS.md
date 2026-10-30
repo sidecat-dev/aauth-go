@@ -288,8 +288,9 @@ polling interval by five seconds on a `429`. When a `429` also carries a
 `Retry-After` longer than the increased interval, both cannot hold with an
 increase of exactly five seconds. Every agent poll keeps the larger of the
 two, so it never polls sooner than the server asked and never backs off by
-less than five seconds. A `503` takes its `Retry-After`, or five seconds when
-absent. Each poll method returns the continuation carrying that interval
+less than five seconds. A `429` whose `Retry-After` cannot be read still backs
+off by five seconds rather than ending the poll. A `503` takes its
+`Retry-After`, or five seconds when absent. Each poll method returns the continuation carrying that interval
 alongside the caller-owned `429` or `503` response.
 
 **Executable example:**

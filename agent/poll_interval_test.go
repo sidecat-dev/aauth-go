@@ -16,7 +16,7 @@ import (
 // pollIntervalSteps scripts the answers to successive polls of one pending
 // URL. Core "Polling with GET": the agent respects Retry-After, polls every
 // five seconds when it is absent, and increases its polling interval by five
-// seconds on each 429.
+// seconds on each 429. A 429 whose Retry-After cannot be read still backs off.
 var pollIntervalSteps = []struct {
 	status     int
 	retryAfter string
@@ -28,6 +28,7 @@ var pollIntervalSteps = []struct {
 	{status: http.StatusServiceUnavailable, retryAfter: "3", want: 3 * time.Second},
 	{status: http.StatusTooManyRequests, want: 8 * time.Second},
 	{status: http.StatusTooManyRequests, retryAfter: "30", want: 30 * time.Second},
+	{status: http.StatusTooManyRequests, retryAfter: "soon", want: 35 * time.Second},
 	{status: http.StatusAccepted, retryAfter: "2", want: 2 * time.Second},
 }
 

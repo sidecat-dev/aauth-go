@@ -110,7 +110,7 @@ func TestExchangeRetryResponseOwnershipAndHTTPDate(t *testing.T) {
 		{"429", http.StatusTooManyRequests, "", 12 * time.Second, false},
 		{"429 longer Retry-After", http.StatusTooManyRequests, "99", 99 * time.Second, false},
 		{"429 date", http.StatusTooManyRequests, time.Date(2026, 8, 29, 18, 0, 30, 0, time.UTC).Format(http.TimeFormat), 30 * time.Second, false},
-		{"429 invalid", http.StatusTooManyRequests, "tomorrow", 0, true},
+		{"429 unreadable Retry-After still backs off", http.StatusTooManyRequests, "tomorrow", 12 * time.Second, false},
 		{"503 date", http.StatusServiceUnavailable, time.Date(2026, 8, 29, 18, 0, 13, 0, time.UTC).Format(http.TimeFormat), 13 * time.Second, false},
 		{"503 invalid", http.StatusServiceUnavailable, "tomorrow", 0, true},
 	} {

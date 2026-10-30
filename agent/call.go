@@ -471,33 +471,39 @@ func parseRetryAfter(values []string) (time.Duration, error) {
 
 // retryPollInterval returns the polling interval that follows a 429 or 503
 // answer to a poll. A 429 increases the current interval by five seconds, or
-// to the response's Retry-After when that is longer. A 503 takes the
-// response's Retry-After, or the five-second default when the header is
-// absent. An HTTP-date is rounded up to whole seconds, so the interval never
-// polls sooner than the server asked and remains representable in a snapshot.
+// to the response's Retry-After when that is longer; a Retry-After that cannot
+// be read does not stop the backoff. A 503 takes the response's Retry-After,
+// or the five-second default when the header is absent. An HTTP-date is
+// rounded up to whole seconds, so the interval never polls sooner than the
+// server asked and remains representable in a snapshot.
 func retryPollInterval(current time.Duration, response *http.Response, now time.Time) (time.Duration, error) {
 	values := response.Header.Values("Retry-After")
 	retryAfter, err := parseHTTPRetryAfter(values, now)
-	if err != nil {
-		return 0, err
-	}
-	if fraction := retryAfter % time.Second; fraction != 0 {
-		if retryAfter > time.Duration(math.MaxInt64)-time.Second {
-			return 0, errors.New("poll retry interval overflows")
-		}
-		retryAfter += time.Second - fraction
+	if err == nil {
+		retryAfter, err = roundUpToSecond(retryAfter)
 	}
 	if response.StatusCode != http.StatusTooManyRequests {
-		return retryAfter, nil
+		return retryAfter, err
 	}
 	if current > time.Duration(math.MaxInt64)-5*time.Second {
 		return 0, errors.New("poll retry interval overflows")
 	}
 	next := current + 5*time.Second
-	if len(values) == 0 {
+	if len(values) == 0 || err != nil {
 		return next, nil
 	}
 	return max(next, retryAfter), nil
+}
+
+func roundUpToSecond(interval time.Duration) (time.Duration, error) {
+	fraction := interval % time.Second
+	if fraction == 0 {
+		return interval, nil
+	}
+	if interval > time.Duration(math.MaxInt64)-time.Second {
+		return 0, errors.New("poll retry interval overflows")
+	}
+	return interval + time.Second - fraction, nil
 }
 
 func hasNoStore(values []string) bool {
