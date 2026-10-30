@@ -10,6 +10,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -19,10 +20,27 @@ var (
 	errUpstreamCallerRevoked    = errors.New("personserver: the Agent token or binding of the upstream token's calling Agent is revoked")
 )
 
+// verifiedUpstreamToken is a verified upstream person token or auth token.
+// Exactly one of person and auth is set.
 type verifiedUpstreamToken struct {
-	claims    aauth.AuthTokenClaims
+	person    *aauth.PersonTokenClaims
+	auth      *aauth.AuthTokenClaims
 	reference aauth.TokenReference
 	digest    [32]byte
+}
+
+func (upstream *verifiedUpstreamToken) subject() string {
+	if upstream.person != nil {
+		return upstream.person.Subject
+	}
+	return upstream.auth.Subject
+}
+
+func (upstream *verifiedUpstreamToken) expiresAt() time.Time {
+	if upstream.person != nil {
+		return time.Unix(upstream.person.ExpiresAt, 0)
+	}
+	return time.Unix(upstream.auth.ExpiresAt, 0)
 }
 
 type upstreamTokenFailure struct{ cause error }
@@ -61,31 +79,63 @@ func (server *Server) verifyOptionalUpstreamToken(
 	if err := json.Unmarshal(raw, &compact); err != nil || compact == "" {
 		return nil, errUpstreamTokenSyntax
 	}
-	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
-	claims, err := aauth.VerifyAuthToken(ctx, compact, server.keyResolver, verificationClock)
+	// An upstream token is a person token or an auth token; typ tells which,
+	// and each is verified by its own verifier. Any other typ is refused.
+	header, err := jose.PeekHeader(compact)
 	if err != nil {
 		return nil, &upstreamTokenFailure{cause: err}
 	}
-	if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
-		return nil, &upstreamTokenFailure{cause: err}
-	}
-	if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != server.issuer ||
-		claims.PersonServer != server.issuer {
-		return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token was not issued by this Person Server")}
-	}
-	if claims.Audience != intermediary.Issuer {
-		return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token audience does not match the intermediary Resource")}
-	}
-	if claims.MissionS256 != "" || claims.Account != nil {
-		return nil, &unsupportedCallChainError{cause: errors.New("personserver: mission- or account-bound call chaining is not implemented")}
-	}
-	upstream := &verifiedUpstreamToken{
-		claims: cloneAuthTokenClaims(claims),
-		reference: aauth.TokenReference{
-			Issuer: claims.Issuer,
-			JTI:    claims.JTI,
-		},
-		digest: sha256.Sum256([]byte(compact)),
+	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
+	upstream := &verifiedUpstreamToken{digest: sha256.Sum256([]byte(compact))}
+	switch header.Type {
+	case aauth.PersonTokenType:
+		claims, err := aauth.VerifyPersonToken(ctx, compact, server.keyResolver, verificationClock)
+		if err != nil {
+			return nil, &upstreamTokenFailure{cause: err}
+		}
+		if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
+			return nil, &upstreamTokenFailure{cause: err}
+		}
+		// The cnf of an upstream token is the calling Agent's key, not the
+		// intermediary's, so it is not compared with the request signer.
+		if claims.Issuer != server.issuer {
+			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream person token was not issued by this Person Server")}
+		}
+		if claims.Audience != intermediary.Issuer {
+			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token audience does not match the intermediary Resource")}
+		}
+		if claims.MissionS256 != "" {
+			return nil, &unsupportedCallChainError{cause: errors.New("personserver: mission-bound call chaining is not implemented")}
+		}
+		upstream.person = &claims
+		upstream.reference = aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
+	case aauth.AuthTokenType:
+		claims, err := aauth.VerifyAuthToken(ctx, compact, server.keyResolver, verificationClock)
+		if err != nil {
+			return nil, &upstreamTokenFailure{cause: err}
+		}
+		if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
+			return nil, &upstreamTokenFailure{cause: err}
+		}
+		// This Person Server presents no person token to an Access Server, so
+		// the only auth token it can verify the issuer of is its own.
+		if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != server.issuer ||
+			claims.PersonServer != server.issuer {
+			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token was not issued by this Person Server")}
+		}
+		if claims.Audience != intermediary.Issuer {
+			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token audience does not match the intermediary Resource")}
+		}
+		if claims.MissionS256 != "" || claims.Account != nil {
+			return nil, &unsupportedCallChainError{cause: errors.New("personserver: mission- or account-bound call chaining is not implemented")}
+		}
+		cloned := cloneAuthTokenClaims(claims)
+		upstream.auth = &cloned
+		upstream.reference = aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
+	default:
+		return nil, &upstreamTokenFailure{
+			cause: fmt.Errorf("personserver: upstream token typ %q is neither a person token nor an auth token", header.Type),
+		}
 	}
 	if err := server.identifyUpstreamCaller(ctx, upstream); err != nil {
 		return nil, err
@@ -94,11 +144,14 @@ func (server *Server) verifyOptionalUpstreamToken(
 }
 
 // identifyUpstreamCaller finds the Agent this Person Server issued the upstream
-// auth token to, from the issuance record of that exact token, and refuses a
-// caller whose Agent token has been revoked. The token's signature does not
+// token to, from the issuance record of that exact token, and refuses a caller
+// whose Agent token or binding has been revoked. The token's signature does not
 // identify the caller, and neither do the intermediary's Agent token or the
 // upstream token's own jti.
 func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *verifiedUpstreamToken) error {
+	if upstream.person != nil {
+		return server.identifyUpstreamPersonTokenCaller(ctx, upstream)
+	}
 	if server.issuedAuthTokens == nil {
 		return &upstreamTokenFailure{cause: errors.New("personserver: no issuance record identifies the upstream token's calling Agent")}
 	}
@@ -109,22 +162,64 @@ func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *veri
 	if err != nil {
 		return &upstreamStoreError{cause: err}
 	}
-	thumbprint, err := upstream.claims.Confirmation.JWK.Thumbprint()
+	thumbprint, err := upstream.auth.Confirmation.JWK.Thumbprint()
 	if err != nil {
 		return &upstreamTokenFailure{cause: err}
 	}
 	if validateIssuedAuthTokenRecord(record) != nil ||
 		record.Reference != upstream.reference ||
 		record.CompactSHA256 != upstream.digest ||
-		record.Resource != upstream.claims.Audience ||
+		record.Resource != upstream.auth.Audience ||
 		!record.identifiesRecipient() ||
 		record.AgentJKT != thumbprint {
 		return &upstreamTokenFailure{cause: errors.New("personserver: the upstream token's issuance record does not identify its calling Agent")}
 	}
+	return server.checkUpstreamCaller(
+		ctx, record.AgentProvider, record.Agent, record.ParentAgent, record.AgentTokenJTI,
+		time.Unix(upstream.auth.IssuedAt, 0),
+	)
+}
+
+// identifyUpstreamPersonTokenCaller finds the Agent this Person Server issued
+// the upstream person token to, from the retained person-token record.
+func (server *Server) identifyUpstreamPersonTokenCaller(ctx context.Context, upstream *verifiedUpstreamToken) error {
+	claims := upstream.person
+	record, err := server.tokens.Load(ctx, server.issuer, claims.JTI)
+	if errors.Is(err, ErrPersonTokenNotFound) {
+		return &upstreamTokenFailure{cause: errors.New("personserver: no issuance record identifies the upstream token's calling Agent")}
+	}
+	if err != nil {
+		return &upstreamStoreError{cause: err}
+	}
+	if validatePersonTokenRecord(record) != nil ||
+		record.JTI != claims.JTI ||
+		record.PersonServer != server.issuer ||
+		record.Resource != claims.Audience ||
+		record.Subject != claims.Subject ||
+		record.MissionS256 != claims.MissionS256 ||
+		record.Tenant != claims.Tenant ||
+		!record.ExpiresAt.Equal(time.Unix(claims.ExpiresAt, 0)) ||
+		!record.Confirmation.Equal(claims.Confirmation.JWK) ||
+		record.AgentTokenJTI == "" {
+		return &upstreamTokenFailure{cause: errors.New("personserver: the upstream token's issuance record does not identify its calling Agent")}
+	}
+	return server.checkUpstreamCaller(
+		ctx, record.AgentProvider, record.Agent, record.ParentAgent, record.AgentTokenJTI,
+		time.Unix(claims.IssuedAt, 0),
+	)
+}
+
+// checkUpstreamCaller refuses an upstream token whose calling Agent's Agent
+// token, or binding to the person, this Person Server has revoked.
+func (server *Server) checkUpstreamCaller(
+	ctx context.Context,
+	agentProvider, agent, parentAgent, agentTokenJTI string,
+	issuedAt time.Time,
+) error {
 	if server.agentTokenRevocations != nil {
 		revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{
-			Issuer: record.AgentProvider,
-			JTI:    record.AgentTokenJTI,
+			Issuer: agentProvider,
+			JTI:    agentTokenJTI,
 		})
 		if err != nil {
 			return &upstreamStoreError{cause: err}
@@ -135,11 +230,11 @@ func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *veri
 	}
 	// The binding behind the chain is the caller's, or its parent's when the
 	// upstream token was issued to a mediated sub-agent.
-	binding := AgentBinding{AgentProvider: record.AgentProvider, Agent: record.Agent}
-	if record.ParentAgent != "" {
-		binding.Agent = record.ParentAgent
+	binding := AgentBinding{AgentProvider: agentProvider, Agent: agent}
+	if parentAgent != "" {
+		binding.Agent = parentAgent
 	}
-	if err := server.checkAgentBinding(ctx, binding, time.Unix(upstream.claims.IssuedAt, 0)); err != nil {
+	if err := server.checkAgentBinding(ctx, binding, issuedAt); err != nil {
 		if errors.Is(err, ErrAgentBindingRevoked) {
 			return fmt.Errorf("%w: %w", errUpstreamCallerRevoked, err)
 		}
@@ -148,12 +243,18 @@ func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *veri
 	return nil
 }
 
-func (upstream *verifiedUpstreamToken) policyClaims() *aauth.AuthTokenClaims {
+// policyClaims returns independent copies of the verified upstream token for
+// policy: the auth token claims, or the person token claims.
+func (upstream *verifiedUpstreamToken) policyClaims() (*aauth.AuthTokenClaims, *aauth.PersonTokenClaims) {
 	if upstream == nil {
-		return nil
+		return nil, nil
 	}
-	claims := cloneAuthTokenClaims(upstream.claims)
-	return &claims
+	if upstream.person != nil {
+		claims := *upstream.person
+		return nil, &claims
+	}
+	claims := cloneAuthTokenClaims(*upstream.auth)
+	return &claims, nil
 }
 
 func (upstream *verifiedUpstreamToken) bindRecord(record *PersonTokenRecord) {

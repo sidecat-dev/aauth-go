@@ -680,7 +680,7 @@ func (server *Server) preparePersonToken(
 	}
 	// A person token issued with upstream_token expires no later than it.
 	if upstream != nil {
-		if upstreamExpiry := time.Unix(upstream.claims.ExpiresAt, 0); upstreamExpiry.Before(expiresAt) {
+		if upstreamExpiry := upstream.expiresAt(); upstreamExpiry.Before(expiresAt) {
 			expiresAt = upstreamExpiry
 		}
 	}
@@ -704,7 +704,8 @@ func (server *Server) preparePersonToken(
 		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
 		AgentProvider: credentialAgent.Issuer, Agent: credentialAgent.Subject,
 		ParentAgent: credentialAgent.ParentAgent, Confirmation: credentialAgent.Confirmation.JWK,
-		ExpiresAt: canonicalExpiry,
+		AgentTokenJTI: credentialAgent.JTI,
+		ExpiresAt:     canonicalExpiry,
 		RetainUntil: canonicalExpiry.Add(
 			server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime,
 		),

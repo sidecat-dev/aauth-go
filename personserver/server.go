@@ -134,9 +134,12 @@ type PSAuthorizationConfig struct {
 	// exact issuance retention. Per-call proposals remain federated-only.
 	R3 *DirectR3Config
 	// CallChaining explicitly enables one immediate PS-authorized downstream
-	// hop. Existing policies never receive an upstream authorization unless this
-	// separate policy pair is configured. It requires an issued auth-token
-	// store, which identifies the calling Agent of an upstream token.
+	// hop. Existing policies never receive an upstream token unless this
+	// separate policy pair is configured. The upstream token is a person token
+	// or auth token this Person Server issued. It requires an issued auth-token
+	// store, which identifies the calling Agent of an upstream auth token; the
+	// person-token record identifies the calling Agent of an upstream person
+	// token.
 	CallChaining *CallChainingConfig
 	// IssuedTokens retains auth-token issuance records without enabling
 	// revocation. When Revocation is configured its IssuedTokens store is used
@@ -222,9 +225,15 @@ type PersonTokenRequest struct {
 	// Mission is nonnil when the request names an active mission owned by the
 	// verified Agent. It includes the exact approved content policy evaluates.
 	Mission *MissionContext
-	// Upstream is nonnil only for explicit call chaining. It is an independent
-	// copy of the verified PS-issued auth-token claims.
+	// Upstream is nonnil only for explicit call chaining on an upstream auth
+	// token. It is an independent copy of the verified PS-issued auth-token
+	// claims.
 	Upstream *aauth.AuthTokenClaims
+	// UpstreamPerson is nonnil only for explicit call chaining on an upstream
+	// person token. It is an independent copy of the verified claims of a
+	// person token this Person Server issued. At most one of Upstream and
+	// UpstreamPerson is set.
+	UpstreamPerson *aauth.PersonTokenClaims
 	// Capabilities are the agent's declared interaction abilities. Omitted
 	// request members fall back to the mission's capabilities when a mission
 	// is bound.
@@ -265,9 +274,14 @@ type AuthorizationRequest struct {
 	// Mission is nonnil when the retained person-token lineage names an active
 	// mission owned by the verified Agent.
 	Mission *MissionContext
-	// Upstream is nonnil only for explicit call chaining. It is an independent
-	// copy of the same verified authorization bound at person-token issuance.
+	// Upstream is nonnil only for explicit call chaining on an upstream auth
+	// token. It is an independent copy of the same verified authorization
+	// bound at person-token issuance.
 	Upstream *aauth.AuthTokenClaims
+	// UpstreamPerson is nonnil only for explicit call chaining on an upstream
+	// person token, bound at person-token issuance like Upstream. At most one
+	// of Upstream and UpstreamPerson is set.
+	UpstreamPerson *aauth.PersonTokenClaims
 }
 
 // PersonTokenRecord is the retained binding used to validate a later resource
@@ -287,10 +301,16 @@ type PersonTokenRecord struct {
 	ExpiresAt     time.Time
 	RetainUntil   time.Time
 	// UpstreamTokenReference and UpstreamTokenSHA256 bind a chained person
-	// token to the exact PS-issued authorization presented at both Person
-	// Server calls. Direct and parent-mediated records leave both zero.
+	// token to the exact PS-issued upstream person or auth token presented at
+	// both Person Server calls. Direct and parent-mediated records leave both
+	// zero.
 	UpstreamTokenReference aauth.TokenReference
 	UpstreamTokenSHA256    [32]byte
+	// AgentTokenJTI is the jti of the Agent token of the credential recipient,
+	// Agent, that the issuing request presented. Call chaining identifies the
+	// calling Agent of an upstream person token from Agent and AgentTokenJTI;
+	// a record without it identifies no caller.
+	AgentTokenJTI string
 }
 
 // TokenStore retains and resolves person-token bindings. Implementations must
@@ -882,7 +902,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		personRequest.SubagentAdditionalClaims = cloneClaims(credentialAgent.AdditionalClaims)
 	}
 	if upstream != nil {
-		personRequest.Upstream = upstream.policyClaims()
+		personRequest.Upstream, personRequest.UpstreamPerson = upstream.policyClaims()
 	}
 	if upstream == nil && server.requirePersonTokenInteraction != nil {
 		policyRequest := clonePersonTokenRequest(personRequest)
@@ -919,7 +939,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	if upstream != nil && person.Subject == upstream.claims.Subject {
+	if upstream != nil && person.Subject == upstream.subject() {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: downstream directed subject must differ from upstream subject"))
 		return
 	}
@@ -1289,7 +1309,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		authorizationRequest.SubagentAdditionalClaims = cloneClaims(credentialAgent.AdditionalClaims)
 	}
 	if upstream != nil {
-		authorizationRequest.Upstream = upstream.policyClaims()
+		authorizationRequest.Upstream, authorizationRequest.UpstreamPerson = upstream.policyClaims()
 	}
 	if server.authorizationMode == authorizationModePersonServer {
 		// Person Server authorization closes when the presented token expires,
@@ -1570,8 +1590,8 @@ func (server *Server) issuePSAuthorizationToken(
 	}
 	// An auth token issued on a request carrying upstream_token expires no
 	// later than that token.
-	if authorizationRequest.Upstream != nil {
-		if upstreamExpiresAt := time.Unix(authorizationRequest.Upstream.ExpiresAt, 0); upstreamExpiresAt.Before(expiresAt) {
+	if upstream != nil {
+		if upstreamExpiresAt := upstream.expiresAt(); upstreamExpiresAt.Before(expiresAt) {
 			expiresAt = upstreamExpiresAt
 		}
 	}
@@ -2136,6 +2156,10 @@ func clonePersonTokenRequest(request PersonTokenRequest) PersonTokenRequest {
 		upstream := cloneAuthTokenClaims(*request.Upstream)
 		request.Upstream = &upstream
 	}
+	if request.UpstreamPerson != nil {
+		upstream := *request.UpstreamPerson
+		request.UpstreamPerson = &upstream
+	}
 	return request
 }
 
@@ -2172,6 +2196,10 @@ func cloneAuthorizationRequest(request AuthorizationRequest) AuthorizationReques
 	if request.Upstream != nil {
 		upstream := cloneAuthTokenClaims(*request.Upstream)
 		request.Upstream = &upstream
+	}
+	if request.UpstreamPerson != nil {
+		upstream := *request.UpstreamPerson
+		request.UpstreamPerson = &upstream
 	}
 	return request
 }

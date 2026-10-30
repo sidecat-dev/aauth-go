@@ -595,7 +595,8 @@ func (server *Server) ApprovePersonTokenInteraction(ctx context.Context, interac
 		Subject: claims.Subject, MissionS256: claims.MissionS256, Tenant: claims.Tenant,
 		AgentProvider: interaction.agentProvider, Agent: interaction.agent,
 		ParentAgent: interaction.parentAgent, Confirmation: interaction.confirmation,
-		ExpiresAt: canonicalExpiry,
+		AgentTokenJTI: interaction.agentTokenJTI,
+		ExpiresAt:     canonicalExpiry,
 		RetainUntil: canonicalExpiry.Add(
 			server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime,
 		),

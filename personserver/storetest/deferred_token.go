@@ -353,7 +353,8 @@ func deferredTokenApproval(
 			JTI: "person-token-" + subject, PersonServer: record.PersonServer,
 			Resource: record.Resource, Subject: subject, AgentProvider: record.AgentProvider,
 			Agent: record.Agent, ParentAgent: record.ParentAgent, Confirmation: record.Confirmation,
-			ExpiresAt: deferredTokenNow.Add(20 * time.Minute), RetainUntil: deferredTokenNow.Add(time.Hour),
+			AgentTokenJTI: record.AgentTokenJTI,
+			ExpiresAt:     deferredTokenNow.Add(20 * time.Minute), RetainUntil: deferredTokenNow.Add(time.Hour),
 		},
 		ExpiresIn: 1200, DecidedAt: deferredTokenNow,
 	}

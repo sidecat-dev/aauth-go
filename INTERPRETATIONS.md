@@ -323,10 +323,18 @@ Verification`, and `Call Chaining`.
 
 Generic auth-token verification includes Resource request-context checks that
 do not apply when a Person Server receives an upstream token in a request
-signed by an intermediary. This implementation verifies the upstream JWT's
-type, issuer key, and time first. It then requires a Person-role token with
-`iss == ps` equal to the receiving Person Server and `aud` equal to the
-intermediary Agent token's `iss`.
+signed by an intermediary. The upstream token is a person token or an auth
+token, told apart by `typ`; any other `typ` is refused. This implementation
+verifies the upstream JWT's type, issuer key, and time first. It then requires
+a person token whose `iss` is the receiving Person Server, or a Person-role
+auth token with `iss == ps` equal to it, and in both cases `aud` equal to the
+intermediary Agent token's `iss`. The calling Agent is identified from this
+Person Server's own issuance record: the person-token record, which names the
+Agent token the token was issued against, or the auth-token issuance record.
+
+A three-party Person Server presents no person token to an Access Server, so
+an auth token issued by an Access Server can never pass the issuer check here
+and is refused.
 
 The upstream token remains bound to the original Agent's key. It is not
 required to match the intermediary's request key. The intermediary proves its
@@ -340,9 +348,10 @@ path. It does not claim the general “previously brokered or authorized to
 extend” relationship.
 
 **Executable examples:**
-`agent/call_chaining_test.go:TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly`
+`agent/call_chaining_test.go:TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly`,
+`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`
 and
-`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`.
+`personserver/call_chaining_person_token_test.go:TestCallChainingAcceptsAnUpstreamPersonToken`.
 
 ## Both Person Server calls bind the same exact upstream token
 
