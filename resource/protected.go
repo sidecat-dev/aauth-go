@@ -23,9 +23,13 @@ func (server *Server) serveProtected(response http.ResponseWriter, request *http
 		server.writeCredentialRequirement(response)
 		return
 	}
-	prepared, compact, err := server.prepareJWTRequest(request, server.additionalSignatureComponents)
+	prepared, compact, err := server.prepareProtectedRequest(request)
 	if err != nil {
 		writeCredentialProblem(response, "invalid_token", err)
+		return
+	}
+	if compact == "" {
+		server.serveFurtherScheme(response, request, prepared)
 		return
 	}
 	// The header is untrusted dispatch input only. Each branch below runs the
@@ -103,6 +107,7 @@ func hasAAuthRequestProof(request *http.Request) bool {
 }
 
 func (server *Server) writeCredentialRequirement(response http.ResponseWriter) {
+	server.writeAcceptedSchemes(response)
 	switch server.accessMode {
 	case aauth.AccessModeAgentToken:
 		response.Header().Set("AAuth-Requirement", aauth.FormatAgentTokenRequirement())

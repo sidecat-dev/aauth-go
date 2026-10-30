@@ -2162,3 +2162,28 @@ Person Server refuses a Resource token naming an Access Server with
 
 **Evidence:** `accessserver/upstream_external_test.go` and
 `integration/call_chaining_four_party_test.go`.
+
+## Further Signature-Key schemes are for a Resource's clients outside AAuth
+
+**Source:** Protocol `70d6737`, Keying Material (lines 2177-2196) and
+Signature-Key Scheme Rejection (2256-2266); Signature-Key `69f5ba2`,
+Accept-Signature-Scheme and Cached Assertion (cached).
+
+Keying Material requires `jwt` of Agents and `jwks_uri` of servers, and step 4
+of Verification refuses any scheme the profile does not use. The one place a
+draft expects more is a Resource that also serves clients outside AAuth: it
+may accept further schemes and must then list all of them. No AAuth role
+accepts `jwks`, `x509` or `cached` for an AAuth request. A Resource with
+`FurtherSchemes` prepares its protected routes with `jwt` plus the listed
+schemes and with Ed25519 plus the listed algorithms, so every
+`unsupported_scheme` and `unsupported_algorithm` there names the full lists,
+and it states them on the unsigned challenge too. A request under a further
+scheme goes to a separate handler with a `SignerPrincipal`, so no AAuth policy
+or principal sees a signer that is not an Agent. `cached` resolves only
+`jkt-jwt` assertions, since the Resource does not cache AAuth tokens, and a
+resolved assertion of another scheme is `invalid_jwt`. The authorization,
+revocation, R3 and usage endpoints keep their AAuth schemes, because they
+serve only AAuth parties. A Resource-managed session Resource has no further
+schemes.
+
+**Evidence:** `resource/further_schemes_test.go`.

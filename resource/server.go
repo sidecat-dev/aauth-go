@@ -86,6 +86,9 @@ type FederatedAuthorizationConfig struct {
 	// plus trailers. All three retained-application limits must be positive when
 	// held delivery or R3 per-call retry is configured, and zero otherwise.
 	MaxRetainedHeaderBytes int64
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
 }
 
 // PSAuthorizationConfig supplies a PS-authorization Resource's identity,
@@ -121,6 +124,9 @@ type PSAuthorizationConfig struct {
 	// AuthTokenStatuses enables observation and revocation of accepted auth
 	// tokens. A nil store omits the revocation endpoint.
 	AuthTokenStatuses AuthTokenStatusStore
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
 }
 
 // AgentIdentityConfig constructs a Resource that authorizes application
@@ -141,6 +147,9 @@ type AgentIdentityConfig struct {
 	// AgentTokenRevocations enables the issuing Agent Provider's signed
 	// revocation endpoint and checks retained markers before application use.
 	AgentTokenRevocations AgentTokenRevocationStore
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
 }
 
 // PersonIdentityConfig constructs a Resource that authorizes application
@@ -154,6 +163,9 @@ type PersonIdentityConfig struct {
 	MaxSignedBodyBytes            int64
 	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	Protected                     http.Handler
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
 }
 
 // PersonIdentity is the stable person reference asserted to this Resource.
@@ -338,6 +350,7 @@ type Server struct {
 	maxRetainedHeaderBytes        int64
 	r3                            *r3Config
 	budget                        *budgetConfig
+	furtherSchemes                *furtherSchemes
 	handler                       http.Handler
 }
 
@@ -358,6 +371,7 @@ type directIdentityConfig struct {
 	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	protected                     http.Handler
 	agentTokenRevocations         AgentTokenRevocationStore
+	furtherSchemes                *FurtherSchemesConfig
 }
 
 // NewAgentIdentity constructs an identity-only Resource that accepts verified
@@ -369,6 +383,7 @@ func NewAgentIdentity(config AgentIdentityConfig) (*Server, error) {
 		additionalSignatureComponents: config.AdditionalSignatureComponents,
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes, protected: config.Protected,
 		agentTokenRevocations: config.AgentTokenRevocations,
+		furtherSchemes:        config.FurtherSchemes,
 	})
 }
 
@@ -384,6 +399,7 @@ func NewPersonIdentity(config PersonIdentityConfig) (*Server, error) {
 		additionalSignatureComponents: config.AdditionalSignatureComponents,
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		resolvePerson:                 config.ResolvePerson, protected: config.Protected,
+		furtherSchemes: config.FurtherSchemes,
 	})
 }
 
@@ -407,6 +423,10 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	further, err := validateFurtherSchemes(config.furtherSchemes)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		issuer: config.issuer, accessMode: config.accessMode,
 		keyResolver: config.keyResolver, clock: config.clock,
@@ -414,6 +434,7 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 		maxSignedBodyBytes:            config.maxSignedBodyBytes,
 		resolvePerson:                 config.resolvePerson, protected: config.protected,
 		agentTokenRevocations: config.agentTokenRevocations,
+		furtherSchemes:        further,
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -451,6 +472,7 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 		AuthorizationAsk: config.AuthorizationAsk,
 		Protected:        config.Protected,
 		R3:               config.R3,
+		FurtherSchemes:   config.FurtherSchemes,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
 }
 
@@ -552,6 +574,10 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
+	further, err := validateFurtherSchemes(config.FurtherSchemes)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		issuer:                        config.Issuer,
 		accessMode:                    aauth.AccessModeAuthToken,
@@ -577,6 +603,7 @@ func newAuthorizationServer(
 		maxRetainedHeaderBytes:        config.MaxRetainedHeaderBytes,
 		r3:                            validatedR3,
 		budget:                        validatedBudget,
+		furtherSchemes:                further,
 	}
 	server.handler = server.newHandler()
 	return server, nil

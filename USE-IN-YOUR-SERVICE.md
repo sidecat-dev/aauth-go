@@ -822,7 +822,8 @@ only use the cache where that cannot happen legitimately.
 ## Verify other Signature-Key schemes
 
 The role handlers accept the Signature-Key schemes their protocol step needs,
-with Ed25519 keys, and answer any other scheme with `unsupported_scheme`. An
+with Ed25519 keys, and answer any other scheme with `unsupported_scheme`. A
+Resource can also accept clients outside AAuth (see below). An
 endpoint of your own can use the `signaturekey` package directly. Name the
 schemes and algorithms it accepts, then finish with the verifier for the
 selected scheme:
@@ -890,6 +891,40 @@ OCSP, delta CRLs and partitioned CRLs are not supported.
 several labeled signatures. It writes every `Signature-Key` member before it
 signs, and each signature covers `signature-key`. A verifier selects one label
 with `VerifyOptions.SignatureLabel`.
+
+### Accept clients outside AAuth at a Resource
+
+AAuth Agents sign with the `jwt` scheme, and servers with `jwks_uri`. A
+Resource that also serves clients outside AAuth may accept further schemes on
+its protected routes. Set `FurtherSchemes` on any Resource constructor:
+
+```go
+resource.AgentIdentityConfig{
+	// ...
+	FurtherSchemes: &resource.FurtherSchemesConfig{
+		Schemes:    []signaturekey.Scheme{signaturekey.SchemeHWK, signaturekey.SchemeJWKS},
+		Algorithms: []string{jose.ES256Algorithm}, // for hwk keys
+		JWKS:       keyResolver,
+		Protected:  otherClients,
+	},
+}
+```
+
+A request under one of these schemes is verified by that scheme's verifier and
+served by `FurtherSchemes.Protected`, never by the AAuth handler. There,
+`resource.SignerFromContext` returns the scheme, the signer (a key thumbprint
+URI, a `jwks_uri` id, a `jwks` URL or an `x5u`) and the verifying key. Such a
+signer is not an AAuth Agent and carries no person or grant. AAuth requests are
+unchanged. Every `Accept-Signature-Scheme` the protected routes send, on an
+unsigned challenge or on `unsupported_scheme`, lists `jwt` and then your
+schemes in your order; `Accept-Signature-Alg` lists Ed25519 and your
+algorithms; an `hwk` or `x509` key may use them, while keys found through
+`jwks`, `jwks_uri` or `jkt-jwt` stay Ed25519. Schemes may be `hwk`, `jkt-jwt`,
+`jwks_uri`, `jwks`, `x509` and `cached`. `x509` needs an `X509` callback that returns the chain, anchors and
+CRLs for an `x5u`. `cached` needs `Cache`, an `AssertionCache`, and `jkt-jwt`:
+the Resource then issues `Signature-Key-Cache` to a `jkt-jwt` client that
+asks, and resolves its `cached` requests. The authorization and revocation
+endpoints keep their AAuth schemes.
 
 ### Cache an assertion
 
