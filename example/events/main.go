@@ -99,7 +99,7 @@ func run(output io.Writer) error {
 			EndpointPrefix: resourceID + "/events/protected/", NewTicketID: func() string { return "ticket-1" },
 			MaximumTicketLifetime: 5 * time.Minute,
 			Register: func(_ context.Context, request resource.ProtectedSubscriptionRequest) (resource.PublicSubscriptionDecision, error) {
-				if request.Ticket.Agent != agentID || string(request.Ticket.Context) != "created appointment" {
+				if string(request.Ticket.Context) != "created appointment" {
 					return resource.PublicSubscriptionDecision{}, resource.ErrEventSubscriptionDenied
 				}
 				return resource.PublicSubscriptionDecision{ExpiresAt: now.Add(24 * time.Hour)}, nil
@@ -155,8 +155,11 @@ func run(output io.Writer) error {
 	}); err != nil {
 		return err
 	}
+	// A real Resource issues the ticket while serving a request it verified
+	// with a person token or auth token, binding the ticket to that token's
+	// cnf.jwk. The Agent signs with the same key here.
 	ticket, err := eventService.IssueProtectedSubscriptionTicket(ctx, resource.ProtectedSubscriptionTicketRequest{
-		Agent: agentID, Context: []byte("created appointment"), Lifetime: 2 * time.Minute,
+		ConfirmationKey: agentKey.PublicJWK(), Context: []byte("created appointment"), Lifetime: 2 * time.Minute,
 	})
 	if err != nil {
 		return err

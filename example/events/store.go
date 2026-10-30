@@ -143,13 +143,13 @@ func (store *resourceEventStore) CreateProtectedSubscriptionTicket(
 func (store *resourceEventStore) LoadProtectedSubscriptionTicket(
 	_ context.Context,
 	id string,
-	agent string,
+	keyThumbprint string,
 	at time.Time,
 ) (resource.ProtectedSubscriptionTicket, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	ticket, exists := store.tickets[id]
-	if !exists || ticket.Agent != agent {
+	if !exists || ticket.KeyThumbprint != keyThumbprint {
 		return resource.ProtectedSubscriptionTicket{}, resource.ErrProtectedSubscriptionNotFound
 	}
 	if !at.Before(ticket.ExpiresAt) && ticket.UsedAt.IsZero() {
