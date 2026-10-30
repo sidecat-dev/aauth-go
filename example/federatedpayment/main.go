@@ -34,7 +34,9 @@ func run(output io.Writer) {
 	apKey, agentKey, psKey, asKey, resourceKey := key("ap"), key("agent"), key("ps"), key("as"), key("resource")
 	network := localTransport{}
 	client := &http.Client{Transport: network}
-	resolver := must(signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{Client: client, Clock: clock, Admit: func(_ context.Context, endpoint string) error {
+	// The in-memory network makes no connection. Leave TransportEnforcesEgress
+	// unset with a network transport, so the resolver checks every destination.
+	resolver := must(signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{Client: client, TransportEnforcesEgress: true, Clock: clock, Admit: func(_ context.Context, endpoint string) error {
 		request, err := http.NewRequest("GET", endpoint, nil)
 		if err != nil {
 			return err

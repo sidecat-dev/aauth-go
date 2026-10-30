@@ -40,7 +40,7 @@ func TestHTTPKeyResolverBoundsPositiveAndNegativeState(t *testing.T) {
 			return discoveryResponse(request, body, "max-age=300"), nil
 		})}
 		resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-			Client: client, Clock: fixedClock(now), Admit: func(context.Context, string) error { return nil },
+			Client: client, TransportEnforcesEgress: true, Clock: fixedClock(now), Admit: func(context.Context, string) error { return nil },
 			Limits: signaturekey.HTTPKeyResolverLimits{PositiveEntries: 1, NegativeEntries: 1, InFlightEntries: 1},
 		})
 		if err != nil {
@@ -67,7 +67,7 @@ func TestHTTPKeyResolverBoundsPositiveAndNegativeState(t *testing.T) {
 			}, nil
 		})}
 		resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-			Client: client, Clock: fixedClock(now), Admit: func(context.Context, string) error { return nil },
+			Client: client, TransportEnforcesEgress: true, Clock: fixedClock(now), Admit: func(context.Context, string) error { return nil },
 			Limits: signaturekey.HTTPKeyResolverLimits{PositiveEntries: 1, NegativeEntries: 1, InFlightEntries: 1},
 		})
 		if err != nil {
@@ -97,7 +97,7 @@ func TestHTTPKeyResolverBoundsConcurrentUniqueDiscovery(t *testing.T) {
 		return nil, errors.New("released test request")
 	})}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: client, Clock: fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)),
+		Client: client, TransportEnforcesEgress: true, Clock: fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)),
 		Admit:  func(context.Context, string) error { return nil },
 		Limits: signaturekey.HTTPKeyResolverLimits{PositiveEntries: 1, NegativeEntries: 1, InFlightEntries: 1},
 	})
@@ -132,7 +132,7 @@ func TestHTTPKeyResolverEnforcesEgressAndRedirectBoundaries(t *testing.T) {
 			return nil, errors.New("network must not run")
 		})}
 		resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-			Client: client, Clock: fixedClock(time.Now()), Admit: func(context.Context, string) error {
+			Client: client, TransportEnforcesEgress: true, Clock: fixedClock(time.Now()), Admit: func(context.Context, string) error {
 				return errors.New("blocked by host policy")
 			},
 		})
@@ -160,7 +160,7 @@ func TestHTTPKeyResolverEnforcesEgressAndRedirectBoundaries(t *testing.T) {
 		}))
 		defer issuer.Close()
 		resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-			Client: issuer.Client(), Clock: fixedClock(time.Now()), Admit: func(context.Context, string) error { return nil },
+			Client: issuer.Client(), AllowDestination: allowLoopbackDiscovery, Clock: fixedClock(time.Now()), Admit: func(context.Context, string) error { return nil },
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -198,7 +198,7 @@ func TestHTTPKeyResolverRequiresExactMetadataIssuerBeforeJWKS(t *testing.T) {
 				return discoveryResponse(request, []byte(test.metadata), "max-age=300"), nil
 			})}
 			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-				Client: client, Clock: fixedClock(time.Now()), Admit: func(context.Context, string) error { return nil },
+				Client: client, TransportEnforcesEgress: true, Clock: fixedClock(time.Now()), Admit: func(context.Context, string) error { return nil },
 			})
 			if err != nil {
 				t.Fatal(err)

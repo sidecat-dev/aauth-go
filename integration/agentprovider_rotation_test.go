@@ -61,7 +61,7 @@ func TestAgentProviderKeyReplacementAndHostPublishedOverlap(t *testing.T) {
 			}
 			network.Handle(issuer, serve(oldProvider, nil))
 			resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-				Client: &http.Client{Transport: network}, Clock: clock,
+				Client: &http.Client{Transport: network}, TransportEnforcesEgress: true, Clock: clock,
 				Admit: func(_ context.Context, endpoint string) error {
 					if endpoint == issuer+"/.well-known/aauth-agent.json" || endpoint == issuer+"/.well-known/jwks.json" {
 						return nil

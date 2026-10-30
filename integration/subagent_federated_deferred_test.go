@@ -66,7 +66,7 @@ func newSubagentFederation(t *testing.T, childLifetime time.Duration) *subagentF
 	apKey, asKey, resourceKey := newSigningKey(t, "ap"), newSigningKey(t, "as"), newSigningKey(t, "resource")
 	f.parentKey, f.childKey, f.psKey = newSigningKey(t, "parent"), newSigningKey(t, "child"), newSigningKey(t, "ps")
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: f.clock, Admit: func(context.Context, string) error { return nil },
+		Client: httpClient, TransportEnforcesEgress: true, Clock: f.clock, Admit: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -576,7 +576,7 @@ func TestSubagentFederatedLateASAnswerIsWithdrawn(t *testing.T) {
 func (f *subagentFederation) parentResolver(t *testing.T) signaturekey.KeyResolver {
 	t.Helper()
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: &http.Client{Transport: f.network}, Clock: f.clock, Admit: func(context.Context, string) error { return nil },
+		Client: &http.Client{Transport: f.network}, TransportEnforcesEgress: true, Clock: f.clock, Admit: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,12 +33,33 @@ const (
 type EgressAdmitter func(ctx context.Context, endpoint string) error
 
 // HTTPKeyResolverConfig supplies network, time, egress, and capacity policy.
+//
+// Admit decides, before each fetch, whether a metadata or JWKS URL may be
+// contacted. The resolver also checks every connection itself: it dials
+// through a clone of Client's *http.Transport (or of a direct default
+// transport when Client has none), resolves the host once, refuses the
+// destination when any resolved address is not public (PublicDestination) and
+// AllowDestination does not admit it, and connects to the exact address it
+// checked, so DNS rebinding cannot move the connection. Redirects are never
+// followed.
 type HTTPKeyResolverConfig struct {
 	Client  *http.Client
 	Clock   Clock
 	Admit   EgressAdmitter
 	Limits  HTTPKeyResolverLimits
 	Timeout time.Duration
+	// AllowDestination admits a non-public destination address that
+	// deployment configuration explicitly allows, such as an internal issuer.
+	// Nil admits none.
+	AllowDestination func(netip.Addr) bool
+	// LookupAddresses resolves a discovery host. Nil uses the system resolver.
+	LookupAddresses func(context.Context, string) ([]netip.Addr, error)
+	// TransportEnforcesEgress states that Client's transport applies these
+	// destination controls itself, or makes no network connection at all. The
+	// resolver then uses it unchanged. Without it, a transport the resolver
+	// cannot dial through (not an *http.Transport, or one with a proxy or a
+	// custom TLS dialer) is refused.
+	TransportEnforcesEgress bool
 }
 
 // HTTPKeyResolverLimits bounds retained successful issuers, retained remote
@@ -105,8 +127,12 @@ func NewHTTPKeyResolver(config HTTPKeyResolverConfig) (*HTTPKeyResolver, error) 
 	if timeout == 0 {
 		timeout = defaultDiscoveryTimeout
 	}
+	client, err := discoveryHTTPClient(config)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPKeyResolver{
-		client:   config.Client,
+		client:   client,
 		clock:    config.Clock,
 		admit:    config.Admit,
 		limits:   limits,

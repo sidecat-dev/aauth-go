@@ -48,7 +48,7 @@ func TestKeyRotationReauthorizesWithFreshResourceTokensAtThePersonServer(t *test
 	submitted := &submittedResourceTokens{base: network, personServer: personServerID}
 	httpClient := &http.Client{Transport: submitted}
 	keyResolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if stringsHasAnySuffix(endpoint,
 				"/.well-known/aauth-agent.json", "/.well-known/aauth-person.json",

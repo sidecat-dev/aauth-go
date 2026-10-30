@@ -33,8 +33,8 @@ func TestCurrentCoreMissionlessAndMissionBoundInteractionRelay(t *testing.T) {
 	network := newLogicalTransport()
 	httpClient := &http.Client{Transport: network}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient,
-		Clock:  clock,
+		Client: httpClient, TransportEnforcesEgress: true,
+		Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if strings.Contains(endpoint, ".example/.well-known/") {
 				return nil

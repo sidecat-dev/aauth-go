@@ -33,7 +33,7 @@ func TestCurrentCoreMissionBoundPermissionAcrossPersonServerRecomposition(t *tes
 	network := newLogicalTransport()
 	httpClient := &http.Client{Transport: network}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
-		Client: httpClient, Clock: clock,
+		Client: httpClient, TransportEnforcesEgress: true, Clock: clock,
 		Admit: func(_ context.Context, endpoint string) error {
 			if strings.HasSuffix(endpoint, ".example/.well-known/aauth-agent.json") ||
 				strings.HasSuffix(endpoint, ".example/.well-known/aauth-person.json") ||
