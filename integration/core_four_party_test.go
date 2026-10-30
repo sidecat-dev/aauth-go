@@ -1388,9 +1388,17 @@ func cloneHeldInvocation(invocation resource.HeldInvocation) resource.HeldInvoca
 	invocation.Header = invocation.Header.Clone()
 	invocation.Body = append([]byte(nil), invocation.Body...)
 	invocation.RequiredScopes = append([]string(nil), invocation.RequiredScopes...)
+	if invocation.Budget != nil {
+		budget := *invocation.Budget
+		invocation.Budget = &budget
+	}
 	if invocation.R3PerCall != nil {
 		cloned := *invocation.R3PerCall
 		cloned.ExactProposal = append([]byte(nil), invocation.R3PerCall.ExactProposal...)
+		if cloned.Release != nil {
+			release := cloneHeldResponse(*cloned.Release)
+			cloned.Release = &release
+		}
 		invocation.R3PerCall = &cloned
 	}
 	return invocation

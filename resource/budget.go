@@ -329,13 +329,10 @@ func validateBudgetConfig(config *BudgetConfig, topology authorizationTopology) 
 	if config.Store == nil {
 		return nil, errors.New("aauth: Resource Budget store is required")
 	}
-	var reserver BudgetReserver
-	if config.Maximum != nil {
-		var ok bool
-		reserver, ok = config.Store.(BudgetReserver)
-		if !ok {
-			return nil, errors.New("aauth: variable-cost Resource Budget requires a reserve-commit-release store")
-		}
+	// A reserving store also lets the Resource hold a Budget refusal under 202.
+	reserver, _ := config.Store.(BudgetReserver)
+	if config.Maximum != nil && reserver == nil {
+		return nil, errors.New("aauth: variable-cost Resource Budget requires a reserve-commit-release store")
 	}
 	if config.Challenge == nil {
 		return nil, errors.New("aauth: Resource Budget challenge issuer is required")

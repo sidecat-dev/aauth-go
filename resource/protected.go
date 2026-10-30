@@ -359,7 +359,7 @@ func (server *Server) serveAuthTokenProtected(
 			// document lookup.
 		} else if referenceKind == r3ClassReference && access == r3.OperationAccessPerCall {
 			server.serveR3PerCallChallenge(
-				response, request, proof, claims, *authorization, operation, requiredScopes,
+				response, request, proof, claims, *authorization, operation, requiredScopes, compact,
 			)
 			return
 		} else if referenceKind == r3ProposalReference && access == r3.OperationAccessGranted {
@@ -400,14 +400,14 @@ func (server *Server) serveAuthTokenProtected(
 			reference = &value
 		}
 		if server.budget.maximum != nil {
-			settlement, ok := server.beginReservedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference)
+			settlement, ok := server.beginReservedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference, requiredScopes)
 			if !ok {
 				return
 			}
 			defer settlement.finish()
 			protectedContext = context.WithValue(protectedContext, budgetSettlementKey{}, settlement)
 			handlerWriter = settlement.writer
-		} else if !server.enforceFixedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference) {
+		} else if !server.enforceFixedBudget(budgetResponse, request, claims, principal, *budgetGrant, reference, requiredScopes) {
 			return
 		}
 	} else if budgetResponse != nil {
@@ -461,6 +461,7 @@ func (server *Server) enforceFixedBudget(
 	principal AuthPrincipal,
 	grant budgets.Value,
 	r3Reference *r3.Reference,
+	requiredScopes []string,
 ) bool {
 	// Pricing is part of metering. A pricing failure must not trigger a
 	// fallback balance observation or establish a ledger binding.
@@ -504,7 +505,7 @@ func (server *Server) enforceFixedBudget(
 		response.Header().Set("AAuth-Budget", formatted)
 		return true
 	}
-	return server.refuseBudget(response, request, claims, principal, grant, r3Reference, cost, result, err)
+	return server.refuseBudget(response, request, claims, principal, grant, r3Reference, requiredScopes, cost, result, err)
 }
 
 func (server *Server) refuseBudget(
@@ -514,6 +515,7 @@ func (server *Server) refuseBudget(
 	principal AuthPrincipal,
 	grant budgets.Value,
 	r3Reference *r3.Reference,
+	requiredScopes []string,
 	cost int64,
 	result BudgetChargeResult,
 	err error,
@@ -576,6 +578,17 @@ func (server *Server) refuseBudget(
 	)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
+	}
+	store, hold, err := server.heldBudgetStore(request, r3Reference != nil)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return false
+	}
+	if hold {
+		server.holdBudgetRefusal(
+			response, request, store, claims, challengeToken, requiredScopes, formattedRequirement, formattedFeedback,
+		)
 		return false
 	}
 	response.Header().Set("AAuth-Budget", formattedFeedback)
@@ -739,7 +752,19 @@ func (server *Server) servePersonTokenChallenge(
 	response.WriteHeader(http.StatusUnauthorized)
 }
 
+// shouldHoldAuthTokenRequest selects held delivery for a person-token or R3
+// per-call challenge. A Resource with a Budget profile holds only Budget
+// refusals, whose completion is metered against the completing token; any
+// other held completion would run a metered route unmetered.
 func (server *Server) shouldHoldAuthTokenRequest(request *http.Request) (bool, error) {
+	if server.budget != nil {
+		return false, nil
+	}
+	return server.holdPolicy(request)
+}
+
+// holdPolicy applies the host's HoldAuthTokenRequest policy.
+func (server *Server) holdPolicy(request *http.Request) (bool, error) {
 	if server.heldInvocations == nil {
 		return false, nil
 	}

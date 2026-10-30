@@ -250,6 +250,76 @@ means the approval contains no token for that exact Resource identifier.
 use its keys when reporting the available Resources. [Mission tests](agent/mission_test.go)
 cover present and absent Resources and protect the retained mapping from mutation.
 
+## Organize R3 definitions and gate release
+
+**Several internal definitions.** A Resource may keep its R3 authorization in
+several definitions of its own, for example one per scope. List them in
+`R3VocabularyConfig.InternalDefinitions`, each with its operations and display;
+together they must cover every operation of the vocabulary's `Definition`. An
+agent request whose operations fall under more than one definition still gets
+one Resource token naming one document: its operations are exactly the
+requested ones, and its display merges each involved definition's display with
+`r3.MergeDisplays`. `DisplayForOperations`, when set, writes the display for
+the combination instead, and is where to name an `account` in words the person
+recognizes. The document's bytes are retained in your `R3DocumentStore` as for
+any R3 document.
+
+**Approve release rather than execution.** For a per-call operation with no
+side effects, set `R3PerCallConfig.Release`:
+
+```go
+config.R3.PerCall.Release = &resource.R3ReleaseConfig{
+	Eligible: func(ctx context.Context, call r3.Invocation) (bool, error) {
+		return isReadOnlyQuery(call), nil
+	},
+	DescribeResult: func(ctx context.Context, ran resource.R3ReleaseRequest) (resource.R3ReleaseDescription, error) {
+		return resource.R3ReleaseDescription{
+			Parameters: queryParameters(ran.Invocation),
+			Result:     json.RawMessage(`{"records":214,"contains":["compensation"]}`),
+			Display:    releaseSummary, // "Release the result of a query over employee records"
+			Detail:     "## Details\n214 rows.",
+		}, nil
+	},
+}
+```
+
+It applies to a call the Resource holds under `202` (`HeldInvocations` and
+`HoldAuthTokenRequest`). The Resource runs the held call at once under the
+class Auth token, passes the response to `DescribeResult`, and publishes a
+proposal with your `result` members and a display whose detail opens with
+`r3.ReleaseAction`, the statement that the operation has run and that what is
+approved is release of its result. The first poll with the per-call Auth token
+receives the retained response; the call never runs again, and a result whose
+release is never approved is never sent. Return true from `Eligible` only when
+nothing outside the result changes when the call runs: not for a call that is
+audited or billed, or that calls another party. The Resource itself never runs
+first a route its Budget profile meters or an operation annotated
+`budget: true`. Held stores must copy `HeldR3PerCall.Release`; rerun
+`resource/storetest.RunHeldInvocation`.
+
+## Hold a Budget refusal
+
+A four-party Resource with a Budget profile can answer a Budget refusal with
+`202` instead of `401` and hold the call. Configure `HeldInvocations` with a
+store that also implements `resource.HeldBudgetStore`, a Budget store that
+implements `BudgetReserver`, and `HoldAuthTokenRequest`. The `202` carries the
+same `AAuth-Requirement`, reason and fresh Resource token as the `401`, and
+`AAuth-Budget` reports the refused token's `remaining` and `required` only.
+Nothing is reserved against or metered to the refused token.
+
+The agent obtains a new Auth token and polls the `Location`. On that poll the
+Resource reserves the call's `Maximum` (or fixed `Cost`) against the poll's
+token, runs the call, and commits; the handler may call `SettleBudget` as on a
+direct call. A poll token whose remainder is too small gets another `202` with
+`reason=insufficient-budget` and a fresh Resource token naming it, and the call
+stays held at the same URL; the store's `Rechallenge` swaps the Resource token.
+A repeated poll with the completing token is answered from the stored result,
+metered once, with `AAuth-Budget` reporting that token's current remaining.
+With a Budget profile, the Resource holds only Budget refusals: person-token
+and R3 per-call challenges answer `401`, because their held completion would
+run a metered route unmetered. A refused token that carries R3 claims is
+answered `401`.
+
 ## Sign and verify Budget usage
 
 A Resource whose `BudgetStore` implements `BudgetUsageStore` serves the

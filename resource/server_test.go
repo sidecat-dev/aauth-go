@@ -114,9 +114,6 @@ func TestFederatedBudgetRejectsUnsupportedDeliveryCompositions(t *testing.T) {
 		change func(*FederatedAuthorizationConfig)
 		want   string
 	}{
-		{name: "held invocation", change: func(config *FederatedAuthorizationConfig) {
-			config.HeldInvocations = newHeldMemoryStore()
-		}, want: "Resource-held Budget"},
 		{name: "reactive initial offer", change: func(config *FederatedAuthorizationConfig) {
 			config.Budget.InitialOffer = func(context.Context, BudgetInitialOfferRequest) (budgets.Value, error) {
 				return budgets.Value{}, nil

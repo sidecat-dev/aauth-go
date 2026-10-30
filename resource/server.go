@@ -68,15 +68,17 @@ type FederatedAuthorizationConfig struct {
 	// Budget optionally enables proactive four-party Budget offers and
 	// fixed-price enforcement for metered protected routes. A paired R3 config
 	// permits class-document operation authorization under the same fixed grant.
-	// Budget does not compose with held or reactive delivery.
+	// Budget does not compose with reactive delivery. With HeldInvocations,
+	// only Budget refusals are held; see HeldBudgetStore.
 	Budget *BudgetConfig
 	// HeldInvocations enables Resource-held auth-token delivery. The host store
 	// is a trusted persistence and authorization boundary; see
 	// HeldInvocationStore.
 	HeldInvocations HeldInvocationStore
 	// HoldAuthTokenRequest selects held delivery per verified person-token
-	// request. A nil function selects held delivery for every request when
-	// HeldInvocations is configured.
+	// request, R3 per-call challenge, or Budget refusal. A nil function
+	// selects held delivery for every request when HeldInvocations is
+	// configured.
 	HoldAuthTokenRequest func(*http.Request) bool
 	// MaxRetainedRequestBodyBytes bounds the retained application request body.
 	MaxRetainedRequestBodyBytes int64
@@ -446,9 +448,6 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, error) {
 	if err := aauth.ValidateServerIdentifier(config.AccessServer); err != nil {
 		return nil, fmt.Errorf("aauth: resource access server: %w", err)
-	}
-	if config.Budget != nil && config.HeldInvocations != nil {
-		return nil, errors.New("aauth: Resource-held Budget authorization is not implemented")
 	}
 	if config.Budget != nil && config.Budget.InitialOffer != nil {
 		return nil, errors.New("aauth: reactive four-party Budget authorization is not implemented")

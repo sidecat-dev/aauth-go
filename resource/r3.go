@@ -67,12 +67,18 @@ type R3VocabularyConfig struct {
 	// advertised at its retained endpoint.
 	Definition r3.AuthoritativeSnapshot
 	// DisplayForOperations optionally describes the consequences of one
-	// validated request for Person Server consent.
+	// validated request for Person Server consent. It takes precedence over
+	// the merged display of InternalDefinitions.
 	DisplayForOperations func(
 		context.Context,
 		r3.OperationSet,
 		*string,
 	) (*r3.Display, error)
+	// InternalDefinitions optionally organizes the vocabulary's operations
+	// into the Resource's own definitions, each with its display. Together
+	// they must cover every operation of Definition. A request is always
+	// answered with one composed document; see R3InternalDefinition.
+	InternalDefinitions []R3InternalDefinition
 }
 
 // R3PerCallConfig supplies Resource-owned proposal description plus the
@@ -83,6 +89,9 @@ type R3PerCallConfig struct {
 	DescribeCall func(context.Context, r3.Invocation, *string) (R3CallDescription, error)
 	Proposals    R3ProposalStore
 	Retries      R3RetryStore
+	// Release optionally runs eligible held calls before approval and asks
+	// for approval to release their result. See R3ReleaseConfig.
+	Release *R3ReleaseConfig
 }
 
 // R3CallDescription is the Resource's proposed representation and display
@@ -109,15 +118,9 @@ func (server *Server) issueR3ResourceToken(
 	if !ok {
 		return "", fmt.Errorf("aauth: R3 vocabulary %q is not configured", operations.Vocabulary())
 	}
-	var display *r3.Display
-	var err error
-	if vocabulary.displayForOperations != nil {
-		display, err = vocabulary.displayForOperations(
-			ctx, operations, cloneAuthorizationAccount(claims.Account),
-		)
-		if err != nil {
-			return "", fmt.Errorf("aauth: describe R3 operations: %w", err)
-		}
+	display, err := vocabulary.documentDisplay(ctx, operations, claims.Account)
+	if err != nil {
+		return "", err
 	}
 	document, err := r3.NewDocument(operations, r3.DocumentOptions{
 		Account: cloneAuthorizationAccount(claims.Account), Display: display,
@@ -473,12 +476,14 @@ func (server *Server) r3InvocationForRequest(request *http.Request, operation r3
 type r3VocabularyConfig struct {
 	definition           r3.AuthoritativeSnapshot
 	displayForOperations func(context.Context, r3.OperationSet, *string) (*r3.Display, error)
+	internalDefinitions  []r3InternalDefinition
 }
 
 type r3PerCallConfig struct {
 	describeCall func(context.Context, r3.Invocation, *string) (R3CallDescription, error)
 	proposals    R3ProposalStore
 	retries      R3RetryStore
+	release      *r3ReleaseConfig
 }
 
 func validateR3Config(config *R3Config) (*r3Config, error) {
@@ -532,9 +537,14 @@ func validateR3Config(config *R3Config) (*r3Config, error) {
 				}
 			}
 		}
+		internalDefinitions, err := validateR3InternalDefinitions(uri, candidate.Definition, candidate.InternalDefinitions)
+		if err != nil {
+			return nil, err
+		}
 		vocabularies[uri] = r3VocabularyConfig{
 			definition:           candidate.Definition,
 			displayForOperations: candidate.DisplayForOperations,
+			internalDefinitions:  internalDefinitions,
 		}
 		order[index] = uri
 	}
@@ -552,10 +562,15 @@ func validateR3Config(config *R3Config) (*r3Config, error) {
 		if config.PerCall.Retries == nil {
 			return nil, errors.New("aauth: Resource R3 retry store is required")
 		}
+		release, err := validateR3ReleaseConfig(config.PerCall.Release)
+		if err != nil {
+			return nil, err
+		}
 		perCall = &r3PerCallConfig{
 			describeCall: config.PerCall.DescribeCall,
 			proposals:    config.PerCall.Proposals,
 			retries:      config.PerCall.Retries,
+			release:      release,
 		}
 	}
 	return &r3Config{

@@ -2209,3 +2209,65 @@ unsigned. See AAG-F150.
 
 **Evidence:** `resource/usage_signature_test.go` and
 `signaturekey/response_external_test.go`.
+
+## Internal R3 definitions compose by merging their displays
+
+**Source:** R3 `70d6737`, Operations Spanning Multiple Definitions (lines
+431–442).
+
+The draft leaves the organization of a Resource's definitions to the Resource
+and lets it merge their displays or write one for the combination. A
+definition is involved when the requested operations are not disjoint from its
+operations under the vocabulary's own semantics. `r3.MergeDisplays` joins
+summaries with "; ", implications and irreversible text with a blank line, and
+takes the union of the distinct `data_accessed` values, so no stated
+consequence is lost. The composed document's operations are always exactly the
+requested ones, never the whole of each involved definition. The internal
+definitions must together cover the vocabulary's authoritative operations, so
+no requested operation falls outside every definition. Each document stays
+bound to its Resource token's lineage in its URI, so an identical combination
+yields identical bytes and the same `r3_s256` but is not served at a shared
+URI.
+
+**Evidence:** `resource/r3_definitions_test.go` and `r3/release_test.go`.
+
+## Release gating runs only held calls and writes the release statement
+
+**Source:** R3 `70d6737`, Proposal Document (`result`) and Approving Release
+Rather Than Execution (lines 686–723).
+
+The Resource runs a call before approval only under `202` delivery, where the
+agent never re-sends it: under `401` the agent's retry would ask for a result
+computed from a call it no longer controls. `NewReleaseProposalDisplay` opens
+the detail with a fixed `## Action` section stating that the operation has run
+and that what is approved is release of its result, and `NewProposal` refuses a
+`result` without that display; a received proposal is not judged by this
+wording. A route the Budget profile meters, and an operation annotated
+`budget: true`, never run first. Whether running is audited or billed, or calls
+another party, only the host knows, so `Eligible` decides. The library meters
+nothing for a release-gated call, so a declined release leaves no Budget
+posting and the held record keeps the unreleased response until its pending
+lifetime ends: what the library meters and what its records show cannot
+diverge. A host that meters release itself owns that agreement. A re-requested
+call runs again rather than inheriting the earlier result; by the eligibility
+rule that has no outside effect.
+
+**Evidence:** `resource/r3_release_test.go` and `r3/release_test.go`.
+
+## A held Budget refusal stays at one pending URL
+
+**Source:** Budgets `70d6737`, Deferred Delivery (lines 769–802).
+
+Rule 3 says the Resource "continues to hold the invocation" after a completing
+token that does not fit, without saying whether the pending URL changes. The
+Resource keeps the same `Location` and swaps the held Resource token with
+`HeldBudgetStore.Rechallenge`, a compare-and-swap on the previous token, so one
+invocation is never pending under two tokens. The reservation for the
+completing token is taken before the store claims the invocation and released
+on a replay, a conflict or a mismatch, so a replay meters nothing and a token
+that does not fit leaves the invocation pending. A hold needs a reserving
+Budget store for that order. With a Budget profile the Resource holds nothing
+else, because a held Core or per-call completion carries no meter. A refused
+token that carries R3 claims is answered `401`, as before.
+
+**Evidence:** `resource/held_budget_test.go`.

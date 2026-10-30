@@ -100,6 +100,10 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if invocation.Budget != nil {
+		server.serveHeldBudgetPoll(response, request, pendingID, invocation, snapshot)
+		return
+	}
 	resourceToken, resourceReference, resourceCarriesR3, err := server.verifyHeldRetainedResourceToken(
 		request.Context(), invocation,
 	)
@@ -149,6 +153,11 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		writeR3ValidationFailure(response, err)
 		return
 	}
+	released, releaseFirst, err := server.heldRelease(invocation)
+	if err != nil {
+		writeR3ValidationFailure(response, err)
+		return
+	}
 	credential := HeldAuthToken{
 		SHA256:      sha256.Sum256([]byte(compact)),
 		PresentedAt: time.Unix(proof.VerifiedAt().Unix(), 0),
@@ -170,9 +179,14 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("held invocation store returned an invalid execution claim"))
 		return
 	}
-	applicationResponse := server.executeHeldInvocation(
-		snapshot, compact, authToken, proof.PublicKey(), proof.VerifiedAt(), executionScopes,
-	)
+	// A release-gated call already ran before approval: completion releases
+	// the response it produced and never runs it again.
+	applicationResponse := released
+	if !releaseFirst {
+		applicationResponse = server.executeHeldInvocation(
+			snapshot, compact, authToken, proof.PublicKey(), proof.VerifiedAt(), executionScopes,
+		)
+	}
 	retained, err := server.heldInvocations.Retain(context.Background(), execution, applicationResponse)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -350,6 +364,20 @@ func (server *Server) executeHeldInvocation(
 	requestKey jose.JWK,
 	verifiedAt time.Time,
 	scopes []string,
+) HeldResponse {
+	return server.executeHeldInvocationSettled(snapshot, compact, claims, requestKey, verifiedAt, scopes, nil)
+}
+
+// executeHeldInvocationSettled runs a held invocation. A non-nil settlement
+// is the Budget reservation the handler may settle with SettleBudget.
+func (server *Server) executeHeldInvocationSettled(
+	snapshot heldRequestSnapshot,
+	compact string,
+	claims aauth.AuthTokenClaims,
+	requestKey jose.JWK,
+	verifiedAt time.Time,
+	scopes []string,
+	settlement *budgetSettlement,
 ) (result HeldResponse) {
 	defer func() {
 		if recover() != nil {
@@ -373,6 +401,9 @@ func (server *Server) executeHeldInvocation(
 		AdditionalClaims: cloneAdditionalClaims(claims.AdditionalClaims),
 	}
 	executionContext = context.WithValue(executionContext, authTokenContextKey{}, compact)
+	if settlement != nil {
+		executionContext = context.WithValue(executionContext, budgetSettlementKey{}, settlement)
+	}
 	applicationRequest, err := snapshot.request(executionContext, principal)
 	if err != nil {
 		return server.heldInternalFailure()

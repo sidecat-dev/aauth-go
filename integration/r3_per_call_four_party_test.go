@@ -1506,7 +1506,33 @@ func (store *r3PerCallHeldStore) observation(location string) (claims, retains i
 	return entry.claims, entry.retains
 }
 
-var _ resource.HeldInvocationStore = (*r3PerCallHeldStore)(nil)
+func (store *r3PerCallHeldStore) Rechallenge(_ context.Context, id string, challenge resource.HeldRechallenge) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entry, ok := store.records[id]
+	if !ok {
+		return resource.ErrHeldInvocationNotFound
+	}
+	switch entry.state {
+	case "pending":
+	case "complete":
+		return resource.ErrHeldAuthTokenMismatch
+	case "expired":
+		return resource.ErrHeldInvocationExpired
+	default:
+		return resource.ErrHeldInvocationConflict
+	}
+	if entry.invocation.ResourceToken != challenge.Previous {
+		return resource.ErrHeldInvocationConflict
+	}
+	entry.invocation.ResourceToken = challenge.ResourceToken
+	entry.invocation.ResourceTokenIssuedAt = challenge.ResourceTokenIssuedAt
+	entry.invocation.ExpiresAt = challenge.ExpiresAt
+	entry.invocation.CompletionUntil = challenge.CompletionUntil
+	return nil
+}
+
+var _ resource.HeldBudgetStore = (*r3PerCallHeldStore)(nil)
 
 func assertR3PerCallStoreCopies(
 	t *testing.T,

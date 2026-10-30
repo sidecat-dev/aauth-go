@@ -17,9 +17,13 @@ import (
 
 type budgetSettlementKey struct{}
 
+// budgetSettlement settles one reservation. A held invocation settles with no
+// writer: it records the result, and the Resource writes the feedback on the
+// retained response.
 type budgetSettlement struct {
 	mu      sync.Mutex
 	settled bool
+	result  *BudgetChargeResult
 	writer  *budgetWriteState
 	store   BudgetReserver
 	id      string
@@ -116,6 +120,11 @@ func (settlement *budgetSettlement) settle(cost int64) error {
 	if err != nil {
 		return err
 	}
+	if settlement.writer == nil {
+		settlement.result = &result
+		settlement.settled = true
+		return nil
+	}
 	if settlement.writer.written() {
 		formatted, err := budgets.FormatTrailer(result.Cost)
 		if err != nil {
@@ -155,6 +164,7 @@ func (server *Server) beginReservedBudget(
 	principal AuthPrincipal,
 	grant budgets.Value,
 	r3Reference *r3.Reference,
+	requiredScopes []string,
 ) (*budgetSettlement, bool) {
 	response.observationBlocked = true
 	policyRequest, finish, err := cloneScopePolicyRequest(request)
@@ -195,7 +205,7 @@ func (server *Server) beginReservedBudget(
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return nil, false
 		}
-		server.refuseBudget(response, request, claims, principal, grant, r3Reference, hold, BudgetChargeResult{Remaining: reserved.Remaining, Consumed: reserved.Consumed}, err)
+		server.refuseBudget(response, request, claims, principal, grant, r3Reference, requiredScopes, hold, BudgetChargeResult{Remaining: reserved.Remaining, Consumed: reserved.Consumed}, err)
 		return nil, false
 	}
 	feedback, err := budgets.NewReservedFeedback(grant, reserved.Remaining, reserved.Reserved)
