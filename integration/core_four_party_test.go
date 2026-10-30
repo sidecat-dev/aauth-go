@@ -860,10 +860,11 @@ func cloneIntegrationMissionCompletionDocument(document aauth.MissionCompletionD
 }
 
 type memoryPendingPersonToken struct {
-	record   personserver.PendingPersonTokenRecord
-	state    personserver.PersonTokenPollState
-	approval personserver.PersonTokenApproval
-	denied   bool
+	record         personserver.PendingPersonTokenRecord
+	state          personserver.PersonTokenPollState
+	approval       personserver.PersonTokenApproval
+	denied         bool
+	failedAttempts int
 }
 
 func (store *memoryPersonTokenStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
@@ -933,14 +934,24 @@ func (store *memoryPersonTokenStore) CreatePendingPersonToken(_ context.Context,
 	return nil
 }
 
-func (store *memoryPersonTokenStore) ConsumePersonTokenInteractionCode(_ context.Context, personServer, reference string, code [32]byte, now time.Time) (personserver.PendingPersonTokenRecord, error) {
+func (store *memoryPersonTokenStore) ConsumePersonTokenInteractionCode(_ context.Context, personServer, reference string, presentation personserver.PersonTokenCodePresentation, now time.Time) (personserver.PendingPersonTokenRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	pending, ok := store.pending[reference]
-	if !ok {
+	if !ok || pending.record.PersonServer != personServer {
 		return personserver.PendingPersonTokenRecord{}, personserver.ErrInteractionCodeInvalid
 	}
-	if pending.record.PersonServer != personServer || pending.record.CodeSHA256 != code {
+	if pending.failedAttempts >= personserver.MaximumPersonTokenCodeAttempts {
+		return personserver.PendingPersonTokenRecord{}, personserver.ErrPendingPersonTokenGone
+	}
+	if !presentation.SyntacticallyValid || pending.record.CodeSHA256 != presentation.CodeSHA256 {
+		if pending.state == personserver.PersonTokenPollWaiting && now.Before(pending.record.ExpiresAt) {
+			pending.failedAttempts++
+			if pending.failedAttempts >= personserver.MaximumPersonTokenCodeAttempts {
+				pending.state = personserver.PersonTokenPollGone
+				return personserver.PendingPersonTokenRecord{}, personserver.ErrPendingPersonTokenGone
+			}
+		}
 		return personserver.PendingPersonTokenRecord{}, personserver.ErrInteractionCodeInvalid
 	}
 	if pending.state != personserver.PersonTokenPollWaiting {

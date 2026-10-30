@@ -34,6 +34,20 @@ var (
 	ErrInteractionCodeUsed = errors.New("personserver: interaction code was already used")
 )
 
+// MaximumPersonTokenCodeAttempts is the fixed failed-code bound for one
+// pending person-token interaction. The store terminally fails the
+// interaction when it is reached.
+const MaximumPersonTokenCodeAttempts = 3
+
+// PersonTokenCodePresentation is one non-plaintext interaction-code attempt.
+// SyntacticallyValid is true only when CodeSHA256 contains the digest of a
+// successfully normalized Crockford presentation. A false value carries no
+// digest authority but still counts as a failed attempt.
+type PersonTokenCodePresentation struct {
+	CodeSHA256         [32]byte
+	SyntacticallyValid bool
+}
+
 // PersonTokenInteractionPolicy requests one PS-hosted interaction before a
 // person token is issued. URL names the host's authenticated user-interface
 // base; the server appends the unguessable pending reference as one path
@@ -129,9 +143,14 @@ type PendingPersonTokenSnapshot struct {
 // TokenStore. Its methods provide these atomic transitions:
 //
 //   - Create accepts one unique ID, issuer, and code digest or changes nothing.
-//   - Consume matches issuer, pending reference, and digest, gives terminal/used
-//     state precedence over expiry, and changes one live unused code to
-//     interacting.
+//   - Consume matches issuer and pending reference. While the record is
+//     waiting and unexpired, a syntactically invalid presentation or a
+//     nonmatching digest is one failed attempt; at
+//     MaximumPersonTokenCodeAttempts the record changes to gone, and every
+//     later presentation returns ErrPendingPersonTokenGone. A matching digest
+//     gives terminal/used state precedence over expiry and changes one live
+//     unused code to interacting. Consume never returns a record for
+//     SyntacticallyValid=false.
 //   - Load is read-only and returns the exact retained snapshot.
 //   - Approve atomically retains the exact token, token record, and Person
 //     before any of them become pollable.
@@ -142,13 +161,12 @@ type PendingPersonTokenSnapshot struct {
 //
 // A repeated approval with the same Person, or a repeated denial, is
 // idempotent even when the retry proposes a new token ID or decision time; the
-// first retained value remains canonical. The host rate-limits failed code
-// entries at its authenticated interaction URL and calls Invalidate when the
-// bound is reached.
+// first retained value remains canonical. The failed-attempt bound is the
+// store's; a host may also invalidate an interaction sooner.
 type DeferredTokenStore interface {
 	TokenStore
 	CreatePendingPersonToken(context.Context, PendingPersonTokenRecord) error
-	ConsumePersonTokenInteractionCode(context.Context, string, string, [32]byte, time.Time) (PendingPersonTokenRecord, error)
+	ConsumePersonTokenInteractionCode(context.Context, string, string, PersonTokenCodePresentation, time.Time) (PendingPersonTokenRecord, error)
 	LoadPendingPersonToken(context.Context, string) (PendingPersonTokenSnapshot, error)
 	ApprovePendingPersonToken(context.Context, string, PersonTokenApproval) error
 	DenyPendingPersonToken(context.Context, string, time.Time) error
@@ -432,7 +450,10 @@ func missionS256(record *MissionRecord) string {
 // ConsumePersonTokenInteractionCode correlates the code entered at one
 // pending-reference URL and atomically consumes it. Neither value authorizes
 // the request. The host must authenticate the person separately before
-// deciding.
+// deciding. Every failed code, malformed or wrong, counts against the
+// pending interaction; after MaximumPersonTokenCodeAttempts the interaction
+// is terminally failed, later presentations return ErrPendingPersonTokenGone,
+// and the Agent's poll answers invalid_code.
 func (server *Server) ConsumePersonTokenInteractionCode(ctx context.Context, reference, code string) (PersonTokenInteraction, error) {
 	if server == nil || server.deferredTokens == nil {
 		return PersonTokenInteraction{}, errors.New("personserver: person-token interactions are not configured")
@@ -443,18 +464,24 @@ func (server *Server) ConsumePersonTokenInteractionCode(ctx context.Context, ref
 	if reference == "" {
 		return PersonTokenInteraction{}, ErrInteractionCodeInvalid
 	}
-	digest, err := interaction.Digest(code)
-	if err != nil {
-		return PersonTokenInteraction{}, ErrInteractionCodeInvalid
+	presentation := PersonTokenCodePresentation{}
+	if digest, err := interaction.Digest(code); err == nil {
+		presentation.CodeSHA256 = digest
+		presentation.SyntacticallyValid = true
 	}
-	record, err := server.deferredTokens.ConsumePersonTokenInteractionCode(ctx, server.issuer, reference, digest, server.clock.Now().UTC())
+	record, err := server.deferredTokens.ConsumePersonTokenInteractionCode(
+		ctx, server.issuer, reference, presentation, server.clock.Now().UTC(),
+	)
 	if err != nil {
 		return PersonTokenInteraction{}, err
+	}
+	if !presentation.SyntacticallyValid {
+		return PersonTokenInteraction{}, errors.New("personserver: interaction store accepted a malformed code")
 	}
 	if err := validatePendingPersonTokenRecord(record); err != nil {
 		return PersonTokenInteraction{}, err
 	}
-	if record.ID != reference || record.PersonServer != server.issuer || record.CodeSHA256 != digest {
+	if record.ID != reference || record.PersonServer != server.issuer || record.CodeSHA256 != presentation.CodeSHA256 {
 		return PersonTokenInteraction{}, errors.New("personserver: interaction store returned a different pending request")
 	}
 	return server.personTokenInteractionFromRecord(ctx, record, server.clock.Now().UTC())
@@ -643,10 +670,10 @@ func (server *Server) DenyPersonTokenInteraction(ctx context.Context, interactio
 	return server.deferredTokens.DenyPendingPersonToken(ctx, interaction.id, now)
 }
 
-// InvalidatePersonTokenInteraction terminally fails a pending interaction after
-// the host's rate limiter reaches its failed-code-attempt bound. The host owns
-// the authenticated interaction endpoint and its attempt key; this package
-// owns only the retained terminal transition.
+// InvalidatePersonTokenInteraction terminally fails a pending interaction. The
+// store already does so after MaximumPersonTokenCodeAttempts failed codes; a
+// host whose own limiter at the authenticated interaction endpoint trips
+// sooner calls this.
 func (server *Server) InvalidatePersonTokenInteraction(ctx context.Context, interaction PersonTokenInteraction) error {
 	snapshot, err := server.loadPersonTokenInteraction(ctx, interaction)
 	if err != nil {
