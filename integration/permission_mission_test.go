@@ -64,7 +64,7 @@ func TestCurrentCoreMissionBoundPermissionAcrossPersonServerRecomposition(t *tes
 	store := exampleutil.NewMissionPermissionStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Prepare and send the reviewed incident update.",
 	})
 	if err != nil {

@@ -82,7 +82,7 @@ func run(output io.Writer) error {
 	permissions := testutil.NewMissionStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Archive the reviewed incident report.",
 	})
 	if err != nil {

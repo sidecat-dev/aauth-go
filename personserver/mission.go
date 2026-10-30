@@ -417,7 +417,7 @@ func (server *Server) prepareMissionApproval(
 		return MissionProposalApproval{}, err
 	}
 	blob := aauth.MissionBlob{
-		Approver: server.issuer, Agent: agent.Subject, ApprovedAt: approvedAt,
+		Agent: agent.Subject, ApprovedAt: approvedAt,
 		ExpiresAt: decision.ExpiresAt, Description: decision.Description,
 		ApprovedTools:     append([]aauth.MissionTool(nil), decision.ApprovedTools...),
 		ApprovedResources: append([]string(nil), decision.ApprovedResources...),
@@ -620,12 +620,8 @@ func (server *Server) loadActiveMission(
 	if record.Agent != agent || record.S256 != s256 {
 		return MissionRecord{}, ErrMissionNotFound
 	}
-	mission, err := validateMissionRecord(record)
-	if err != nil {
+	if _, err := validateMissionRecord(record); err != nil {
 		return MissionRecord{}, err
-	}
-	if mission.Blob.Approver != server.issuer {
-		return MissionRecord{}, errors.New("personserver: retained mission approver is not this Person Server")
 	}
 	if record.State == MissionTerminated {
 		return MissionRecord{}, &MissionTerminatedError{TerminationReason: record.TerminationReason}

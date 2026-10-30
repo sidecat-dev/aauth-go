@@ -637,7 +637,7 @@ func newMissionDeferredAuthorizationFixture(t *testing.T) missionDeferredAuthori
 	store := newMissionDeferredAuthorizationTestStore()
 	expiresAt := protocol.now.Add(90 * time.Second)
 	approved, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Prepare and publish the reviewed report.",
 	})

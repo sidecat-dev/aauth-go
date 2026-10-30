@@ -239,7 +239,7 @@ func commitCompositionMission(
 	t.Helper()
 	expiresAt := now.Add(10 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServer, Agent: agent, ApprovedAt: now.Add(-time.Minute),
+		Agent: agent, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &expiresAt, Description: "Composition boundary test",
 	})
 	if err != nil {

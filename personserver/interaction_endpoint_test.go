@@ -81,7 +81,7 @@ func TestMissionInteractionQuestionPolicyReceivesExactActiveMission(t *testing.T
 	store := newMemoryMissionStore()
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Choose the route for the approved trip.",
 	})
@@ -139,7 +139,7 @@ func TestMissionInteractionQuestionIsAvailableInFederatedMode(t *testing.T) {
 	store := newMemoryMissionStore()
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Choose the route for the approved trip.",
 	})
@@ -188,7 +188,7 @@ func TestDeferredMissionInteractionQuestionUsesExactMissionThroughConsume(t *tes
 	store := newMemoryMissionStore()
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Choose the route for the approved trip.",
 	})

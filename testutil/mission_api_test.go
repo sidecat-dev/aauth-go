@@ -76,7 +76,7 @@ func commitPublicMission(tb testing.TB, store personserver.MissionStore, approve
 	tb.Helper()
 	expires := approvedAt.Add(2 * time.Hour)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: "https://ps.example", Agent: "aauth:operator@ap.example", ApprovedAt: approvedAt, ExpiresAt: &expires, Description: "Review an itinerary.",
+		Agent: "aauth:operator@ap.example", ApprovedAt: approvedAt, ExpiresAt: &expires, Description: "Review an itinerary.",
 	})
 	if err != nil {
 		tb.Fatal(err)

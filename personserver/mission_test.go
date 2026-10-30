@@ -42,13 +42,21 @@ func TestMissionApprovalRetainsExactBlobAndIssuesBoundPersonTokens(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mission.Blob.Approver != protocol.personServerID || mission.Blob.Agent != protocol.agentID ||
+	if mission.Blob.Agent != protocol.agentID ||
 		mission.Blob.Description != "# Reviewed report\n\nPublish only the reviewed report." ||
 		!mission.Blob.ApprovedAt.Equal(protocol.now) || mission.Blob.ExpiresAt == nil ||
 		!mission.Blob.ExpiresAt.Equal(protocol.now.Add(12*time.Minute)) ||
 		!reflect.DeepEqual(mission.Blob.ApprovedTools, []aauth.MissionTool{{Name: "Publish", Description: "Publish the reviewed report"}}) ||
 		!slices.Equal(mission.Blob.ApprovedResources, []string{protocol.resourceID}) {
 		t.Fatalf("approved mission = %#v", mission.Blob)
+	}
+	// The blob carries no approver member; the approver is this Person Server.
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(mission.ExactJSON, &members); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := members["approver"]; present {
+		t.Fatalf("mission blob carries an approver member: %s", mission.ExactJSON)
 	}
 	if !slices.Equal(approval.Capabilities, []string{"interaction"}) {
 		t.Fatalf("capabilities = %#v", approval.Capabilities)
@@ -323,7 +331,7 @@ func TestMissionStoreRejectsDuplicateApprovalBatch(t *testing.T) {
 
 	protocol := newMissionProtocol(t)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID, ApprovedAt: protocol.now,
+		Agent: protocol.agentID, ApprovedAt: protocol.now,
 		Description: "Work",
 	})
 	if err != nil {
@@ -533,7 +541,7 @@ func TestMemoryMissionStoreCopiesUpdateAndCompletionRecords(t *testing.T) {
 	store := newMemoryMissionStore()
 	expiresAt := now.Add(time.Hour)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: "https://person.example", Agent: "aauth:agent@example", ApprovedAt: now,
+		Agent: "aauth:agent@example", ApprovedAt: now,
 		Description: "Test the reference store", ExpiresAt: &expiresAt,
 	})
 	if err != nil {
@@ -607,7 +615,7 @@ func TestMemoryMissionStoreLifecycleCASMaterializesExpiry(t *testing.T) {
 	store := newMemoryMissionStore()
 	expiresAt := now.Add(time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: "https://person.example", Agent: "aauth:agent@example", ApprovedAt: now,
+		Agent: "aauth:agent@example", ApprovedAt: now,
 		Description: "Expire the reference store", ExpiresAt: &expiresAt,
 	})
 	if err != nil {
@@ -727,7 +735,7 @@ func newMissionProtocol(t *testing.T) *missionProtocol {
 func (protocol *missionProtocol) commitMission(t *testing.T, agent string, expiresAt time.Time, state MissionState, reason string) MissionRecord {
 	t.Helper()
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: agent, ApprovedAt: protocol.now.Add(-time.Minute),
+		Agent: agent, ApprovedAt: protocol.now.Add(-time.Minute),
 		ExpiresAt: &expiresAt, Description: "Test mission",
 	})
 	if err != nil {

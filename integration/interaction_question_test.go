@@ -63,7 +63,7 @@ func TestCurrentCoreMissionlessAndMissionBoundInteractionQuestion(t *testing.T) 
 	questionStore := exampleutil.NewMissionInteractionQuestionStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Choose the route for the approved trip.",
 	})
 	if err != nil {

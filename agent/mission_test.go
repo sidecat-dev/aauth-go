@@ -25,7 +25,7 @@ func TestClientProposesAndVerifiesMission(t *testing.T) {
 	approvedAt := protocol.now
 	expiresAt := protocol.now.Add(15 * time.Minute)
 	mission := mustEncodeMission(t, aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID, ApprovedAt: approvedAt,
+		Agent: protocol.agentID, ApprovedAt: approvedAt,
 		ExpiresAt: &expiresAt, Description: proposal.Description,
 		ApprovedTools:     []aauth.MissionTool{{Name: "Read", Description: "Read records for the report"}},
 		ApprovedResources: []string{protocol.resourceID},
@@ -78,7 +78,7 @@ func TestClientProposesAndVerifiesMission(t *testing.T) {
 	}
 	approved := result.Mission()
 	if approved.S256 != mission.S256 || string(approved.ExactJSON) != string(mission.ExactJSON) ||
-		approved.Blob.Agent != protocol.agentID || approved.Blob.Approver != protocol.personServerID {
+		approved.Blob.Agent != protocol.agentID {
 		t.Fatalf("mission result = %#v", approved)
 	}
 	if !slices.Equal(result.Capabilities(), []string{"interaction"}) {
@@ -131,12 +131,8 @@ func TestClientRejectsInvalidMissionApprovalBindings(t *testing.T) {
 		{name: "digest substitution", change: func(_ *testProtocol, _ *aauth.ApprovedMission, approval *aauth.MissionApproval) {
 			approval.S256 = aauth.MissionS256([]byte("other"))
 		}},
-		{name: "wrong approver", change: func(protocol *testProtocol, mission *aauth.ApprovedMission, approval *aauth.MissionApproval) {
-			*mission = mustEncodeMission(t, aauth.MissionBlob{Approver: "https://other.example", Agent: protocol.agentID, ApprovedAt: protocol.now, Description: "Work"})
-			approval.S256, approval.Mission = mission.S256, mission.Encoded
-		}},
 		{name: "wrong agent", change: func(protocol *testProtocol, mission *aauth.ApprovedMission, approval *aauth.MissionApproval) {
-			*mission = mustEncodeMission(t, aauth.MissionBlob{Approver: protocol.personServerID, Agent: "aauth:other@ap.example", ApprovedAt: protocol.now, Description: "Work"})
+			*mission = mustEncodeMission(t, aauth.MissionBlob{Agent: "aauth:other@ap.example", ApprovedAt: protocol.now, Description: "Work"})
 			approval.S256, approval.Mission = mission.S256, mission.Encoded
 		}},
 		{name: "unapproved token resource", change: func(_ *testProtocol, _ *aauth.ApprovedMission, approval *aauth.MissionApproval) {
@@ -159,7 +155,7 @@ func TestClientRejectsInvalidMissionApprovalBindings(t *testing.T) {
 			t.Parallel()
 			protocol := newTestProtocol(t)
 			mission := mustEncodeMission(t, aauth.MissionBlob{
-				Approver: protocol.personServerID, Agent: protocol.agentID, ApprovedAt: protocol.now,
+				Agent: protocol.agentID, ApprovedAt: protocol.now,
 				Description: "Work", ApprovedResources: []string{protocol.resourceID},
 			})
 			personToken, err := aauth.MintPersonToken(protocol.personServerKey, aauth.PersonTokenClaims{
@@ -189,7 +185,7 @@ func TestClientRejectsDuplicatePersonTokenIdentityInMissionApproval(t *testing.T
 	protocol := newTestProtocol(t)
 	const otherResource = "https://resource-2.example"
 	mission := mustEncodeMission(t, aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID, ApprovedAt: protocol.now,
+		Agent: protocol.agentID, ApprovedAt: protocol.now,
 		Description: "Read both records", ApprovedResources: []string{protocol.resourceID, otherResource},
 	})
 	personTokens := make(map[string]string, 2)

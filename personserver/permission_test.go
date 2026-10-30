@@ -155,7 +155,7 @@ func TestMissionPermissionImmediateDecisionUsesExactActiveMission(t *testing.T) 
 	store := newMissionPermissionTestStore()
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Prepare and send the reviewed itinerary.",
 	})
@@ -216,7 +216,7 @@ func TestMissionPermissionImmediateDecisionRefusesExpiryDuringPolicy(t *testing.
 	store := newMissionPermissionTestStore()
 	expiresAt := protocol.now.Add(time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Prepare the reviewed itinerary.",
 	})
@@ -252,7 +252,7 @@ func TestMissionPermissionDeferredGrantRefusesTerminatedMission(t *testing.T) {
 	store := newMissionPermissionTestStore()
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Prepare the reviewed itinerary.",
 	})
@@ -340,7 +340,7 @@ func TestMissionPermissionPollDoesNotDeliverGrantAfterTermination(t *testing.T) 
 	store := newMissionPermissionTestStore()
 	expiresAt := protocol.now.Add(20 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: protocol.agentID,
+		Agent:      protocol.agentID,
 		ApprovedAt: protocol.now.Add(-time.Minute), ExpiresAt: &expiresAt,
 		Description: "Prepare the reviewed itinerary.",
 	})

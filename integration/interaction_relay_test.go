@@ -63,7 +63,7 @@ func TestCurrentCoreMissionlessAndMissionBoundInteractionRelay(t *testing.T) {
 	store := exampleutil.NewMissionInteractionRelayStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Complete the approved confirmation.",
 	})
 	if err != nil {

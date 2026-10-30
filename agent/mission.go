@@ -508,9 +508,6 @@ func (client *Client) decodeMissionApproval(
 	if err != nil {
 		return MissionResult{}, err
 	}
-	if mission.Blob.Approver != credential.personServer {
-		return MissionResult{}, errors.New("mission approver does not match person server")
-	}
 	if mission.Blob.Agent != client.identifier {
 		return MissionResult{}, errors.New("mission belongs to another Agent")
 	}

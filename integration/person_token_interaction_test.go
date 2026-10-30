@@ -66,7 +66,7 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	store := newMemoryPersonTokenStore()
 	missionExpiry := now.Add(30 * time.Minute)
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: personServerID, Agent: agentID, ApprovedAt: now.Add(-time.Minute),
+		Agent: agentID, ApprovedAt: now.Add(-time.Minute),
 		ExpiresAt: &missionExpiry, Description: "Read the approved records.",
 	})
 	if err != nil {

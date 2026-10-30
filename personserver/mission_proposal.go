@@ -465,7 +465,6 @@ func missionApprovalsSemanticallyEqual(left, right MissionProposalApproval) bool
 		return false
 	}
 	return leftMission.Blob.Agent == rightMission.Blob.Agent &&
-		leftMission.Blob.Approver == rightMission.Blob.Approver &&
 		leftMission.Blob.Description == rightMission.Blob.Description &&
 		slices.Equal(leftMission.Blob.ApprovedTools, rightMission.Blob.ApprovedTools) &&
 		slices.Equal(leftMission.Blob.ApprovedResources, rightMission.Blob.ApprovedResources) &&

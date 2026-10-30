@@ -584,7 +584,7 @@ func (protocol *auditProtocol) commitMission(
 ) MissionRecord {
 	t.Helper()
 	mission, err := aauth.EncodeMission(aauth.MissionBlob{
-		Approver: protocol.personServerID, Agent: agent, ApprovedAt: protocol.now.Add(-time.Minute),
+		Agent: agent, ApprovedAt: protocol.now.Add(-time.Minute),
 		ExpiresAt: &expiresAt, Description: "Audit test mission",
 	})
 	if err != nil {
