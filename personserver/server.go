@@ -1381,6 +1381,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	accessRequest.Header.Set("Content-Type", "application/json")
+	// Consent and the Budget ceiling may take as long as the person needs. A
+	// Person Server must not present an expired token, so the presented token
+	// and the Resource token are checked again just before they are sent.
+	if !server.authorizationInputsCurrent(response, resourceToken, presented.ExpiresAt, server.clock.Now().UTC()) {
+		return
+	}
 	if err := signaturekey.SignJWKSURIRequestWithOptions(
 		accessRequest, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock,
 		signaturekey.SignOptions{
