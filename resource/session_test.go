@@ -564,6 +564,7 @@ func TestSessionUseVerifiesProofBeforeLoadAndRejectsEveryBindingFailure(t *testi
 	if store.loadCount() != loadsBefore || protected != 0 {
 		t.Fatalf("unsigned session loaded state or called Protected: loads=%d->%d protected=%d", loadsBefore, store.loadCount(), protected)
 	}
+	assertSignatureError(t, unsignedResponse, signaturekey.ErrorInvalidSignature)
 
 	wrongResource, err := store.Create(context.Background(), SessionRecord{
 		Resource: "https://other-resource.example", AgentProvider: protocol.provider, Agent: protocol.agent,

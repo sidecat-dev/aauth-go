@@ -329,9 +329,11 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	signatureHeaders := request.Header.Values("Signature")
 	signatureInputs := request.Header.Values("Signature-Input")
 	credentialHeaders := request.Header.Values("Signature-Key")
+	// A missing Signature, Signature-Input, or Signature-Key header is a
+	// missing signature, not a request error unrelated to the signature.
 	if len(signatureHeaders) == 0 || len(signatureInputs) == 0 || len(credentialHeaders) == 0 {
 		return prepared, newError(
-			ErrorInvalidRequest,
+			ErrorInvalidSignature,
 			errors.New("aauth: Signature, Signature-Input, and Signature-Key headers are required"),
 		)
 	}
