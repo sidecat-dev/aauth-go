@@ -64,6 +64,10 @@ func TestAccessServerClaimsContinuation(t *testing.T) {
 				return Decision{Pending: &PendingDecision{Payment: &PaymentChallenge{Authenticate: `Payment id="bill"`}, RequiredClaims: []string{"email"}}}, nil
 			case "duplicate":
 				return Decision{Pending: &PendingDecision{RequiredClaims: []string{"email", "email"}}}, nil
+			case "claims-and-interaction":
+				return Decision{Pending: &PendingDecision{RequiredClaims: []string{"email"}, InteractionURL: "https://as.example/consent"}}, nil
+			case "interaction-url-with-query":
+				return Decision{Pending: &PendingDecision{InteractionURL: "https://as.example/consent?step=1"}}, nil
 			default:
 				if _, ok := request.Claims["email"]; ok {
 					return Decision{Scopes: request.Scopes, Lifetime: time.Minute}, nil
@@ -95,7 +99,8 @@ func TestAccessServerClaimsContinuation(t *testing.T) {
 		server.Handler().ServeHTTP(response, request)
 		return response
 	}
-	for _, bad := range []string{"sub", "payment-and-claims", "duplicate"} {
+	// A wait asks for one thing, and an interaction URL carries no query.
+	for _, bad := range []string{"sub", "payment-and-claims", "duplicate", "claims-and-interaction", "interaction-url-with-query"} {
 		mode = bad
 		response := postToken()
 		if response.Code != http.StatusInternalServerError {

@@ -28,7 +28,7 @@ func RunDeferredAuthorization(t *testing.T, contract DeferredAuthorizationContra
 	}
 	ctx := context.Background()
 	fixture := func() accessserver.PendingAuthorizationRecord {
-		return accessserver.PendingAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", Request: []byte(`{"agent_token":"exact"}`), ExpiresAt: time.Unix(100, 0), Revision: 1}
+		return accessserver.PendingAuthorizationRecord{ID: "request", PersonServer: "https://ps.example", Request: []byte(`{"agent_token":"exact"}`), InteractionCode: "ABCD-EFGH", ExpiresAt: time.Unix(100, 0), Revision: 1}
 	}
 	t.Run("replacement requires an existing record", func(t *testing.T) {
 		store := contract.New(t)
@@ -69,7 +69,7 @@ func RunDeferredAuthorization(t *testing.T, contract DeferredAuthorizationContra
 		if err := store.CreateAccessAuthorization(ctx, before); err != nil {
 			t.Fatal(err)
 		}
-		for _, field := range []string{"ID", "PersonServer", "Request", "ExpiresAt"} {
+		for _, field := range []string{"ID", "PersonServer", "Request", "InteractionCode", "ExpiresAt"} {
 			after := fixture()
 			after.Revision++
 			v := reflect.ValueOf(&after).Elem().FieldByName(field)

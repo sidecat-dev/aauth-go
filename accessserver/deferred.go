@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -21,9 +22,9 @@ import (
 // ErrPendingAuthorizationConflict reports a missing record or competing update.
 var ErrPendingAuthorizationConflict = errors.New("accessserver: pending authorization conflict")
 
-// DeferredConfig enables bounded approval, payment, and claims waits for Core
-// requests, missionless or mission-bound, top-level, parent-mediated or
-// chained. It does not forward interaction or clarification.
+// DeferredConfig enables bounded approval, payment, claims and interaction
+// waits for Core requests, missionless or mission-bound, top-level,
+// parent-mediated or chained. It does not ask clarification questions.
 type DeferredConfig struct {
 	Store    DeferredAuthorizationStore
 	Lifetime time.Duration
@@ -39,15 +40,23 @@ type PaymentChallenge struct {
 	Body         []byte
 }
 
-// PendingDecision requests approval (Payment nil and no RequiredClaims), payment,
-// or claims before issuance. RetryAfter is a whole nonnegative number of seconds.
-// The host's next policy result may change payment or claims to approval at the
-// same pending URL. RequiredClaims names the claims the Person Server must post.
-// sub is never a legal name: the Access Server must not request it.
+// PendingDecision requests approval (no Payment, RequiredClaims or
+// InteractionURL), payment, claims or interaction before issuance; at most one
+// of the three. RetryAfter is a whole nonnegative number of seconds. The
+// host's next policy result may change payment, claims or interaction to
+// approval at the same pending URL. RequiredClaims names the claims the Person
+// Server must post. sub is never a legal name: the Access Server must not
+// request it. InteractionURL is the HTTPS page, without a query or fragment,
+// where the person completes the interaction; the requirement carries it with
+// the code this Access Server drew for the wait,
+// AuthorizationRequest.InteractionCode. The host serves the page, compares a
+// presented code with aauth.MatchInteractionCode, and its next policy result
+// grants or refuses once the person has finished.
 type PendingDecision struct {
 	RetryAfter     time.Duration
 	Payment        *PaymentChallenge
 	RequiredClaims []string
+	InteractionURL string
 }
 
 // PendingAuthorizationRecord retains the exact token request and its verified
@@ -56,18 +65,21 @@ type PendingDecision struct {
 // evaluate policy and sign a token before the replacement comparison. Only the
 // winning replacement publishes its buffered response; losing tokens are not
 // released. This is a publication fence, not exactly-once policy execution.
+// InteractionCode is the code drawn for the wait when it was created; an
+// interaction requirement carries it.
 type PendingAuthorizationRecord struct {
-	ID             string
-	PersonServer   string
-	Request        []byte
-	ExpiresAt      time.Time
-	NextPollAt     time.Time
-	Revision       uint64
-	Gone           bool
-	RequiredClaims []string
+	ID              string
+	PersonServer    string
+	Request         []byte
+	InteractionCode string
+	ExpiresAt       time.Time
+	NextPollAt      time.Time
+	Revision        uint64
+	Gone            bool
+	RequiredClaims  []string
 	// Claims holds the values posted for RequiredClaims. A replacement may
-	// change Claims and RequiredClaims. ID, PersonServer, Request, and
-	// ExpiresAt stay immutable.
+	// change Claims and RequiredClaims. ID, PersonServer, Request,
+	// InteractionCode and ExpiresAt stay immutable.
 	Claims map[string]json.RawMessage
 }
 
@@ -75,7 +87,8 @@ type PendingAuthorizationRecord struct {
 // reject duplicate IDs. Stored slices must not alias caller-owned memory. Load
 // returns an independent copy. Replace
 // atomically compares the complete previous record, preserves ID, PersonServer,
-// Request and ExpiresAt, increments Revision, and never reopens Gone. Claims
+// Request, InteractionCode and ExpiresAt, increments Revision, and never
+// reopens Gone. Claims
 // and RequiredClaims may change. A conflict
 // or missing ID returns ErrPendingAuthorizationConflict. No HTTP response may
 // be published until its corresponding replacement succeeds.
@@ -103,7 +116,13 @@ func validPendingDecision(d Decision) bool {
 	if p == nil || len(d.Scopes) != 0 || d.Lifetime != 0 || d.Budget != nil || p.RetryAfter < 0 || p.RetryAfter > time.Hour || p.RetryAfter%time.Second != 0 {
 		return false
 	}
-	if !validRequiredClaimNames(p.RequiredClaims) || (p.Payment != nil && len(p.RequiredClaims) > 0) {
+	asks := 0
+	for _, ask := range []bool{p.Payment != nil, len(p.RequiredClaims) > 0, p.InteractionURL != ""} {
+		if ask {
+			asks++
+		}
+	}
+	if !validRequiredClaimNames(p.RequiredClaims) || asks > 1 {
 		return false
 	}
 	if p.Payment == nil {
@@ -115,11 +134,23 @@ func validPendingDecision(d Decision) bool {
 
 // deferAuthorization retains the exact verified request. credentialExpiresAt
 // is the earlier of the parent and any sub-agent token expiry, so a wait never
-// outlasts either Agent token.
-func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request, ps string, encoded []byte, resource aauth.ResourceTokenClaims, credentialExpiresAt time.Time, presented aauth.PresentedToken, decision Decision, prior *PendingAuthorizationRecord) {
+// outlasts either Agent token. interactionCode is the code policy saw, drawn
+// for a new wait or retained by prior.
+func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request, ps string, encoded []byte, resource aauth.ResourceTokenClaims, credentialExpiresAt time.Time, presented aauth.PresentedToken, decision Decision, prior *PendingAuthorizationRecord, interactionCode string) {
 	if server.deferred == nil || !validPendingDecision(decision) {
 		writeProblem(w, 500, "server_error", errors.New("accessserver: invalid or unconfigured deferred decision"))
 		return
+	}
+	interactionRequirement := ""
+	if decision.Pending.InteractionURL != "" {
+		var err error
+		interactionRequirement, err = aauth.FormatInteractionRequirement(aauth.InteractionRequirement{
+			URL: decision.Pending.InteractionURL, Code: interactionCode,
+		})
+		if err != nil {
+			writeProblem(w, 500, "server_error", fmt.Errorf("accessserver: interaction decision: %w", err))
+			return
+		}
 	}
 	now := server.clock.Now().UTC()
 	var record PendingAuthorizationRecord
@@ -135,7 +166,7 @@ func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request,
 			writeProblem(w, 500, "server_error", err)
 			return
 		}
-		record = PendingAuthorizationRecord{ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: ps, Request: append([]byte(nil), encoded...), ExpiresAt: deadline, NextPollAt: now.Add(decision.Pending.RetryAfter), Revision: 1, RequiredClaims: append([]string(nil), decision.Pending.RequiredClaims...)}
+		record = PendingAuthorizationRecord{ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: ps, Request: append([]byte(nil), encoded...), InteractionCode: interactionCode, ExpiresAt: deadline, NextPollAt: now.Add(decision.Pending.RetryAfter), Revision: 1, RequiredClaims: append([]string(nil), decision.Pending.RequiredClaims...)}
 		if !now.Before(deadline) {
 			writeProblem(w, 408, "expired", nil)
 			return
@@ -163,6 +194,11 @@ func (server *Server) deferAuthorization(w http.ResponseWriter, r *http.Request,
 	if len(decision.Pending.RequiredClaims) > 0 {
 		w.Header().Set("AAuth-Requirement", "requirement=claims")
 		writePrivateJSON(w, 202, map[string]any{"status": "pending", "required_claims": append([]string(nil), decision.Pending.RequiredClaims...)})
+		return
+	}
+	if interactionRequirement != "" {
+		w.Header().Set("AAuth-Requirement", interactionRequirement)
+		writePrivateJSON(w, 202, map[string]string{"status": "pending"})
 		return
 	}
 	w.Header().Set("AAuth-Requirement", "requirement=approval")

@@ -1170,37 +1170,17 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
-	unsupportedCapabilities := input.Capabilities
-	supportsCapabilities := server.authorizationMode == authorizationModePersonServer ||
-		server.federatedBudgetCeiling != nil
-	if supportsCapabilities {
-		unsupportedCapabilities = nil
-	}
 	if _, err := parseIgnoredPersonRequestHints(input.Justification, input.LoginHint, input.Tenant, input.DomainHint, input.Prompt, input.Platform, input.Device); err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	if err := rejectUnsupportedRequestMembers(map[string]json.RawMessage{
-		"capabilities": unsupportedCapabilities,
-	}); err != nil {
+	// A federated Person Server acts on interaction, relaying an Access
+	// Server's interaction requirement, and ignores the values it does not act
+	// on, as a direct one does.
+	capabilities, err := parseAuthorizationCapabilities(input.Capabilities)
+	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
-	}
-	var capabilities []string
-	if supportsCapabilities {
-		capabilities, err = parseAuthorizationCapabilities(input.Capabilities)
-		if err != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_request", err)
-			return
-		}
-		if server.authorizationMode == authorizationModeFederated {
-			for _, capability := range capabilities {
-				if capability != "budget" {
-					writeProblem(response, http.StatusBadRequest, "invalid_request", fmt.Errorf("personserver: federated Budget does not support capability %q", capability))
-					return
-				}
-			}
-		}
 	}
 	upstream, err := server.verifyOptionalUpstreamToken(
 		request.Context(), input.UpstreamToken, agent, proof,
@@ -1278,12 +1258,14 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 		}
 	}
-	// A direct Person Server sizes this token's own grant. A budget is not a
-	// sub-budget of a parent or upstream token, so delegation and one call-chain
-	// hop use the same offer and narrowing as any other auth token. Federated
-	// issuance still refuses the combination.
-	if budgetOffer != nil && (delegated || upstream != nil) && server.authorizationMode != authorizationModePersonServer {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: federated Budget does not compose with delegation or call chaining"))
+	// Each auth token's grant is sized from its own Resource token's offer. A
+	// budget is not a sub-budget of a parent or upstream token, so delegation
+	// and each call-chain hop use the same offer and narrowing as any other
+	// auth token; a federated chained request carries the Person Server's
+	// ceiling to the Access Server as an unchained one does. Federated
+	// issuance still refuses delegation.
+	if budgetOffer != nil && delegated && server.authorizationMode != authorizationModePersonServer {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: federated Budget does not compose with delegation"))
 		return
 	}
 	if r3Context != nil && upstream != nil && server.authorizationMode == authorizationModeFederated {
@@ -1714,6 +1696,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			resourceToken: input.ResourceToken, agentToken: agentToken, presentedToken: input.PresentedToken,
 			subagentToken: subagentToken, upstream: upstream, agent: agent, credentialAgent: credentialAgent,
 			resource: resourceToken, presentedExpiresAt: presented.ExpiresAt, createdAt: proof.VerifiedAt(),
+			interactionCapable: slices.Contains(capabilities, "interaction"),
 		})
 		return
 	}
@@ -2351,15 +2334,6 @@ func validatePersonRequestDevice(device string) error {
 	for _, character := range device {
 		if !unicode.IsPrint(character) {
 			return errors.New("personserver: device must be printable UTF-8")
-		}
-	}
-	return nil
-}
-
-func rejectUnsupportedRequestMembers(members map[string]json.RawMessage) error {
-	for name, value := range members {
-		if value != nil {
-			return fmt.Errorf("personserver: request member %q is not supported by the immediate flow", name)
 		}
 	}
 	return nil

@@ -32,9 +32,9 @@ var ErrFederatedAuthorizationConflict = errors.New("personserver: federated auth
 type DeferredCompositionError struct{ reason string }
 
 // Reason returns not_configured, r3, budget, claims, clarification,
-// interaction, requirement (an unsupported extension) or supervision (a
-// supervised request completed after its decision was deferred). A mixed-capability
-// PS may still defer a Core request, missionless or mission-bound, top-level,
+// requirement (an unsupported extension) or supervision (a supervised request
+// completed after its decision was deferred). A mixed-capability PS may still
+// defer a Core request, missionless or mission-bound, top-level,
 // parent-mediated or chained.
 func (e *DeferredCompositionError) Reason() string {
 	if e == nil {
@@ -50,10 +50,10 @@ func (e *DeferredCompositionError) Error() string {
 		return "personserver: deferred AS authorization does not support R3 requests"
 	case "budget":
 		return "personserver: deferred AS authorization does not support Budget requests"
-	case "claims", "clarification", "interaction":
+	case "claims", "clarification":
 		return "personserver: deferred AS authorization does not support " + e.Reason() + " requirements"
 	case "requirement":
-		return "personserver: deferred AS authorization supports only approval and payment requirements"
+		return "personserver: deferred AS authorization supports only approval, payment, claims and interaction requirements"
 	case "supervision":
 		return "personserver: a request that waited for its supervisor cannot also wait for the Access Server"
 	default:
@@ -64,15 +64,18 @@ func (e *DeferredCompositionError) Error() string {
 // ErrFederationNotReady means a poll is premature, already running, or terminal.
 var ErrFederationNotReady = errors.New("personserver: federation cannot be advanced")
 
-// FederatedDeferredConfig enables Core AS approval, payment and claims
-// continuations, missionless or mission-bound: top-level, parent-mediated for
-// a one-level sub-agent, or chained by an intermediary. Hosts settle payment
-// and cache billing relationships per AS, then call AdvanceFederation
-// explicitly. No payment is made by the library. A mission-bound wait loads
-// its mission again on every poll and host advance and ends with
-// mission_terminated once it is terminated; the grant is committed with the
-// mission when it is released. R3, Budget, interaction and clarification are
-// absent.
+// FederatedDeferredConfig enables Core AS approval, payment, claims and
+// interaction continuations, missionless or mission-bound: top-level,
+// parent-mediated for a one-level sub-agent, or chained by an intermediary.
+// Hosts settle payment and cache billing relationships per AS, then call
+// AdvanceFederation explicitly. No payment is made by the library. An AS
+// interaction requirement is relayed to the Agent unchanged, URL and code,
+// when the request declared the interaction capability, and answered 403
+// user_unreachable otherwise; the host keeps advancing the wait while the
+// person interacts at the AS. A mission-bound wait loads its mission again on
+// every poll and host advance and ends with mission_terminated once it is
+// terminated; the grant is committed with the mission when it is released.
+// R3, Budget and clarification are absent.
 type FederatedDeferredConfig struct {
 	Store    FederatedAuthorizationStore
 	Lifetime time.Duration
@@ -92,9 +95,10 @@ type FederatedResponse struct {
 }
 
 // FederatedAuthorizationRecord keeps one exact request and its continuation
-// in the PS boundary. The token bytes, IDs, Location, CreatedAt, and ExpiresAt
-// are immutable. CreatedAt is the initial request's verification time, before
-// policy or AS work; a binding replaced after it no longer authorizes the wait.
+// in the PS boundary. The token bytes, IDs, InteractionCapable, Location,
+// CreatedAt, and ExpiresAt are immutable. CreatedAt is the initial request's
+// verification time, before policy or AS work; a binding replaced after it no
+// longer authorizes the wait.
 // Advancing fences an external AS poll: an uncertain poll is never reclaimed.
 // Terminal stores the verified result or local problem; Gone prevents replay.
 // AgentIssuer, Agent and AgentJKT name the Agent that signed the request and
@@ -102,28 +106,31 @@ type FederatedResponse struct {
 // SubagentToken holds the exact sub-agent token the grant is bound to. For a
 // chained request the signer is the intermediary and UpstreamToken holds the
 // exact upstream_token, verified again on every poll, host advance and
-// delivery.
+// delivery. InteractionCapable records that the request declared the
+// interaction capability, so an AS interaction requirement is relayed to the
+// Agent rather than ending the wait with user_unreachable.
 type FederatedAuthorizationRecord struct {
-	ID             string
-	PersonServer   string
-	ResourceToken  string
-	AgentToken     string
-	AgentIssuer    string
-	Agent          string
-	AgentJKT       string
-	PresentedToken string
-	SubagentToken  string
-	UpstreamToken  string
-	Location       string
-	CreatedAt      time.Time
-	ExpiresAt      time.Time
-	RetryAfter     time.Duration
-	NextPollAt     time.Time
-	Revision       uint64
-	Advancing      bool
-	Terminal       bool
-	Gone           bool
-	Response       FederatedResponse
+	ID                 string
+	PersonServer       string
+	ResourceToken      string
+	AgentToken         string
+	AgentIssuer        string
+	Agent              string
+	AgentJKT           string
+	PresentedToken     string
+	SubagentToken      string
+	UpstreamToken      string
+	InteractionCapable bool
+	Location           string
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	RetryAfter         time.Duration
+	NextPollAt         time.Time
+	Revision           uint64
+	Advancing          bool
+	Terminal           bool
+	Gone               bool
+	Response           FederatedResponse
 }
 
 // FederatedAuthorizationStore owns only PS-to-AS continuation state. Create
@@ -173,7 +180,8 @@ func (server *Server) FederatedAuthorization(ctx context.Context, reference stri
 
 // federatedContinuationInput is the verified request a PS continuation retains.
 // agent signed the request; credentialAgent holds the credentials and equals
-// agent unless subagentToken is set.
+// agent unless subagentToken is set. interactionCapable reports that the
+// request declared the interaction capability.
 type federatedContinuationInput struct {
 	resourceToken, agentToken, presentedToken, subagentToken string
 	upstream                                                 *verifiedUpstreamToken
@@ -181,12 +189,19 @@ type federatedContinuationInput struct {
 	resource                                                 aauth.ResourceTokenClaims
 	presentedExpiresAt                                       time.Time
 	createdAt                                                time.Time
+	interactionCapable                                       bool
 }
 
 func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http.Request, as *http.Response, endpoint string, input federatedContinuationInput) {
 	state, location, retry, err := readFederatedPending(as, endpoint, "")
 	if err != nil {
 		writeFederatedContinuationProblem(w, err)
+		return
+	}
+	if err := relayableFederatedResponse(state, input.interactionCapable); err != nil {
+		// The AS already holds the request; withdraw it rather than leave it waiting.
+		server.withdrawAccessServerRequest(r.Context(), location)
+		writeProblem(w, http.StatusForbidden, "user_unreachable", err)
 		return
 	}
 	now := server.clock.Now().UTC()
@@ -226,7 +241,8 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 	record := FederatedAuthorizationRecord{
 		ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: server.issuer, ResourceToken: input.resourceToken,
 		AgentToken: input.agentToken, AgentIssuer: input.agent.Issuer, Agent: input.agent.Subject, AgentJKT: thumbprint,
-		PresentedToken: input.presentedToken, SubagentToken: input.subagentToken, UpstreamToken: upstreamToken, Location: location,
+		PresentedToken: input.presentedToken, SubagentToken: input.subagentToken, UpstreamToken: upstreamToken,
+		InteractionCapable: input.interactionCapable, Location: location,
 		CreatedAt: input.createdAt, ExpiresAt: deadline, NextPollAt: now.Add(retry), RetryAfter: retry, Revision: 1, Response: state,
 	}
 	if err := server.federatedDeferred.Store.CreateFederatedAuthorization(r.Context(), record); err != nil {
@@ -302,13 +318,16 @@ func readFederatedPending(response *http.Response, endpoint, prior string) (Fede
 				if err := validateFederatedRequiredClaims(input.RequiredClaims); err != nil {
 					return FederatedResponse{}, "", 0, err
 				}
-			default:
-				reason := "requirement"
-				switch requirement {
-				case aauth.RequirementClarification, aauth.RequirementInteraction:
-					reason = string(requirement)
+			case aauth.RequirementInteraction:
+				// The URL and code reach the Agent as the AS wrote them, so
+				// they are checked as an Agent would check them.
+				if _, err := aauth.ParseInteractionRequirement(response.Header.Values("AAuth-Requirement")); err != nil {
+					return fail()
 				}
-				return FederatedResponse{}, "", 0, &DeferredCompositionError{reason: reason}
+			case aauth.RequirementClarification:
+				return FederatedResponse{}, "", 0, &DeferredCompositionError{reason: string(requirement)}
+			default:
+				return FederatedResponse{}, "", 0, &DeferredCompositionError{reason: "requirement"}
 			}
 		}
 	} else {
@@ -507,6 +526,12 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 			writeFederatedContinuationProblem(out, err)
 			return
 		}
+		if err := relayableFederatedResponse(pending, record.InteractionCapable); err != nil {
+			// The AS still holds the request, so the PS withdraws it.
+			out.local = true
+			writeProblem(out, http.StatusForbidden, "user_unreachable", err)
+			return
+		}
 		out.pending = &pending
 		out.retry = retry
 		return
@@ -647,8 +672,19 @@ func (server *Server) writeFederatedWaiting(w http.ResponseWriter, record Federa
 		}
 	}
 	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
-	w.Header().Set("AAuth-Requirement", "requirement=approval")
 	body := map[string]string{"status": "pending"}
+	if interaction, ok := federatedInteraction(record.Response); ok {
+		// The Agent sends the person to the AS with the AS's own URL and code.
+		requirement, err := aauth.FormatInteractionRequirement(interaction)
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		w.Header().Set("AAuth-Requirement", requirement)
+		writePrivateJSON(w, 202, body)
+		return
+	}
+	w.Header().Set("AAuth-Requirement", "requirement=approval")
 	switch record.Response.Status {
 	case http.StatusPaymentRequired:
 		body["pending_reason"] = "awaiting_payment"
@@ -656,6 +692,30 @@ func (server *Server) writeFederatedWaiting(w http.ResponseWriter, record Federa
 		body["pending_reason"] = "awaiting_approval"
 	}
 	writePrivateJSON(w, 202, body)
+}
+
+// federatedInteraction returns the interaction requirement of a retained AS
+// 202, which readFederatedPending has already checked.
+func federatedInteraction(response FederatedResponse) (aauth.InteractionRequirement, bool) {
+	if response.Status != http.StatusAccepted {
+		return aauth.InteractionRequirement{}, false
+	}
+	values := response.Header.Values("AAuth-Requirement")
+	if requirement, err := aauth.ParseRequirement(values); err != nil || requirement != aauth.RequirementInteraction {
+		return aauth.InteractionRequirement{}, false
+	}
+	interaction, err := aauth.ParseInteractionRequirement(values)
+	return interaction, err == nil
+}
+
+// relayableFederatedResponse refuses an AS interaction for a request that did
+// not declare the interaction capability: the Agent cannot send the person to
+// the AS, and this Person Server has no way of its own to reach them.
+func relayableFederatedResponse(response FederatedResponse, interactionCapable bool) error {
+	if _, ok := federatedInteraction(response); ok && !interactionCapable {
+		return errors.New("personserver: the Access Server requires interaction and the Agent did not declare the interaction capability")
+	}
+	return nil
 }
 func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Request) {
 	_, agent, _, err := server.verifyAgentProof(r, nil)
@@ -981,7 +1041,8 @@ type federatedResponseBuffer struct {
 	pending       *FederatedResponse
 	retry         time.Duration
 	refusalReason string
-	// local reports a result the PS reached without polling the AS.
+	// local reports a result the PS reached on its own while the AS still
+	// holds the request, which the PS then withdraws.
 	local bool
 }
 

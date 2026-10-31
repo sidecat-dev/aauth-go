@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/accessserver"
 	clientagent "gitlab.com/sidecat-dev/aauth-go/agent"
 	"gitlab.com/sidecat-dev/aauth-go/agentprovider"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
@@ -58,13 +60,34 @@ type hopFixture struct {
 	requests        []string
 	interceptor     func(http.ResponseWriter, *http.Request) bool
 	holdStock       bool
+	askStock        bool
 	chainedBindings []personserver.PersonTokenRequest
 	chainedConsents []personserver.AuthorizationRequest
+	ceilings        []personserver.AuthorizationRequest
 	accessRequests  []accessserver.AuthorizationRequest
 }
 
 type hopOptions struct {
 	missions *personserver.MissionConfig
+	// budget meters inventory: it offers what is asked, the Person Server
+	// lowers that to hopBudgetCeiling, and the stock Access Server grants the
+	// Person Server's ceiling.
+	budget bool
+}
+
+// The denomination and Person Server ceiling of a budgeted hop fixture.
+const (
+	hopBudgetCeiling = 300
+	hopBudgetCost    = 40
+)
+
+func hopBudgetValue(t *testing.T, amount int64) budgets.Value {
+	t.Helper()
+	unit, err := budgets.NewUnit("credits", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return integrationBudgetValue(t, amount, unit)
 }
 
 func newHopFixture(t *testing.T, options hopOptions) *hopFixture {
@@ -105,6 +128,19 @@ func newHopFixture(t *testing.T, options hopOptions) *hopFixture {
 	}
 	ids := newSequence()
 
+	var units []budgets.UnitDeclaration
+	var accessBudget *accessserver.BudgetConfig
+	if options.budget {
+		declaration, err := budgets.NewBoundedUnitDeclaration(hopBudgetValue(t, 1).Unit(), 1_000, "Stock credits")
+		if err != nil {
+			t.Fatal(err)
+		}
+		units = []budgets.UnitDeclaration{declaration}
+		accessBudget = &accessserver.BudgetConfig{
+			ResolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) { return units, nil },
+		}
+	}
+
 	for _, server := range []struct {
 		issuer string
 		key    jose.SigningKey
@@ -127,11 +163,17 @@ func newHopFixture(t *testing.T, options hopOptions) *hopFixture {
 				fixture.mu.Lock()
 				defer fixture.mu.Unlock()
 				fixture.accessRequests = append(fixture.accessRequests, request)
+				if hold && fixture.askStock {
+					return accessserver.Decision{Pending: &accessserver.PendingDecision{
+						RetryAfter: time.Second, InteractionURL: hopStockAS + "/consent",
+					}}, nil
+				}
 				if hold && fixture.holdStock {
 					return accessserver.Decision{Pending: &accessserver.PendingDecision{RetryAfter: time.Second}}, nil
 				}
-				return accessserver.Decision{Scopes: request.Scopes, Lifetime: 30 * time.Minute}, nil
+				return accessserver.Decision{Scopes: request.Scopes, Lifetime: 30 * time.Minute, Budget: request.Budget}, nil
 			},
+			Budget:   accessBudget,
 			Deferred: &accessserver.DeferredConfig{Store: testutil.NewAccessAuthorizationStore(), Lifetime: 30 * time.Minute},
 			Revocation: &accessserver.RevocationConfig{
 				Revocations: testutil.NewTokenRevocationStore(), IssuedTokens: testutil.NewAccessIssuedAuthTokenStore(),
@@ -153,6 +195,21 @@ func newHopFixture(t *testing.T, options hopOptions) *hopFixture {
 		{issuer: hopWarehouse, accessServer: hopStockAS, scope: "warehouse.pick", key: keys["warehouse"]},
 	} {
 		scope := protected.scope
+		var budget *resource.BudgetConfig
+		if options.budget && protected.issuer == hopInventory {
+			budget = &resource.BudgetConfig{
+				Units: units,
+				Offer: func(_ context.Context, request resource.BudgetOfferRequest) (budgets.Value, error) {
+					return request.Requested, nil
+				},
+				RetainLineage: func(context.Context, resource.BudgetLineage) error { return nil },
+				Cost:          func(context.Context, resource.BudgetCostRequest) (int64, error) { return hopBudgetCost, nil },
+				Store:         newIntegrationBudgetStore(),
+				Challenge: func(context.Context, resource.BudgetChallengeRequest) (string, error) {
+					return "", errors.New("the hop fixture asks for no Budget step-up")
+				},
+			}
+		}
 		server, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
 			Issuer: protected.issuer, AccessServer: protected.accessServer, SigningKey: protected.key,
 			KeyResolver: resolver, Clock: fixture.clock,
@@ -168,6 +225,7 @@ func newHopFixture(t *testing.T, options hopOptions) *hopFixture {
 			Revocation: &resource.RevocationConfig{
 				PersonTokens: testutil.NewTokenRevocationStore(), HTTPClient: fixture.client, Admit: fixture.admit,
 			},
+			Budget: budget,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -211,6 +269,18 @@ func newHopFixture(t *testing.T, options hopOptions) *hopFixture {
 		},
 		AgentTokenRevocations: testutil.NewTokenRevocationStore(),
 		Missions:              options.missions,
+	}
+	if options.budget {
+		config.Budget = &personserver.FederatedBudgetConfig{
+			ResolveResourceUnits: func(context.Context, string) ([]budgets.UnitDeclaration, error) { return units, nil },
+			Ceiling: func(_ context.Context, request personserver.AuthorizationRequest) (*budgets.Value, error) {
+				fixture.mu.Lock()
+				fixture.ceilings = append(fixture.ceilings, request)
+				fixture.mu.Unlock()
+				ceiling := hopBudgetValue(t, hopBudgetCeiling)
+				return &ceiling, nil
+			},
+		}
 	}
 	var err error
 	fixture.people, err = personserver.NewFederatedAuthorization(config)
@@ -305,6 +375,14 @@ func (fixture *hopFixture) setStockHold(hold bool) {
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	fixture.holdStock = hold
+}
+
+// setStockInteraction makes the stock Access Server ask for the person at
+// its own consent page.
+func (fixture *hopFixture) setStockInteraction(ask bool) {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	fixture.askStock = ask
 }
 
 // hopLink is what one hop of a chain obtained: the person token for the
@@ -685,6 +763,132 @@ func TestChainedExchangeWaitsForTheAccessServerUntilItsUpstreamIsRevoked(t *test
 	_, err = fixture.ordersRelay.PollExchange(ctx, waiting)
 	if !errors.As(err, &problem) || problem.Status != http.StatusGone {
 		t.Fatalf("poll after the revoked ending = %v", err)
+	}
+}
+
+// Protocol 70d6737, AS Response, PS Response and Interaction Chaining: when
+// the Access Server needs the person for a chained request, the Person Server
+// answers the intermediary 202 with the Access Server's own interaction URL
+// and code, for the intermediary to chain to its caller, and the wait
+// completes once the person has finished there. An intermediary that did not
+// declare the interaction capability cannot reach the person and is answered
+// user_unreachable.
+func TestChainedExchangeRelaysTheAccessServersInteraction(t *testing.T) {
+	t.Parallel()
+	fixture := newHopFixture(t, hopOptions{})
+	ctx := fixture.ctx
+
+	caller := fixture.callerLink("")
+	link := fixture.chainedLink(fixture.ordersRelay, hopInventory, "inventory.reserve", caller.auth)
+	fixture.setStockInteraction(true)
+	exchange := clientagent.ExchangeRequest{
+		ResourceToken: link.resourceToken, PresentedToken: link.person, UpstreamToken: caller.auth,
+	}
+	_, err := fixture.ordersRelay.BeginExchange(ctx, exchange)
+	requireDeferredProblem(t, err, http.StatusForbidden, "user_unreachable")
+
+	exchange.Capabilities = []string{"interaction"}
+	begun, err := fixture.ordersRelay.BeginExchange(ctx, exchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting, ok := begun.Pending()
+	if !ok {
+		t.Fatalf("chained exchange the Access Server asked about = %#v", begun)
+	}
+	fixture.mu.Lock()
+	asked := fixture.accessRequests[len(fixture.accessRequests)-1]
+	fixture.mu.Unlock()
+	if waiting.Requirement() != aauth.RequirementInteraction || waiting.InteractionURL() != hopStockAS+"/consent" ||
+		asked.InteractionCode == "" || waiting.InteractionCode() != asked.InteractionCode ||
+		waiting.PersonServer() != hopPersonServer || asked.Upstream == nil {
+		t.Fatalf("relayed %q %q %q for the Access Server's code %q", waiting.Requirement(), waiting.InteractionURL(), waiting.InteractionCode(), asked.InteractionCode)
+	}
+
+	// The person finishes at the Access Server's page; the host's next
+	// advance collects the grant for the intermediary.
+	fixture.setStockInteraction(false)
+	fixture.advance(2 * time.Second)
+	reference := waiting.Location()[strings.LastIndex(waiting.Location(), "/")+1:]
+	if err := fixture.people.AdvanceFederation(ctx, reference); err != nil {
+		t.Fatal(err)
+	}
+	delivered, err := fixture.ordersRelay.PollExchange(ctx, waiting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authToken, ok := delivered.Token()
+	if !ok || hopExpiry(t, authToken) > hopExpiry(t, caller.auth) {
+		t.Fatalf("delivered chained grant = %#v", delivered)
+	}
+	fixture.serve(fixture.ordersRelay, hopInventory, authToken, caller.auth, "served person-at-inventory-hop.example")
+}
+
+// Budgets (Person Server and Access Server issuance) with Protocol Call
+// Chaining and PS-to-AS Token Request: a chained four-party request carries
+// the Person Server's ceiling for the downstream Resource token's own offer
+// to the Access Server beside the upstream token, and the downstream auth
+// token carries the Access Server's grant. Nothing is drawn from, or added
+// to, the upstream token.
+func TestFourPartyChainedBudgetIsSizedForTheDownstreamToken(t *testing.T) {
+	t.Parallel()
+	fixture := newHopFixture(t, hopOptions{budget: true})
+	ctx := fixture.ctx
+
+	caller := fixture.callerLink("")
+	result, err := fixture.ordersRelay.PersonToken(ctx, clientagent.PersonTokenRequest{Resource: hopInventory, UpstreamToken: caller.auth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	person, _ := result.Token()
+	requested := hopBudgetValue(t, 500)
+	resourceToken, err := fixture.ordersRelay.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: hopInventory, PersonToken: person, UpstreamToken: caller.auth,
+		Scopes: []string{"inventory.reserve"}, Budget: &requested,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authToken, err := fixture.ordersRelay.Exchange(ctx, clientagent.ExchangeRequest{
+		ResourceToken: resourceToken, PresentedToken: person, UpstreamToken: caller.auth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, _ := json.Marshal(tokenClaims(t, authToken)["budget"])
+	if string(granted) != `{"amount":300,"decimals":0,"unit":"credits"}` {
+		t.Fatalf("downstream auth token budget = %s", granted)
+	}
+	if _, upstreamBudget := tokenClaims(t, caller.auth)["budget"]; upstreamBudget {
+		t.Fatal("the upstream token carries a budget")
+	}
+	fixture.mu.Lock()
+	ceilings := append([]personserver.AuthorizationRequest(nil), fixture.ceilings...)
+	asked := fixture.accessRequests[len(fixture.accessRequests)-1]
+	fixture.mu.Unlock()
+	if len(ceilings) != 1 || ceilings[0].Upstream == nil || ceilings[0].Budget == nil || ceilings[0].Budget.Amount() != 500 {
+		t.Fatalf("Person Server ceiling requests = %#v", ceilings)
+	}
+	if asked.Upstream == nil || asked.Upstream.JTI != tokenClaims(t, caller.auth)["jti"] ||
+		asked.Budget == nil || asked.Budget.Amount() != hopBudgetCeiling {
+		t.Fatalf("Access Server request budget %v upstream %v", asked.Budget, asked.Upstream)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, hopInventory+"/work", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := fixture.ordersRelay.BeginBudgetCall(ctx, clientagent.BudgetCall{Request: request, AuthToken: authToken, UpstreamToken: caller.auth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := call.Response()
+	if !ok {
+		t.Fatalf("budgeted chained call = %#v", call)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if cost, _ := call.Cost(); string(body) != "served person-at-inventory-hop.example" || cost != hopBudgetCost {
+		t.Fatalf("budgeted chained call = %q at cost %d", body, cost)
 	}
 }
 

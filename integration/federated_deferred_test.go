@@ -149,6 +149,11 @@ type deferredFederation struct {
 	protected              atomic.Int32
 	recompose              func(*testing.T)
 	exchange               func(*testing.T) agent.ExchangeResult
+	tryExchange            func(*testing.T) (agent.ExchangeResult, error)
+	// capabilities are those the Agent declares on its exchange.
+	capabilities []string
+	// interactionCode is the code the AS drew for its interaction wait.
+	interactionCode atomic.Value
 }
 
 func (f *deferredFederation) begin(t *testing.T) agent.PendingExchange {
@@ -212,6 +217,9 @@ func newDeferredFederation(t *testing.T) *deferredFederation {
 						return accessserver.Decision{Scopes: r.Scopes, Lifetime: time.Duration(f.grantLifetime.Load()) * time.Second}, nil
 					}
 					return accessserver.Decision{Pending: &accessserver.PendingDecision{RequiredClaims: []string{"email"}}}, nil
+				case 4:
+					f.interactionCode.Store(r.InteractionCode)
+					return accessserver.Decision{Pending: &accessserver.PendingDecision{InteractionURL: "https://as.example/consent"}}, nil
 				default:
 					return accessserver.Decision{Scopes: r.Scopes, Lifetime: time.Duration(f.grantLifetime.Load()) * time.Second}, nil
 				}
@@ -263,7 +271,7 @@ func newDeferredFederation(t *testing.T) *deferredFederation {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.exchange = func(t *testing.T) agent.ExchangeResult {
+	f.tryExchange = func(t *testing.T) (agent.ExchangeResult, error) {
 		t.Helper()
 		ctx := context.Background()
 		result, err := f.client.PersonToken(ctx, agent.PersonTokenRequest{PersonServer: "https://ps.example", Resource: "https://resource.example"})
@@ -283,7 +291,11 @@ func newDeferredFederation(t *testing.T) *deferredFederation {
 		if !ok {
 			t.Fatal("missing Resource token")
 		}
-		exchange, err := f.client.BeginExchange(ctx, agent.ExchangeRequest{PersonServer: "https://ps.example", ResourceToken: required.ResourceToken, PresentedToken: person})
+		return f.client.BeginExchange(ctx, agent.ExchangeRequest{PersonServer: "https://ps.example", ResourceToken: required.ResourceToken, PresentedToken: person, Capabilities: f.capabilities})
+	}
+	f.exchange = func(t *testing.T) agent.ExchangeResult {
+		t.Helper()
+		exchange, err := f.tryExchange(t)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -948,8 +960,87 @@ func TestFederatedClaimsStayWithThePersonServer(t *testing.T) {
 	}
 }
 
+// Protocol 70d6737, AS Response and PS Response: the PS passes an AS
+// interaction requirement back to an Agent that declared the interaction
+// capability, with the AS's own URL and code, and keeps the wait; the person
+// interacts at the AS. Without the capability the PS cannot reach the person
+// and answers user_unreachable, withdrawing the request at the AS.
+func TestFederatedInteractionReachesTheAgentThatDeclaredIt(t *testing.T) {
+	for _, phase := range []string{"initial", "poll"} {
+		for _, declared := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/declared=%t", phase, declared), func(t *testing.T) {
+				f := newDeferredFederation(t)
+				if declared {
+					f.capabilities = []string{"interaction"}
+				}
+				f.stage.Store(1)
+				if phase == "initial" {
+					f.stage.Store(4)
+				}
+				var deletes atomic.Int32
+				f.asMutation = func(r *http.Request, _ *httptest.ResponseRecorder) {
+					if r.Method == http.MethodDelete {
+						deletes.Add(1)
+					}
+				}
+				var pending agent.PendingExchange
+				if phase == "initial" {
+					if !declared {
+						_, err := f.tryExchange(t)
+						requireDeferredProblem(t, err, 403, "user_unreachable")
+						if deletes.Load() != 1 {
+							t.Fatalf("AS withdrawals = %d", deletes.Load())
+						}
+						return
+					}
+					pending = f.begin(t)
+				} else {
+					pending = f.begin(t)
+					f.stage.Store(4)
+					if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
+						t.Fatal(err)
+					}
+					result, err := f.client.PollExchange(context.Background(), pending)
+					if !declared {
+						requireDeferredProblem(t, err, 403, "user_unreachable")
+						if deletes.Load() != 1 {
+							t.Fatalf("AS withdrawals = %d", deletes.Load())
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					var ok bool
+					if pending, ok = result.Pending(); !ok {
+						t.Fatal("the relayed interaction ended the wait")
+					}
+				}
+				code, _ := f.interactionCode.Load().(string)
+				if pending.Requirement() != aauth.RequirementInteraction || pending.InteractionURL() != "https://as.example/consent" ||
+					code == "" || pending.InteractionCode() != code {
+					t.Fatalf("relayed %q %q %q, AS code %q", pending.Requirement(), pending.InteractionURL(), pending.InteractionCode(), code)
+				}
+				// The person finishes at the AS; the host's next advance
+				// collects the grant.
+				f.stage.Store(2)
+				if err := f.ps.AdvanceFederation(context.Background(), deferredReference(pending)); err != nil {
+					t.Fatal(err)
+				}
+				result, err := f.client.PollExchange(context.Background(), pending)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := result.Token(); !ok || deletes.Load() != 0 {
+					t.Fatalf("delivery after interaction: token %t, AS withdrawals %d", ok, deletes.Load())
+				}
+			})
+		}
+	}
+}
+
 func TestFederatedUnsupportedRequirementIsLocalRefusal(t *testing.T) {
-	for _, requirement := range []string{"interaction", "clarification"} {
+	for _, requirement := range []string{"clarification"} {
 		for _, phase := range []string{"initial", "poll"} {
 			t.Run(requirement+"/"+phase, func(t *testing.T) {
 				f := newDeferredFederation(t)
@@ -970,8 +1061,6 @@ func TestFederatedUnsupportedRequirementIsLocalRefusal(t *testing.T) {
 						body["required_claims"] = []string{"email"}
 					case "clarification":
 						body["clarification"], body["timeout"] = "Proceed?", 30
-					case "interaction":
-						header += `;url="https://as.example/interaction";code="ABCD"`
 					}
 					w.Header().Set("AAuth-Requirement", header)
 					w.Body.Reset()
