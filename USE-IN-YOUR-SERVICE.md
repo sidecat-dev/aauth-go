@@ -376,14 +376,20 @@ and at exhaustion, alongside binding and concurrent-cap enforcement.
 | AS deferred approval/payment + R3 or Budget | Immediate compositions retain their existing support; a deferred result is refused. Mission-bound Core requests can wait. See [deferred federation](#continue-an-as-approval-or-payment-request). |
 | AS deferred approval/payment + one-level sub-agent | Missionless Core waits for the parent; the grant binds the child. See [Delegate to a sub-agent](#delegate-to-a-sub-agent) and the [integration tests](integration/subagent_federated_deferred_test.go). |
 | Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
-| Budget + deferred Core consent | Immediate requests work, but selecting deferred consent for a Budget request returns `500 server_error`; [request-time limit test](personserver/budget_test.go). |
+| Budget + deferred Core consent | The Person Server keeps the Resource token's offer while the person decides, and `ApproveAuthorizationInteraction` mints the Budget its decision grants, which must narrow the offer. A request that did not declare the `interaction` capability is `403 user_unreachable`. [`TestBudgetAuthorizationInteractionIsARequestTimeLimit`](personserver/budget_test.go). |
 | Reactive `Client.Begin` + mission Person token | Refused before sending; use proactive authorization. [Input tests](agent/call_test.go). |
 | One Agent identity + several Person Servers | Use an Agent token and `Client` for each PS; a client rejects tokens naming another PS. [Context tests](agent/client_test.go). |
 
 When combining Budget with a consent policy, inspect `AuthorizationRequest.Budget`.
-If it is non-nil, use the immediate `Authorize` policy to approve or deny the
-offer; do not select deferred consent. Interactive Budget consent is not
-implemented, and `AuthorizationInteraction` has no Budget offer to display.
+If it is non-nil, the Resource offered a Budget, and the decision must grant
+one in the same unit and scale, no larger: in `AuthorizationDecision.Budget`,
+returned from `Authorize` or passed to `ApproveAuthorizationInteraction` after
+deferred consent. A decision that omits it or exceeds it is a host error: the
+immediate request fails with `500 server_error`, and
+`ApproveAuthorizationInteraction` returns the error.
+`AuthorizationInteraction` does not expose the offer; to show it to the
+person, keep it from the `AuthorizationRequest` that
+`RequireAuthorizationInteraction` receives.
 
 Check the boolean from `MissionResult.PersonToken(resource)`. A false result
 means the approval contains no token for that exact Resource identifier.

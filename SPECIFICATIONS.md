@@ -150,9 +150,11 @@ tracked by Git commit rather than inserted into the source manifest.
 ## Executed behavior: call-chain expiry
 
 The manifest pins the whole Protocol file. This library executes these rules
-only on the supported call-chain path: one immediate, missionless,
-accountless hop whose `upstream_token` is an auth token issued by the same
-Person Server.
+on every call-chain path it supports: an `upstream_token` that is a person
+token or an auth token, issued by this Person Server or delivered by it from
+an Access Server, in three- and four-party access, with or without a
+mission, on each hop of a repeated chain, and while a chained request waits
+for an Access Server.
 
 - A person token issued with `upstream_token` does not outlive it: the
   `upstream_token` part of the `exp` rule in `### Person Token Structure`.
@@ -168,10 +170,16 @@ Person Server.
 
 An upstream token that fails only `exp` returns `expired_upstream_token`. A
 malformed or untrusted upstream token remains `invalid_upstream_token`, and a
-revoked caller is `revoked_upstream_token`. Not adopted by this entry: person
-tokens as upstream tokens; mission- or account-bound upstream tokens;
-AS-issued upstream tokens and federated downstream issuance; and repeated hops
-or cascade. This overlay does not claim full call chaining.
+revoked caller is `revoked_upstream_token`. A mission on the upstream token
+also bounds the downstream tokens; an account on it is not carried down. The
+limits of call chaining itself are in the Call chaining row of
+[CONFORMANCE.md](CONFORMANCE.md#aauth-core). Evidence:
+`personserver/call_chaining_person_token_test.go` (an upstream person token),
+`integration/call_chaining_four_party_test.go` and
+`accessserver/upstream_external_test.go` (Access Server issuance, including a
+wait that ends when the upstream token expires), and
+`integration/call_chaining_hops_test.go` (repeated hops and a mission-bound
+chain).
 
 ## Executed behavior: deferred AS delivery
 
@@ -314,7 +322,10 @@ narrowing chain and the consumption-record carrier:
 A Resource whose Budget store implements usage queries publishes
 `usage_endpoint` and serves signed `POST /usage`. Callers are a Person Server
 or an Access Server. The response carries one unit, UTC calendar counters, and
-per-key figures. It is not signed. `budgets.AccountedSpend` treats a missing
+per-key figures. A Resource with a signing key signs it under its `jwks_uri`
+key, covering `@status`, `content-type` and `content-digest` and binding it to
+the request; `budgets.PostUsageChecked` verifies the signature
+(`resource/usage_signature_test.go`). `budgets.AccountedSpend` treats a missing
 consumption record as the full grant, and `budgets.Free` applies the
 settlement formula. Consent display helpers format a human amount and sanitize
 a Markdown unit description; this library does not render the consent screen.

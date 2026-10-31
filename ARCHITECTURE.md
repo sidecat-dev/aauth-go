@@ -347,9 +347,12 @@ failed call is chargeable, or create a cross-Resource ledger. Those are policy
 inputs owned by PS and Resource compositions. The current Resource profile
 retains a purpose-specific `BudgetLineage` through host storage before releasing
 the Resource token, then uses one atomic `BudgetStore.Charge` after every other
-authorization check and before application dispatch. Variable-cost
-reservation/settlement, streaming, usage queries, and prior-consumption policy
-remain separate unimplemented profiles. In four-party Core, the Person Server
+authorization check and before application dispatch. A variable cost is
+reserved first, as `BudgetConfig.Maximum` through a `BudgetReserver` store,
+and settled by the handler with `SettleBudget`, as a cost-only trailer once
+the response has started. A store that implements usage queries answers
+signed `POST /usage`, and a step-up Resource token's `budget_consumed` record
+reaches Person Server and Access Server policy. In four-party Core, the Person Server
 and Access Server independently resolve trusted Resource unit metadata, the PS
 may narrow the amount in its signed request, and the AS may narrow it again.
 

@@ -71,6 +71,27 @@ Resource defines and describes in its metadata.
 
 In this library, AAuth tokens and the keys they name are Ed25519.
 
+## Challenges and waiting
+
+A Resource says what it needs in an `AAuth-Requirement` response header. The
+value of `requirement` is one of:
+
+| Value | Status | The agent should |
+| --- | --- | --- |
+| `agent-token` | 401 | sign the request with its Agent token |
+| `person-token` | 401 | get a Person token for this Resource from its Person Server |
+| `auth-token` | 401 | take the Resource token in the header to its Person Server |
+| `interaction` | 202 | send the person to the URL in the header, then poll |
+| `approval` | 202 | wait for someone to approve, then poll |
+| `clarification` | 202 | answer the question in the body |
+| `claims` | 202 | (Access Server to Person Server only) supply the identity claims asked for |
+
+A `202 Accepted` response means the answer is not ready. It has a `Location`
+header naming a **pending URL**, and the agent sends signed `GET` requests to
+that URL, waiting at least `Retry-After` seconds between them, until the
+response is not `202`. In this library, a method that can be deferred returns
+an `agent.Pending` value, and each `Poll` sends one of those requests.
+
 ## How an API decides
 
 The drafts define five ways, called access modes. A Resource can use a
@@ -149,28 +170,7 @@ sequenceDiagram
 
 [Access Server](roles/access-server.md) runs this flow.
 
-## Challenges and waiting
-
-A Resource says what it needs in an `AAuth-Requirement` response header. The
-value of `requirement` is one of:
-
-| Value | Status | The agent should |
-| --- | --- | --- |
-| `agent-token` | 401 | sign the request with its Agent token |
-| `person-token` | 401 | get a Person token for this Resource from its Person Server |
-| `auth-token` | 401 | take the Resource token in the header to its Person Server |
-| `interaction` | 202 | send the person to the URL in the header, then poll |
-| `approval` | 202 | wait for someone to approve, then poll |
-| `clarification` | 202 | answer the question in the body |
-| `claims` | 202 | (Access Server to Person Server only) supply the identity claims asked for |
-
-A `202 Accepted` response means the answer is not ready. It has a `Location`
-header naming a **pending URL**, and the agent sends signed `GET` requests to
-that URL, waiting at least `Retry-After` seconds between them, until the
-response is not `202`. In this library, a method that can be deferred returns
-an `agent.Pending` value, and each `Poll` sends one of those requests.
-
-## Missions and governance
+## Missions and supervision
 
 A person can require their agent to work under a **mission**: a description of
 what the agent intends to do, which the agent proposes and the person approves

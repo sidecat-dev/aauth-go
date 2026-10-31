@@ -614,7 +614,10 @@ separators.
 
 ### Budgeted access
 
-The implemented profiles are fixed-price and non-streaming. Direct three-party
+The profiles below charge a fixed price. A Resource may instead reserve a
+maximum and settle a lower cost, with a cost-only trailer on a streamed
+response; that profile is listed under AAuth Budgets in
+[JOURNEYS.md](JOURNEYS.md). Direct three-party
 supports both source-defined entry paths. Proactively, the Agent requests
 one denomination. Reactively, the Agent's ordinary Person-token call receives
 a Budget-bearing Resource token in the `401`; the host's `InitialOffer` policy

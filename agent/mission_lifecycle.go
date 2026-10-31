@@ -104,10 +104,11 @@ func readMissionUpdate(_ context.Context, response *http.Response) (MissionUpdat
 
 // CompleteMission performs one signed mission-completion request and accepts
 // one immediate completion. Core defines no success-response document to
-// decode. A Person Server normally defers completion while the person reviews
-// the summary; the error is then a *PendingError[MissionCompletionResult]
-// that carries the pending completion, and BeginMissionCompletion returns it
-// as a Result.
+// decode. A Person Server may defer completion while the person reviews the
+// summary; this module's Person Server answers at once unless a supervision
+// server decides the completion. A deferred completion is a
+// *PendingError[MissionCompletionResult] that carries the pending completion,
+// and BeginMissionCompletion returns it as a Result.
 func (client *Client) CompleteMission(ctx context.Context, input MissionCompletionRequest) error {
 	const operation = "complete mission"
 	result, err := client.beginMissionCompletion(ctx, input, operation)
