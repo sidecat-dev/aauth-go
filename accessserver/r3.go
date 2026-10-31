@@ -71,6 +71,11 @@ type R3DocumentDecision struct {
 type R3ProposalDecision struct {
 	Scopes   []string
 	Lifetime time.Duration
+	// Budget is required when AuthorizationRequest.Budget is present, as for
+	// a proposal whose Resource token offers the cost of releasing a held
+	// result, and may only lower its amount without changing unit or
+	// decimals. The per-call Auth token carries it.
+	Budget *budgets.Value
 }
 
 type r3Config struct {

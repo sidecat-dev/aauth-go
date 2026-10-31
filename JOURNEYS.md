@@ -114,9 +114,11 @@ Specifications:
     state; no payment provider is contacted.
   - Evidence: [`example/federatedpayment/main_test.go`](example/federatedpayment/main_test.go)
     and [`integration/federated_deferred_test.go`](integration/federated_deferred_test.go).
-  - Boundary: top-level missionless Core, `WWW-Authenticate` challenge carrier,
-    explicit host-driven polling, separate in-memory role stores. No claims,
-    clarification, interaction forwarding or deferred companion combinations.
+  - Boundary: Core, `WWW-Authenticate` challenge carrier, explicit host-driven
+    polling, separate in-memory role stores. An AS interaction reaches an Agent
+    that declared `interaction` with the AS's URL and code; without it the PS
+    answers `user_unreachable` ([`integration/federated_deferred_test.go`](integration/federated_deferred_test.go)).
+    No clarification forwarding or deferred companion combinations.
 
 
 Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth/blob/a99d353cf18aee81d0c5445bac070164fb3b8bc5/draft-hardt-oauth-aauth-protocol.md).
@@ -270,10 +272,13 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `go run ./example/subagent` (the hosted sub-agent request through the AS
     wait), and `go run ./example/callchaining`. The shared
     harness's `authorization.subagent` slice measures the same native roles.
-  - Missing: recursive delegation, R3 or four-party Budget chaining, an
-    interaction for a chained request,
-    sub-agent call chaining, mission-bound parent mediation, and a cascade
-    from a parent's Agent-token revocation to its children's credentials.
+  - A four-party chained request carries its own hop's Budget ceiling to the
+    AS, and an AS interaction reaches the intermediary with the AS's URL and
+    code ([`integration/call_chaining_hops_test.go`](integration/call_chaining_hops_test.go)).
+  - Missing: recursive delegation, R3 chaining, three-party PS-hosted consent
+    for a chained request, sub-agent call chaining, mission-bound parent
+    mediation, and a cascade from a parent's Agent-token revocation to its
+    children's credentials.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
   - Flow: AP signs an exact Agent-token reference → PS or a known direct
@@ -831,8 +836,9 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
   - Boundary: a PS omission is not a grant. The AS issues no `budget` claim, and
     the PS rejects an Auth token that carries one. A step-up Resource token
     carries `budget_consumed` for the presented Auth token in that grant's
-    scale. Per-call R3 plus Budget and deferred interaction remain excluded.
-    Direct delegation and one-hop call chaining are a separate journey.
+    scale. Per-call R3 carries a Budget only for a metered release, a separate
+    journey; deferred interaction with a Budget remains excluded. Delegation
+    and call chaining are a separate journey.
     Variable-cost reservation is a separate journey.
 
 ### Not implemented
@@ -873,19 +879,30 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
     class R3 uses the AS issuance commit followed by the PS mission comparison
     and exact-token commit; a later mission race withholds the token even though
     the independent AS audit remains.
-- [x] **Delegation and one-hop call chaining — Each auth token carries its own Budget.**
+- [x] **Delegation and call chaining — Each auth token carries its own Budget.**
   A direct Person Server sizes the grant from that token's resource-token
-  offer. A second token for the same offer is not reduced by the first, and
+  offer, and a federated one sends its ceiling for a chained token's offer to
+  the AS. A second token for the same offer is not reduced by the first, and
   the upstream token is not a balance to draw down. The parent mediates a
   sub-agent exchange; the auth token is bound to the child. The child can
-  request its own budgeted resource token. Federated delegation and federated
-  call chaining stay refused.
-  Evidence: [`personserver/budget_delegation_test.go`](personserver/budget_delegation_test.go)
+  request its own budgeted resource token. Federated delegation stays refused.
+  Evidence: [`personserver/budget_delegation_test.go`](personserver/budget_delegation_test.go),
+  [`integration/call_chaining_hops_test.go`](integration/call_chaining_hops_test.go)
   and [`agent/budget_test.go`](agent/budget_test.go).
+- [x] **Metered release of a held R3 result — Implemented four-party.**
+  - Flow: class Auth token → per-call call to a `budget: true` operation → the
+    Resource runs it, holds the result and offers its cost on the proposal's
+    Resource token → PS ceiling → AS grant on the per-call Auth token → the
+    Agent's poll releases the result and the cost is charged once.
+  - Evidence: [`integration/r3_metered_release_four_party_test.go`](integration/r3_metered_release_four_party_test.go)
+    and [`resource/r3_release_test.go`](resource/r3_release_test.go).
+  - Boundary: opt-in with `R3ReleaseConfig.MeterRelease`. A token whose
+    budget is short is `403` with `AAuth-Budget`, and the result stays held. No
+    three-party per-call R3.
 - [ ] **Per-call mission R3 Budgets — Not implemented.**
-  The Access Server refuses a fixed Budget that also grants per-call R3
-  operations. Mission-bound delegation and mission-bound call chaining stay
-  refused.
+  The Access Server refuses a fixed Budget on a class grant that also grants
+  per-call R3 operations; only a metered release carries a per-call Budget.
+  Mission-bound delegation stays refused.
 
 ## AAuth Supervision
 

@@ -17,9 +17,12 @@ import (
 // token. When no trustworthy response arrives, BeginBudgetCall conservatively
 // assumes the entire signed grant because Core exposes no verified current
 // balance and Budgets defines no interoperable maximum-cost input.
+// UpstreamToken is local call-chain context, as in Call, and is never sent to
+// the Resource.
 type BudgetCall struct {
-	Request   *http.Request
-	AuthToken string
+	Request       *http.Request
+	AuthToken     string
+	UpstreamToken string
 }
 
 type budgetCallResultKind uint8
@@ -224,6 +227,9 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	var claims aauth.AuthTokenClaims
 	var grant budgets.Value
 	var r3Reference *r3.Reference
+	if carriesR3 && call.UpstreamToken != "" {
+		return BudgetCallResult{}, fail(operation, errors.New("R3 call chaining is not implemented"))
+	}
 	if carriesR3 {
 		var reference r3.Reference
 		claims, reference, _, grant, err = r3.VerifyBudgetAuthToken(
@@ -238,7 +244,7 @@ func (client *Client) BeginBudgetCall(ctx context.Context, call BudgetCall) (Bud
 	} else {
 		claims, grant, err = budgets.VerifyAuthToken(ctx, call.AuthToken, client.keyResolver, client.clock)
 		if err == nil {
-			err = client.validateAuthTokenForDirectCall(ctx, claims, resource, "")
+			err = client.validateAuthTokenForDirectCall(ctx, claims, resource, call.UpstreamToken)
 		}
 	}
 	if err != nil {

@@ -42,6 +42,8 @@ func (registry Registry) ParseReferencedArtifact(reference Reference, exact []by
 		"parameters": func(json.RawMessage) error { parametersPresent = true; return nil },
 		"account":    func(json.RawMessage) error { return nil },
 		"display":    func(json.RawMessage) error { return nil },
+		// A release proposal states what the call that already ran produced.
+		"result": func(json.RawMessage) error { return nil },
 	})
 	if err != nil {
 		return ReferencedArtifact{}, fmt.Errorf("r3: invalid artifact envelope: %w", err)

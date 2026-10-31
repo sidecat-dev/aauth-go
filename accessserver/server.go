@@ -17,6 +17,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -42,7 +43,8 @@ type Config struct {
 	Authorize         func(context.Context, AuthorizationRequest) (Decision, error)
 	Budget            *BudgetConfig
 	R3                *R3Config
-	// Deferred enables retained Core approval and payment continuations.
+	// Deferred enables retained Core approval, payment, claims and
+	// interaction continuations.
 	Deferred *DeferredConfig
 	// Revocation enables the revocation endpoint and refusal of revoked
 	// person and resource tokens.
@@ -83,6 +85,12 @@ type AuthorizationRequest struct {
 	// Claims are values the Person Server posted for a requirement=claims wait.
 	// Keys are claim names. sub is never present.
 	Claims map[string]json.RawMessage
+	// InteractionCode is the code this Access Server drew for the request's
+	// wait when Deferred is configured: a PendingDecision with an
+	// InteractionURL is answered with it, and every poll of that wait carries
+	// the same code. It correlates the person's visit to the interaction page
+	// and authorizes nothing.
+	InteractionCode string
 	// Upstream or UpstreamPerson is set when an intermediary chains this
 	// request: the verified auth token or person token the calling Agent
 	// presented to it. It names the person the intermediary acts for and
@@ -403,6 +411,14 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		BudgetConsumed: cloneConsumptionRecord(budgetConsumed),
 		Claims:         cloneClaims(pendingClaims(pending)),
 	}
+	if server.deferred != nil {
+		if pending != nil {
+			policyRequest.InteractionCode = pending.InteractionCode
+		} else if policyRequest.InteractionCode, err = interaction.GenerateCode(nil); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	}
 	policyRequest.Upstream, policyRequest.UpstreamPerson = upstream.policyClaims()
 	if subagentClaims != nil {
 		policyRequest.Subagent = &Agent{
@@ -448,6 +464,7 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		decision = Decision{
 			Scopes:   append([]string(nil), proposalDecision.Scopes...),
 			Lifetime: proposalDecision.Lifetime,
+			Budget:   cloneBudgetValue(proposalDecision.Budget),
 		}
 		err = proposalErr
 	default:
@@ -467,7 +484,7 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 			writeProblem(response, 500, "server_error", errors.New("accessserver: deferred authorization supports Core requests without R3 or Budget only"))
 			return
 		}
-		server.deferAuthorization(response, request, personServer, encoded, resourceClaims, credentialExpiresAt, presented, decision, pending)
+		server.deferAuthorization(response, request, personServer, encoded, resourceClaims, credentialExpiresAt, presented, decision, pending, policyRequest.InteractionCode)
 		return
 	}
 	if err := validateDecision(decision, requestedScopes, r3Context != nil); err != nil {
@@ -539,10 +556,17 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 				}
 			}
 		case r3.ArtifactProposal:
-			authToken, err = r3.MintPerCallAuthToken(
-				server.r3.registry, server.signingKey, claims,
-				r3Context.reference, r3Context.exact,
-			)
+			if grantedBudget == nil {
+				authToken, err = r3.MintPerCallAuthToken(
+					server.r3.registry, server.signingKey, claims,
+					r3Context.reference, r3Context.exact,
+				)
+			} else {
+				authToken, err = r3.MintBudgetPerCallAuthToken(
+					server.r3.registry, server.signingKey, claims,
+					r3Context.reference, r3Context.exact, *grantedBudget,
+				)
+			}
 		default:
 			err = errors.New("accessserver: R3 artifact is unclassified")
 		}

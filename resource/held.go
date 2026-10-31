@@ -16,6 +16,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
 	"gitlab.com/sidecat-dev/aauth-go/internal/r3dispatch"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
@@ -104,7 +105,7 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 		server.serveHeldBudgetPoll(response, request, pendingID, invocation, snapshot)
 		return
 	}
-	resourceToken, resourceReference, resourceCarriesR3, err := server.verifyHeldRetainedResourceToken(
+	resourceToken, resourceReference, resourceCarriesR3, offer, err := server.verifyHeldRetainedResourceToken(
 		request.Context(), invocation,
 	)
 	if err != nil {
@@ -116,6 +117,10 @@ func (server *Server) serveHeldPoll(response http.ResponseWriter, request *http.
 			response, http.StatusInternalServerError, "server_error",
 			retainedR3State(errors.New("held invocation authorization kind does not match its Resource token")),
 		)
+		return
+	}
+	if offer != nil {
+		server.serveHeldMeteredRelease(response, request, pendingID, invocation, resourceReference, *offer)
 		return
 	}
 	prepared, compact, err := server.prepareJWTRequest(request, nil)
@@ -304,50 +309,42 @@ func (server *Server) verifyHeldR3Completion(
 	return authScopes, nil
 }
 
+// verifyHeldRetainedResourceToken verifies the Resource token a held
+// invocation was challenged with. offer is the budget a metered release's
+// proposal token offers, and nil for any other held invocation.
 func (server *Server) verifyHeldRetainedResourceToken(
 	ctx context.Context,
 	invocation HeldInvocation,
-) (aauth.ResourceTokenClaims, r3.Reference, bool, error) {
+) (claims aauth.ResourceTokenClaims, reference r3.Reference, carriesR3 bool, offer *budgets.Value, err error) {
 	verificationClock := aauth.ClockFunc(func() time.Time { return invocation.ResourceTokenIssuedAt })
-	carriesR3, err := r3dispatch.TokenCarriesClaims(invocation.ResourceToken)
-	if err != nil {
-		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
-			fmt.Errorf("inspect held Resource token: %w", err),
-		)
+	fail := func(err error) (aauth.ResourceTokenClaims, r3.Reference, bool, *budgets.Value, error) {
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, nil, retainedR3State(err)
 	}
-	var (
-		claims    aauth.ResourceTokenClaims
-		reference r3.Reference
-	)
-	if carriesR3 {
-		if server.r3 == nil {
-			return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
-				errors.New("held R3 Resource token is not configured"),
-			)
-		}
-		claims, reference, err = r3.VerifyResourceToken(
-			ctx, invocation.ResourceToken, server.keyResolver, verificationClock,
-		)
-	} else {
+	carriesR3, err = r3dispatch.TokenCarriesClaims(invocation.ResourceToken)
+	if err != nil {
+		return fail(fmt.Errorf("inspect held Resource token: %w", err))
+	}
+	switch {
+	case carriesR3 && server.r3 == nil:
+		return fail(errors.New("held R3 Resource token is not configured"))
+	case carriesR3:
+		claims, reference, offer, err = server.verifyProposalResourceToken(ctx, invocation.ResourceToken, verificationClock)
+	default:
 		claims, err = aauth.VerifyResourceToken(
 			ctx, invocation.ResourceToken, server.keyResolver, verificationClock,
 		)
 	}
 	if err != nil {
-		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
-			fmt.Errorf("verify held Resource token: %w", err),
-		)
+		return fail(fmt.Errorf("verify held Resource token: %w", err))
 	}
 	if claims.Issuer != server.issuer || claims.Audience != server.accessServer ||
 		claims.DWK != aauth.ResourceDiscoveryDocument ||
 		claims.IssuedAt != invocation.ResourceTokenIssuedAt.Unix() ||
 		claims.ExpiresAt != invocation.ExpiresAt.Unix() ||
 		!invocation.CompletionUntil.Equal(invocation.ExpiresAt.Add(maximumDerivativeAuthTokenLifetime)) {
-		return aauth.ResourceTokenClaims{}, r3.Reference{}, false, retainedR3State(
-			errors.New("held Resource token does not match its retained invocation"),
-		)
+		return fail(errors.New("held Resource token does not match its retained invocation"))
 	}
-	return claims, reference, carriesR3, nil
+	return claims, reference, carriesR3, offer, nil
 }
 
 func (server *Server) validateR3Scopes(scope string) ([]string, error) {

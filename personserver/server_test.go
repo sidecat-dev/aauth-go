@@ -472,7 +472,6 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 
 	for name, value := range map[string]any{
 		"upstream_token": "token",
-		"capabilities":   []string{"interaction"},
 	} {
 		t.Run("known unsupported token request "+name, func(t *testing.T) {
 			requestBody, err := json.Marshal(map[string]any{"resource_token": resourceToken, "presented_token": presentedToken, name: value})
@@ -500,6 +499,8 @@ func TestServerExchangesRetainedPersonContextWithAccessServer(t *testing.T) {
 		"prompt":        "consent",
 		"platform":      "desktop",
 		"device":        "test device",
+		// An immediate grant leaves the capabilities unused.
+		"capabilities": []string{"interaction", "clarification", "payment"},
 	} {
 		t.Run("ignored token request "+name, func(t *testing.T) {
 			before := accessCalls

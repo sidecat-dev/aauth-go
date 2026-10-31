@@ -343,7 +343,7 @@ and at exhaustion, alongside binding and concurrent-cap enforcement.
 | --- | --- |
 | Core + Budget, three or four parties | Immediate grants and replacement-grant step-up; [three-party](integration/budget_three_party_test.go) and [four-party](integration/budget_four_party_test.go) tests. |
 | R3 class + Budget | Immediate grants; denied operations report zero cost. [Three-party](integration/r3_budget_three_party_test.go) and [four-party](integration/r3_direct_four_party_test.go) tests. |
-| AS deferred approval/payment + R3, Budget or missions | Immediate compositions retain their existing support; a deferred result is refused. See [deferred federation](#continue-an-as-approval-or-payment-request). |
+| AS deferred approval/payment + R3 or Budget | Immediate compositions retain their existing support; a deferred result is refused. Mission-bound Core requests can wait. See [deferred federation](#continue-an-as-approval-or-payment-request). |
 | AS deferred approval/payment + one-level sub-agent | Missionless Core waits for the parent; the grant binds the child. See [Delegate to a sub-agent](#delegate-to-a-sub-agent) and the [integration tests](integration/subagent_federated_deferred_test.go). |
 | Direct R3 + deferred Core consent | Constructor refuses this configuration; [configuration test](personserver/r3_direct_test.go). |
 | Budget + deferred Core consent | Immediate requests work, but selecting deferred consent for a Budget request returns `500 server_error`; [request-time limit test](personserver/budget_test.go). |
@@ -404,9 +404,33 @@ receives the retained response; the call never runs again, and a result whose
 release is never approved is never sent. Return true from `Eligible` only when
 nothing outside the result changes when the call runs: not for a call that is
 audited or billed, or that calls another party. The Resource itself never runs
-first a route its Budget profile meters or an operation annotated
-`budget: true`. Held stores must copy `HeldR3PerCall.Release`; rerun
-`resource/storetest.RunHeldInvocation`.
+first a route its Budget profile meters, or an operation annotated
+`budget: true` unless it meters the release. Held stores must copy
+`HeldR3PerCall.Release`; rerun `resource/storetest.RunHeldInvocation`.
+
+**Meter the release.** When what an operation annotated `budget: true`
+charges for is the result rather than running it, set `MeterRelease` and
+state the cost in `DescribeResult`:
+
+```go
+config.R3.PerCall.Release.MeterRelease = true // needs config.Budget
+// in DescribeResult, for an annotated operation:
+cost, _ := budgets.NewValue(40, credits) // a declared denomination
+description.Cost = &cost
+```
+
+The Resource needs its Budget profile, with `Metered` leaving the per-call
+route unmetered so the class Auth token reaches the per-call challenge. An
+unannotated operation's release states no `Cost`. The proposal's Resource
+token offers exactly the cost as `budget`; the Person Server's
+`FederatedBudgetConfig.Ceiling` and the Access Server's
+`R3ProposalDecision.Budget` grant it on the per-call Auth token. The Agent's
+`PollR3Call` checks that grant against the offer. The poll that presents the
+per-call token draws the cost down once: the released response carries
+`AAuth-Budget`, and a replay reports `remaining` without metering again. A
+per-call token without a budget is `403`; one whose budget is below the cost
+is `403` with `AAuth-Budget` stating `required`, and the result stays held for
+a token that fits. A declined release meters nothing.
 
 ## Hold a Budget refusal
 
@@ -561,7 +585,38 @@ parent-mediated for a [sub-agent](#delegate-to-a-sub-agent), set `accessserver.C
 AS-owned `accessserver.DeferredAuthorizationStore`, and
 `personserver.FederatedAuthorizationConfig.Deferred` with a separate
 `personserver.FederatedAuthorizationStore`. An AS policy returns `Decision.Pending` while
-approval or payment is needed; a normal decision grants access.
+approval, payment, claims or the person's interaction is needed; a normal
+decision grants access.
+
+**The person at the Access Server.** When the AS needs the person, for
+example to bind their Person Server or to have the resource owner approve,
+its policy returns a `PendingDecision` with `InteractionURL`, the HTTPS page
+the AS host serves. The AS answers with `requirement=interaction`, that URL
+and `AuthorizationRequest.InteractionCode`, the code it drew for this wait;
+every later poll of the wait carries the same code, so the host can keep the
+pairing. The host's page compares the code the person presents with
+`aauth.MatchInteractionCode`, and a later policy call grants or refuses once
+the person has finished. The Person Server passes that URL and code to the
+Agent in its own `202`, and the host keeps calling `AdvanceFederation` as for
+approval. The Agent must declare it can reach the person:
+
+```go
+result, err := client.BeginExchange(ctx, agent.ExchangeRequest{
+	PersonServer: personServer, ResourceToken: resourceToken, PresentedToken: personToken,
+	Capabilities: []string{"interaction"},
+})
+if pending, waiting := result.Pending(); err == nil && waiting &&
+	pending.Requirement() == aauth.RequirementInteraction {
+	// Send the person to pending.InteractionURL() with
+	// pending.InteractionCode(), then poll with PollExchange.
+}
+```
+
+Without `interaction` in `capabilities` (or in the mission's captured
+capabilities when a mission-bound request omits them) the Person Server
+answers `403 user_unreachable` and withdraws the request at the AS. An
+intermediary that meets this on a chained request chains it to its own caller
+with `ChainInteraction`.
 
 A mission-bound wait loads its mission again on every Agent poll and host
 advance; once the mission is terminated the wait ends with
@@ -575,8 +630,8 @@ request. A local refusal returns `500 server_error` with a safe explanation.
 Use `errors.As` on the diagnostic cause to inspect
 `*personserver.DeferredCompositionError` and its `Reason()`; this is distinct
 from `502 as_unreachable` for an unavailable or unverifiable AS response.
-Unsupported AS claims, interaction and clarification requirements use the same
-local refusal, including when they arrive on a later poll. `AdvanceFederation`
+An AS clarification requirement, or an unsupported extension, uses the same
+local refusal, including when it arrives on a later poll. `AdvanceFederation`
 retains that terminal result; diagnostics reports its reconstructed typed cause
 when the Agent polls. Store adapters must preserve `FederatedResponse.RefusalReason`
 with the terminal response.
@@ -622,8 +677,8 @@ returns `409 request_conflict`. These are [library error-code extensions](INTERP
 explicit policy denial remains `403 denied`.
 
 The supported challenge carrier is `WWW-Authenticate`, with optional opaque
-body content. Claims, clarification, interaction forwarding and deferred
-R3/Budget/mission combinations remain unsupported. The earliest
+body content. Clarification forwarding and deferred R3 and Budget
+combinations remain unsupported. The earliest
 original credential expiry and configured lifetime bound both pending records.
 Custom adapters should run `accessserver/storetest.RunDeferredAuthorization`
 and `personserver/storetest.RunFederatedAuthorization`. Pending listing is optional:
@@ -934,8 +989,16 @@ store whose `CommitMissionPersonToken` accepts a chained record, which names
 the intermediary rather than the mission's Agent (`testutil.NewMissionStore`
 does).
 
+**Budgets.** A downstream Resource token may offer a Budget on a chained
+request. The Person Server sizes that hop's grant from its own offer, with
+`Authorize` in three-party access or `FederatedBudgetConfig.Ceiling` sent to
+the Access Server in four-party access, exactly as for an unchained request;
+nothing is drawn from the upstream token. The intermediary makes the metered
+call with `BeginBudgetCall`, passing the upstream token in
+`BudgetCall.UpstreamToken`.
+
 **Waits.** With `Deferred`, a chained request can wait for Access Server
-approval, payment or claims like any missionless Core request. The
+approval, payment, claims or interaction like any Core request. The
 intermediary calls `BeginExchange`, or takes the `PendingExchangeError` from
 `Exchange`, and polls with `PollExchange`. The Person Server
 lets the intermediary poll although its Agent token names its own Person
@@ -945,13 +1008,13 @@ upstream token, resource token or calling Agent's Agent token or binding is
 revoked ends with `403 revoked` and a `detail`; its pending URL then answers
 `410`. The Access Server answers its own pending URL the same way.
 
-Limits: chained R3 and Budget requests are refused, a sub-agent cannot be an
-intermediary. Neither Person
-Server asks the person about a chained request: the four-party one does not
-forward an Access Server's `requirement=interaction` for any request, and the
-three-party one decides a chained request with `CallChaining.Authorize` alone.
-An interaction the intermediary meets elsewhere is chained back to its caller
-as below.
+An Access Server's `requirement=interaction` reaches the intermediary with
+the AS's URL and code when it declared `interaction` in `Capabilities`, and
+it chains that to its own caller as below.
+
+Limits: chained R3 requests are refused, and a sub-agent cannot be an
+intermediary. The three-party Person Server does not ask the person about a
+chained request: it decides with `CallChaining.Authorize` alone.
 
 ## Deliver events to an Agent
 

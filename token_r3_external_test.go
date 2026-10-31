@@ -1074,6 +1074,78 @@ func TestMCPR3PerCallTokensBindTheExactProposal(t *testing.T) {
 	}
 }
 
+// TestMCPR3PerCallBudgetTokensCarryTheReleaseOffer covers the per-call
+// Budget profile: a proposal's Resource token offering what releasing a held
+// result costs, and a per-call Auth token carrying the grant for exactly that
+// proposal. The plain per-call verifiers refuse both.
+func TestMCPR3PerCallBudgetTokensCarryTheReleaseOffer(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	resourceKey := coreTokenKey(t, "resource-key")
+	accessKey := coreTokenKey(t, "access-key")
+	requestKey := coreTokenKey(t, "request-key")
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: accessKey.ID()}:       accessKey.PublicJWK(),
+	}
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	operation, _ := newMCPR3Operation("records.export")
+	parameters, _ := r3.NewParameters(nil)
+	proposal, _ := r3.NewProposal(operation, parameters, r3.ProposalOptions{})
+	exactProposal, _ := json.Marshal(proposal)
+	unit, _ := budgets.NewUnit("credits", 0)
+	offer, _ := budgets.NewValue(25, unit)
+
+	resourceCompact, reference, err := r3.MintBudgetProposalResourceToken(tokenMCPRegistry, resourceKey, aauth.ResourceTokenClaims{
+		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
+		Audience: "https://access.example", JTI: "budget-proposal-resource-token",
+		PersonServer: "https://person.example", Subject: "person-1", PresentedJTI: "class-auth-token",
+		AgentJKT: coreTokenS256("agent-key"), IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
+	}, "https://resource.example/r3/proposal-billed", exactProposal, offer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gotReference, gotOffer, consumed, err := r3.VerifyBudgetResourceToken(context.Background(), tokenMCPRegistry, resourceCompact, resolver, clock)
+	if err != nil || gotReference != reference || gotOffer.Amount() != 25 || !gotOffer.Unit().Equal(unit) || consumed != nil {
+		t.Fatalf("budget proposal Resource token = %#v %v %v, %v", gotReference, gotOffer, consumed, err)
+	}
+	if _, _, err := r3.VerifyResourceToken(context.Background(), resourceCompact, resolver, clock); err == nil {
+		t.Fatal("the plain R3 verifier accepted a proposal Resource token with a budget")
+	}
+
+	grant, _ := budgets.NewValue(25, unit)
+	authClaims := aauth.AuthTokenClaims{
+		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
+		Audience: "https://resource.example", JTI: "budget-per-call-auth-token",
+		PersonServer: "https://person.example", Subject: "person-1",
+		Confirmation: aauth.Confirmation{JWK: requestKey.PublicJWK()},
+		IssuedAt:     now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+	}
+	authCompact, err := r3.MintBudgetPerCallAuthToken(tokenMCPRegistry, accessKey, authClaims, reference, exactProposal, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := compactClaimMap(t, authCompact)["r3_per_call"]; ok {
+		t.Fatal("budget per-call Auth token contains r3_per_call")
+	}
+	claims, granted, gotGrant, err := r3.VerifyBudgetPerCallAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock, reference, exactProposal)
+	if err != nil || claims.JTI != "budget-per-call-auth-token" || mcpR3Tool(t, granted) != "records.export" || gotGrant.Amount() != 25 {
+		t.Fatalf("budget per-call Auth token = %#v %#v %v, %v", claims, granted, gotGrant, err)
+	}
+	if _, _, _, err := r3.VerifyPerCallAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock, reference, exactProposal); err == nil {
+		t.Fatal("the plain per-call verifier accepted a budget grant")
+	}
+	other, _ := r3.NewReference("https://resource.example/r3/proposal-other", reference.Digest())
+	if _, _, _, err := r3.VerifyBudgetPerCallAuthToken(context.Background(), tokenMCPRegistry, authCompact, resolver, clock, other, exactProposal); err == nil {
+		t.Fatal("the budget per-call verifier accepted another proposal reference")
+	}
+	changed := append(append([]byte(nil), exactProposal...), '\n')
+	if _, err := r3.MintBudgetPerCallAuthToken(tokenMCPRegistry, accessKey, authClaims, reference, changed, grant); err == nil {
+		t.Fatal("budget per-call mint accepted proposal bytes that changed after hashing")
+	}
+}
+
 func TestMCPR3AuthClaimVerificationRejectsMalformedPerCallShapes(t *testing.T) {
 	t.Parallel()
 

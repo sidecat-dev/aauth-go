@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -55,11 +56,13 @@ const (
 	pendingR3CallVerified   pendingR3CallKind   = 1
 )
 
+// budget is the offer of a proposal whose release the Resource meters.
 type r3ProposalContext struct {
 	resourceToken  string
 	reference      r3.Reference
 	resourceClaims aauth.ResourceTokenClaims
 	operation      r3.Operation
+	budget         *budgets.Value
 }
 
 // R3Authorization is a verified per-call proposal requirement and an exact
@@ -434,7 +437,29 @@ func (client *Client) verifyR3ProposalRequirement(
 	if err != nil {
 		return r3ProposalContext{}, err
 	}
-	claims, reference, err := r3.VerifyResourceToken(ctx, requirement.ResourceToken, client.keyResolver, client.clock)
+	// A proposal whose release the Resource meters offers the release's cost.
+	carriesBudget, err := budgets.TokenCarriesClaims(requirement.ResourceToken)
+	if err != nil {
+		return r3ProposalContext{}, err
+	}
+	var (
+		claims    aauth.ResourceTokenClaims
+		reference r3.Reference
+		offer     *budgets.Value
+	)
+	if carriesBudget {
+		var offered budgets.Value
+		var consumed *budgets.ConsumptionRecord
+		claims, reference, offered, consumed, err = r3.VerifyBudgetResourceToken(
+			ctx, client.r3.Registry, requirement.ResourceToken, client.keyResolver, client.clock,
+		)
+		if err == nil && consumed != nil {
+			err = errors.New("proposal Resource token must not carry a consumption record")
+		}
+		offer = &offered
+	} else {
+		claims, reference, err = r3.VerifyResourceToken(ctx, requirement.ResourceToken, client.keyResolver, client.clock)
+	}
 	if err != nil {
 		return r3ProposalContext{}, err
 	}
@@ -465,7 +490,7 @@ func (client *Client) verifyR3ProposalRequirement(
 	}
 	return r3ProposalContext{
 		resourceToken: requirement.ResourceToken, reference: reference,
-		resourceClaims: claims, operation: operation,
+		resourceClaims: claims, operation: operation, budget: offer,
 	}, nil
 }
 
@@ -514,9 +539,27 @@ func (client *Client) verifyR3ProposalAuthToken(
 	compact string,
 	proposal r3ProposalContext,
 ) error {
-	claims, reference, operations, err := r3.VerifyAuthTokenClaims(
-		ctx, client.r3.Registry, compact, client.keyResolver, client.clock,
+	var (
+		claims     aauth.AuthTokenClaims
+		reference  r3.Reference
+		operations r3.AuthTokenOperations
+		err        error
 	)
+	if proposal.budget != nil {
+		var grant budgets.Value
+		claims, reference, operations, grant, err = r3.VerifyBudgetAuthToken(
+			ctx, client.r3.Registry, compact, client.keyResolver, client.clock,
+		)
+		if err == nil {
+			if narrowErr := budgets.ValidateNarrowing(*proposal.budget, grant); narrowErr != nil {
+				err = fmt.Errorf("proposal auth-token Budget did not narrow the release offer: %w", narrowErr)
+			}
+		}
+	} else {
+		claims, reference, operations, err = r3.VerifyAuthTokenClaims(
+			ctx, client.r3.Registry, compact, client.keyResolver, client.clock,
+		)
+	}
 	if err != nil {
 		return err
 	}

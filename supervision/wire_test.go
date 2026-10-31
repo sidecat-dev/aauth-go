@@ -162,6 +162,24 @@ func TestDecisionsCarryOnlyWhatTheirVerdictAndKindAllow(t *testing.T) {
 	}
 }
 
+// TestClarificationTimeoutIsWholeSeconds refuses a timeout the wire's whole
+// seconds cannot carry, rather than sending a positive one as 0.
+func TestClarificationTimeoutIsWholeSeconds(t *testing.T) {
+	for _, timeout := range []time.Duration{time.Nanosecond, 500 * time.Millisecond, 1500 * time.Millisecond, -time.Second} {
+		clarification := supervision.Clarification{Question: "Which date?", Timeout: timeout}
+		if err := clarification.Validate(); err == nil {
+			t.Errorf("timeout %v validated", timeout)
+		}
+		if body, err := supervision.EncodePending("d-1", &clarification); err == nil {
+			t.Errorf("timeout %v encoded as %s", timeout, body)
+		}
+	}
+	body, err := supervision.EncodePending("d-1", &supervision.Clarification{Question: "Which date?", Timeout: 2 * time.Second})
+	if err != nil || !strings.Contains(string(body), `"timeout":2`) {
+		t.Fatalf("two seconds encoded as %s, %v", body, err)
+	}
+}
+
 // TestReportsAndEventsNameWhatTheyReport checks an approved report's digest
 // and the members events require.
 func TestReportsAndEventsNameWhatTheyReport(t *testing.T) {
