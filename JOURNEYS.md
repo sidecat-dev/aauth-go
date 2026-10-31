@@ -260,13 +260,15 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     [`integration/person_token_interaction_test.go`](integration/person_token_interaction_test.go),
     [`integration/call_chaining_test.go`](integration/call_chaining_test.go),
     [`integration/call_chaining_four_party_test.go`](integration/call_chaining_four_party_test.go),
+    [`integration/call_chaining_hops_test.go`](integration/call_chaining_hops_test.go),
     [`personserver/agent_binding_lifecycle_test.go`](personserver/agent_binding_lifecycle_test.go),
     `go run ./example/subagent` (the hosted sub-agent request through the AS
     wait), and `go run ./example/callchaining`. The shared
     harness's `authorization.subagent` slice measures the same native roles.
-  - Missing: recursive delegation, repeated chain depth, a federated
-    upstream auth token, deferred or R3 federated chaining, sub-agent call
-    chaining, mission composition, and Agent-token revocation cascades.
+  - Missing: recursive delegation, R3 or four-party Budget chaining, a
+    mission-bound chained wait, an interaction for a chained request,
+    sub-agent call chaining, mission-bound parent mediation, and a cascade
+    from a parent's Agent-token revocation to its children's credentials.
 
 - [ ] **Agent- and three-party Auth-token revocation — Partial**
   - Flow: AP signs an exact Agent-token reference → PS or a known direct

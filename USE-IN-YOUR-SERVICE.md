@@ -161,12 +161,32 @@ answers `202` or `429 rate_limited` is reported pending, and a call after its
 `RetryAfter` polls its pending URL with a signed `GET`, or sends the revocation
 again. A failed recipient is `revocation_unavailable` or
 `revocation_unsupported` and is attempted again on the next call. Repeating the
-call is safe. When `Tokens` also implements `personserver.ChainedPersonTokenStore`,
-the person tokens a call-chaining intermediary obtained with the revoked token as
-`upstream_token`, and those obtained from them, are revoked in the same cascade.
-A person token passed to an Access Server as `upstream_token` counts as
-presented to it, so it is revoked there too and the Access Server refuses it
-with `revoked_upstream_token`.
+call is safe. A person token passed to an Access Server as `upstream_token`
+counts as presented to it, so it is revoked there too and the Access Server
+refuses it with `revoked_upstream_token`.
+
+Two optional store extensions let the cascade reach what was obtained with the
+person token. When the issued auth-token store implements
+`personserver.AuthTokenLineageStore`, every auth token obtained with it,
+step-ups included, is recorded as revoked, so the Person Server refuses it as a
+presented or upstream token, and those the Person Server issued itself are
+revoked at their Resources; an Access Server revokes its own. When `Tokens`
+implements `personserver.ChainedPersonTokenStore`, the person tokens a
+call-chaining intermediary obtained with any of these as `upstream_token` are
+revoked the same way, hop by hop down the chain. `testutil.NewMissionStore` and
+`testutil.NewIssuedAuthTokenStore` implement both.
+
+An Agent Provider's revocation of an Agent token cascades the same way when the
+Person Server has `AgentTokenRevocations`, `TokenRevocation` with `HTTPClient`
+and `Admit`, and a `Tokens` store that implements
+`personserver.AgentPersonTokenStore`. Every unexpired person token issued to
+that Agent, under any of its Agent tokens, is revoked at its Resource, at each
+Access Server it was presented to, and down its chains. The Person Server holds
+the request for up to `Hold` and answers an empty `200` once each recipient has
+a terminal outcome, or `202` with a pending URL under `/revoke/pending/`.
+`agentprovider.RevocationClient` then returns
+`*agentprovider.RevocationPendingError`; revoke again after its `RetryAfter`,
+which records nothing new and continues the cascade.
 
 An Access Server with `accessserver.Config.Revocation` serves `POST /revoke` and
 advertises `revocation_endpoint`. It retains each auth token it issues in
@@ -174,8 +194,9 @@ advertises `revocation_endpoint`. It retains each auth token it issues in
 a person token, it revokes every auth token issued against it, step-ups
 included, at the Resource each names. It answers `200` with a `downstream`
 report, or `202` with a pending URL that only the revoking Person Server may
-poll. It refuses a revoked person token or resource token in a later token
-request, and ends a waiting request with `revoked`.
+poll. It refuses a revoked person token, upstream token or resource token in a
+later token request, and ends a request waiting on one with `403 revoked`,
+whose `detail` names the token.
 
 A Resource withdraws a resource token with `RevokeResourceToken`. In
 three-party access it revokes the token at the Person Server in its `aud`; in
@@ -753,19 +774,21 @@ Policy sees both identities: `PersonTokenRequest.Agent` and
 `Subagent` names the child, with its own Agent Provider claims in
 `SubagentAdditionalClaims`. The AS receives both as `AuthorizationRequest.Agent`
 and `Subagent`. Limits: one level only, missionless only for AS waits, no
-sub-agent call chaining, and no cascade from an Agent-token revocation to the
-child's credentials. See [CONFORMANCE.md](CONFORMANCE.md) and
+sub-agent call chaining, and no cascade from the parent's Agent-token
+revocation to the child's credentials. See [CONFORMANCE.md](CONFORMANCE.md) and
 [the interpretations](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery).
 
 ## Chain a call through an Access Server
 
 A Resource that calls another Resource for its caller acts as its own Agent
 Provider and Agent (the intermediary). When the downstream Resource has an
-Access Server, give the four-party Person Server a chaining policy:
+Access Server, give the four-party Person Server a chaining policy and a store
+for the auth tokens it delivers:
 
 ```go
 personserver.FederatedAuthorizationConfig{
 	// ...
+	IssuedTokens: issuedTokens, // testutil.NewIssuedAuthTokenStore() in tests
 	CallChaining: &personserver.FederatedCallChainingConfig{
 		BindPerson: mapUpstreamPersonToDownstreamPerson,
 		Consent:    decideDownstreamRequest,
@@ -773,9 +796,19 @@ personserver.FederatedAuthorizationConfig{
 }
 ```
 
-The intermediary passes the person token its caller presented as
-`UpstreamToken` in `PersonTokenRequest`, `AuthorizeRequest`,
-`ExchangeRequest` and `Call`. The Person Server verifies it, calls
+The intermediary passes the token its caller presented as `UpstreamToken` in
+`PersonTokenRequest`, `AuthorizeRequest`, `ExchangeRequest` and `Call`: the
+person token, when it served the call on the person's identity, or the auth
+token, when it required authorization. In four-party that auth token was
+issued by an Access Server and delivered by this Person Server, which kept a
+receipt in `IssuedTokens` naming the Agent it went to and the person token it
+was obtained with. The Agent client routes by the token's `iss` (a person
+token) or `ps` (an auth token), never by the intermediary's own Agent token.
+
+The Person Server verifies the upstream token, identifies the calling Agent
+from its own record of the token, and refuses the chain with
+`revoked_upstream_token` once it has revoked that token, the person token it
+was obtained with, or the calling Agent's Agent token or binding. It calls
 `BindPerson` for a new directed person and `Consent` for the downstream
 request, and posts the exact `upstream_token` with the intermediary's Agent
 token to the Access Server. The Access Server verifies it again: `typ`, an
@@ -783,13 +816,44 @@ token to the Access Server. The Access Server verifies it again: `typ`, an
 by, or an auth token naming, the Person Server that signed. Its policy sees the
 token in `AuthorizationRequest.UpstreamPerson` or `Upstream`, and the
 intermediary in `Agent`. The auth token it issues has the downstream `sub` and
-expires no later than the upstream token, and so does any wait for it. A bad
-token is `400 invalid_upstream_token`, an expired one `expired_upstream_token`.
+expires no later than the upstream token. A bad token is
+`400 invalid_upstream_token`, an expired one `expired_upstream_token`.
 
-Limits: the four-party Person Server accepts only person tokens it issued as
-upstream tokens, because it keeps no record of auth tokens an Access Server
-issued. It refuses chained R3 and Budget requests, and a `202` or `402` from
-the Access Server for a chained request is `500 server_error`.
+The downstream auth token can be the next hop's upstream token: the
+intermediary's own downstream Resource chains again in the same way, as
+[the repeated-hop test](integration/call_chaining_hops_test.go) does.
+
+**Missions.** When the upstream token carries `mission_s256`, the Person
+Server loads that mission of the calling Agent, passes it to `BindPerson` and
+`Consent` as `Mission`, copies `mission_s256` into the downstream person token
+and bounds it by the mission's expiry; the downstream auth token carries it
+too. A terminated mission ends the chain with `403 mission_terminated` and its
+`termination_reason`. A mission the Person Server does not hold for that Agent
+is `invalid_upstream_token`. The intermediary sends no `mission_s256` of its
+own; the Agent client refuses one with `UpstreamToken`, and the Person Server
+answers `invalid_request`. Missions need `Missions` configured with a `Tokens`
+store whose `CommitMissionPersonToken` accepts a chained record, which names
+the intermediary rather than the mission's Agent (`testutil.NewMissionStore`
+does).
+
+**Waits.** With `Deferred`, a chained request can wait for Access Server
+approval, payment or claims like any missionless Core request. The
+intermediary calls `BeginExchange` and polls with `PollExchange`; `Exchange`
+returns `CallChainingInteractionUnsupportedError` for a wait. The Person Server
+lets the intermediary poll although its Agent token names its own Person
+Server, verifies the upstream token again on every poll, host advance and
+delivery, and ends the wait no later than the upstream token. A wait whose
+upstream token, resource token or calling Agent's Agent token or binding is
+revoked ends with `403 revoked` and a `detail`; its pending URL then answers
+`410`. The Access Server answers its own pending URL the same way.
+
+Limits: chained R3 and Budget requests are refused, a sub-agent cannot be an
+intermediary, and a mission-bound chained request cannot wait. Neither Person
+Server asks the person about a chained request: the four-party one does not
+forward an Access Server's `requirement=interaction` for any request, and the
+three-party one decides a chained request with `CallChaining.Authorize` alone.
+An interaction the intermediary meets elsewhere is chained back to its caller
+as below.
 
 ## Deliver events to an Agent
 
@@ -993,9 +1057,9 @@ tokens can be chained.
 The original Agent reads the `202` from `Do` with `ReadInteractionCall`, sends
 the person to the interaction, and polls with `PollInteractionCall` and the
 same Auth token. An intermediary whose own call-chaining exchange meets an
-interaction gets a pending exchange from `BeginExchange` and polls the Person
-Server its upstream token names; such a pending exchange cannot be
-snapshotted. A call-chained Person-token request that meets an interaction
+interaction, or an Access Server wait, gets a pending exchange from
+`BeginExchange` and polls the Person Server its upstream token names; such a
+pending exchange cannot be snapshotted. A call-chained Person-token request that meets an interaction
 still returns `CallChainingInteractionUnsupportedError`. See
 [the end-to-end test](integration/interaction_chaining_test.go).
 
@@ -1014,7 +1078,7 @@ fixture discards its identities and decisions and is not a cleanup strategy.
 
 | Constructor | State it owns |
 | --- | --- |
-| `NewMissionStore` | PS Person-token records (the `Tokens` store, with or without missions), mission lifecycle, proposals, permissions, audit and R3 issuance |
+| `NewMissionStore` | PS Person-token records (the `Tokens` store, with or without missions, found also by upstream token and by Agent), mission lifecycle, proposals, permissions, audit and R3 issuance |
 | `NewMissionInteractionQuestionStore` | The same mission state plus questions, sharing one transaction boundary |
 | `NewMissionInteractionRelayStore` | The same mission state plus interaction relays, sharing one transaction boundary |
 | `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |
@@ -1024,7 +1088,7 @@ fixture discards its identities and decisions and is not a cleanup strategy.
 | `NewAccessAuthorizationStore`, `NewFederatedAuthorizationStore` | Separate AS request retention and PS federation continuation |
 | `NewBudgetStore` | Resource fixed-price token consumption and person totals |
 | `NewR3DocumentStore`, `NewR3IssuanceStore` | Resource documents or role-local issuance audit, respectively |
-| `NewIssuedAuthTokenStore`, `NewAuthTokenStatusStore` | PS-issued Auth tokens or Resource revocation status, respectively |
+| `NewIssuedAuthTokenStore`, `NewAuthTokenStatusStore` | PS-issued Auth tokens and four-party delivery receipts, found by reference or by the token they were issued against; or Resource revocation status, respectively |
 
 The mission constructors expose their supported interfaces directly. Configure
 mission features with the same store instance; separate instances do not share

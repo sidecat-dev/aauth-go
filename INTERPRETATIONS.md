@@ -344,15 +344,28 @@ do not apply when a Person Server receives an upstream token in a request
 signed by an intermediary. The upstream token is a person token or an auth
 token, told apart by `typ`; any other `typ` is refused. This implementation
 verifies the upstream JWT's type, issuer key, and time first. It then requires
-a person token whose `iss` is the receiving Person Server, or a Person-role
-auth token with `iss == ps` equal to it, and in both cases `aud` equal to the
-intermediary Agent token's `iss`. The calling Agent is identified from this
-Person Server's own issuance record: the person-token record, which names the
-Agent token the token was issued against, or the auth-token issuance record.
+a person token whose `iss` is the receiving Person Server, or an auth token
+whose `ps` is the receiving Person Server and whose `iss` is that Person Server
+(a Person-role token) or an Access Server (an Access-role token), and in every
+case `aud` equal to the intermediary Agent token's `iss`. The calling Agent is
+identified from this Person Server's own record of that exact token: the
+person-token record, which names the Agent token the token was issued
+against, the auth-token issuance record, or, for an Access Server's token, the
+receipt the Person Server kept when it delivered it.
 
-A three-party Person Server presents no person token to an Access Server, so
-an auth token issued by an Access Server can never pass the issuer check here
-and is refused.
+Step 2 accepts an Access Server's auth token when the Person Server presented
+a person token to that server "for that token's `aud` and `sub`". The receipt
+is the evidence: the Person Server writes it only after checking, on
+delivery, the token's `iss`, `aud`, `sub` and `cnf` against the request it sent
+that server, and the receipt binds the exact token digest. An Access Server's
+auth token without a receipt, such as one a three-party Person Server never
+delivered, is `invalid_upstream_token`. Since step 4 identifies the caller
+through the person token the auth token was obtained with, an upstream auth
+token whose person token this Person Server revoked, directly or behind a
+step-up, is `revoked_upstream_token` even when no cascade reached the auth
+token itself. After a binding is replaced, an Access Server's token cannot
+show which binding generation authorized it, so it is refused as upstream
+evidence as it is as a presented token.
 
 The upstream token remains bound to the original Agent's key. It is not
 required to match the intermediary's request key. The intermediary proves its
@@ -367,9 +380,11 @@ extend” relationship.
 
 **Executable examples:**
 `agent/call_chaining_test.go:TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly`,
-`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`
+`integration/call_chaining_test.go:TestCurrentCoreImmediateTwoResourceCallChain`,
+`personserver/call_chaining_person_token_test.go:TestCallChainingAcceptsAnUpstreamPersonToken`,
+`personserver/call_chaining_lineage_test.go:TestCallChainingRefusesAnUpstreamAuthTokenWhosePersonTokenWasRevoked`
 and
-`personserver/call_chaining_person_token_test.go:TestCallChainingAcceptsAnUpstreamPersonToken`.
+`integration/call_chaining_hops_test.go:TestFourPartyCallChainRepeatsOnAccessServerAuthTokens`.
 
 ## Both Person Server calls bind the same exact upstream token
 
@@ -427,18 +442,19 @@ and
 **Source:** AAuth Core, `Call Chaining`, `Interaction Chaining`, `Sub-Agents`,
 and `Token Endpoint Error Codes`.
 
-The first evidenced call-chain path is immediate, missionless, accountless,
-and PS-authorized; the four-party path is described in "An Access Server
-verifies the upstream token of a chained request itself". Missions, accounts,
-and sub-agents are not partially processed. Once their otherwise valid context is recognized,
-the Person Server returns `500 server_error` before chain policy,
-pending-state creation, or issuance. Ordinary interaction selectors are never
-called for a chained request; `CallChaining` is an explicitly immediate policy
-pair.
+Missions are carried down a chain, and an account in an upstream auth token
+stays with the upstream Resource: policy sees it in the upstream claims and no
+downstream token carries it. A sub-agent intermediary, or a sub-agent token
+combined with an upstream token, is not partially processed. Once its
+otherwise valid context is recognized, the Person Server returns
+`500 server_error` before chain policy, pending-state creation, or issuance.
+Ordinary interaction selectors are never called for a chained request;
+`CallChaining` and `FederatedCallChainingConfig` decide it immediately, and
+only an Access Server can make a four-party chained request wait.
 
-The public seam has no depth marker. A Resource can compose it again for
-another same-PS hop, but repeated-hop behavior is untested and unclaimed; it is
-not classified as an unsupported branch.
+The public seam has no depth marker. Each hop is verified on its own: the
+intermediary's downstream token becomes the next hop's upstream token, and its
+record names that intermediary as the calling Agent.
 
 An invalid verified upstream token provisionally returns
 `400 invalid_upstream_token`; Core has no registered upstream-token error. A
@@ -2152,17 +2168,18 @@ then. Once a person token's revocation reaches the Access Server, it answers
 `revoked_upstream_token`; see "A Person Server's revocation names a person
 token or an auth token" below.
 
-The four-party Person Server accepts only upstream person tokens it issued.
-It keeps no record of the auth tokens an Access Server issues, so step 4
-cannot identify the calling Agent behind one, and such a token is
-`invalid_upstream_token`. It refuses chained R3 and Budget
-requests, and answers a `202` or `402` from the Access Server for a chained
-request with `DeferredCompositionError` reason `call_chaining`. A three-party
-Person Server refuses a Resource token naming an Access Server with
-`invalid_resource_token`, chained or not.
+The four-party Person Server accepts upstream person tokens it issued and
+auth tokens an Access Server issued that it delivered and kept a receipt of,
+as "Immediate call chaining uses token trust plus explicit chain bindings"
+describes. It refuses chained R3 and Budget requests. A `202` or `402` from the
+Access Server for a chained request starts an ordinary federated wait, which
+retains the exact upstream token. A three-party Person Server refuses a
+Resource token naming an Access Server with `invalid_resource_token`, chained
+or not.
 
-**Evidence:** `accessserver/upstream_external_test.go` and
-`integration/call_chaining_four_party_test.go`.
+**Evidence:** `accessserver/upstream_external_test.go`,
+`integration/call_chaining_four_party_test.go` and
+`integration/call_chaining_hops_test.go`.
 
 ## Further Signature-Key schemes are for a Resource's clients outside AAuth
 
@@ -2447,9 +2464,98 @@ afterwards. The detailed flow shows the intermediary sending the person on to
 the downstream interaction with its own callback; the library builds that
 link with a per-flow callback value, as for Resource-initiated interaction,
 and an error that comes back ends the chained request with the mapped polling
-error. The library's own Person Server does not defer a call-chaining request,
-so a chained `202` comes from another server; the Agent keeps polling the
-Person Server the upstream token names.
+error. The library's own Person Servers ask the person nothing about a
+call-chaining request, so a chained `requirement=interaction` comes from
+another server; the Agent keeps polling the Person Server the upstream token
+names, as it does for a chained Access Server wait.
 
 **Evidence:** `integration/interaction_chaining_test.go` and
 `agent/call_chaining_test.go`.
+
+## A chain carries the calling Agent's mission
+
+**Source:** Protocol `70d6737`, Person Token Endpoint ("Which person" and the
+`mission_s256` parameter), Call Chaining, Upstream Token Verification step 5,
+Person Token Structure, Auth Token Structure and Mission Status Errors.
+
+When the upstream token carries `mission_s256`, the Person Server "evaluates
+the request against that mission". A mission belongs to an Agent, and the
+draft does not say whose this is. It is the calling Agent's, as the Person
+Server's record of the upstream token names it, or that Agent's parent when
+it was a mediated sub-agent. The mission is loaded for that Agent and passed
+to the chain policy, the downstream person token copies `mission_s256` and
+expires no later than the mission, and so does the downstream auth token. The
+Resource token for the downstream call must carry the same `mission_s256`,
+since the Resource copied it from that person token; another is
+`invalid_resource_token`.
+
+Mission Status Errors is phrased for a request "with a `mission_s256`
+parameter", which a chained request does not have. A terminated or expired
+mission still ends the chain with `403 mission_terminated` and its
+`termination_reason`, because the Person Token Endpoint says the mission's
+expiry and termination "reach the chain". A mission the Person Server does not
+hold for the calling Agent is `invalid_upstream_token`: the intermediary did
+not name it, so the fault is in the upstream token. An intermediary that sends
+`mission_s256` with `upstream_token` is `invalid_request`. A chained record
+names the intermediary as its Agent, so a mission store's issuance commit
+accepts a chained record whose Agent differs from the mission's.
+
+**Evidence:** `integration/call_chaining_hops_test.go:TestCallChainCarriesTheCallingAgentsMission`
+and `personserver/mission_composition_test.go`.
+
+## A revoked upstream token ends a waiting chained request with revoked
+
+**Source:** Protocol `70d6737`, Call Chaining, Presenting a Revoked Token,
+Polling Error Codes and Upstream Token Verification step 4.
+
+Call Chaining names only `expired`, for a pending downstream request whose
+upstream token expires. Presenting a Revoked Token says a pending request
+"whose upstream token or agent's agent token is revoked while it waits,
+terminates with `revoked`", with `detail` saying which. Both Person Server and
+Access Server verify a waiting chained request's upstream token again and
+answer `403 revoked` on their pending URLs. At the Person Server, step 4 makes
+a revoked Agent token or binding of the calling Agent refuse the chain as the
+token itself does, so the `detail` is "The upstream token of this chained
+request, or its calling agent's agent token or binding, was revoked." At the
+Access Server it is "The upstream token of this chained request was revoked."
+and, for a withdrawn resource token, "The resource token this request was
+started for was revoked." A new request naming the revoked token is still
+answered `revoked_upstream_token`. The Person Server's wait ends no later than
+the upstream token, but that bound never binds earlier than the presented
+token's, which already expires no later than the upstream token.
+
+**Evidence:** `integration/call_chaining_hops_test.go:TestChainedExchangeWaitsForTheAccessServerUntilItsUpstreamIsRevoked`
+and `accessserver/upstream_external_test.go:TestAccessServerEndsAChainedWaitWhenItsUpstreamOrResourceTokenIsRevoked`.
+
+## Revocation follows the tokens obtained with a person token
+
+**Source:** Protocol `70d6737`, Revocation Cascade (the person-token and
+Agent-token items, and Records), Who Revokes What and Revocation Response.
+
+The chain clause reaches person tokens issued with the revoked person token,
+"or an auth token issued against it", as `upstream_token`. A Person Server
+records each auth token it issues, and each it delivers from an Access Server,
+with the token it was issued against, and the walk follows those records from
+the person token through step-ups to every auth token obtained with it. Each
+enters the Person Server's own revocation store, so it is refused as a
+presented or upstream token. One the Person Server issued itself is revoked at
+its Resource, as an Access Server does with its own; one an Access Server
+issued is left to that server, which revokes it when the person token reaches
+it. The person tokens chained from any of them are revoked the same way, at
+their Resources and Access Servers, hop by hop.
+
+The chain clause sits under "PS revokes a person token it issued". An Agent
+Provider's revocation of an Agent token also revokes person tokens, so the
+cascade applies the clause there too. The cascade is by Agent identity, and
+the revocation names only an Agent token's `jti`. The Person Server finds the
+Agent from the person-token records that name that Agent token, then revokes
+every unexpired person token issued to that Agent, each at its Resource and
+once at every Access Server it was presented to. It holds the Agent Provider's
+request while the cascade runs, answers `202` with a pending URL if a
+recipient has not reached a terminal outcome, and answers the empty `200` once
+each has. Repeating the revocation records nothing new and continues the
+cascade.
+
+**Evidence:** `integration/call_chaining_hops_test.go:TestFourPartyCallChainRepeatsOnAccessServerAuthTokens`,
+`integration/call_chaining_hops_test.go:TestAgentTokenRevocationReachesEachPersonTokenAndItsChain`
+and `accessserver/upstream_external_test.go:TestAccessServerRevokesStepUpsWithTheirPersonToken`.
