@@ -29,6 +29,35 @@ type verifiedUpstreamToken struct {
 	digest    [32]byte
 	// compact is the exact token, passed through to an Access Server.
 	compact string
+	// caller is the calling Agent, as this Person Server's issuance record of
+	// the token names it.
+	caller upstreamCaller
+}
+
+// upstreamCaller is the Agent an upstream token was issued to.
+type upstreamCaller struct {
+	agentProvider, agent, parentAgent, agentTokenJTI string
+}
+
+// owner is the top-level Agent behind the chain: the caller, or its parent
+// when the token was issued to a mediated sub-agent. Its binding authorized
+// the token, and its missions are the ones the token can carry.
+func (caller upstreamCaller) owner() string {
+	if caller.parentAgent != "" {
+		return caller.parentAgent
+	}
+	return caller.agent
+}
+
+// missionS256 is the mission the upstream token carries, if any.
+func (upstream *verifiedUpstreamToken) missionS256() string {
+	if upstream == nil {
+		return ""
+	}
+	if upstream.person != nil {
+		return upstream.person.MissionS256
+	}
+	return upstream.auth.MissionS256
 }
 
 func (upstream *verifiedUpstreamToken) subject() string {
@@ -85,21 +114,40 @@ func (server *Server) verifyOptionalUpstreamToken(
 	if err := json.Unmarshal(raw, &compact); err != nil || compact == "" {
 		return nil, errUpstreamTokenSyntax
 	}
+	return server.verifyUpstreamToken(ctx, compact, intermediary, proof.VerifiedAt(), proof.CheckIssuedAt)
+}
+
+// verifyUpstreamToken applies Upstream Token Verification at the instant at.
+// checkIssuedAt bounds the token's iat by the request signature; a retained
+// request verified again while it waits passes nil.
+func (server *Server) verifyUpstreamToken(
+	ctx context.Context,
+	compact string,
+	intermediary aauth.AgentTokenClaims,
+	at time.Time,
+	checkIssuedAt func(time.Time) error,
+) (*verifiedUpstreamToken, error) {
 	// An upstream token is a person token or an auth token; typ tells which,
 	// and each is verified by its own verifier. Any other typ is refused.
 	header, err := jose.PeekHeader(compact)
 	if err != nil {
 		return nil, &upstreamTokenFailure{cause: err}
 	}
-	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
+	verificationClock := aauth.ClockFunc(func() time.Time { return at })
+	withinSignature := func(iat int64) error {
+		if checkIssuedAt == nil {
+			return nil
+		}
+		return checkIssuedAt(time.Unix(iat, 0))
+	}
 	upstream := &verifiedUpstreamToken{digest: sha256.Sum256([]byte(compact)), compact: compact}
 	switch header.Type {
 	case aauth.PersonTokenType:
 		claims, err := aauth.VerifyPersonToken(ctx, compact, server.keyResolver, verificationClock)
-		if err != nil {
-			return nil, &upstreamTokenFailure{cause: err}
+		if err == nil {
+			err = withinSignature(claims.IssuedAt)
 		}
-		if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
+		if err != nil {
 			return nil, &upstreamTokenFailure{cause: err}
 		}
 		// The cnf of an upstream token is the calling Agent's key, not the
@@ -110,31 +158,27 @@ func (server *Server) verifyOptionalUpstreamToken(
 		if claims.Audience != intermediary.Issuer {
 			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token audience does not match the intermediary Resource")}
 		}
-		if claims.MissionS256 != "" {
-			return nil, &unsupportedCallChainError{cause: errors.New("personserver: mission-bound call chaining is not implemented")}
-		}
 		upstream.person = &claims
 		upstream.reference = aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
 	case aauth.AuthTokenType:
 		claims, err := aauth.VerifyAuthToken(ctx, compact, server.keyResolver, verificationClock)
+		if err == nil {
+			err = withinSignature(claims.IssuedAt)
+		}
 		if err != nil {
 			return nil, &upstreamTokenFailure{cause: err}
 		}
-		if err := proof.CheckIssuedAt(time.Unix(claims.IssuedAt, 0)); err != nil {
-			return nil, &upstreamTokenFailure{cause: err}
-		}
-		// Only an auth token this Person Server issued has an issuance record
-		// that identifies the calling Agent. A four-party Person Server keeps
-		// none for the auth tokens an Access Server issues.
-		if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != server.issuer ||
-			claims.PersonServer != server.issuer {
-			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token was not issued by this Person Server")}
+		// Its ps is this Person Server, and its iss is this Person Server or an
+		// Access Server it presented a person token to for that aud and sub.
+		// Either way this Person Server retained the token when it issued it or
+		// delivered it, and that record identifies the calling Agent.
+		if claims.PersonServer != server.issuer ||
+			claims.Issuer == server.issuer && claims.DWK != aauth.PersonDiscoveryDocument ||
+			claims.Issuer != server.issuer && claims.DWK != aauth.AccessDiscoveryDocument {
+			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream auth token was not issued or delivered by this Person Server")}
 		}
 		if claims.Audience != intermediary.Issuer {
 			return nil, &upstreamTokenFailure{cause: errors.New("personserver: upstream token audience does not match the intermediary Resource")}
-		}
-		if claims.MissionS256 != "" || claims.Account != nil {
-			return nil, &unsupportedCallChainError{cause: errors.New("personserver: mission- or account-bound call chaining is not implemented")}
 		}
 		cloned := cloneAuthTokenClaims(claims)
 		upstream.auth = &cloned
@@ -184,10 +228,52 @@ func (server *Server) identifyUpstreamCaller(ctx context.Context, upstream *veri
 		record.AgentJKT != thumbprint {
 		return &upstreamTokenFailure{cause: errors.New("personserver: the upstream token's issuance record does not identify its calling Agent")}
 	}
-	return server.checkUpstreamCaller(
-		ctx, record.AgentProvider, record.Agent, record.ParentAgent, record.AgentTokenJTI,
-		time.Unix(upstream.auth.IssuedAt, 0),
-	)
+	if err := server.checkUpstreamLineageRevoked(ctx, record); err != nil {
+		return err
+	}
+	upstream.caller = upstreamCaller{
+		agentProvider: record.AgentProvider, agent: record.Agent,
+		parentAgent: record.ParentAgent, agentTokenJTI: record.AgentTokenJTI,
+	}
+	// An Access Server's clock cannot show which binding generation authorized
+	// its token, so after a binding is replaced such a token is refused, as it
+	// is as a presented token.
+	bindingSince := time.Unix(upstream.auth.IssuedAt, 0)
+	if upstream.auth.DWK == aauth.AccessDiscoveryDocument {
+		bindingSince = time.Time{}
+	}
+	return server.checkUpstreamCaller(ctx, upstream.caller, bindingSince)
+}
+
+// maximumUpstreamLineage bounds how many step-ups checkUpstreamLineageRevoked
+// follows back to the person token an upstream auth token was obtained with.
+const maximumUpstreamLineage = 32
+
+// checkUpstreamLineageRevoked refuses an upstream auth token obtained with a
+// person token this Person Server revoked, directly or through step-ups, even
+// where no cascade reached the auth token itself.
+func (server *Server) checkUpstreamLineageRevoked(ctx context.Context, record IssuedAuthTokenRecord) error {
+	presented := record.PresentedTokenReference
+	for range maximumUpstreamLineage {
+		if presented == (aauth.TokenReference{}) {
+			return nil
+		}
+		if err := server.checkUpstreamRevoked(ctx, presented); err != nil {
+			return err
+		}
+		earlier, err := server.issuedAuthTokens.LoadIssuedAuthToken(ctx, presented)
+		if errors.Is(err, ErrIssuedAuthTokenNotFound) {
+			return nil
+		}
+		if err != nil {
+			return &upstreamStoreError{cause: err}
+		}
+		if earlier.Reference != presented {
+			return &upstreamStoreError{cause: errors.New("personserver: issued auth-token store returned a record for another token")}
+		}
+		presented = earlier.PresentedTokenReference
+	}
+	return &upstreamTokenFailure{cause: errors.New("personserver: the upstream token's step-up lineage is too long")}
 }
 
 // identifyUpstreamPersonTokenCaller finds the Agent this Person Server issued
@@ -213,23 +299,20 @@ func (server *Server) identifyUpstreamPersonTokenCaller(ctx context.Context, ups
 		record.AgentTokenJTI == "" {
 		return &upstreamTokenFailure{cause: errors.New("personserver: the upstream token's issuance record does not identify its calling Agent")}
 	}
-	return server.checkUpstreamCaller(
-		ctx, record.AgentProvider, record.Agent, record.ParentAgent, record.AgentTokenJTI,
-		time.Unix(claims.IssuedAt, 0),
-	)
+	upstream.caller = upstreamCaller{
+		agentProvider: record.AgentProvider, agent: record.Agent,
+		parentAgent: record.ParentAgent, agentTokenJTI: record.AgentTokenJTI,
+	}
+	return server.checkUpstreamCaller(ctx, upstream.caller, time.Unix(claims.IssuedAt, 0))
 }
 
 // checkUpstreamCaller refuses an upstream token whose calling Agent's Agent
 // token, or binding to the person, this Person Server has revoked.
-func (server *Server) checkUpstreamCaller(
-	ctx context.Context,
-	agentProvider, agent, parentAgent, agentTokenJTI string,
-	issuedAt time.Time,
-) error {
+func (server *Server) checkUpstreamCaller(ctx context.Context, caller upstreamCaller, issuedAt time.Time) error {
 	if server.agentTokenRevocations != nil {
 		revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{
-			Issuer: agentProvider,
-			JTI:    agentTokenJTI,
+			Issuer: caller.agentProvider,
+			JTI:    caller.agentTokenJTI,
 		})
 		if err != nil {
 			return &upstreamStoreError{cause: err}
@@ -240,10 +323,7 @@ func (server *Server) checkUpstreamCaller(
 	}
 	// The binding behind the chain is the caller's, or its parent's when the
 	// upstream token was issued to a mediated sub-agent.
-	binding := AgentBinding{AgentProvider: agentProvider, Agent: agent}
-	if parentAgent != "" {
-		binding.Agent = parentAgent
-	}
+	binding := AgentBinding{AgentProvider: caller.agentProvider, Agent: caller.owner()}
 	if err := server.checkAgentBinding(ctx, binding, issuedAt); err != nil {
 		if errors.Is(err, ErrAgentBindingRevoked) {
 			return fmt.Errorf("%w: %w", errUpstreamCallerRevoked, err)
@@ -344,12 +424,28 @@ func (server *Server) writeUpstreamTokenProblem(response http.ResponseWriter, er
 	writeProblem(response, http.StatusBadRequest, "invalid_upstream_token", err)
 }
 
+// writeUpstreamMissionProblem answers a chained request whose upstream token
+// carries a mission this Person Server cannot use. The intermediary did not
+// name the mission, so one this Person Server does not hold for the calling
+// Agent makes the upstream token invalid; a terminated one ends the chain with
+// mission_terminated, as it ends the calling Agent's own requests.
+func (server *Server) writeUpstreamMissionProblem(response http.ResponseWriter, err error) {
+	if errors.Is(err, ErrMissionNotFound) {
+		server.writeUpstreamTokenProblem(response, &upstreamTokenFailure{
+			cause: errors.New("personserver: the upstream token's mission is not one this Person Server holds for its calling Agent"),
+		})
+		return
+	}
+	writeMissionReferenceProblem(response, err)
+}
+
 func upstreamTokenExpired(err error) bool {
 	var validation *aauth.TokenValidationError
 	return errors.As(err, &validation) && validation.Code == aauth.TokenValidationExpired
 }
 
 func cloneAuthTokenClaims(claims aauth.AuthTokenClaims) aauth.AuthTokenClaims {
+	claims.Account = cloneAuthorizationAccount(claims.Account)
 	claims.AdditionalClaims = cloneClaims(claims.AdditionalClaims)
 	return claims
 }

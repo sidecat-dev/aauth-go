@@ -913,7 +913,8 @@ func (store *memoryMissionStore) CommitMissionPersonToken(
 	if err := store.requireActiveMissionLocked(expected, decidedAt); err != nil {
 		return err
 	}
-	if token.MissionS256 != expected.S256 || token.Agent != expected.Agent {
+	chained := token.UpstreamTokenReference != (aauth.TokenReference{})
+	if token.MissionS256 != expected.S256 || !chained && token.Agent != expected.Agent {
 		return ErrMissionConflict
 	}
 	key := token.PersonServer + "\x00" + token.JTI

@@ -16,6 +16,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/testutil"
 )
 
 // TestFourPartyCallChainPassesTheUpstreamTokenToTheAccessServer chains a call
@@ -140,6 +141,7 @@ func TestFourPartyCallChainPassesTheUpstreamTokenToTheAccessServer(t *testing.T)
 		Consent: func(context.Context, personserver.AuthorizationRequest) error {
 			return errors.New("ordinary consent received a chained request")
 		},
+		IssuedTokens: testutil.NewIssuedAuthTokenStore(),
 		CallChaining: &personserver.FederatedCallChainingConfig{
 			BindPerson: func(_ context.Context, request personserver.PersonTokenRequest) (personserver.Person, error) {
 				if request.Agent != relayAgentID || request.Resource != inventoryID ||

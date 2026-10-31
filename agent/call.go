@@ -845,11 +845,8 @@ func (client *Client) validateAuthTokenForDirectCall(
 	resource string,
 	upstreamToken string,
 ) error {
-	if claims.MissionS256 != "" && upstreamToken != "" {
-		return errors.New("mission-bound call-chain authorization is not supported")
-	}
 	if err := client.acceptIssuedPersonServer(
-		ctx, upstreamToken, claims.PersonServer, time.Unix(claims.IssuedAt, 0),
+		ctx, upstreamToken, claims.PersonServer, claims.MissionS256, time.Unix(claims.IssuedAt, 0),
 	); err != nil {
 		return fmt.Errorf("auth-token person server: %w", err)
 	}

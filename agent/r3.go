@@ -142,7 +142,7 @@ func (client *Client) validateR3AuthTokenForCallClaims(
 	resource string,
 ) (aauth.AuthTokenClaims, error) {
 	if err := client.acceptIssuedPersonServer(
-		ctx, "", claims.PersonServer, time.Unix(claims.IssuedAt, 0),
+		ctx, "", claims.PersonServer, claims.MissionS256, time.Unix(claims.IssuedAt, 0),
 	); err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}

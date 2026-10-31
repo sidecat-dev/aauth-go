@@ -71,7 +71,10 @@ func TestMissionCompositionRejectsSubagentBeforePolicyOrRetention(t *testing.T) 
 	}
 }
 
-func TestMissionCompositionRejectsCallChainBeforePolicyOrRetention(t *testing.T) {
+// An intermediary names no mission of its own: the upstream token carries
+// the mission, and a Resource token naming one the upstream token does not
+// carry is refused, before policy or retention.
+func TestMissionCompositionRejectsAnIntermediaryMissionBeforePolicyOrRetention(t *testing.T) {
 	t.Parallel()
 
 	for _, endpoint := range []string{"person", "token"} {
@@ -113,11 +116,15 @@ func TestMissionCompositionRejectsCallChainBeforePolicyOrRetention(t *testing.T)
 				}, protocol.resourceOneProofKey, protocol.resourceOneIDToken, protocol.clock)
 			}
 
-			assertCompositionProblem(t, response, http.StatusBadRequest, "invalid_request")
+			code := "invalid_request"
+			if endpoint == "token" {
+				code = "invalid_resource_token"
+			}
+			assertCompositionProblem(t, response, http.StatusBadRequest, code)
 			if protocol.ordinaryBindCalls != 0 || protocol.chainBindCalls != 0 ||
 				protocol.ordinaryAuthorizeCalls != 0 || protocol.chainAuthorizeCalls != 0 {
 				t.Fatalf(
-					"unsupported mission/call-chain composition reached policy: ordinary=%d/%d chain=%d/%d",
+					"intermediary mission reached policy: ordinary=%d/%d chain=%d/%d",
 					protocol.ordinaryBindCalls, protocol.ordinaryAuthorizeCalls,
 					protocol.chainBindCalls, protocol.chainAuthorizeCalls,
 				)

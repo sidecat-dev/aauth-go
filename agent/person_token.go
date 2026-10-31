@@ -113,8 +113,13 @@ func (client *Client) personTokenResponse(
 	if response.StatusCode != http.StatusOK {
 		return PersonTokenResult{}, responseFailure(response)
 	}
+	// A chained person token carries the upstream token's mission.
+	missionS256 := input.MissionS256
+	if input.UpstreamToken != "" {
+		missionS256 = credential.upstreamMission
+	}
 	token, err := client.verifiedPersonToken(
-		ctx, response, input.PersonServer, input.Resource, input.MissionS256, credential,
+		ctx, response, input.PersonServer, input.Resource, missionS256, credential,
 	)
 	if err != nil {
 		return PersonTokenResult{}, err

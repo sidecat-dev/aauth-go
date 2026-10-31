@@ -467,8 +467,11 @@ func (client *Client) finishExchangeRequest(
 	if err := client.refuseWithdrawnResourceToken(input.ResourceToken); err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
 	}
-	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
-		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")
+	if resourceClaims.MissionS256 != "" && input.SubagentToken != "" {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated authorization is not supported")
+	}
+	if input.UpstreamToken != "" && resourceClaims.MissionS256 != credential.upstreamMission {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource token does not carry the upstream token's mission")
 	}
 	if resourceClaims.Interaction != nil && !deferred {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource-token interaction requires BeginExchange")

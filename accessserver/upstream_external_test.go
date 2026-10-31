@@ -6,8 +6,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,6 +55,10 @@ type chainFixture struct {
 	server     *accessserver.Server
 	evaluated  []accessserver.AuthorizationRequest
 	pending    bool
+	nextID     int
+	// revokedAt records each revocation the Access Server sends a Resource.
+	revokedMu sync.Mutex
+	revokedAt []string
 }
 
 func newChainFixture(t *testing.T) *chainFixture {
@@ -101,7 +109,10 @@ func newChainFixture(t *testing.T) *chainFixture {
 	}
 	fixture.server, err = accessserver.New(accessserver.Config{
 		Issuer: chainAccess, SigningKey: fixture.keys["as"], KeyResolver: resolver, Clock: fixture.clock,
-		NewID:             func() string { return "inventory-auth-token" },
+		NewID: func() string {
+			fixture.nextID++
+			return fmt.Sprintf("inventory-auth-token-%d", fixture.nextID)
+		},
 		TrustPersonServer: func(context.Context, string) error { return nil },
 		Authorize: func(_ context.Context, request accessserver.AuthorizationRequest) (accessserver.Decision, error) {
 			fixture.evaluated = append(fixture.evaluated, request)
@@ -111,11 +122,65 @@ func newChainFixture(t *testing.T) *chainFixture {
 			return accessserver.Decision{Scopes: []string{"inventory.reserve"}, Lifetime: 30 * time.Minute}, nil
 		},
 		Deferred: &accessserver.DeferredConfig{Store: testutil.NewAccessAuthorizationStore(), Lifetime: time.Hour},
+		Revocation: &accessserver.RevocationConfig{
+			Revocations: testutil.NewTokenRevocationStore(), IssuedTokens: testutil.NewAccessIssuedAuthTokenStore(),
+			HTTPClient: &http.Client{Transport: chainRecipient{fixture}},
+			Admit:      func(context.Context, string) error { return nil },
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return fixture
+}
+
+// chainRecipient answers a Resource's metadata and revocation endpoint and
+// records the jti each revocation names.
+type chainRecipient struct{ fixture *chainFixture }
+
+func (recipient chainRecipient) RoundTrip(request *http.Request) (*http.Response, error) {
+	origin := request.URL.Scheme + "://" + request.URL.Host
+	response := httptest.NewRecorder()
+	switch {
+	case request.Method == http.MethodGet && request.URL.Path == "/.well-known/aauth-resource.json":
+		_ = json.NewEncoder(response).Encode(map[string]string{"issuer": origin, "revocation_endpoint": origin + "/revoke"})
+	case request.Method == http.MethodPost && request.URL.Path == "/revoke":
+		var revocation struct {
+			JTI string `json:"jti"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&revocation)
+		recipient.fixture.revokedMu.Lock()
+		recipient.fixture.revokedAt = append(recipient.fixture.revokedAt, origin+" "+revocation.JTI)
+		recipient.fixture.revokedMu.Unlock()
+	default:
+		response.WriteHeader(http.StatusNotFound)
+	}
+	result := response.Result()
+	result.Request = request
+	return result, nil
+}
+
+// revoke posts a signed revocation of jti to the Access Server as the server
+// that issued the token: the Person Server, or the Resource.
+func (fixture *chainFixture) revoke(issuer, document, key, jti string) *httptest.ResponseRecorder {
+	fixture.t.Helper()
+	body, err := aauth.EncodeRevocationRequest(aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: issuer, JTI: jti}, ExpiresAt: fixture.now.Add(time.Hour),
+	})
+	if err != nil {
+		fixture.t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, chainAccess+"/revoke", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	if err := signaturekey.SignJWKSURIRequestWithOptions(
+		request, fixture.keys[key], issuer, document, fixture.clock,
+		signaturekey.SignOptions{AdditionalComponents: []string{"content-type", "content-digest"}, MaxBodyBytes: int64(len(body))},
+	); err != nil {
+		fixture.t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	fixture.server.Handler().ServeHTTP(response, request)
+	return response
 }
 
 func (fixture *chainFixture) upstreamPerson(change func(*aauth.PersonTokenClaims), signer string) string {
@@ -315,4 +380,125 @@ func TestAccessServerEndsAChainedWaitWhenItsUpstreamTokenExpires(t *testing.T) {
 	poll = httptest.NewRecorder()
 	fixture.server.Handler().ServeHTTP(poll, fixture.signed(http.MethodGet, location, nil))
 	chainProblem(t, poll, http.StatusRequestTimeout, "expired")
+}
+
+// Presenting a Revoked Token: a request waiting at the Access Server whose
+// upstream token, or whose resource token, is revoked while it waits ends with
+// the polling error revoked, and detail says which.
+func TestAccessServerEndsAChainedWaitWhenItsUpstreamOrResourceTokenIsRevoked(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name                     string
+		issuer, document, signer string
+		jti, detail              string
+	}{
+		{
+			name: "upstream token", issuer: chainPersonServer, document: aauth.PersonDiscoveryDocument, signer: "ps",
+			jti: "relay-person-token", detail: "The upstream token of this chained request was revoked.",
+		},
+		{
+			name: "resource token", issuer: chainResource, document: aauth.ResourceDiscoveryDocument, signer: "resource",
+			jti: "inventory-resource-token", detail: "The resource token this request was started for was revoked.",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newChainFixture(t)
+			fixture.pending = true
+			response := fixture.token(map[string]any{"upstream_token": fixture.upstreamPerson(nil, "ps")})
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("token response = %d %s", response.Code, response.Body.String())
+			}
+			location := response.Header().Get("Location")
+			if revoked := fixture.revoke(test.issuer, test.document, test.signer, test.jti); revoked.Code != http.StatusOK {
+				t.Fatalf("revocation = %d %s", revoked.Code, revoked.Body.String())
+			}
+			fixture.now = fixture.now.Add(time.Second)
+			poll := httptest.NewRecorder()
+			fixture.server.Handler().ServeHTTP(poll, fixture.signed(http.MethodGet, location, nil))
+			chainProblem(t, poll, http.StatusForbidden, "revoked")
+			var problem struct {
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(poll.Body.Bytes(), &problem); err != nil || problem.Detail != test.detail {
+				t.Fatalf("revoked detail = %q, %v", problem.Detail, err)
+			}
+			poll = httptest.NewRecorder()
+			fixture.server.Handler().ServeHTTP(poll, fixture.signed(http.MethodGet, location, nil))
+			chainProblem(t, poll, http.StatusGone, "request_consumed")
+		})
+	}
+}
+
+// Revocation Cascade: an Access Server that receives a person token's
+// revocation revokes every auth token it issued against it at its Resource,
+// step-ups included, and issues no further auth token against any of them.
+func TestAccessServerRevokesStepUpsWithTheirPersonToken(t *testing.T) {
+	t.Parallel()
+
+	fixture := newChainFixture(t)
+	// An Agent with no call chain: its own Agent token names the Person Server.
+	agentToken, err := aauth.MintAgentToken(chainRelay, fixture.keys["relay-provider"], aauth.AgentTokenRequest{
+		Agent: chainRelayAgent, PersonServer: chainPersonServer,
+		PublicKey: fixture.keys["relay-agent"].PublicJWK(), Lifetime: time.Hour,
+	}, fixture.now, "direct-agent-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := fixture.token(map[string]any{"agent_token": agentToken})
+	if response.Code != http.StatusOK {
+		t.Fatalf("first grant = %d %s", response.Code, response.Body.String())
+	}
+	var first struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	stepUp := func(presented string, jti string) *httptest.ResponseRecorder {
+		t.Helper()
+		claims, err := aauth.VerifyAuthToken(context.Background(), presented, signaturekey.StaticKeyResolver{
+			{Issuer: chainAccess, DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: "as"}: fixture.keys["as"].PublicJWK(),
+		}, fixture.clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		relayJKT, err := fixture.keys["relay-agent"].PublicJWK().Thumbprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		resourceToken, err := aauth.MintResourceToken(fixture.keys["resource"], aauth.ResourceTokenClaims{
+			Issuer: chainResource, DWK: aauth.ResourceDiscoveryDocument, Audience: chainAccess,
+			JTI: jti, AgentJKT: relayJKT, IssuedAt: fixture.now.Unix(),
+			ExpiresAt: fixture.now.Add(5 * time.Minute).Unix(), Scope: "inventory.reserve",
+			PersonServer: chainPersonServer, Subject: "person-at-inventory", PresentedJTI: claims.JTI,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fixture.token(map[string]any{"agent_token": agentToken, "resource_token": resourceToken, "presented_token": presented})
+	}
+	response = stepUp(first.AuthToken, "step-up-resource-token")
+	if response.Code != http.StatusOK {
+		t.Fatalf("step-up = %d %s", response.Code, response.Body.String())
+	}
+	var second struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+
+	revoked := fixture.revoke(chainPersonServer, aauth.PersonDiscoveryDocument, "ps", "inventory-person-token")
+	if revoked.Code != http.StatusOK || !bytes.Contains(revoked.Body.Bytes(), []byte(chainResource)) {
+		t.Fatalf("person-token revocation = %d %s", revoked.Code, revoked.Body.String())
+	}
+	fixture.revokedMu.Lock()
+	sent := slices.Sorted(slices.Values(fixture.revokedAt))
+	fixture.revokedMu.Unlock()
+	if got := strings.Join(sent, ", "); got != chainResource+" inventory-auth-token-1, "+chainResource+" inventory-auth-token-2" {
+		t.Fatalf("revocations sent to the Resource = %s", got)
+	}
+	chainProblem(t, stepUp(second.AuthToken, "late-step-up-resource-token"), http.StatusBadRequest, "revoked_presented_token")
 }

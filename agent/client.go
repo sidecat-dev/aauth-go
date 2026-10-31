@@ -74,6 +74,9 @@ type personServerCredential struct {
 	expiresAt      int64
 	expirySource   string
 	parentMediated bool
+	// upstreamMission is the mission_s256 of a call-chaining request's
+	// upstream token, which the downstream tokens carry.
+	upstreamMission string
 }
 
 // Error identifies the client operation that failed while preserving its
@@ -112,8 +115,9 @@ func (failure *SubagentPendingExchangeRequiredError) Error() string {
 }
 
 // CallChainingInteractionUnsupportedError reports a call-chain request that
-// reached a deferred response. The current call-chain path is immediate and
-// does not create or hide an interaction relay.
+// reached a deferred response where the operation returns no continuation:
+// chained person-token issuance, or the immediate Exchange. A chained
+// BeginExchange returns a pending exchange that PollExchange continues.
 type CallChainingInteractionUnsupportedError struct {
 	Operation string
 }
@@ -122,7 +126,7 @@ func (failure *CallChainingInteractionUnsupportedError) Error() string {
 	if failure == nil || failure.Operation == "" {
 		return "aauth agent: call-chaining interaction is not supported"
 	}
-	return "aauth agent: call-chaining " + failure.Operation + " does not support interaction"
+	return "aauth agent: call-chaining " + failure.Operation + " cannot continue a pending response"
 }
 
 // PersonTokenRequest names the Person Server and Resource for one directed
@@ -170,8 +174,8 @@ type AuthorizeRequest struct {
 // Resource acting as an Agent instead sets UpstreamToken; that verified token
 // selects the Person Server, so PersonServer may be empty or must name the same
 // server. Exchange remains immediate-only. BeginExchange exposes a verified
-// pending continuation for a top-level request and for one a parent mediates
-// for its sub-agent; a call-chained request remains immediate-only.
+// pending continuation for a top-level request, for one a parent mediates for
+// its sub-agent, and for a call-chained request.
 type ExchangeRequest struct {
 	PersonServer   string
 	ResourceToken  string
@@ -272,8 +276,11 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 		if err := aauth.ValidateMissionS256(input.MissionS256); err != nil {
 			return PersonTokenResult{}, fail(operation, err)
 		}
-		if input.SubagentToken != "" || input.UpstreamToken != "" {
-			return PersonTokenResult{}, fail(operation, errors.New("mission-bound delegated or call-chain person-token issuance is not supported"))
+		if input.UpstreamToken != "" {
+			return PersonTokenResult{}, fail(operation, errors.New("mission_s256 is not sent with upstream_token, which carries the mission"))
+		}
+		if input.SubagentToken != "" {
+			return PersonTokenResult{}, fail(operation, errors.New("mission-bound delegated person-token issuance is not supported"))
 		}
 	}
 	metadata, err := client.personServerMetadata(ctx, input.PersonServer)
@@ -356,12 +363,9 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		return "", fail(operation, err)
 	}
 	if err := client.acceptIssuedPersonServer(
-		ctx, input.UpstreamToken, person.Issuer, time.Unix(person.IssuedAt, 0),
+		ctx, input.UpstreamToken, person.Issuer, person.MissionS256, time.Unix(person.IssuedAt, 0),
 	); err != nil {
 		return "", fail(operation, fmt.Errorf("person-token issuer: %w", err))
-	}
-	if person.MissionS256 != "" && input.UpstreamToken != "" {
-		return "", fail(operation, errors.New("mission-bound call-chain authorization is not supported"))
 	}
 	if err := aauth.ValidatePersonTokenContext(person, input.Resource, client.signingKey.PublicJWK()); err != nil {
 		return "", fail(operation, err)
@@ -568,7 +572,7 @@ func (client *Client) personServerRequestBinding(
 		return personServerCredential{}, ErrSubagentPersonServerCall
 	}
 	if upstreamToken != "" {
-		upstreamPersonServer, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
+		upstream, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
 		if err != nil {
 			return personServerCredential{}, err
 		}
@@ -576,16 +580,21 @@ func (client *Client) personServerRequestBinding(
 			if err := aauth.ValidateServerIdentifier(personServer); err != nil {
 				return personServerCredential{}, fmt.Errorf("person server: %w", err)
 			}
-			if personServer != upstreamPersonServer {
+			if personServer != upstream.personServer {
 				return personServerCredential{}, errors.New("person server does not match upstream token")
 			}
 		}
-		return personServerCredential{
-			personServer: upstreamPersonServer,
+		// Downstream access does not outlive the upstream token.
+		credential := personServerCredential{
+			personServer: upstream.personServer,
 			requestKey:   client.signingKey.PublicJWK(),
 			expiresAt:    client.agentClaims.ExpiresAt,
-			expirySource: "agent token",
-		}, nil
+			expirySource: "agent token", upstreamMission: upstream.missionS256,
+		}
+		if upstream.expiresAt < credential.expiresAt {
+			credential.expiresAt, credential.expirySource = upstream.expiresAt, "upstream token"
+		}
+		return credential, nil
 	}
 	if err := client.requireDirectPersonServerCaller(); err != nil {
 		return personServerCredential{}, err
@@ -622,58 +631,63 @@ func (client *Client) personServerRequestBinding(
 	}, nil
 }
 
-func (client *Client) verifyCallChainUpstreamToken(ctx context.Context, compact string) (string, error) {
+// callChainUpstream is what an intermediary uses of a verified upstream
+// token: the Person Server it names, which downstream requests are routed to,
+// the mission it carries, and its expiry.
+type callChainUpstream struct {
+	personServer string
+	missionS256  string
+	expiresAt    int64
+}
+
+func (client *Client) verifyCallChainUpstreamToken(ctx context.Context, compact string) (callChainUpstream, error) {
 	return client.verifyCallChainUpstreamTokenAt(ctx, compact, client.clock.Now())
 }
 
 // verifyCallChainUpstreamTokenAt verifies the token the calling Agent
-// presented to this intermediary and returns the Person Server it names, which
-// downstream requests are routed to. It is a person token when the
-// intermediary served the call on the person's identity, or an auth token its
-// Person Server issued.
+// presented to this intermediary. It is a person token when the intermediary
+// served the call on the person's identity, or an auth token when it required
+// authorization: one its Person Server issued, or in four-party one an Access
+// Server issued. Routing follows the person token's iss or the auth token's
+// ps, never this intermediary's own Agent token.
 func (client *Client) verifyCallChainUpstreamTokenAt(
 	ctx context.Context,
 	compact string,
 	verifiedAt time.Time,
-) (string, error) {
+) (callChainUpstream, error) {
 	verificationClock := aauth.ClockFunc(func() time.Time { return verifiedAt })
 	header, err := jose.PeekHeader(compact)
 	if err != nil {
-		return "", fmt.Errorf("verify upstream token: %w", err)
+		return callChainUpstream{}, fmt.Errorf("verify upstream token: %w", err)
 	}
 	if header.Type == aauth.PersonTokenType {
 		claims, err := aauth.VerifyPersonToken(ctx, compact, client.keyResolver, verificationClock)
 		if err != nil {
-			return "", fmt.Errorf("verify upstream token: %w", err)
+			return callChainUpstream{}, fmt.Errorf("verify upstream token: %w", err)
 		}
 		if claims.Audience != client.agentClaims.Issuer {
-			return "", errors.New("upstream token audience does not match intermediary Resource")
+			return callChainUpstream{}, errors.New("upstream token audience does not match intermediary Resource")
 		}
-		if claims.MissionS256 != "" {
-			return "", errors.New("mission-bound call chaining is not supported")
-		}
-		return claims.Issuer, nil
+		return callChainUpstream{personServer: claims.Issuer, missionS256: claims.MissionS256, expiresAt: claims.ExpiresAt}, nil
 	}
 	claims, err := aauth.VerifyAuthToken(ctx, compact, client.keyResolver, verificationClock)
 	if err != nil {
-		return "", fmt.Errorf("verify upstream token: %w", err)
-	}
-	if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != claims.PersonServer {
-		return "", errors.New("upstream token was not issued by its Person Server")
+		return callChainUpstream{}, fmt.Errorf("verify upstream token: %w", err)
 	}
 	if claims.Audience != client.agentClaims.Issuer {
-		return "", errors.New("upstream token audience does not match intermediary Resource")
+		return callChainUpstream{}, errors.New("upstream token audience does not match intermediary Resource")
 	}
-	if claims.MissionS256 != "" || claims.Account != nil {
-		return "", errors.New("mission- or account-bound call chaining is not supported")
-	}
-	return claims.PersonServer, nil
+	return callChainUpstream{personServer: claims.PersonServer, missionS256: claims.MissionS256, expiresAt: claims.ExpiresAt}, nil
 }
 
+// acceptIssuedPersonServer checks the Person Server and mission a downstream
+// token names. Without an upstream token they are this client's own; with
+// one, the Person Server it names and the mission it carries.
 func (client *Client) acceptIssuedPersonServer(
 	ctx context.Context,
 	upstreamToken string,
 	personServer string,
+	missionS256 string,
 	issuedAt time.Time,
 ) error {
 	if upstreamToken == "" {
@@ -682,12 +696,15 @@ func (client *Client) acceptIssuedPersonServer(
 		}
 		return nil
 	}
-	upstreamPersonServer, err := client.verifyCallChainUpstreamTokenAt(ctx, upstreamToken, issuedAt)
+	upstream, err := client.verifyCallChainUpstreamTokenAt(ctx, upstreamToken, issuedAt)
 	if err != nil {
 		return err
 	}
-	if personServer != upstreamPersonServer {
+	if personServer != upstream.personServer {
 		return errors.New("does not match upstream token")
+	}
+	if missionS256 != upstream.missionS256 {
+		return errors.New("mission_s256 does not match the upstream token's mission")
 	}
 	return nil
 }

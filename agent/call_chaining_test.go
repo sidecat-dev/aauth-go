@@ -108,7 +108,7 @@ func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {
 					Audience: protocol.resourceID, Subject: downstreamSubject,
 					Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
 					JTI:          "downstream-person-token", IssuedAt: protocol.now.Unix(),
-					ExpiresAt: protocol.now.Add(20 * time.Minute).Unix(),
+					ExpiresAt: protocol.now.Add(10 * time.Minute).Unix(),
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -126,7 +126,7 @@ func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {
 					Audience: protocol.resourceID, JTI: "downstream-auth-token",
 					PersonServer: protocol.personServerID, Subject: downstreamSubject,
 					Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
-					IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
+					IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(12 * time.Minute).Unix(),
 					Scope: downstreamScope,
 				})
 				if err != nil {
@@ -188,10 +188,9 @@ func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The upstream token had to be valid at both Person Server requests. The
-	// downstream authorization has its own lifetime and remains usable after
-	// that upstream token expires.
-	protocol.now = protocol.now.Add(16 * time.Minute)
+	// The upstream token had to be valid at both Person Server requests, and
+	// the downstream tokens expire no later than it.
+	protocol.now = protocol.now.Add(11 * time.Minute)
 	response, err := client.Do(context.Background(), agent.Call{
 		Request: request, AuthToken: authToken, UpstreamToken: upstreamToken,
 	})
@@ -248,36 +247,6 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrongRole, err := aauth.MintAuthToken(protocol.accessServerKey, aauth.AuthTokenClaims{
-		Issuer: protocol.accessServerID, DWK: aauth.AccessDiscoveryDocument,
-		Audience: protocol.agentProviderID, JTI: "wrong-role-upstream",
-		PersonServer: protocol.personServerID, Subject: "person-123",
-		Confirmation: aauth.Confirmation{JWK: otherKey.PublicJWK()},
-		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	missionClaims := aauth.AuthTokenClaims{
-		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
-		Audience: protocol.agentProviderID, JTI: "mission-upstream",
-		PersonServer: protocol.personServerID, Subject: "person-123",
-		Confirmation: aauth.Confirmation{JWK: otherKey.PublicJWK()},
-		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(),
-		MissionS256: strings.Repeat("A", 43),
-	}
-	missionBound, err := aauth.MintAuthToken(protocol.personServerKey, missionClaims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	accountClaims := missionClaims
-	accountClaims.JTI = "account-upstream"
-	accountClaims.MissionS256 = ""
-	accountClaims.Account = testStringPointer("account-17")
-	accountBound, err := aauth.MintAuthToken(protocol.personServerKey, accountClaims)
-	if err != nil {
-		t.Fatal(err)
-	}
 	expiredUpstream, err := aauth.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
 		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
 		Audience: protocol.agentProviderID, JTI: "expired-upstream",
@@ -296,9 +265,7 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	}{
 		{name: "malformed", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: "not-a-compact-token"}, want: "verify upstream token"},
 		{name: "wrong audience", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: wrongAudience}, want: "audience"},
-		{name: "wrong issuer role", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: wrongRole}, want: "not issued by its Person Server"},
-		{name: "mission bound", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: missionBound}, want: "mission- or account-bound"},
-		{name: "account bound", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: accountBound}, want: "mission- or account-bound"},
+		{name: "own mission", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: validUpstream, MissionS256: strings.Repeat("A", 43)}, want: "carries the mission"},
 		{name: "wrong explicit person server", request: agent.PersonTokenRequest{PersonServer: "https://other-ps.example", Resource: protocol.resourceID, UpstreamToken: validUpstream}, want: "does not match upstream token"},
 		{name: "sub-agent combination", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: validUpstream, SubagentToken: protocol.agentToken}, want: "mutually exclusive"},
 		{name: "expired", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: expiredUpstream}, want: "expired"},

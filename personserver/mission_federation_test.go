@@ -192,11 +192,20 @@ func TestFederatedMissionAuthorizationRetainsExactAuthIdentityBeforeResponse(t *
 		t.Fatal("success response was written before the mission auth token was committed")
 	}
 	attempts, committed, got := fixture.store.observation()
+	agentJKT, err := fixture.protocol.agentKey.PublicJWK().Thumbprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The receipt names the Agent the token went to and the person token it
+	// was obtained with.
 	want := IssuedAuthTokenRecord{
 		Reference: aauth.TokenReference{Issuer: fixture.accessServerID, JTI: fixture.authJTI},
 		Resource:  fixture.protocol.resourceID, MissionS256: fixture.mission.S256,
 		CompactSHA256: sha256.Sum256([]byte(fixture.authToken)),
 		IssuedAt:      fixture.times.now, ExpiresAt: fixture.times.authExpiresAt,
+		AgentProvider: fixture.protocol.agentProviderID, Agent: fixture.protocol.agentID,
+		AgentTokenJTI: "mission-federated-agent-token", AgentJKT: agentJKT,
+		PresentedTokenReference: aauth.TokenReference{Issuer: fixture.protocol.personServerID, JTI: "mission-federated-person"},
 	}
 	if attempts != 1 || !committed || !reflect.DeepEqual(got, want) {
 		t.Fatalf("mission auth-token commit = attempts:%d committed:%t\ngot  %#v\nwant %#v", attempts, committed, got, want)
