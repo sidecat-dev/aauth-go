@@ -240,7 +240,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     update or completion (the Agent handles both); a helper that waits between
     polls; a durable production
     adapter; recovery after an uncertain initial or terminal response;
-    delegation; call chaining; held delivery; and revocation.
+    delegation; held delivery; and revocation. A mission does travel through
+    three- and four-party call chains; see the call chaining journey below.
 
 - [ ] **Parent-mediated sub-agents and one Resource call chain — Partial**
   - Flow: the parent's own AP issues the child from the parent's token →
