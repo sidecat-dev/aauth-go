@@ -476,6 +476,21 @@ func (server *Server) serveHeldMeteredRelease(
 		writeCredentialProblem(response, "invalid_token", err)
 		return
 	}
+	carriesBudget, err := budgets.TokenCarriesClaims(compact)
+	if err != nil {
+		writeCredentialProblem(response, "invalid_token", err)
+		return
+	}
+	if !carriesBudget {
+		// A valid per-call token without a budget carries no authorization
+		// for a metered release.
+		if _, _, _, _, err := server.verifyPreparedR3AuthRequest(request, prepared, compact); err != nil {
+			writeCredentialProblem(response, "invalid_token", err)
+			return
+		}
+		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("a metered release requires a per-call Auth token with a budget"))
+		return
+	}
 	proof, claims, reference, operations, grant, err := server.verifyPreparedR3BudgetAuthRequest(request, prepared, compact)
 	if err != nil {
 		writeCredentialProblem(response, "invalid_token", err)

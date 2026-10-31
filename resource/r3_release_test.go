@@ -321,10 +321,10 @@ func TestR3ReleaseGatingRefusesMeteredAndBudgetAnnotatedCalls(t *testing.T) {
 // TestR3MeteredReleaseDrawsTheCostDownOnceFromThePerCallToken meters the
 // release of a budget:true operation's result (R3 Approving Release Rather
 // Than Execution; Budgets Deferred Delivery). The proposal's Resource token
-// offers the release cost, a per-call token whose budget is short or above
-// the offer releases nothing, the fitting token releases the result once with
-// AAuth-Budget, and its replay meters nothing again. An unannotated
-// operation's release beside it is not metered.
+// offers the release cost, a per-call token without a budget, or whose budget
+// is short or above the offer, releases nothing, the fitting token releases
+// the result once with AAuth-Budget, and its replay meters nothing again. An
+// unannotated operation's release beside it is not metered.
 func TestR3MeteredReleaseDrawsTheCostDownOnceFromThePerCallToken(t *testing.T) {
 	t.Parallel()
 
@@ -556,6 +556,13 @@ func TestR3MeteredReleaseDrawsTheCostDownOnceFromThePerCallToken(t *testing.T) {
 				t.Fatalf("short per-call budget feedback = %q", refused.Header().Values("AAuth-Budget"))
 			}
 		}
+	}
+	unfunded, err := r3.MintPerCallAuthToken(registry, accessKey, authClaims("per-call-unfunded"), billed.reference, billed.proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refused := poll(billed.location, unfunded); refused.Code != http.StatusForbidden {
+		t.Fatalf("per-call token without a budget released %d %s", refused.Code, refused.Body.String())
 	}
 	if consumed := ledger.personConsumed(personIssuer, classClaims.Subject, resourceIssuer); consumed != 0 {
 		t.Fatalf("a refused release metered %d", consumed)
