@@ -89,7 +89,7 @@ your client's `*http.Transport`, so `NewHTTPKeyResolver` refuses a client whose
 transport is something else, or has a proxy, or sets a dialer other than
 `DialContext`.
 
-Three settings change that, one for each kind of deployment:
+What to set depends on where your issuers are:
 
 | Your issuers are | Set | Effect |
 | --- | --- | --- |

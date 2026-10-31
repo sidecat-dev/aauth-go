@@ -8,8 +8,8 @@ an API can decide who gets in.
 ## Roles
 
 Each guide says what the role does, shows the flow, and shows the code that
-sets it up. The code on these pages is quoted from programs under `example/`,
-and a test fails if a quote stops matching its program.
+sets it up. The code on these pages is quoted from the repository's compiled
+examples, and a test (`internal/docscheck`) fails if a quote stops matching.
 
 | Guide | Package | For |
 | --- | --- | --- |
