@@ -2397,7 +2397,45 @@ Person Server grant the release budget and refuses a budgeted proposal at a
 federated one. This library's per-call R3 is four-party only, and the
 PS-to-AS budget parameter applies to any Resource token that offers a budget,
 so its federated Person Server relays the ceiling and its Access Server
-grants the release budget.
+grants the release budget. The relay has no precedent in the drafts or in
+aauth-rust, so each step is stated here for another implementation to match:
+
+1. The Agent sends the proposal's Resource token to its Person Server with
+   the class Auth token it presented on the call as `presented_token`, and
+   `capabilities` including `budget`.
+2. The Person Server verifies the Resource token's `r3_uri`, `r3_s256` and
+   `budget`, and checks the offer against the Resource's declared
+   `budget_units` (`invalid_budget` otherwise). It fetches the proposal, and
+   proposal consent sees the offer in `AuthorizationRequest.Budget`.
+3. The Person Server's ceiling policy (`FederatedBudgetConfig.Ceiling`)
+   returns the ceiling, which keeps the offer's `unit` and `decimals` and an
+   `amount` no higher, or nothing. Anything else is `500 server_error`.
+4. The PS-to-AS token request carries `resource_token`, `presented_token`,
+   `agent_token` and, when there is a ceiling, `budget` with it. Without a
+   ceiling `budget` is omitted, and omission is not a grant.
+5. The Access Server checks the offer against its own view of the
+   Resource's `budget_units`. Its proposal policy returns
+   `R3ProposalDecision.Budget`: required when the request carried `budget`,
+   forbidden when it did not, and narrowing it without changing `unit` or
+   `decimals`. Anything else is `500 server_error`.
+6. The Access Server mints the per-call Auth token with `r3_uri` and
+   `r3_s256` of the proposal, `r3_granted` of its one operation, no
+   `r3_per_call`, and `budget` set to the grant. It expires no later than the
+   presented class token.
+7. The Person Server verifies the per-call token as for any per-call result
+   and also its budget. The token carries `budget` exactly when the Person
+   Server sent one, in the same `unit` and `decimals`, with an `amount` no
+   higher than the ceiling or the offer. Otherwise it answers
+   `502 as_unreachable`. The Person Server keeps no allocation ledger across
+   tokens.
+8. An Access Server `202` or `402` for a budgeted proposal is refused at the
+   Person Server with `500 server_error` (`DeferredCompositionError` reason
+   `r3`), as for any deferred R3 exchange.
+9. The Agent checks that the per-call token's budget narrows the offer, at
+   the exchange and again before it polls. When the Person Server omitted its
+   ceiling, the per-call token it delivers has no budget: this library's
+   Agent refuses it at the exchange, and a Resource presented with it answers
+   the release `403`.
 
 **Evidence:** `TestR3MeteredReleaseDrawsTheCostDownOnceFromThePerCallToken`,
 `TestR3MeteredReleaseFourPartyJourney`,
