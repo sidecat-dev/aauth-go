@@ -24,15 +24,137 @@ import (
 func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 8, 31, 11, 0, 0, 0, time.UTC)
-	clock := aauth.ClockFunc(func() time.Time { return now })
-	registry := newAgentR3Registry(t)
+	fixture := newR3ExchangeFixture(t)
+	gotResourceToken, err := fixture.client.Authorize(context.Background(), agent.AuthorizeRequest{
+		Resource: "https://resource.example", PersonToken: fixture.personToken,
+		Account: &fixture.account, R3Operations: &fixture.operations,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizeInput := fixture.authorizeInput
+	parsedOperations, parseErr := fixture.registry.ParseOperationSet(authorizeInput.R3Operations)
+	operationsEqual, equalErr := parsedOperations.Equal(fixture.operations)
+	if gotResourceToken != fixture.resourceToken || authorizeInput.Scope != nil || authorizeInput.Account == nil ||
+		*authorizeInput.Account != fixture.account || len(authorizeInput.R3Operations) == 0 ||
+		parseErr != nil || equalErr != nil || !operationsEqual {
+		t.Fatalf("authorize input/output = %#v / %t", authorizeInput, gotResourceToken == fixture.resourceToken)
+	}
+	gotAuthToken, err := fixture.client.Exchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: "https://person.example", ResourceToken: gotResourceToken, PresentedToken: fixture.personToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuthToken != fixture.authToken {
+		t.Fatalf("auth token changed")
+	}
+	claims, gotReference, gotAuthorization, err := r3.VerifyAuthTokenClaims(
+		context.Background(), fixture.registry, gotAuthToken, fixture.resolver, fixture.clock,
+	)
+	grantedEqual, grantedErr := gotAuthorization.GrantedOperations().Equal(fixture.granted)
+	perCallEqual, perCallErr := gotAuthorization.PerCallOperations().Equal(fixture.perCall)
+	if err != nil || claims.Scope != "" || gotReference != fixture.reference ||
+		grantedErr != nil || !grantedEqual || perCallErr != nil || !perCallEqual {
+		t.Fatalf("verified auth = %#v %#v %#v, %v", claims, gotReference, gotAuthorization, err)
+	}
+}
+
+// A Person Server may defer an R3 exchange like any other. The pending
+// exchange keeps the R3 document reference, and the auth token its poll
+// delivers is verified against it.
+func TestClientR3PendingExchangePollsForTheR3AuthToken(t *testing.T) {
+	t.Parallel()
+
+	fixture := newR3ExchangeFixture(t)
+	polls := 0
+	fixture.token = func(request *http.Request) *http.Response {
+		response := &http.Response{
+			StatusCode: http.StatusAccepted, Request: request,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"}, "Location": []string{"/pending/r3"},
+				"Retry-After": []string{"0"}, "Cache-Control": []string{"no-store"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"status":"pending"}`)),
+		}
+		return response
+	}
+	fixture.pending = func(request *http.Request) *http.Response {
+		polls++
+		body, _ := json.Marshal(map[string]any{"auth_token": fixture.authToken, "expires_in": 1800})
+		return &http.Response{
+			StatusCode: http.StatusOK, Request: request,
+			Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body:   io.NopCloser(bytes.NewReader(body)),
+		}
+	}
+	result, err := fixture.client.BeginExchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: "https://person.example", ResourceToken: fixture.resourceToken, PresentedToken: fixture.personToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := result.Pending()
+	if !ok || pending.Location() != "https://person.example/pending/r3" {
+		t.Fatalf("R3 exchange = %#v", result)
+	}
+	if _, err := pending.Snapshot(); err == nil {
+		t.Fatal("an R3 pending exchange was snapshotted without its document reference")
+	}
+	polled, err := fixture.client.PollExchange(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, ok := polled.Token(); !ok || token != fixture.authToken || polls != 1 {
+		t.Fatalf("R3 poll = %#v, polls = %d", polled, polls)
+	}
+
+	_, err = fixture.client.Exchange(context.Background(), agent.ExchangeRequest{
+		PersonServer: "https://person.example", ResourceToken: fixture.resourceToken, PresentedToken: fixture.personToken,
+	})
+	var deferred *agent.PendingExchangeError
+	if !errors.As(err, &deferred) || deferred.Pending().Location() != pending.Location() {
+		t.Fatalf("immediate R3 exchange error = %v", err)
+	}
+}
+
+type r3ExchangeFixture struct {
+	now            time.Time
+	clock          aauth.Clock
+	registry       r3.Registry
+	resolver       signaturekey.StaticKeyResolver
+	client         *agent.Client
+	personToken    string
+	resourceToken  string
+	authToken      string
+	account        string
+	operations     r3.OperationSet
+	reference      r3.Reference
+	granted        r3.GrantedOperations
+	perCall        r3.GrantedOperations
+	authorizeInput struct {
+		Scope        *string         `json:"scope"`
+		Account      *string         `json:"account"`
+		R3Operations json.RawMessage `json:"r3_operations"`
+	}
+	// token answers the PS token request; nil answers the auth token.
+	token func(*http.Request) *http.Response
+	// pending answers requests to the PS pending URL.
+	pending func(*http.Request) *http.Response
+}
+
+func newR3ExchangeFixture(t *testing.T) *r3ExchangeFixture {
+	t.Helper()
+	fixture := &r3ExchangeFixture{now: time.Date(2026, 8, 31, 11, 0, 0, 0, time.UTC)}
+	fixture.clock = aauth.ClockFunc(func() time.Time { return fixture.now })
+	now := fixture.now
+	fixture.registry = newAgentR3Registry(t)
 	providerKey := agentR3Key(t, "provider-key", 1)
 	personKey := agentR3Key(t, "person-key", 2)
 	resourceKey := agentR3Key(t, "resource-key", 3)
 	accessKey := agentR3Key(t, "access-key", 4)
 	agentKey := agentR3Key(t, "agent-key", 5)
-	resolver := signaturekey.StaticKeyResolver{
+	fixture.resolver = signaturekey.StaticKeyResolver{
 		{Issuer: "https://provider.example", DiscoveryDocument: aauth.AgentDiscoveryDocument, KeyID: providerKey.ID()}:    providerKey.PublicJWK(),
 		{Issuer: "https://person.example", DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personKey.ID()}:       personKey.PublicJWK(),
 		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
@@ -48,7 +170,7 @@ func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	personToken, err := aauth.MintPersonToken(personKey, aauth.PersonTokenClaims{
+	fixture.personToken, err = aauth.MintPersonToken(personKey, aauth.PersonTokenClaims{
 		Issuer: "https://person.example", DWK: aauth.PersonDiscoveryDocument,
 		Audience: "https://resource.example", Subject: "person-123", JTI: "person-token-1",
 		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
@@ -58,40 +180,35 @@ func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T)
 		t.Fatal(err)
 	}
 	agentJKT, _ := agentKey.PublicJWK().Thumbprint()
-	account := "work-account"
+	fixture.account = "work-account"
 	read := newAgentMCPOperation(t, "records.read")
 	export := newAgentMCPOperation(t, "records.export")
-	operations := newAgentMCPOperationSet(t, read, export)
-	document, _ := r3.NewDocument(operations, r3.DocumentOptions{Account: &account})
+	fixture.operations = newAgentMCPOperationSet(t, read, export)
+	document, _ := r3.NewDocument(fixture.operations, r3.DocumentOptions{Account: &fixture.account})
 	exactDocument, _ := json.Marshal(document)
-	reference, _ := r3.NewReference("https://resource.example/r3/document", r3.Digest(exactDocument))
-	resourceToken, _, err := r3.MintResourceToken(registry, resourceKey, aauth.ResourceTokenClaims{
+	fixture.reference, _ = r3.NewReference("https://resource.example/r3/document", r3.Digest(exactDocument))
+	fixture.resourceToken, _, err = r3.MintResourceToken(fixture.registry, resourceKey, aauth.ResourceTokenClaims{
 		Issuer: "https://resource.example", DWK: aauth.ResourceDiscoveryDocument,
 		Audience: "https://access.example", JTI: "resource-token-1", AgentJKT: agentJKT,
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(5 * time.Minute).Unix(),
 		PersonServer: "https://person.example", Subject: "person-123", PresentedJTI: "person-token-1",
-		Account: &account,
-	}, reference.URI(), exactDocument)
+		Account: &fixture.account,
+	}, fixture.reference.URI(), exactDocument)
 	if err != nil {
 		t.Fatal(err)
 	}
-	granted, _ := r3.NewGrantedOperations(mcp.Vocabulary(), read)
-	perCall, _ := r3.NewGrantedOperations(mcp.Vocabulary(), export)
-	authorization, _ := r3.NewAuthorization(granted, perCall, document)
-	authToken, err := r3.MintAuthToken(registry, accessKey, aauth.AuthTokenClaims{
+	fixture.granted, _ = r3.NewGrantedOperations(mcp.Vocabulary(), read)
+	fixture.perCall, _ = r3.NewGrantedOperations(mcp.Vocabulary(), export)
+	authorization, _ := r3.NewAuthorization(fixture.granted, fixture.perCall, document)
+	fixture.authToken, err = r3.MintAuthToken(fixture.registry, accessKey, aauth.AuthTokenClaims{
 		Issuer: "https://access.example", DWK: aauth.AccessDiscoveryDocument,
 		Audience: "https://resource.example", JTI: "auth-token-1",
-		PersonServer: "https://person.example", Subject: "person-123", Account: &account,
+		PersonServer: "https://person.example", Subject: "person-123", Account: &fixture.account,
 		Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
 		IssuedAt:     now.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix(),
-	}, reference, exactDocument, authorization)
+	}, fixture.reference, exactDocument, authorization)
 	if err != nil {
 		t.Fatal(err)
-	}
-	var authorizeInput struct {
-		Scope        *string         `json:"scope"`
-		Account      *string         `json:"account"`
-		R3Operations json.RawMessage `json:"r3_operations"`
 	}
 	transport := agentR3RoundTripper(func(request *http.Request) (*http.Response, error) {
 		var responseBody []byte
@@ -99,10 +216,10 @@ func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T)
 		case "https://resource.example/.well-known/aauth-resource.json":
 			responseBody = []byte(`{"issuer":"https://resource.example","authorization_endpoint":"https://resource.example/authorize","r3_vocabularies":{"urn:aauth:vocabulary:mcp":"https://resource.example/mcp"}}`)
 		case "https://resource.example/authorize":
-			if err := json.NewDecoder(request.Body).Decode(&authorizeInput); err != nil {
+			if err := json.NewDecoder(request.Body).Decode(&fixture.authorizeInput); err != nil {
 				t.Fatal(err)
 			}
-			responseBody, _ = json.Marshal(map[string]string{"resource_token": resourceToken})
+			responseBody, _ = json.Marshal(map[string]string{"resource_token": fixture.resourceToken})
 		case "https://person.example/.well-known/aauth-person.json":
 			responseBody = []byte(`{"issuer":"https://person.example","person_token_endpoint":"https://person.example/person","auth_token_endpoint":"https://person.example/token","jwks_uri":"https://person.example/jwks"}`)
 		case "https://person.example/token":
@@ -112,10 +229,18 @@ func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T)
 			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 				t.Fatal(err)
 			}
-			if input.ResourceToken != resourceToken {
+			if input.ResourceToken != fixture.resourceToken {
 				t.Fatalf("exchange resource token changed")
 			}
-			responseBody, _ = json.Marshal(map[string]any{"auth_token": authToken, "expires_in": 1800})
+			if fixture.token != nil {
+				return fixture.token(request), nil
+			}
+			responseBody, _ = json.Marshal(map[string]any{"auth_token": fixture.authToken, "expires_in": 1800})
+		case "https://person.example/pending/r3":
+			if fixture.pending == nil {
+				t.Fatalf("unexpected poll %s", request.URL)
+			}
+			return fixture.pending(request), nil
 		default:
 			t.Fatalf("unexpected request %s", request.URL)
 		}
@@ -125,45 +250,16 @@ func TestClientR3AuthorizesAndExchangesScopelessClassAuthorization(t *testing.T)
 			Body:       io.NopCloser(bytes.NewReader(responseBody)), Request: request,
 		}, nil
 	})
-	client, err := agent.New(context.Background(), agent.Config{
+	fixture.client, err = agent.New(context.Background(), agent.Config{
 		Identifier: "aauth:planner@provider.example", SigningKey: agentKey,
-		AgentToken: agentToken, KeyResolver: resolver,
-		HTTPClient: &http.Client{Transport: transport}, Clock: clock,
-		R3: &agent.R3Config{Registry: registry},
+		AgentToken: agentToken, KeyResolver: fixture.resolver,
+		HTTPClient: &http.Client{Transport: transport}, Clock: fixture.clock,
+		R3: &agent.R3Config{Registry: fixture.registry},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotResourceToken, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
-		Resource: "https://resource.example", PersonToken: personToken,
-		Account: &account, R3Operations: &operations,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsedOperations, parseErr := registry.ParseOperationSet(authorizeInput.R3Operations)
-	operationsEqual, equalErr := parsedOperations.Equal(operations)
-	if gotResourceToken != resourceToken || authorizeInput.Scope != nil || authorizeInput.Account == nil ||
-		*authorizeInput.Account != account || len(authorizeInput.R3Operations) == 0 ||
-		parseErr != nil || equalErr != nil || !operationsEqual {
-		t.Fatalf("authorize input/output = %#v / %t", authorizeInput, gotResourceToken == resourceToken)
-	}
-	gotAuthToken, err := client.Exchange(context.Background(), agent.ExchangeRequest{
-		PersonServer: "https://person.example", ResourceToken: gotResourceToken, PresentedToken: personToken,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotAuthToken != authToken {
-		t.Fatalf("auth token changed")
-	}
-	claims, gotReference, gotAuthorization, err := r3.VerifyAuthTokenClaims(context.Background(), registry, gotAuthToken, resolver, clock)
-	grantedEqual, grantedErr := gotAuthorization.GrantedOperations().Equal(granted)
-	perCallEqual, perCallErr := gotAuthorization.PerCallOperations().Equal(perCall)
-	if err != nil || claims.Scope != "" || gotReference != reference ||
-		grantedErr != nil || !grantedEqual || perCallErr != nil || !perCallEqual {
-		t.Fatalf("verified auth = %#v %#v %#v, %v", claims, gotReference, gotAuthorization, err)
-	}
+	return fixture
 }
 
 func TestClientUsesTheRegisteredVocabularyDiscoveryEndpointRule(t *testing.T) {

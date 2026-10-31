@@ -129,6 +129,9 @@ func (pending PendingExchange) Snapshot() (PendingExchangeSnapshot, error) {
 	if pending.chained {
 		return PendingExchangeSnapshot{}, errors.New("aauth agent: a call-chaining pending exchange cannot be snapshotted")
 	}
+	if pending.r3Reference != nil || pending.budget != nil {
+		return PendingExchangeSnapshot{}, errors.New("aauth agent: an R3 or Budget pending exchange cannot be snapshotted")
+	}
 	if err := validatePendingExchangeLocation(pending); err != nil {
 		return PendingExchangeSnapshot{}, fmt.Errorf("aauth agent: snapshot pending exchange: %w", err)
 	}
@@ -434,7 +437,7 @@ func (client *Client) performClarificationAction(request *http.Request) error {
 	return nil
 }
 
-func (client *Client) parseClarification(encoded json.RawMessage, observedAt time.Time) (ClarificationQuestion, error) {
+func parseClarification(encoded json.RawMessage, observedAt time.Time) (ClarificationQuestion, error) {
 	var body struct {
 		Clarification json.RawMessage `json:"clarification"`
 		Timeout       json.RawMessage `json:"timeout"`

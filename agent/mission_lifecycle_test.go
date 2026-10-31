@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/agent"
@@ -274,21 +275,33 @@ func TestMissionLifecyclePreservesContinuationAndProblemErrors(t *testing.T) {
 
 	missionS256 := aauth.MissionS256([]byte("approved mission"))
 	for _, operation := range []struct {
-		name  string
-		phase string
-		call  func(*agent.Client) error
+		name     string
+		call     func(*agent.Client) error
+		location func(error) (string, bool)
 	}{
-		{name: "UpdateMission", phase: "update", call: func(client *agent.Client) error {
+		{name: "UpdateMission", call: func(client *agent.Client) error {
 			_, err := client.UpdateMission(context.Background(), agent.MissionUpdateRequest{
 				PersonServer: "https://ps.example", MissionS256: missionS256, Description: "Changed work",
 			})
 			return err
+		}, location: func(err error) (string, bool) {
+			var pending *agent.PendingError[agent.MissionUpdateResult]
+			if !errors.As(err, &pending) {
+				return "", false
+			}
+			return pending.Pending().Location(), true
 		}},
-		{name: "CompleteMission", phase: "completion", call: func(client *agent.Client) error {
+		{name: "CompleteMission", call: func(client *agent.Client) error {
 			err := client.CompleteMission(context.Background(), agent.MissionCompletionRequest{
 				PersonServer: "https://ps.example", MissionS256: missionS256, Summary: "Done",
 			})
 			return err
+		}, location: func(err error) (string, bool) {
+			var pending *agent.PendingError[agent.MissionCompletionResult]
+			if !errors.As(err, &pending) {
+				return "", false
+			}
+			return pending.Pending().Location(), true
 		}},
 	} {
 		operation := operation
@@ -301,7 +314,9 @@ func TestMissionLifecyclePreservesContinuationAndProblemErrors(t *testing.T) {
 				return missionPendingResponse(request)
 			})
 			err := operation.call(client)
-			assertMissionContinuationError(t, err, operation.phase, operation.name)
+			if location, ok := operation.location(err); !ok || location != "https://ps.example/pending/mission" {
+				t.Fatalf("%s error = %v, want the pending request", operation.name, err)
+			}
 			if postCalls != 1 {
 				t.Fatalf("mission lifecycle POST calls = %d, want one", postCalls)
 			}
@@ -358,8 +373,8 @@ func TestMissionLifecycleRejectsMalformedDeferredResponse(t *testing.T) {
 			_, err := client.UpdateMission(context.Background(), agent.MissionUpdateRequest{
 				PersonServer: protocol.personServerID, MissionS256: missionS256, Description: "Changed work",
 			})
-			var continuation *agent.MissionContinuationUnsupportedError
-			if err == nil || errors.As(err, &continuation) {
+			var pending *agent.PendingError[agent.MissionUpdateResult]
+			if err == nil || errors.As(err, &pending) {
 				t.Fatalf("malformed deferred response error = %v", err)
 			}
 		})
@@ -375,11 +390,17 @@ func TestMissionContinuationUsesDefaultWhenRetryAfterIsAbsent(t *testing.T) {
 		response.Header.Del("Retry-After")
 		return response
 	})
-	_, err := client.UpdateMission(context.Background(), agent.MissionUpdateRequest{
+	result, err := client.BeginMissionUpdate(context.Background(), agent.MissionUpdateRequest{
 		PersonServer: protocol.personServerID,
 		MissionS256:  aauth.MissionS256([]byte("approved mission")), Description: "Changed work",
 	})
-	assertMissionContinuationError(t, err, "update", "UpdateMission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, ok := result.Pending(); !ok || pending.RetryAfter() != 5*time.Second ||
+		!pending.NextPollAt().Equal(protocol.now.Add(5*time.Second)) {
+		t.Fatalf("pending update = %#v", result)
+	}
 }
 
 func TestMissionLifecycleDoesNotRetryAmbiguousTransportFailure(t *testing.T) {
