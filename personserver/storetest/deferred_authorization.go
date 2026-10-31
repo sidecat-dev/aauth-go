@@ -78,13 +78,17 @@ func RunDeferredAuthorization(t *testing.T, contract DeferredAuthorizationContra
 		wrong := sha256.Sum256([]byte("wrong-code"))
 		if _, err := store.ConsumeAuthorizationInteractionCode(
 			context.Background(), record.PersonServer, record.ID,
-			personserver.AuthorizationCodePresentation{CodeSHA256: wrong, SyntacticallyValid: true}, deferredAuthorizationNow,
+			personserver.AuthorizationCodePresentation{
+				CodeSHA256: wrong, SyntacticallyValid: true, Callback: "https://agent.example/wrong",
+			}, deferredAuthorizationNow,
 		); !errors.Is(err, personserver.ErrAuthorizationInteractionCodeInvalid) {
 			t.Fatalf("wrong code = %v", err)
 		}
 		consumed, err := store.ConsumeAuthorizationInteractionCode(
 			context.Background(), record.PersonServer, record.ID,
-			personserver.AuthorizationCodePresentation{CodeSHA256: record.CodeSHA256, SyntacticallyValid: true}, deferredAuthorizationNow,
+			personserver.AuthorizationCodePresentation{
+				CodeSHA256: record.CodeSHA256, SyntacticallyValid: true, Callback: "https://agent.example/callback",
+			}, deferredAuthorizationNow,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -96,11 +100,20 @@ func RunDeferredAuthorization(t *testing.T, contract DeferredAuthorizationContra
 			t.Fatal(err)
 		}
 		requireDeferredAuthorizationRecord(t, retained.Record, record.ID)
+		if retained.Callback != "https://agent.example/callback" {
+			t.Fatalf("retained callback = %q", retained.Callback)
+		}
 		if _, err := store.ConsumeAuthorizationInteractionCode(
 			context.Background(), record.PersonServer, record.ID,
-			personserver.AuthorizationCodePresentation{CodeSHA256: record.CodeSHA256, SyntacticallyValid: true}, deferredAuthorizationNow,
+			personserver.AuthorizationCodePresentation{
+				CodeSHA256: record.CodeSHA256, SyntacticallyValid: true, Callback: "https://agent.example/other",
+			}, deferredAuthorizationNow,
 		); !errors.Is(err, personserver.ErrAuthorizationInteractionCodeUsed) {
 			t.Fatalf("reused code = %v", err)
+		}
+		if again, err := store.LoadPendingAuthorization(context.Background(), record.ID, deferredAuthorizationNow); err != nil ||
+			again.Callback != "https://agent.example/callback" {
+			t.Fatalf("callback after a reused code = %q, %v", again.Callback, err)
 		}
 
 		bounded := deferredAuthorizationRecord(t, "bounded", "code-bounded")

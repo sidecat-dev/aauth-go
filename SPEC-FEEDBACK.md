@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 73 (P1: 6, P2: 38, P3: 29; 46 submitted, 27 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 75 (P1: 6, P2: 38, P3: 31; 46 submitted, 29 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -154,6 +154,8 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F130 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F131 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F132 | A signed usage response is not required to cover `signature-key` | Budgets, Signature-Key | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F133 | A pending URL does not say which credential signs its polls | Core | missing-requirement | P3 | open | 2026-10-31 | Not submitted | — |
+| AAG-F134 | A completion the person does not accept has no terminal answer | Core | missing-requirement | P3 | open | 2026-10-31 | Not submitted | — |
 
 An earlier plan of "umbrella only" meant raising the item only inside one combined
 issue of small editorial items. On 2026-10-01 each such item was posted as its own issue instead.
@@ -1654,6 +1656,46 @@ An Agent "MAY append a `callback` parameter, constructed from its `callback_endp
 The intermediary "MUST provide its own `Location` URL for the original agent to poll" and returns the original request's result there. Pending URLs are bound to the identity that started the request, but this one was started by a call carrying an Auth token at a Resource, and the section does not say whether the poll presents that Auth token, the Agent token, or either, nor whether the poll is refused after the Auth token expires while the person is still interacting. Agents and intermediaries that choose differently cannot poll each other. aauth-go polls with the call's Auth token, binds the poll to its key, and ends the wait at that token's expiry.
 
 **Question:** Which credential does the original Agent present on an intermediary's pending URL, and does the wait outlive the Auth token the call carried?
+
+### AAG-F133 — A pending URL does not say which credential signs its polls
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-31
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-31 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Polling with GET, line 2529; Authorization Endpoint, line 667; Deferred completion of revocation, line 2730.
+
+"After receiving a `202`, the agent switches to `GET` for all subsequent requests to the `Location` URL and does not resend the original request body." Any endpoint may defer, and the original requests are signed under different credentials: the Agent token at the Person Server, the person token the Authorization Endpoint requires ("The agent MUST present a person token"), an auth token at a Resource, and `hwk` or `jkt-jwt` in Bootstrap. For revocation the text says the poller signs "under the same identity that made the revocation", but Polling with GET says nothing, so an Agent that polls `/authorize` with its Agent token and a Resource that expects the person token cannot interoperate. aauth-go signs each poll with the credential that signed the original request.
+
+**Question:** Does a poll present the same credential as the request that received the `202`, or may it use the Agent token, and is that the same for every endpoint?
+
+### AAG-F134 — A completion the person does not accept has no terminal answer
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-31
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-31 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Mission Completion, line 1505.
+
+"The person either accepts — the PS terminates the mission with reason `completed` and returns `200 OK` — or responds with follow-up questions via clarification chat (#clarification-chat), leaving the mission active." The Agent polls a deferred completion, but only acceptance has an answer. A person who reads the summary and decides the work is not finished, without a question for the Agent, leaves the pending completion with no defined terminal response, so the Agent cannot tell a rejected completion from one still under review until the pending request expires. aauth-go reports whatever terminal error the Person Server sends and treats the mission as still active.
+
+**Question:** What does the pending URL answer when the person declines a completion, and is it a polling error such as `denied` that leaves the mission active?
 
 ## Against informative text
 

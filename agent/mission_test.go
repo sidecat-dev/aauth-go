@@ -318,7 +318,7 @@ func TestClientRejectsResourceTokenThatOutlivesMissionBoundPersonToken(t *testin
 	}
 }
 
-func TestMissionExchangeContinuationReturnsTypedError(t *testing.T) {
+func TestMissionExchangeConvenienceReturnsThePendingExchange(t *testing.T) {
 	for _, operation := range []struct {
 		name string
 		call func(*agent.Client, agent.ExchangeRequest) error
@@ -347,7 +347,10 @@ func TestMissionExchangeContinuationReturnsTypedError(t *testing.T) {
 				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
 				PresentedToken: harness.presentedToken,
 			})
-			assertMissionContinuationError(t, err, "auth-token exchange", operation.name)
+			var pending *agent.PendingExchangeError
+			if !errors.As(err, &pending) || pending.Pending().Location() != harness.protocol.personServerID+"/pending/mission" {
+				t.Fatalf("%s error = %v, want the pending exchange", operation.name, err)
+			}
 		})
 	}
 }
@@ -375,17 +378,6 @@ func TestMissionBeginExchangeReturnsVerifiedPending(t *testing.T) {
 	pending, ok := result.Pending()
 	if !ok || pending.Location() != harness.protocol.personServerID+"/pending/mission" {
 		t.Fatalf("mission pending = %#v, %t", pending, ok)
-	}
-}
-
-func assertMissionContinuationError(t *testing.T, err error, phase, operation string) {
-	t.Helper()
-	var unsupported *agent.MissionContinuationUnsupportedError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("error = %v, want *agent.MissionContinuationUnsupportedError", err)
-	}
-	if unsupported.Phase != phase || unsupported.Operation != operation {
-		t.Fatalf("mission continuation error = %#v, want phase %q operation %q", unsupported, phase, operation)
 	}
 }
 

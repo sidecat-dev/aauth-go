@@ -21,13 +21,6 @@ type MissionRequest struct {
 	Proposal     aauth.MissionProposal
 }
 
-// MissionContinuationUnsupportedError reports a mission-specific 202 response
-// for which the named client operation does not expose a continuation.
-type MissionContinuationUnsupportedError struct {
-	Phase     string
-	Operation string
-}
-
 // MissionProposalSubmissionUncertainError reports an unverifiable transport
 // result after the signed proposal was handed to the HTTP client. The Person
 // Server may have retained it, so callers must not automatically submit the
@@ -91,19 +84,6 @@ func (failure *MissionProposalPendingError) Pending() PendingMissionProposal {
 	return failure.pending
 }
 
-func (failure *MissionContinuationUnsupportedError) Error() string {
-	if failure == nil {
-		return "aauth agent: mission continuation is not supported"
-	}
-	if failure.Operation == "" {
-		return "aauth agent: mission " + failure.Phase + " continuation is not supported"
-	}
-	if failure.Phase == "" {
-		return "aauth agent: " + failure.Operation + " does not support a mission continuation"
-	}
-	return "aauth agent: " + failure.Operation + " does not support mission " + failure.Phase + " continuation"
-}
-
 // MissionResult is one verified mission approval, returned immediately or
 // after an explicit poll. Accessors return copies so callers cannot rewrite
 // the verified mission or token map.
@@ -139,7 +119,7 @@ func (result MissionProposalResult) Approval() (MissionResult, bool) {
 
 // Pending returns the verified proposal continuation, when present.
 func (result MissionProposalResult) Pending() (PendingMissionProposal, bool) {
-	if result.kind != missionProposalPending || result.pending.location == "" {
+	if result.kind != missionProposalPending || result.pending.state.location == "" {
 		return PendingMissionProposal{}, false
 	}
 	return result.pending, true
@@ -147,11 +127,13 @@ func (result MissionProposalResult) Pending() (PendingMissionProposal, bool) {
 
 // PendingMissionProposal is one verified mission-proposal continuation. Its
 // private identity and key bindings prevent callers from inventing or
-// transferring polling authority.
+// transferring polling authority. While the person reviews the proposal the
+// Person Server may ask for approval elsewhere, send the person to an
+// interaction, or ask the Agent a clarification question (Core, Mission
+// Creation).
 type PendingMissionProposal struct {
 	personServer  string
-	location      string
-	retryAfter    time.Duration
+	state         pendingState
 	agentProvider string
 	agent         string
 	agentJKT      string
@@ -162,10 +144,38 @@ type PendingMissionProposal struct {
 func (pending PendingMissionProposal) PersonServer() string { return pending.personServer }
 
 // Location returns the verified URL for the next explicit poll.
-func (pending PendingMissionProposal) Location() string { return pending.location }
+func (pending PendingMissionProposal) Location() string { return pending.state.location }
 
 // RetryAfter returns the Person Server's current polling interval hint.
-func (pending PendingMissionProposal) RetryAfter() time.Duration { return pending.retryAfter }
+func (pending PendingMissionProposal) RetryAfter() time.Duration { return pending.state.retryAfter }
+
+// Requirement returns the requirement named by the latest 202: approval,
+// interaction, clarification, or empty. A restored proposal has none until
+// its next poll.
+func (pending PendingMissionProposal) Requirement() aauth.Requirement {
+	return pending.state.requirement
+}
+
+// InteractionURL returns the HTTPS URL where the person can act, when the
+// requirement is interaction.
+func (pending PendingMissionProposal) InteractionURL() string { return pending.state.interactionURL }
+
+// InteractionCode returns the correlation code to show the person, when the
+// requirement is interaction. It is not a credential.
+func (pending PendingMissionProposal) InteractionCode() string { return pending.state.interactionCode }
+
+// Interacting reports that the person reached the interaction.
+func (pending PendingMissionProposal) Interacting() bool { return pending.state.interacting }
+
+// Clarification returns the question the person or Person Server asked about
+// the proposal. Answer it with AnswerMissionClarification.
+func (pending PendingMissionProposal) Clarification() (ClarificationQuestion, bool) {
+	if pending.state.requirement != aauth.RequirementClarification ||
+		pending.state.clarification.kind != clarificationQuestionValidated {
+		return ClarificationQuestion{}, false
+	}
+	return pending.state.clarification, true
+}
 
 // PendingMissionProposalSnapshot is the JSON-serializable state needed to
 // restore one verified mission-proposal continuation. It contains authority
@@ -185,16 +195,16 @@ type PendingMissionProposalSnapshot struct {
 // proposal. The caller must protect the returned value as authority-bearing
 // continuation state.
 func (pending PendingMissionProposal) Snapshot() (PendingMissionProposalSnapshot, error) {
-	if pending.personServer == "" || pending.location == "" ||
+	if pending.personServer == "" || pending.state.location == "" ||
 		pending.agentProvider == "" || pending.agent == "" || pending.agentJKT == "" {
 		return PendingMissionProposalSnapshot{}, errors.New("aauth agent: verified pending mission proposal is required")
 	}
-	if pending.retryAfter < 0 || pending.retryAfter%time.Second != 0 {
+	if pending.state.retryAfter < 0 || pending.state.retryAfter%time.Second != 0 {
 		return PendingMissionProposalSnapshot{}, errors.New("aauth agent: pending mission proposal retry interval must be whole nonnegative seconds")
 	}
 	return PendingMissionProposalSnapshot{
-		PersonServer: pending.personServer, Location: pending.location,
-		RetryAfter:    int64(pending.retryAfter / time.Second),
+		PersonServer: pending.personServer, Location: pending.state.location,
+		RetryAfter:    int64(pending.state.retryAfter / time.Second),
 		AgentProvider: pending.agentProvider, Agent: pending.agent, AgentJKT: pending.agentJKT,
 		ProposedResources: append([]string(nil), pending.resources...),
 	}, nil
@@ -309,7 +319,7 @@ func (client *Client) beginMission(
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusAccepted {
-		pending, err := client.pendingMissionProposal(response, credential.personServer, input.Proposal.Resources, PendingMissionProposal{}, "ProposeMission")
+		pending, err := client.pendingMissionProposal(response, credential.personServer, input.Proposal.Resources, nil)
 		if err != nil {
 			return MissionProposalResult{}, fail(operation, &MissionProposalSubmissionUncertainError{cause: err})
 		}
@@ -355,12 +365,12 @@ func (client *Client) PollMissionProposal(ctx context.Context, pending PendingMi
 		return MissionProposalResult{}, fail(operation, errors.New("person-server metadata mission_endpoint is invalid"))
 	}
 	currentOrigin, err := httpOrigin(missionEndpoint)
-	pendingTarget, pendingErr := url.Parse(pending.location)
+	pendingTarget, pendingErr := url.Parse(pending.state.location)
 	pendingOrigin, pendingOriginErr := httpOrigin(pendingTarget)
 	if err != nil || pendingErr != nil || pendingOriginErr != nil || currentOrigin != pendingOrigin {
 		return MissionProposalResult{}, fail(operation, errors.New("pending mission proposal origin does not match current Person Server metadata"))
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.location, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, pending.state.location, nil)
 	if err != nil {
 		return MissionProposalResult{}, fail(operation, err)
 	}
@@ -376,14 +386,16 @@ func (client *Client) PollMissionProposal(ctx context.Context, pending PendingMi
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
 		next := pending
-		next.retryAfter, err = retryPollInterval(pending.retryAfter, response, client.clock.Now())
+		now := client.clock.Now()
+		next.state.retryAfter, err = retryPollInterval(pending.state.retryAfter, response, now)
 		if err != nil {
 			return MissionProposalResult{}, fail(operation, err)
 		}
+		next.state.nextPollAt = now.Add(next.state.retryAfter)
 		return MissionProposalResult{kind: missionProposalPending, pending: next}, nil
 	}
 	if response.StatusCode == http.StatusAccepted {
-		next, err := client.pendingMissionProposal(response, pending.personServer, pending.resources, pending, "PollMissionProposal")
+		next, err := client.pendingMissionProposal(response, pending.personServer, pending.resources, &pending)
 		if err != nil {
 			return MissionProposalResult{}, fail(operation, err)
 		}
@@ -478,9 +490,12 @@ func (client *Client) RestorePendingMissionProposal(
 	if err != nil || locationOrigin != origin {
 		return PendingMissionProposal{}, fail(operation, errors.New("snapshot pending Location does not match current mission endpoint origin"))
 	}
+	retryAfter := time.Duration(snapshot.RetryAfter) * time.Second
 	return PendingMissionProposal{
-		personServer: snapshot.PersonServer, location: snapshot.Location,
-		retryAfter:    time.Duration(snapshot.RetryAfter) * time.Second,
+		personServer: snapshot.PersonServer,
+		state: pendingState{
+			location: snapshot.Location, retryAfter: retryAfter, nextPollAt: client.clock.Now().Add(retryAfter),
+		},
 		agentProvider: snapshot.AgentProvider, agent: snapshot.Agent, agentJKT: snapshot.AgentJKT,
 		resources: append([]string(nil), snapshot.ProposedResources...),
 	}, nil
@@ -565,62 +580,61 @@ func (client *Client) pendingMissionProposal(
 	response *http.Response,
 	personServer string,
 	proposedResources []string,
-	prior PendingMissionProposal,
-	operation string,
+	prior *PendingMissionProposal,
 ) (PendingMissionProposal, error) {
-	location, err := parsePendingLocation(response)
+	var priorState *pendingState
+	if prior != nil {
+		priorState = &prior.state
+	}
+	state, err := readPendingResponse(response, priorState, client.clock.Now())
 	if err != nil {
 		return PendingMissionProposal{}, err
-	}
-	if prior.location != "" && location != prior.location {
-		return PendingMissionProposal{}, errors.New("pending mission proposal Location changed while polling")
-	}
-	target, err := url.Parse(location)
-	if err != nil {
-		return PendingMissionProposal{}, errors.New("pending mission proposal Location is invalid")
-	}
-	if _, err := httpOrigin(target); err != nil {
-		return PendingMissionProposal{}, errors.New("pending mission proposal Location origin is invalid")
-	}
-	retryAfter, err := parseRetryAfter(response.Header.Values("Retry-After"))
-	if err != nil {
-		return PendingMissionProposal{}, err
-	}
-	if !hasNoStore(response.Header.Values("Cache-Control")) {
-		return PendingMissionProposal{}, errors.New("pending mission proposal Cache-Control must contain no-store")
-	}
-	if len(response.Header.Values("Content-Type")) != 1 {
-		return PendingMissionProposal{}, errors.New("pending mission proposal requires exactly one Content-Type")
-	}
-	if values := response.Header.Values("AAuth-Requirement"); len(values) > 0 {
-		requirement, err := aauth.ParseRequirement(values)
-		if err != nil {
-			return PendingMissionProposal{}, err
-		}
-		if requirement != aauth.RequirementApproval {
-			return PendingMissionProposal{}, &MissionContinuationUnsupportedError{
-				Phase: string(requirement), Operation: operation,
-			}
-		}
-	}
-	var body struct {
-		Status string `json:"status"`
-	}
-	if err := decodeJSONResponse(response, &body); err != nil {
-		return PendingMissionProposal{}, err
-	}
-	if body.Status == "" {
-		return PendingMissionProposal{}, errors.New("pending mission proposal status is required")
 	}
 	thumbprint, err := client.signingKey.PublicJWK().Thumbprint()
 	if err != nil {
 		return PendingMissionProposal{}, err
 	}
 	return PendingMissionProposal{
-		personServer: personServer, location: location, retryAfter: retryAfter,
+		personServer: personServer, state: state,
 		agentProvider: client.agentClaims.Issuer, agent: client.identifier, agentJKT: thumbprint,
 		resources: append([]string(nil), proposedResources...),
 	}, nil
+}
+
+// AnswerMissionClarification performs exactly one Agent-token-signed POST
+// answering the clarification question on a pending mission proposal, before
+// its deadline. It does not poll; poll the proposal afterwards for the outcome.
+func (client *Client) AnswerMissionClarification(ctx context.Context, pending PendingMissionProposal, markdown string) error {
+	const operation = "answer mission clarification"
+	if client == nil {
+		return fail(operation, errors.New("client is required"))
+	}
+	if err := client.validatePendingMissionProposal(ctx, pending); err != nil {
+		return fail(operation, err)
+	}
+	if err := answerClarification(
+		ctx, client.httpClient, client.pendingRequestSigner(), client.clock, pending.state, markdown,
+	); err != nil {
+		return fail(operation, err)
+	}
+	return nil
+}
+
+// CancelMissionProposal performs exactly one Agent-token-signed DELETE that
+// withdraws a pending mission proposal (Core, Cancel Request). A 2xx answer
+// means the Person Server ended the review; later polls are 410.
+func (client *Client) CancelMissionProposal(ctx context.Context, pending PendingMissionProposal) error {
+	const operation = "cancel mission proposal"
+	if client == nil {
+		return fail(operation, errors.New("client is required"))
+	}
+	if err := client.validatePendingMissionProposal(ctx, pending); err != nil {
+		return fail(operation, err)
+	}
+	if err := cancelPending(ctx, client.httpClient, client.pendingRequestSigner(), pending.state); err != nil {
+		return fail(operation, err)
+	}
+	return nil
 }
 
 func (client *Client) validatePendingMissionProposal(ctx context.Context, pending PendingMissionProposal) error {
@@ -630,7 +644,7 @@ func (client *Client) validatePendingMissionProposal(ctx context.Context, pendin
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if pending.personServer == "" || pending.location == "" ||
+	if pending.personServer == "" || pending.state.location == "" ||
 		pending.agentProvider == "" || pending.agent == "" || pending.agentJKT == "" {
 		return errors.New("verified pending mission proposal for this client is required")
 	}
@@ -645,7 +659,7 @@ func (client *Client) validatePendingMissionProposal(ctx context.Context, pendin
 	if thumbprint != pending.agentJKT {
 		return errors.New("pending mission proposal does not match client key")
 	}
-	target, err := url.Parse(pending.location)
+	target, err := url.Parse(pending.state.location)
 	if err != nil {
 		return errors.New("pending mission proposal Location is invalid")
 	}

@@ -128,72 +128,110 @@ type ReceivedEvent struct {
 }
 
 // RegisterPublicSubscription verifies the AP token, commits local context,
-// and performs one signed registration POST. It never retries.
+// and performs one signed registration POST. It never retries. When the
+// Resource defers the registration, the error is a
+// *PendingError[EventSubscription] that carries the pending registration;
+// BeginPublicSubscription returns it as a Result.
 func (client *Client) RegisterPublicSubscription(
 	ctx context.Context,
 	input PublicSubscriptionInput,
 ) (EventSubscription, error) {
-	return client.registerEventSubscription(ctx, "register public event subscription", input)
+	const operation = "register public event subscription"
+	result, err := client.registerEventSubscription(ctx, operation, input)
+	if err != nil {
+		return EventSubscription{}, err
+	}
+	return completed(operation, result)
+}
+
+// BeginPublicSubscription performs the same single registration as
+// RegisterPublicSubscription and returns the registration, or the pending
+// registration when the Resource answers 202. Polls are signed with the same
+// subscribe token.
+func (client *Client) BeginPublicSubscription(
+	ctx context.Context,
+	input PublicSubscriptionInput,
+) (Result[EventSubscription], error) {
+	return client.registerEventSubscription(ctx, "begin public event subscription", input)
 }
 
 // RegisterProtectedSubscription binds context and performs one signed POST to
-// a Resource-issued ticket URL. It never retries.
+// a Resource-issued ticket URL. It never retries. A deferred registration is
+// a *PendingError[EventSubscription], as for RegisterPublicSubscription.
 func (client *Client) RegisterProtectedSubscription(
 	ctx context.Context,
 	input ProtectedSubscriptionInput,
 ) (EventSubscription, error) {
-	return client.registerEventSubscription(ctx, "register protected event subscription", PublicSubscriptionInput{
+	const operation = "register protected event subscription"
+	result, err := client.registerEventSubscription(ctx, operation, input.public())
+	if err != nil {
+		return EventSubscription{}, err
+	}
+	return completed(operation, result)
+}
+
+// BeginProtectedSubscription performs the same single POST as
+// RegisterProtectedSubscription and returns the registration, or the pending
+// registration when the Resource answers 202.
+func (client *Client) BeginProtectedSubscription(
+	ctx context.Context,
+	input ProtectedSubscriptionInput,
+) (Result[EventSubscription], error) {
+	return client.registerEventSubscription(ctx, "begin protected event subscription", input.public())
+}
+
+func (input ProtectedSubscriptionInput) public() PublicSubscriptionInput {
+	return PublicSubscriptionInput{
 		Endpoint:       input.TicketURL,
 		SubscribeToken: input.SubscribeToken,
 		Parameters:     input.Parameters,
 		ContentType:    input.ContentType,
 		Context:        input.Context,
-	})
+	}
 }
 
 func (client *Client) registerEventSubscription(
 	ctx context.Context,
 	operation string,
 	input PublicSubscriptionInput,
-) (EventSubscription, error) {
-	var subscription EventSubscription
+) (Result[EventSubscription], error) {
 	if client == nil || client.events == nil {
-		return subscription, fail(operation, errors.New("Events is not configured"))
+		return Result[EventSubscription]{}, fail(operation, errors.New("Events is not configured"))
 	}
 	if ctx == nil {
-		return subscription, fail(operation, errors.New("context is required"))
+		return Result[EventSubscription]{}, fail(operation, errors.New("context is required"))
 	}
 	if input.SubscribeToken == "" {
-		return subscription, fail(operation, errors.New("subscribe token is required"))
+		return Result[EventSubscription]{}, fail(operation, errors.New("subscribe token is required"))
 	}
 	if len(input.Context) == 0 {
-		return subscription, fail(operation, errors.New("event context is required"))
+		return Result[EventSubscription]{}, fail(operation, errors.New("event context is required"))
 	}
 	if len(input.Parameters) > 0 && input.ContentType == "" {
-		return subscription, fail(operation, errors.New("nonempty subscription parameters require a content type"))
+		return Result[EventSubscription]{}, fail(operation, errors.New("nonempty subscription parameters require a content type"))
 	}
 	if input.ContentType != "" {
 		if _, _, err := mime.ParseMediaType(input.ContentType); err != nil {
-			return subscription, fail(operation, fmt.Errorf("content type: %w", err))
+			return Result[EventSubscription]{}, fail(operation, fmt.Errorf("content type: %w", err))
 		}
 	}
 	if err := validateEventEndpoint(input.Endpoint); err != nil {
-		return subscription, fail(operation, err)
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
 	claims, err := events.VerifySubscribeToken(ctx, input.SubscribeToken, client.keyResolver, client.clock)
 	if err != nil {
-		return subscription, fail(operation, err)
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
 	if claims.Subject != client.identifier {
-		return subscription, fail(operation, errors.New("subscribe-token subject does not match Agent"))
+		return Result[EventSubscription]{}, fail(operation, errors.New("subscribe-token subject does not match Agent"))
 	}
 	if !claims.Confirmation.JWK.Equal(client.signingKey.PublicJWK()) {
-		return subscription, fail(operation, errors.New("subscribe-token confirmation key does not match Agent key"))
+		return Result[EventSubscription]{}, fail(operation, errors.New("subscribe-token confirmation key does not match Agent key"))
 	}
 	endpoint, _ := url.Parse(input.Endpoint)
 	resource := endpoint.Scheme + "://" + endpoint.Host
 	if err := events.ValidateSubscribeRegistration(claims, resource, client.signingKey.PublicJWK()); err != nil {
-		return subscription, fail(operation, err)
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
 	contextRecord := EventContext{
 		EventID: claims.EventID, Resource: claims.Audience,
@@ -201,11 +239,11 @@ func (client *Client) registerEventSubscription(
 		SubscribeTokenSHA256: sha256.Sum256([]byte(input.SubscribeToken)),
 	}
 	if err := client.events.store.BindContext(ctx, contextRecord); err != nil {
-		return subscription, fail(operation, err)
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, input.Endpoint, bytes.NewReader(input.Parameters))
 	if err != nil {
-		return subscription, fail(operation, err)
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
 	// SignJWTRequestWithOptions covers content-digest for nonempty parameters.
 	var components []string
@@ -223,18 +261,26 @@ func (client *Client) registerEventSubscription(
 			MaxBodyBytes:         client.maxSignedBodyBytes,
 		},
 	); err != nil {
-		return subscription, fail(operation, err)
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return subscription, fail(operation, err)
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return subscription, fail(operation, responseFailure(response))
+	subscription := EventSubscription{EventID: claims.EventID, Resource: claims.Audience}
+	flow := newPendingFlow(client, "event subscription", input.SubscribeToken,
+		func(_ context.Context, response *http.Response) (EventSubscription, error) {
+			if response.StatusCode != http.StatusOK {
+				return EventSubscription{}, responseFailure(response)
+			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes+1))
+			return subscription, nil
+		})
+	result, err := flow.begin(ctx, response)
+	if err != nil {
+		return Result[EventSubscription]{}, fail(operation, err)
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes+1))
-	return EventSubscription{EventID: claims.EventID, Resource: claims.Audience}, nil
+	return result, nil
 }
 
 // AcceptEvent verifies and correlates one AP-forwarded event, as Events Agent

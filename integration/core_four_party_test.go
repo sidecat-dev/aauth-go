@@ -866,6 +866,7 @@ type memoryPendingPersonToken struct {
 	approval       personserver.PersonTokenApproval
 	denied         bool
 	failedAttempts int
+	callback       string
 }
 
 func (store *memoryPersonTokenStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
@@ -963,6 +964,7 @@ func (store *memoryPersonTokenStore) ConsumePersonTokenInteractionCode(_ context
 		return personserver.PendingPersonTokenRecord{}, personserver.ErrPendingPersonTokenExpired
 	}
 	pending.state = personserver.PersonTokenPollInteracting
+	pending.callback = presentation.Callback
 	return clonePendingPersonToken(pending.record), nil
 }
 
@@ -973,7 +975,9 @@ func (store *memoryPersonTokenStore) LoadPendingPersonToken(_ context.Context, i
 	if !ok {
 		return personserver.PendingPersonTokenSnapshot{}, personserver.ErrPendingPersonTokenNotFound
 	}
-	snapshot := personserver.PendingPersonTokenSnapshot{Record: clonePendingPersonToken(pending.record), State: pending.state}
+	snapshot := personserver.PendingPersonTokenSnapshot{
+		Record: clonePendingPersonToken(pending.record), State: pending.state, Callback: pending.callback,
+	}
 	if pending.state == personserver.PersonTokenPollApproved {
 		snapshot.ApprovedPerson = pending.approval.Person
 	}

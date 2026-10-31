@@ -83,10 +83,21 @@ const (
 )
 
 // PendingSessionSnapshot lets the authenticated host resume one interaction.
+// Callback is the callback retained when the code was consumed, or empty when
+// the visit carried none.
 type PendingSessionSnapshot struct {
 	Record   PendingSessionRecord
 	State    SessionPollState
 	Approval SessionApproval
+	Callback string
+}
+
+// SessionCodePresentation is one interaction-code attempt: the digest of the
+// normalized code and the callback the person arrived with, or empty (Core,
+// User Interaction).
+type SessionCodePresentation struct {
+	CodeSHA256 [32]byte
+	Callback   string
 }
 
 // SessionPollIdentity binds a pending URL to the stable Agent identity that
@@ -111,7 +122,9 @@ type SessionPollRecord struct {
 //   - CreatePending retains one unique verified request before its 202.
 //   - ConsumeInteractionCode normalizes no input itself: it compares the
 //     supplied digest, increments failed attempts, and enforces the retained
-//     attempt bound, single use, and expiry.
+//     attempt bound, single use, and expiry. The presentation that consumes
+//     the code has its Callback retained for LoadPending to return; no other
+//     presentation changes it.
 //   - Approve transitions only an interacting record: it preserves every
 //     terminal state, atomically refuses expiry, or creates and retains the
 //     exact session before approved polling. An exact repeat after approval
@@ -128,7 +141,7 @@ type SessionPollRecord struct {
 type DeferredSessionStore interface {
 	SessionStore
 	CreatePending(context.Context, PendingSessionRecord) error
-	ConsumeInteractionCode(context.Context, string, string, [32]byte, time.Time) (PendingSessionRecord, error)
+	ConsumeInteractionCode(context.Context, string, string, SessionCodePresentation, time.Time) (PendingSessionRecord, error)
 	LoadPending(context.Context, string) (PendingSessionSnapshot, error)
 	Approve(context.Context, string, SessionRecord, time.Time) (SessionApproval, error)
 	Deny(context.Context, string, time.Time) error

@@ -68,22 +68,31 @@ func RunDeferredToken(t *testing.T, contract DeferredTokenContract) {
 		if err := store.CreatePendingPersonToken(context.Background(), record); err != nil {
 			t.Fatal(err)
 		}
-		wrong := sha256.Sum256([]byte("wrong-code"))
+		wrong := deferredTokenCode(sha256.Sum256([]byte("wrong-code")))
+		wrong.Callback = "https://agent.example/wrong"
 		if _, err := store.ConsumePersonTokenInteractionCode(
-			context.Background(), record.PersonServer, record.ID, deferredTokenCode(wrong), deferredTokenNow,
+			context.Background(), record.PersonServer, record.ID, wrong, deferredTokenNow,
 		); !errors.Is(err, personserver.ErrInteractionCodeInvalid) {
 			t.Fatalf("wrong code = %v", err)
 		}
+		right := deferredTokenCode(record.CodeSHA256)
+		right.Callback = "https://agent.example/callback"
 		consumed, err := store.ConsumePersonTokenInteractionCode(
-			context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
+			context.Background(), record.PersonServer, record.ID, right, deferredTokenNow,
 		)
 		if err != nil || consumed.ID != record.ID || consumed.Agent != record.Agent {
 			t.Fatalf("consumed = %#v, %v", consumed, err)
 		}
+		reused := deferredTokenCode(record.CodeSHA256)
+		reused.Callback = "https://agent.example/other"
 		if _, err := store.ConsumePersonTokenInteractionCode(
-			context.Background(), record.PersonServer, record.ID, deferredTokenCode(record.CodeSHA256), deferredTokenNow,
+			context.Background(), record.PersonServer, record.ID, reused, deferredTokenNow,
 		); !errors.Is(err, personserver.ErrInteractionCodeUsed) {
 			t.Fatalf("reused code = %v", err)
+		}
+		if snapshot, err := store.LoadPendingPersonToken(context.Background(), record.ID); err != nil ||
+			snapshot.Callback != "https://agent.example/callback" {
+			t.Fatalf("retained callback = %q, %v", snapshot.Callback, err)
 		}
 	})
 

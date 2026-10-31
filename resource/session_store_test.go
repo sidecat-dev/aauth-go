@@ -76,7 +76,7 @@ func TestDeferredSessionStoreRetainsCanonicalApprovalBeforePollExposure(t *testi
 
 	entered := sessionCodeDigestForTest("abco-1234")
 	correlated, err := store.ConsumeInteractionCode(
-		context.Background(), "https://resource.example", "pending-1", entered, now,
+		context.Background(), "https://resource.example", "pending-1", SessionCodePresentation{CodeSHA256: entered}, now,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestDeferredSessionStoreRetainsCanonicalApprovalBeforePollExposure(t *testi
 	correlated.Request.AgentPrincipal.AdditionalClaims["platform"][2] = 'X'
 
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), "https://resource.example", "pending-1", entered, now,
+		context.Background(), "https://resource.example", "pending-1", SessionCodePresentation{CodeSHA256: entered}, now,
 	); !errors.Is(err, ErrSessionInteractionCodeUsed) {
 		t.Fatalf("second code use error = %v", err)
 	}
@@ -168,7 +168,7 @@ func TestDeferredSessionStoreBoundsCodeFailuresAndExpiry(t *testing.T) {
 	for attempt := 1; attempt <= pending.MaximumCodeAttempts; attempt++ {
 		_, err := store.ConsumeInteractionCode(
 			context.Background(), pending.Resource, pending.ID,
-			sessionCodeDigestForTest(fmt.Sprintf("ZZZZ-000%d", attempt)), now,
+			SessionCodePresentation{CodeSHA256: sessionCodeDigestForTest(fmt.Sprintf("ZZZZ-000%d", attempt))}, now,
 		)
 		if attempt < pending.MaximumCodeAttempts && !errors.Is(err, ErrSessionInteractionCodeInvalid) {
 			t.Fatalf("invalid attempt %d error = %v", attempt, err)
@@ -178,7 +178,7 @@ func TestDeferredSessionStoreBoundsCodeFailuresAndExpiry(t *testing.T) {
 		}
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), pending.Resource, pending.ID, pending.CodeSHA256, now,
+		context.Background(), pending.Resource, pending.ID, SessionCodePresentation{CodeSHA256: pending.CodeSHA256}, now,
 	); !errors.Is(err, ErrPendingSessionGone) {
 		t.Fatalf("correct code after invalidation error = %v", err)
 	}
@@ -190,7 +190,7 @@ func TestDeferredSessionStoreBoundsCodeFailuresAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), expiring.Resource, expiring.ID, expiring.CodeSHA256, expiring.ExpiresAt,
+		context.Background(), expiring.Resource, expiring.ID, SessionCodePresentation{CodeSHA256: expiring.CodeSHA256}, expiring.ExpiresAt,
 	); !errors.Is(err, ErrPendingSessionExpired) {
 		t.Fatalf("expired code error = %v", err)
 	}
@@ -219,7 +219,7 @@ func TestDeferredSessionStoreRefusesApprovalAtOrAfterPendingExpiry(t *testing.T)
 		t.Fatal(err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), pending.Resource, pending.ID, pending.CodeSHA256, now,
+		context.Background(), pending.Resource, pending.ID, SessionCodePresentation{CodeSHA256: pending.CodeSHA256}, now,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestDeferredSessionStoreDoesNotRewriteTerminalStateOnLateApproval(t *testin
 		t.Fatal(err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), pending.Resource, pending.ID, pending.CodeSHA256, now,
+		context.Background(), pending.Resource, pending.ID, SessionCodePresentation{CodeSHA256: pending.CodeSHA256}, now,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -351,6 +351,7 @@ type memoryPendingSession struct {
 	attempts int
 	approval SessionApproval
 	deniedAt time.Time
+	callback string
 }
 
 func newMemorySessionStore() *memorySessionStore {
@@ -409,7 +410,7 @@ func (store *memorySessionStore) CreatePending(_ context.Context, record Pending
 }
 
 func (store *memorySessionStore) ConsumeInteractionCode(
-	_ context.Context, resource, reference string, code [32]byte, now time.Time,
+	_ context.Context, resource, reference string, presentation SessionCodePresentation, now time.Time,
 ) (PendingSessionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -427,7 +428,7 @@ func (store *memorySessionStore) ConsumeInteractionCode(
 		pending.state = SessionPollExpired
 		return PendingSessionRecord{}, ErrPendingSessionExpired
 	}
-	if pending.record.Resource != resource || pending.record.CodeSHA256 != code {
+	if pending.record.Resource != resource || pending.record.CodeSHA256 != presentation.CodeSHA256 {
 		pending.attempts++
 		if pending.attempts >= pending.record.MaximumCodeAttempts {
 			pending.state = SessionPollGone
@@ -436,6 +437,7 @@ func (store *memorySessionStore) ConsumeInteractionCode(
 		return PendingSessionRecord{}, ErrSessionInteractionCodeInvalid
 	}
 	pending.state = SessionPollInteracting
+	pending.callback = presentation.Callback
 	return clonePendingSessionRecordForTest(pending.record), nil
 }
 
@@ -448,7 +450,7 @@ func (store *memorySessionStore) LoadPending(_ context.Context, id string) (Pend
 	}
 	return PendingSessionSnapshot{
 		Record: clonePendingSessionRecordForTest(pending.record), State: pending.state,
-		Approval: cloneSessionApprovalForTest(pending.approval),
+		Approval: cloneSessionApprovalForTest(pending.approval), Callback: pending.callback,
 	}, nil
 }
 

@@ -449,12 +449,19 @@ func TestResourceManagedInteractionRequiresCapabilityAndHostDecision(t *testing.
 		t.Fatal(err)
 	}
 	reference := strings.TrimPrefix(requirement.URL, protocol.resource+"/interaction/")
-	interaction, err := server.ConsumeSessionInteractionCode(context.Background(), reference, requirement.Code)
+	interaction, err := server.ConsumeSessionInteractionVisit(context.Background(), reference, aauth.InteractionVisit{
+		Code: requirement.Code, Callback: "https://agent.example/callback",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.DenySessionInteraction(context.Background(), interaction); err != nil {
 		t.Fatal(err)
+	}
+	failed, failedErr := interaction.FailureURL(aauth.InteractionCallbackAccessDenied)
+	back, backErr := server.SessionCallbackURL(context.Background(), reference)
+	if want := "https://agent.example/callback?error=access_denied"; failed != want || failedErr != nil || back != want || backErr != nil {
+		t.Fatalf("denied callback = %q, %v; from state %q, %v", failed, failedErr, back, backErr)
 	}
 	location := start.Header().Get("Location")
 	denied := httptest.NewRecorder()
@@ -487,11 +494,20 @@ func TestResourceManagedInteractionRefusesApprovalAtOrAfterExpiry(t *testing.T) 
 		t.Fatal(err)
 	}
 	reference := strings.TrimPrefix(requirement.URL, protocol.resource+"/interaction/")
-	interaction, err := server.ConsumeSessionInteractionCode(context.Background(), reference, requirement.Code)
+	interaction, err := server.ConsumeSessionInteractionVisit(context.Background(), reference, aauth.InteractionVisit{
+		Code: requirement.Code, Callback: "https://agent.example/callback",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := server.SessionCallbackURL(context.Background(), reference); !errors.Is(err, ErrPendingSessionConflict) {
+		t.Fatalf("callback while the session can be granted = %v", err)
+	}
 	protocol.now = interaction.ExpiresAt()
+	if back, err := server.SessionCallbackURL(context.Background(), reference); err != nil ||
+		back != "https://agent.example/callback?error=interaction_expired" {
+		t.Fatalf("expired callback = %q, %v", back, err)
+	}
 	err = server.ApproveSessionInteraction(context.Background(), interaction, SessionGrant{
 		Subject: "person-123", Scope: []string{"records.read"}, Lifetime: 30 * time.Minute,
 	})

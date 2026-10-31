@@ -331,10 +331,10 @@ func TestParentMediatedSubagentExchangeConvenienceNamesPendingAPI(t *testing.T) 
 		SubagentToken:  harness.childToken,
 		Capabilities:   []string{"interaction"},
 	})
-	var pendingRequired *agent.SubagentPendingExchangeRequiredError
-	if !errors.As(err, &pendingRequired) || pendingRequired.Operation != "Exchange" ||
+	var pending *agent.PendingExchangeError
+	if !errors.As(err, &pending) || pending.Pending().Location() != harness.protocol.personServerID+"/pending/exchange-1" ||
 		!strings.Contains(err.Error(), "use BeginExchange and PollExchange") {
-		t.Fatalf("error = %v, want typed pending-exchange direction", err)
+		t.Fatalf("error = %v, want the pending exchange", err)
 	}
 }
 

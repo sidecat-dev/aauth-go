@@ -123,6 +123,9 @@ type PendingExchange struct {
 	tokenExpirySource    string
 	parentMediated       bool
 	budget               *budgets.Value
+	// r3Reference is the R3 document an R3 resource token named; the auth
+	// token the poll delivers must name the same one.
+	r3Reference *r3.Reference
 	// chained marks a call-chaining request: personServer is the Person
 	// Server the upstream token names, not this client's own.
 	chained bool
@@ -218,31 +221,11 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		return ExchangeResult{kind: exchangeResultToken, token: token}, nil
 	case http.StatusAccepted:
 		defer response.Body.Close()
-		if verifiedResource.r3Reference != nil {
-			return ExchangeResult{}, fail(operation, errors.New("R3 exchange interaction is not implemented"))
-		}
-		resourceClaims := verifiedResource.claims
-		pending, err := client.pendingExchangeResponse(
-			response, credential.personServer, input.ResourceToken, resourceClaims, PendingExchange{}, credential,
-		)
+		result, err := client.initialPendingExchange(response, input, verifiedResource, credential)
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
-		// A call-chaining request keeps polling the Person Server its upstream
-		// token named, so an intermediary can chain the interaction to its own
-		// caller (Core, Interaction Chaining).
-		pending.chained = input.UpstreamToken != ""
-		missionCapabilityFallback := resourceClaims.MissionS256 != "" && input.Capabilities == nil
-		pending.interactionCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "interaction")
-		pending.clarificationCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "clarification")
-		if verifiedResource.budget != nil {
-			offer := *verifiedResource.budget
-			pending.budget = &offer
-		}
-		if err := validatePendingExchangeRequirement(pending); err != nil {
-			return ExchangeResult{}, fail(operation, err)
-		}
-		return pendingExchangeResult(pending), nil
+		return result, nil
 	case http.StatusServiceUnavailable:
 		if _, err := parseHTTPRetryAfter(response.Header.Values("Retry-After"), client.clock.Now()); err != nil {
 			response.Body.Close()
@@ -253,6 +236,44 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 		defer response.Body.Close()
 		return ExchangeResult{}, fail(operation, responseFailure(response))
 	}
+}
+
+// initialPendingExchange reads a PS token endpoint's 202 to the original
+// request into a verified pending exchange that keeps the exact resource-token
+// context, including any R3 reference and Budget offer, for its terminal
+// answer.
+func (client *Client) initialPendingExchange(
+	response *http.Response,
+	input ExchangeRequest,
+	verifiedResource verifiedExchangeResource,
+	credential personServerCredential,
+) (ExchangeResult, error) {
+	resourceClaims := verifiedResource.claims
+	pending, err := client.pendingExchangeResponse(
+		response, credential.personServer, input.ResourceToken, resourceClaims, PendingExchange{}, credential,
+	)
+	if err != nil {
+		return ExchangeResult{}, err
+	}
+	// A call-chaining request keeps polling the Person Server its upstream
+	// token named, so an intermediary can chain the interaction to its own
+	// caller (Core, Interaction Chaining).
+	pending.chained = input.UpstreamToken != ""
+	missionCapabilityFallback := resourceClaims.MissionS256 != "" && input.Capabilities == nil
+	pending.interactionCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "interaction")
+	pending.clarificationCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "clarification")
+	if verifiedResource.budget != nil {
+		offer := *verifiedResource.budget
+		pending.budget = &offer
+	}
+	if verifiedResource.r3Reference != nil {
+		reference := *verifiedResource.r3Reference
+		pending.r3Reference = &reference
+	}
+	if err := validatePendingExchangeRequirement(pending); err != nil {
+		return ExchangeResult{}, err
+	}
+	return pendingExchangeResult(pending), nil
 }
 
 // PollExchange performs exactly one bodyless Agent-token-signed GET for a
@@ -306,7 +327,9 @@ func (client *Client) PollExchange(ctx context.Context, pending PendingExchange)
 		token, err := client.verifiedExchangeResponse(
 			ctx,
 			response,
-			verifiedExchangeResource{claims: *pending.resourceClaims, budget: pending.budget},
+			verifiedExchangeResource{
+				claims: *pending.resourceClaims, r3Reference: pending.r3Reference, budget: pending.budget,
+			},
 			personServerCredential{
 				requestKey: pending.tokenKey, expiresAt: pending.tokenExpiresAt,
 				expirySource: pending.tokenExpirySource, parentMediated: pending.parentMediated,
@@ -680,7 +703,7 @@ func (client *Client) pendingExchangeResponse(
 		return PendingExchange{}, errors.New("pending clarification requires the declared clarification capability")
 	}
 	if requirement == aauth.RequirementClarification {
-		clarification, err = client.parseClarification(encodedBody, observedAt)
+		clarification, err = parseClarification(encodedBody, observedAt)
 		if err != nil {
 			return PendingExchange{}, err
 		}
@@ -730,7 +753,7 @@ func (client *Client) pendingExchangeResponse(
 		resourceToken: resourceToken, resourceClaims: &claims,
 		agentProvider: client.agentClaims.Issuer, agent: client.identifier, agentJKT: thumbprint,
 		tokenKey: tokenKey, tokenExpiresAt: tokenExpiresAt, tokenExpirySource: tokenExpirySource,
-		parentMediated: parentMediated, budget: prior.budget, chained: prior.chained,
+		parentMediated: parentMediated, budget: prior.budget, r3Reference: prior.r3Reference, chained: prior.chained,
 	}, nil
 }
 

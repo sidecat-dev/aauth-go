@@ -153,10 +153,12 @@ type AuthorizationPollIdentity struct {
 // SyntacticallyValid is true only when CodeSHA256 contains the digest of a
 // successfully normalized Crockford presentation. A false value carries no
 // digest authority but must still traverse the store's atomic expiry and
-// failed-attempt transition.
+// failed-attempt transition. Callback is the callback the person arrived
+// with, or empty (Core, User Interaction).
 type AuthorizationCodePresentation struct {
 	CodeSHA256         [32]byte
 	SyntacticallyValid bool
+	Callback           string
 }
 
 // AuthorizationPollState is one PS Token Endpoint pending state.
@@ -201,6 +203,9 @@ type PendingAuthorizationSnapshot struct {
 	// ResourceInteraction is the progress of the Resource's own interaction.
 	// It is zero unless the record carries one and the person was sent to it.
 	ResourceInteraction ResourceInteractionProgress
+	// Callback is the callback retained when the code was consumed, or empty
+	// when the visit carried none.
+	Callback string
 }
 
 // DeferredAuthorizationStore owns only PS auth-token interaction state. It is
@@ -212,7 +217,10 @@ type PendingAuthorizationSnapshot struct {
 // failed attempt while the record is waiting. It changes the record to gone
 // when MaximumAuthorizationCodeAttempts is reached. Once a
 // valid code moves the record to interacting, every later code presentation
-// returns ErrAuthorizationInteractionCodeUsed without changing state. Consume
+// returns ErrAuthorizationInteractionCodeUsed without changing state. The
+// presentation that moves the record to interacting has its Callback retained,
+// and Load returns it as PendingAuthorizationSnapshot.Callback; no other
+// presentation changes it. Consume
 // must never return a successful record for SyntacticallyValid=false. Expired
 // has precedence when the deadline is reached before attempt counting. A
 // terminal state committed before the deadline remains terminal. The plaintext
@@ -345,6 +353,7 @@ type AuthorizationInteraction struct {
 	missionRecord  *MissionRecord
 	clarifications []AuthorizationClarificationRound
 	cancelledAt    time.Time
+	callback       string
 }
 
 const authorizationInteractionCorrelated uint8 = 1
@@ -411,6 +420,25 @@ func (value AuthorizationInteraction) Reference() string { return value.record.I
 
 // ExpiresAt returns the effective pending deadline.
 func (value AuthorizationInteraction) ExpiresAt() time.Time { return value.record.ExpiresAt }
+
+// Callback returns the callback the person arrived with, or empty.
+func (value AuthorizationInteraction) Callback() string { return value.callback }
+
+// CompletionURL returns where to send the person after this server approved
+// the request: the callback they arrived with. It returns an empty string when
+// they arrived without one; show a completion page instead.
+func (value AuthorizationInteraction) CompletionURL() (string, error) {
+	return interactionCallbackURL(value.kind == authorizationInteractionCorrelated, value.callback, "")
+}
+
+// FailureURL returns where to send the person when the request cannot be
+// completed, such as after DenyAuthorizationInteraction (access_denied) or
+// AbandonAuthorizationInteraction (user_abandoned): the callback with failure
+// as its error (Core, Interaction Callback Errors). It returns an empty string
+// when they arrived without a callback.
+func (value AuthorizationInteraction) FailureURL(failure aauth.InteractionCallbackError) (string, error) {
+	return interactionCallbackURL(value.kind == authorizationInteractionCorrelated, value.callback, failure)
+}
 
 func validateAuthorizationInteractionPolicy(policy AuthorizationInteractionPolicy) error {
 	if _, err := aauth.FormatInteractionRequirement(aauth.InteractionRequirement{URL: policy.URL, Code: "0000-0000"}); err != nil {
@@ -627,7 +655,25 @@ func (server *Server) beginAuthorizationInteraction(
 
 // ConsumeAuthorizationInteractionCode correlates one host visit and consumes
 // its code. The host must authenticate the person separately before deciding.
+// It is ConsumeAuthorizationInteractionVisit for a visit without a callback.
 func (server *Server) ConsumeAuthorizationInteractionCode(ctx context.Context, reference, code string) (AuthorizationInteraction, error) {
+	return server.ConsumeAuthorizationInteractionVisit(ctx, reference, aauth.InteractionVisit{Code: code})
+}
+
+// ConsumeAuthorizationInteractionVisit correlates one visit to
+// {interaction URL}/{reference} and consumes its code. visit comes from
+// aauth.ParseInteractionVisit. A callback in it is retained with the pending
+// request, so that the person is returned there however the request ends:
+// CompletionURL and FailureURL give the redirect after the host's own
+// decision, and AuthorizationCallbackURL after any terminal state. A visit
+// whose code does not correlate retains nothing, and the host shows an error
+// page rather than redirect. The host must authenticate the person separately
+// before deciding.
+func (server *Server) ConsumeAuthorizationInteractionVisit(
+	ctx context.Context,
+	reference string,
+	visit aauth.InteractionVisit,
+) (AuthorizationInteraction, error) {
 	if server == nil || server.authorizationInteractions == nil {
 		return AuthorizationInteraction{}, errors.New("personserver: authorization interactions are not configured")
 	}
@@ -637,8 +683,13 @@ func (server *Server) ConsumeAuthorizationInteractionCode(ctx context.Context, r
 	if reference == "" {
 		return AuthorizationInteraction{}, ErrAuthorizationInteractionCodeInvalid
 	}
-	presentation := AuthorizationCodePresentation{}
-	if digest, err := interaction.Digest(code); err == nil {
+	if visit.Callback != "" {
+		if err := aauth.ValidateInteractionCallback(visit.Callback, true); err != nil {
+			return AuthorizationInteraction{}, err
+		}
+	}
+	presentation := AuthorizationCodePresentation{Callback: visit.Callback}
+	if digest, err := interaction.Digest(visit.Code); err == nil {
 		presentation.CodeSHA256 = digest
 		presentation.SyntacticallyValid = true
 	}
@@ -658,7 +709,12 @@ func (server *Server) ConsumeAuthorizationInteractionCode(ctx context.Context, r
 	if record.ID != reference || record.PersonServer != server.issuer || record.CodeSHA256 != presentation.CodeSHA256 {
 		return AuthorizationInteraction{}, ErrPendingAuthorizationConflict
 	}
-	return server.authorizationInteractionFromRecord(ctx, record, now)
+	value, err := server.authorizationInteractionFromRecord(ctx, record, now)
+	if err != nil {
+		return AuthorizationInteraction{}, err
+	}
+	value.callback = visit.Callback
+	return value, nil
 }
 
 // ResumeAuthorizationInteraction reconstructs a host handle from durable state.
@@ -969,6 +1025,7 @@ func (server *Server) authorizationInteractionFromSnapshot(
 	}
 	value.clarifications = cloneAuthorizationClarifications(snapshot.Clarifications)
 	value.cancelledAt = snapshot.CancelledAt
+	value.callback = snapshot.Callback
 	return value, nil
 }
 
@@ -1033,6 +1090,9 @@ func (server *Server) validatePendingAuthorizationSnapshot(ctx context.Context, 
 	}
 	if err := validateResourceInteractionProgress(snapshot.Record, snapshot.State, snapshot.ResourceInteraction); err != nil {
 		return err
+	}
+	if err := validateRetainedCallback(snapshot.Callback, snapshot.State == AuthorizationPollWaiting); err != nil {
+		return ErrPendingAuthorizationConflict
 	}
 	switch snapshot.State {
 	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollDenied,

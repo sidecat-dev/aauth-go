@@ -229,13 +229,16 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `PendingMissionProposal.Snapshot`, `RestorePendingMissionProposal`,
     `Server.PendingMissionProposals`,
     `ApproveMissionProposal`, `DenyMissionProposal`, `UpdateMission`, and
-    `CompleteMission`.
+    `CompleteMission`; `AnswerMissionClarification`, `CancelMissionProposal`,
+    `BeginMissionUpdate` and `BeginMissionCompletion` when the Person Server
+    defers a step.
   - Evidence: [`integration/mission_three_party_test.go`](integration/mission_three_party_test.go),
     [`integration/mission_four_party_test.go`](integration/mission_four_party_test.go),
     [`integration/mission_deferred_proposal_test.go`](integration/mission_deferred_proposal_test.go),
     `go run ./example/mission`, and `go run ./example/fourparty`.
-  - Missing: mission clarification and POST-on-pending; deferred mission update
-    or completion; a helper that waits between polls; a durable production
+  - Missing: a Person Server that asks a mission clarification or defers an
+    update or completion (the Agent handles both); a helper that waits between
+    polls; a durable production
     adapter; recovery after an uncertain initial or terminal response;
     delegation; call chaining; held delivery; and revocation.
 

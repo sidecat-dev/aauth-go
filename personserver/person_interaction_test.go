@@ -943,6 +943,7 @@ type memoryPendingPersonToken struct {
 	approval       PersonTokenApproval
 	deniedAt       time.Time
 	failedAttempts int
+	callback       string
 }
 
 func newMemoryDeferredTokenStore() *memoryDeferredTokenStore {
@@ -1035,6 +1036,7 @@ func (store *memoryDeferredTokenStore) ConsumePersonTokenInteractionCode(_ conte
 		return PendingPersonTokenRecord{}, ErrPendingPersonTokenExpired
 	}
 	pending.state = PersonTokenPollInteracting
+	pending.callback = presentation.Callback
 	record := clonePendingPersonTokenRecord(pending.record)
 	if store.consumeChange != nil {
 		store.consumeChange(&record)
@@ -1049,7 +1051,9 @@ func (store *memoryDeferredTokenStore) LoadPendingPersonToken(_ context.Context,
 	if !ok {
 		return PendingPersonTokenSnapshot{}, ErrPendingPersonTokenNotFound
 	}
-	snapshot := PendingPersonTokenSnapshot{Record: clonePendingPersonTokenRecord(pending.record), State: pending.state}
+	snapshot := PendingPersonTokenSnapshot{
+		Record: clonePendingPersonTokenRecord(pending.record), State: pending.state, Callback: pending.callback,
+	}
 	if pending.state == PersonTokenPollApproved {
 		snapshot.ApprovedPerson = pending.approval.Person
 	}
