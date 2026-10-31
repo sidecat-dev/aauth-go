@@ -1719,8 +1719,8 @@ payment-protocol interpretation, settlement and billing-relationship caches
 per AS/PS; policy callbacks inspect that state without charging on a poll.
 The library currently carries one `WWW-Authenticate` challenge with optional
 opaque content. It does not implement a payment protocol or other payment
-header formats. AS claims, clarification and interaction forwarding remain
-separate unimplemented branches.
+header formats. AS claims and interaction are described below; clarification
+forwarding remains a separate unimplemented branch.
 
 Each pending deadline is the earliest of its configured lifetime, the original
 Resource-token expiry, Agent-token expiry and presented-token expiry. A wait
@@ -1746,8 +1746,8 @@ with GET, Error Response Format and Token Endpoint Error Codes.
 
 A local request-composition refusal uses `500 server_error` with a bounded
 public explanation; `DeferredCompositionError` identifies the reason to the
-host through diagnostics. A valid pending envelope asking for unsupported
-claims, clarification or interaction uses the same typed refusal, both on the
+host through diagnostics. A valid pending envelope asking for clarification,
+or for an unsupported extension, uses the same typed refusal, both on the
 initial response and a later AS poll. Its reason identifies that branch.
 On a later AS poll, the PS retains the bounded reason with the terminal response;
 `AdvanceFederation` reports successful retention, and Agent delivery reconstructs
@@ -1787,6 +1787,54 @@ or credentials are copied to the Agent. The hint grants no payment authority.
 `TestFederatedAgentWaitReasonPaymentThenApproval`,
 `TestFederatedUnsupportedRequirementIsLocalRefusal`, and the PS federation store
 contracts in `personserver/storetest/federated.go`.
+
+## An Access Server's interaction reaches the Agent that declared it
+
+**Source:** Protocol `70d6737`, AS Response (lines 1610-1625), PS Response
+(969-977), Person Token Endpoint (`capabilities`, line 814), AAuth-Capabilities
+(2456-2476), Interaction Required (2358-2400) and Interaction Chaining
+(1882-1886).
+
+A federated Person Server passes an Access Server's `202` with
+`requirement=interaction` back to the Agent: the Agent's `202` carries the
+AS's own `url` and `code` in a fresh `AAuth-Requirement`, the PS's own
+`Location`, and `{"status":"pending"}`. The code is the AS's, so the person
+completes the interaction on the AS's page, which compares it; the PS keeps
+its wait and the host advances it, as for approval, until the AS answers. A
+chained request is relayed the same way, and the intermediary chains it to
+its caller with its own code and pending URL. The relay happens on the first
+AS answer and on a later host advance alike.
+
+The Agent declares what it can handle. A request whose `capabilities`, or
+whose mission's captured capabilities when the request omits them, do not
+include `interaction` cannot send the person to the AS, and this Person
+Server has no page of its own for an AS interaction. It answers
+`403 user_unreachable`, as the Person Token Endpoint says a PS that must reach
+the person does without the capability, and sends the AS one signed `DELETE`.
+On a later advance the wait ends with that answer. The federated Person
+Server therefore accepts `capabilities` now and, as AAuth-Capabilities
+requires, ignores values it does not act on.
+
+The PS reads the interaction requirement as an Agent would. A `url` that is
+not HTTPS or carries a query or fragment, or a `code` outside upper-case
+Crockford base32, is a malformed AS continuation and the request ends with
+`502 as_unreachable`. aauth-rust relays an AS interaction whatever the
+request's capabilities and upper-cases a code the AS wrote in lower case. Go
+answers `user_unreachable` because its Agent refuses an interaction it did
+not declare, and the draft names that answer for a person the PS cannot
+reach. It refuses a lower-case code because Interaction Code Format forbids a
+server to emit one.
+
+The Access Server draws a 40-bit code for each wait it may defer and keeps it
+for every poll of that wait (`AuthorizationRequest.InteractionCode`,
+`PendingAuthorizationRecord.InteractionCode`). A policy that asks for
+interaction names only the page (`PendingDecision.InteractionURL`); the host
+serves that page, compares a presented code with `aauth.MatchInteractionCode`,
+and its policy grants or refuses on a later poll once the person has finished.
+
+**Evidence:** `TestFederatedInteractionReachesTheAgentThatDeclaredIt`,
+`TestChainedExchangeRelaysTheAccessServersInteraction` and
+`TestAccessServerClaimsContinuation`.
 
 ## Federated grants have no exchange identifier
 
@@ -2175,9 +2223,13 @@ token or an auth token" below.
 The four-party Person Server accepts upstream person tokens it issued and
 auth tokens an Access Server issued that it delivered and kept a receipt of,
 as "Immediate call chaining uses token trust plus explicit chain bindings"
-describes. It refuses chained R3 and Budget requests. A `202` or `402` from the
-Access Server for a chained request starts an ordinary federated wait, which
-retains the exact upstream token. A three-party Person Server refuses a
+describes. It refuses chained R3 requests. A chained request whose Resource
+token offers a Budget carries the Person Server's ceiling to the Access Server
+beside the upstream token, sized from that Resource token's own offer as for
+an unchained request; nothing is drawn from the upstream token, which carries
+no Budget of its own here. A `202` or `402` from the Access Server for a
+chained request starts an ordinary federated wait, which retains the exact
+upstream token. A three-party Person Server refuses a
 Resource token naming an Access Server with `invalid_resource_token`, chained
 or not.
 
@@ -2266,11 +2318,13 @@ and that what is approved is release of its result, and `NewProposal` refuses a
 `result` without that display; a received proposal is not judged by this
 wording. A route the Budget profile meters, and an operation annotated
 `budget: true`, never run first. Whether running is audited or billed, or calls
-another party, only the host knows, so `Eligible` decides. The library meters
-nothing for a release-gated call, so a declined release leaves no Budget
-posting and the held record keeps the unreleased response until its pending
-lifetime ends: what the library meters and what its records show cannot
-diverge. A host that meters release itself owns that agreement. A re-requested
+another party, only the host knows, so `Eligible` decides. Unless
+`MeterRelease` is set, the library meters nothing for a release-gated call, so
+a declined release leaves no Budget posting and the held record keeps the
+unreleased response until its pending lifetime ends: what the library meters
+and what its records show cannot diverge. With `MeterRelease` the release is
+the metered event; see "A per-call token's budget meters the release of a
+held result" below. A re-requested
 call runs again rather than inheriting the earlier result; by the eligibility
 rule that has no outside effect.
 
@@ -2289,10 +2343,66 @@ completing token is taken before the store claims the invocation and released
 on a replay, a conflict or a mismatch, so a replay meters nothing and a token
 that does not fit leaves the invocation pending. A hold needs a reserving
 Budget store for that order. With a Budget profile the Resource holds nothing
-else, because a held Core or per-call completion carries no meter. A refused
+else but a metered release, because a held Core or per-call completion carries
+no meter. A refused
 token that carries R3 claims is answered `401`, as before.
 
 **Evidence:** `resource/held_budget_test.go`.
+
+## A per-call token's budget meters the release of a held result
+
+**Source:** R3 `70d6737`, Approving Release Rather Than Execution (lines
+688-723), Budget Annotation (316-322) and Flow (674-679); Budgets, Resource
+Token Extensions (425-452), PS-to-AS Token Request Extensions (542-572), Auth
+Token Extensions (574-608), Budget Exhaustion (716-727) and Deferred Delivery
+(769-797).
+
+A Resource may meter the release of a result rather than its execution; R3
+leaves what that draws down to the Resource's metering policy. With
+`R3ReleaseConfig.MeterRelease` the library meters it against the per-call
+Auth token, the token presented on the poll that completes the held
+invocation. The drafts do not say whether a per-call proposal's Resource
+token or the per-call Auth token may carry `budget`; this library's reading,
+as aauth-rust's, is that they may:
+
+- Only an operation annotated `budget: true` is metered at release, and it
+  may then run before approval; an unannotated release states no cost. A
+  route the Budget profile meters still never runs first.
+- The proposal's Resource token offers exactly the release cost, in a
+  denomination the Resource declares, and carries no `budget_consumed`: the
+  token presented on the call is a class Auth token, which carries no Budget
+  here.
+- The per-call Auth token carries the issuer's grant beside `r3_granted`. The
+  Person Server sends its ceiling to the Access Server, and the Access
+  Server's proposal policy grants it, under the same rules as any Budget
+  offer.
+- A per-call token without a budget, or whose grant is above the offer or in
+  another denomination, is `403 access_denied`. One whose grant is below the
+  cost is `403` with `AAuth-Budget` stating its `remaining` and the cost as
+  `required`, before the held store claims the invocation, so the result
+  stays held for a token that fits. A per-call token authorizes only this
+  release, so its grant alone decides whether it fits.
+- The release charges the cost once. The released response carries
+  `AAuth-Budget` with that cost; a replay answers from the stored result with
+  the token's current `remaining` and meters nothing again. If the charge
+  fails after the claim, the release is retained as a `500` and the call is
+  never run again. A declined release meters nothing.
+
+Deferred Delivery's third rule answers a completing token that does not fit
+with another `202` and a fresh Resource token naming that token. For a held
+release that token would have to be a new per-call proposal token presented
+with a per-call Auth token, which R3's flow does not describe, so this
+library answers `403` as aauth-rust does. aauth-rust also lets a three-party
+Person Server grant the release budget and refuses a budgeted proposal at a
+federated one. This library's per-call R3 is four-party only, and the
+PS-to-AS budget parameter applies to any Resource token that offers a budget,
+so its federated Person Server relays the ceiling and its Access Server
+grants the release budget.
+
+**Evidence:** `TestR3MeteredReleaseDrawsTheCostDownOnceFromThePerCallToken`,
+`TestR3MeteredReleaseFourPartyJourney`,
+`TestMCPR3PerCallBudgetTokensCarryTheReleaseOffer` and
+`TestR3ReleaseGatingRefusesMeteredAndBudgetAnnotatedCalls`.
 
 ## A revocation hold that ends before a downstream answers is pending
 
