@@ -11,6 +11,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 // AuditConfig explicitly enables the mission-bound Audit Endpoint. It has no
@@ -107,6 +108,13 @@ func (server *Server) handleAudit(response http.ResponseWriter, request *http.Re
 		writeMissionActionProblem(response, err)
 		return
 	}
+	// A supervised Agent's supervisor is told, in order with its other events;
+	// the Agent's answer does not wait for that delivery.
+	_ = server.notifyAgent(request.Context(), agent, supervision.Event{
+		Name: supervision.EventAuditRecorded, MissionS256: document.Entry.MissionS256,
+		Action: document.Entry.Action, Description: document.Entry.Description,
+		Parameters: nonNullJSON(document.Entry.Parameters), Result: nonNullJSON(document.Entry.Result),
+	})
 	response.Header().Set("Cache-Control", "no-store")
 	response.WriteHeader(http.StatusCreated)
 }

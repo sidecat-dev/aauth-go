@@ -27,6 +27,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 const (
@@ -119,6 +120,9 @@ type FederatedAuthorizationConfig struct {
 	// TokenRevocation enables RevokePersonToken and resource-token
 	// revocations at the revocation endpoint.
 	TokenRevocation *TokenRevocationConfig
+	// Supervision optionally routes Agents to supervision servers, which
+	// then decide in place of Consent, Missions and Permission for them.
+	Supervision *SupervisionConfig
 }
 
 // PSAuthorizationConfig supplies a three-party Person Server. It issues auth
@@ -196,6 +200,9 @@ type PSAuthorizationConfig struct {
 	// TokenRevocation enables RevokePersonToken and resource-token
 	// revocations at the revocation endpoint.
 	TokenRevocation *TokenRevocationConfig
+	// Supervision optionally routes Agents to supervision servers, which
+	// then decide in place of Authorize, Missions and Permission for them.
+	Supervision *SupervisionConfig
 }
 
 // BudgetConfig supplies the Resource-metadata resolution required before a
@@ -446,6 +453,7 @@ type Server struct {
 	tokenRevocation                  *tokenRevocationState
 	revocationLimits                 aauth.RevocationLimits
 	revocationLimiter                *revocation.Limiter
+	supervision                      *supervisionState
 }
 
 type authorizationMode uint8
@@ -553,6 +561,9 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	}
 	server.r3 = r3Config
 	server.authorizationMode = authorizationModeFederated
+	if err := server.configureSupervision(config.Supervision); err != nil {
+		return nil, err
+	}
 	return server, nil
 }
 
@@ -647,6 +658,9 @@ func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
 	}
 	if config.Revocation == nil {
 		server.issuedAuthTokens = config.IssuedTokens
+	}
+	if err := server.configureSupervision(config.Supervision); err != nil {
+		return nil, err
 	}
 	return server, nil
 }
@@ -859,6 +873,9 @@ func (server *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /interaction/relay/{id}", server.handlePendingInteractionRelay)
 	}
 	server.handleRevocationRoutes(mux)
+	if server.supervision != nil {
+		mux.HandleFunc(supervisionPendingPath+"{id}", server.handleSupervisedPending)
+	}
 	return mux
 }
 
@@ -943,6 +960,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	}
 	credentialAgent := agent
 	delegated := false
+	subagentToken := ""
 	if upstream != nil && input.SubagentToken != nil {
 		server.writeUpstreamTokenProblem(response, &unsupportedCallChainError{
 			cause: errors.New("personserver: sub-agent and call-chain authorization cannot be combined"),
@@ -968,7 +986,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		}
 	}
 	if upstream == nil {
-		_, credentialAgent, delegated, err = server.verifyOptionalSubagentToken(
+		subagentToken, credentialAgent, delegated, err = server.verifyOptionalSubagentToken(
 			request.Context(), input.SubagentToken, agent, proof,
 		)
 		if err != nil {
@@ -999,7 +1017,36 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	if upstream != nil {
 		personRequest.Upstream, personRequest.UpstreamPerson = upstream.policyClaims()
 	}
-	if upstream == nil && server.requirePersonTokenInteraction != nil {
+	// A supervised Agent's request goes to its supervisor, not to the
+	// interaction selector; BindPerson then resolves the person only.
+	justification, _ := parseOptionalRequestString("justification", input.Justification)
+	act := supervisedAct{
+		request: supervision.Request{
+			Kind: supervision.KindPersonToken, AgentToken: agentToken, Resource: input.Resource,
+			SubagentToken: subagentToken, Justification: justification,
+		},
+		agent: agent, proof: proof, expiresAt: []time.Time{time.Unix(credentialAgent.ExpiresAt, 0)},
+	}
+	if missionRecord != nil {
+		act.request.MissionS256 = missionRecord.S256
+		act.expiresAt = append(act.expiresAt, missionRecord.ExpiresAt)
+	}
+	if upstream != nil {
+		act.request.UpstreamToken = upstream.compact
+		act.expiresAt = append(act.expiresAt, upstream.expiresAt())
+	}
+	verdict, handled := server.supervise(response, request, act)
+	if handled {
+		return
+	}
+	if verdict != nil && !verdict.allowed() {
+		writeProblem(response, http.StatusForbidden, "person_token_denied", verdict.denial(ErrAccessDenied))
+		return
+	}
+	if verdict != nil {
+		request = withSupervisionVerdict(request, verdict)
+	}
+	if upstream == nil && server.requirePersonTokenInteraction != nil && verdict == nil {
 		policyRequest := clonePersonTokenRequest(personRequest)
 		policy, required, err := server.requirePersonTokenInteraction(request.Context(), policyRequest)
 		if err != nil {
@@ -1038,7 +1085,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: downstream directed subject must differ from upstream subject"))
 		return
 	}
-	issuedAt := proof.VerifiedAt()
+	issuedAt := server.issuanceTime(request.Context(), proof.VerifiedAt())
 	if missionRecord != nil {
 		issuedAt = server.clock.Now().UTC()
 		current, err := server.recheckActiveMission(request.Context(), *missionRecord, issuedAt)
@@ -1047,6 +1094,16 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 		missionRecord = &current
+	}
+	if verdict != nil && verdict.decision.ExpiresAt != 0 {
+		// The supervisor's exp bounds the token.
+		if bound := time.Unix(verdict.decision.ExpiresAt, 0).Sub(issuedAt); bound < person.Lifetime {
+			person.Lifetime = bound
+		}
+		if person.Lifetime <= 0 {
+			writeProblem(response, http.StatusForbidden, "person_token_denied", errors.New("personserver: the supervisor's allowance has expired"))
+			return
+		}
 	}
 	compact, record, err := server.preparePersonToken(
 		issuedAt, agent, credentialAgent, personRequest, person, missionRecord, upstream,
@@ -1069,6 +1126,10 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
+	server.reportIssued(request.Context(), agent.Subject, supervision.Event{
+		Name: supervision.EventPersonTokenIssued, MissionS256: record.MissionS256,
+		JTI: record.JTI, Audience: record.Resource, ExpiresAt: record.ExpiresAt.Unix(),
+	})
 	writePrivateJSON(response, http.StatusOK, struct {
 		PersonToken string `json:"person_token"`
 		ExpiresIn   int64  `json:"expires_in"`
@@ -1431,6 +1492,20 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if upstream != nil {
 		authorizationRequest.Upstream, authorizationRequest.UpstreamPerson = upstream.policyClaims()
 	}
+	verdict, handled := server.superviseAuthorization(
+		response, request, agentToken, agent, proof, input.ResourceToken, input.PresentedToken, subagentToken,
+		input.Justification, resourceToken, presented, credentialAgent, upstream, missionRecord, scopes, r3Context,
+	)
+	if handled {
+		return
+	}
+	if verdict != nil && !verdict.allowed() {
+		writeAccessPolicyProblem(response, verdict.denial(ErrAccessDenied))
+		return
+	}
+	if verdict != nil {
+		request = withSupervisionVerdict(request, verdict)
+	}
 	if server.authorizationMode == authorizationModePersonServer {
 		// Person Server authorization closes when the presented token expires,
 		// and the Auth token it issues never outlives that token.
@@ -1451,7 +1526,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			)
 			return
 		}
-		if upstream == nil && server.requireAuthorizationInteraction != nil {
+		if upstream == nil && server.requireAuthorizationInteraction != nil && verdict == nil {
 			policyRequest := cloneAuthorizationRequest(authorizationRequest)
 			policy, required, err := server.requireAuthorizationInteraction(request.Context(), policyRequest)
 			if err != nil {
@@ -1479,6 +1554,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		if upstream != nil {
 			authorize = server.authorizeChained
 		}
+		if verdict != nil {
+			authorize = supervisedAuthorization(verdict)
+		}
 		if authorize == nil {
 			if server.r3 != nil && upstream == nil {
 				writeAccessPolicyProblem(response, errors.Join(
@@ -1497,7 +1575,9 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	var consentErr error
-	if r3Context != nil {
+	if verdict != nil {
+		// The supervisor decided; no consent policy runs.
+	} else if r3Context != nil {
 		consentErr = server.consentR3(
 			request.Context(), cloneAuthorizationRequest(authorizationRequest), r3Context,
 		)
@@ -1511,7 +1591,11 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		return
 	}
 	var personBudgetCeiling *budgets.Value
-	if budgetOffer != nil {
+	if budgetOffer != nil && verdict != nil {
+		// A supervised allow grants the Resource's offer as the supervisor
+		// saw it in the resource token.
+		personBudgetCeiling = cloneBudgetValue(budgetOffer)
+	} else if budgetOffer != nil {
 		if server.federatedBudgetCeiling == nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: federated Budget ceiling policy is not configured"))
 			return
@@ -1613,6 +1697,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		switch {
 		case server.federatedDeferred == nil:
 			reason = "not_configured"
+		case supervisionCompletionFrom(request.Context()) != nil:
+			// A request that already waited for its supervisor cannot then
+			// wait for the Access Server: the Agent polls one pending URL.
+			reason = "supervision"
 		case r3Context != nil:
 			reason = "r3"
 		case budgetOffer != nil:
@@ -1737,6 +1825,12 @@ func (server *Server) issuePSAuthorizationToken(
 			expiresAt = upstreamExpiresAt
 		}
 	}
+	// A supervisor's exp bounds the token.
+	if verdict := supervisionVerdictFrom(request.Context()); verdict != nil && verdict.decision.ExpiresAt != 0 {
+		if bound := time.Unix(verdict.decision.ExpiresAt, 0); bound.Before(expiresAt) {
+			expiresAt = bound
+		}
+	}
 	if !expiresAt.After(issuedAt) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("authorization decision has no usable lifetime"))
 		return
@@ -1787,6 +1881,10 @@ func (server *Server) issuePSAuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	server.reportIssued(request.Context(), requestingAgent.Subject, supervision.Event{
+		Name: supervision.EventAuthTokenIssued, MissionS256: claims.MissionS256, JTI: claims.JTI,
+		Audience: claims.Audience, Scope: claims.Scope, ExpiresAt: claims.ExpiresAt, Issuer: claims.Issuer,
+	})
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
@@ -1987,7 +2085,9 @@ func (server *Server) verifyAgentRequest(request *http.Request, requiredComponen
 
 func (server *Server) verifyAgentProof(request *http.Request, requiredComponents []string) (string, aauth.AgentTokenClaims, signaturekey.VerifiedRequest, error) {
 	var agent aauth.AgentTokenClaims
-	prepared, err := signaturekey.PrepareRequest(request, server.clock, signaturekey.VerifyOptions{
+	// A supervised request completed after its decision is verified as it was
+	// first verified, when it was made.
+	prepared, err := signaturekey.PrepareRequest(request, server.supervisionVerificationClock(request.Context()), signaturekey.VerifyOptions{
 		RequiredComponents: requiredComponents,
 		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeJWT},
 		MaxBodyBytes:       maxRequestBytes,
@@ -2485,6 +2585,17 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
 		return
 	}
+	// The PS-to-AS request carries no narrowing, so the Person Server enforces
+	// a supervisor's scope and exp on what the Access Server issued.
+	if verdict := supervisionVerdictFrom(request.Context()); verdict != nil {
+		allowed, _ := supervision.ParseScope(verdict.decision.Scope)
+		if len(allowed) > 0 && !scopeSubset(grantedScopes, allowed) ||
+			verdict.decision.ExpiresAt != 0 && authToken.ExpiresAt > verdict.decision.ExpiresAt {
+			writeAccessPolicyProblem(response, errors.Join(ErrAccessDenied,
+				errors.New("personserver: the Access Server issued more than the supervisor allowed")))
+			return
+		}
+	}
 	// The receipt names the Agent the auth token goes to and the token it was
 	// obtained with, so the token can later be verified as an upstream token
 	// and a revocation of that token reaches it.
@@ -2528,6 +2639,10 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	server.reportIssued(request.Context(), agent.Subject, supervision.Event{
+		Name: supervision.EventAuthTokenIssued, MissionS256: authToken.MissionS256, JTI: authToken.JTI,
+		Audience: authToken.Audience, Scope: authToken.Scope, ExpiresAt: authToken.ExpiresAt, Issuer: authToken.Issuer,
+	})
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`

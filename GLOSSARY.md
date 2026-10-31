@@ -27,5 +27,8 @@ explain names; [CONFORMANCE.md](CONFORMANCE.md) defines implemented limits.
 | R3 | Rich Resource Requests: operation-level authorization described by a vocabulary, such as MCP tool names or OpenAPI operation IDs. |
 | Budget / `AAuth-Budget` | A grant's metering allowance / the HTTP response field carrying Budget feedback. The implemented fixed-price paths and missing variable/streaming behavior are listed in the matrix. |
 | Mission / `mission_s256` | A person-approved task description retained by the PS / the digest binding tokens and requests to its exact approved bytes. Other roles need the digest, not the mission text. |
-| Clarification | A pending authorization question that the caller explicitly answers or cancels. The implemented path is bounded to one round. |
+| Clarification | A pending authorization question that the caller explicitly answers or cancels. The implemented path is bounded to one round; a supervised request allows five. |
+| Supervisor / supervision server (SS) | The party that decides each act an Agent asks its PS to authorize: the person by default, or a supervision server the person connects to their PS. For an Agent routed to an SS, the PS decides nothing itself; it relays, records and enforces. |
+| Deciding SS / `sdi` | The one SS the PS consults for an Agent / the supervision decision identifier the PS mints for each request, tying the request, its retries, polls and clarifications, the person's answer and the issued tokens together. |
+| `ask` / reach (`apply`) | The SS's answer that the person decides / how far the person's answer reaches (`once`, `mission`, `always`, or a value the SS offered), which the SS remembers and applies; the PS applies none. |
 | `storetest` | Reusable contract suites for host-supplied, role-specific stores. Passing them checks observable storage behavior; production restart and backend-failure tests remain the application's responsibility. |

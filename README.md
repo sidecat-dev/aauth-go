@@ -69,6 +69,7 @@ Request verified: aauth:reader@agents.example
 | R3 operations, Budgets or Events | [`example/r3threeparty`](example/r3threeparty), [`example/budget`](example/budget), [`example/events`](example/events) | In-process; terms in the [glossary](GLOSSARY.md) |
 | Revocation and Person-token recovery | [`example/revocation`](example/revocation) | In-process |
 | Sub-agents: the hosted child request, parent-mediated grants including an AS approval wait, binding revocation | [`example/subagent`](example/subagent) | In-process; see [Delegate to a sub-agent](USE-IN-YOUR-SERVICE.md#delegate-to-a-sub-agent) |
+| Supervision: Agents decided by supervision servers, asks for the person, an offline supervisor, signed decisions | [`example/supervision`](example/supervision) | In-process; see [Supervise Agents](USE-IN-YOUR-SERVICE.md#supervise-agents-with-a-supervision-server) |
 | Separate services, restart and retained state | [`walkthrough/local`](walkthrough/local), [`walkthrough/hosted`](walkthrough/hosted), [`walkthrough/callchaining`](walkthrough/callchaining) | Multiple TLS processes and state directories |
 | Historical Go/TypeScript qualifications (2026-09-01) | [`walkthrough/interop`](walkthrough/interop) | Live qualification needs public HTTPS and external services |
 
@@ -97,6 +98,8 @@ to point a consumer module at your checkout.
 | `accessserver` | Person-Server-authenticated authorization and R3 issuance |
 | `r3` and `r3/vocab/*` | Vocabulary-neutral grants plus bounded MCP, OpenAPI, gRPC, GraphQL, AsyncAPI, WSDL, and OData adapters |
 | `budgets` and `events` | Typed companion-protocol values and verification |
+| `supervision` | Supervision wire values, signed decisions and the Person Server's client for a supervision server |
+| `supervisionserver` | The supervision server role: connect, the mission, decision and event endpoints, and host policy |
 | `*/storetest` and `r3/vocabtest` | Reusable contracts for application stores and third-party R3 adapters |
 
 The root protocol package and the JOSE and Signature-Key packages do not
@@ -126,7 +129,8 @@ The repository has executing paths for direct identity, three- and four-party
 authorization, Resource-managed sessions, hosted enrollment and refresh,
 missions, local permission, audit, interaction, one-level parent-mediated
 sub-agents (including AS approval and payment waits), bounded call chaining,
-revocation, R3, Events, and fixed-price Budgets.
+revocation, R3, Events, fixed-price Budgets, and Supervision by a supervision
+server.
 
 It does **not** yet implement all of AAuth Core or every companion profile.
 Notable exclusions include production store adapters, key custody, TLS and

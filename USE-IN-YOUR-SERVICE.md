@@ -1045,6 +1045,111 @@ refuses an expired token, an `aud` other than the Agent's own identifier, and a
 body that does not match `body_s256`. Act on an event only after it returns
 without error and with `Duplicate` false.
 
+## Supervise Agents with a supervision server
+
+AAuth Supervision lets a person hand the decisions about their Agents to a
+supervision server (SS): a standing policy, a rules engine, or an
+organization's governance service that answers on the person's behalf and asks
+the person only when it cannot. [`example/supervision`](example/supervision)
+runs one person's Agents under two supervisors in one process.
+
+**Person Server.** Set `SupervisionConfig` on either Person Server
+constructor. `Route` names each Agent's deciding supervisor: its issuer, the
+directed `sub` you derive for the person with that supervisor as audience, and
+the tenant you assert at connect. A person may route all their Agents to one
+supervisor and particular Agents to others, for example work Agents to their
+organization's. `HTTPClient` and `Admit` carry every request to a supervisor:
+the person names it, and anyone can run one, so admit destinations as you do
+for any outbound call.
+
+For a routed Agent the Person Server decides nothing itself. Your `Authorize`,
+`Consent`, `Missions`, `Permission` and interaction policies are not called;
+`BindPerson` still resolves the person's identity after an allow. Tell the
+person, when they register a supervisor, that it will see their Agents'
+missions, justifications and actions, and will decide with their authority.
+
+```go
+config.Supervision = &personserver.SupervisionConfig{
+	Route: func(ctx context.Context, agent personserver.SupervisedAgent) (personserver.Supervisor, bool, error) {
+		return routes.Lookup(ctx, agent.Agent) // false: the person supervises it
+	},
+	Store:      supervisionStore,
+	HTTPClient: httpClient,
+	Admit:      admit,
+}
+```
+
+By default the Person Server consults only a supervisor that signs its
+decisions, so every decision it acts on is one it can later show was the
+supervisor's; set `AllowUnsignedDecisions` to consult one that does not.
+
+Connect when the person registers a supervisor. `ConnectSupervisor` returns
+`SupervisorConnecting` with an `InteractionURL` and `InteractionCode` when the
+supervisor wants the person to confirm; show them both, then call
+`PollSupervisorConnect`. The Person Server also connects on first use, and
+again after `unknown_sub`.
+
+**Asks and an unavailable supervisor.** After an `ask`, or when the supervisor
+cannot be reached, the Agent receives a pending response and the request waits
+for the person:
+
+```go
+reviews, err := people.PendingSupervision(ctx, 50)
+if err != nil {
+	return err
+}
+for _, review := range reviews {
+	// Authenticate the person and keep only their requests. Show review.Ask
+	// (summary, recommendation, proposed mission) apart from what the Agent
+	// asserted in review.Request, and offer review.ApplyOptions.
+	err := people.ResolveSupervision(ctx, review.Reference, personserver.SupervisionAnswer{
+		Answer: supervision.AnswerAllow, Apply: chosenReach,
+	})
+	if err != nil {
+		return err
+	}
+}
+```
+
+`AskSupervisedAgent` puts the person's question to the Agent first; the chat
+is reported to the supervisor with the person's decision. A review confers no
+authority: authenticate the person before you resolve.
+
+**Deferred decisions and events.** A supervisor that answers `202` is polled by
+your host, not by the Agent's polls: call `AdvanceSupervision` for each review
+in `SupervisedWaitingForSupervisor` once its next poll is due. Events and
+mission reports reach a supervisor in order, before the next request to it,
+after each host step, and when you call `DeliverSupervisionEvents`, for
+example when a supervisor that was offline is reachable again. They include
+an Agent Provider's revocation of an Agent's token, when the Person Server
+also has `AgentTokenRevocations`. While supervision is configured the Person
+Server also records the missions and tokens of Agents no supervisor decides
+for, so that routing one later replays its active state.
+
+**Log entries.** Every exchange with a supervisor is recorded with
+`SupervisionStore.RecordSupervisionLog`: the request as signed and the
+response as received, or no exchange when the supervisor was not consulted.
+`supervision.VerifyExchange` verifies a signed decision from that record
+alone, later, without knowing which supervisor was configured at the time.
+
+**Supervision server.** `supervisionserver.New` serves the metadata, connect,
+mission, decision and event endpoints. `Connect` accepts a Person Server for a
+person at once, for instance for a tenant you govern, or asks the person to
+confirm at your page; show them `ConnectConfirmation.PersonServer`, its
+`PersonServerName` and the code before `ConfirmConnect`. `Decide` answers each
+request with a decision, a question for the Agent, or a deferral you resolve
+later with `ResolveDecision`; it sees every member the Agent sent, in
+`Request.Extra` for those the request type does not name, and decides again
+when a Person Server relays an updated auth-token request. `Observe` sees every event, including
+`decision.resolved` with the reach the person gave their answer, which your
+policy then applies. With a `SigningKey` the server publishes `jwks_uri` and
+signs every decision. `testutil.NewSupervisorStore` and
+`testutil.NewSupervisionStore` are in-memory stores for each side.
+
+The limits are in [CONFORMANCE.md](CONFORMANCE.md#companion-specifications):
+among them, R3 and Resource-initiated interaction are refused for a
+supervised Agent.
+
 ## Return the person after an interaction
 
 Every interaction URL accepts `?code={code}` and, from a party with a browser

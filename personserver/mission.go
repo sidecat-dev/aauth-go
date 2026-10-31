@@ -16,6 +16,8 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 // ErrMissionNotFound reports that an owner-scoped MissionStore lookup cannot
@@ -227,7 +229,7 @@ func (failure *MissionTerminatedError) Error() string {
 }
 
 func (server *Server) handleMission(response http.ResponseWriter, request *http.Request) {
-	_, agent, proof, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
+	agentToken, agent, proof, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -256,6 +258,27 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		Agent: agent.Subject, Proposal: cloneMissionProposal(proposal),
 		ExactJSON:             append([]byte(nil), exactJSON...),
 		AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
+	}
+	// A supervised Agent's proposal is decided by its supervisor, which may
+	// refine the mission; the Person Server builds the blob from its terms.
+	verdict, handled := server.supervise(response, request, supervisedAct{
+		request: supervision.Request{
+			Kind: supervision.KindMissionProposal, AgentToken: agentToken,
+			Description: proposal.Description, Tools: proposal.Tools, Resources: proposal.Resources,
+		},
+		agent: agent, proof: proof, validate: validateSupervisedMission(proposal, server.clock.Now().UTC()),
+	})
+	if handled {
+		return
+	}
+	if verdict != nil && !verdict.allowed() {
+		writeMissionPolicyProblem(response, "mission_denied", verdict.denial(ErrMissionDenied))
+		return
+	}
+	if verdict != nil {
+		request = withSupervisionVerdict(request, verdict)
+		server.approveMission(response, request, agent, proof, proposal, supervisedMission(verdict))
+		return
 	}
 	if server.missionDeferProposal != nil {
 		pending, deferProposal, err := server.missionDeferProposal(request.Context(), cloneMissionApprovalRequest(policyRequest))
@@ -317,6 +340,19 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		writeMissionPolicyProblem(response, "mission_denied", err)
 		return
 	}
+	server.approveMission(response, request, agent, proof, proposal, decision)
+}
+
+// approveMission builds, retains and returns the approved mission and its
+// Person tokens.
+func (server *Server) approveMission(
+	response http.ResponseWriter,
+	request *http.Request,
+	agent aauth.AgentTokenClaims,
+	proof signaturekey.VerifiedRequest,
+	proposal aauth.MissionProposal,
+	decision MissionDecision,
+) {
 	approvedAt := server.clock.Now().UTC()
 	if err := validateMissionDecision(decision, proposal, approvedAt); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -339,6 +375,16 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 	if err := server.missions.CommitMission(request.Context(), approval.Mission, approval.PersonTokenRecords); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
+	}
+	server.reportMission(request.Context(), agent.Subject, supervision.Report{
+		Action: supervision.ReportApproved, MissionS256: approval.Mission.S256,
+		Mission: append([]byte(nil), approval.Mission.ExactJSON...),
+	})
+	for _, record := range approval.PersonTokenRecords {
+		server.reportIssued(request.Context(), agent.Subject, supervision.Event{
+			Name: supervision.EventPersonTokenIssued, MissionS256: record.MissionS256,
+			JTI: record.JTI, Audience: record.Resource, ExpiresAt: record.ExpiresAt.Unix(),
+		})
 	}
 	writePrivateJSON(response, http.StatusOK, missionApprovalResponse(approval))
 }
@@ -478,7 +524,7 @@ func (server *Server) prepareMissionApproval(
 }
 
 func (server *Server) handleMissionAction(response http.ResponseWriter, request *http.Request) {
-	_, agent, _, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
+	_, agent, proof, err := server.verifyAgentProof(request, []string{"content-type", "content-digest"})
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -527,9 +573,34 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 		return
 	}
 
+	// A supervised Agent's update or completion is decided by its supervisor.
+	act := supervisedAct{
+		request: supervision.Request{Kind: supervision.KindMissionUpdate, MissionS256: s256},
+		agent:   agent, proof: proof, expiresAt: []time.Time{expected.ExpiresAt},
+	}
+	denialCode := "mission_update_denied"
+	if action.Action == "update" {
+		act.request.Description = updateDocument.Update.Description
+	} else {
+		act.request.Kind = supervision.KindMissionCompletion
+		act.request.Summary = completionDocument.Completion.Summary
+		denialCode = "mission_completion_denied"
+	}
+	verdict, handled := server.supervise(response, request, act)
+	if handled {
+		return
+	}
+	if verdict != nil && !verdict.allowed() {
+		writeMissionPolicyProblem(response, denialCode, verdict.denial(ErrMissionDenied))
+		return
+	}
+	if verdict != nil {
+		request = withSupervisionVerdict(request, verdict)
+	}
+
 	switch action.Action {
 	case "update":
-		if server.missionAcceptUpdate == nil {
+		if verdict == nil && server.missionAcceptUpdate == nil {
 			writeMissionPolicyProblem(response, "mission_update_denied", fmt.Errorf("%w: mission updates are not enabled", ErrMissionDenied))
 			return
 		}
@@ -538,9 +609,11 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 			Document:              cloneMissionUpdateDocument(updateDocument),
 			AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		}
-		if err := server.missionAcceptUpdate(request.Context(), policyRequest); err != nil {
-			writeMissionPolicyProblem(response, "mission_update_denied", err)
-			return
+		if verdict == nil {
+			if err := server.missionAcceptUpdate(request.Context(), policyRequest); err != nil {
+				writeMissionPolicyProblem(response, "mission_update_denied", err)
+				return
+			}
 		}
 		acceptedAt := server.clock.Now().UTC()
 		if err := validateMissionAcceptanceInstant(acceptedAt); err != nil {
@@ -565,7 +638,7 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 		}
 		writePrivateJSON(response, http.StatusOK, aauth.MissionUpdateResponse{S256: updateDocument.S256})
 	case "completion":
-		if server.missionConfirmPersonCompletion == nil {
+		if verdict == nil && server.missionConfirmPersonCompletion == nil {
 			writeMissionPolicyProblem(response, "mission_completion_denied", fmt.Errorf("%w: mission completion is not enabled", ErrMissionDenied))
 			return
 		}
@@ -574,9 +647,11 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 			Document:              cloneMissionCompletionDocument(completionDocument),
 			AgentAdditionalClaims: cloneClaims(agent.AdditionalClaims),
 		}
-		if err := server.missionConfirmPersonCompletion(request.Context(), policyRequest); err != nil {
-			writeMissionPolicyProblem(response, "mission_completion_denied", err)
-			return
+		if verdict == nil {
+			if err := server.missionConfirmPersonCompletion(request.Context(), policyRequest); err != nil {
+				writeMissionPolicyProblem(response, "mission_completion_denied", err)
+				return
+			}
 		}
 		acceptedAt := server.clock.Now().UTC()
 		if err := validateMissionAcceptanceInstant(acceptedAt); err != nil {
@@ -601,6 +676,9 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission store returned an invalid completion transition"))
 			return
 		}
+		server.reportMission(request.Context(), agent.Subject, supervision.Report{
+			Action: supervision.ReportTerminated, MissionS256: s256, Reason: "completed",
+		})
 		response.Header().Set("Cache-Control", "no-store")
 		response.WriteHeader(http.StatusOK)
 	}
@@ -626,6 +704,7 @@ func (server *Server) loadActiveMission(
 		return MissionRecord{}, err
 	}
 	if record.State == MissionTerminated {
+		server.reportMissionEnded(ctx, record)
 		return MissionRecord{}, &MissionTerminatedError{TerminationReason: record.TerminationReason}
 	}
 	if !record.ExpiresAt.IsZero() && !now.Before(record.ExpiresAt) {

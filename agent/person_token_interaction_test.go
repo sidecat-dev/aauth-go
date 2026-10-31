@@ -387,8 +387,10 @@ func TestPersonTokenInteractionRejectsInvalidPendingResponses(t *testing.T) {
 		}},
 		{name: "malformed status body", change: func(response *http.Response) { replaceInteractionBody(response, `{"status":`) }},
 		{name: "missing requirement", change: func(response *http.Response) { response.Header.Del("AAuth-Requirement") }},
+		// An approval or clarification wait is a pending request the Agent
+		// polls; claims is not a requirement a Person Server sends an Agent.
 		{name: "wrong requirement", change: func(response *http.Response) {
-			response.Header.Set("AAuth-Requirement", `requirement=approval`)
+			response.Header.Set("AAuth-Requirement", `requirement=claims`)
 		}},
 		{name: "missing interaction URL", change: func(response *http.Response) {
 			response.Header.Set("AAuth-Requirement", `requirement=interaction;code="A1B2-C3D4"`)
