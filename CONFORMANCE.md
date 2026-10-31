@@ -32,7 +32,41 @@ drafts found these behaviors failing, and they now conform:
 - Call chaining accepts an upstream person token.
 
 Still open: chaining an upstream auth token issued by an Access Server, which
-needs four-party call chaining. Also open: about ten agent flows that do not
+needs four-party call chaining. The PS-to-AS step (the Person Server passing
+`upstream_token` to the Access Server, and the Access Server verifying it) now
+exists; a four-party Person Server still accepts only person tokens as
+`upstream_token`.
+
+Features added on 2026-10-30:
+
+- Resource-initiated interaction, three-party: a Resource puts its own flow in
+  the challenge, a Person Server redirects the person there after checking the
+  code and the URL, and callback errors end the request with the mapped polling
+  error. Interaction chaining answers the original caller with its own `202`,
+  code and pending URL.
+- Interaction callbacks with `error` where the library hosts the page:
+  Resource-initiated interaction, the Person Server returning the Agent, and
+  chaining. The Person Server's ordinary consent, person-token and
+  Resource-managed session pages do not take a callback yet.
+- The `aauth-resource` link relation is emitted and followed only for a server
+  identifier's well-known metadata; a link is never read as a requirement.
+- Delayed signed requests verify at their `created` time, with replay detection
+  across the delay.
+- Revocation: person and resource tokens are revoked at every recipient, the
+  Access Server holds a cascade for `Prefer: wait`, every revocation endpoint
+  answers `429 rate_limited` with `Retry-After`, and an Agent stops presenting a
+  refused token.
+- R3: several internal definitions compose into one document; a release-gated
+  call runs once and its result goes into the proposal; a metered or
+  `budget:true` operation never runs before approval.
+- Budgets: held refusals reserve nothing (four-party), replays answer without
+  metering, and a Resource with a key signs its usage answers.
+- Events: `EventInboxReader` hands queued deliveries to the Agent with their
+  exact bytes.
+- A Resource that also serves clients outside AAuth can accept further
+  Signature-Key schemes; such requests go to the host's own handler.
+
+Still open: consent through a supervision server, which needs Supervision. Also open: about ten agent flows that do not
 yet poll a `202` response, among them R3 and call-chain exchanges, mission
 update and completion, `/authorize`, sub-agents, events, audit and bootstrap.
 
