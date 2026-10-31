@@ -200,20 +200,9 @@ func MintPerCallAuthToken(
 	reference Reference,
 	exactProposal []byte,
 ) (string, error) {
-	proposal, err := registry.ParseReferencedProposal(reference, exactProposal)
-	if err != nil {
-		return "", fmt.Errorf("r3: per-call auth-token proposal: %w", err)
-	}
-	if err := ValidateProposalAccount(proposal, claims.Account); err != nil {
-		return "", fmt.Errorf("r3: per-call auth-token account: %w", err)
-	}
-	granted, err := NewGrantedOperations(proposal.operation.value.vocabulary, proposal.Operation())
+	grantedJSON, err := perCallGranted(registry, claims, reference, exactProposal)
 	if err != nil {
 		return "", err
-	}
-	grantedJSON, err := json.Marshal(granted)
-	if err != nil {
-		return "", fmt.Errorf("r3: per-call auth-token operation: %w", err)
 	}
 	additional, err := prepareAuthClaims(claims.AdditionalClaims, reference, grantedJSON, nil)
 	if err != nil {
@@ -221,6 +210,33 @@ func MintPerCallAuthToken(
 	}
 	claims.AdditionalClaims = additional
 	return aauth.MintAuthTokenCore(key, claims)
+}
+
+// perCallGranted returns the signed r3_granted value of a per-call Auth
+// token: exactly the one operation of the proposal reference names, after
+// checking its account.
+func perCallGranted(
+	registry Registry,
+	claims aauth.AuthTokenClaims,
+	reference Reference,
+	exactProposal []byte,
+) ([]byte, error) {
+	proposal, err := registry.ParseReferencedProposal(reference, exactProposal)
+	if err != nil {
+		return nil, fmt.Errorf("r3: per-call auth-token proposal: %w", err)
+	}
+	if err := ValidateProposalAccount(proposal, claims.Account); err != nil {
+		return nil, fmt.Errorf("r3: per-call auth-token account: %w", err)
+	}
+	granted, err := NewGrantedOperations(proposal.operation.value.vocabulary, proposal.Operation())
+	if err != nil {
+		return nil, err
+	}
+	grantedJSON, err := json.Marshal(granted)
+	if err != nil {
+		return nil, fmt.Errorf("r3: per-call auth-token operation: %w", err)
+	}
+	return grantedJSON, nil
 }
 
 // VerifyDirectAuthToken verifies Core trust, one complete R3 reference,
@@ -287,24 +303,41 @@ func VerifyPerCallAuthToken(
 	if perCallPresent || len(perCall.Operations()) != 0 {
 		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token must not contain r3_per_call")
 	}
-	if reference != expectedReference {
-		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token changed the proposal reference")
-	}
-	if err := ValidateProposalAccount(proposal, claims.Account); err != nil {
-		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, fmt.Errorf("r3: per-call Auth token account: %w", err)
-	}
-	operations := granted.Operations()
-	if len(operations) != 1 {
-		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token must grant exactly one operation")
-	}
-	equal, err := operations[0].Equal(proposal.Operation())
+	operation, err := perCallOperation(proposal, expectedReference, reference, granted, claims.Account)
 	if err != nil {
 		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, err
 	}
-	if !equal {
-		return aauth.AuthTokenClaims{}, Reference{}, Operation{}, errors.New("r3: per-call Auth token granted an operation other than the proposal")
+	return claims, reference, operation, nil
+}
+
+// perCallOperation returns the one operation a verified per-call Auth token
+// grants, after checking that it echoes the expected proposal reference,
+// matches the proposal's account, and grants exactly the proposal's
+// operation.
+func perCallOperation(
+	proposal Proposal,
+	expectedReference, reference Reference,
+	granted GrantedOperations,
+	account *string,
+) (Operation, error) {
+	if reference != expectedReference {
+		return Operation{}, errors.New("r3: per-call Auth token changed the proposal reference")
 	}
-	return claims, reference, operations[0], nil
+	if err := ValidateProposalAccount(proposal, account); err != nil {
+		return Operation{}, fmt.Errorf("r3: per-call Auth token account: %w", err)
+	}
+	operations := granted.Operations()
+	if len(operations) != 1 {
+		return Operation{}, errors.New("r3: per-call Auth token must grant exactly one operation")
+	}
+	equal, err := operations[0].Equal(proposal.Operation())
+	if err != nil {
+		return Operation{}, err
+	}
+	if !equal {
+		return Operation{}, errors.New("r3: per-call Auth token granted an operation other than the proposal")
+	}
+	return operations[0], nil
 }
 
 func verifyAuthToken(

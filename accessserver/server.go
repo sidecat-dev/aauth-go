@@ -464,6 +464,7 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		decision = Decision{
 			Scopes:   append([]string(nil), proposalDecision.Scopes...),
 			Lifetime: proposalDecision.Lifetime,
+			Budget:   cloneBudgetValue(proposalDecision.Budget),
 		}
 		err = proposalErr
 	default:
@@ -555,10 +556,17 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 				}
 			}
 		case r3.ArtifactProposal:
-			authToken, err = r3.MintPerCallAuthToken(
-				server.r3.registry, server.signingKey, claims,
-				r3Context.reference, r3Context.exact,
-			)
+			if grantedBudget == nil {
+				authToken, err = r3.MintPerCallAuthToken(
+					server.r3.registry, server.signingKey, claims,
+					r3Context.reference, r3Context.exact,
+				)
+			} else {
+				authToken, err = r3.MintBudgetPerCallAuthToken(
+					server.r3.registry, server.signingKey, claims,
+					r3Context.reference, r3Context.exact, *grantedBudget,
+				)
+			}
 		default:
 			err = errors.New("accessserver: R3 artifact is unclassified")
 		}

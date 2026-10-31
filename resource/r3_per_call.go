@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -48,7 +49,7 @@ func (server *Server) serveR3PerCallChallenge(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	hold, err := server.shouldHoldAuthTokenRequest(request)
+	hold, err := server.holdPolicy(request)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -57,6 +58,8 @@ func (server *Server) serveR3PerCallChallenge(
 		snapshot heldRequestSnapshot
 		release  *HeldResponse
 		proposal r3.Proposal
+		// offer is the cost of a metered release.
+		offer *budgets.Value
 	)
 	if hold {
 		if snapshot, err = server.snapshotHeldR3Request(request); err != nil {
@@ -64,17 +67,23 @@ func (server *Server) serveR3PerCallChallenge(
 			return
 		}
 	}
-	releaseFirst := false
+	releaseFirst, meteredRelease := false, false
 	if hold {
-		if releaseFirst, err = server.releaseEligible(request, invocation); err != nil {
+		if releaseFirst, meteredRelease, err = server.releaseEligible(request, invocation); err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
 			return
 		}
 	}
+	// A Resource with a Budget profile holds a call only to release a result
+	// under MeterRelease: a held execution would run on completion without a
+	// meter.
+	if hold && server.budget != nil && (!releaseFirst || !server.r3.perCall.release.meterRelease) {
+		hold, releaseFirst, meteredRelease = false, false, false
+	}
 	if releaseFirst {
 		var executed HeldResponse
-		proposal, executed, err = server.runForRelease(
-			request.Context(), snapshot, compact, claims, proof, requiredScopes, invocation,
+		proposal, executed, offer, err = server.runForRelease(
+			request.Context(), snapshot, compact, claims, proof, requiredScopes, invocation, meteredRelease,
 		)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -117,9 +126,19 @@ func (server *Server) serveR3PerCallChallenge(
 	proposalURI := r3ProposalURI(
 		server.issuer, exactJSON, proposalClaims.PersonServer, proposalClaims.Audience, proposalClaims.JTI,
 	)
-	proposalToken, reference, err := r3.MintProposalResourceToken(
-		server.r3.registry, server.signingKey, proposalClaims, proposalURI, exactJSON,
+	var (
+		proposalToken string
+		reference     r3.Reference
 	)
+	if offer == nil {
+		proposalToken, reference, err = r3.MintProposalResourceToken(
+			server.r3.registry, server.signingKey, proposalClaims, proposalURI, exactJSON,
+		)
+	} else {
+		proposalToken, reference, err = r3.MintBudgetProposalResourceToken(
+			server.r3.registry, server.signingKey, proposalClaims, proposalURI, exactJSON, *offer,
+		)
+	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -338,9 +357,7 @@ func (server *Server) validateR3Retry(
 		return r3.Proposal{}, aauth.ResourceTokenClaims{}, errors.New("R3 completion token does not grant exactly the retained proposal operation")
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return retry.PreparedAt })
-	retained, reference, err := r3.VerifyResourceToken(
-		ctx, retry.ResourceToken, server.keyResolver, verificationClock,
-	)
+	retained, reference, _, err := server.verifyProposalResourceToken(ctx, retry.ResourceToken, verificationClock)
 	if err != nil {
 		return r3.Proposal{}, aauth.ResourceTokenClaims{}, retainedR3State(
 			fmt.Errorf("verify retained R3 proposal token: %w", err),
@@ -419,6 +436,32 @@ func (server *Server) validateR3Retry(
 		return r3.Proposal{}, aauth.ResourceTokenClaims{}, errors.New("R3 completion token lifetime is outside the retained proposal authorization")
 	}
 	return proposal, retained, nil
+}
+
+// verifyProposalResourceToken verifies a proposal's Resource token. offer is
+// the budget it carries when the Resource meters the release it proposes,
+// and nil otherwise; such a token carries no consumption record.
+func (server *Server) verifyProposalResourceToken(
+	ctx context.Context,
+	compact string,
+	clock aauth.Clock,
+) (aauth.ResourceTokenClaims, r3.Reference, *budgets.Value, error) {
+	carriesBudget, err := budgets.TokenCarriesClaims(compact)
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, nil, err
+	}
+	if !carriesBudget {
+		claims, reference, err := r3.VerifyResourceToken(ctx, compact, server.keyResolver, clock)
+		return claims, reference, nil, err
+	}
+	claims, reference, offer, consumed, err := r3.VerifyBudgetResourceToken(ctx, server.r3.registry, compact, server.keyResolver, clock)
+	if err == nil && consumed != nil {
+		err = errors.New("a proposal Resource token reports consumption")
+	}
+	if err != nil {
+		return aauth.ResourceTokenClaims{}, r3.Reference{}, nil, err
+	}
+	return claims, reference, &offer, nil
 }
 
 type r3RetainedStateError struct {

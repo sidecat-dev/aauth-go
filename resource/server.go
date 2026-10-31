@@ -573,6 +573,10 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
+	if validatedR3 != nil && validatedR3.perCall != nil && validatedR3.perCall.release != nil &&
+		validatedR3.perCall.release.meterRelease && validatedBudget == nil {
+		return nil, errors.New("aauth: a metered R3 release requires a Budget profile")
+	}
 	if validatedBudget != nil {
 		if _, queryable := validatedBudget.store.(BudgetUsageStore); queryable {
 			if err := aauth.ValidateEndpoint(config.Issuer + "/usage"); err != nil {

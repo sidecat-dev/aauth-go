@@ -52,8 +52,46 @@ func MintBudgetResourceToken(
 	return compact, reference, nil
 }
 
+// MintBudgetProposalResourceToken mints the Resource token for a per-call
+// proposal with a Budget offer: what the Resource draws down for the call it
+// proposes, such as the release of a held result (R3 Approving Release Rather
+// Than Execution; Budgets Deferred Delivery). It carries no consumption
+// record: the token presented on the call is a class Auth token, which this
+// profile gives no Budget.
+func MintBudgetProposalResourceToken(
+	registry Registry,
+	key jose.SigningKey,
+	claims aauth.ResourceTokenClaims,
+	proposalURI string,
+	exactProposal []byte,
+	offer budgets.Value,
+) (string, Reference, error) {
+	proposal, err := registry.ParseProposal(exactProposal)
+	if err != nil {
+		return "", Reference{}, fmt.Errorf("r3: Budget proposal resource-token proposal: %w", err)
+	}
+	if err := ValidateProposalAccount(proposal, claims.Account); err != nil {
+		return "", Reference{}, fmt.Errorf("r3: Budget proposal resource-token account: %w", err)
+	}
+	reference, err := NewReference(proposalURI, Digest(exactProposal))
+	if err != nil {
+		return "", Reference{}, fmt.Errorf("r3: Budget proposal resource-token reference: %w", err)
+	}
+	additional, err := prepareBudgetResourceClaims(claims, reference, offer, nil)
+	if err != nil {
+		return "", Reference{}, err
+	}
+	claims.AdditionalClaims = additional
+	compact, err := aauth.MintResourceTokenCore(key, claims)
+	if err != nil {
+		return "", Reference{}, err
+	}
+	return compact, reference, nil
+}
+
 // VerifyBudgetResourceToken verifies Core trust and consumes one complete R3
-// class reference plus one complete Budget offer and consumption history.
+// reference, to a class document or a per-call proposal, plus one complete
+// Budget offer and consumption history. The reference is not fetched here.
 func VerifyBudgetResourceToken(
 	ctx context.Context,
 	registry Registry,
@@ -117,8 +155,60 @@ func MintBudgetAuthToken(
 	return aauth.MintAuthTokenCore(key, claims)
 }
 
-// VerifyBudgetAuthToken verifies Core trust and consumes one R3 class grant
-// and one fixed Budget grant from the same Auth token.
+// MintBudgetPerCallAuthToken mints the one-operation Auth token for an
+// approved exact proposal with a fixed Budget grant: MintPerCallAuthToken
+// plus budget. The grant's unit must be representable in AAuth-Budget.
+func MintBudgetPerCallAuthToken(
+	registry Registry,
+	key jose.SigningKey,
+	claims aauth.AuthTokenClaims,
+	reference Reference,
+	exactProposal []byte,
+	budgetGrant budgets.Value,
+) (string, error) {
+	grantedJSON, err := perCallGranted(registry, claims, reference, exactProposal)
+	if err != nil {
+		return "", err
+	}
+	additional, err := prepareBudgetAuthClaims(claims, reference, grantedJSON, budgetGrant)
+	if err != nil {
+		return "", err
+	}
+	claims.AdditionalClaims = additional
+	return aauth.MintAuthTokenCore(key, claims)
+}
+
+// VerifyBudgetPerCallAuthToken verifies a per-call Auth token with a fixed
+// Budget grant against the exact proposal it approves: the checks of
+// VerifyPerCallAuthToken, and those of VerifyBudgetAuthToken for the grant.
+func VerifyBudgetPerCallAuthToken(
+	ctx context.Context,
+	registry Registry,
+	compact string,
+	resolver signaturekey.KeyResolver,
+	clock aauth.Clock,
+	expectedReference Reference,
+	exactProposal []byte,
+) (aauth.AuthTokenClaims, Operation, budgets.Value, error) {
+	proposal, err := registry.ParseReferencedProposal(expectedReference, exactProposal)
+	if err != nil {
+		return aauth.AuthTokenClaims{}, Operation{}, budgets.Value{}, fmt.Errorf("r3: verify Budget per-call proposal: %w", err)
+	}
+	claims, reference, operations, grant, err := VerifyBudgetAuthToken(ctx, registry, compact, resolver, clock)
+	if err != nil {
+		return aauth.AuthTokenClaims{}, Operation{}, budgets.Value{}, err
+	}
+	operation, err := perCallOperation(proposal, expectedReference, reference, operations.GrantedOperations(), claims.Account)
+	if err != nil {
+		return aauth.AuthTokenClaims{}, Operation{}, budgets.Value{}, err
+	}
+	return claims, operation, grant, nil
+}
+
+// VerifyBudgetAuthToken verifies Core trust and consumes one R3 grant and one
+// fixed Budget grant from the same Auth token: a class grant, or the one
+// operation of a per-call grant, which VerifyBudgetPerCallAuthToken checks
+// against its proposal.
 func VerifyBudgetAuthToken(
 	ctx context.Context,
 	registry Registry,

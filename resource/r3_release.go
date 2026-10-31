@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -23,15 +24,27 @@ import (
 //
 // Running first is allowed only where nothing outside the result changes
 // when the call runs. The Resource itself refuses it on a route its Budget
-// profile meters and for an operation its definition annotates budget:true,
-// because there running is the metered event and approval must precede it.
-// Eligible must refuse the other cases only the host knows: a call whose
-// running is audited or billed, or that calls another party.
+// profile meters and, unless MeterRelease is set, for an operation its
+// definition annotates budget:true, because there running is the metered
+// event and approval must precede it. Eligible must refuse the other cases
+// only the host knows: a call whose running is audited or billed, or that
+// calls another party.
 type R3ReleaseConfig struct {
 	// Eligible reports whether this call may run before approval.
 	Eligible func(context.Context, r3.Invocation) (bool, error)
 	// DescribeResult describes a call that has run, for the proposal.
 	DescribeResult func(context.Context, R3ReleaseRequest) (R3ReleaseDescription, error)
+	// MeterRelease says this Resource meters the release of a held result,
+	// not the execution, of an operation its definition annotates
+	// budget:true. Such an operation may then run first, and DescribeResult
+	// must state its Cost. The proposal's Resource token offers exactly that
+	// cost as its budget, the per-call Auth token carries the grant, and the
+	// poll that releases the result draws the cost down from that token once
+	// (Budgets Deferred Delivery). A per-call token whose budget does not
+	// cover the cost is refused with 403 and AAuth-Budget stating required,
+	// and the result stays held. A declined release meters nothing. It
+	// requires the Resource's Budget profile.
+	MeterRelease bool
 }
 
 // R3ReleaseRequest is a call the Resource has run before approval. Response
@@ -49,16 +62,22 @@ type R3ReleaseRequest struct {
 // itself is not carried. The proposal's display is Display with Detail after
 // the r3.ReleaseAction section, which states that the operation has run and
 // that what is approved is release of its result.
+//
+// Cost is what releasing the result draws down, in one of the Resource's
+// declared denominations. It is set exactly for an operation annotated
+// budget:true under R3ReleaseConfig.MeterRelease, and nil otherwise.
 type R3ReleaseDescription struct {
 	Parameters r3.Parameters
 	Result     json.RawMessage
 	Display    r3.Display
 	Detail     string
+	Cost       *budgets.Value
 }
 
 type r3ReleaseConfig struct {
 	eligible       func(context.Context, r3.Invocation) (bool, error)
 	describeResult func(context.Context, R3ReleaseRequest) (R3ReleaseDescription, error)
+	meterRelease   bool
 }
 
 func validateR3ReleaseConfig(config *R3ReleaseConfig) (*r3ReleaseConfig, error) {
@@ -68,59 +87,67 @@ func validateR3ReleaseConfig(config *R3ReleaseConfig) (*r3ReleaseConfig, error) 
 	if config.Eligible == nil || config.DescribeResult == nil {
 		return nil, errors.New("aauth: Resource R3 release gating requires an eligibility policy and a result description")
 	}
-	return &r3ReleaseConfig{eligible: config.Eligible, describeResult: config.DescribeResult}, nil
+	return &r3ReleaseConfig{
+		eligible: config.Eligible, describeResult: config.DescribeResult, meterRelease: config.MeterRelease,
+	}, nil
 }
 
 // releaseEligible decides whether a held per-call invocation runs before
 // approval: the host policy must allow it, the route must not be metered by
-// the Budget profile, and the operation must not carry budget:true.
+// the Budget profile, and the operation must not carry budget:true unless the
+// Resource meters its release. metered reports a release whose cost is drawn
+// down when it is released.
 func (server *Server) releaseEligible(
 	request *http.Request,
 	invocation r3.Invocation,
-) (bool, error) {
+) (eligible bool, metered bool, err error) {
 	release := server.r3.perCall.release
 	if release == nil {
-		return false, nil
+		return false, false, nil
 	}
 	operation := invocation.Operation()
 	vocabulary, ok := server.r3.vocabularies[operation.Vocabulary()]
 	if !ok {
-		return false, fmt.Errorf("aauth: R3 vocabulary %q is not configured", operation.Vocabulary())
+		return false, false, fmt.Errorf("aauth: R3 vocabulary %q is not configured", operation.Vocabulary())
 	}
 	hints, present, err := vocabulary.definition.HintsFor(operation)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if present {
 		if budgeted, set := hints.Budget(); set && budgeted {
-			return false, nil
+			if !release.meterRelease {
+				return false, false, nil
+			}
+			metered = true
 		}
 	}
 	if server.budget != nil {
-		metered := true
+		meteredRoute := true
 		if server.budget.metered != nil {
 			policyRequest, finish, err := cloneScopePolicyRequest(request)
 			if err != nil {
-				return false, err
+				return false, false, err
 			}
-			metered = server.budget.metered(policyRequest)
+			meteredRoute = server.budget.metered(policyRequest)
 			if err := finish(); err != nil {
-				return false, err
+				return false, false, err
 			}
 		}
-		if metered {
-			return false, nil
+		if meteredRoute {
+			return false, false, nil
 		}
 	}
-	eligible, err := release.eligible(request.Context(), invocation)
+	eligible, err = release.eligible(request.Context(), invocation)
 	if err != nil {
-		return false, fmt.Errorf("aauth: R3 release eligibility: %w", err)
+		return false, false, fmt.Errorf("aauth: R3 release eligibility: %w", err)
 	}
-	return eligible, nil
+	return eligible, metered && eligible, nil
 }
 
 // runForRelease runs the held call under the class Auth token that was
-// presented on it and builds the release proposal from the result.
+// presented on it and builds the release proposal from the result. A metered
+// release returns its cost, which the proposal's Resource token offers.
 func (server *Server) runForRelease(
 	ctx context.Context,
 	snapshot heldRequestSnapshot,
@@ -129,35 +156,60 @@ func (server *Server) runForRelease(
 	proof signaturekey.VerifiedRequest,
 	scopes []string,
 	invocation r3.Invocation,
-) (r3.Proposal, HeldResponse, error) {
+	metered bool,
+) (r3.Proposal, HeldResponse, *budgets.Value, error) {
 	response := server.executeHeldInvocation(snapshot, compact, claims, proof.PublicKey(), proof.VerifiedAt(), scopes)
 	description, err := server.r3.perCall.release.describeResult(ctx, R3ReleaseRequest{
 		Invocation: invocation, Account: cloneAuthorizationAccount(claims.Account),
 		Response: cloneHeldResponse(response),
 	})
 	if err != nil {
-		return r3.Proposal{}, HeldResponse{}, fmt.Errorf("R3 release description: %w", err)
+		return r3.Proposal{}, HeldResponse{}, nil, fmt.Errorf("R3 release description: %w", err)
 	}
 	if description.Result == nil {
-		return r3.Proposal{}, HeldResponse{}, errors.New("R3 release description has no result")
+		return r3.Proposal{}, HeldResponse{}, nil, errors.New("R3 release description has no result")
 	}
 	if matches, err := description.Parameters.Matches(invocation.PresentedParameters()); err != nil || !matches {
 		if err == nil {
 			err = errors.New("release parameters do not match the concrete call")
 		}
-		return r3.Proposal{}, HeldResponse{}, fmt.Errorf("R3 release description: %w", err)
+		return r3.Proposal{}, HeldResponse{}, nil, fmt.Errorf("R3 release description: %w", err)
+	}
+	cost, err := server.releaseCost(description.Cost, metered)
+	if err != nil {
+		return r3.Proposal{}, HeldResponse{}, nil, fmt.Errorf("R3 release description: %w", err)
 	}
 	display, err := r3.NewReleaseProposalDisplay(description.Display, description.Detail)
 	if err != nil {
-		return r3.Proposal{}, HeldResponse{}, fmt.Errorf("R3 release display: %w", err)
+		return r3.Proposal{}, HeldResponse{}, nil, fmt.Errorf("R3 release display: %w", err)
 	}
 	proposal, err := r3.NewProposal(invocation.Operation(), description.Parameters, r3.ProposalOptions{
 		Account: cloneAuthorizationAccount(claims.Account), Result: description.Result, Display: &display,
 	})
 	if err != nil {
-		return r3.Proposal{}, HeldResponse{}, fmt.Errorf("construct R3 release proposal: %w", err)
+		return r3.Proposal{}, HeldResponse{}, nil, fmt.Errorf("construct R3 release proposal: %w", err)
 	}
-	return proposal, response, nil
+	return proposal, response, cost, nil
+}
+
+// releaseCost checks the cost a release description states: a positive value
+// in a declared denomination for a metered release, and none otherwise.
+func (server *Server) releaseCost(cost *budgets.Value, metered bool) (*budgets.Value, error) {
+	switch {
+	case !metered && cost != nil:
+		return nil, errors.New("an unmetered release states a cost")
+	case !metered:
+		return nil, nil
+	case cost == nil:
+		return nil, errors.New("a metered release states no cost")
+	case cost.Amount() <= 0:
+		return nil, errors.New("a metered release cost must be positive")
+	}
+	if err := budgets.ValidateDeclaredValue(server.budget.units, *cost); err != nil {
+		return nil, fmt.Errorf("metered release cost: %w", err)
+	}
+	offered := *cost
+	return &offered, nil
 }
 
 // heldRelease returns the retained response of a release-gated held call, or

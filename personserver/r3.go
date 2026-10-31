@@ -230,13 +230,26 @@ func (server *Server) verifyResourceTokenForAuthorization(
 	return claims, &verifiedR3{reference: reference}, nil, nil, nil
 }
 
+// verifyR3BudgetAccessResult verifies an Access Server's Auth token carrying
+// an R3 grant and a Budget grant: a class grant for a document, or the one
+// operation of a per-call proposal whose Resource token offered a budget.
 func (server *Server) verifyR3BudgetAccessResult(
 	ctx context.Context,
 	compact string,
 	verified *verifiedR3,
 ) (aauth.AuthTokenClaims, budgets.Value, error) {
+	if verified != nil && verified.kind == r3.ArtifactProposal {
+		claims, _, grant, err := r3.VerifyBudgetPerCallAuthToken(
+			ctx, server.r3.registry, compact, server.keyResolver, server.clock,
+			verified.reference, verified.exactArtifact,
+		)
+		if err != nil {
+			return aauth.AuthTokenClaims{}, budgets.Value{}, fmt.Errorf("personserver: Access Server R3 proposal result: %w", err)
+		}
+		return claims, grant, nil
+	}
 	if verified == nil || verified.kind != r3.ArtifactDocument {
-		return aauth.AuthTokenClaims{}, budgets.Value{}, errors.New("personserver: class R3 context is required for a Budget result")
+		return aauth.AuthTokenClaims{}, budgets.Value{}, errors.New("personserver: R3 context is required for a Budget result")
 	}
 	claims, reference, operations, grant, err := r3.VerifyBudgetAuthToken(
 		ctx, server.r3.registry, compact, server.keyResolver, server.clock,

@@ -11,6 +11,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -446,4 +447,142 @@ func (server *Server) writeHeldBudgetReplay(response http.ResponseWriter, meter 
 	if err := server.writeHeldResponse(response, replay); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 	}
+}
+
+// serveHeldMeteredRelease completes a release-gated per-call invocation whose
+// release this Resource meters (R3ReleaseConfig.MeterRelease). The proposal's
+// Resource token offered the release cost, and the poll that releases the
+// result is metered against the per-call Auth token presented on it, once
+// (Budgets Deferred Delivery, rules 2 and 4). A per-call token authorizes
+// only this release, so a token whose budget is below the cost is refused
+// with 403 and AAuth-Budget stating required before the held store claims the
+// invocation, and the result stays held for a token that fits. The cost is
+// charged as the result is released, and a repeated presentation of the
+// completing token is answered from the stored result without metering again.
+func (server *Server) serveHeldMeteredRelease(
+	response http.ResponseWriter,
+	request *http.Request,
+	pendingID string,
+	invocation HeldInvocation,
+	resourceReference r3.Reference,
+	offer budgets.Value,
+) {
+	if server.budget == nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", retainedR3State(errors.New("metered R3 release is not configured")))
+		return
+	}
+	prepared, compact, err := server.prepareJWTRequest(request, nil)
+	if err != nil {
+		writeCredentialProblem(response, "invalid_token", err)
+		return
+	}
+	proof, claims, reference, operations, grant, err := server.verifyPreparedR3BudgetAuthRequest(request, prepared, compact)
+	if err != nil {
+		writeCredentialProblem(response, "invalid_token", err)
+		return
+	}
+	if _, err := server.verifyHeldR3Completion(
+		request.Context(), proof, claims,
+		r3ProtectedAuthorization{reference: reference, operations: operations},
+		resourceReference, invocation,
+	); err != nil {
+		writeR3ValidationFailure(response, err)
+		return
+	}
+	released, releaseFirst, err := server.heldRelease(invocation)
+	if err == nil && !releaseFirst {
+		err = retainedR3State(errors.New("a held invocation with a Budget offer is not a release"))
+	}
+	if err != nil {
+		writeR3ValidationFailure(response, err)
+		return
+	}
+	if err := budgets.ValidateNarrowing(offer, grant); err != nil {
+		writeProblem(response, http.StatusForbidden, "access_denied", fmt.Errorf("per-call Auth-token Budget does not narrow the release offer: %w", err))
+		return
+	}
+	if err := server.observeAuthToken(request.Context(), compact, claims); err != nil {
+		switch {
+		case errors.Is(err, ErrAuthTokenRevoked):
+			response.Header().Set("AAuth-Requirement", aauth.FormatPersonTokenRequirement())
+			writeProblem(response, http.StatusUnauthorized, "invalid_token", signaturekey.NewError(signaturekey.ErrorRevokedJWT, err))
+		case errors.Is(err, ErrAuthTokenConflict):
+			writeProblem(response, http.StatusForbidden, "access_denied", err)
+		default:
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		}
+		return
+	}
+	meter := newBudgetResponseWriter(response, request.Context(), server.budget.store, claims, grant, server.clock.Now())
+	cost := offer.Amount()
+	if grant.Amount() < cost {
+		server.refuseMeteredRelease(response, meter, cost)
+		return
+	}
+	credential := HeldAuthToken{
+		SHA256:      sha256.Sum256([]byte(compact)),
+		PresentedAt: time.Unix(proof.VerifiedAt().Unix(), 0),
+		RetainUntil: time.Unix(claims.ExpiresAt, 0),
+	}
+	claim, err := server.heldInvocations.Claim(context.Background(), pendingID, credential)
+	if err != nil {
+		server.writeHeldStoreFailure(response, pendingID, err)
+		return
+	}
+	if replay, ok := claim.Replay(); ok {
+		server.writeHeldBudgetReplay(response, meter, replay)
+		return
+	}
+	execution, ok := claim.Execution()
+	if !ok || execution.InvocationID != pendingID || execution.Fence == "" {
+		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("held invocation store returned an invalid execution claim"))
+		return
+	}
+	// The call already ran; what is metered is the release of its result.
+	result := server.heldInternalFailure()
+	charge := meter.charge
+	charge.Cost, charge.ChargedAt = cost, server.clock.Now().UTC()
+	if charged, err := server.budget.store.Charge(context.Background(), charge); err == nil && charged.Cost == cost {
+		if feedback, err := budgets.NewSuccessFeedback(grant, cost, charged.Remaining); err == nil {
+			if formatted, err := budgets.FormatFeedback(feedback); err == nil {
+				result = released
+				result.Header = released.Header.Clone()
+				if result.Header == nil {
+					result.Header = http.Header{}
+				}
+				result.Header.Set("AAuth-Budget", formatted)
+			}
+		}
+	}
+	stored, err := server.heldInvocations.Retain(context.Background(), execution, result)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if err := server.writeHeldResponse(response, stored); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+	}
+}
+
+// refuseMeteredRelease answers a per-call token whose budget does not cover a
+// metered release: 403 with AAuth-Budget reporting the token's remaining and
+// the release cost as required. Nothing is metered.
+func (server *Server) refuseMeteredRelease(response http.ResponseWriter, meter *budgetResponseWriter, cost int64) {
+	observed, err := server.budget.store.Charge(meter.ctx, meter.charge)
+	if err != nil && !errors.Is(err, ErrBudgetExhausted) {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	feedback, err := budgets.NewRefusalFeedback(meter.charge.Grant, observed.Remaining, &cost)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	formatted, err := budgets.FormatFeedback(feedback)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	response.Header().Set("AAuth-Budget", formatted)
+	writeProblem(response, http.StatusForbidden, "access_denied", errors.New("per-call Auth-token Budget does not cover the release"))
 }
