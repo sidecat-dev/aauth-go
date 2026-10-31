@@ -2148,8 +2148,9 @@ window is `clock_skew`. The intermediary's own Agent token is not required to
 name the signing Person Server, since its `ps` names the intermediary's own.
 The issued auth token takes `sub` from the Resource token and expires no later
 than the upstream token, and a deferred wait for it ends with `expired` by
-then. The Access Server keeps no revocation records, so it never answers
-`revoked_upstream_token`.
+then. Once a person token's revocation reaches the Access Server, it answers
+`revoked_upstream_token`; see "A Person Server's revocation names a person
+token or an auth token" below.
 
 The four-party Person Server accepts only upstream person tokens it issued.
 It keeps no record of the auth tokens an Access Server issues, so step 4

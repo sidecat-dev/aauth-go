@@ -210,12 +210,12 @@ Delivery and remaining limits:
   with an optional `downstream` array. Invalid bodies are unavailable results;
   valid downstream reports are not exposed. A valid single `Retry-After` on
   `429 rate_limited` becomes `RateLimitedError`; retry stays caller-controlled.
-- Only AP Agent tokens and PS Auth tokens are supported. Resource-side Agent
-  revocation is an extension to the source's recipient table. Person,
-  Resource and AS tokens, parameter-token errors, deferred `202`, downstream
-  propagation, automatic fan-out, mission cascade and session revocation are
-  absent. Unseen Auth-token refusal has endpoint/store tests, not an end-to-end
-  pre-use revocation journey.
+- Agent, Person, Resource and Auth tokens are revoked. Since 2026-10-30,
+  person and resource tokens are revoked at every recipient, the Access Server
+  holds a cascade for `Prefer: wait`, and every revocation endpoint answers
+  `429 rate_limited` with `Retry-After`; see "Features added on 2026-10-30"
+  above. Resource-side Agent revocation is an extension to the source's
+  recipient table. Mission cascade and session revocation are absent.
 - Issuer-stated `exp` has no past-value or upper-bound check. Hosts own
   retention, including far-future values; entry/rate bounds are not supplied.
   The removed `ErrAuthTokenNotFound` and `personserver.ErrRevocationNotRecognized`
