@@ -374,8 +374,10 @@ replay enforcement remain explicit gaps in [CONFORMANCE.md](CONFORMANCE.md).
 ### Companion specifications and interoperability
 
 R3, Events, Bootstrap, Budgets, Supervision, and the interoperability profile
-are pinned as first-class inputs even where behavior is absent. Supervision is
-pinned and not executed. This repository has one executing two-key repository
+are pinned as first-class inputs even where behavior is absent. Supervision
+executes in the `supervision`, `supervisionserver` and `personserver`
+packages, with the limits [CONFORMANCE.md](CONFORMANCE.md) lists. This
+repository has one executing two-key repository
 profile; its application-selected endpoints and JSON remain implementation
 choices because the source is informational.
 [CONFORMANCE.md](CONFORMANCE.md) separates reusable Core primitives from an

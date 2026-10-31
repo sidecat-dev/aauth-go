@@ -2656,3 +2656,217 @@ record, so a record past its deadline reads as expired there.
 `personserver/authorization_interaction_test.go`, `resource/session_test.go`,
 and the storetests `RunDeferredAuthorization`, `RunDeferredToken` and
 `resource/storetest` (deferred session).
+
+## A supervised Agent's acts go to its supervisor and nowhere else
+
+**Source:** AAuth Supervision, `What This Document Defines`, `Supervision
+Decisions` and `Why the PS Never Decides`.
+
+A Person Server with a supervision server configured for an Agent makes no
+supervision decision of its own for that Agent. For an Agent that
+`SupervisionConfig.Route` routes, the Person Server calls none of `Authorize`,
+`Consent`, `CallChaining` policies, `Missions.Approve`, `DeferProposal`,
+`AcceptUpdate`, `ConfirmPersonAcceptedCompletion`, `Permission.Policy`, the
+interaction selectors or the four-party Budget `Ceiling`. `BindPerson` still
+runs after an allow, because it resolves the person's directed identity for a
+Resource, which is the Person Server's job; it must not apply consent. An
+allow without narrowing grants a Resource's Budget offer as offered: the
+supervisor saw it in the resource token. An R3 authorization and a
+Resource-initiated interaction are refused with `SupervisionCompositionError`
+(500 `server_error`) rather than decided locally, because this implementation
+cannot put them to a supervisor.
+
+**Evidence:** every test in `integration/supervision_test.go` fails if a
+Person Server policy decides for a routed Agent.
+
+## The person decides through the supervised request's own pending URL
+
+**Source:** AAuth Supervision, `Supervision Decisions` (`ask`), `Unavailable
+Supervisor`; Core, `Deferred Responses`.
+
+After an `ask`, and when the supervisor is unavailable, the Person Server
+answers the Agent `202` with `requirement=approval` at
+`/supervision/pending/{id}` and keeps the request for the person. It reaches
+the person through its own channel: `PendingSupervision` and
+`ReviewSupervision` give the host what to show, and `ResolveSupervision`
+records the authenticated person's answer, its reach and an optional reason.
+It does not hand the Agent an interaction URL, because the draft leaves the
+channel to the Person Server and no other Agent-facing requirement is needed.
+A supervisor that defers is polled by the host with `AdvanceSupervision`, as
+an Access Server continuation is; the Agent's polls only observe retained
+state.
+
+**Evidence:** `TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions`,
+`TestUnavailableSupervisorLeavesTheDecisionToThePerson`.
+
+## A supervised request allowed later is served again as it was made
+
+**Source:** AAuth Supervision, `Deferred Decisions`; Core, `Deferred
+Responses`.
+
+A decision that arrives after the Agent received `202` must still issue what
+the Agent asked for. The Person Server keeps the Agent's exact signed request
+and, once the request is allowed, serves it again through the same handler:
+the HTTP signature and the request's tokens are verified as at the instant
+they were first verified, and every lifetime, revocation, binding and mission
+check runs again at the time of issuance. Tokens are issued at that time. The
+response the Agent would have received is kept for its next poll. A deny ends
+the request with the polling error `denied`, except a permission request,
+whose answer is the denial with the supervisor's reason. A four-party request
+that already waited for its supervisor cannot then wait for the Access Server:
+the Agent polls one pending URL, so that combination ends with
+`DeferredCompositionError` reason `supervision`.
+
+**Evidence:** `TestUnavailableSupervisorLeavesTheDecisionToThePerson`,
+`TestSupervisorClarifiesThroughThePersonServer`.
+
+## An unreachable supervisor is not retried within the act
+
+**Source:** AAuth Supervision, `Delivery` and `Unavailable Supervisor`.
+
+`Delivery` says the Person Server retries a request until it receives a
+terminal response, and `Unavailable Supervisor` says a connection failure
+makes the supervisor unavailable for the decision, which then goes to the
+person. The Person Server does not retry a supervision request it could not
+deliver: it puts the act to the person at once and logs that the supervisor
+was not consulted. Events and mission reports are queued in order per
+`(sub, supervisor)` and delivered before the next request to that supervisor,
+after each host step, and whenever the host calls `DeliverSupervisionEvents`;
+delivery stops at the first one not accepted, so none is delivered out of
+order. An event the supervisor answers `invalid_request` is dropped, since the
+draft says retrying cannot help and keeping it would hold back every later
+one.
+
+**Evidence:** `TestUnavailableSupervisorLeavesTheDecisionToThePerson`.
+
+## A deferral that outlives the Agent's wait ends the request
+
+**Source:** AAuth Supervision, `Deferred Decisions`.
+
+The Person Server polls a deferring supervisor "until the agent's own pending
+request at the PS would expire", and then treats it as unavailable, which
+would put the act to the person when no time is left. The Person Server ends
+the request with `408 expired` at that point and reports `decision.resolved`
+with `answer` `abandoned` and `supervisor` `unavailable`. A request that was
+with the person when it expired is reported `abandoned` without
+`supervisor`. The pending request lasts `SupervisionConfig.PendingLifetime`,
+ten minutes by default, and never longer than the tokens it depends on.
+
+**Evidence:** `TestUnavailableSupervisorLeavesTheDecisionToThePerson`.
+
+## A signed decision is verified for coverage, signer and age since the act
+
+**Source:** AAuth Supervision, `Signed Decisions` and `Idempotence`.
+
+The Person Server requires the components the draft makes MUST: `@status`,
+`content-type` and `content-digest`. It asks for the request's
+`content-digest`, `@authority` and `@path` under `req`, which the supervision
+server in this repository always covers, but does not refuse a decision
+without them, since they are SHOULD. A repeated request is answered with the
+same signed response, whose `created` time is that of the first answer, so a
+signature is accepted as old as the act's `iat` plus the ordinary
+sixty-second window. `supervision.VerifyExchange` checks a logged exchange
+later with the same rule at the recorded receipt time.
+
+**Evidence:** `TestSignedSupervisorDecisionsAreAVerifiableRecord`,
+`supervisionserver/server_test.go`.
+
+## A four-party narrowing is enforced when the token is delivered
+
+**Source:** AAuth Supervision, `Auth Token`.
+
+An allow may narrow `scope` and bound `exp`, and "how a PS narrows a federated
+request is the AS's business". The PS-to-AS request in this implementation
+carries no scope, so the Person Server checks the Access Server's token on
+delivery and refuses one broader than the supervisor allowed with
+`403 access_denied`.
+
+**Evidence:** `TestFourPartySupervisorDecidesAndThePersonServerEnforcesIt`.
+
+## Supervisor endpoints are on the issuer's origin
+
+**Source:** AAuth Supervision, `Supervisor Metadata`.
+
+Endpoint URLs "MUST be on the `issuer`'s origin or one the SS controls". A
+Person Server cannot establish from the document which other origins an SS
+controls, so `supervision.Metadata.Validate` requires the issuer's own origin
+for every endpoint and for `jwks_uri`.
+
+**Evidence:** `TestMetadataKeepsEndpointsOnTheIssuerOrigin`.
+
+## Replay copies what the Person Server reported
+
+**Source:** AAuth Supervision, `Replay and Recovery`.
+
+Replay gives a new supervisor "the mission's log entries in order, each as the
+event or report it would have been". The Person Server keeps every event and
+report it queued for an Agent and replays from that history, keeping each
+one's `id` and rewriting only `sub`: `agent.bound`, then for each mission not
+reported terminated its `approved` report and events, and the issued events
+of tokens still outstanding. An accepted mission update has no event or report
+form, so it is not replayed. A mission approved before the Agent was
+supervised has no recorded report; after `unknown_mission` the Person Server
+builds its `approved` report from the mission store under a fresh `sdi`.
+`agent.bound` is sent the first time an Agent is routed, since this Person
+Server binds an Agent implicitly rather than at one approval.
+
+**Evidence:** `TestAgentsOfOnePersonGoToTheirOwnSupervisors`,
+`TestUnknownMissionIsReplayedBeforeTheSupervisorDecides`.
+
+## A mission's end is reported once, when the Person Server finds it
+
+**Source:** AAuth Supervision, `Terminated`; Core, `Mission Management`.
+
+Missions expire lazily in this implementation: the store materializes expiry
+when it loads one. The Person Server reports `terminated` to the Agent's last
+deciding supervisor when it finds a mission terminated for any reason, and
+after a completion it allowed. The report's `id` is `e-terminated-{s256}`, so a
+mission found ended more than once is reported once.
+
+**Evidence:** `TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions`.
+
+## Agent-asserted content reaches a supervisor in the members the Agent wrote
+
+**Source:** Core, `Consent Presentation`.
+
+Where the Supervisor is a supervision server, the Person Server must convey
+the distinction between resource-asserted and agent-asserted content. A
+supervision request carries agent-asserted content only in the members the
+Agent authored (`description`, `summary`, `justification`, `action`,
+`parameters`) and resource-asserted content only in the forwarded resource
+token, so the distinction is carried by member, and `SupervisionReview`
+keeps it for the host's own presentation.
+
+**Evidence:** `supervision.Request`, `TestRequestsRoundTripThroughTheirEndpoints`.
+
+## Supervised clarification allows five rounds and no replacement request
+
+**Source:** AAuth Supervision, `Clarification`; Core, `Clarification Limits`
+and `Agent Response to Clarification`.
+
+The Person Server enforces one limit of five rounds per supervised request,
+counting the supervisor's questions and the person's own, as the draft
+recommends. Beyond it the supervisor is treated as unavailable and the person
+decides. Core carries no round identifier in an answer (AAG-F095), so a
+delayed repeat of an earlier answer is taken as the answer to the question
+open when it arrives. `updated_request` is refused with `400`: the retained
+request is what is completed, so a different request is made afresh.
+
+**Evidence:** `TestSupervisorClarifiesThroughThePersonServer`.
+
+## A supervision server repeats each terminal answer byte for byte
+
+**Source:** AAuth Supervision, `Idempotence`; Core, `Deferred Response State
+Machine`.
+
+A repeated request under an answered `sdi` gets "the same signed response",
+and Core makes a pending URL gone after its terminal response. The
+supervision server keeps every terminal response for an `sdi` and repeats it
+exactly for the same request: the original POST, or a poll of its pending URL.
+If the first answer went out on a poll and the POST is repeated later, it
+signs that decision once as a response to the POST and repeats that. Polls of
+a decided pending URL keep returning the decision rather than `410`, because
+the Person Server may not have received the first. A repeat under an `sdi`
+whose request differs is `invalid_request`.
+
+**Evidence:** `supervisionserver/server_test.go`.

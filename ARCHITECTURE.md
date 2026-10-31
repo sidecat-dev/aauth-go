@@ -119,8 +119,23 @@ their focused deferred state; their mission-aware counterparts extend the
 existing mission boundary for immediate retention and deferred transitions.
 Neither is a generic interaction engine or the complete mission log.
 
-The current model includes focused `r3`, `events`, and `budgets` protocol
-packages. Sections below distinguish their implemented profiles from target
+The current Supervision slice adds the `supervision` package, which owns the
+supervision server's metadata, the signed request envelope and bodies,
+decisions, events, mission reports, errors, the signature profile of a signed
+decision, and the Person Server's client for a supervision server. The
+`supervisionserver` package is the supervision server role: it verifies
+Person Server requests, keeps connections, decisions, mission blobs and
+delivered events in its own store, and hands each act to host policy.
+`personserver` owns routing, the decision points, the Agent's pending
+supervised request, the log, the ordered event queue and replay, all behind
+`SupervisionStore`. For a routed Agent each decision point consults the
+supervisor in place of host policy; a decision that arrives after the Agent
+was answered `202` is applied by serving the Agent's retained signed request
+again, verified as it was made, so issuance stays in one code path. Neither
+role imports the other.
+
+The current model includes focused `r3`, `events`, `budgets` and
+`supervision` protocol packages. Sections below distinguish their implemented profiles from target
 ownership. Present-tense support must never be inferred from the target import
 map alone.
 
@@ -145,12 +160,14 @@ flowchart TD
     r3[r3]
     budgets[budgets]
     events[events]
+    supervision[supervision]
 
     ap[agentprovider]
     agent[agent]
     ps[personserver]
     resource[resource]
     as[accessserver]
+    ss[supervisionserver]
     examples[example and integration]
 
     sk --> jose
@@ -160,6 +177,8 @@ flowchart TD
     budgets --> core
     events --> core
     events --> sk
+    supervision --> core
+    supervision --> sk
 
     ap --> core
     ap --> events
@@ -172,6 +191,10 @@ flowchart TD
     ps --> sk
     ps --> r3
     ps --> budgets
+    ps --> supervision
+    ss --> core
+    ss --> sk
+    ss --> supervision
     resource --> core
     resource --> sk
     resource --> r3
@@ -187,6 +210,7 @@ flowchart TD
     examples --> ps
     examples --> resource
     examples --> as
+    examples --> ss
 
 ```
 

@@ -11,6 +11,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 // ErrInteractionUserUnreachable tells the Interaction Endpoint that the host
@@ -81,14 +82,55 @@ func (server *Server) handleInteraction(response http.ResponseWriter, request *h
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("interaction request must be one JSON object"))
 		return
 	}
+	recorder := &statusRecorder{ResponseWriter: response}
 	switch envelope.Type {
 	case "question":
-		server.handleVerifiedInteractionQuestion(response, request, agent, exactJSON)
+		server.handleVerifiedInteractionQuestion(recorder, request, agent, exactJSON)
 	case string(aauth.InteractionRelayInteraction), string(aauth.InteractionRelayPayment):
-		server.handleVerifiedInteractionRelay(response, request, agent, exactJSON)
+		server.handleVerifiedInteractionRelay(recorder, request, agent, exactJSON)
 	default:
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("interaction type must be interaction, payment, or question"))
+		return
 	}
+	// Once the Person Server has taken the request to the person, a supervised
+	// Agent's supervisor is told: a relay is not a decision. The code is not
+	// forwarded.
+	if recorder.status == http.StatusOK || recorder.status == http.StatusAccepted {
+		var relayed struct {
+			URL         string `json:"url"`
+			MissionS256 string `json:"mission_s256"`
+		}
+		_ = json.Unmarshal(exactJSON, &relayed)
+		_ = server.notifyAgent(request.Context(), agent, supervision.Event{
+			Name: supervision.EventInteractionRequested, Type: envelope.Type, URL: relayed.URL,
+			MissionS256: relayed.MissionS256,
+		})
+	}
+}
+
+// statusRecorder notes the status a handler wrote, and forwards everything,
+// including problem diagnostics, to the response it wraps.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (recorder *statusRecorder) WriteHeader(status int) {
+	if recorder.status == 0 {
+		recorder.status = status
+	}
+	recorder.ResponseWriter.WriteHeader(status)
+}
+
+func (recorder *statusRecorder) Write(data []byte) (int, error) {
+	if recorder.status == 0 {
+		recorder.status = http.StatusOK
+	}
+	return recorder.ResponseWriter.Write(data)
+}
+
+func (recorder *statusRecorder) ReportAAuthProblem(status int, code string, cause error) {
+	httpapi.ReportProblem(recorder.ResponseWriter, status, code, cause)
 }
 
 func (server *Server) handleVerifiedInteractionQuestion(

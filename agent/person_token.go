@@ -17,6 +17,7 @@ const (
 	personTokenResultToken personTokenResultKind = iota + 1
 	personTokenResultPending
 	personTokenResultChained
+	personTokenResultApproval
 )
 
 // PersonTokenResult is either one verified person token, one verified pending
@@ -52,6 +53,18 @@ func (result PersonTokenResult) Pending() (PendingPersonToken, bool) {
 // person token, checked as an immediate one is.
 func (result PersonTokenResult) ChainedPending() (Pending[string], bool) {
 	if result.kind != personTokenResultChained {
+		return Pending[string]{}, false
+	}
+	return result.chained, true
+}
+
+// Approval returns the pending request when the Person Server deferred the
+// request without asking the Agent to send the person anywhere: it answered
+// requirement=approval, as while a supervisor or the person decides, or
+// requirement=clarification with a question for the Agent. Poll it; its
+// result is the verified person token, checked as an immediate one is.
+func (result PersonTokenResult) Approval() (Pending[string], bool) {
+	if result.kind != personTokenResultApproval {
 		return Pending[string]{}, false
 	}
 	return result.chained, true
@@ -116,11 +129,18 @@ func (client *Client) personTokenResponse(
 	credential personServerCredential,
 ) (PersonTokenResult, error) {
 	if response.StatusCode == http.StatusAccepted && input.UpstreamToken != "" {
-		pending, err := client.chainedPersonTokenPending(ctx, response, input, credential)
+		pending, err := client.genericPersonTokenPending(ctx, response, input, credential, credential.upstreamMission, "call-chaining person token")
 		if err != nil {
 			return PersonTokenResult{}, err
 		}
 		return PersonTokenResult{kind: personTokenResultChained, chained: pending}, nil
+	}
+	if response.StatusCode == http.StatusAccepted && !requiresInteraction(response) {
+		pending, err := client.genericPersonTokenPending(ctx, response, input, credential, input.MissionS256, "person token")
+		if err != nil {
+			return PersonTokenResult{}, err
+		}
+		return PersonTokenResult{kind: personTokenResultApproval, chained: pending}, nil
 	}
 	if response.StatusCode == http.StatusAccepted {
 		pending, err := client.pendingPersonToken(response, input, PendingPersonToken{}, credential)
@@ -146,23 +166,36 @@ func (client *Client) personTokenResponse(
 	return PersonTokenResult{kind: personTokenResultToken, token: token}, nil
 }
 
-// chainedPersonTokenPending reads a Person Server's 202 to a call-chaining
-// person-token request into a Pending at that Person Server's pending URL. Its
-// terminal person token must carry the upstream token's mission and must not
-// outlive the upstream token, as an immediate one must not.
-func (client *Client) chainedPersonTokenPending(
+// requiresInteraction reports whether a 202 asks the Agent to send the person
+// to an interaction URL.
+func requiresInteraction(response *http.Response) bool {
+	values := response.Header.Values("AAuth-Requirement")
+	if len(values) == 0 {
+		return true
+	}
+	requirement, err := aauth.ParseRequirement(values)
+	return err != nil || requirement == aauth.RequirementInteraction
+}
+
+// genericPersonTokenPending reads a Person Server's 202 into a Pending at its
+// pending URL: for a call-chaining request, or for one deferred without an
+// interaction. Its terminal person token must carry missionS256 and must not
+// outlive the request's credentials, as an immediate one must not.
+func (client *Client) genericPersonTokenPending(
 	ctx context.Context,
 	response *http.Response,
 	input PersonTokenRequest,
 	credential personServerCredential,
+	missionS256 string,
+	name string,
 ) (Pending[string], error) {
-	flow := newPendingFlow(client, "call-chaining person token", client.agentToken,
+	flow := newPendingFlow(client, name, client.agentToken,
 		func(ctx context.Context, response *http.Response) (string, error) {
 			if response.StatusCode != http.StatusOK {
 				return "", responseFailure(response)
 			}
 			return client.verifiedPersonToken(
-				ctx, response, input.PersonServer, input.Resource, credential.upstreamMission, credential,
+				ctx, response, input.PersonServer, input.Resource, missionS256, credential,
 			)
 		})
 	result, err := flow.begin(ctx, response)

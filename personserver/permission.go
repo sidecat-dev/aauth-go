@@ -15,6 +15,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/internal/interaction"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 const (
@@ -392,8 +393,29 @@ func (server *Server) handlePermission(response http.ResponseWriter, request *ht
 		Parameters: append(json.RawMessage(nil), parameters...),
 		Mission:    missionContext,
 	}
-	result, err := server.permissionPolicy(request.Context(), policyRequest)
-	if err != nil {
+	// A supervised Agent's permission is decided by its supervisor, and the
+	// decision is retained as an immediate one is.
+	act := supervisedAct{
+		request: supervision.Request{
+			Kind: supervision.KindPermission, Action: input.Action, Description: input.Description,
+		},
+		agent: agent, proof: proof,
+	}
+	if trimmed := bytes.TrimSpace(parameters); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		act.request.Parameters = append(json.RawMessage(nil), parameters...)
+	}
+	if missionRecord != nil {
+		act.request.MissionS256 = missionRecord.S256
+		act.expiresAt = []time.Time{missionRecord.ExpiresAt}
+	}
+	verdict, handled := server.supervise(response, request, act)
+	if handled {
+		return
+	}
+	var result PermissionPolicyResult
+	if verdict != nil {
+		result = supervisedPermission(verdict)
+	} else if result, err = server.permissionPolicy(request.Context(), policyRequest); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}

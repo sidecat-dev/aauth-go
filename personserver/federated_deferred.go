@@ -32,7 +32,8 @@ var ErrFederatedAuthorizationConflict = errors.New("personserver: federated auth
 type DeferredCompositionError struct{ reason string }
 
 // Reason returns not_configured, r3, budget, claims, clarification,
-// interaction or requirement (an unsupported extension). A mixed-capability
+// interaction, requirement (an unsupported extension) or supervision (a
+// supervised request completed after its decision was deferred). A mixed-capability
 // PS may still defer a Core request, missionless or mission-bound, top-level,
 // parent-mediated or chained.
 func (e *DeferredCompositionError) Reason() string {
@@ -53,6 +54,8 @@ func (e *DeferredCompositionError) Error() string {
 		return "personserver: deferred AS authorization does not support " + e.Reason() + " requirements"
 	case "requirement":
 		return "personserver: deferred AS authorization supports only approval and payment requirements"
+	case "supervision":
+		return "personserver: a request that waited for its supervisor cannot also wait for the Access Server"
 	default:
 		return "personserver: unsupported deferred AS authorization composition"
 	}
