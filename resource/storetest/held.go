@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/resource"
 )
@@ -246,6 +247,11 @@ func heldInvocation(t *testing.T, suffix string, now time.Time) resource.HeldInv
 		R3PerCall: &resource.HeldR3PerCall{
 			Reference: reference, ClassReference: classReference,
 			ExactProposal: []byte(`{"operation":"records.read"}`),
+			Release: &resource.HeldResponse{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"records":214}`),
+			},
 		},
 	}
 }
@@ -268,9 +274,17 @@ func cloneHeldInvocation(invocation resource.HeldInvocation) resource.HeldInvoca
 	invocation.Header = invocation.Header.Clone()
 	invocation.Body = append([]byte(nil), invocation.Body...)
 	invocation.RequiredScopes = append([]string(nil), invocation.RequiredScopes...)
+	if invocation.Budget != nil {
+		budget := *invocation.Budget
+		invocation.Budget = &budget
+	}
 	if invocation.R3PerCall != nil {
 		cloned := *invocation.R3PerCall
 		cloned.ExactProposal = append([]byte(nil), invocation.R3PerCall.ExactProposal...)
+		if cloned.Release != nil {
+			release := cloneHeldResponse(*cloned.Release)
+			cloned.Release = &release
+		}
 		invocation.R3PerCall = &cloned
 	}
 	return invocation
@@ -281,6 +295,8 @@ func mutateHeldInvocation(invocation *resource.HeldInvocation) {
 	invocation.Body[0] ^= 0xff
 	invocation.RequiredScopes[0] = "mutated.scope"
 	invocation.R3PerCall.ExactProposal[0] ^= 0xff
+	invocation.R3PerCall.Release.Body[0] ^= 0xff
+	invocation.R3PerCall.Release.Header.Set("X-Trace", "mutated")
 }
 
 func cloneHeldResponse(response resource.HeldResponse) resource.HeldResponse {
@@ -295,4 +311,75 @@ func mutateHeldResponse(response *resource.HeldResponse) {
 	response.Header.Set("X-Result", "mutated")
 	response.Body[0] ^= 0xff
 	response.Trailer.Set("Digest", "mutated")
+}
+
+// HeldBudgetContract constructs a fresh empty store for held Budget
+// refusals.
+type HeldBudgetContract struct {
+	New func(testing.TB) resource.HeldBudgetStore
+}
+
+// RunHeldBudget checks Rechallenge: it replaces only the Resource token and
+// completion horizon of a pending invocation still under the expected
+// token, keeps the Budget marker, and refuses an unknown, executing,
+// completed, or already rechallenged invocation with the documented errors.
+func RunHeldBudget(t *testing.T, contract HeldBudgetContract) {
+	t.Helper()
+	if contract.New == nil {
+		t.Fatal("storetest: HeldBudgetContract.New is required")
+	}
+	ctx := context.Background()
+	now := heldTestTime()
+	store := contract.New(t)
+	invocation := heldInvocation(t, "budget", now)
+	invocation.R3PerCall = nil
+	invocation.Budget = &resource.HeldBudget{RefusedToken: aauth.TokenReference{Issuer: "https://as.example", JTI: "refused-token"}}
+	pristine := cloneHeldInvocation(invocation)
+	id, err := store.Create(ctx, invocation)
+	if err != nil {
+		t.Fatalf("Create = %v", err)
+	}
+	if err := store.Rechallenge(ctx, "unknown-held-invocation", resource.HeldRechallenge{Previous: invocation.ResourceToken}); !errors.Is(err, resource.ErrHeldInvocationNotFound) {
+		t.Fatalf("Rechallenge unknown = %v, want ErrHeldInvocationNotFound", err)
+	}
+	next := resource.HeldRechallenge{
+		Previous: invocation.ResourceToken, ResourceToken: "resource-token-rechallenged",
+		ResourceTokenIssuedAt: now.Add(time.Minute), ExpiresAt: now.Add(6 * time.Minute),
+		CompletionUntil: now.Add(66 * time.Minute),
+	}
+	if err := store.Rechallenge(ctx, id, next); err != nil {
+		t.Fatalf("Rechallenge = %v", err)
+	}
+	loaded, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load = %v", err)
+	}
+	want := cloneHeldInvocation(pristine)
+	want.ResourceToken, want.ResourceTokenIssuedAt = next.ResourceToken, next.ResourceTokenIssuedAt
+	want.ExpiresAt, want.CompletionUntil = next.ExpiresAt, next.CompletionUntil
+	if !reflect.DeepEqual(loaded, want) {
+		t.Fatalf("rechallenged invocation = %#v, want only the token and horizon replaced", loaded)
+	}
+	if err := store.Rechallenge(ctx, id, next); !errors.Is(err, resource.ErrHeldInvocationConflict) {
+		t.Fatalf("Rechallenge under a replaced token = %v, want ErrHeldInvocationConflict", err)
+	}
+	claim, err := store.Claim(ctx, id, heldAuthToken(1, now))
+	if err != nil {
+		t.Fatalf("Claim = %v", err)
+	}
+	execution, ok := claim.Execution()
+	if !ok {
+		t.Fatal("Claim did not grant execution")
+	}
+	again := next
+	again.Previous = next.ResourceToken
+	if err := store.Rechallenge(ctx, id, again); !errors.Is(err, resource.ErrHeldInvocationConflict) {
+		t.Fatalf("Rechallenge while executing = %v, want ErrHeldInvocationConflict", err)
+	}
+	if _, err := store.Retain(ctx, execution, heldResponse()); err != nil {
+		t.Fatalf("Retain = %v", err)
+	}
+	if err := store.Rechallenge(ctx, id, again); !errors.Is(err, resource.ErrHeldAuthTokenMismatch) {
+		t.Fatalf("Rechallenge after completion = %v, want ErrHeldAuthTokenMismatch", err)
+	}
 }

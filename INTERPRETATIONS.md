@@ -428,8 +428,9 @@ and
 and `Token Endpoint Error Codes`.
 
 The first evidenced call-chain path is immediate, missionless, accountless,
-and PS-authorized. Missions, accounts, sub-agents, and Access Server federation
-are not partially processed. Once their otherwise valid context is recognized,
+and PS-authorized; the four-party path is described in "An Access Server
+verifies the upstream token of a chained request itself". Missions, accounts,
+and sub-agents are not partially processed. Once their otherwise valid context is recognized,
 the Person Server returns `500 server_error` before chain policy,
 pending-state creation, or issuance. Ordinary interaction selectors are never
 called for a chained request; `CallChaining` is an explicitly immediate policy
@@ -2077,3 +2078,378 @@ gets `invalid_signature`, never `cache_miss`. Caching requires `iss`, `jti`,
 `exp` and `cnf.jwk`.
 
 **Evidence:** `signaturekey/cache_external_test.go`.
+
+## An `aauth-resource` link is read leniently and admitted strictly
+
+**Source:** Protocol `70d6737`, Resource Metadata Link Relation (lines
+2136-2158), Link Relation Security (2858-2862), and Link Relation Type
+Registration (3012-3019).
+
+The draft fixes the admissible target, a server identifier followed by
+`/.well-known/aauth-resource.json`, and says the HTML relation is carried in
+`head`. It does not say how an Agent reads the relation. `ResourceLinksFromHTML`
+reads every `link` element, in `head` or not, decodes attribute entities as
+HTML does, and does not resolve a relative `href` against the page, so only an
+absolute target can be admitted. A relation token is matched case-insensitively
+among the space-separated values of `rel`. An `anchor` parameter is ignored. A
+Link field longer than 8 KiB in total, or a page larger than 1 MiB, is not
+scanned. Duplicate targets are reported once. Whatever is read, only the one
+target form is admitted, and `ResolveResourceLink` checks that form again
+before it fetches anything. A document reached through a link is verified like
+any metadata document, with `issuer` compared byte for byte against the target
+minus the suffix. The library never follows a link on its own: an Agent passes
+the links it found, with where it found them, to `ResolveResourceLink`.
+
+**Evidence:** `resource_link_test.go` and
+`integration/resource_link_test.go`.
+
+## A delayed verifier's bound and replay span come from its own options
+
+**Source:** Protocol `70d6737`, Freshness and Replay (lines 2268-2274) and
+Verification (Server), step 3 (lines 2240-2254).
+
+The draft lets a verifier that first sees a signed artifact after a delay
+anchor on `created`, verify the presented token at `created`, and choose how
+much delay it accepts, and it requires such a verifier's replay cache to span
+that delay. It does not say how the delay relates to the signature window or to
+`expires`. `VerifyOptions.MaxDelay` is the accepted delay. A request may then be
+up to the larger of `MaxDelay` and the window old; `created` further ahead than
+the window is still `clock_skew`; and `expires` is judged at the time of
+verification, because the draft's rule to reject a past `expires` has no
+exception. `ValidAt` is `created` for a delayed verifier, and `CheckIssuedAt`
+judges a token's `iat` against it. `ReplayCache` keys entries by the tuple the
+draft names, `(signing-key thumbprint, created, @method, @authority, @path)`,
+and holds each until `created` plus the request's own `MaxAge`, so its span
+follows the verifier's options rather than a separate setting. A replay is
+`invalid_signature`, the code the Signature-Key draft gives a replayed
+`created`. A full cache refuses with `ErrReplayCacheFull` rather than evict an
+entry whose span has not ended.
+
+**Evidence:** `signaturekey/freshness_external_test.go` and
+`freshness_external_test.go`.
+
+## An Access Server verifies the upstream token of a chained request itself
+
+**Source:** Protocol `70d6737`, PS-to-AS Token Request (lines 1577-1608),
+Call Chaining (1846-1858), Intermediary Agent Identity (1860-1866), Directed
+Identifiers Across a Chain (1868-1880), and Upstream Token Verification
+(1826-1836).
+
+A four-party Person Server with `FederatedCallChainingConfig` passes the
+Agent's exact `upstream_token` to the Access Server, with the intermediary's
+Agent token as `agent_token`. The Access Server applies steps 1 to 3 of
+Upstream Token Verification before policy: `typ` selects the person-token or
+auth-token verifier and any other is `invalid_upstream_token`; `aud` must equal
+the `iss` of the intermediary's Agent token; `cnf` is not compared; a person
+token's `iss`, or an auth token's `ps`, must be the Person Server that signed
+the request, and an auth token's `iss` is not checked beyond its signature. An
+expired token is `expired_upstream_token`, and an `iat` beyond the signature
+window is `clock_skew`. The intermediary's own Agent token is not required to
+name the signing Person Server, since its `ps` names the intermediary's own.
+The issued auth token takes `sub` from the Resource token and expires no later
+than the upstream token, and a deferred wait for it ends with `expired` by
+then. Once a person token's revocation reaches the Access Server, it answers
+`revoked_upstream_token`; see "A Person Server's revocation names a person
+token or an auth token" below.
+
+The four-party Person Server accepts only upstream person tokens it issued.
+It keeps no record of the auth tokens an Access Server issues, so step 4
+cannot identify the calling Agent behind one, and such a token is
+`invalid_upstream_token`. It refuses chained R3 and Budget
+requests, and answers a `202` or `402` from the Access Server for a chained
+request with `DeferredCompositionError` reason `call_chaining`. A three-party
+Person Server refuses a Resource token naming an Access Server with
+`invalid_resource_token`, chained or not.
+
+**Evidence:** `accessserver/upstream_external_test.go` and
+`integration/call_chaining_four_party_test.go`.
+
+## Further Signature-Key schemes are for a Resource's clients outside AAuth
+
+**Source:** Protocol `70d6737`, Keying Material (lines 2177-2196) and
+Signature-Key Scheme Rejection (2256-2266); Signature-Key `69f5ba2`,
+Accept-Signature-Scheme and Cached Assertion (cached).
+
+Keying Material requires `jwt` of Agents and `jwks_uri` of servers, and step 4
+of Verification refuses any scheme the profile does not use. The one place a
+draft expects more is a Resource that also serves clients outside AAuth: it
+may accept further schemes and must then list all of them. No AAuth role
+accepts `jwks`, `x509` or `cached` for an AAuth request. A Resource with
+`FurtherSchemes` prepares its protected routes with `jwt` plus the listed
+schemes and with Ed25519 plus the listed algorithms, so every
+`unsupported_scheme` and `unsupported_algorithm` there names the full lists,
+and it states them on the unsigned challenge too. A request under a further
+scheme goes to a separate handler with a `SignerPrincipal`, so no AAuth policy
+or principal sees a signer that is not an Agent. `cached` resolves only
+`jkt-jwt` assertions, since the Resource does not cache AAuth tokens, and a
+resolved assertion of another scheme is `invalid_jwt`. The authorization,
+revocation, R3 and usage endpoints keep their AAuth schemes, because they
+serve only AAuth parties. A Resource-managed session Resource has no further
+schemes.
+
+**Evidence:** `resource/further_schemes_test.go`.
+
+## A signed usage response covers what Budgets lists
+
+**Source:** Budgets `70d6737`, The Signed Response (lines 1039–1061);
+Signature-Key `69f5ba2`, Signature-Key Integrity.
+
+Budgets lists the components a signed usage response covers: `@status`,
+`content-type`, `content-digest`, and the request's `@authority` and `@path`
+under `req`. Signature-Key requires every request signature to cover
+`signature-key`, and says nothing about responses. The Resource covers exactly
+the five listed components, in that order, under the label `sig`, so any
+verifier that rebuilds the base from the Budgets list accepts it. Leaving
+`signature-key` uncovered does not let a third party re-attribute the
+response, because `VerifyUsageResponse` does not take the signer from the
+header: it requires the jwks_uri `id` to be the Resource the caller asked and
+`dwk` to be `aauth-resource.json`, and it applies the request signature window
+to `created`. A response with a signature that does not verify is refused even
+when the caller does not require one; an unsigned response is reported as
+unsigned. See AAG-F132.
+
+**Evidence:** `resource/usage_signature_test.go` and
+`signaturekey/response_external_test.go`.
+
+## Internal R3 definitions compose by merging their displays
+
+**Source:** R3 `70d6737`, Operations Spanning Multiple Definitions (lines
+431–442).
+
+The draft leaves the organization of a Resource's definitions to the Resource
+and lets it merge their displays or write one for the combination. A
+definition is involved when the requested operations are not disjoint from its
+operations under the vocabulary's own semantics. `r3.MergeDisplays` joins
+summaries with "; ", implications and irreversible text with a blank line, and
+takes the union of the distinct `data_accessed` values, so no stated
+consequence is lost. The composed document's operations are always exactly the
+requested ones, never the whole of each involved definition. The internal
+definitions must together cover the vocabulary's authoritative operations, so
+no requested operation falls outside every definition. Each document stays
+bound to its Resource token's lineage in its URI, so an identical combination
+yields identical bytes and the same `r3_s256` but is not served at a shared
+URI.
+
+**Evidence:** `resource/r3_definitions_test.go` and `r3/release_test.go`.
+
+## Release gating runs only held calls and writes the release statement
+
+**Source:** R3 `70d6737`, Proposal Document (`result`) and Approving Release
+Rather Than Execution (lines 686–723).
+
+The Resource runs a call before approval only under `202` delivery, where the
+agent never re-sends it: under `401` the agent's retry would ask for a result
+computed from a call it no longer controls. `NewReleaseProposalDisplay` opens
+the detail with a fixed `## Action` section stating that the operation has run
+and that what is approved is release of its result, and `NewProposal` refuses a
+`result` without that display; a received proposal is not judged by this
+wording. A route the Budget profile meters, and an operation annotated
+`budget: true`, never run first. Whether running is audited or billed, or calls
+another party, only the host knows, so `Eligible` decides. The library meters
+nothing for a release-gated call, so a declined release leaves no Budget
+posting and the held record keeps the unreleased response until its pending
+lifetime ends: what the library meters and what its records show cannot
+diverge. A host that meters release itself owns that agreement. A re-requested
+call runs again rather than inheriting the earlier result; by the eligibility
+rule that has no outside effect.
+
+**Evidence:** `resource/r3_release_test.go` and `r3/release_test.go`.
+
+## A held Budget refusal stays at one pending URL
+
+**Source:** Budgets `70d6737`, Deferred Delivery (lines 769–802).
+
+Rule 3 says the Resource "continues to hold the invocation" after a completing
+token that does not fit, without saying whether the pending URL changes. The
+Resource keeps the same `Location` and swaps the held Resource token with
+`HeldBudgetStore.Rechallenge`, a compare-and-swap on the previous token, so one
+invocation is never pending under two tokens. The reservation for the
+completing token is taken before the store claims the invocation and released
+on a replay, a conflict or a mismatch, so a replay meters nothing and a token
+that does not fit leaves the invocation pending. A hold needs a reserving
+Budget store for that order. With a Budget profile the Resource holds nothing
+else, because a held Core or per-call completion carries no meter. A refused
+token that carries R3 claims is answered `401`, as before.
+
+**Evidence:** `resource/held_budget_test.go`.
+
+## A revocation hold that ends before a downstream answers is pending
+
+**Source:** Protocol `70d6737`, Revocation Response.
+
+The draft answers `202` when the cascade takes longer than the recipient will
+hold the connection, and makes a downstream that did not respond or timed out
+`revocation_unavailable`. It does not say which applies when the recipient's
+own hold ends first. Here the hold is the caller's `Prefer: wait`, capped at
+20 seconds by default. A downstream still unanswered when it ends stays
+pending: the recipient answers `202` and attempts it again on the next poll,
+which is safe because a repeated revocation records nothing new. A downstream
+whose own request fails or times out under the HTTP client is
+`revocation_unavailable`. A downstream that answers `429 rate_limited` has not
+reached either terminal outcome the draft names, so it stays pending and is not
+attempted again before its `Retry-After`, nor is anything else sent to that
+recipient in the same step; a pending downstream URL is likewise not polled
+before its `Retry-After`. The cascade's progress is process memory, bounded,
+while the revocation itself is in the host store before anyone is called; a
+pending URL the recipient no longer holds is `404`, and the caller revokes
+again. After the terminal response a poll is `410` with `invalid_code`, the code
+this library uses for every consumed pending URL. Repeated revocations
+re-attempt both `revocation_unavailable` and `revocation_unsupported`
+recipients, since neither succeeded.
+
+**Evidence:** `TestRevocationCascadeIsDeferredAndPolledByItsCaller` and
+`TestFourPartyRevocationCascadesFromPersonServerThroughAccessServer` in
+`integration/revocation_cascade_test.go`.
+
+## A Person Server's revocation names a person token or an auth token
+
+**Source:** Protocol `70d6737`, Revocation Request, Who Revokes What and
+Revocation Cascade.
+
+A revocation carries only `jti` and `exp`, and a Person Server issues both
+person tokens and, in three-party access, auth tokens under one `iss`. A
+Resource cannot tell which one a revocation names, so it records the pair as a
+revoked person token and, in three-party access, as a revoked auth token. An
+Access Server accepts person-token revocations only from Person Servers its
+`TrustPersonServer` policy admits and answers others `unsupported_iss`; a
+four-party Resource accepts auth-token revocations only from its configured
+Access Server. A Person Server counts an Access Server it passed a person token
+to as `upstream_token` among those it presented the token to, so a revocation
+reaches it and it can answer `revoked_upstream_token`
+([AAG-F128](SPEC-FEEDBACK.md#aag-f140--no-revocation-reaches-an-access-server-that-received-a-person-token-as-upstream_token)). When a person token is revoked the Access Server revokes every
+unexpired auth token issued against it and, on a step-up, against those auth
+tokens in turn, and records each as revoked itself so a later step-up presenting
+one is refused.
+
+**Evidence:** `TestFourPartyRevocationCascadesFromPersonServerThroughAccessServer`.
+
+## A revoked request-parameter token is reported revoked even when expired
+
+**Source:** Protocol `70d6737`, Presenting a Revoked Token and Verification
+(Server).
+
+Presenting a Revoked Token requires a recipient to say a revoked token was
+revoked, not that it is expired, while step 5 of Verification gives
+`revoked_jwt` only to a JWT that is unexpired. This library follows step 5 for a
+token in `Signature-Key`, which is `expired_jwt` once expired. For a
+`resource_token` or `presented_token`, whose signature was verified before its
+lifetime, a revocation still on record is reported as
+`revoked_resource_token` or `revoked_presented_token`. A pending request is
+answered `403 revoked` instead, with a `detail` naming the token.
+
+**Evidence:** `TestWithdrawnResourceTokenEndsPSHostedConsent` in
+`personserver/resource_token_revocation_test.go`.
+
+## The Agent keeps refused resource tokens until they expire
+
+**Source:** Protocol `70d6737`, Token Endpoint Error Codes.
+
+`revoked_resource_token` is terminal for that token, and the Agent must not
+resubmit it. `agent.Client` does not otherwise retain state, but it remembers
+the digest of each resource token a Person Server refused this way, up to 1024
+tokens, until the token's `exp`, and refuses to send it again with a
+`*RevokedResourceTokenError` whose `Problem` is nil. After `exp` the Client's
+own verification refuses the token. The memory is per process; a host that
+recreates the Client after a restart relies on the Person Server refusing the
+token again.
+
+**Evidence:** `TestThreePartyWithdrawnResourceTokenAndRateLimitedRevocation`.
+
+## Revocation endpoints bound each caller by rate and lifetime
+
+**Source:** Protocol `70d6737`, Revocation Request and Revocation Response.
+
+A recipient that accepts revocations from any verified issuer should bound what
+one issuer can hold, in entries and in rate, and may reject an `exp` beyond the
+longest lifetime it accepts. Every revocation endpoint here admits 600 requests a
+minute from one verified caller by default, polls excluded, and answers
+`429 rate_limited` with `Retry-After` beyond that. A cascade sends one
+revocation per token, so the default of 600 a minute is high enough that a
+legitimate cascade meets it only rarely, and when it does the sender keeps the
+revocation pending rather than failing it. An `exp` more than 24 hours
+ahead, the longest lifetime of an Agent token, is `invalid_request`. The entry
+bound belongs to the store, which returns `aauth.ErrRevocationLimitReached`;
+the endpoint then answers `rate_limited` and records nothing. A revocation from
+a caller whose metadata document names no role the endpoint accepts
+revocations from is `403 unsupported_iss`.
+
+**Evidence:** `TestThreePartyWithdrawnResourceTokenAndRateLimitedRevocation`.
+
+## Interaction callbacks are honored only after the code correlates
+
+**Source:** AAuth Core `70d6737`, User Interaction, Interaction Callback
+Errors, Endpoint and Other URLs, and Agent Provider Metadata.
+
+Core makes the callback a user-experience aid with no security role, and says
+an Agent builds it from its `callback_endpoint`. It does not say whether a
+host compares the callback with that metadata, or whether a host redirects
+for a visit whose code does not correlate. The library helpers accept a
+callback only as an HTTPS URL with a lowercase host and no userinfo, query or
+fragment, so `?error=` is always its only query; a loopback `http` callback is
+accepted only when the host opts in after checking
+`localhost_callback_allowed`. Roles hand a callback back only through a
+correlated interaction: an unknown, used or rate-limited code produces an
+error and no redirect, so an interaction page cannot become an open
+redirector for an arbitrary link. Comparing the callback with the Agent's
+`callback_endpoint` is left to the host (`AAG-F125`). A callback whose `error`
+is unregistered, repeated or unreadable is read as `server_error`, never as
+completion.
+
+**Evidence:** `interaction_callback_test.go`,
+`integration/resource_initiated_interaction_test.go` and
+`integration/interaction_chaining_test.go`.
+
+## Resource-initiated interaction is three-party, missionless and deferred
+
+**Source:** AAuth Core `70d6737`, Resource Token Structure, Resource-Initiated
+Interaction, Interaction Callback Errors, and Polling Error Codes.
+
+The section has the Person Server issue the Auth token after its own consent,
+which describes three-party access; it does not say what a federated Person
+Server or an Access Server does with the claim (`AAG-F124`). A Resource puts
+the claim only in Core Resource tokens it issues against a Person token, and
+retains only the code's digest, until the Resource token expires. A Person
+Server accepts the claim only with `ResourceInteractionConfig`, only on the
+three-party path, and refuses it for call chaining, R3 and mission-bound
+requests. A request that carries it always takes the deferred path, because
+the person must visit the Resource, and an Agent that did not declare
+`interaction` receives `user_unreachable`. The person is sent to the Resource
+once, after the host's interstitial, to `{interaction.url}?code=...&callback=...`
+where the callback ends in a fresh 128-bit flow value; only its digest is
+retained, and a callback with any other value is refused. The interaction URL
+is checked for HTTPS and passed to the host's egress admission before the
+redirect, although the person's browser, not the Person Server, makes that
+request (`AAG-F127`). Consent cannot be approved until the Resource returned
+the person without an error. An error callback ends the request in the mapped
+terminal state, which the next poll delivers once. When the Resource withdraws
+the Resource token, the person is not sent on, the Resource's callback is
+refused, and the next poll ends the request with `revoked`.
+
+**Evidence:** `integration/resource_initiated_interaction_test.go`.
+
+## Interaction chaining binds polls to the caller's key
+
+**Source:** AAuth Core `70d6737`, Interaction Chaining, Interaction Chaining
+(detailed flow), Deferred Responses, and Pending URL Security.
+
+The section requires the intermediary to answer with its own code and
+`Location` and to complete the original request there, but does not say which
+credential the original Agent presents on that pending URL (`AAG-F126`). The
+Agent polls with the Auth token it made the call with, and the Resource
+answers only a poll whose verified key has the thumbprint retained when the
+interaction was chained and whose person matches; any other caller receives
+an empty `404`. The deadline never passes that Auth token's expiry, so only
+Core Auth tokens are chained, and a revoked one is refused with
+`revoked_jwt` like any other request. A downstream request that ends with a
+polling error, `revoked` included, is relayed to the caller with that error. The result, a final status other than `202` with
+its body and media type, is delivered once and the pending URL is `410`
+afterwards. The detailed flow shows the intermediary sending the person on to
+the downstream interaction with its own callback; the library builds that
+link with a per-flow callback value, as for Resource-initiated interaction,
+and an error that comes back ends the chained request with the mapped polling
+error. The library's own Person Server does not defer a call-chaining request,
+so a chained `202` comes from another server; the Agent keeps polling the
+Person Server the upstream token names.
+
+**Evidence:** `integration/interaction_chaining_test.go` and
+`agent/call_chaining_test.go`.

@@ -189,6 +189,11 @@ func (server *Server) issueAuthorizationResourceToken(
 	if err != nil {
 		return "", err
 	}
+	if operations == nil {
+		if err := server.openInitiatedInteraction(request, person, scopes, &claims); err != nil {
+			return "", err
+		}
+	}
 	if budgetOffer != nil {
 		if operations != nil {
 			compact, err := server.issueR3ResourceToken(request.Context(), claims, person, *operations, budgetOffer)

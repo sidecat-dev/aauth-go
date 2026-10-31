@@ -41,7 +41,7 @@ var ErrHeldCompletionStale = errors.New("resource: held completion fence is stal
 // CompletionUntil is the latest first-presentation horizon for an Auth token
 // issued before ExpiresAt. A completed response remains replayable afterward.
 // Header, Body, and
-// RequiredScopes and R3PerCall are mutable Go values. Store implementations
+// RequiredScopes, R3PerCall and Budget are mutable Go values. Store implementations
 // must copy them at the Create and Load boundaries described by
 // HeldInvocationStore.
 type HeldInvocation struct {
@@ -68,6 +68,7 @@ type HeldInvocation struct {
 	ExpiresAt             time.Time
 	CompletionUntil       time.Time
 	R3PerCall             *HeldR3PerCall
+	Budget                *HeldBudget
 }
 
 // HeldR3PerCall binds a pending invocation to the exact per-call proposal
@@ -75,10 +76,18 @@ type HeldInvocation struct {
 // class references identify immutable retained records. ExactProposal carries
 // the complete operation, parameter, account, and display artifact and is
 // parsed through the Resource's current registry after Load.
+//
+// Release is set when the Resource ran the call before seeking approval (see
+// R3ReleaseConfig): it is the response to release on approval, and the call
+// does not run again. It is present exactly when the proposal carries a
+// result member. It is confidential until released, and store implementations
+// must copy it, including its header, body and trailer, at the Create and
+// Load boundaries.
 type HeldR3PerCall struct {
 	Reference      r3.Reference
 	ClassReference r3.Reference
 	ExactProposal  []byte
+	Release        *HeldResponse
 }
 
 // HeldRequestBodyKind preserves the handler-visible representation of an

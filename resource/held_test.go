@@ -976,6 +976,7 @@ type heldMemoryStore struct {
 	rejectCanceledClaim  bool
 	beforeRetain         func()
 	pendingID            string
+	rechallenges         int
 	createErr            error
 	loadErr              error
 	retainErr            error
@@ -1087,6 +1088,32 @@ func (store *heldMemoryStore) Retain(_ context.Context, execution HeldExecution,
 	return result, nil
 }
 
+func (store *heldMemoryStore) Rechallenge(_ context.Context, id string, challenge HeldRechallenge) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if id != store.pendingID || store.state == "" {
+		return ErrHeldInvocationNotFound
+	}
+	switch store.state {
+	case "pending":
+	case "complete":
+		return ErrHeldAuthTokenMismatch
+	case "expired":
+		return ErrHeldInvocationExpired
+	default:
+		return ErrHeldInvocationConflict
+	}
+	if store.invocation.ResourceToken != challenge.Previous {
+		return ErrHeldInvocationConflict
+	}
+	store.rechallenges++
+	store.invocation.ResourceToken = challenge.ResourceToken
+	store.invocation.ResourceTokenIssuedAt = challenge.ResourceTokenIssuedAt
+	store.invocation.ExpiresAt = challenge.ExpiresAt
+	store.invocation.CompletionUntil = challenge.CompletionUntil
+	return nil
+}
+
 func (store *heldMemoryStore) loaded(t *testing.T) HeldInvocation {
 	t.Helper()
 	store.mu.Lock()
@@ -1098,9 +1125,17 @@ func cloneHeldInvocationForTest(invocation HeldInvocation) HeldInvocation {
 	invocation.Header = invocation.Header.Clone()
 	invocation.Body = append([]byte(nil), invocation.Body...)
 	invocation.RequiredScopes = append([]string(nil), invocation.RequiredScopes...)
+	if invocation.Budget != nil {
+		budget := *invocation.Budget
+		invocation.Budget = &budget
+	}
 	if invocation.R3PerCall != nil {
 		cloned := *invocation.R3PerCall
 		cloned.ExactProposal = append([]byte(nil), invocation.R3PerCall.ExactProposal...)
+		if cloned.Release != nil {
+			release := cloneHeldResponseForTest(*cloned.Release)
+			cloned.Release = &release
+		}
 		invocation.R3PerCall = &cloned
 	}
 	return invocation

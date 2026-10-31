@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 )
 
@@ -19,18 +20,20 @@ type deferredAuthorizationStore struct {
 }
 
 type memoryPendingAuthorization struct {
-	record         personserver.PendingAuthorizationRecord
-	state          personserver.AuthorizationPollState
-	clarifications []personserver.AuthorizationClarificationRound
-	approval       personserver.AuthorizationApproval
-	failedAttempts int
-	cancelledAt    time.Time
+	record              personserver.PendingAuthorizationRecord
+	state               personserver.AuthorizationPollState
+	clarifications      []personserver.AuthorizationClarificationRound
+	approval            personserver.AuthorizationApproval
+	failedAttempts      int
+	cancelledAt         time.Time
+	resourceInteraction personserver.ResourceInteractionProgress
 }
 
 // NewDeferredAuthorizationStore returns an empty, concurrency-safe consent and
 // clarification store. It also implements personserver.AuthorizationClarificationStore
-// over the same pending records. Retained results survive Server recomposition,
-// not a process restart. Records are retained for the lifetime of the store.
+// and personserver.ResourceInteractionAuthorizationStore over the same pending
+// records. Retained results survive Server recomposition, not a process
+// restart. Records are retained for the lifetime of the store.
 func NewDeferredAuthorizationStore() personserver.DeferredAuthorizationStore {
 	return &deferredAuthorizationStore{
 		pending: make(map[string]*memoryPendingAuthorization),
@@ -112,13 +115,90 @@ func (store *deferredAuthorizationStore) LoadPendingAuthorization(
 	materializeAuthorizationExpiry(pending, now)
 	snapshot := personserver.PendingAuthorizationSnapshot{
 		Record: clonePendingAuthorization(pending.record), State: pending.state,
-		Clarifications: cloneAuthorizationClarifications(pending.clarifications),
-		CancelledAt:    pending.cancelledAt,
+		Clarifications:      cloneAuthorizationClarifications(pending.clarifications),
+		CancelledAt:         pending.cancelledAt,
+		ResourceInteraction: pending.resourceInteraction,
 	}
 	if pending.state == personserver.AuthorizationPollApproved {
 		snapshot.Approval = cloneAuthorizationApproval(pending.approval)
 	}
 	return snapshot, nil
+}
+
+func (store *deferredAuthorizationStore) StartPendingAuthorizationResourceInteraction(
+	_ context.Context,
+	reference string,
+	progress personserver.ResourceInteractionProgress,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[reference]
+	if !ok {
+		return personserver.ErrPendingAuthorizationNotFound
+	}
+	materializeAuthorizationExpiry(pending, now)
+	switch {
+	case pending.state == personserver.AuthorizationPollExpired:
+		return personserver.ErrPendingAuthorizationExpired
+	case pending.state == personserver.AuthorizationPollGone, pending.state == personserver.AuthorizationPollCancelled:
+		return personserver.ErrPendingAuthorizationGone
+	case pending.state != personserver.AuthorizationPollInteracting,
+		pending.record.ResourceInteraction == (aauth.ResourceInteraction{}),
+		!pending.resourceInteraction.StartedAt.IsZero(),
+		progress.StartedAt.IsZero(), !progress.CompletedAt.IsZero(), progress.CallbackSHA256 == ([32]byte{}):
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	pending.resourceInteraction = progress
+	return nil
+}
+
+func (store *deferredAuthorizationStore) FinishPendingAuthorizationResourceInteraction(
+	_ context.Context,
+	reference string,
+	callbackSHA256 [32]byte,
+	outcome personserver.AuthorizationPollState,
+	now time.Time,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending, ok := store.pending[reference]
+	if !ok {
+		return personserver.ErrPendingAuthorizationNotFound
+	}
+	materializeAuthorizationExpiry(pending, now)
+	progress := &pending.resourceInteraction
+	if pending.record.ResourceInteraction == (aauth.ResourceInteraction{}) || progress.StartedAt.IsZero() {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if progress.CallbackSHA256 != callbackSHA256 {
+		return personserver.ErrPendingAuthorizationNotFound
+	}
+	switch outcome {
+	case personserver.AuthorizationPollInteracting:
+		if !progress.CompletedAt.IsZero() && pending.state == personserver.AuthorizationPollInteracting {
+			return nil
+		}
+	case personserver.AuthorizationPollDenied, personserver.AuthorizationPollAbandoned,
+		personserver.AuthorizationPollServerError, personserver.AuthorizationPollExpired:
+		if pending.state == outcome && progress.CompletedAt.IsZero() {
+			return nil
+		}
+	default:
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if pending.state == personserver.AuthorizationPollExpired {
+		return personserver.ErrPendingAuthorizationExpired
+	}
+	if pending.state != personserver.AuthorizationPollInteracting || !progress.CompletedAt.IsZero() {
+		return personserver.ErrPendingAuthorizationConflict
+	}
+	if outcome == personserver.AuthorizationPollInteracting {
+		progress.CompletedAt = now
+		return nil
+	}
+	pending.state = outcome
+	return nil
 }
 
 func (store *deferredAuthorizationStore) RequestPendingAuthorizationClarification(

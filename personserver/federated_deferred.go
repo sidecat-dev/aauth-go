@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
 
@@ -29,8 +31,8 @@ var ErrFederatedAuthorizationConflict = errors.New("personserver: federated auth
 // with a public explanation, not a federation reachability error.
 type DeferredCompositionError struct{ reason string }
 
-// Reason returns not_configured, r3, budget, mission, claims, clarification,
-// interaction or requirement (an unsupported extension). A mixed-capability
+// Reason returns not_configured, call_chaining, r3, budget, mission, claims,
+// clarification, interaction or requirement (an unsupported extension). A mixed-capability
 // PS may still defer a missionless Core request, top-level or parent-mediated.
 func (e *DeferredCompositionError) Reason() string {
 	if e == nil {
@@ -48,6 +50,8 @@ func (e *DeferredCompositionError) Error() string {
 		return "personserver: deferred AS authorization does not support Budget requests"
 	case "mission":
 		return "personserver: deferred AS authorization does not support mission-bound requests"
+	case "call_chaining":
+		return "personserver: deferred AS authorization does not support call-chained requests"
 	case "claims", "clarification", "interaction":
 		return "personserver: deferred AS authorization does not support " + e.Reason() + " requirements"
 	case "requirement":
@@ -481,7 +485,7 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writeAccessServerUnreachable(out, err)
 		return
 	}
-	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt)
+	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, nil)
 }
 
 // verifyFederatedAgents reverifies the retained Agent tokens at the current
@@ -509,7 +513,17 @@ func (server *Server) checkFederatedRevocations(ctx context.Context, record Fede
 	if credential.ParentAgent != "" {
 		child = credential.JTI
 	}
-	return server.checkPendingRevocations(ctx, agent.Issuer, agent.Subject, agent.JTI, child, record.CreatedAt)
+	if err := server.checkPendingRevocations(ctx, agent.Issuer, agent.Subject, agent.JTI, child, record.CreatedAt); err != nil {
+		return err
+	}
+	if server.tokenRevocation == nil {
+		return nil
+	}
+	reference, err := revocation.TokenReference(record.ResourceToken)
+	if err != nil {
+		return &agentTokenRevocationStoreError{cause: fmt.Errorf("personserver: retained resource token: %w", err)}
+	}
+	return server.revokedPendingResourceToken(ctx, reference)
 }
 
 func (server *Server) writeFederatedWaiting(w http.ResponseWriter, record FederatedAuthorizationRecord) {
@@ -697,7 +711,7 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 		return
 	}
 	response := &http.Response{StatusCode: 200, Header: record.Response.Header, Body: io.NopCloser(bytes.NewReader(record.Response.Body))}
-	server.deliverFederatedAuthorization(w, r, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt)
+	server.deliverFederatedAuthorization(w, r, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, nil)
 }
 
 // handleFederatedCancellation lets the Agent that started a federated wait

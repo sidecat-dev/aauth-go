@@ -189,13 +189,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	delivery, err := providerStore.Delivery(issued.EventID)
-	if err != nil {
-		return err
-	}
-	received, err := agentClient.AcceptEvent(ctx, clientagent.EventDeliveryInput{
-		EventToken: delivery.Token, Payload: delivery.Payload, ContentType: delivery.ContentType,
-	})
+	received, err := deliverToAgent(ctx, provider, agentClient)
 	if err != nil {
 		return err
 	}
@@ -216,14 +210,7 @@ func run(output io.Writer) error {
 	if _, err := eventService.DeliverEvent(ctx, protectedPrepared); err != nil {
 		return err
 	}
-	protectedDelivery, err := providerStore.Delivery(protectedToken.EventID)
-	if err != nil {
-		return err
-	}
-	protectedReceived, err := agentClient.AcceptEvent(ctx, clientagent.EventDeliveryInput{
-		EventToken: protectedDelivery.Token, Payload: protectedDelivery.Payload,
-		ContentType: protectedDelivery.ContentType,
-	})
+	protectedReceived, err := deliverToAgent(ctx, provider, agentClient)
 	if err != nil {
 		return err
 	}
@@ -232,6 +219,36 @@ func run(output io.Writer) error {
 	}
 	_, err = fmt.Fprintf(output, "AAuth protected event complete: %s\n", protectedReceived.Payload)
 	return err
+}
+
+// deliverToAgent is the AP-to-Agent hop. This example runs both in one
+// process, so the hop is a function call; a real AP carries the same three
+// values over its own transport. The AP reads the oldest pending delivery,
+// the Agent verifies the token and body_s256, and only then does the AP
+// acknowledge it.
+func deliverToAgent(
+	ctx context.Context,
+	provider *agentprovider.Server,
+	agentClient *clientagent.Client,
+) (clientagent.ReceivedEvent, error) {
+	pending, err := provider.PendingEvents(ctx, agentID)
+	if err != nil {
+		return clientagent.ReceivedEvent{}, err
+	}
+	if len(pending) == 0 {
+		return clientagent.ReceivedEvent{}, errors.New("events example: the Agent Provider holds no event for the Agent")
+	}
+	delivery := pending[0]
+	received, err := agentClient.AcceptEvent(ctx, clientagent.EventDeliveryInput{
+		EventToken: delivery.Token, Payload: delivery.Payload, ContentType: delivery.ContentType,
+	})
+	if err != nil {
+		return clientagent.ReceivedEvent{}, err
+	}
+	if err := provider.AcknowledgeEvent(ctx, agentID, delivery.Fingerprint); err != nil {
+		return clientagent.ReceivedEvent{}, err
+	}
+	return received, nil
 }
 
 // asyncAPIDocument describes the Resource's event channels. Events requires it

@@ -117,9 +117,17 @@ type PendingAuthorizationRecord struct {
 	// BudgetOffer is the verified resource-token offer. Approval must narrow
 	// it; a nil offer forbids a Budget on the decision.
 	BudgetOffer *budgets.Value
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-	RetryAfter  time.Duration
+	// ResourceInteraction is the Resource token's interaction claim, which the
+	// person completes at the Resource before consent. It is zero when the
+	// Resource token carried none.
+	ResourceInteraction aauth.ResourceInteraction
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	RetryAfter          time.Duration
+	// ResourceTokenJTI is the jti of the resource token the request was
+	// started for, in the namespace of Resource. A withdrawn resource token
+	// ends the request with revoked. A record without it is not checked.
+	ResourceTokenJTI string
 }
 
 // AuthorizationApproval is the canonical host decision and PS-issued token
@@ -190,6 +198,9 @@ type PendingAuthorizationSnapshot struct {
 	Clarifications []AuthorizationClarificationRound
 	CancelledAt    time.Time
 	Approval       AuthorizationApproval
+	// ResourceInteraction is the progress of the Resource's own interaction.
+	// It is zero unless the record carries one and the person was sent to it.
+	ResourceInteraction ResourceInteractionProgress
 }
 
 // DeferredAuthorizationStore owns only PS auth-token interaction state. It is
@@ -478,6 +489,11 @@ func validatePendingAuthorizationRecord(record PendingAuthorizationRecord) error
 	} else if !record.MissionExpiresAt.IsZero() {
 		return errors.New("personserver: missionless pending authorization has a mission expiry")
 	}
+	if record.ResourceInteraction != (aauth.ResourceInteraction{}) {
+		if _, err := aauth.FormatInteractionVisitURL(record.ResourceInteraction.URL, record.ResourceInteraction.Code, ""); err != nil {
+			return fmt.Errorf("personserver: pending Resource interaction: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -565,6 +581,10 @@ func (server *Server) beginAuthorizationInteraction(
 			Capabilities:          append([]string(nil), authorization.Capabilities...),
 			BudgetOffer:           cloneBudgetValue(authorization.Budget),
 			CreatedAt:             createdAt, ExpiresAt: expiresAt, RetryAfter: policy.RetryAfter,
+			ResourceTokenJTI: resourceToken.JTI,
+		}
+		if resourceToken.Interaction != nil {
+			record.ResourceInteraction = *resourceToken.Interaction
 		}
 		if authorization.Subagent != "" {
 			record.Subagent = authorization.Subagent
@@ -714,7 +734,10 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	case AuthorizationPollGone, AuthorizationPollCancelled:
 		return ErrPendingAuthorizationGone
 	case AuthorizationPollInteracting:
-		// Continue below.
+		// The Resource's own interaction is resolved before consent.
+		if value.record.ResourceInteraction != (aauth.ResourceInteraction{}) && snapshot.ResourceInteraction.CompletedAt.IsZero() {
+			return ErrResourceInteractionPending
+		}
 	default:
 		return ErrPendingAuthorizationConflict
 	}
@@ -727,6 +750,11 @@ func (server *Server) ApproveAuthorizationInteraction(ctx context.Context, value
 	// token the request was made with refuses the decision too.
 	if err := server.checkPendingRevocations(ctx, value.record.AgentProvider, value.record.Agent,
 		value.record.AgentTokenJTI, value.record.SubagentTokenJTI, value.record.CreatedAt); err != nil {
+		return err
+	}
+	if err := server.revokedPendingResourceToken(ctx, aauth.TokenReference{
+		Issuer: value.record.Resource, JTI: value.record.ResourceTokenJTI,
+	}); err != nil {
 		return err
 	}
 	// The pending deadline bounds only when approval may happen; it does not
@@ -1003,6 +1031,9 @@ func (server *Server) validatePendingAuthorizationSnapshot(ctx context.Context, 
 	if err := validateAuthorizationClarificationHistory(snapshot.Record, snapshot.State, snapshot.Clarifications); err != nil {
 		return err
 	}
+	if err := validateResourceInteractionProgress(snapshot.Record, snapshot.State, snapshot.ResourceInteraction); err != nil {
+		return err
+	}
 	switch snapshot.State {
 	case AuthorizationPollWaiting, AuthorizationPollInteracting, AuthorizationPollClarifying, AuthorizationPollDenied,
 		AuthorizationPollAbandoned, AuthorizationPollServerError, AuthorizationPollExpired, AuthorizationPollGone:
@@ -1050,7 +1081,8 @@ func pendingAuthorizationRecordsEqual(left, right PendingAuthorizationRecord) bo
 		reflect.DeepEqual(left.SubagentAdditionalClaims, right.SubagentAdditionalClaims) &&
 		reflect.DeepEqual(left.Capabilities, right.Capabilities) && left.CreatedAt.Equal(right.CreatedAt) &&
 		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetryAfter == right.RetryAfter &&
-		budgetPointersEqual(left.BudgetOffer, right.BudgetOffer)
+		budgetPointersEqual(left.BudgetOffer, right.BudgetOffer) &&
+		left.ResourceInteraction == right.ResourceInteraction && left.ResourceTokenJTI == right.ResourceTokenJTI
 }
 
 func optionalAuthorizationJWKEqual(left, right jose.JWK) bool {
@@ -1147,8 +1179,14 @@ func (server *Server) handlePendingAuthorization(response http.ResponseWriter, r
 		// A revoked Agent token or binding ends a live request and withholds a
 		// retained token. The answer is terminal, so the request is ended first.
 		pending := result.Pending
-		if err := server.checkPendingRevocations(request.Context(), pending.AgentProvider, pending.Agent,
-			pending.AgentTokenJTI, pending.SubagentTokenJTI, pending.CreatedAt); err != nil {
+		err := server.checkPendingRevocations(request.Context(), pending.AgentProvider, pending.Agent,
+			pending.AgentTokenJTI, pending.SubagentTokenJTI, pending.CreatedAt)
+		if err == nil {
+			err = server.revokedPendingResourceToken(request.Context(), aauth.TokenReference{
+				Issuer: pending.Resource, JTI: pending.ResourceTokenJTI,
+			})
+		}
+		if err != nil {
 			if pendingRevoked(err) && !server.endPendingAuthorization(response, request, id, identity, result, mission) {
 				return
 			}

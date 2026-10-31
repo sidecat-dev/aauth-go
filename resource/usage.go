@@ -1,9 +1,12 @@
 package resource
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
@@ -79,8 +82,43 @@ func (server *Server) serveUsage(response http.ResponseWriter, request *http.Req
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	response.Header().Set("Cache-Control", "no-store")
-	writeJSON(response, http.StatusOK, payload)
+	server.writeSignedUsage(response, request, payload)
+}
+
+// writeSignedUsage sends a usage answer signed under the Resource's
+// jwks_uri key, as Budgets The Signed Response recommends: the signature
+// covers @status, content-type and content-digest, and binds the response to
+// the request with @authority and @path under req. A Resource that publishes
+// no key answers unsigned.
+func (server *Server) writeSignedUsage(response http.ResponseWriter, request *http.Request, payload usageResponseBodyValue) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	body = append(body, '\n')
+	header := http.Header{}
+	header.Set("Content-Type", "application/json")
+	header.Set("Cache-Control", "no-store")
+	if server.signingKey.ID() != "" {
+		credential, err := signaturekey.NewJWKSURICredential(server.issuer, aauth.ResourceDiscoveryDocument, server.signingKey.ID())
+		if err == nil {
+			err = signaturekey.SignResponse(
+				header, http.StatusOK, body, request, server.signingKey, credential, server.clock,
+				budgets.UsageResponseSignOptions(),
+			)
+		}
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("sign usage response: %w", err))
+			return
+		}
+	}
+	for name, values := range header {
+		response.Header()[name] = values
+	}
+	response.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	response.WriteHeader(http.StatusOK)
+	_, _ = response.Write(body)
 }
 
 func validateUsageCaller(document string, request budgets.UsageRequest) error {

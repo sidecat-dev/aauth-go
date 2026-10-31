@@ -39,6 +39,30 @@ func (d ProposalDisplay) validate() error {
 	return nil
 }
 
+// ReleaseAction is the section that opens the detail of every release
+// proposal, the proposal of a call that has already run: R3 Approving
+// Release Rather Than Execution requires its display to say so, and to say
+// that what is approved is release of the result.
+const ReleaseAction = "## Action\nThis operation has already run. What you are approving is release of its result to the agent."
+
+// NewReleaseProposalDisplay constructs the display of a release proposal.
+// Its detail opens with ReleaseAction; detail, when not empty, follows after
+// a blank line and should describe the result rather than repeat the action.
+// Write the summary as a release too, for example "Release the result of a
+// query over employee records".
+func NewReleaseProposalDisplay(display Display, detail string) (ProposalDisplay, error) {
+	if detail == "" {
+		return NewProposalDisplay(display, ReleaseAction)
+	}
+	return NewProposalDisplay(display, ReleaseAction+"\n\n"+detail)
+}
+
+// StatesRelease reports whether the display opens its detail with
+// ReleaseAction, as NewReleaseProposalDisplay writes it.
+func (d ProposalDisplay) StatesRelease() bool {
+	return d.detail == ReleaseAction || strings.HasPrefix(d.detail, ReleaseAction+"\n")
+}
+
 // Summary returns the required consent-screen summary.
 func (d ProposalDisplay) Summary() string { return d.display.Summary() }
 
@@ -516,9 +540,16 @@ func (p *Parameters) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ProposalOptions supplies the optional account and per-call display fields.
+// ProposalOptions supplies the optional account, result, and per-call
+// display fields. Result is the proposal's result member: a JSON object of
+// Resource-defined members describing what a call that has already run
+// returned, present only for release gating. Nil omits it, which means the
+// call has not run and the approval is for execution. NewProposal requires a
+// proposal with a result to carry a display built by
+// NewReleaseProposalDisplay.
 type ProposalOptions struct {
 	Account *string
+	Result  json.RawMessage
 	Display *ProposalDisplay
 }
 
@@ -526,12 +557,20 @@ type ProposalOptions struct {
 type Proposal struct {
 	operation  Operation
 	parameters Parameters
+	result     json.RawMessage
 	account    *string
 	display    *ProposalDisplay
 }
 
 // NewProposal constructs a validated per-call proposal.
 func NewProposal(operation Operation, parameters Parameters, options ProposalOptions) (Proposal, error) {
+	if options.Result != nil && (options.Display == nil || !options.Display.StatesRelease()) {
+		return Proposal{}, errors.New("r3: a proposal with a result requires a release display that states the operation has run")
+	}
+	return newProposal(operation, parameters, options)
+}
+
+func newProposal(operation Operation, parameters Parameters, options ProposalOptions) (Proposal, error) {
 	if err := operation.value.validate(); err != nil {
 		return Proposal{}, err
 	}
@@ -539,6 +578,13 @@ func NewProposal(operation Operation, parameters Parameters, options ProposalOpt
 		return Proposal{}, err
 	}
 	proposal := Proposal{operation: Operation{value: operation.value.clone()}, parameters: parameters.clone()}
+	if options.Result != nil {
+		result, err := proposalResult(options.Result)
+		if err != nil {
+			return Proposal{}, err
+		}
+		proposal.result = result
+	}
 	if options.Account != nil {
 		if !utf8.ValidString(*options.Account) {
 			return Proposal{}, errors.New("r3: proposal account must be valid UTF-8")
@@ -561,6 +607,16 @@ func (p Proposal) Operation() Operation { return Operation{value: p.operation.va
 
 // Parameters returns a copy of the concrete parameter set.
 func (p Proposal) Parameters() Parameters { return p.parameters.clone() }
+
+// Result returns a copy of the compact result member and whether it was
+// present. A present result means the Resource has already run the call and
+// the approval is for release of its result.
+func (p Proposal) Result() (json.RawMessage, bool) {
+	if p.result == nil {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), p.result...), true
+}
 
 // Account returns the account and whether the optional member was present.
 func (p Proposal) Account() (string, bool) {
@@ -591,11 +647,12 @@ func (p Proposal) MarshalJSON() ([]byte, error) {
 		Vocabulary VocabularyURI     `json:"vocabulary"`
 		Operations []json.RawMessage `json:"operations"`
 		Parameters Parameters        `json:"parameters"`
+		Result     json.RawMessage   `json:"result,omitempty"`
 		Account    *string           `json:"account,omitempty"`
 		Display    *ProposalDisplay  `json:"display,omitempty"`
 	}{
 		Vocabulary: p.operation.Vocabulary(), Operations: []json.RawMessage{p.operation.JSON()},
-		Parameters: p.parameters, Account: p.account, Display: p.display,
+		Parameters: p.parameters, Result: p.result, Account: p.account, Display: p.display,
 	})
 }
 
@@ -610,12 +667,14 @@ func (registry Registry) ParseProposal(source []byte) (Proposal, error) {
 	var vocabulary string
 	var operationsRaw json.RawMessage
 	var parameters Parameters
+	var result json.RawMessage
 	var account string
 	var display ProposalDisplay
 	seen, err := decodeStrictObject(source, map[string]func(json.RawMessage) error{
 		"vocabulary": func(raw json.RawMessage) error { return decodeJSONString(raw, &vocabulary) },
 		"operations": func(raw json.RawMessage) error { operationsRaw = append(operationsRaw[:0], raw...); return nil },
 		"parameters": func(raw json.RawMessage) error { return json.Unmarshal(raw, &parameters) },
+		"result":     func(raw json.RawMessage) error { result = append(json.RawMessage(nil), raw...); return nil },
 		"account":    func(raw json.RawMessage) error { return decodeJSONString(raw, &account) },
 		"display":    func(raw json.RawMessage) error { return json.Unmarshal(raw, &display) },
 	})
@@ -645,13 +704,35 @@ func (registry Registry) ParseProposal(source []byte) (Proposal, error) {
 	}
 	operation := Operation{value: value}
 	options := ProposalOptions{}
+	if _, ok := seen["result"]; ok {
+		options.Result = result
+	}
 	if _, ok := seen["account"]; ok {
 		options.Account = &account
 	}
 	if _, ok := seen["display"]; ok {
 		options.Display = &display
 	}
-	return NewProposal(operation, parameters, options)
+	// A received proposal's display wording is the sender's; only a proposal
+	// this library builds is held to NewReleaseProposalDisplay.
+	return newProposal(operation, parameters, options)
+}
+
+// proposalResult validates a result member as one strict JSON object and
+// returns its compact form.
+func proposalResult(raw json.RawMessage) (json.RawMessage, error) {
+	value, err := decodeStrictJSONValue(raw)
+	if err != nil {
+		return nil, fmt.Errorf("r3: invalid proposal result: %w", err)
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return nil, errors.New("r3: proposal result must be a JSON object")
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return nil, fmt.Errorf("r3: invalid proposal result: %w", err)
+	}
+	return compact.Bytes(), nil
 }
 
 // ParseReferencedProposal validates a reference against exact bytes before

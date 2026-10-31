@@ -6,6 +6,7 @@ package agentprovider
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -22,6 +23,14 @@ type Config struct {
 	NewID      func() string
 	// Events enables public subscribe-token issuance and the Resource-to-AP inbox.
 	Events *EventsConfig
+	// CallbackEndpoint optionally publishes callback_endpoint: the Agent's
+	// HTTPS URL, without query or fragment, from which it builds the callback
+	// it appends to an interaction URL when it has a browser.
+	CallbackEndpoint string
+	// LocalhostCallbackAllowed publishes localhost_callback_allowed: the
+	// Agent may send an http://localhost or http://127.0.0.1 callback in place
+	// of CallbackEndpoint.
+	LocalhostCallbackAllowed bool
 }
 
 // Server issues agent tokens and publishes Agent Provider discovery data.
@@ -31,6 +40,8 @@ type Server struct {
 	clock      aauth.Clock
 	newID      func() string
 	events     *eventsServerConfig
+	callback   string
+	loopback   bool
 	handler    http.Handler
 }
 
@@ -56,12 +67,19 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if config.CallbackEndpoint != "" {
+		if err := aauth.ValidateEndpoint(config.CallbackEndpoint); err != nil {
+			return nil, fmt.Errorf("aauth: agent provider callback endpoint: %w", err)
+		}
+	}
 	server := &Server{
 		issuer:     config.Issuer,
 		signingKey: config.SigningKey,
 		clock:      config.Clock,
 		newID:      config.NewID,
 		events:     eventsConfig,
+		callback:   config.CallbackEndpoint,
+		loopback:   config.LocalhostCallbackAllowed,
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -110,13 +128,17 @@ func (server *Server) newHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/aauth-agent.json", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, struct {
-			Issuer        string `json:"issuer"`
-			JWKSURI       string `json:"jwks_uri"`
-			EventEndpoint string `json:"event_endpoint,omitempty"`
+			Issuer                   string `json:"issuer"`
+			JWKSURI                  string `json:"jwks_uri"`
+			CallbackEndpoint         string `json:"callback_endpoint,omitempty"`
+			EventEndpoint            string `json:"event_endpoint,omitempty"`
+			LocalhostCallbackAllowed bool   `json:"localhost_callback_allowed,omitempty"`
 		}{
-			Issuer:        server.issuer,
-			JWKSURI:       server.issuer + "/.well-known/jwks.json",
-			EventEndpoint: eventEndpoint(server),
+			Issuer:                   server.issuer,
+			JWKSURI:                  server.issuer + "/.well-known/jwks.json",
+			CallbackEndpoint:         server.callback,
+			EventEndpoint:            eventEndpoint(server),
+			LocalhostCallbackAllowed: server.loopback,
 		})
 	})
 	mux.HandleFunc("GET /.well-known/jwks.json", func(response http.ResponseWriter, _ *http.Request) {

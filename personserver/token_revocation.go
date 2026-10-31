@@ -1,0 +1,411 @@
+package personserver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
+	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+)
+
+// ErrResourceTokenRevoked reports a resource token its Resource withdrew. A
+// request waiting on it ends with the polling error revoked, and a host
+// decision on it is refused.
+var ErrResourceTokenRevoked = errors.New("personserver: resource token revoked")
+
+// TokenRevocationStore records revocations by (iss, jti): person and auth
+// tokens this Person Server revoked, and resource tokens withdrawn by the
+// Resource that issued them. Revoke must be idempotent, and IsRevoked and
+// Revoke for one reference must be linearizable. A marker is retained at
+// least through the request's ExpiresAt plus the recipient's clock skew; a
+// repeat with a later ExpiresAt extends it and one with an earlier ExpiresAt
+// does not shorten it. Revoke may return aauth.ErrRevocationLimitReached when
+// the issuer already holds as many entries as the store allows.
+type TokenRevocationStore interface {
+	Revoke(context.Context, aauth.RevocationRequest) error
+	IsRevoked(context.Context, aauth.TokenReference) (bool, error)
+}
+
+// maximumChainedPersonTokens bounds how many person tokens issued from a
+// revoked one, at any depth, one revocation walks.
+const maximumChainedPersonTokens = 256
+
+// ChainedPersonTokenStore is an optional TokenStore extension. It returns the
+// retained records of the person tokens this Person Server issued with the
+// given upstream token, in any order, and none when there are none. With it,
+// RevokePersonToken also revokes, in the same cascade, the person tokens a
+// call-chaining intermediary obtained by presenting a revoked person token as
+// upstream_token, and those obtained from them in turn.
+type ChainedPersonTokenStore interface {
+	LoadChainedPersonTokens(ctx context.Context, upstream aauth.TokenReference) ([]PersonTokenRecord, error)
+}
+
+// TokenRevocationConfig enables RevokePersonToken and the resource-token half
+// of the revocation endpoint. A revoked person token is refused as a
+// presented_token and never presented to an Access Server; a resource token
+// its Resource withdrew is refused with revoked_resource_token and ends a
+// request waiting on it with revoked.
+type TokenRevocationConfig struct {
+	Revocations TokenRevocationStore
+	// HTTPClient and Admit carry RevokePersonToken to Resources and Access
+	// Servers. Leave both nil when this Person Server only receives
+	// resource-token revocations. The server uses a copy of HTTPClient that
+	// follows no redirects and sends no cookies.
+	HTTPClient *http.Client
+	// Admit decides whether each metadata, revocation and pending URL may be
+	// contacted.
+	Admit signaturekey.EgressAdmitter
+	// Limits bounds what one caller may send the revocation endpoint. Zero
+	// members select defaults.
+	Limits aauth.RevocationLimits
+	// Hold bounds how long RevokePersonToken waits for its recipients before
+	// it reports them pending. Zero selects 20 seconds.
+	Hold time.Duration
+}
+
+type tokenRevocationState struct {
+	store   TokenRevocationStore
+	sender  *revocation.Sender
+	tracker *revocation.Tracker
+	hold    time.Duration
+}
+
+func (server *Server) configureTokenRevocation(config *TokenRevocationConfig) error {
+	limits := aauth.RevocationLimits{}
+	if config != nil {
+		limits = config.Limits
+	}
+	if err := revocation.ValidateLimits(limits); err != nil {
+		return fmt.Errorf("personserver: %w", err)
+	}
+	server.revocationLimits = revocation.Limits(limits)
+	server.revocationLimiter = revocation.NewLimiter(limits)
+	if config == nil {
+		return nil
+	}
+	if config.Revocations == nil {
+		return errors.New("personserver: token revocation store is required")
+	}
+	if config.Hold < 0 {
+		return errors.New("personserver: revocation hold must not be negative")
+	}
+	state := &tokenRevocationState{store: config.Revocations, tracker: revocation.NewTracker(), hold: config.Hold}
+	if config.HTTPClient != nil || config.Admit != nil {
+		sender, err := revocation.NewSender(config.HTTPClient, config.Admit, server.signingKey, server.issuer, aauth.PersonDiscoveryDocument, server.clock)
+		if err != nil {
+			return fmt.Errorf("personserver: %w", err)
+		}
+		state.sender = sender
+	}
+	server.tokenRevocation = state
+	return nil
+}
+
+func (server *Server) handleRevocationRoutes(mux *http.ServeMux) {
+	if server.agentTokenRevocations != nil || server.tokenRevocation != nil {
+		mux.HandleFunc("POST /revoke", server.handleRevocation)
+	}
+}
+
+func (server *Server) revocationEndpoint() string {
+	if server.agentTokenRevocations == nil && server.tokenRevocation == nil {
+		return ""
+	}
+	return server.issuer + "/revoke"
+}
+
+// handleRevocation records an Agent Provider's Agent-token revocation or a
+// Resource's resource-token revocation. Neither has anything downstream at
+// this Person Server, so each is answered at once with an empty 200.
+func (server *Server) handleRevocation(response http.ResponseWriter, request *http.Request) {
+	caller, err := revocation.VerifyCaller(request, server.clock, server.keyResolver, []string{"content-type", "content-digest"}, maxRequestBytes)
+	if err != nil {
+		writeProblem(response, http.StatusUnauthorized, "invalid_request", err)
+		return
+	}
+	var record func(context.Context, aauth.RevocationRequest) error
+	switch {
+	case caller.Document == aauth.AgentDiscoveryDocument && server.agentTokenRevocations != nil:
+		record = server.agentTokenRevocations.Revoke
+	case caller.Document == aauth.ResourceDiscoveryDocument && server.tokenRevocation != nil:
+		record = server.tokenRevocation.store.Revoke
+	default:
+		writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("personserver: this Person Server accepts no revocations from this caller"))
+		return
+	}
+	now := server.clock.Now().UTC()
+	if delay, ok := server.revocationLimiter.Allow(caller.Issuer, now); !ok {
+		revocation.WriteRateLimited(response, delay, errors.New("personserver: revocation rate exceeded"))
+		return
+	}
+	input, err := revocation.DecodeRequest(request, caller.Issuer, maxRequestBytes, now, server.revocationLimits)
+	if err != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	if err := record(request.Context(), input); err != nil {
+		if errors.Is(err, aauth.ErrRevocationLimitReached) {
+			revocation.WriteRateLimited(response, server.revocationLimits.Window, err)
+			return
+		}
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	revocation.WriteReport(response, nil)
+}
+
+// PersonTokenRevocation reports how far revoking one person token has
+// reached: one attempt for the Resource named in its aud and one for each
+// Access Server it was presented to.
+type PersonTokenRevocation struct {
+	Attempts []aauth.RevocationAttempt
+}
+
+// Pending reports whether any recipient has not reached a terminal outcome.
+// Call RevokePersonToken again after RetryAfter to continue.
+func (revoked PersonTokenRevocation) Pending() bool {
+	for _, attempt := range revoked.Attempts {
+		if attempt.Pending {
+			return true
+		}
+	}
+	return false
+}
+
+// RetryAfter is the longest delay a pending recipient asked for.
+func (revoked PersonTokenRevocation) RetryAfter() time.Duration {
+	var delay time.Duration
+	for _, attempt := range revoked.Attempts {
+		if attempt.Pending && attempt.RetryAfter > delay {
+			delay = attempt.RetryAfter
+		}
+	}
+	return delay
+}
+
+// RevokePersonToken revokes a person token this Person Server issued and
+// retained. It records the revocation first, so the token is refused as a
+// presented_token from then on, then revokes it at the Resource named in its
+// aud and at every Access Server it was presented to. An Access Server revokes
+// in turn the auth tokens it issued against it. When Tokens implements
+// ChainedPersonTokenStore, the person tokens issued from it by call chaining
+// are revoked the same way in the same cascade.
+//
+// Each call makes one attempt at each recipient that has not recorded the
+// revocation, waiting at most the configured hold. A recipient that answers
+// 202 is reported pending and the next call polls its pending URL; one that
+// failed is attempted again. Repeating the call is safe.
+func (server *Server) RevokePersonToken(ctx context.Context, jti string) (PersonTokenRevocation, error) {
+	if server == nil || server.tokenRevocation == nil || server.tokenRevocation.sender == nil {
+		return PersonTokenRevocation{}, errors.New("personserver: person-token revocation is not configured")
+	}
+	if ctx == nil {
+		return PersonTokenRevocation{}, errors.New("personserver: revocation context is required")
+	}
+	reference := aauth.TokenReference{Issuer: server.issuer, JTI: jti}
+	if err := aauth.ValidateTokenReference(reference); err != nil {
+		return PersonTokenRevocation{}, err
+	}
+	record, err := server.tokens.Load(ctx, server.issuer, jti)
+	if err != nil {
+		return PersonTokenRevocation{}, err
+	}
+	if err := validatePersonTokenRecord(record); err != nil || record.JTI != jti || record.PersonServer != server.issuer {
+		return PersonTokenRevocation{}, errors.New("personserver: retained person-token record is invalid")
+	}
+	state := server.tokenRevocation
+	records, err := server.chainedPersonTokens(ctx, record)
+	if err != nil {
+		return PersonTokenRevocation{}, err
+	}
+	var targets []revocation.Target
+	retainUntil := record.ExpiresAt
+	for _, revoked := range records {
+		tokenTargets, err := server.revokePersonTokenRecord(ctx, revoked)
+		if err != nil {
+			return PersonTokenRevocation{}, err
+		}
+		targets = append(targets, tokenTargets...)
+		if revoked.ExpiresAt.After(retainUntil) {
+			retainUntil = revoked.ExpiresAt
+		}
+	}
+	now := server.clock.Now().UTC()
+	hold := state.hold
+	if hold <= 0 {
+		hold = revocation.DefaultHold
+	}
+	result := state.tracker.Step(ctx, state.sender, revocation.Run{
+		Key: reference, Caller: server.issuer, Targets: targets, Retry: true, Hold: hold,
+		RetainUntil: retainUntil.Add(revocation.Skew), Now: now,
+	})
+	return PersonTokenRevocation{Attempts: revocation.Aggregate(result)}, nil
+}
+
+// revokePersonTokenRecord records one person token as revoked and returns the
+// revocations it needs: at its Resource and at each Access Server it was
+// presented to.
+func (server *Server) revokePersonTokenRecord(ctx context.Context, record PersonTokenRecord) ([]revocation.Target, error) {
+	reference := aauth.TokenReference{Issuer: server.issuer, JTI: record.JTI}
+	if err := server.tokenRevocation.store.Revoke(ctx, aauth.RevocationRequest{Reference: reference, ExpiresAt: record.ExpiresAt}); err != nil {
+		return nil, fmt.Errorf("personserver: record person-token revocation: %w", err)
+	}
+	targets := []revocation.Target{{
+		Recipient: record.Resource, Metadata: aauth.ResourceDiscoveryDocument, JTI: record.JTI, ExpiresAt: record.ExpiresAt,
+	}}
+	if server.personTokenPresentations != nil {
+		accessServers, err := server.personTokenPresentations.LoadPersonTokenPresentations(ctx, server.issuer, record.JTI)
+		if err != nil {
+			return nil, fmt.Errorf("personserver: load person-token presentations: %w", err)
+		}
+		for _, accessServer := range accessServers {
+			targets = append(targets, revocation.Target{
+				Recipient: accessServer, Metadata: aauth.AccessDiscoveryDocument, JTI: record.JTI, ExpiresAt: record.ExpiresAt,
+			})
+		}
+	}
+	return targets, nil
+}
+
+// chainedPersonTokens returns the revoked person token followed by every
+// unexpired person token issued from it by call chaining, at any depth.
+func (server *Server) chainedPersonTokens(ctx context.Context, root PersonTokenRecord) ([]PersonTokenRecord, error) {
+	records := []PersonTokenRecord{root}
+	chained, ok := server.tokens.(ChainedPersonTokenStore)
+	if !ok {
+		return records, nil
+	}
+	now := server.clock.Now()
+	seen := map[string]struct{}{root.JTI: {}}
+	for next := 0; next < len(records); next++ {
+		upstream := aauth.TokenReference{Issuer: server.issuer, JTI: records[next].JTI}
+		found, err := chained.LoadChainedPersonTokens(ctx, upstream)
+		if err != nil {
+			return nil, fmt.Errorf("personserver: load chained person tokens: %w", err)
+		}
+		for _, record := range found {
+			if validatePersonTokenRecord(record) != nil || record.PersonServer != server.issuer ||
+				record.UpstreamTokenReference != upstream {
+				return nil, errors.New("personserver: chained person-token store returned a record for another token")
+			}
+			if _, duplicate := seen[record.JTI]; duplicate || !now.Before(record.ExpiresAt) {
+				continue
+			}
+			if len(records) > maximumChainedPersonTokens {
+				return nil, errors.New("personserver: too many person tokens issued from one revoked token")
+			}
+			seen[record.JTI] = struct{}{}
+			records = append(records, record)
+		}
+	}
+	return records, nil
+}
+
+// recordUpstreamPresentation records that a person token this Person Server
+// issued is passed to an Access Server as upstream_token. Revoking that
+// person token then reaches the Access Server, which refuses it as an
+// upstream_token from then on.
+func (server *Server) recordUpstreamPresentation(ctx context.Context, upstream *verifiedUpstreamToken, accessServer string) error {
+	if upstream == nil || upstream.person == nil || upstream.person.Issuer != server.issuer {
+		return nil
+	}
+	err := server.personTokenPresentations.RecordPersonTokenPresentation(ctx, PersonTokenPresentation{
+		PersonServer: server.issuer, JTI: upstream.person.JTI, AccessServer: accessServer,
+		RetainUntil: time.Unix(upstream.person.ExpiresAt, 0).UTC().Add(server.maximumResourceTokenLifetime + aauth.MaximumAuthTokenLifetime),
+	})
+	if err != nil {
+		return fmt.Errorf("personserver: record upstream person-token presentation: %w", err)
+	}
+	return nil
+}
+
+// recordIssuedAuthTokenRevocation retains a revocation of an auth token this
+// Person Server issued, so it is refused as a presented_token too.
+func (server *Server) recordIssuedAuthTokenRevocation(ctx context.Context, record IssuedAuthTokenRecord) error {
+	if server.tokenRevocation == nil {
+		return nil
+	}
+	return server.tokenRevocation.store.Revoke(ctx, aauth.RevocationRequest{Reference: record.Reference, ExpiresAt: record.ExpiresAt})
+}
+
+// refuseRevokedParameter answers a token request whose resource_token or
+// presented_token is revoked, and reports whether it did. A token whose
+// verification failed only by expiry is still reported as revoked.
+func (server *Server) refuseRevokedParameter(
+	response http.ResponseWriter,
+	ctx context.Context,
+	compact string,
+	verified *aauth.TokenReference,
+	verifyErr error,
+	code string,
+) bool {
+	if server.tokenRevocation == nil {
+		return false
+	}
+	reference := aauth.TokenReference{}
+	switch {
+	case verified != nil:
+		reference = *verified
+	default:
+		expired, ok := revocation.ExpiredTokenReference(compact, verifyErr)
+		if !ok {
+			return false
+		}
+		reference = expired
+	}
+	revoked, err := server.tokenRevocation.store.IsRevoked(ctx, reference)
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return true
+	}
+	if !revoked {
+		return false
+	}
+	detail := "The resource token was withdrawn by the Resource that issued it."
+	if code == "revoked_presented_token" {
+		detail = "The presented token was revoked by the server that issued it."
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	httpapi.WriteProblem(response, http.StatusBadRequest, code, errors.New(detail), httpapi.ProblemFields{Detail: detail})
+	return true
+}
+
+// checkUpstreamRevoked refuses an upstream token this Person Server revoked.
+func (server *Server) checkUpstreamRevoked(ctx context.Context, reference aauth.TokenReference) error {
+	if server.tokenRevocation == nil {
+		return nil
+	}
+	revoked, err := server.tokenRevocation.store.IsRevoked(ctx, reference)
+	if err != nil {
+		return &upstreamStoreError{cause: err}
+	}
+	if revoked {
+		return fmt.Errorf("%w: the upstream token was revoked", errUpstreamCallerRevoked)
+	}
+	return nil
+}
+
+// revokedPendingResourceToken ends a request waiting on a resource token its
+// Resource withdrew. A record retained without the resource token's jti is
+// not checked.
+func (server *Server) revokedPendingResourceToken(ctx context.Context, reference aauth.TokenReference) error {
+	if server.tokenRevocation == nil || reference.JTI == "" {
+		return nil
+	}
+	revoked, err := server.tokenRevocation.store.IsRevoked(ctx, reference)
+	if err != nil {
+		return &agentTokenRevocationStoreError{cause: err}
+	}
+	if revoked {
+		return &revokedPendingTokenError{
+			detail: "The resource token this request was started for was revoked.",
+			reason: ErrResourceTokenRevoked,
+		}
+	}
+	return nil
+}

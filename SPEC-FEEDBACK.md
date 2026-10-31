@@ -75,7 +75,7 @@ Related discussions:
 
 ## Tracking
 
-Unresolved: 62 (P1: 6, P2: 35, P3: 21; 46 submitted, 16 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
+Unresolved: 73 (P1: 6, P2: 38, P3: 29; 46 submitted, 27 open). Local implementation notes: 2. Removed: 62 (36 resolved, 0 rejected, 26 withdrawn).
 
 Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, not the 2026-10-01 reconcile revision in the table above.
 
@@ -129,6 +129,9 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F118 | Usage as_of cannot name a lagging store's completeness time | Budgets | missing-requirement | P3 | open | 2026-10-26 | Not submitted | — |
 | AAG-F119 | A budget object with an unknown member is rejected | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
 | AAG-F120 | An offer above the metadata maximum is invalid_budget | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
+| AAG-F124 | Resource-initiated interaction does not say what happens in four-party access | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
+| AAG-F125 | An interaction host is not told how a callback relates to the Agent's `callback_endpoint` | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
+| AAG-F129 | The replay-cache tuple refuses a second, different request in the same second | Core | informative | P2 | open | 2026-10-30 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -143,6 +146,14 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F104 | Core both permits and forbids a self-hosted Agent Provider | Core | informative | P3 | submitted | 2b7909b (2026-08-31) | 2026-10-01, GitHub | Comment on [#208](https://github.com/dickhardt/AAuth/issues/208#issuecomment-5943160270) |
 | AAG-H003 | Recommended justification sections | Core | informative | P3 | submitted | 3afa429 (2026-08-28) | Slack, four-party implementation round with the editor, item 5 (a concrete proposal for the `justification` sections); the original Slack date is not retained (transcript supplied 2026-08-03) | None now: the editor deferred it to a later revision |
 | AAG-F121 | The jkt-jwt example `iss` is not the thumbprint of its header key | Signature-Key | informative | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F122 | `revoked_jwt` is reserved for unexpired JWTs, while a revoked token must not be reported as expired | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F123 | A revocation hold that ends before a downstream answers has no defined outcome | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F126 | Interaction chaining does not name the credential that polls the intermediary | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F127 | Egress admission is required for a URL the Person Server never fetches | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F128 | No revocation reaches an Access Server that received a person token as upstream_token | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F130 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F131 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F132 | A signed usage response is not required to cover `signature-key` | Budgets, Signature-Key | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 
 An earlier plan of "umbrella only" meant raising the item only inside one combined
 issue of small editorial items. On 2026-10-01 each such item was posted as its own issue instead.
@@ -487,6 +498,26 @@ Our implementation falls back to the full signed grant when no interoperable bou
 **Question:** Should the protocol say how an Agent learns the Resource's maximum for ambiguous-failure accounting? Alternatively, should it explicitly require the full remaining grant as the conservative fallback when no `reserved` was seen and no interoperable bound exists?
 
 **Venue:** New issue [#250](https://github.com/dickhardt/AAuth/issues/250), posted 2026-10-01. Earlier plan: New issue. A Budgets issue on ambiguous failures, with the full-grant fallback as implementation evidence.
+
+### AAG-F127 — Egress admission is required for a URL the Person Server never fetches
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Resource-Initiated Interaction, line 997.
+
+"The PS MUST validate this before redirecting and MUST apply its egress admission policy to it." Egress admission elsewhere governs connections a server opens itself, such as metadata and JWKS fetches. Here the Person Server only returns a redirect, and the person's browser makes the request, so a server-side admission policy for its own connections says nothing about what the browser may reach. Implementations may apply a fetch policy that does not fit, or skip the step because they make no connection.
+
+**Question:** Is this admission meant as a policy on where the Person Server may send a person, and should it be named as such?
 
 ## Missing requirements
 
@@ -1544,6 +1575,86 @@ A resource declares an optional maximum for a unit. The listed `invalid_budget` 
 
 **Question:** Is a signed offer above the resource's declared maximum `invalid_budget`, or must the resource never produce that offer?
 
+### AAG-F132 — A signed usage response is not required to cover `signature-key`
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Budgets `70d6737` and Signature-Key `69f5ba2`.
+
+**Source:** Budgets `70d6737`, The Signed Response, lines 1039–1052; Signature-Key `69f5ba2`, Signature-Key Integrity, lines 1287–1301.
+
+The Signed Response says the usage-response signature MUST cover `@status`, `content-type` and `content-digest`, and the request's `@authority` and `@path` with `req`, and its example `Signature-Input` covers exactly those five. Signature-Key Integrity says the `Signature-Key` header MUST be a covered component and that verifiers MUST reject a signature where it is not, because otherwise its `id` can be substituted. That section is written for requests; neither document says whether a response signature carrying `Signature-Key` must cover it. This library signs exactly the five listed components, so a verifier that rebuilds the base from the Budgets list accepts it, and its verifier pins the signer to the Resource it asked instead of reading the identity from the uncovered header.
+
+**Question:** Must a signed usage response also cover `signature-key`, and should Signature-Key Integrity say whether it applies to response signatures?
+
+### AAG-F124 — Resource-initiated interaction does not say what happens in four-party access
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Resource-Initiated Interaction, lines 986–997, and Resource Token Structure, line 757.
+
+Steps 1 to 6 have the Person Server resolve the Resource's interaction, run its own consent, and then "issue the auth token". In four-party access the Resource token's `aud` is the Access Server, which issues the Auth token, and the Person Server reaches it through a PS-to-AS token request. The section does not say whether a federated Person Server resolves the Resource's interaction before it federates, whether the Access Server must also see that the interaction completed, or whether the claim is three-party only. A federated Person Server and an Access Server that read it differently either skip the Resource's flow or refuse the token. aauth-go refuses the claim outside three-party access.
+
+**Question:** Does a federated Person Server resolve the Resource's interaction before its PS-to-AS token request, and is the Access Server told that it did?
+
+### AAG-F125 — An interaction host is not told how a callback relates to the Agent's `callback_endpoint`
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P2
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, User Interaction, lines 1003–1009; Endpoint and Other URLs, lines 1973–1975; Agent Provider Metadata, line 2027.
+
+An Agent "MAY append a `callback` parameter, constructed from its `callback_endpoint` metadata", and the server "redirects the user's browser to the `callback` URL". Nothing says whether the server compares the callback with the requesting Agent's `callback_endpoint`, exactly or by prefix, or what it does when they differ; a Person Server sending the person to a Resource uses a callback of its own, which matches no Agent metadata. Without a rule, any party holding a live interaction code can make the interaction host redirect to an HTTPS URL of its choice, and hosts that do compare reject callbacks that others accept. The `localhost_callback_allowed` exception has the same gap: the host must fetch the Agent's metadata to apply it.
+
+**Question:** Must an interaction host check an Agent's callback against that Agent's `callback_endpoint` (and `localhost_callback_allowed`), and by what comparison?
+
+### AAG-F126 — Interaction chaining does not name the credential that polls the intermediary
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against AAuth `70d6737`.
+
+**Source:** AAuth Core `70d6737`, Interaction Chaining, line 1886, and the detailed flow, lines 3347–3416.
+
+The intermediary "MUST provide its own `Location` URL for the original agent to poll" and returns the original request's result there. Pending URLs are bound to the identity that started the request, but this one was started by a call carrying an Auth token at a Resource, and the section does not say whether the poll presents that Auth token, the Agent token, or either, nor whether the poll is refused after the Auth token expires while the person is still interacting. Agents and intermediaries that choose differently cannot poll each other. aauth-go polls with the call's Auth token, binds the poll to its key, and ends the wait at that token's expiry.
+
+**Question:** Which credential does the original Agent present on an intermediary's pending URL, and does the wait outlive the Auth token the call carried?
+
 ## Against informative text
 
 Findings against examples, rationale, terminology and other text that uses no BCP 14 keyword.
@@ -1937,6 +2048,126 @@ Our consent interface renders `justification` as agent-asserted, sanitized Markd
 The example JWT header carries an EC P-256 `jwk` with `x` `f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU` and `y` `x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0`. Its RFC 7638 SHA-256 thumbprint is `oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`. The payload's `iss`, and the identity named after it, is `urn:jkt:sha-256:NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs`, which is the thumbprint of the RSA example key in RFC 7638, Section 3.1. A verifier following steps 5 to 7 of the verification procedure rejects the example. This library's thumbprint test computes both values.
 
 **Question:** Should the example `iss` be `urn:jkt:sha-256:oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U`?
+
+### AAG-F122 — `revoked_jwt` is reserved for unexpired JWTs, while a revoked token must not be reported as expired
+
+**Status:** open
+
+**Targets:** MUST/SHALL/REQUIRED
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Verification (Server), step 5, line 2248; Presenting a Revoked Token, line 2762.
+
+Step 5 returns `expired_jwt` if the JWT has expired and `revoked_jwt` "if the JWT verifies and is unexpired but the server holds a revocation for it". Presenting a Revoked Token says "A recipient MUST say that a revoked token was revoked, not that it is malformed or expired." A recipient keeps a revocation until the token's `exp` plus its clock skew, so a token in `Signature-Key` presented after `exp` while the revocation is still held gets `expired_jwt` under step 5 and must not be reported as expired under the second rule. This library follows step 5 for `Signature-Key` tokens, and reports a revoked request-parameter token as revoked even after its `exp`.
+
+**Question:** Should step 5 give `revoked_jwt` precedence over `expired_jwt` while the recipient holds the revocation, or should Presenting a Revoked Token exempt a token that has also expired?
+
+### AAG-F123 — A revocation hold that ends before a downstream answers has no defined outcome
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Revocation Response, lines 2706–2730.
+
+A downstream revocation is terminal when it was recorded or ended `revocation_unavailable`, which covers a party that "did not respond, timed out". Deferred completion answers `202` "if the cascade takes longer than the recipient will hold the connection", and a recipient "MAY hold for less than the caller asked for and answer `202` at its own cap". When the hold ends while a downstream request is still in flight, the draft does not say whether that downstream has timed out, and is reported `revocation_unavailable` in a `200`, or is still pending, and the recipient answers `202` and continues. The two choices give the caller different answers for the same cascade. This library answers `202` and attempts the downstream again on the next poll.
+
+**Question:** Should the draft say that a downstream still unanswered when the recipient's hold ends is pending, so the recipient answers `202`, and that `revocation_unavailable` is for a downstream whose own request failed or timed out?
+
+### AAG-F128 — No revocation reaches an Access Server that received a person token as upstream_token
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Upstream Token Verification step 1 (line 1832), Who Revokes What (lines 2692-2699) and Revocation Cascade (line 2752).
+
+Step 1 has the recipient of an `upstream_token`, the Access Server included, answer `revoked_upstream_token` "when the recipient holds a revocation for it". Who Revokes What has the Person Server revoke a person token at the resource in its `aud` "and each AS the PS presented it to (#ps-to-as-token-request)", and the cascade says the same. A person token the intermediary's caller presented is passed to the downstream Access Server as `upstream_token`, never as `presented_token`, so a Person Server that records only `presented_token` presentations never revokes it there, and that Access Server can never hold the revocation step 1 checks. The cascade's SHOULD revokes the downstream person tokens at their Access Servers, which stops further issuance against them, so the effect is that `revoked_upstream_token` at an Access Server is unreachable rather than that a revoked chain continues. aauth-go reads "presented that person token to" as including an Access Server the Person Server passed it to as `upstream_token`: it records that Access Server with the token's presentations, revokes the token there, and its Access Server then answers `revoked_upstream_token`.
+
+**Question:** Does "presented that person token to" include an Access Server the Person Server passed it to as `upstream_token`? If so, should the Records paragraph say that the Person Server records those Access Servers too?
+
+### AAG-F129 — The replay-cache tuple refuses a second, different request in the same second
+
+**Status:** open
+
+**Targets:** informative
+
+**Priority:** P2
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Freshness and Replay (lines 2270-2274).
+
+The optional replay cache is keyed by `(signing-key-thumbprint, created, @method, @authority, @path)`, and the delayed-verifier sentence requires such a cache to span the skew it accepts. `created` is a whole number of seconds and the tuple has no body, query or signature. Two different requests one Agent signs in the same second to the same path, such as two `POST /token` requests carrying different resource tokens, or two `GET`s that differ only in `@query`, share the tuple, so a verifier following the text refuses the second as a replay. `signaturekey/freshness_external_test.go` shows it with two `POST /orders` bodies. A digest of the signature base, or the signature itself, identifies one signed request exactly.
+
+**Question:** Should the tuple be the signature (or the signature base), or include `@query` and `content-digest`, so that only a repeated signed request is refused?
+
+### AAG-F130 — A delayed verifier is not told when `expires` is judged
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Freshness and Replay (lines 2270-2274).
+
+Servers "MUST honor [`expires`] when present and MUST reject requests where `expires` is in the past". A verifier that first sees a signed artifact after a delay uses `created` as the anchor and verifies the presented token at `created`. The text does not say whether that verifier judges `expires` at `created`, where it can never have passed, or at the time it verifies, where any `expires` shorter than the pipeline's delay makes the artifact unverifiable. aauth-go judges it at the time of verification, because the rejection rule has no exception.
+
+**Question:** Is `expires` a deadline for any verifier, delayed ones included, as the signer's way to refuse store-and-forward, or is it judged against the same anchor as the presented token?
+
+### AAG-F131 — A relative `aauth-resource` href is not addressed
+
+**Status:** open
+
+**Targets:** missing-requirement
+
+**Priority:** P3
+
+**First public here:** 2026-10-30
+
+**Submitted:** Not submitted.
+
+**Checked:** 2026-10-30 against Protocol `70d6737`.
+
+**Source:** Protocol `70d6737`, Resource Metadata Link Relation (lines 2136-2158).
+
+An HTML document "MAY carry the same relation as a `link` element in its `head`", and "The target MUST be a server identifier followed by `/.well-known/aauth-resource.json`". In HTML and in RFC 8288 a relative reference is resolved against the document's URL, so `<link rel="aauth-resource" href="/.well-known/aauth-resource.json">` on `https://api.example/docs` names `https://api.example/.well-known/aauth-resource.json`. The text does not say whether the target form applies before or after resolution. aauth-go admits only an absolute target as written, so that page's link is ignored.
+
+**Question:** Is the target form judged on the reference as written, so a relative `href` is never followed, or on the resolved URL?
 
 ## Local implementation notes (not upstream feedback)
 

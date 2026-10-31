@@ -44,6 +44,9 @@ type Config struct {
 	R3                *R3Config
 	// Deferred enables retained Core approval and payment continuations.
 	Deferred *DeferredConfig
+	// Revocation enables the revocation endpoint and refusal of revoked
+	// person and resource tokens.
+	Revocation *RevocationConfig
 }
 
 // Agent is the verified agent identity presented to authorization policy.
@@ -80,6 +83,15 @@ type AuthorizationRequest struct {
 	// Claims are values the Person Server posted for a requirement=claims wait.
 	// Keys are claim names. sub is never present.
 	Claims map[string]json.RawMessage
+	// Upstream or UpstreamPerson is set when an intermediary chains this
+	// request: the verified auth token or person token the calling Agent
+	// presented to it. It names the person the intermediary acts for and
+	// grants nothing by itself; Agent is then the intermediary, whose own
+	// Agent token need not name this Person Server. The issued auth token
+	// expires no later than it, and its sub is Subject, never the upstream
+	// token's.
+	Upstream       *aauth.AuthTokenClaims
+	UpstreamPerson *aauth.PersonTokenClaims
 }
 
 // Decision is the requested Core-scope subset and lifetime granted by Core
@@ -106,6 +118,7 @@ type Server struct {
 	budget            *budgetConfig
 	r3                *r3Config
 	deferred          *DeferredConfig
+	revocation        *revocationState
 }
 
 // New constructs an Access Server.
@@ -142,17 +155,22 @@ func New(config Config) (*Server, error) {
 	if err := validateDeferredConfig(config.Deferred); err != nil {
 		return nil, err
 	}
-	return &Server{
+	server := &Server{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
 		trustPersonServer: config.TrustPersonServer, authorize: config.Authorize,
 		budget: budgetConfiguration, r3: r3Configuration, deferred: cloneDeferredConfig(config.Deferred),
-	}, nil
+	}
+	if err := server.configureRevocation(config.Revocation); err != nil {
+		return nil, err
+	}
+	return server, nil
 }
 
 // Handler serves POST /token, the metadata and JWKS documents, and with
 // Deferred the pending URLs GET, POST, and DELETE /token/pending/{id}, where id
-// is the PendingAuthorizationRecord ID. POST delivers claims.
+// is the PendingAuthorizationRecord ID. POST delivers claims. With Revocation
+// it also serves POST /revoke and its pending URLs GET /revoke/pending/{id}.
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", server.handleToken)
@@ -161,6 +179,7 @@ func (server *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /token/pending/{id}", server.handlePendingClaims)
 		mux.HandleFunc("DELETE /token/pending/{id}", server.handlePendingCancellation)
 	}
+	server.handleRevocationRoutes(mux)
 	mux.HandleFunc("GET /.well-known/aauth-access.json", server.handleMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", server.handleJWKS)
 	return mux
@@ -217,8 +236,8 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: presented_token is required"))
 		return
 	}
-	if input.UpstreamToken != nil {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: request member \"upstream_token\" is not supported by the immediate flow"))
+	if input.UpstreamToken != nil && input.SubagentToken != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("accessserver: sub-agent and call-chain authorization cannot be combined"))
 		return
 	}
 	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
@@ -237,6 +256,9 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		err = proof.CheckIssuedAt(time.Unix(resourceClaims.IssuedAt, 0))
 	}
 	if err != nil {
+		if server.refuseRevokedParameter(response, request.Context(), input.ResourceToken, nil, err, "revoked_resource_token", pending != nil) {
+			return
+		}
 		if budgets.IsTokenClaimError(err) {
 			writeProblem(response, http.StatusBadRequest, "invalid_budget", err)
 		} else {
@@ -244,12 +266,36 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		}
 		return
 	}
-	if agentClaims.ParentAgent != "" || agentClaims.PersonServer != personServer {
+	resourceReference := aauth.TokenReference{Issuer: resourceClaims.Issuer, JTI: resourceClaims.JTI}
+	if server.refuseRevokedParameter(response, request.Context(), input.ResourceToken, &resourceReference, nil, "revoked_resource_token", pending != nil) {
+		return
+	}
+	// An intermediary's own ps, if any, names its own Person Server, not the
+	// person's; a chained request is tied to the signing Person Server by the
+	// upstream token instead.
+	if agentClaims.ParentAgent != "" || input.UpstreamToken == nil && agentClaims.PersonServer != personServer {
 		writeProblem(response, http.StatusBadRequest, "invalid_agent_token", errors.New("agent token context does not match the person server"))
 		return
 	}
 	confirmation := agentClaims.Confirmation.JWK
 	credentialExpiresAt := time.Unix(agentClaims.ExpiresAt, 0).UTC()
+	var upstream *verifiedUpstream
+	if input.UpstreamToken != nil {
+		upstream, err = verifyUpstreamToken(request.Context(), input.UpstreamToken, agentClaims, personServer, server.keyResolver, proof)
+		if err != nil {
+			writeUpstreamTokenProblem(response, err)
+			return
+		}
+		upstreamReference := upstream.reference()
+		if server.refuseRevokedParameter(response, request.Context(), "", &upstreamReference, nil, "revoked_upstream_token", pending != nil) {
+			return
+		}
+		// Downstream access does not outlive the upstream token, and neither
+		// does a wait for it.
+		if expiresAt := upstream.expiresAt(); expiresAt.Before(credentialExpiresAt) {
+			credentialExpiresAt = expiresAt
+		}
+	}
 	var subagentClaims *aauth.AgentTokenClaims
 	if input.SubagentToken != nil {
 		var compact string
@@ -297,7 +343,14 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		err = proof.CheckIssuedAt(presentedTokenIssuedAt(presented))
 	}
 	if err != nil {
+		if server.refuseRevokedParameter(response, request.Context(), input.PresentedToken, nil, err, "revoked_presented_token", pending != nil) {
+			return
+		}
 		writePresentedTokenProblem(response, err)
+		return
+	}
+	presentedReference := aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI}
+	if server.refuseRevokedParameter(response, request.Context(), input.PresentedToken, &presentedReference, nil, "revoked_presented_token", pending != nil) {
 		return
 	}
 	var budgetCeiling *budgets.Value
@@ -350,6 +403,7 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		BudgetConsumed: cloneConsumptionRecord(budgetConsumed),
 		Claims:         cloneClaims(pendingClaims(pending)),
 	}
+	policyRequest.Upstream, policyRequest.UpstreamPerson = upstream.policyClaims()
 	if subagentClaims != nil {
 		policyRequest.Subagent = &Agent{
 			Identifier: subagentClaims.Subject, Confirmation: subagentClaims.Confirmation.JWK,
@@ -521,6 +575,10 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 			return
 		}
 	}
+	if err := server.commitIssuedAuthToken(request.Context(), claims, presented); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
@@ -588,11 +646,15 @@ func validateDecision(decision Decision, requested []string, hasR3 bool) error {
 }
 
 func (server *Server) handleMetadata(response http.ResponseWriter, _ *http.Request) {
-	httpapi.WriteJSON(response, http.StatusOK, map[string]string{
+	metadata := map[string]string{
 		"issuer":              server.issuer,
 		"auth_token_endpoint": strings.TrimRight(server.issuer, "/") + "/token",
 		"jwks_uri":            strings.TrimRight(server.issuer, "/") + "/.well-known/jwks.json",
-	})
+	}
+	if endpoint := server.revocationEndpoint(); endpoint != "" {
+		metadata["revocation_endpoint"] = endpoint
+	}
+	httpapi.WriteJSON(response, http.StatusOK, metadata)
 }
 
 func (server *Server) handleJWKS(response http.ResponseWriter, _ *http.Request) {

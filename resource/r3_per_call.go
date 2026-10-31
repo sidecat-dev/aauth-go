@@ -25,6 +25,7 @@ func (server *Server) serveR3PerCallChallenge(
 	authorization r3ProtectedAuthorization,
 	operation r3.Operation,
 	requiredScopes []string,
+	compact string,
 ) {
 	if server.r3 == nil || server.r3.perCall == nil {
 		writeProblem(response, http.StatusForbidden, "access_denied", errors.New("R3 per-call authorization is not configured"))
@@ -47,24 +48,59 @@ func (server *Server) serveR3PerCallChallenge(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	description, err := server.describeR3Call(request.Context(), invocation, claims.Account)
+	hold, err := server.shouldHoldAuthTokenRequest(request)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	if matches, err := description.Parameters.Matches(invocation.PresentedParameters()); err != nil || !matches {
-		if err == nil {
-			err = errors.New("proposal parameters do not match the concrete call")
+	var (
+		snapshot heldRequestSnapshot
+		release  *HeldResponse
+		proposal r3.Proposal
+	)
+	if hold {
+		if snapshot, err = server.snapshotHeldR3Request(request); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
 		}
-		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("describe R3 call: %w", err))
-		return
 	}
-	proposal, err := r3.NewProposal(operation, description.Parameters, r3.ProposalOptions{
-		Account: cloneAuthorizationAccount(claims.Account), Display: description.Display,
-	})
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("construct R3 proposal: %w", err))
-		return
+	releaseFirst := false
+	if hold {
+		if releaseFirst, err = server.releaseEligible(request, invocation); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	}
+	if releaseFirst {
+		var executed HeldResponse
+		proposal, executed, err = server.runForRelease(
+			request.Context(), snapshot, compact, claims, proof, requiredScopes, invocation,
+		)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		release = &executed
+	} else {
+		description, err := server.describeR3Call(request.Context(), invocation, claims.Account)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+		if matches, err := description.Parameters.Matches(invocation.PresentedParameters()); err != nil || !matches {
+			if err == nil {
+				err = errors.New("proposal parameters do not match the concrete call")
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("describe R3 call: %w", err))
+			return
+		}
+		proposal, err = r3.NewProposal(operation, description.Parameters, r3.ProposalOptions{
+			Account: cloneAuthorizationAccount(claims.Account), Display: description.Display,
+		})
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("construct R3 proposal: %w", err))
+			return
+		}
 	}
 	exactJSON, err := json.Marshal(proposal)
 	if err != nil {
@@ -81,7 +117,7 @@ func (server *Server) serveR3PerCallChallenge(
 	proposalURI := r3ProposalURI(
 		server.issuer, exactJSON, proposalClaims.PersonServer, proposalClaims.Audience, proposalClaims.JTI,
 	)
-	compact, reference, err := r3.MintProposalResourceToken(
+	proposalToken, reference, err := r3.MintProposalResourceToken(
 		server.r3.registry, server.signingKey, proposalClaims, proposalURI, exactJSON,
 	)
 	if err != nil {
@@ -97,21 +133,16 @@ func (server *Server) serveR3PerCallChallenge(
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("retain R3 proposal: %w", err))
 		return
 	}
-	hold, err := server.shouldHoldAuthTokenRequest(request)
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
 	if hold {
 		server.serveHeldR3Challenge(
-			response, request, compact, reference, authorization.reference,
-			exactJSON, requiredScopes, verifiedAt, expiresAt,
+			response, request, snapshot, proposalToken, reference, authorization.reference,
+			exactJSON, release, requiredScopes, verifiedAt, expiresAt,
 		)
 		return
 	}
 	retry := R3RetryInvocation{
 		Reference: reference, ClassReference: authorization.reference,
-		ResourceToken: compact, ExactProposal: append([]byte(nil), exactJSON...),
+		ResourceToken: proposalToken, ExactProposal: append([]byte(nil), exactJSON...),
 		RequiredScopes: append([]string(nil), requiredScopes...),
 		PreparedAt:     verifiedAt, ExpiresAt: expiresAt,
 		CompletionUntil: expiresAt.Add(maximumDerivativeAuthTokenLifetime),
@@ -120,7 +151,7 @@ func (server *Server) serveR3PerCallChallenge(
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("retain R3 retry: %w", err))
 		return
 	}
-	requirement, err := aauth.FormatAuthTokenRequirement(aauth.AuthTokenRequirement{ResourceToken: compact})
+	requirement, err := aauth.FormatAuthTokenRequirement(aauth.AuthTokenRequirement{ResourceToken: proposalToken})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
@@ -130,26 +161,30 @@ func (server *Server) serveR3PerCallChallenge(
 	response.WriteHeader(http.StatusUnauthorized)
 }
 
+func (server *Server) snapshotHeldR3Request(request *http.Request) (heldRequestSnapshot, error) {
+	snapshot, err := snapshotHeldRequest(request, server.maxRetainedRequestBodyBytes)
+	if err != nil {
+		return heldRequestSnapshot{}, err
+	}
+	if err := validateHeldRequestHeaderLimit(snapshot.header, server.maxRetainedHeaderBytes); err != nil {
+		return heldRequestSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
 func (server *Server) serveHeldR3Challenge(
 	response http.ResponseWriter,
 	request *http.Request,
+	snapshot heldRequestSnapshot,
 	resourceToken string,
 	reference r3.Reference,
 	classReference r3.Reference,
 	exactProposal []byte,
+	release *HeldResponse,
 	scopes []string,
 	issuedAt time.Time,
 	expiresAt time.Time,
 ) {
-	snapshot, err := snapshotHeldRequest(request, server.maxRetainedRequestBodyBytes)
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	if err := validateHeldRequestHeaderLimit(snapshot.header, server.maxRetainedHeaderBytes); err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
 	requirement, err := aauth.FormatAuthTokenRequirement(aauth.AuthTokenRequirement{ResourceToken: resourceToken})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -159,6 +194,10 @@ func (server *Server) serveHeldR3Challenge(
 	invocation.R3PerCall = &HeldR3PerCall{
 		Reference: reference, ClassReference: classReference,
 		ExactProposal: append([]byte(nil), exactProposal...),
+	}
+	if release != nil {
+		retained := cloneHeldResponse(*release)
+		invocation.R3PerCall.Release = &retained
 	}
 	pendingID, err := server.heldInvocations.Create(request.Context(), invocation)
 	if err != nil {

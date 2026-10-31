@@ -125,6 +125,96 @@ need application idempotency. A stale proof returns `invalid_signature`;
 a proof too far ahead returns `clock_skew`, as the pinned draft requires
 ([tests](signaturekey/clock_skew_external_test.go)).
 
+## Revoke person and resource tokens
+
+Each role records a revocation under `(iss, jti)`, where `iss` is the server
+that signed the revocation request, before it calls anyone downstream.
+`testutil.NewTokenRevocationStore()` is an in-memory store that satisfies every
+role's revocation store interface. Production stores keep each marker at least
+until the revoked token's `exp` plus clock skew, and survive restarts.
+
+A Person Server revokes a person token it issued with `RevokePersonToken`. It
+revokes the token at the Resource named in its `aud` and at every Access Server
+it was presented to, and from then on refuses it as a `presented_token` with
+`revoked_presented_token`:
+
+```go
+people, err := personserver.NewFederatedAuthorization(personserver.FederatedAuthorizationConfig{
+	// ...
+	TokenRevocation: &personserver.TokenRevocationConfig{
+		Revocations: revocations, HTTPClient: client, Admit: admit,
+	},
+})
+
+result, err := people.RevokePersonToken(ctx, personTokenJTI)
+for _, attempt := range result.Attempts {
+	// attempt.Recorded(), attempt.Pending or attempt.Error per recipient
+}
+if result.Pending() {
+	// Call RevokePersonToken again after result.RetryAfter().
+}
+```
+
+Each call makes one attempt at each recipient that has not recorded the
+revocation, and waits at most `Hold` (20 seconds by default). A recipient that
+answers `202` or `429 rate_limited` is reported pending, and a call after its
+`RetryAfter` polls its pending URL with a signed `GET`, or sends the revocation
+again. A failed recipient is `revocation_unavailable` or
+`revocation_unsupported` and is attempted again on the next call. Repeating the
+call is safe. When `Tokens` also implements `personserver.ChainedPersonTokenStore`,
+the person tokens a call-chaining intermediary obtained with the revoked token as
+`upstream_token`, and those obtained from them, are revoked in the same cascade.
+A person token passed to an Access Server as `upstream_token` counts as
+presented to it, so it is revoked there too and the Access Server refuses it
+with `revoked_upstream_token`.
+
+An Access Server with `accessserver.Config.Revocation` serves `POST /revoke` and
+advertises `revocation_endpoint`. It retains each auth token it issues in
+`IssuedTokens`, with the token presented for it. When its Person Server revokes
+a person token, it revokes every auth token issued against it, step-ups
+included, at the Resource each names. It answers `200` with a `downstream`
+report, or `202` with a pending URL that only the revoking Person Server may
+poll. It refuses a revoked person token or resource token in a later token
+request, and ends a waiting request with `revoked`.
+
+A Resource withdraws a resource token with `RevokeResourceToken`. In
+three-party access it revokes the token at the Person Server in its `aud`; in
+four-party access at the Access Server and at its `ps`. Each recipient refuses
+it with `revoked_resource_token` and ends a request waiting on it with
+`revoked`:
+
+```go
+protected, err := resource.NewFederatedAuthorization(resource.FederatedAuthorizationConfig{
+	// ...
+	AuthTokenStatuses: authTokens,
+	Revocation: &resource.RevocationConfig{
+		PersonTokens: revocations, HTTPClient: client, Admit: admit,
+	},
+})
+
+result, err := protected.RevokeResourceToken(ctx, resource.ResourceTokenRevocation{
+	JTI: jti, ExpiresAt: expiresAt, Audience: accessServer, PersonServer: personServer,
+})
+```
+
+`PersonTokens` makes the Resource refuse a revoked person token with
+`Signature-Error: error=revoked_jwt`, so it issues no resource token naming it.
+`AuthTokenStatuses` on a four-party Resource accepts revocations from its Access
+Server.
+
+The Agent treats `revoked_resource_token` as terminal for that token.
+`agent.Client` remembers the refused token and refuses to submit it again with
+`*agent.RevokedResourceTokenError`, which matches `agent.ErrResourceTokenRevoked`.
+Call the Resource again for a fresh one.
+
+Every revocation endpoint accepts 600 requests a minute from one caller by
+default and answers `429 rate_limited` with `Retry-After` beyond that; set
+`Limits` to change it. A cascade that meets a recipient's limit is not lost:
+that revocation stays pending until the `Retry-After` has passed. A store may return `aauth.ErrRevocationLimitReached` to
+bound how many entries one issuer holds. An `exp` more than 24 hours ahead is
+`invalid_request`. The [revocation cascade tests](integration/revocation_cascade_test.go)
+run these paths through the real role handlers.
+
 ## Check a token without an HTTP request
 
 When you already have a compact Agent JWT, the Core call is:
@@ -249,6 +339,107 @@ means the approval contains no token for that exact Resource identifier.
 `PersonTokens()` returns a copy of all returned Resource-to-token mappings;
 use its keys when reporting the available Resources. [Mission tests](agent/mission_test.go)
 cover present and absent Resources and protect the retained mapping from mutation.
+
+## Organize R3 definitions and gate release
+
+**Several internal definitions.** A Resource may keep its R3 authorization in
+several definitions of its own, for example one per scope. List them in
+`R3VocabularyConfig.InternalDefinitions`, each with its operations and display;
+together they must cover every operation of the vocabulary's `Definition`. An
+agent request whose operations fall under more than one definition still gets
+one Resource token naming one document: its operations are exactly the
+requested ones, and its display merges each involved definition's display with
+`r3.MergeDisplays`. `DisplayForOperations`, when set, writes the display for
+the combination instead, and is where to name an `account` in words the person
+recognizes. The document's bytes are retained in your `R3DocumentStore` as for
+any R3 document.
+
+**Approve release rather than execution.** For a per-call operation with no
+side effects, set `R3PerCallConfig.Release`:
+
+```go
+config.R3.PerCall.Release = &resource.R3ReleaseConfig{
+	Eligible: func(ctx context.Context, call r3.Invocation) (bool, error) {
+		return isReadOnlyQuery(call), nil
+	},
+	DescribeResult: func(ctx context.Context, ran resource.R3ReleaseRequest) (resource.R3ReleaseDescription, error) {
+		return resource.R3ReleaseDescription{
+			Parameters: queryParameters(ran.Invocation),
+			Result:     json.RawMessage(`{"records":214,"contains":["compensation"]}`),
+			Display:    releaseSummary, // "Release the result of a query over employee records"
+			Detail:     "## Details\n214 rows.",
+		}, nil
+	},
+}
+```
+
+It applies to a call the Resource holds under `202` (`HeldInvocations` and
+`HoldAuthTokenRequest`). The Resource runs the held call at once under the
+class Auth token, passes the response to `DescribeResult`, and publishes a
+proposal with your `result` members and a display whose detail opens with
+`r3.ReleaseAction`, the statement that the operation has run and that what is
+approved is release of its result. The first poll with the per-call Auth token
+receives the retained response; the call never runs again, and a result whose
+release is never approved is never sent. Return true from `Eligible` only when
+nothing outside the result changes when the call runs: not for a call that is
+audited or billed, or that calls another party. The Resource itself never runs
+first a route its Budget profile meters or an operation annotated
+`budget: true`. Held stores must copy `HeldR3PerCall.Release`; rerun
+`resource/storetest.RunHeldInvocation`.
+
+## Hold a Budget refusal
+
+A four-party Resource with a Budget profile can answer a Budget refusal with
+`202` instead of `401` and hold the call. Configure `HeldInvocations` with a
+store that also implements `resource.HeldBudgetStore`, a Budget store that
+implements `BudgetReserver`, and `HoldAuthTokenRequest`. The `202` carries the
+same `AAuth-Requirement`, reason and fresh Resource token as the `401`, and
+`AAuth-Budget` reports the refused token's `remaining` and `required` only.
+Nothing is reserved against or metered to the refused token.
+
+The agent obtains a new Auth token and polls the `Location`. On that poll the
+Resource reserves the call's `Maximum` (or fixed `Cost`) against the poll's
+token, runs the call, and commits; the handler may call `SettleBudget` as on a
+direct call. A poll token whose remainder is too small gets another `202` with
+`reason=insufficient-budget` and a fresh Resource token naming it, and the call
+stays held at the same URL; the store's `Rechallenge` swaps the Resource token.
+A repeated poll with the completing token is answered from the stored result,
+metered once, with `AAuth-Budget` reporting that token's current remaining.
+With a Budget profile, the Resource holds only Budget refusals: person-token
+and R3 per-call challenges answer `401`, because their held completion would
+run a metered route unmetered. A refused token that carries R3 claims is
+answered `401`.
+
+## Sign and verify Budget usage
+
+A Resource whose `BudgetStore` implements `BudgetUsageStore` serves the
+`usage_endpoint` and signs each answer with its own key, as AAuth Budgets
+recommends: the signature covers `@status`, `content-type` and
+`content-digest`, and binds the answer to the query with `@authority` and
+`@path` under `req`. A Resource configured without a key ID answers unsigned.
+
+A Person Server or Access Server asks with `budgets.PostUsageChecked`:
+
+```go
+result, err := budgets.PostUsageChecked(ctx, usageEndpoint, psKey, psIssuer,
+	aauth.PersonDiscoveryDocument, clock, budgets.UsageRequest{Subject: sub},
+	budgets.UsageSignatureCheck{Resource: resourceIssuer, KeyResolver: keys})
+if err != nil {
+	return err
+}
+if result.Signed {
+	keepEvidence(result.ExactBody, result.Header)
+}
+```
+
+A signature must verify under a key from the Resource's own metadata and for
+this query; one that does not is refused. An unsigned answer is read and
+reported with `Signed` false, because the draft recommends signing rather than
+requiring it; set `RequireSignature` to refuse it. Keep `ExactBody` and
+`Header` when you want a statement the Resource cannot later disown.
+`budgets.VerifyUsageResponse` checks a response you fetched yourself, and
+`signaturekey.SignResponse` and `signaturekey.VerifyResponse` sign and verify
+other server responses the same way.
 
 ## Continue an AS approval or payment request
 
@@ -566,6 +757,40 @@ sub-agent call chaining, and no cascade from an Agent-token revocation to the
 child's credentials. See [CONFORMANCE.md](CONFORMANCE.md) and
 [the interpretations](INTERPRETATIONS.md#a-revoked-agent-person-binding-ends-issuance-and-pending-delivery).
 
+## Chain a call through an Access Server
+
+A Resource that calls another Resource for its caller acts as its own Agent
+Provider and Agent (the intermediary). When the downstream Resource has an
+Access Server, give the four-party Person Server a chaining policy:
+
+```go
+personserver.FederatedAuthorizationConfig{
+	// ...
+	CallChaining: &personserver.FederatedCallChainingConfig{
+		BindPerson: mapUpstreamPersonToDownstreamPerson,
+		Consent:    decideDownstreamRequest,
+	},
+}
+```
+
+The intermediary passes the person token its caller presented as
+`UpstreamToken` in `PersonTokenRequest`, `AuthorizeRequest`,
+`ExchangeRequest` and `Call`. The Person Server verifies it, calls
+`BindPerson` for a new directed person and `Consent` for the downstream
+request, and posts the exact `upstream_token` with the intermediary's Agent
+token to the Access Server. The Access Server verifies it again: `typ`, an
+`aud` equal to the intermediary's Agent-token `iss`, and a person token issued
+by, or an auth token naming, the Person Server that signed. Its policy sees the
+token in `AuthorizationRequest.UpstreamPerson` or `Upstream`, and the
+intermediary in `Agent`. The auth token it issues has the downstream `sub` and
+expires no later than the upstream token, and so does any wait for it. A bad
+token is `400 invalid_upstream_token`, an expired one `expired_upstream_token`.
+
+Limits: the four-party Person Server accepts only person tokens it issued as
+upstream tokens, because it keeps no record of auth tokens an Access Server
+issued. It refuses chained R3 and Budget requests, and a `202` or `402` from
+the Access Server for a chained request is `500 server_error`.
+
 ## Deliver events to an Agent
 
 AAuth Events lets a Resource notify an Agent that has no public URL: the
@@ -581,8 +806,34 @@ a body that does not match the token's `body_s256`; `403` for a Resource
 other than the subscribed one; `404` for an unknown, inactive, or exhausted
 subscription; and `202` only after your `EventInboxStore` retains the exact
 token and body. Check your store with `agentprovider/storetest.RunEventInbox`.
-Your own transport then hands the retained token and body bytes to the Agent
-unchanged; Events leaves that mechanism to you.
+
+Events leaves the hop from the AP to the Agent to you, but whatever carries it
+must hand the Agent the token and body bytes unchanged. Implement
+`agentprovider.EventInboxReader` on your store and read through the server:
+
+```go
+pending, err := provider.PendingEvents(ctx, agentID)
+if err != nil {
+	return err
+}
+for _, delivery := range pending {
+	// Carry delivery.Token, delivery.Payload and delivery.ContentType to
+	// the Agent, which calls Client.AcceptEvent with them.
+	if err := sendToAgent(ctx, delivery); err != nil {
+		return err
+	}
+	if err := provider.AcknowledgeEvent(ctx, agentID, delivery.Fingerprint); err != nil {
+		return err
+	}
+}
+```
+
+`PendingEvents` returns the Agent's unacknowledged deliveries, oldest first,
+and refuses one whose bytes no longer match the digests and fingerprint the AP
+recorded when it accepted it. Acknowledge only after the Agent accepted the
+event; an acknowledged delivery is not returned again, but an exact replay of
+it from the Resource is still a duplicate. Check the read path with
+`agentprovider/storetest.RunEventInboxReader`.
 
 **Resource.** `resource.NewEventService` returns the service, `eventService`
 below, that serves subscription registration and prepares and sends events:
@@ -632,6 +883,122 @@ refuses an expired token, an `aud` other than the Agent's own identifier, and a
 body that does not match `body_s256`. Act on an event only after it returns
 without error and with `Duplicate` false.
 
+## Return the person after an interaction
+
+Every interaction URL accepts `?code={code}` and, from a party with a browser
+flow of its own, `&callback={callback}`. The library never renders pages or
+redirects by itself; your interaction page does, with these helpers:
+
+```go
+visit, err := aauth.ParseInteractionVisit(r.URL.RawQuery, aauth.InteractionVisitOptions{})
+if err != nil {
+	http.Error(w, "bad interaction link", http.StatusBadRequest)
+	return
+}
+// Correlate visit.Code with the role that issued it, authenticate the person,
+// and run your flow. Then, when there is a callback:
+target, err := aauth.InteractionCallbackURL(visit.Callback, aauth.InteractionCallbackAccessDenied)
+```
+
+`InteractionCallbackURL` returns the callback itself when the interaction
+completed (pass an empty error) and `{callback}?error={error}` when it could
+not, with one of `access_denied`, `user_abandoned`, `server_error`,
+`temporarily_unavailable` or `interaction_expired`. Redirect only after the
+code correlates; for an unknown, used or rate-limited code, show an error page
+instead, so your page cannot be used as an open redirector. A callback must be
+an HTTPS URL without query or fragment. Set `AllowLoopbackCallback` only when
+you checked that the Agent's metadata sets `localhost_callback_allowed`.
+
+**Agent.** To send the person yourself with a callback, build the link with
+`aauth.FormatInteractionVisitURL(pending.InteractionURL(), pending.InteractionCode(), callback)`.
+Publish the base of your callbacks with `agentprovider.Config.CallbackEndpoint`
+(and `LocalhostCallbackAllowed` for a loopback callback). At your callback
+endpoint, `aauth.ReadInteractionCallback(r.URL.RawQuery)` returns nil, or an
+`aauth.InteractionCallbackError` you must surface: do not treat the pending
+request as completable. Its pending URL stays authoritative and reports the
+same outcome as a polling error, which `PollingError()` names.
+
+### Resolve a Resource's own interaction before consent
+
+A Resource that needs its own flow first, such as an OAuth authorization at a
+third-party service, sets `resource.PSAuthorizationConfig.InitiatedInteraction`:
+`URL` (its HTTPS interaction page), `Require` (decides per verified
+Person-token challenge) and `Store` (`testutil.NewInitiatedInteractionStore`
+in tests). The Resource token then carries an `interaction` claim naming
+`{URL}/{reference}` and a fresh code. Your page calls
+`ConsumeInitiatedInteraction(ctx, reference, visit)`, runs the flow for
+`Person()`, and redirects to `CompletionURL()`, or to `FailureURL(err)` when
+the flow cannot finish. The code is single use, allows three failed attempts,
+and dies with the Resource token.
+
+The Person Server sets `personserver.PSAuthorizationConfig.ResourceInteraction`
+with `Policy` (its own interaction page, lifetime and polling interval),
+`CallbackURL` and `Admit` (egress admission for the Resource's URL), plus an
+`AuthorizationInteractions` store that implements
+`personserver.ResourceInteractionAuthorizationStore`
+(`testutil.NewDeferredAuthorizationStore` does). A token request carrying the
+claim always gets a `202`; an Agent that did not declare `interaction` gets
+`403 user_unreachable`. The Agent uses `BeginExchange` and `PollExchange`;
+`Exchange` refuses such a Resource token. Your Person Server pages then:
+
+1. On the interaction page, call `ConsumeAuthorizationInteractionCode`,
+   show the interstitial saying the Resource needs additional permissions, and
+   redirect to `RedirectToResourceInteraction(ctx, interaction, visit.Callback)`.
+   An interaction URL that is not HTTPS or that `Admit` refuses ends the
+   request with `server_error` (`ErrResourceInteractionRefused`).
+2. On `{CallbackURL}/{reference}/{flow}`, call
+   `ReceiveResourceInteractionCallback(ctx, reference, flow, r.URL.RawQuery)`.
+   An error callback ends the request with the mapped polling error
+   (`access_denied` → `denied`, `user_abandoned` → `abandoned`,
+   `interaction_expired` → `expired`, the others → `server_error`) and is
+   returned as an `aauth.InteractionCallbackError`. Otherwise show your consent
+   and call `ApproveAuthorizationInteraction` or `DenyAuthorizationInteraction`;
+   approval before the Resource returned the person is
+   `ErrResourceInteractionPending`. Once the Resource withdraws its Resource
+   token, both steps refuse with `ErrResourceTokenRevoked` and the Agent's
+   next poll receives `revoked`.
+3. Redirect to `AuthorizationCallbackURL(ctx, reference)`, the Agent's own
+   callback with the outcome, or show a completion page when it is empty.
+
+The flow is three-party and missionless. Call chaining, R3, missions and a
+federated Person Server refuse the claim. See
+[the end-to-end test](integration/resource_initiated_interaction_test.go).
+
+### Chain a downstream interaction to your caller
+
+A Resource that calls another server as an Agent may meet a `202` with
+`requirement=interaction`. Set `ChainedInteractions` on
+`resource.PSAuthorizationConfig` or `FederatedAuthorizationConfig` with `URL`,
+`CallbackURL`, `Lifetime`, `RetryAfter` and `Store`
+(`testutil.NewChainedInteractionStore` in tests). In your Protected handler,
+pass the downstream requirement to `ChainInteraction(w, r, downstream)`. It
+answers your caller with your own `202`, your own code, and your own pending
+URL under `/chain/pending/`. It writes nothing and returns
+`ErrChainedInteractionUndeclared` when the caller did not send
+`AAuth-Capabilities: interaction`. Keep the downstream pending value with
+`Reference()`; the library does not hold it for you.
+
+On `{URL}/{reference}`, `VisitChainedInteraction(ctx, reference, visit)` returns
+the downstream interaction link with your own per-flow callback. On
+`{CallbackURL}/{reference}/{flow}`, `ReceiveChainedInteractionCallback` returns
+the interaction, or ends it with the mapped polling error when the downstream
+host sent an error. Poll your downstream request, which stays authoritative,
+finish the original request, and call `CompleteChainedInteraction` with its
+result (or `FailChainedInteraction` with the downstream polling error). Then
+redirect to `ChainedInteractionCallbackURL`. Your caller receives the result
+once; a later poll is `410`, and a poll signed by any other key is an empty
+`404`. The deadline never passes the caller's Auth token, and only Core Auth
+tokens can be chained.
+
+The original Agent reads the `202` from `Do` with `ReadInteractionCall`, sends
+the person to the interaction, and polls with `PollInteractionCall` and the
+same Auth token. An intermediary whose own call-chaining exchange meets an
+interaction gets a pending exchange from `BeginExchange` and polls the Person
+Server its upstream token names; such a pending exchange cannot be
+snapshotted. A call-chained Person-token request that meets an interaction
+still returns `CallChainingInteractionUnsupportedError`. See
+[the end-to-end test](integration/interaction_chaining_test.go).
+
 ## Use in-memory stores in examples and tests
 
 `testutil` provides concurrency-safe stores for examples, tests and local
@@ -652,7 +1019,8 @@ fixture discards its identities and decisions and is not a cleanup strategy.
 | `NewMissionInteractionRelayStore` | The same mission state plus interaction relays, sharing one transaction boundary |
 | `NewPermissionStore`, `NewInteractionQuestionStore`, `NewInteractionRelayStore` | Separate missionless PS stores |
 | `NewEnrollmentStore`, `NewAgentTokenRevocationStore` | AP enrollment or Resource revocation, respectively |
-| `NewDeferredAuthorizationStore` | PS consent and clarification, sharing one transaction boundary |
+| `NewDeferredAuthorizationStore` | PS consent, clarification and Resource-initiated interaction progress, sharing one transaction boundary |
+| `NewInitiatedInteractionStore`, `NewChainedInteractionStore` | Resource-initiated interaction codes, or chained interactions and their results, respectively |
 | `NewAccessAuthorizationStore`, `NewFederatedAuthorizationStore` | Separate AS request retention and PS federation continuation |
 | `NewBudgetStore` | Resource fixed-price token consumption and person totals |
 | `NewR3DocumentStore`, `NewR3IssuanceStore` | Resource documents or role-local issuance audit, respectively |
@@ -710,10 +1078,86 @@ until its own deadline. The [permission](example/permission/main.go) and
 without extracting references from the Agent's poll URL. Mission proposals
 have a separate [pending queue](personserver/mission_proposal_deferred_test.go).
 
+## Point Agents at your metadata
+
+An Agent that lands on your developer portal or API host may not know your
+resource identifier yet. The `aauth-resource` link relation names your
+metadata document from any response or page. Wrap the handlers that serve those
+pages, and the Resource itself if you like:
+
+```go
+portal.Handle("/docs/", server.WithResourceLink(docs))
+api := server.WithResourceLink(server.Handler())
+```
+
+Each response then carries
+`Link: <https://api.example/.well-known/aauth-resource.json>; rel="aauth-resource"`.
+In an HTML template, put `aauth.ResourceLinkElement(issuer)` in the `head` of
+the page at your `documentation_uri`. `aauth.AddResourceLinks` adds the field
+to any header, with one link for each resource a page describes. The link says
+nothing about the response it rides on: a `401` still states its requirement in
+`AAuth-Requirement`.
+
+An Agent reads links with `agent.ResourceLinksFromResponse` and
+`agent.ResourceLinksFromHTML`. Both keep only targets of the one admissible
+form, a server identifier followed by `/.well-known/aauth-resource.json`, and
+record where each link was found and how. Keep that record: a resource that a
+third-party page introduced is not one the person named. Then fetch and verify
+the document:
+
+```go
+links := agent.ResourceLinksFromHTML(pageURL, page)
+linked, err := agent.ResolveResourceLink(ctx, keyResolver, links[0])
+// linked.Resource is the verified resource identifier.
+```
+
+`ResolveResourceLink` refuses any other target form before fetching. A
+`signaturekey.HTTPKeyResolver` fetches with your `Admit` callback, its
+destination checks and size bound, and without following redirects. The
+document's `issuer` must equal the target minus the well-known suffix, or the
+result is `issuer_missing` or `issuer_mismatch`. A link authorizes nothing and
+is never used to find keys: the person still approves the resource at the
+person token endpoint, and verifiers discover keys from `iss` and `dwk`. The
+HTML scan treats the page as untrusted input, reads at most 1 MiB, and uses
+only absolute targets.
+
+## Verify a signed request after a delay
+
+A role handler verifies each request as it arrives, within the signature
+window. A batch pipeline or a store-and-forward hop first sees a signed
+request later. Set `VerifyOptions.MaxDelay` to the delay you accept; the signed
+`created` is then the anchor, and any token presented with the request must
+have been valid at that instant:
+
+```go
+prepared, err := signaturekey.PrepareRequest(stored, clock, signaturekey.VerifyOptions{
+	MaxDelay: 24 * time.Hour,
+})
+// handle err
+compact, _ := prepared.Credential().JWT()
+claims, err := aauth.VerifyAgentToken(ctx, compact, keys, aauth.ClockFunc(prepared.ValidAt))
+// handle err, then prepared.CheckIssuedAt and prepared.Verify(claims.Confirmation.JWK)
+```
+
+`created` may be up to `MaxDelay` old, but not further ahead of your clock than
+the signature window (`clock_skew`). A signature whose `expires` has passed is
+refused whatever the delay. Your key resolver must still hold the issuer keys
+that were current at `created`.
+
+To refuse a request presented twice, keep one `signaturekey.ReplayCache` per
+verifier and call `cache.Check(proof)` after verifying. It keys each entry by
+the signing key's thumbprint, `created`, method, authority and path, and holds
+it until `created` plus `proof.MaxAge()`: the signature window online, or the
+whole delay a delayed verifier accepts. A repeat is `invalid_signature`. A full
+cache returns `ErrReplayCacheFull` rather than forget an entry early. Two
+requests from one key to the same path in the same second share a tuple, so
+only use the cache where that cannot happen legitimately.
+
 ## Verify other Signature-Key schemes
 
 The role handlers accept the Signature-Key schemes their protocol step needs,
-with Ed25519 keys, and answer any other scheme with `unsupported_scheme`. An
+with Ed25519 keys, and answer any other scheme with `unsupported_scheme`. A
+Resource can also accept clients outside AAuth (see below). An
 endpoint of your own can use the `signaturekey` package directly. Name the
 schemes and algorithms it accepts, then finish with the verifier for the
 selected scheme:
@@ -781,6 +1225,40 @@ OCSP, delta CRLs and partitioned CRLs are not supported.
 several labeled signatures. It writes every `Signature-Key` member before it
 signs, and each signature covers `signature-key`. A verifier selects one label
 with `VerifyOptions.SignatureLabel`.
+
+### Accept clients outside AAuth at a Resource
+
+AAuth Agents sign with the `jwt` scheme, and servers with `jwks_uri`. A
+Resource that also serves clients outside AAuth may accept further schemes on
+its protected routes. Set `FurtherSchemes` on any Resource constructor:
+
+```go
+resource.AgentIdentityConfig{
+	// ...
+	FurtherSchemes: &resource.FurtherSchemesConfig{
+		Schemes:    []signaturekey.Scheme{signaturekey.SchemeHWK, signaturekey.SchemeJWKS},
+		Algorithms: []string{jose.ES256Algorithm}, // for hwk keys
+		JWKS:       keyResolver,
+		Protected:  otherClients,
+	},
+}
+```
+
+A request under one of these schemes is verified by that scheme's verifier and
+served by `FurtherSchemes.Protected`, never by the AAuth handler. There,
+`resource.SignerFromContext` returns the scheme, the signer (a key thumbprint
+URI, a `jwks_uri` id, a `jwks` URL or an `x5u`) and the verifying key. Such a
+signer is not an AAuth Agent and carries no person or grant. AAuth requests are
+unchanged. Every `Accept-Signature-Scheme` the protected routes send, on an
+unsigned challenge or on `unsupported_scheme`, lists `jwt` and then your
+schemes in your order; `Accept-Signature-Alg` lists Ed25519 and your
+algorithms; an `hwk` or `x509` key may use them, while keys found through
+`jwks`, `jwks_uri` or `jkt-jwt` stay Ed25519. Schemes may be `hwk`, `jkt-jwt`,
+`jwks_uri`, `jwks`, `x509` and `cached`. `x509` needs an `X509` callback that returns the chain, anchors and
+CRLs for an `x5u`. `cached` needs `Cache`, an `AssertionCache`, and `jkt-jwt`:
+the Resource then issues `Signature-Key-Cache` to a `jkt-jwt` client that
+asks, and resolves its `cached` requests. The authorization and revocation
+endpoints keep their AAuth schemes.
 
 ### Cache an assertion
 

@@ -14,3 +14,11 @@ func TestR3PerCallHeldStoreSatisfiesPublicContract(t *testing.T) {
 		},
 	})
 }
+
+func TestHeldBudgetStoreSatisfiesPublicContract(t *testing.T) {
+	resourcestoretest.RunHeldBudget(t, resourcestoretest.HeldBudgetContract{
+		New: func(testing.TB) resource.HeldBudgetStore {
+			return newR3PerCallHeldStore()
+		},
+	})
+}

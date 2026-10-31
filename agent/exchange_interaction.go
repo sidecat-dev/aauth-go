@@ -123,6 +123,9 @@ type PendingExchange struct {
 	tokenExpirySource    string
 	parentMediated       bool
 	budget               *budgets.Value
+	// chained marks a call-chaining request: personServer is the Person
+	// Server the upstream token names, not this client's own.
+	chained bool
 }
 
 // PersonServer returns the Person Server that accepted the exchange.
@@ -201,7 +204,7 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 	if client == nil {
 		return ExchangeResult{}, fail(operation, errors.New("client is required"))
 	}
-	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input)
+	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input, true)
 	if err != nil {
 		return ExchangeResult{}, fail(operation, err)
 	}
@@ -219,15 +222,16 @@ func (client *Client) BeginExchange(ctx context.Context, input ExchangeRequest) 
 			return ExchangeResult{}, fail(operation, errors.New("R3 exchange interaction is not implemented"))
 		}
 		resourceClaims := verifiedResource.claims
-		if input.UpstreamToken != "" {
-			return ExchangeResult{}, fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
-		}
 		pending, err := client.pendingExchangeResponse(
-			response, input.PersonServer, input.ResourceToken, resourceClaims, PendingExchange{}, credential,
+			response, credential.personServer, input.ResourceToken, resourceClaims, PendingExchange{}, credential,
 		)
 		if err != nil {
 			return ExchangeResult{}, fail(operation, err)
 		}
+		// A call-chaining request keeps polling the Person Server its upstream
+		// token named, so an intermediary can chain the interaction to its own
+		// caller (Core, Interaction Chaining).
+		pending.chained = input.UpstreamToken != ""
 		missionCapabilityFallback := resourceClaims.MissionS256 != "" && input.Capabilities == nil
 		pending.interactionCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "interaction")
 		pending.clarificationCapable = missionCapabilityFallback || slices.Contains(input.Capabilities, "clarification")
@@ -324,7 +328,11 @@ func (client *Client) validatePendingExchange(ctx context.Context, pending Pendi
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := client.requireDirectPersonServerCaller(); err != nil {
+	if pending.chained {
+		if client.agentClaims.ParentAgent != "" {
+			return ErrSubagentPersonServerCall
+		}
+	} else if err := client.requireDirectPersonServerCaller(); err != nil {
 		return err
 	}
 	if pending.kind != pendingExchangeVerified || pending.personServer == "" || pending.location == "" ||
@@ -338,7 +346,8 @@ func (client *Client) validatePendingExchange(ctx context.Context, pending Pendi
 	if err := validatePendingExchangeRequirement(pending); err != nil {
 		return err
 	}
-	if pending.agentProvider != client.agentClaims.Issuer || pending.personServer != client.agentClaims.PersonServer ||
+	if pending.agentProvider != client.agentClaims.Issuer ||
+		(!pending.chained && pending.personServer != client.agentClaims.PersonServer) ||
 		pending.agent != client.identifier {
 		return errors.New("pending exchange does not match client identity")
 	}
@@ -359,9 +368,13 @@ func (client *Client) validatePendingExchange(ctx context.Context, pending Pendi
 	return nil
 }
 
+// exchangeRequest sends one PS token request. deferred is true for callers
+// that can return a pending exchange; a Resource token that carries an
+// interaction claim always meets one.
 func (client *Client) exchangeRequest(
 	ctx context.Context,
 	input ExchangeRequest,
+	deferred bool,
 ) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	if ctx == nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("context is required")
@@ -406,7 +419,7 @@ func (client *Client) exchangeRequest(
 		if !slices.Contains(input.Capabilities, "budget") {
 			input.Capabilities = append(append([]string(nil), input.Capabilities...), "budget")
 		}
-		return client.finishExchangeRequest(ctx, input, credential, verifiedResource)
+		return client.finishExchangeRequest(ctx, input, credential, verifiedResource, deferred)
 	}
 	verifiedResource := verifiedExchangeResource{}
 	if carriesR3 {
@@ -439,7 +452,7 @@ func (client *Client) exchangeRequest(
 		}
 		verifiedResource.claims = claims
 	}
-	return client.finishExchangeRequest(ctx, input, credential, verifiedResource)
+	return client.finishExchangeRequest(ctx, input, credential, verifiedResource, deferred)
 }
 
 func (client *Client) finishExchangeRequest(
@@ -447,13 +460,18 @@ func (client *Client) finishExchangeRequest(
 	input ExchangeRequest,
 	credential personServerCredential,
 	verifiedResource verifiedExchangeResource,
+	deferred bool,
 ) (*http.Response, verifiedExchangeResource, personServerCredential, error) {
 	resourceClaims := verifiedResource.claims
+	// A withdrawn resource token is terminal: it is never submitted again.
+	if err := client.refuseWithdrawnResourceToken(input.ResourceToken); err != nil {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, err
+	}
 	if resourceClaims.MissionS256 != "" && (input.SubagentToken != "" || input.UpstreamToken != "") {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("mission-bound delegated or call-chain authorization is not supported")
 	}
-	if resourceClaims.Interaction != nil {
-		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource-token interaction requires the deferred flow")
+	if resourceClaims.Interaction != nil && !deferred {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, errors.New("resource-token interaction requires BeginExchange")
 	}
 	thumbprint, err := credential.requestKey.Thumbprint()
 	if err != nil {
@@ -508,6 +526,9 @@ func (client *Client) finishExchangeRequest(
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
+		return nil, verifiedExchangeResource{}, personServerCredential{}, err
+	}
+	if err := client.observeWithdrawnResourceToken(response, input.ResourceToken, resourceClaims); err != nil {
 		return nil, verifiedExchangeResource{}, personServerCredential{}, err
 	}
 	return response, verifiedResource, credential, nil
@@ -706,7 +727,7 @@ func (client *Client) pendingExchangeResponse(
 		resourceToken: resourceToken, resourceClaims: &claims,
 		agentProvider: client.agentClaims.Issuer, agent: client.identifier, agentJKT: thumbprint,
 		tokenKey: tokenKey, tokenExpiresAt: tokenExpiresAt, tokenExpirySource: tokenExpirySource,
-		parentMediated: parentMediated, budget: prior.budget,
+		parentMediated: parentMediated, budget: prior.budget, chained: prior.chained,
 	}, nil
 }
 

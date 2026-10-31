@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ type providerEventStore struct {
 	deliveries    map[events.DeliveryFingerprint]agentprovider.EventDelivery
 	acceptances   map[events.DeliveryFingerprint]agentprovider.EventAcceptance
 	order         map[string][]events.DeliveryFingerprint
+	pending       map[string][]events.DeliveryFingerprint
 	uses          map[string]int64
 }
 
@@ -29,6 +31,7 @@ func newProviderEventStore() *providerEventStore {
 		deliveries:    make(map[events.DeliveryFingerprint]agentprovider.EventDelivery),
 		acceptances:   make(map[events.DeliveryFingerprint]agentprovider.EventAcceptance),
 		order:         make(map[string][]events.DeliveryFingerprint),
+		pending:       make(map[string][]events.DeliveryFingerprint),
 		uses:          make(map[string]int64),
 	}
 }
@@ -78,6 +81,7 @@ func (store *providerEventStore) AcceptEvent(_ context.Context, delivery agentpr
 	delivery.Payload = append([]byte(nil), delivery.Payload...)
 	store.deliveries[delivery.Fingerprint] = delivery
 	store.order[delivery.EventID] = append(store.order[delivery.EventID], delivery.Fingerprint)
+	store.pending[delivery.Agent] = append(store.pending[delivery.Agent], delivery.Fingerprint)
 	store.uses[delivery.EventID]++
 	remaining := int64(0)
 	if subscription.MaxUses > 0 {
@@ -102,16 +106,29 @@ func (store *providerEventStore) deliveryFor(fingerprint events.DeliveryFingerpr
 	return delivery, nil
 }
 
-func (store *providerEventStore) Delivery(eventID string) (agentprovider.EventDelivery, error) {
+// PendingEvents is the AP-to-Agent read path: the deliveries accepted for
+// agent and not yet acknowledged, oldest first.
+func (store *providerEventStore) PendingEvents(_ context.Context, agent string) ([]agentprovider.EventDelivery, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	order := store.order[eventID]
-	if len(order) == 0 {
-		return agentprovider.EventDelivery{}, errors.New("events example: Agent Provider has no accepted delivery")
+	pending := make([]agentprovider.EventDelivery, 0, len(store.pending[agent]))
+	for _, fingerprint := range store.pending[agent] {
+		delivery := store.deliveries[fingerprint]
+		delivery.Payload = append([]byte(nil), delivery.Payload...)
+		pending = append(pending, delivery)
 	}
-	delivery := store.deliveries[order[len(order)-1]]
-	delivery.Payload = append([]byte(nil), delivery.Payload...)
-	return delivery, nil
+	return pending, nil
+}
+
+// AcknowledgeEvent drops one handed-over delivery from agent's pending list.
+// The delivery stays known, so an exact replay is still a duplicate.
+func (store *providerEventStore) AcknowledgeEvent(_ context.Context, agent string, fingerprint events.DeliveryFingerprint) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.pending[agent] = slices.DeleteFunc(store.pending[agent], func(candidate events.DeliveryFingerprint) bool {
+		return candidate == fingerprint
+	})
+	return nil
 }
 
 type resourceEventStore struct {

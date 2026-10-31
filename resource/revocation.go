@@ -8,7 +8,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
-	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 )
 
 // ErrAuthTokenRevoked reports that an observed auth token was revoked.
@@ -76,52 +76,72 @@ func (server *Server) observeAuthToken(ctx context.Context, compact string, clai
 	})
 }
 
+// serveRevocation records a revocation from the server that issued the token.
+// A Resource has nothing downstream of one, so it answers at once with an
+// empty 200 and never 202. A Person Server revokes person tokens and, in
+// three-party access, the auth tokens it issued; the configured Access Server
+// revokes the auth tokens it issued; an Agent Provider revokes Agent tokens.
 func (server *Server) serveRevocation(response http.ResponseWriter, request *http.Request) {
-	prepared, err := signaturekey.PrepareRequest(request, server.clock, signaturekey.VerifyOptions{
-		RequiredComponents: authorizationSignatureComponents(server.additionalSignatureComponents),
-		AcceptedSchemes:    []signaturekey.Scheme{signaturekey.SchemeJWKSURI},
-		MaxBodyBytes:       server.maxSignedBodyBytes,
-	})
+	caller, err := revocation.VerifyCaller(request, server.clock, server.keyResolver,
+		authorizationSignatureComponents(server.additionalSignatureComponents), server.maxSignedBodyBytes)
 	if err != nil {
 		writeProblem(response, http.StatusUnauthorized, "invalid_request", err)
 		return
 	}
-	issuer, document, _, ok := prepared.Credential().JWKSURI()
-	if !ok || (document != aauth.PersonDiscoveryDocument && document != aauth.AgentDiscoveryDocument) {
-		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("token issuer proof is required"))
+	stores := server.revocationStores(caller)
+	if len(stores) == 0 {
+		writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("this Resource accepts no revocations from this caller"))
 		return
 	}
-	proof, err := prepared.VerifyJWKSURI(request.Context(), server.keyResolver)
-	if err != nil {
-		writeProblem(response, http.StatusUnauthorized, "invalid_request", err)
+	now := server.clock.Now().UTC()
+	if delay, ok := server.revocationLimiter.Allow(caller.Issuer, now); !ok {
+		revocation.WriteRateLimited(response, delay, errors.New("revocation rate exceeded"))
 		return
 	}
-	if proof.Signer() != issuer {
-		writeProblem(response, http.StatusUnauthorized, "invalid_request", errors.New("token issuer proof signer does not match its issuer"))
-		return
-	}
-	input, err := aauth.DecodeRevocationRequest(request.Body, maximumAuthorizationRequestBytes, issuer)
+	input, err := revocation.DecodeRequest(request, caller.Issuer, maximumAuthorizationRequestBytes, now, server.revocationLimits)
 	if err != nil {
 		writeProblem(response, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	switch document {
+	for _, record := range stores {
+		if err := record(request.Context(), input); err != nil {
+			if errors.Is(err, aauth.ErrRevocationLimitReached) {
+				revocation.WriteRateLimited(response, server.revocationLimits.Window, err)
+				return
+			}
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	}
+	revocation.WriteReport(response, nil)
+}
+
+// revocationStores selects where a verified caller's revocation is recorded.
+// A Person Server's jti may name a person token or, in three-party access, an
+// auth token, so both records are kept.
+func (server *Server) revocationStores(caller revocation.Caller) []func(context.Context, aauth.RevocationRequest) error {
+	var stores []func(context.Context, aauth.RevocationRequest) error
+	switch caller.Document {
 	case aauth.PersonDiscoveryDocument:
-		if server.authTokenStatuses == nil {
-			writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("Auth-token revocation is not configured"))
-			return
+		if server.personTokenRevocations != nil {
+			stores = append(stores, server.personTokenRevocations.Revoke)
 		}
-		err = server.authTokenStatuses.Revoke(request.Context(), input)
+		if server.authTokenStatuses != nil && server.authorizationTopology == authorizationTopologyPersonServer {
+			stores = append(stores, server.authTokenStatuses.Revoke)
+		}
+	case aauth.AccessDiscoveryDocument:
+		if server.authTokenStatuses != nil && server.authorizationTopology == authorizationTopologyFederated &&
+			caller.Issuer == server.accessServer {
+			stores = append(stores, server.authTokenStatuses.Revoke)
+		}
 	case aauth.AgentDiscoveryDocument:
-		if server.agentTokenRevocations == nil {
-			writeProblem(response, http.StatusForbidden, "unsupported_iss", errors.New("Agent-token revocation is not configured"))
-			return
+		if server.agentTokenRevocations != nil {
+			stores = append(stores, server.agentTokenRevocations.Revoke)
 		}
-		err = server.agentTokenRevocations.Revoke(request.Context(), input)
 	}
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
-	}
-	response.WriteHeader(http.StatusOK)
+	return stores
+}
+
+func (server *Server) acceptsRevocations() bool {
+	return server.authTokenStatuses != nil || server.agentTokenRevocations != nil || server.personTokenRevocations != nil
 }

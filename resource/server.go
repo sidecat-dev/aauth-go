@@ -21,6 +21,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -68,15 +69,17 @@ type FederatedAuthorizationConfig struct {
 	// Budget optionally enables proactive four-party Budget offers and
 	// fixed-price enforcement for metered protected routes. A paired R3 config
 	// permits class-document operation authorization under the same fixed grant.
-	// Budget does not compose with held or reactive delivery.
+	// Budget does not compose with reactive delivery. With HeldInvocations,
+	// only Budget refusals are held; see HeldBudgetStore.
 	Budget *BudgetConfig
 	// HeldInvocations enables Resource-held auth-token delivery. The host store
 	// is a trusted persistence and authorization boundary; see
 	// HeldInvocationStore.
 	HeldInvocations HeldInvocationStore
 	// HoldAuthTokenRequest selects held delivery per verified person-token
-	// request. A nil function selects held delivery for every request when
-	// HeldInvocations is configured.
+	// request, R3 per-call challenge, or Budget refusal. A nil function
+	// selects held delivery for every request when HeldInvocations is
+	// configured.
 	HoldAuthTokenRequest func(*http.Request) bool
 	// MaxRetainedRequestBodyBytes bounds the retained application request body.
 	MaxRetainedRequestBodyBytes int64
@@ -86,6 +89,17 @@ type FederatedAuthorizationConfig struct {
 	// plus trailers. All three retained-application limits must be positive when
 	// held delivery or R3 per-call retry is configured, and zero otherwise.
 	MaxRetainedHeaderBytes int64
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
+	// AuthTokenStatuses enables observation of accepted auth tokens and their
+	// revocation by the Access Server that issued them.
+	AuthTokenStatuses AuthTokenStatusStore
+	// Revocation optionally adds person-token revocation and RevokeResourceToken.
+	Revocation *RevocationConfig
+	// ChainedInteractions optionally lets this Resource, acting as an Agent
+	// downstream, answer its caller with its own interaction.
+	ChainedInteractions *ChainedInteractionConfig
 }
 
 // PSAuthorizationConfig supplies a PS-authorization Resource's identity,
@@ -121,6 +135,17 @@ type PSAuthorizationConfig struct {
 	// AuthTokenStatuses enables observation and revocation of accepted auth
 	// tokens. A nil store omits the revocation endpoint.
 	AuthTokenStatuses AuthTokenStatusStore
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
+	// Revocation optionally adds person-token revocation and RevokeResourceToken.
+	Revocation *RevocationConfig
+	// InitiatedInteraction optionally puts this Resource's own user-facing
+	// flow in the Resource tokens of Person-token challenges.
+	InitiatedInteraction *InitiatedInteractionConfig
+	// ChainedInteractions optionally lets this Resource, acting as an Agent
+	// downstream, answer its caller with its own interaction.
+	ChainedInteractions *ChainedInteractionConfig
 }
 
 // AgentIdentityConfig constructs a Resource that authorizes application
@@ -141,6 +166,9 @@ type AgentIdentityConfig struct {
 	// AgentTokenRevocations enables the issuing Agent Provider's signed
 	// revocation endpoint and checks retained markers before application use.
 	AgentTokenRevocations AgentTokenRevocationStore
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
 }
 
 // PersonIdentityConfig constructs a Resource that authorizes application
@@ -154,6 +182,12 @@ type PersonIdentityConfig struct {
 	MaxSignedBodyBytes            int64
 	ResolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	Protected                     http.Handler
+	// FurtherSchemes optionally accepts clients outside AAuth under
+	// Signature-Key schemes AAuth does not use, on the protected routes.
+	FurtherSchemes *FurtherSchemesConfig
+	// Revocation optionally adds person-token revocation. A request
+	// presenting a revoked person token is refused.
+	Revocation *RevocationConfig
 }
 
 // PersonIdentity is the stable person reference asserted to this Resource.
@@ -338,6 +372,14 @@ type Server struct {
 	maxRetainedHeaderBytes        int64
 	r3                            *r3Config
 	budget                        *budgetConfig
+	furtherSchemes                *furtherSchemes
+	personTokenRevocations        PersonTokenRevocationStore
+	revocationLimits              aauth.RevocationLimits
+	revocationLimiter             *revocation.Limiter
+	resourceTokenSender           *revocation.Sender
+	resourceTokenCascades         *revocation.Tracker
+	initiatedInteraction          *InitiatedInteractionConfig
+	chainedInteractions           *chainedInteractionConfig
 	handler                       http.Handler
 }
 
@@ -358,6 +400,8 @@ type directIdentityConfig struct {
 	resolvePerson                 func(context.Context, PersonIdentity, PersonContext) error
 	protected                     http.Handler
 	agentTokenRevocations         AgentTokenRevocationStore
+	furtherSchemes                *FurtherSchemesConfig
+	revocation                    *RevocationConfig
 }
 
 // NewAgentIdentity constructs an identity-only Resource that accepts verified
@@ -369,6 +413,7 @@ func NewAgentIdentity(config AgentIdentityConfig) (*Server, error) {
 		additionalSignatureComponents: config.AdditionalSignatureComponents,
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes, protected: config.Protected,
 		agentTokenRevocations: config.AgentTokenRevocations,
+		furtherSchemes:        config.FurtherSchemes,
 	})
 }
 
@@ -384,6 +429,8 @@ func NewPersonIdentity(config PersonIdentityConfig) (*Server, error) {
 		additionalSignatureComponents: config.AdditionalSignatureComponents,
 		maxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		resolvePerson:                 config.ResolvePerson, protected: config.Protected,
+		furtherSchemes: config.FurtherSchemes,
+		revocation:     config.Revocation,
 	})
 }
 
@@ -407,6 +454,10 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	further, err := validateFurtherSchemes(config.furtherSchemes)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		issuer: config.issuer, accessMode: config.accessMode,
 		keyResolver: config.keyResolver, clock: config.clock,
@@ -414,6 +465,13 @@ func newDirectIdentityServer(config directIdentityConfig) (*Server, error) {
 		maxSignedBodyBytes:            config.maxSignedBodyBytes,
 		resolvePerson:                 config.resolvePerson, protected: config.protected,
 		agentTokenRevocations: config.agentTokenRevocations,
+		furtherSchemes:        further,
+	}
+	if config.revocation != nil && (config.revocation.HTTPClient != nil || config.revocation.Admit != nil) {
+		return nil, errors.New("aauth: an identity-only Resource issues no resource tokens to revoke")
+	}
+	if err := server.configureRevocation(config.revocation); err != nil {
+		return nil, err
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -426,13 +484,10 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if err := aauth.ValidateServerIdentifier(config.AccessServer); err != nil {
 		return nil, fmt.Errorf("aauth: resource access server: %w", err)
 	}
-	if config.Budget != nil && config.HeldInvocations != nil {
-		return nil, errors.New("aauth: Resource-held Budget authorization is not implemented")
-	}
 	if config.Budget != nil && config.Budget.InitialOffer != nil {
 		return nil, errors.New("aauth: reactive four-party Budget authorization is not implemented")
 	}
-	return newAuthorizationServer(config, authorizationTopologyFederated, nil, config.Budget)
+	return newAuthorizationServer(config, authorizationTopologyFederated, config.AuthTokenStatuses, config.Budget)
 }
 
 // NewPSAuthorization constructs a Resource that challenges person-token
@@ -440,18 +495,32 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 // presented person token, and accepts scoped or class-R3 auth tokens from that
 // PS.
 func NewPSAuthorization(config PSAuthorizationConfig) (*Server, error) {
-	return newAuthorizationServer(FederatedAuthorizationConfig{
+	if err := validateInitiatedInteractionConfig(config.InitiatedInteraction); err != nil {
+		return nil, err
+	}
+	server, err := newAuthorizationServer(FederatedAuthorizationConfig{
 		Issuer: config.Issuer, SigningKey: config.SigningKey,
 		KeyResolver: config.KeyResolver, Clock: config.Clock, NewID: config.NewID,
 		ScopeDescriptions:             config.ScopeDescriptions,
 		AdditionalSignatureComponents: config.AdditionalSignatureComponents,
 		MaxSignedBodyBytes:            config.MaxSignedBodyBytes,
 		RequiredScopes:                config.RequiredScopes, ResolvePerson: config.ResolvePerson,
-		ValidateAccount:  config.ValidateAccount,
-		AuthorizationAsk: config.AuthorizationAsk,
-		Protected:        config.Protected,
-		R3:               config.R3,
+		ValidateAccount:     config.ValidateAccount,
+		AuthorizationAsk:    config.AuthorizationAsk,
+		Protected:           config.Protected,
+		R3:                  config.R3,
+		FurtherSchemes:      config.FurtherSchemes,
+		Revocation:          config.Revocation,
+		ChainedInteractions: config.ChainedInteractions,
 	}, authorizationTopologyPersonServer, config.AuthTokenStatuses, config.Budget)
+	if err != nil {
+		return nil, err
+	}
+	if config.InitiatedInteraction != nil {
+		initiated := *config.InitiatedInteraction
+		server.initiatedInteraction = &initiated
+	}
+	return server, nil
 }
 
 func newAuthorizationServer(
@@ -552,6 +621,14 @@ func newAuthorizationServer(
 	if err != nil {
 		return nil, err
 	}
+	further, err := validateFurtherSchemes(config.FurtherSchemes)
+	if err != nil {
+		return nil, err
+	}
+	chainedInteractions, err := newChainedInteractionConfig(config.ChainedInteractions)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		issuer:                        config.Issuer,
 		accessMode:                    aauth.AccessModeAuthToken,
@@ -577,6 +654,11 @@ func newAuthorizationServer(
 		maxRetainedHeaderBytes:        config.MaxRetainedHeaderBytes,
 		r3:                            validatedR3,
 		budget:                        validatedBudget,
+		furtherSchemes:                further,
+		chainedInteractions:           chainedInteractions,
+	}
+	if err := server.configureRevocation(config.Revocation); err != nil {
+		return nil, err
 	}
 	server.handler = server.newHandler()
 	return server, nil
@@ -617,7 +699,7 @@ func (server *Server) newHandler() http.Handler {
 	if server.accessMode == aauth.AccessModeAuthToken {
 		mux.HandleFunc("POST /authorize", server.serveAuthorization)
 	}
-	if server.authTokenStatuses != nil || server.agentTokenRevocations != nil {
+	if server.acceptsRevocations() {
 		mux.HandleFunc("POST /revoke", server.serveRevocation)
 	}
 	if server.budget != nil {
@@ -631,6 +713,10 @@ func (server *Server) newHandler() http.Handler {
 	if server.heldInvocations != nil {
 		mux.HandleFunc("GET /pending/{id}", server.serveHeldPoll)
 		mux.HandleFunc("/pending/", server.serveHeldNamespace)
+	}
+	if server.chainedInteractions != nil {
+		mux.HandleFunc("GET "+chainedInteractionPendingPath+"{id}", server.serveChainedInteractionPoll)
+		mux.HandleFunc(chainedInteractionPendingPath, serveChainedInteractionNamespace)
 	}
 	mux.Handle("/", http.HandlerFunc(server.serveProtected))
 	return withResourceAuthority(server.issuer, mux)
@@ -743,7 +829,7 @@ func resourceAuthorizationEndpoint(server *Server) string {
 }
 
 func resourceRevocationEndpoint(server *Server) string {
-	if server.authTokenStatuses == nil && server.agentTokenRevocations == nil {
+	if !server.acceptsRevocations() {
 		return ""
 	}
 	return server.issuer + "/revoke"

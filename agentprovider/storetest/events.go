@@ -179,3 +179,105 @@ func eventInboxDelivery(eventID, agent, resource, token string, payload []byte, 
 		ContentType: contentType, ReceivedAt: now,
 	}
 }
+
+// EventInboxReaderStore is an Events inbox with its AP-to-Agent read path.
+type EventInboxReaderStore interface {
+	agentprovider.EventInboxStore
+	agentprovider.EventInboxReader
+}
+
+// EventInboxReaderContract constructs a fresh empty inbox that also
+// implements agentprovider.EventInboxReader.
+type EventInboxReaderContract struct {
+	New func(testing.TB) EventInboxReaderStore
+}
+
+// RunEventInboxReader checks the read path from the inbox to its Agents:
+// accepted deliveries are pending for their own Agent only, oldest first,
+// with the exact token and payload bytes and independent of caller memory;
+// an exact replay is not queued twice; and an acknowledged delivery leaves
+// the pending list while its replay stays a duplicate.
+func RunEventInboxReader(t *testing.T, contract EventInboxReaderContract) {
+	t.Helper()
+	if contract.New == nil {
+		t.Fatal("storetest: EventInboxReaderContract.New is required")
+	}
+	ctx := context.Background()
+	now := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC)
+	const (
+		agent    = "aauth:agent@ap.example"
+		other    = "aauth:other@ap.example"
+		resource = "https://resource.example"
+	)
+	store := contract.New(t)
+	if pending, err := store.PendingEvents(ctx, agent); err != nil || len(pending) != 0 {
+		t.Fatalf("PendingEvents on an empty inbox = %d, %v", len(pending), err)
+	}
+	mine := eventInboxSubscription("event-mine", agent, resource, 0, now)
+	theirs := eventInboxSubscription("event-theirs", other, resource, 0, now)
+	for _, subscription := range []agentprovider.EventSubscription{mine, theirs} {
+		if err := store.CommitSubscription(ctx, subscription); err != nil {
+			t.Fatalf("CommitSubscription %s = %v", subscription.EventID, err)
+		}
+	}
+	firstPayload := []byte(`{"slot":"10:00"}`)
+	first := eventInboxDelivery(mine.EventID, agent, resource, "token-first", firstPayload, now)
+	second := eventInboxDelivery(mine.EventID, agent, resource, "token-second", nil, now.Add(time.Second))
+	foreign := eventInboxDelivery(theirs.EventID, other, resource, "token-foreign", []byte(`{}`), now)
+	for _, delivery := range []agentprovider.EventDelivery{first, second, foreign} {
+		if _, err := store.AcceptEvent(ctx, delivery); err != nil {
+			t.Fatalf("AcceptEvent %s = %v", delivery.Token, err)
+		}
+	}
+	original := append([]byte(nil), firstPayload...)
+	firstPayload[0] = 'x'
+	replay := eventInboxDelivery(mine.EventID, agent, resource, "token-first", original, now)
+	if accepted, err := store.AcceptEvent(ctx, replay); err != nil || !accepted.Duplicate {
+		t.Fatalf("exact replay = %#v, %v; want a duplicate", accepted, err)
+	}
+
+	pending, err := store.PendingEvents(ctx, agent)
+	if err != nil {
+		t.Fatalf("PendingEvents = %v", err)
+	}
+	if len(pending) != 2 || pending[0].Fingerprint != first.Fingerprint || pending[1].Fingerprint != second.Fingerprint {
+		t.Fatalf("PendingEvents = %d deliveries; want the two accepted for this Agent, oldest first", len(pending))
+	}
+	if pending[0].Token != "token-first" || !bytes.Equal(pending[0].Payload, original) ||
+		pending[0].ContentType != "application/json" || pending[0].EventID != mine.EventID ||
+		pending[0].Resource != resource || pending[0].Agent != agent {
+		t.Fatalf("pending delivery = %#v; want the exact accepted token and payload", pending[0])
+	}
+	if len(pending[1].Payload) != 0 || pending[1].ContentType != "" {
+		t.Fatalf("bodyless pending delivery = %#v", pending[1])
+	}
+	pending[0].Payload[0] = 'y'
+	again, err := store.PendingEvents(ctx, agent)
+	if err != nil || len(again) != 2 || !bytes.Equal(again[0].Payload, original) {
+		t.Fatalf("pending payload aliases a returned copy: %v", err)
+	}
+
+	if err := store.AcknowledgeEvent(ctx, other, first.Fingerprint); err != nil {
+		t.Fatalf("AcknowledgeEvent for another Agent = %v", err)
+	}
+	if err := store.AcknowledgeEvent(ctx, agent, first.Fingerprint); err != nil {
+		t.Fatalf("AcknowledgeEvent = %v", err)
+	}
+	if err := store.AcknowledgeEvent(ctx, agent, first.Fingerprint); err != nil {
+		t.Fatalf("repeated AcknowledgeEvent = %v", err)
+	}
+	pending, err = store.PendingEvents(ctx, agent)
+	if err != nil || len(pending) != 1 || pending[0].Fingerprint != second.Fingerprint {
+		t.Fatalf("PendingEvents after acknowledgment = %d, %v; want only the second delivery", len(pending), err)
+	}
+	if accepted, err := store.AcceptEvent(ctx, replay); err != nil || !accepted.Duplicate {
+		t.Fatalf("replay after acknowledgment = %#v, %v; want a duplicate", accepted, err)
+	}
+	if pending, err = store.PendingEvents(ctx, agent); err != nil || len(pending) != 1 {
+		t.Fatalf("replay after acknowledgment queued the delivery again: %d, %v", len(pending), err)
+	}
+	foreignPending, err := store.PendingEvents(ctx, other)
+	if err != nil || len(foreignPending) != 1 || foreignPending[0].Fingerprint != foreign.Fingerprint {
+		t.Fatalf("PendingEvents for the other Agent = %d, %v", len(foreignPending), err)
+	}
+}

@@ -50,7 +50,9 @@ type R3Config struct {
 }
 
 // Client performs explicit protocol calls. It does not cache, sleep, retry,
-// or automatically follow requirements or deferred responses.
+// or automatically follow requirements or deferred responses. It remembers
+// only the resource tokens a Person Server refused as withdrawn, so that it
+// never submits one again.
 type Client struct {
 	identifier         string
 	signingKey         jose.SigningKey
@@ -62,6 +64,8 @@ type Client struct {
 	maxSignedBodyBytes int64
 	r3                 *R3Config
 	events             *eventsClientConfig
+	// refusedResourceTokens is shared by every copy of the Client.
+	refusedResourceTokens *refusedResourceTokens
 }
 
 type personServerCredential struct {
@@ -234,7 +238,8 @@ func New(ctx context.Context, config Config) (*Client, error) {
 		identifier: config.Identifier, signingKey: config.SigningKey,
 		agentToken: config.AgentToken, agentClaims: claims,
 		keyResolver: config.KeyResolver, httpClient: &httpClient, clock: config.Clock,
-		maxSignedBodyBytes: config.MaxSignedBodyBytes,
+		maxSignedBodyBytes:    config.MaxSignedBodyBytes,
+		refusedResourceTokens: newRefusedResourceTokens(),
 	}
 	if config.R3 != nil {
 		client.r3 = &R3Config{Registry: config.R3.Registry}
@@ -497,7 +502,7 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 	if client == nil {
 		return "", fail(operation, errors.New("client is required"))
 	}
-	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input)
+	response, verifiedResource, credential, err := client.exchangeRequest(ctx, input, false)
 	if err != nil {
 		return "", fail(operation, err)
 	}
@@ -563,7 +568,7 @@ func (client *Client) personServerRequestBinding(
 		return personServerCredential{}, ErrSubagentPersonServerCall
 	}
 	if upstreamToken != "" {
-		upstream, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
+		upstreamPersonServer, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
 		if err != nil {
 			return personServerCredential{}, err
 		}
@@ -571,12 +576,12 @@ func (client *Client) personServerRequestBinding(
 			if err := aauth.ValidateServerIdentifier(personServer); err != nil {
 				return personServerCredential{}, fmt.Errorf("person server: %w", err)
 			}
-			if personServer != upstream.PersonServer {
+			if personServer != upstreamPersonServer {
 				return personServerCredential{}, errors.New("person server does not match upstream token")
 			}
 		}
 		return personServerCredential{
-			personServer: upstream.PersonServer,
+			personServer: upstreamPersonServer,
 			requestKey:   client.signingKey.PublicJWK(),
 			expiresAt:    client.agentClaims.ExpiresAt,
 			expirySource: "agent token",
@@ -617,30 +622,52 @@ func (client *Client) personServerRequestBinding(
 	}, nil
 }
 
-func (client *Client) verifyCallChainUpstreamToken(ctx context.Context, compact string) (aauth.AuthTokenClaims, error) {
+func (client *Client) verifyCallChainUpstreamToken(ctx context.Context, compact string) (string, error) {
 	return client.verifyCallChainUpstreamTokenAt(ctx, compact, client.clock.Now())
 }
 
+// verifyCallChainUpstreamTokenAt verifies the token the calling Agent
+// presented to this intermediary and returns the Person Server it names, which
+// downstream requests are routed to. It is a person token when the
+// intermediary served the call on the person's identity, or an auth token its
+// Person Server issued.
 func (client *Client) verifyCallChainUpstreamTokenAt(
 	ctx context.Context,
 	compact string,
 	verifiedAt time.Time,
-) (aauth.AuthTokenClaims, error) {
+) (string, error) {
 	verificationClock := aauth.ClockFunc(func() time.Time { return verifiedAt })
+	header, err := jose.PeekHeader(compact)
+	if err != nil {
+		return "", fmt.Errorf("verify upstream token: %w", err)
+	}
+	if header.Type == aauth.PersonTokenType {
+		claims, err := aauth.VerifyPersonToken(ctx, compact, client.keyResolver, verificationClock)
+		if err != nil {
+			return "", fmt.Errorf("verify upstream token: %w", err)
+		}
+		if claims.Audience != client.agentClaims.Issuer {
+			return "", errors.New("upstream token audience does not match intermediary Resource")
+		}
+		if claims.MissionS256 != "" {
+			return "", errors.New("mission-bound call chaining is not supported")
+		}
+		return claims.Issuer, nil
+	}
 	claims, err := aauth.VerifyAuthToken(ctx, compact, client.keyResolver, verificationClock)
 	if err != nil {
-		return aauth.AuthTokenClaims{}, fmt.Errorf("verify upstream token: %w", err)
+		return "", fmt.Errorf("verify upstream token: %w", err)
 	}
 	if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != claims.PersonServer {
-		return aauth.AuthTokenClaims{}, errors.New("upstream token was not issued by its Person Server")
+		return "", errors.New("upstream token was not issued by its Person Server")
 	}
 	if claims.Audience != client.agentClaims.Issuer {
-		return aauth.AuthTokenClaims{}, errors.New("upstream token audience does not match intermediary Resource")
+		return "", errors.New("upstream token audience does not match intermediary Resource")
 	}
 	if claims.MissionS256 != "" || claims.Account != nil {
-		return aauth.AuthTokenClaims{}, errors.New("mission- or account-bound call chaining is not supported")
+		return "", errors.New("mission- or account-bound call chaining is not supported")
 	}
-	return claims, nil
+	return claims.PersonServer, nil
 }
 
 func (client *Client) acceptIssuedPersonServer(
@@ -655,11 +682,11 @@ func (client *Client) acceptIssuedPersonServer(
 		}
 		return nil
 	}
-	upstream, err := client.verifyCallChainUpstreamTokenAt(ctx, upstreamToken, issuedAt)
+	upstreamPersonServer, err := client.verifyCallChainUpstreamTokenAt(ctx, upstreamToken, issuedAt)
 	if err != nil {
 		return err
 	}
-	if personServer != upstream.PersonServer {
+	if personServer != upstreamPersonServer {
 		return errors.New("does not match upstream token")
 	}
 	return nil
