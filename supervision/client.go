@@ -42,8 +42,9 @@ type ClientConfig struct {
 	HTTPClient   *http.Client
 	Admit        signaturekey.EgressAdmitter
 	Clock        aauth.Clock
-	// Wait is sent as Prefer: wait on supervision requests and connect. Zero
-	// selects DefaultWait; it is rounded up to whole seconds.
+	// Wait is sent as Prefer: wait on supervision requests, their polls,
+	// connect and its polls. Zero selects DefaultWait; it is rounded up to
+	// whole seconds.
 	Wait time.Duration
 }
 
@@ -208,11 +209,11 @@ func (client *Client) Connect(ctx context.Context, supervisor string, request Co
 	if err != nil {
 		return Outcome{}, err
 	}
-	outcome, response, err := client.send(ctx, supervisor, http.MethodPost, metadata.ConnectEndpoint, body, true, "")
+	wait := request.Action == ActionConnect
+	outcome, response, err := client.send(ctx, supervisor, http.MethodPost, metadata.ConnectEndpoint, body, wait, "")
 	if err != nil {
 		return outcome, err
 	}
-	outcome.Exchange.ActAt = time.Unix(request.IssuedAt, 0).UTC()
 	return client.connectAnswer(outcome, response, metadata.ConnectEndpoint)
 }
 
@@ -222,10 +223,7 @@ func (client *Client) PollConnect(ctx context.Context, supervisor, location stri
 	if err != nil {
 		return Outcome{}, err
 	}
-	if !sameOrigin(supervisor, location) {
-		return Outcome{}, errors.New("supervision: connect pending URL is not on the supervisor's origin")
-	}
-	outcome, response, err := client.send(ctx, supervisor, http.MethodGet, location, nil, false, "")
+	outcome, response, err := client.send(ctx, supervisor, http.MethodGet, location, nil, true, "")
 	if err != nil {
 		return outcome, err
 	}
@@ -259,9 +257,9 @@ func (client *Client) connectAnswer(outcome Outcome, response *RecordedResponse,
 }
 
 // Supervise puts one act to the supervisor: a POST to mission_endpoint, to
-// {mission_endpoint}/{s256}, or to decision_endpoint, with Prefer: wait and,
-// when the SS signs, Accept-Signature. A decision must echo the request's sdi
-// and, from an SS that publishes a jwks_uri, carry a signature that verifies.
+// {mission_endpoint}/{s256}, or to decision_endpoint, with Prefer: wait and
+// Accept-Signature. A decision must echo the request's sdi and, from an SS
+// that publishes a jwks_uri, carry a signature that verifies.
 func (client *Client) Supervise(ctx context.Context, supervisor string, request Request) (Outcome, error) {
 	metadata, err := client.Metadata(ctx, supervisor)
 	if err != nil {
@@ -275,11 +273,7 @@ func (client *Client) Supervise(ctx context.Context, supervisor string, request 
 	if request.Kind.MissionEndpoint() {
 		endpoint = metadata.MissionEndpoint + request.Path()
 	}
-	accept := ""
-	if metadata.Signs() {
-		accept = AcceptSignature(true)
-	}
-	outcome, response, err := client.send(ctx, supervisor, http.MethodPost, endpoint, body, true, accept)
+	outcome, response, err := client.send(ctx, supervisor, http.MethodPost, endpoint, body, true, AcceptSignature(true))
 	if err != nil {
 		return outcome, err
 	}
@@ -287,20 +281,13 @@ func (client *Client) Supervise(ctx context.Context, supervisor string, request 
 }
 
 // Poll fetches an SS pending URL with a signed, bodyless GET under the same
-// identity that made request.
+// identity that made request, with Prefer: wait.
 func (client *Client) Poll(ctx context.Context, supervisor string, request Request, location string) (Outcome, error) {
 	metadata, err := client.Metadata(ctx, supervisor)
 	if err != nil {
 		return Outcome{}, err
 	}
-	if !sameOrigin(supervisor, location) {
-		return Outcome{}, errors.New("supervision: pending URL is not on the supervisor's origin")
-	}
-	accept := ""
-	if metadata.Signs() {
-		accept = AcceptSignature(false)
-	}
-	outcome, response, err := client.send(ctx, supervisor, http.MethodGet, location, nil, false, accept)
+	outcome, response, err := client.send(ctx, supervisor, http.MethodGet, location, nil, true, AcceptSignature(false))
 	if err != nil {
 		return outcome, err
 	}
@@ -314,18 +301,11 @@ func (client *Client) AnswerClarification(ctx context.Context, supervisor string
 	if err != nil {
 		return Outcome{}, err
 	}
-	if !sameOrigin(supervisor, location) {
-		return Outcome{}, errors.New("supervision: pending URL is not on the supervisor's origin")
-	}
 	body, err := ClarificationResponse{Answer: answer}.Encode()
 	if err != nil {
 		return Outcome{}, err
 	}
-	accept := ""
-	if metadata.Signs() {
-		accept = AcceptSignature(true)
-	}
-	outcome, response, err := client.send(ctx, supervisor, http.MethodPost, location, body, false, accept)
+	outcome, response, err := client.send(ctx, supervisor, http.MethodPost, location, body, false, AcceptSignature(true))
 	if err != nil {
 		return outcome, err
 	}
@@ -335,9 +315,6 @@ func (client *Client) AnswerClarification(ctx context.Context, supervisor string
 // Cancel withdraws a pending supervision request with a signed DELETE, as
 // when the Agent cancels.
 func (client *Client) Cancel(ctx context.Context, supervisor, location string) (Outcome, error) {
-	if !sameOrigin(supervisor, location) {
-		return Outcome{}, errors.New("supervision: pending URL is not on the supervisor's origin")
-	}
 	outcome, response, err := client.send(ctx, supervisor, http.MethodDelete, location, nil, false, "")
 	if err != nil {
 		return outcome, err
@@ -360,7 +337,7 @@ func (client *Client) PostEvent(ctx context.Context, supervisor string, event Ev
 	if err != nil {
 		return Outcome{}, err
 	}
-	return client.report(ctx, supervisor, metadata.EventEndpoint, body, event.IssuedAt)
+	return client.report(ctx, supervisor, metadata.EventEndpoint, body)
 }
 
 // PostReport reports a mission approval or termination to
@@ -374,16 +351,17 @@ func (client *Client) PostReport(ctx context.Context, supervisor string, report 
 	if err != nil {
 		return Outcome{}, err
 	}
-	return client.report(ctx, supervisor, metadata.MissionEndpoint+report.Path(), body, report.IssuedAt)
+	return client.report(ctx, supervisor, metadata.MissionEndpoint+report.Path(), body)
 }
 
-func (client *Client) report(ctx context.Context, supervisor, endpoint string, body []byte, issuedAt int64) (Outcome, error) {
+// report posts an event or report. Any 2xx is delivery; the draft answers
+// 201.
+func (client *Client) report(ctx context.Context, supervisor, endpoint string, body []byte) (Outcome, error) {
 	outcome, response, err := client.send(ctx, supervisor, http.MethodPost, endpoint, body, false, "")
 	if err != nil {
 		return outcome, err
 	}
-	outcome.Exchange.ActAt = time.Unix(issuedAt, 0).UTC()
-	if response.Status == http.StatusCreated {
+	if response.Status >= 200 && response.Status < 300 {
 		outcome.Accepted = true
 		return outcome, nil
 	}
@@ -398,7 +376,6 @@ func (client *Client) supervisionAnswer(
 	request Request,
 	endpoint string,
 ) (Outcome, error) {
-	outcome.Exchange.ActAt = time.Unix(request.IssuedAt, 0).UTC()
 	switch response.Status {
 	case http.StatusOK:
 		if err := requireJSON(response.Header); err != nil {
@@ -420,9 +397,8 @@ func (client *Client) supervisionAnswer(
 			if err != nil {
 				return outcome, err
 			}
-			window := decisionWindow(outcome.Exchange.ActAt, outcome.Exchange.ReceivedAt)
 			if _, err := VerifyDecision(ctx, response.Status, response.Header, response.Body, httpRequest,
-				metadata.Issuer, client.keyResolver, client.clock, window); err != nil {
+				metadata.Issuer, client.keyResolver, client.clock); err != nil {
 				return outcome, err
 			}
 			outcome.Exchange.Signed = true
@@ -440,10 +416,13 @@ func (client *Client) supervisionAnswer(
 			if err != nil {
 				return outcome, fmt.Errorf("supervision: pending requirement: %w", err)
 			}
-			if requirement != aauth.RequirementClarification {
+			switch requirement {
+			case aauth.RequirementClarification:
+				clarifying = true
+			case aauth.RequirementApproval:
+			default:
 				return outcome, fmt.Errorf("supervision: a supervision request cannot require %s", requirement)
 			}
-			clarifying = true
 		}
 		if err := requireJSON(response.Header); err != nil {
 			return outcome, err
@@ -454,9 +433,6 @@ func (client *Client) supervisionAnswer(
 		}
 		if sdi != "" && sdi != request.SDI {
 			return outcome, errors.New("supervision: pending response does not echo the request's sdi")
-		}
-		if !sameOrigin(metadata.Issuer, location) {
-			return outcome, errors.New("supervision: pending URL is not on the supervisor's origin")
 		}
 		outcome.Pending = &PendingAnswer{Location: location, RetryAfter: retryAfter, Clarification: clarification}
 		return outcome, nil

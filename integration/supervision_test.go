@@ -53,6 +53,10 @@ type supervisionWorld struct {
 	routes      map[string]personserver.Supervisor
 	supervisors map[string]*supervisorHost
 	nextID      int
+	agentTokens map[string]string
+	// personConfig built people; a test may build another Person Server
+	// from it.
+	personConfig personserver.PSAuthorizationConfig
 }
 
 // supervisorHost is one supervision server and the host around it: its
@@ -70,7 +74,7 @@ type supervisorHost struct {
 }
 
 type supervisionWorldOptions struct {
-	requireSigned bool
+	allowUnsigned bool
 }
 
 func newSupervisionWorld(t *testing.T, options supervisionWorldOptions) *supervisionWorld {
@@ -79,7 +83,7 @@ func newSupervisionWorld(t *testing.T, options supervisionWorldOptions) *supervi
 		t: t, ctx: context.Background(), now: time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC),
 		network: newLogicalTransport(), store: testutil.NewSupervisionStore(),
 		tokens: testutil.NewMissionStore(), routes: map[string]personserver.Supervisor{},
-		supervisors: map[string]*supervisorHost{},
+		supervisors: map[string]*supervisorHost{}, agentTokens: map[string]string{},
 	}
 	world.clock = aauth.ClockFunc(func() time.Time {
 		world.mu.Lock()
@@ -102,9 +106,10 @@ func newSupervisionWorld(t *testing.T, options supervisionWorldOptions) *supervi
 	if err != nil {
 		t.Fatal(err)
 	}
-	world.people, err = personserver.NewPSAuthorization(personserver.PSAuthorizationConfig{
+	world.personConfig = personserver.PSAuthorizationConfig{
 		Issuer: supervisedPersonID, SigningKey: newSigningKey(t, "supervision-ps"), KeyResolver: resolver,
 		Clock: world.clock, NewID: world.id, Tokens: world.tokens,
+		AgentTokenRevocations: testutil.NewAgentTokenRevocationStore(),
 		BindPerson: func(_ context.Context, request personserver.PersonTokenRequest) (personserver.Person, error) {
 			return personserver.Person{Subject: "person-at-" + strings.TrimPrefix(request.Resource, "https://"), Lifetime: time.Hour}, nil
 		},
@@ -140,9 +145,10 @@ func newSupervisionWorld(t *testing.T, options supervisionWorldOptions) *supervi
 				return supervisor, ok, nil
 			},
 			Store: world.store, HTTPClient: world.httpClient, Admit: admitExampleOrigins,
-			RequireSignedDecisions: options.requireSigned,
+			AllowUnsignedDecisions: options.allowUnsigned,
 		},
-	})
+	}
+	world.people, err = personserver.NewPSAuthorization(world.personConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +275,37 @@ func (world *supervisionWorld) newAgent(local string) (*clientagent.Client, stri
 	if err != nil {
 		world.t.Fatal(err)
 	}
+	world.mu.Lock()
+	if world.agentTokens != nil {
+		world.agentTokens[agentID] = token
+	}
+	world.mu.Unlock()
 	return client, agentID
+}
+
+// revokeAgentToken has the Agent Provider revoke the Agent's token at the
+// Person Server.
+func (world *supervisionWorld) revokeAgentToken(agentID string) aauth.AgentTokenClaims {
+	world.t.Helper()
+	world.mu.Lock()
+	token := world.agentTokens[agentID]
+	world.mu.Unlock()
+	claims, err := aauth.VerifyAgentToken(world.ctx, token, world.resolver, world.clock)
+	if err != nil {
+		world.t.Fatal(err)
+	}
+	revoker, err := agentprovider.NewRevocationClient(agentprovider.RevocationClientConfig{
+		Provider: world.provider, HTTPClient: world.httpClient, Admit: admitExampleOrigins,
+	})
+	if err != nil {
+		world.t.Fatal(err)
+	}
+	if err := revoker.RevokeAgentToken(world.ctx, supervisedPersonID, aauth.RevocationRequest{
+		Reference: aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}, ExpiresAt: time.Unix(claims.ExpiresAt, 0),
+	}); err != nil {
+		world.t.Fatal(err)
+	}
+	return claims
 }
 
 // setOffline takes the supervisor off the network, as a machine that sleeps:
@@ -494,6 +530,7 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	revoked := world.revokeAgentToken(assistantID)
 	if _, err := world.people.DeliverSupervisionEvents(ctx, personserver.Supervisor{Issuer: homeSupervisorID, Subject: "home-person-1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -522,6 +559,7 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 	}
 	wantTold := []string{
 		"agent.bound", "approved", "person_token.issued", "auth_token.issued", "decision.resolved", "terminated",
+		"revocation.received",
 	}
 	if told := home.told(); !slices.Equal(told, wantTold) {
 		t.Fatalf("the supervisor was told %v, want %v", told, wantTold)
@@ -531,9 +569,16 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 		issued[0].Issuer != supervisedPersonID || issued[0].Scope != "records.read" {
 		t.Fatalf("auth_token.issued = %#v, want the token under the auth decision's sdi", issued)
 	}
+	completionSDI := home.asked()[len(home.asked())-1].Request.SDI
 	if reports := home.reports(); len(reports) != 2 || reports[0].MissionS256 != mission.S256 ||
-		string(reports[0].Mission) != string(mission.ExactJSON) || reports[1].Reason != "completed" {
-		t.Fatalf("mission reports = %#v", reports)
+		string(reports[0].Mission) != string(mission.ExactJSON) || reports[1].Reason != "completed" ||
+		reports[1].SDI != completionSDI {
+		t.Fatalf("mission reports = %#v, want the approval and the completion under its sdi", reports)
+	}
+	if revocations := home.events(supervision.EventRevocationReceived); len(revocations) != 1 ||
+		revocations[0].JTI != revoked.JTI || revocations[0].TokenIssuer != supervisedProviderID ||
+		revocations[0].TokenType != "agent_token" {
+		t.Fatalf("revocation.received = %#v", revocations)
 	}
 }
 
@@ -545,7 +590,7 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 // the Person Server replays that Agent's active mission to it first.
 func TestAgentsOfOnePersonGoToTheirOwnSupervisors(t *testing.T) {
 	t.Parallel()
-	world := newSupervisionWorld(t, supervisionWorldOptions{})
+	world := newSupervisionWorld(t, supervisionWorldOptions{allowUnsigned: true})
 	allow := func(supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
 		return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
 	}
@@ -781,20 +826,20 @@ func TestUnavailableSupervisorLeavesTheDecisionToThePerson(t *testing.T) {
 	} else if problem := (*aauth.ProblemError)(nil); !errors.As(err, &problem) || problem.Status != http.StatusRequestTimeout {
 		t.Fatalf("expired poll = %v, want 408 expired", err)
 	}
+	// The person was never asked, so nothing is reported as their answer.
 	if _, err := world.people.DeliverSupervisionEvents(ctx, route); err != nil {
 		t.Fatal(err)
 	}
-	resolved = home.events(supervision.EventDecisionResolved)
-	if last := resolved[len(resolved)-1]; last.Answer != supervision.AnswerAbandoned || last.Supervisor != supervision.SupervisorUnavailable {
-		t.Fatalf("decision.resolved after expiry = %#v, want abandoned with the supervisor unavailable", last)
+	if after := home.events(supervision.EventDecisionResolved); len(after) != len(resolved) {
+		t.Fatalf("decision.resolved after a deferral expired: %#v", after[len(resolved):])
 	}
 }
 
 // TestSignedSupervisorDecisionsAreAVerifiableRecord checks that the Person
 // Server's log entry for a signed decision verifies later from the record
-// alone, that an altered entry does not, and that a Person Server requiring
-// signed decisions puts the act to the person rather than accept an unsigned
-// one.
+// alone, that an altered entry does not, and that by default a Person Server
+// puts the act to the person rather than consult a supervisor that does not
+// sign.
 func TestSignedSupervisorDecisionsAreAVerifiableRecord(t *testing.T) {
 	t.Parallel()
 	world := newSupervisionWorld(t, supervisionWorldOptions{})
@@ -833,7 +878,7 @@ func TestSignedSupervisorDecisionsAreAVerifiableRecord(t *testing.T) {
 		t.Fatal("an altered decision verified")
 	}
 
-	strict := newSupervisionWorld(t, supervisionWorldOptions{requireSigned: true})
+	strict := newSupervisionWorld(t, supervisionWorldOptions{})
 	strict.addSupervisor(homeSupervisorID, false, func(supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
 		t.Error("a Person Server that requires signed decisions consulted an unsigned supervisor")
 		return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
@@ -855,7 +900,7 @@ func TestSignedSupervisorDecisionsAreAVerifiableRecord(t *testing.T) {
 // reported to the supervisor with the person's decision.
 func TestSupervisorClarifiesThroughThePersonServer(t *testing.T) {
 	t.Parallel()
-	world := newSupervisionWorld(t, supervisionWorldOptions{})
+	world := newSupervisionWorld(t, supervisionWorldOptions{allowUnsigned: true})
 	var exchanges sync.Map
 	home := world.addSupervisor(homeSupervisorID, false, func(request supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
 		if request.Request.Kind != supervision.KindAuthToken {
@@ -974,43 +1019,71 @@ func TestSupervisorClarifiesThroughThePersonServer(t *testing.T) {
 	}
 }
 
-// TestUnknownMissionIsReplayedBeforeTheSupervisorDecides routes an Agent to a
-// supervisor after its mission was approved without one. The supervisor does
-// not know the mission, so the Person Server gives it a copy of the mission
-// from its own record and asks again under the same sdi.
+// TestUnknownMissionIsReplayedBeforeTheSupervisorDecides routes Agents to a
+// supervisor after their missions were approved without one. A mission
+// approved while supervision was configured is in the Person Server's record
+// and is replayed when the Agent is first routed. One approved before that is
+// not: the supervisor answers unknown_mission, and the Person Server gives it
+// a copy of the mission from its mission store and asks again under the same
+// sdi.
 func TestUnknownMissionIsReplayedBeforeTheSupervisorDecides(t *testing.T) {
 	t.Parallel()
-	world := newSupervisionWorld(t, supervisionWorldOptions{})
+	world := newSupervisionWorld(t, supervisionWorldOptions{allowUnsigned: true})
 	home := world.addSupervisor(homeSupervisorID, false, func(request supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
 		if request.Mission == nil {
 			t.Error("the supervisor decided without the mission")
 		}
 		return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
 	})
-	assistant, assistantID := world.newAgent("assistant")
-	proposal, err := assistant.BeginMission(world.ctx, clientagent.MissionRequest{
-		PersonServer: supervisedPersonID, Proposal: aauth.MissionProposal{Description: "# Tidy the archive"},
-	})
+	propose := func(agent *clientagent.Client, description string) aauth.ApprovedMission {
+		t.Helper()
+		proposal, err := agent.BeginMission(world.ctx, clientagent.MissionRequest{
+			PersonServer: supervisedPersonID, Proposal: aauth.MissionProposal{Description: description},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		approval, ok := proposal.Approval()
+		if !ok {
+			t.Fatal("mission was not approved by the person's own policy")
+		}
+		return approval.Mission()
+	}
+	// The archivist's mission is approved by a Person Server with no
+	// supervision configured, over the same stores.
+	config := world.personConfig
+	config.Supervision = nil
+	unsupervised, err := personserver.NewPSAuthorization(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	approval, ok := proposal.Approval()
-	if !ok {
-		t.Fatal("mission was not approved by the person's own policy")
-	}
-	mission := approval.Mission()
-	world.route(assistantID, personserver.Supervisor{Issuer: homeSupervisorID, Subject: "home-person-1"})
-	result, err := assistant.RequestPermission(world.ctx, clientagent.PermissionRequest{
-		PersonServer: supervisedPersonID, MissionS256: mission.S256, Action: "archive.move",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decision, ok := result.Decision(); !ok || decision.Permission() != aauth.PermissionGranted {
-		t.Fatal("permission was not granted after the replay")
+	archivist, archivistID := world.newAgent("archivist")
+	world.network.Handle(supervisedPersonID, unsupervised.Handler())
+	before := propose(archivist, "# Tidy the archive")
+	world.network.Handle(supervisedPersonID, world.people.Handler())
+	planner, plannerID := world.newAgent("planner")
+	recorded := propose(planner, "# Plan the offsite")
+
+	route := personserver.Supervisor{Issuer: homeSupervisorID, Subject: "home-person-1"}
+	world.route(archivistID, route)
+	world.route(plannerID, route)
+	for _, ask := range []struct {
+		agent   *clientagent.Client
+		mission aauth.ApprovedMission
+	}{{planner, recorded}, {archivist, before}} {
+		result, err := ask.agent.RequestPermission(world.ctx, clientagent.PermissionRequest{
+			PersonServer: supervisedPersonID, MissionS256: ask.mission.S256, Action: "files.move",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision, ok := result.Decision(); !ok || decision.Permission() != aauth.PermissionGranted {
+			t.Fatal("permission was not granted after the replay")
+		}
 	}
 	reports := home.reports()
-	if len(reports) != 1 || reports[0].Action != supervision.ReportApproved || string(reports[0].Mission) != string(mission.ExactJSON) {
+	if len(reports) != 2 || string(reports[0].Mission) != string(recorded.ExactJSON) ||
+		string(reports[1].Mission) != string(before.ExactJSON) {
 		t.Fatalf("replayed reports = %#v", reports)
 	}
 	var outcomes []string
@@ -1019,8 +1092,8 @@ func TestUnknownMissionIsReplayedBeforeTheSupervisorDecides(t *testing.T) {
 			outcomes = append(outcomes, entry.Outcome)
 		}
 	}
-	if !slices.Equal(outcomes, []string{"unknown_mission", "allow"}) {
-		t.Fatalf("logged outcomes = %v, want the refusal and then the allow", outcomes)
+	if !slices.Equal(outcomes, []string{"allow", "unknown_mission", "allow"}) {
+		t.Fatalf("logged outcomes = %v, want an allow, then the refusal and the allow", outcomes)
 	}
 }
 

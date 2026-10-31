@@ -36,6 +36,18 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 	if !ok {
 		return
 	}
+	// An event about a mission needs the mission, so the Person Server
+	// replays it first; and the mission must be the event's Agent's.
+	if event.MissionS256 != "" {
+		mission, ok := server.loadMission(response, request, personServer, event.Subject, event.MissionS256)
+		if !ok {
+			return
+		}
+		if mission.Agent != event.Agent {
+			writeProblem(response, supervision.ErrorInvalidRequest, errors.New("supervisionserver: the event's mission is another agent's"))
+			return
+		}
+	}
 	server.deliver(response, request, connection, event.ID, body, nil, Observation{Event: &event})
 }
 

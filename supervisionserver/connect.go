@@ -114,7 +114,7 @@ func (server *Server) handleConnect(response http.ResponseWriter, request *http.
 			writeProblem(response, supervision.ErrorServerError, err)
 			return
 		}
-		writeConnected(response)
+		writeStatus(response, http.StatusOK, "disconnected")
 		return
 	}
 	if _, err := server.store.LoadConnection(ctx, personServer, connect.Subject); err == nil {
@@ -257,24 +257,32 @@ func (server *Server) handleConnectPoll(response http.ResponseWriter, request *h
 }
 
 func writeConnected(response http.ResponseWriter) {
-	response.Header().Set("Cache-Control", "no-store")
-	response.WriteHeader(http.StatusOK)
+	writeStatus(response, http.StatusOK, "connected")
 }
 
-// writeConnectPending answers 202. Until the person presents the code the
-// response carries the interaction requirement; afterwards it reports status
-// interacting and asks for nothing more.
+// writeStatus answers with a body naming the outcome: connected,
+// disconnected or cancelled.
+func writeStatus(response http.ResponseWriter, code int, status string) {
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(code)
+	_, _ = response.Write([]byte(`{"status":"` + status + `"}`))
+}
+
+// writeConnectPending answers 202 with the interaction requirement for as
+// long as the connect waits for the person. Its status is interacting once
+// the person has presented the code.
 func writeConnectPending(response http.ResponseWriter, pending PendingConnect) {
-	status := "interacting"
-	if pending.State == ConnectWaiting {
-		requirement, err := aauth.FormatInteractionRequirement(aauth.InteractionRequirement{URL: pending.URL, Code: pending.Code})
-		if err != nil {
-			writeProblem(response, supervision.ErrorServerError, err)
-			return
-		}
-		response.Header().Set("AAuth-Requirement", requirement)
-		status = "pending"
+	status := "pending"
+	if pending.State != ConnectWaiting {
+		status = "interacting"
 	}
+	requirement, err := aauth.FormatInteractionRequirement(aauth.InteractionRequirement{URL: pending.URL, Code: pending.Code})
+	if err != nil {
+		writeProblem(response, supervision.ErrorServerError, err)
+		return
+	}
+	response.Header().Set("AAuth-Requirement", requirement)
 	response.Header().Set("Location", pendingLocation(ConnectPendingPath, pending.ID))
 	response.Header().Set("Retry-After", retryAfterValue(pending.RetryAfter))
 	response.Header().Set("Cache-Control", "no-store")

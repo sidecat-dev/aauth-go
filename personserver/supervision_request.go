@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	supervisionPendingPath = "/supervision/pending/"
+	supervisionPendingPath = "/pending/"
 	supervisedRetryAfter   = 5 * time.Second
 	// supervisionClaimLease is how long a host step holds a supervised
 	// request while it calls the supervisor or completes the act. A claim
@@ -207,30 +207,45 @@ func (denial *supervisionDenial) Error() string {
 
 func (denial *supervisionDenial) Unwrap() error { return denial.sentinel }
 
-// reportIssued queues an issued-token event under the decision the act
-// proceeded on. It does nothing for an act no supervisor decided.
-func (server *Server) reportIssued(ctx context.Context, event supervision.Event) {
-	verdict := supervisionVerdictFrom(ctx)
-	if verdict == nil || server.supervision == nil {
+// reportIssued queues an issued-token event for the supervisor that decided
+// the act, under its decision's sdi. A token issued without a supervisor is
+// recorded under a sdi the Person Server mints, for replay to a supervisor the
+// Agent is routed to later.
+func (server *Server) reportIssued(ctx context.Context, agent string, event supervision.Event) {
+	if server.supervision == nil {
 		return
 	}
-	event.SDI = verdict.sdi
-	event.Agent = verdict.agent
-	_ = server.queueEvent(ctx, verdict.supervisor, event)
+	supervisor := Supervisor{}
+	if verdict := supervisionVerdictFrom(ctx); verdict != nil {
+		supervisor, event.SDI, agent = verdict.supervisor, verdict.sdi, verdict.agent
+	} else if sdi, err := mintSupervisionID("d-"); err == nil {
+		event.SDI = sdi
+	} else {
+		return
+	}
+	event.Agent = agent
+	_ = server.queueEvent(ctx, supervisor, event)
 }
 
-// reportMission queues a mission report under the decision the act proceeded
-// on. It does nothing for an act no supervisor decided.
-func (server *Server) reportMission(ctx context.Context, report supervision.Report) {
-	verdict := supervisionVerdictFrom(ctx)
-	if verdict == nil || server.supervision == nil {
+// reportMission queues a mission report for the supervisor that decided the
+// act, under its decision's sdi; the report of a mission no supervisor
+// decided is recorded for replay, as reportIssued records a token.
+func (server *Server) reportMission(ctx context.Context, agent string, report supervision.Report) {
+	if server.supervision == nil {
 		return
 	}
-	if report.Action == supervision.ReportApproved {
-		report.SDI = verdict.sdi
+	supervisor := Supervisor{}
+	if verdict := supervisionVerdictFrom(ctx); verdict != nil {
+		supervisor, report.SDI, agent = verdict.supervisor, verdict.sdi, verdict.agent
+	} else if report.Action == supervision.ReportApproved {
+		sdi, err := mintSupervisionID("d-")
+		if err != nil {
+			return
+		}
+		report.SDI = sdi
 	}
-	report.Agent = verdict.agent
-	_ = server.queueReport(ctx, verdict.supervisor, report)
+	report.Agent = agent
+	_ = server.queueReport(ctx, supervisor, report)
 }
 
 type supervisionVerdictKey struct{}
@@ -307,6 +322,9 @@ func (server *Server) supervise(response http.ResponseWriter, request *http.Requ
 	act.request.IssuedAt = now.Unix()
 	act.request.Subject = supervisor.Subject
 	act.request.Agent = act.agent.Subject
+	// The supervisor sees every member the Agent sent, not only those the
+	// act names.
+	act.request.Extra = supervision.ForwardedMembers(act.proof.ExactBody())
 	body, err := act.request.Encode()
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", fmt.Errorf("personserver: supervision request: %w", err))
@@ -431,6 +449,9 @@ func (server *Server) consult(
 			return result.consultation
 		}
 		switch outcome.Problem.Code {
+		case supervision.ErrorUnsupportedIss:
+			server.forgetConnection(ctx, supervisor)
+			return result.consultation
 		case supervision.ErrorUnknownSub:
 			if !server.reconnect(ctx, supervisor) {
 				return consultation{unavailable: true}
@@ -647,8 +668,8 @@ func (server *Server) pollSupervised(response http.ResponseWriter, request *http
 
 // expireSupervised ends a request whose time ran out. A decision the
 // supervisor returns afterwards is discarded. A request that was with the
-// person is reported abandoned; one still waiting on the supervisor is
-// reported abandoned with the supervisor unavailable for it.
+// person is reported abandoned; the person was never asked about one still
+// waiting on the supervisor, so nothing is reported for it.
 func (server *Server) expireSupervised(ctx context.Context, record SupervisedRequest, now time.Time) (SupervisedRequest, error) {
 	after := cloneSupervisedRequest(record)
 	after.State = SupervisedDecided
@@ -661,8 +682,8 @@ func (server *Server) expireSupervised(ctx context.Context, record SupervisedReq
 	}
 	withPerson := record.State == SupervisedWaitingForPerson ||
 		record.State == SupervisedClarifying && record.Question != nil && record.Question.From == supervision.FromPerson
-	if withPerson || record.State == SupervisedWaitingForSupervisor {
-		server.reportResolved(ctx, after, supervision.AnswerAbandoned, "", "", nil, record.State == SupervisedWaitingForSupervisor)
+	if withPerson {
+		server.reportResolved(ctx, after, supervision.AnswerAbandoned, "", "", nil, false)
 	}
 	return after, nil
 }

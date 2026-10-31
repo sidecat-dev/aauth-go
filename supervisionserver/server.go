@@ -49,9 +49,12 @@ const (
 	// DefaultDecisionRetention is how long a decided or cancelled record is
 	// kept when Config.DecisionRetention is zero.
 	DefaultDecisionRetention = 24 * time.Hour
-	// DefaultPendingLifetime bounds a deferral, a clarification without a
-	// timeout, and a connect interaction that name no lifetime.
+	// DefaultPendingLifetime bounds a connect interaction that names no
+	// lifetime.
 	DefaultPendingLifetime = 10 * time.Minute
+	// DefaultDecisionLifetime bounds a deferral and a clarification that name
+	// none. A pending URL past it answers unknown_pending.
+	DefaultDecisionLifetime = time.Hour
 	// MaximumPendingLifetime is the longest a request may stay pending.
 	MaximumPendingLifetime = 24 * time.Hour
 	// DefaultRetryAfter is the polling interval of a deferral or connect

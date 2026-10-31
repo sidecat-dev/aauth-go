@@ -199,6 +199,9 @@ func (server *Server) handleRevocation(response http.ResponseWriter, request *ht
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	if caller.Document == aauth.AgentDiscoveryDocument {
+		server.reportAgentTokenRevocation(request.Context(), input)
+	}
 	if caller.Document != aauth.AgentDiscoveryDocument || !server.cascadesAgentTokenRevocations() {
 		revocation.WriteReport(response, nil)
 		return

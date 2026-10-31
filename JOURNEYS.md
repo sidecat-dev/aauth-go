@@ -895,8 +895,8 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
     narrowed by it → routine permission allowed by standing policy → an
     exception asked of the person, who answers with a reach → the supervisor
     learns it from `decision.resolved` and allows the next one itself →
-    mission update and completion → the supervisor told what was issued and
-    that the mission ended.
+    mission update and completion → the supervisor told what was issued, that
+    the mission ended, and that the Agent's token was revoked.
   - Also: an offline supervisor leaves the act to the person and is told in
     order once reachable; a deferring supervisor is polled by the host; a
     supervisor's question is relayed to the Agent and the person's own
@@ -908,7 +908,8 @@ Pinned source: [Budgets editor source](https://github.com/dickhardt/AAuth/blob/7
   - Evidence: `integration/supervision_test.go`,
     `supervisionserver/server_test.go`, `supervision/wire_test.go`.
   - Boundary: in-memory stores and one process; no independent implementation
-    has been run against these roles. R3, Resource-initiated interaction and
+    has been run against these roles, though the open wire choices match
+    aauth-rust's. R3, Resource-initiated interaction and a resource token's
     `revocation.received` are outside it; see
     [CONFORMANCE.md](CONFORMANCE.md#companion-specifications).
 

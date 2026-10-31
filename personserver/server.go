@@ -1019,10 +1019,11 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	}
 	// A supervised Agent's request goes to its supervisor, not to the
 	// interaction selector; BindPerson then resolves the person only.
+	justification, _ := parseOptionalRequestString("justification", input.Justification)
 	act := supervisedAct{
 		request: supervision.Request{
 			Kind: supervision.KindPersonToken, AgentToken: agentToken, Resource: input.Resource,
-			SubagentToken: subagentToken,
+			SubagentToken: subagentToken, Justification: justification,
 		},
 		agent: agent, proof: proof, expiresAt: []time.Time{time.Unix(credentialAgent.ExpiresAt, 0)},
 	}
@@ -1125,7 +1126,7 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	server.reportIssued(request.Context(), supervision.Event{
+	server.reportIssued(request.Context(), agent.Subject, supervision.Event{
 		Name: supervision.EventPersonTokenIssued, MissionS256: record.MissionS256,
 		JTI: record.JTI, Audience: record.Resource, ExpiresAt: record.ExpiresAt.Unix(),
 	})
@@ -1880,7 +1881,7 @@ func (server *Server) issuePSAuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	server.reportIssued(request.Context(), supervision.Event{
+	server.reportIssued(request.Context(), requestingAgent.Subject, supervision.Event{
 		Name: supervision.EventAuthTokenIssued, MissionS256: claims.MissionS256, JTI: claims.JTI,
 		Audience: claims.Audience, Scope: claims.Scope, ExpiresAt: claims.ExpiresAt, Issuer: claims.Issuer,
 	})
@@ -2638,7 +2639,7 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	server.reportIssued(request.Context(), supervision.Event{
+	server.reportIssued(request.Context(), agent.Subject, supervision.Event{
 		Name: supervision.EventAuthTokenIssued, MissionS256: authToken.MissionS256, JTI: authToken.JTI,
 		Audience: authToken.Audience, Scope: authToken.Scope, ExpiresAt: authToken.ExpiresAt, Issuer: authToken.Issuer,
 	})

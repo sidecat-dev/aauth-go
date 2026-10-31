@@ -5,14 +5,17 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"time"
 
+	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/personserver"
 	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 // SupervisionStore is an in-memory personserver.SupervisionStore. Log
 // returns the retained log entries, for a test or an example to inspect
-// what the Person Server recorded of each decision.
+// what the Person Server recorded of each decision. It keeps the Agent of each
+// recorded Agent token until the process ends, past expiresAt.
 type SupervisionStore struct {
 	mu          sync.Mutex
 	connections map[supervisionKey]personserver.SupervisorConnection
@@ -21,6 +24,7 @@ type SupervisionStore struct {
 	notices     []personserver.SupervisionNotice
 	sequences   map[supervisionKey]uint64
 	requests    map[string]personserver.SupervisedRequest
+	tokens      map[aauth.TokenReference]string
 }
 
 type supervisionKey struct{ issuer, subject string }
@@ -34,6 +38,7 @@ func NewSupervisionStore() *SupervisionStore {
 		routes:      make(map[string]personserver.Supervisor),
 		sequences:   make(map[supervisionKey]uint64),
 		requests:    make(map[string]personserver.SupervisedRequest),
+		tokens:      make(map[aauth.TokenReference]string),
 	}
 }
 
@@ -139,7 +144,8 @@ func (store *SupervisionStore) PendingSupervisionNotices(ctx context.Context, is
 	defer store.mu.Unlock()
 	var pending []personserver.SupervisionNotice
 	for _, notice := range store.notices {
-		if notice.Supervisor.Issuer == issuer && notice.Supervisor.Subject == subject && !notice.Delivered {
+		if notice.Supervisor.Issuer != "" && notice.Supervisor.Issuer == issuer &&
+			notice.Supervisor.Subject == subject && !notice.Delivered {
 			pending = append(pending, cloneNotice(notice))
 		}
 	}
@@ -177,6 +183,29 @@ func (store *SupervisionStore) SupervisionHistory(ctx context.Context, agent str
 		}
 	}
 	return history, nil
+}
+
+func (store *SupervisionStore) RecordTokenAgent(ctx context.Context, token aauth.TokenReference, agent string, _ time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.tokens[token] = agent
+	return nil
+}
+
+func (store *SupervisionStore) LoadTokenAgent(ctx context.Context, token aauth.TokenReference) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	agent, ok := store.tokens[token]
+	if !ok {
+		return "", personserver.ErrSupervisionNotFound
+	}
+	return agent, nil
 }
 
 func (store *SupervisionStore) CreateSupervisedRequest(ctx context.Context, request personserver.SupervisedRequest) error {

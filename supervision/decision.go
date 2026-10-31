@@ -407,42 +407,85 @@ func decodePending(exact []byte, clarifying bool) (string, *Clarification, error
 }
 
 // ClarificationResponse is the answer a Person Server relays to an SS
-// pending URL: the Agent's Markdown answer, posted with action
-// clarification_response.
+// pending URL, as the Agent sent it: the Agent's Markdown answer, posted with
+// action clarification_response, or for an auth-token request a replacement
+// resource token and presented token, posted with action updated_request.
+// Exactly one of Answer and Updated is set.
 type ClarificationResponse struct {
-	Answer string
+	Answer  string
+	Updated *UpdatedRequest
 }
 
-// Encode returns the clarification_response body.
+// UpdatedRequest is an auth-token request the Agent replaced while answering a
+// clarification. The Person Server has verified the pair as the protocol
+// requires before relaying it.
+type UpdatedRequest struct {
+	ResourceToken  string
+	PresentedToken string
+	Justification  string
+}
+
+// Encode returns the clarification_response or updated_request body.
 func (response ClarificationResponse) Encode() ([]byte, error) {
-	if response.Answer == "" {
-		return nil, errors.New("supervision: clarification response is required")
-	}
-	if err := validateMarkdown("clarification_response", response.Answer); err != nil {
+	if err := response.validate(); err != nil {
 		return nil, err
 	}
 	var object objectWriter
+	if response.Updated != nil {
+		object.add("action", "updated_request")
+		object.add("resource_token", response.Updated.ResourceToken)
+		object.add("presented_token", response.Updated.PresentedToken)
+		object.addString("justification", response.Updated.Justification)
+		return object.bytes()
+	}
 	object.add("action", "clarification_response")
 	object.add("clarification_response", response.Answer)
 	return object.bytes()
 }
 
+func (response ClarificationResponse) validate() error {
+	if (response.Answer == "") == (response.Updated == nil) {
+		return errors.New("supervision: a clarification response is an answer or an updated request")
+	}
+	if response.Updated != nil {
+		for _, token := range []string{response.Updated.ResourceToken, response.Updated.PresentedToken} {
+			if strings.Count(token, ".") != 2 {
+				return errors.New("supervision: an updated request carries compact resource and presented tokens")
+			}
+		}
+		return validateMarkdown("justification", response.Updated.Justification)
+	}
+	return validateMarkdown("clarification_response", response.Answer)
+}
+
 // DecodeClarificationResponse decodes a POST to an SS pending URL. A missing
-// or unrecognized action, and updated_request, which a supervised request
-// does not carry, are invalid_request.
+// or unrecognized action is invalid_request.
 func DecodeClarificationResponse(exact []byte) (ClarificationResponse, error) {
 	var wire struct {
-		Action   string  `json:"action"`
-		Response *string `json:"clarification_response"`
+		Action         string  `json:"action"`
+		Response       *string `json:"clarification_response"`
+		ResourceToken  string  `json:"resource_token"`
+		PresentedToken string  `json:"presented_token"`
+		Justification  string  `json:"justification"`
 	}
 	if err := decodeStrict(exact, &wire); err != nil {
 		return ClarificationResponse{}, invalidRequest(err)
 	}
-	if wire.Action != "clarification_response" || wire.Response == nil || *wire.Response == "" {
-		return ClarificationResponse{}, invalidRequest(errors.New("supervision: action must be clarification_response with an answer"))
+	var response ClarificationResponse
+	switch wire.Action {
+	case "clarification_response":
+		if wire.Response != nil {
+			response.Answer = *wire.Response
+		}
+	case "updated_request":
+		response.Updated = &UpdatedRequest{
+			ResourceToken: wire.ResourceToken, PresentedToken: wire.PresentedToken, Justification: wire.Justification,
+		}
+	default:
+		return ClarificationResponse{}, invalidRequest(errors.New("supervision: action must be clarification_response or updated_request"))
 	}
-	if err := validateMarkdown("clarification_response", *wire.Response); err != nil {
+	if err := response.validate(); err != nil {
 		return ClarificationResponse{}, invalidRequest(err)
 	}
-	return ClarificationResponse{Answer: *wire.Response}, nil
+	return response, nil
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
@@ -38,10 +37,10 @@ type Metadata struct {
 // decisions.
 func (metadata Metadata) Signs() bool { return metadata.JWKSURI != "" }
 
-// Validate checks the required members and the endpoint rules: every endpoint
-// and the key set are HTTPS URLs on the issuer's origin. The draft also admits
-// an origin the SS controls, which a Person Server cannot establish from the
-// document, so this implementation requires the issuer's own origin.
+// Validate checks the required members and that every endpoint and the key
+// set are HTTPS URLs. The draft puts them on the issuer's origin or one the SS
+// controls; a Person Server cannot establish the second from the document, so
+// which origins it contacts is left to its egress admission.
 func (metadata Metadata) Validate() error {
 	if err := aauth.ValidateServerIdentifier(metadata.Issuer); err != nil {
 		return fmt.Errorf("supervision: metadata issuer: %w", err)
@@ -65,9 +64,6 @@ func (metadata Metadata) Validate() error {
 		}
 		if err := aauth.ValidateEndpoint(endpoint.value); err != nil {
 			return fmt.Errorf("supervision: metadata %s: %w", endpoint.name, err)
-		}
-		if !sameOrigin(metadata.Issuer, endpoint.value) {
-			return fmt.Errorf("supervision: metadata %s is not on the issuer's origin", endpoint.name)
 		}
 	}
 	for name, value := range map[string]string{
@@ -97,14 +93,6 @@ func DecodeMetadata(exact []byte, expectedIssuer string) (Metadata, error) {
 		return Metadata{}, err
 	}
 	return metadata, nil
-}
-
-func sameOrigin(issuer, endpoint string) bool {
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return false
-	}
-	return parsed.Scheme+"://"+parsed.Host == issuer
 }
 
 // decodeStrict decodes one JSON value, rejecting ambiguous member names and

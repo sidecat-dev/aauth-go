@@ -43,7 +43,7 @@ type DecisionResult struct {
 }
 
 // Deferral bounds a request the host decides later. Lifetime and RetryAfter
-// are whole seconds; zero selects DefaultPendingLifetime and
+// are whole seconds; zero selects DefaultDecisionLifetime and
 // DefaultRetryAfter.
 type Deferral struct {
 	Lifetime   time.Duration
@@ -183,7 +183,8 @@ func (server *Server) answer(response http.ResponseWriter, request *http.Request
 	switch record.State {
 	case DecisionDeciding, DecisionClarifying:
 		if !server.clock.Now().Before(record.ExpiresAt) {
-			writeStatusProblem(response, http.StatusRequestTimeout, "expired", ErrExpired)
+			// A pending URL the SS stopped deciding is one it no longer holds.
+			writeProblem(response, supervision.ErrorUnknownPending, ErrExpired)
 			return
 		}
 		writePending(response, record)
@@ -334,7 +335,7 @@ func (server *Server) apply(record DecisionRecord, result DecisionResult, now ti
 		question := cloneClarification(*result.Clarify)
 		lifetime := question.Timeout
 		if lifetime == 0 {
-			lifetime = DefaultPendingLifetime
+			lifetime = DefaultDecisionLifetime
 		}
 		if lifetime > MaximumPendingLifetime {
 			return DecisionRecord{}, errors.New("supervisionserver: clarification timeout is too long")
@@ -349,7 +350,7 @@ func (server *Server) apply(record DecisionRecord, result DecisionResult, now ti
 		}
 		lifetime, retryAfter := result.Defer.Lifetime, result.Defer.RetryAfter
 		if lifetime == 0 {
-			lifetime = DefaultPendingLifetime
+			lifetime = DefaultDecisionLifetime
 		}
 		if retryAfter == 0 {
 			retryAfter = DefaultRetryAfter
@@ -423,6 +424,24 @@ func retainedRequest(record DecisionRecord) (supervision.Request, error) {
 	}
 }
 
+// currentRequest is the request as the policy decides it: the retained
+// request, with the resource token, presented token and justification of the
+// latest updated_request in place.
+func currentRequest(record DecisionRecord) (supervision.Request, error) {
+	request, err := retainedRequest(record)
+	if err != nil {
+		return supervision.Request{}, err
+	}
+	for _, round := range record.Rounds {
+		if round.Updated != nil {
+			request.ResourceToken = round.Updated.ResourceToken
+			request.PresentedToken = round.Updated.PresentedToken
+			request.Justification = round.Updated.Justification
+		}
+	}
+	return request, nil
+}
+
 // loadPending loads the request a pending URL names. A URL the SS does not
 // hold, and one another Person Server made, are both unknown_pending.
 func (server *Server) loadPending(response http.ResponseWriter, request *http.Request, personServer string) (DecisionRecord, bool) {
@@ -454,8 +473,8 @@ func (server *Server) handlePoll(response http.ResponseWriter, request *http.Req
 }
 
 // handleClarificationAnswer takes the Agent's answer to the open question,
-// consults the policy again with the round recorded, and answers as a poll
-// would. An answer to a request already decided or withdrawn is answered as
+// or for an auth-token request its updated request, consults the policy again
+// with the round recorded, and answers as a poll would. An answer to a request already decided or withdrawn is answered as
 // a poll of it.
 func (server *Server) handleClarificationAnswer(response http.ResponseWriter, request *http.Request) {
 	personServer, _, body, ok := server.authenticate(response, request, true)
@@ -484,9 +503,8 @@ func (server *Server) handleClarificationAnswer(response http.ResponseWriter, re
 		server.answer(response, request, record, true)
 		return
 	}
-	decoded, err := retainedRequest(record)
-	if err != nil {
-		writeProblem(response, supervision.ErrorServerError, err)
+	if answer.Updated != nil && record.Kind != supervision.KindAuthToken {
+		writeProblem(response, supervision.ErrorInvalidRequest, errors.New("supervisionserver: only an auth-token request can be replaced"))
 		return
 	}
 	mission, ok := server.loadMission(response, request, personServer, record.Subject, record.MissionS256)
@@ -494,9 +512,19 @@ func (server *Server) handleClarificationAnswer(response http.ResponseWriter, re
 		return
 	}
 	after := record.Clone()
-	after.Rounds = append(after.Rounds, ClarificationRound{
+	round := ClarificationRound{
 		Question: cloneClarification(*record.Clarification), Answer: answer.Answer, AnsweredAt: now,
-	})
+	}
+	if answer.Updated != nil {
+		updated := *answer.Updated
+		round.Updated = &updated
+	}
+	after.Rounds = append(after.Rounds, round)
+	decoded, err := currentRequest(after)
+	if err != nil {
+		writeProblem(response, supervision.ErrorServerError, err)
+		return
+	}
 	result, err := server.decide(request.Context(), DecisionRequest{
 		PersonServer: personServer, Connection: connection, Request: decoded,
 		Body: append([]byte(nil), record.Request...), Mission: mission,
@@ -532,8 +560,8 @@ func (server *Server) handleClarificationAnswer(response http.ResponseWriter, re
 	server.answer(response, request, after, true)
 }
 
-// handleCancel withdraws a request still deciding or clarifying. Later
-// requests to the pending URL answer 410.
+// handleCancel withdraws a request still deciding or clarifying, answering
+// 200 with status cancelled. Later requests to the pending URL answer 410.
 func (server *Server) handleCancel(response http.ResponseWriter, request *http.Request) {
 	personServer, _, _, ok := server.authenticate(response, request, false)
 	if !ok {
@@ -561,8 +589,7 @@ func (server *Server) handleCancel(response http.ResponseWriter, request *http.R
 		after.Revision++
 		err := server.store.ReplaceDecision(request.Context(), record, after)
 		if err == nil {
-			response.Header().Set("Cache-Control", "no-store")
-			response.WriteHeader(http.StatusNoContent)
+			writeStatus(response, http.StatusOK, "cancelled")
 			return
 		}
 		if !errors.Is(err, ErrConflict) {
@@ -598,7 +625,7 @@ func (server *Server) ResumeDecision(ctx context.Context, personServer, sdi stri
 	if err != nil {
 		return DecisionRequest{}, err
 	}
-	decoded, err := retainedRequest(record)
+	decoded, err := currentRequest(record)
 	if err != nil {
 		return DecisionRequest{}, err
 	}

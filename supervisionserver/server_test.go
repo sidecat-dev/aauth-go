@@ -32,7 +32,7 @@ const (
 	otherServer    = "https://other.example"
 	subject        = "8f14e45fceea167a5a36dedd4bea2543"
 	agentID        = "aauth:assistant@agent.example"
-	forwardedToken = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhc3Npc3RhbnQifQ.c2lnbmF0dXJl"
+	forwardedToken = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSJ9.c2lnbmF0dXJl"
 )
 
 var missionBlob = []byte(`{"agent":"aauth:assistant@agent.example","approver":"https://ps.example","description":"# Plan a trip"}`)
@@ -534,8 +534,11 @@ func TestConnectWaitsForThePersonToConfirm(t *testing.T) {
 	if _, err := f.server.ConsumeConnectCode(ctx, reference, interaction.Code); !errors.Is(err, supervisionserver.ErrInvalidCode) {
 		t.Fatalf("consumed code = %v", err)
 	}
+	// While the person decides, polls repeat the interaction and report the
+	// person interacting.
 	polled, err = f.ps.PollConnect(ctx, supervisor, interaction.Location)
-	if err != nil || polled.Pending == nil || polled.Pending.Location != interaction.Location || polled.Connected {
+	if err != nil || polled.Interaction == nil || polled.Interaction.Location != interaction.Location || polled.Connected ||
+		!strings.Contains(string(polled.Exchange.Response.Body), `"interacting"`) {
 		t.Fatalf("poll while the person decides = %#v, %v", polled, err)
 	}
 	if err := f.server.ConfirmConnect(ctx, reference, "account-7"); err != nil {
@@ -849,7 +852,8 @@ func TestClarificationRoundTripAndCancellation(t *testing.T) {
 	cancelled := f.request(supervision.KindPermission, "d-cancelled", "")
 	location = supervise(t, f.ps, cancelled).Pending.Location
 	withdrawn, err := f.ps.Cancel(ctx, supervisor, location)
-	if err != nil || !withdrawn.Accepted || withdrawn.Exchange.Response.Status != http.StatusNoContent {
+	if err != nil || !withdrawn.Accepted || withdrawn.Exchange.Response.Status != http.StatusOK ||
+		string(withdrawn.Exchange.Response.Body) != `{"status":"cancelled"}` {
 		t.Fatalf("cancel = %#v, %v", withdrawn, err)
 	}
 	for name, send := range map[string]func() (supervision.Outcome, error){
@@ -914,8 +918,20 @@ func TestUnknownMissionUntilTheApprovedReport(t *testing.T) {
 	if requests := f.decisionRequests(); len(requests) != 0 {
 		t.Fatalf("policy saw %d requests for an unknown mission", len(requests))
 	}
+	audit := supervision.Event{
+		Name: supervision.EventAuditRecorded, ID: "e-audit", IssuedAt: f.clock.Now().Unix(),
+		Subject: subject, Agent: agentID, MissionS256: s256, Action: "WebSearch",
+	}
+	outcome, err := f.ps.PostEvent(ctx, supervisor, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireProblem(t, outcome, 404, supervision.ErrorUnknownMission)
 
 	f.approve(t, missionBlob)
+	if outcome, err := f.ps.PostEvent(ctx, supervisor, audit); err != nil || !outcome.Accepted {
+		t.Fatalf("event after the approved report = %#v, %v", outcome, err)
+	}
 	requireVerdict(t, supervise(t, f.ps, update), supervision.VerdictAllow)
 	requests := f.decisionRequests()
 	if len(requests) != 1 || requests[0].Mission == nil || !bytes.Equal(requests[0].Mission.Blob, missionBlob) ||
@@ -1080,5 +1096,46 @@ func TestConcurrentPollsShareOneSignedResponse(t *testing.T) {
 	record, err := f.store.LoadDecision(ctx, personServer, request.SDI)
 	if err != nil || len(record.Responses) != 1 {
 		t.Fatalf("retained %d responses, %v", len(record.Responses), err)
+	}
+}
+
+// Clarification: a Person Server may relay an Agent's updated auth-token
+// request; the policy decides again on the replacement tokens.
+func TestUpdatedRequestReplacesTheTokensThePolicySees(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.connectSubject(t, f.ps, subject)
+	f.setDecide(func(request supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
+		if len(request.Rounds) == 0 {
+			return supervisionserver.DecisionResult{Clarify: &supervision.Clarification{Question: "Can you ask for less?"}}
+		}
+		return allow(request)
+	})
+	request := f.request(supervision.KindAuthToken, "d-update-request", "")
+	asked := supervise(t, f.ps, request)
+	if asked.Pending == nil || asked.Pending.Clarification == nil {
+		t.Fatalf("clarification = %#v", asked)
+	}
+	replacement := "eyJhbGciOiJFZERTQSJ9.eyJzY29wZSI6ImNhbGVuZGFyLnJlYWQifQ.bmFycm93ZXI"
+	body, err := supervision.ClarificationResponse{Updated: &supervision.UpdatedRequest{
+		ResourceToken: replacement, PresentedToken: forwardedToken, Justification: "Read only.",
+	}}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := f.raw(t, f.psKey, personServer, http.MethodPost, asked.Pending.Location, body)
+	if answered.Code != http.StatusOK {
+		t.Fatalf("updated request = %d %s", answered.Code, answered.Body.String())
+	}
+	requests := f.decisionRequests()
+	last := requests[len(requests)-1]
+	if last.Request.ResourceToken != replacement || last.Request.Justification != "Read only." ||
+		len(last.Rounds) != 1 || last.Rounds[0].Updated == nil {
+		t.Fatalf("policy saw %#v", last)
+	}
+	permission := f.request(supervision.KindPermission, "d-permission-update", "")
+	location := supervise(t, f.ps, permission).Pending.Location
+	if refused := f.raw(t, f.psKey, personServer, http.MethodPost, location, body); refused.Code != http.StatusBadRequest {
+		t.Fatalf("an updated permission request = %d", refused.Code)
 	}
 }

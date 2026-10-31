@@ -5,8 +5,8 @@
 // supervisors apply standing policy and ask the person only for exceptions;
 // the Person Server decides nothing itself for them. When the person's own
 // supervisor is offline, as on a machine that sleeps, the person decides, and
-// the supervisor is told afterwards. Its signed decisions remain a record the
-// person can verify later.
+// the supervisor is told afterwards. Both sign their decisions, which remain
+// a record the person can verify later.
 package main
 
 import (
@@ -139,11 +139,13 @@ func run(output io.Writer) error {
 	}
 
 	// Two supervisors. The organization's accepts its tenant's people at
-	// once; the person's own asks them to confirm, and signs its decisions.
+	// once; the person's own asks them to confirm. Both sign their decisions,
+	// as a Person Server requires by default.
 	organizationPolicy := &standingPolicy{asked: map[string]string{}, allowed: map[string]bool{}}
+	organizationKey := keys["organization"]
 	organization, err := supervisionserver.New(supervisionserver.Config{
-		Issuer: organizationSSID, Name: "Organization supervisor", KeyResolver: resolver, Clock: clock,
-		Store: testutil.NewSupervisorStore(),
+		Issuer: organizationSSID, Name: "Organization supervisor", SigningKey: &organizationKey,
+		KeyResolver: resolver, Clock: clock, Store: testutil.NewSupervisorStore(),
 		Connect: func(_ context.Context, request supervisionserver.ConnectRequest) (supervisionserver.ConnectResult, error) {
 			return supervisionserver.ConnectResult{Accept: request.Tenant == "example.org"}, nil
 		},
@@ -375,9 +377,9 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	// The person's supervisor signed every decision it made. The Person
-	// Server's log entry verifies later from the record alone.
-	verified := 0
+	// Each supervisor signed every decision it made. The Person Server's log
+	// entry verifies later from the record alone and names its signer.
+	verified := map[string]int{}
 	for _, entry := range supervisionStore.Log() {
 		if entry.Exchange == nil || !entry.Exchange.Signed {
 			continue
@@ -386,12 +388,13 @@ func run(output io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if signed.Signer() != personalSSID {
+		if signed.Signer() != entry.Supervisor.Issuer {
 			return errors.New("a logged decision names another signer")
 		}
-		verified++
+		verified[signed.Signer()]++
 	}
-	return print("Signed decisions in the log verified: %d, each by %s", verified, personalSSID)
+	return print("Signed decisions in the log verified: %d by %s, %d by %s",
+		verified[organizationSSID], organizationSSID, verified[personalSSID], personalSSID)
 }
 
 func lastLine(text string) string {

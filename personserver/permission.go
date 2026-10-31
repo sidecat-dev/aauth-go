@@ -332,7 +332,7 @@ func (server *Server) handlePermission(response http.ResponseWriter, request *ht
 		writeProblem(response, http.StatusNotFound, "not_found", errors.New("permission endpoint is not configured"))
 		return
 	}
-	_, agent, proof, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
+	agentToken, agent, proof, err := server.verifyAgentRequest(request, []string{"content-type", "content-digest"})
 	if err != nil {
 		writeAgentTokenProblem(response, err)
 		return
@@ -397,7 +397,7 @@ func (server *Server) handlePermission(response http.ResponseWriter, request *ht
 	// decision is retained as an immediate one is.
 	act := supervisedAct{
 		request: supervision.Request{
-			Kind: supervision.KindPermission, Action: input.Action, Description: input.Description,
+			Kind: supervision.KindPermission, AgentToken: agentToken, Action: input.Action, Description: input.Description,
 		},
 		agent: agent, proof: proof,
 	}

@@ -2,9 +2,11 @@ package supervision
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -98,6 +100,38 @@ type Request struct {
 	Action string
 	// Parameters is the permission request's JSON object, exactly as sent.
 	Parameters json.RawMessage
+	// Extra holds the other members of the Agent's request body, forwarded
+	// as the Agent sent them, such as capabilities or login_hint. A name this
+	// package defines, or one of the envelope, never appears here.
+	Extra map[string]json.RawMessage
+}
+
+// requestMembers are the member names a supervision request defines; any
+// other member of an Agent's body is forwarded in Request.Extra.
+var requestMembers = map[string]bool{
+	"act": true, "action": true, "sdi": true, "id": true, "iat": true, "sub": true, "agent": true,
+	"mission_s256": true, "agent_token": true, "resource": true, "resource_token": true,
+	"presented_token": true, "upstream_token": true, "subagent_token": true, "justification": true,
+	"description": true, "tools": true, "resources": true, "summary": true, "parameters": true,
+}
+
+// ForwardedMembers returns the members of an Agent's request body that a
+// supervision request does not define, exactly as sent, for Request.Extra.
+// A body that is not one JSON object forwards nothing.
+func ForwardedMembers(body []byte) map[string]json.RawMessage {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(body, &members) != nil {
+		return nil
+	}
+	for name := range members {
+		if requestMembers[name] {
+			delete(members, name)
+		}
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	return members
 }
 
 // Path returns the path segment a mission update or completion is sent to
@@ -140,13 +174,13 @@ func (request Request) Validate() error {
 		required = []string{"summary"}
 	case KindPersonToken:
 		required = []string{"agent_token", "resource"}
-		optional = []string{"upstream_token", "subagent_token"}
-	case KindAuthToken:
-		required = []string{"agent_token", "resource_token", "presented_token"}
 		optional = []string{"upstream_token", "subagent_token", "justification"}
+	case KindAuthToken:
+		required = []string{"resource_token", "presented_token"}
+		optional = []string{"agent_token", "upstream_token", "subagent_token", "justification"}
 	case KindPermission:
 		required = []string{"action"}
-		optional = []string{"description", "parameters"}
+		optional = []string{"agent_token", "description", "parameters"}
 	}
 	for _, name := range required {
 		if !present[name] {
@@ -201,7 +235,32 @@ func (request Request) Validate() error {
 			return err
 		}
 	}
+	for name, value := range request.Extra {
+		if requestMembers[name] || !json.Valid(value) {
+			return fmt.Errorf("supervision: forwarded member %q is not forwardable", name)
+		}
+	}
 	return nil
+}
+
+// agentTokenSubject returns the unverified sub of a forwarded agent token,
+// which must be the request's agent.
+func agentTokenSubject(token string) (string, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", errors.New("supervision: agent_token is not a compact JWT")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", errors.New("supervision: agent_token payload is not base64url")
+	}
+	var claims struct {
+		Subject string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", errors.New("supervision: agent_token payload is not JSON")
+	}
+	return claims.Subject, nil
 }
 
 // Encode returns the request body. Members are written in a fixed order and
@@ -245,6 +304,14 @@ func (request Request) Encode() ([]byte, error) {
 	if request.Parameters != nil {
 		object.addRaw("parameters", request.Parameters)
 	}
+	names := make([]string, 0, len(request.Extra))
+	for name := range request.Extra {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		object.addRaw(name, request.Extra[name])
+	}
 	return object.bytes()
 }
 
@@ -285,6 +352,7 @@ func DecodeDecisionRequest(exact []byte) (Request, error) {
 		return Request{}, invalidRequest(errors.New("supervision: act is missing or unrecognized"))
 	}
 	request := wire.request(kind)
+	request.Extra = ForwardedMembers(exact)
 	if kind == KindPermission {
 		request.Action = wire.Action
 	} else if wire.Action != "" {
@@ -303,6 +371,7 @@ func DecodeMissionProposal(exact []byte) (Request, error) {
 		return Request{}, invalidRequest(errors.New("supervision: a mission proposal carries neither act nor action"))
 	}
 	request := wire.request(KindMissionProposal)
+	request.Extra = ForwardedMembers(exact)
 	return request, validated(request)
 }
 
@@ -333,6 +402,7 @@ func DecodeMissionAction(s256 string, exact []byte) (*Request, *Report, error) {
 			return nil, nil, invalidRequest(errors.New("supervision: a mission action carries no act"))
 		}
 		request := wire.request(kind)
+		request.Extra = ForwardedMembers(exact)
 		if request.MissionS256 == "" {
 			request.MissionS256 = s256
 		}
@@ -365,9 +435,20 @@ func (wire requestWire) request(kind Kind) Request {
 	}
 }
 
+// validated checks a decoded request and, as an SS does, that a forwarded
+// agent token names the request's agent.
 func validated(request Request) error {
 	if err := request.Validate(); err != nil {
 		return invalidRequest(err)
+	}
+	if request.AgentToken != "" {
+		subject, err := agentTokenSubject(request.AgentToken)
+		if err != nil {
+			return invalidRequest(err)
+		}
+		if subject != request.Agent {
+			return invalidRequest(errors.New("supervision: agent_token does not name the request's agent"))
+		}
 	}
 	return nil
 }

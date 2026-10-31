@@ -376,12 +376,12 @@ func (server *Server) approveMission(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	server.reportMission(request.Context(), supervision.Report{
+	server.reportMission(request.Context(), agent.Subject, supervision.Report{
 		Action: supervision.ReportApproved, MissionS256: approval.Mission.S256,
 		Mission: append([]byte(nil), approval.Mission.ExactJSON...),
 	})
 	for _, record := range approval.PersonTokenRecords {
-		server.reportIssued(request.Context(), supervision.Event{
+		server.reportIssued(request.Context(), agent.Subject, supervision.Event{
 			Name: supervision.EventPersonTokenIssued, MissionS256: record.MissionS256,
 			JTI: record.JTI, Audience: record.Resource, ExpiresAt: record.ExpiresAt.Unix(),
 		})
@@ -676,8 +676,8 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission store returned an invalid completion transition"))
 			return
 		}
-		server.reportMission(request.Context(), supervision.Report{
-			Action: supervision.ReportTerminated, ID: terminatedReportID(s256), MissionS256: s256, Reason: "completed",
+		server.reportMission(request.Context(), agent.Subject, supervision.Report{
+			Action: supervision.ReportTerminated, MissionS256: s256, Reason: "completed",
 		})
 		response.Header().Set("Cache-Control", "no-store")
 		response.WriteHeader(http.StatusOK)

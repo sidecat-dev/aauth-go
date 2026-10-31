@@ -146,10 +146,12 @@ const (
 )
 
 // ClarificationRound is one question the SS asked the Agent and the answer
-// the Person Server relayed.
+// the Person Server relayed: a Markdown answer, or for an auth-token request
+// an Updated request whose tokens replace the retained ones.
 type ClarificationRound struct {
 	Question   supervision.Clarification
 	Answer     string
+	Updated    *supervision.UpdatedRequest
 	AnsweredAt time.Time
 }
 
@@ -211,6 +213,10 @@ func (record DecisionRecord) Clone() DecisionRecord {
 		rounds := make([]ClarificationRound, len(record.Rounds))
 		for index, round := range record.Rounds {
 			round.Question = cloneClarification(round.Question)
+			if round.Updated != nil {
+				updated := *round.Updated
+				round.Updated = &updated
+			}
 			rounds[index] = round
 		}
 		record.Rounds = rounds

@@ -72,10 +72,11 @@ type SupervisionConfig struct {
 	// PendingLifetime bounds an Agent's pending supervised request. Zero
 	// selects DefaultSupervisionPendingLifetime.
 	PendingLifetime time.Duration
-	// RequireSignedDecisions treats a supervisor that publishes no jwks_uri
-	// as unavailable, for a Person Server that must later show what its
-	// supervisor said.
-	RequireSignedDecisions bool
+	// AllowUnsignedDecisions consults a supervisor that publishes no
+	// jwks_uri. By default such a supervisor is treated as unavailable, so
+	// every decision the Person Server acts on is one it can later show was
+	// the supervisor's.
+	AllowUnsignedDecisions bool
 }
 
 // SupervisedAgent is the verified Agent a route is chosen for.
@@ -143,10 +144,12 @@ type SupervisionLogEntry struct {
 // SupervisionNotice is one event or mission report for one supervisor. The
 // store keeps it, in Sequence order per (Supervisor.Issuer,
 // Supervisor.Subject), until it is delivered, and keeps every notice about an
-// Agent as the history replay reads. Body is the exact body for that
-// supervisor. Report marks a mission report sent to {mission_endpoint}/{s256}
-// rather than an event. ExpiresAt is the exp of the token an issued event
-// names.
+// Agent as the history replay reads. A notice with a zero Supervisor is
+// history only, recorded about an Agent no supervisor decides for: it is never
+// pending, and replay gives a copy of it to a supervisor the Agent is routed
+// to later. Body is the exact body for that supervisor. Report marks a
+// mission report sent to {mission_endpoint}/{s256} rather than an event.
+// ExpiresAt is the exp of the token an issued event names.
 type SupervisionNotice struct {
 	ID          string
 	Supervisor  Supervisor
@@ -175,6 +178,10 @@ type SupervisionNotice struct {
 // delivered and is idempotent. SupervisionHistory returns every notice about
 // an Agent, for any supervisor, in the order appended.
 //
+// RecordTokenAgent records which Agent presented an Agent token, until
+// expiresAt; LoadTokenAgent returns it, or ErrSupervisionNotFound, so an
+// Agent Provider's revocation of the token reaches that Agent's supervisor.
+//
 // CreateSupervisedRequest rejects a duplicate Reference with
 // ErrSupervisionConflict. ReplaceSupervisedRequest atomically compares the
 // stored Revision with before's, requires after to keep the immutable fields
@@ -192,6 +199,8 @@ type SupervisionStore interface {
 	PendingSupervisionNotices(ctx context.Context, issuer, subject string, limit int) ([]SupervisionNotice, error)
 	MarkSupervisionNoticeDelivered(ctx context.Context, issuer, subject, id string) error
 	SupervisionHistory(ctx context.Context, agent string) ([]SupervisionNotice, error)
+	RecordTokenAgent(ctx context.Context, token aauth.TokenReference, agent string, expiresAt time.Time) error
+	LoadTokenAgent(ctx context.Context, token aauth.TokenReference) (string, error)
 	CreateSupervisedRequest(ctx context.Context, request SupervisedRequest) error
 	LoadSupervisedRequest(ctx context.Context, reference string) (SupervisedRequest, error)
 	ReplaceSupervisedRequest(ctx context.Context, before, after SupervisedRequest) error
@@ -234,7 +243,7 @@ func (server *Server) configureSupervision(config *SupervisionConfig) error {
 	}
 	server.supervision = &supervisionState{
 		route: config.Route, store: config.Store, client: client,
-		pendingLifetime: lifetime, requireSigned: config.RequireSignedDecisions,
+		pendingLifetime: lifetime, requireSigned: !config.AllowUnsignedDecisions,
 	}
 	return nil
 }
@@ -397,8 +406,20 @@ func mintSupervisionID(prefix string) (string, error) {
 
 // --- Events and reports -----------------------------------------------------
 
-// queueEvent queues one event for the supervisor. ExpiresAt is retained for
-// replay of outstanding tokens.
+// historySubject stands in for sub in a notice recorded for history only;
+// replay writes the subject directed to the supervisor it goes to.
+const historySubject = "-"
+
+func noticeSubject(supervisor Supervisor) string {
+	if supervisor.Issuer == "" {
+		return historySubject
+	}
+	return supervisor.Subject
+}
+
+// queueEvent queues one event for the supervisor, or with a zero Supervisor
+// records it for history only. ExpiresAt is retained for replay of
+// outstanding tokens.
 func (server *Server) queueEvent(ctx context.Context, supervisor Supervisor, event supervision.Event) error {
 	if event.ID == "" {
 		id, err := mintSupervisionID("e-")
@@ -410,7 +431,7 @@ func (server *Server) queueEvent(ctx context.Context, supervisor Supervisor, eve
 	if event.IssuedAt == 0 {
 		event.IssuedAt = server.clock.Now().Unix()
 	}
-	event.Subject = supervisor.Subject
+	event.Subject = noticeSubject(supervisor)
 	body, err := event.Encode()
 	if err != nil {
 		return err
@@ -437,7 +458,7 @@ func (server *Server) queueReport(ctx context.Context, supervisor Supervisor, re
 	if report.IssuedAt == 0 {
 		report.IssuedAt = server.clock.Now().Unix()
 	}
-	report.Subject = supervisor.Subject
+	report.Subject = noticeSubject(supervisor)
 	body, err := report.Encode()
 	if err != nil {
 		return err
@@ -479,6 +500,7 @@ func (server *Server) deliverNotices(ctx context.Context, supervisor Supervisor)
 	state := server.supervision
 	delivered := 0
 	reconnected := false
+	replayed := map[string]bool{}
 	for {
 		notices, err := state.store.PendingSupervisionNotices(ctx, supervisor.Issuer, supervisor.Subject, maximumNoticesPerDelivery)
 		if err != nil {
@@ -503,6 +525,20 @@ func (server *Server) deliverNotices(ctx context.Context, supervisor Supervisor)
 					if err != nil {
 						return delivered, err
 					}
+				case supervision.ErrorUnknownMission:
+					// An event about a mission the supervisor does not hold:
+					// give it the mission first, then the event again.
+					if notice.MissionS256 == "" || replayed[notice.MissionS256] ||
+						server.sendApproved(ctx, notice.Agent, notice.MissionS256, supervisor) != nil {
+						return delivered, fmt.Errorf("personserver: supervisor does not know the mission: %s", describeProblem(outcome.Problem))
+					}
+					replayed[notice.MissionS256] = true
+					outcome, err = server.postNotice(ctx, notice)
+					if err != nil {
+						return delivered, err
+					}
+				case supervision.ErrorUnsupportedIss:
+					server.forgetConnection(ctx, supervisor)
 				case supervision.ErrorInvalidRequest:
 					// A body the supervisor cannot read is a defect or a
 					// version mismatch; retrying cannot help, and keeping it
@@ -548,65 +584,143 @@ func decodeQueuedReport(notice SupervisionNotice) (supervision.Report, error) {
 	return *report, nil
 }
 
+// sendApproved posts a mission's approved report to the supervisor at once:
+// the one recorded for it, under its own id, or one built from the mission
+// store under a fresh sdi for a mission approved before any was recorded.
+func (server *Server) sendApproved(ctx context.Context, agent, s256 string, supervisor Supervisor) error {
+	report, err := server.approvedReport(ctx, agent, s256)
+	if err != nil {
+		return err
+	}
+	report.Subject = supervisor.Subject
+	outcome, err := server.supervision.client.PostReport(ctx, supervisor.Issuer, report)
+	if err != nil {
+		return err
+	}
+	if !outcome.Accepted {
+		return fmt.Errorf("personserver: supervisor did not accept the mission: %s", describeProblem(outcome.Problem))
+	}
+	return nil
+}
+
+func (server *Server) approvedReport(ctx context.Context, agent, s256 string) (supervision.Report, error) {
+	history, err := server.supervision.store.SupervisionHistory(ctx, agent)
+	if err != nil {
+		return supervision.Report{}, err
+	}
+	for _, notice := range history {
+		if notice.Report && notice.Name == string(supervision.ReportApproved) && notice.MissionS256 == s256 {
+			return decodeQueuedReport(notice)
+		}
+	}
+	if server.missions == nil {
+		return supervision.Report{}, ErrMissionNotFound
+	}
+	mission, err := server.missions.LoadMissionForAgent(ctx, agent, s256, server.clock.Now().UTC())
+	if err != nil {
+		return supervision.Report{}, err
+	}
+	id, err := mintSupervisionID("e-")
+	if err != nil {
+		return supervision.Report{}, err
+	}
+	sdi, err := mintSupervisionID("d-")
+	if err != nil {
+		return supervision.Report{}, err
+	}
+	return supervision.Report{
+		Action: supervision.ReportApproved, ID: id, SDI: sdi, Agent: agent, MissionS256: s256,
+		Mission: append([]byte(nil), mission.ExactJSON...), IssuedAt: mission.ApprovedAt.Unix(),
+	}, nil
+}
+
+// forgetConnection drops a connection the supervisor no longer accepts, so
+// the next act connects again; until it accepts, it is unavailable.
+func (server *Server) forgetConnection(ctx context.Context, supervisor Supervisor) {
+	_ = server.supervision.store.SaveSupervisorConnection(ctx, SupervisorConnection{
+		Supervisor: supervisor, State: SupervisorRefused, UpdatedAt: server.clock.Now().UTC(),
+	})
+}
+
 // reconnect connects again after a supervisor answered unknown_sub.
 func (server *Server) reconnect(ctx context.Context, supervisor Supervisor) bool {
 	connection, err := server.connectSupervisor(ctx, supervisor, supervision.ActionConnect)
 	return err == nil && connection.State == SupervisorConnected
 }
 
-// terminatedReportID names the one terminated report for a mission, so a
-// mission whose end is noticed more than once is reported once.
-func terminatedReportID(s256 string) string { return "e-terminated-" + s256 }
-
 // reportMissionEnded tells the supervisor deciding for a mission's Agent that
 // the mission ended, when the Person Server finds it terminated: expired, or
-// ended for any other reason. A mission completed under a supervisor's
-// decision was reported then, under the same id.
+// ended for any other reason. A mission whose end was already reported, as a
+// completion is when it is accepted, is not reported again. The end of a
+// mission no supervisor decided for is recorded for replay.
 func (server *Server) reportMissionEnded(ctx context.Context, mission MissionRecord) {
 	if server.supervision == nil || mission.TerminationReason == "" {
 		return
 	}
 	supervisor, err := server.supervision.store.LoadAgentSupervisor(ctx, mission.Agent)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrSupervisionNotFound) {
 		return
 	}
 	history, err := server.supervision.store.SupervisionHistory(ctx, mission.Agent)
 	if err != nil {
 		return
 	}
-	id := terminatedReportID(mission.S256)
 	for _, notice := range history {
-		if notice.ID == id {
+		if notice.Report && notice.Name == string(supervision.ReportTerminated) && notice.MissionS256 == mission.S256 {
 			return
 		}
 	}
 	_ = server.queueReport(ctx, supervisor, supervision.Report{
-		Action: supervision.ReportTerminated, ID: id,
-		Agent: mission.Agent, MissionS256: mission.S256, Reason: mission.TerminationReason,
+		Action: supervision.ReportTerminated, Agent: mission.Agent,
+		MissionS256: mission.S256, Reason: mission.TerminationReason,
+	})
+}
+
+// reportAgentTokenRevocation tells the supervisor deciding for the Agent an
+// Agent Provider revoked a token of that the Person Server received the
+// revocation. The supervisor has no part in the cascade.
+func (server *Server) reportAgentTokenRevocation(ctx context.Context, revocation aauth.RevocationRequest) {
+	if server.supervision == nil {
+		return
+	}
+	state := server.supervision
+	agent, err := state.store.LoadTokenAgent(ctx, revocation.Reference)
+	if err != nil {
+		return
+	}
+	supervisor, err := state.store.LoadAgentSupervisor(ctx, agent)
+	if err != nil {
+		return
+	}
+	_ = server.queueEvent(ctx, supervisor, supervision.Event{
+		Name: supervision.EventRevocationReceived, Agent: agent, TokenType: "agent_token",
+		TokenIssuer: revocation.Reference.Issuer, JTI: revocation.Reference.JTI,
+		ExpiresAt: revocation.ExpiresAt.Unix(),
 	})
 }
 
 // --- Routing changes and replay ---------------------------------------------
 
 // followRoute records the supervisor deciding for an Agent. The first time an
-// Agent is routed it queues agent.bound; when the person changed the Agent's
-// deciding supervisor it replays the Agent's active state to the new one
-// before anything new is put to it (Replay and Recovery).
+// Agent is routed, and when the person changed its deciding supervisor, it
+// replays the Agent's active state to that supervisor, beginning with
+// agent.bound, before anything new is put to it (Replay and Recovery).
 func (server *Server) followRoute(ctx context.Context, agent aauth.AgentTokenClaims, supervisor Supervisor) error {
 	state := server.supervision
+	// The Agent token is indexed so that its revocation reaches the
+	// supervisor.
+	if err := state.store.RecordTokenAgent(ctx, aauth.TokenReference{Issuer: agent.Issuer, JTI: agent.JTI},
+		agent.Subject, time.Unix(agent.ExpiresAt, 0).UTC()); err != nil {
+		return err
+	}
 	previous, err := state.store.LoadAgentSupervisor(ctx, agent.Subject)
 	switch {
 	case err == nil && previous == supervisor:
 		return nil
-	case err == nil:
+	case err == nil, errors.Is(err, ErrSupervisionNotFound):
+		// A first route replays what the Person Server recorded before the
+		// Agent was supervised; a changed one, what the last supervisor knew.
 		if err := server.replayAgent(ctx, agent, supervisor); err != nil {
-			return err
-		}
-	case errors.Is(err, ErrSupervisionNotFound):
-		if err := server.queueEvent(ctx, supervisor, supervision.Event{
-			Name: supervision.EventAgentBound, Agent: agent.Subject,
-			AgentIssuer: agent.Issuer, AgentSubject: agent.Subject,
-		}); err != nil {
 			return err
 		}
 	default:
@@ -687,21 +801,11 @@ func (server *Server) replayMission(ctx context.Context, agent string, s256 stri
 		replay = append(replay, notice)
 	}
 	if !approvedSeen {
-		if server.missions == nil {
-			return ErrMissionNotFound
-		}
-		mission, err := server.missions.LoadMissionForAgent(ctx, agent, s256, server.clock.Now().UTC())
+		report, err := server.approvedReport(ctx, agent, s256)
 		if err != nil {
 			return err
 		}
-		sdi, err := mintSupervisionID("d-")
-		if err != nil {
-			return err
-		}
-		if err := server.queueReport(ctx, supervisor, supervision.Report{
-			Action: supervision.ReportApproved, SDI: sdi, Agent: agent, MissionS256: s256,
-			Mission: append([]byte(nil), mission.ExactJSON...), IssuedAt: mission.ApprovedAt.Unix(),
-		}); err != nil {
+		if err := server.queueReport(ctx, supervisor, report); err != nil {
 			return err
 		}
 	}

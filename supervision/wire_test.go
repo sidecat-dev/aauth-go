@@ -2,6 +2,8 @@ package supervision_test
 
 import (
 	"errors"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +14,7 @@ import (
 
 const (
 	testAgent = "aauth:assistant@agent.example"
-	testToken = "eyJhbGciOiJFZDI1NTE5In0.eyJzdWIiOiJ4In0.c2ln"
+	testToken = "eyJhbGciOiJFZDI1NTE5In0.eyJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSJ9.c2ln"
 	testS256  = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 )
 
@@ -206,9 +208,10 @@ func TestReportsAndEventsNameWhatTheyReport(t *testing.T) {
 	}
 }
 
-// TestMetadataKeepsEndpointsOnTheIssuerOrigin refuses a metadata document
-// that names an endpoint elsewhere or another issuer.
-func TestMetadataKeepsEndpointsOnTheIssuerOrigin(t *testing.T) {
+// TestMetadataNamesHTTPSEndpoints refuses a metadata document that names
+// another issuer or an endpoint that is not HTTPS. Which origins a Person
+// Server contacts is its egress admission's decision.
+func TestMetadataNamesHTTPSEndpoints(t *testing.T) {
 	good := `{"issuer":"https://ss.example","connect_endpoint":"https://ss.example/connect","mission_endpoint":"https://ss.example/mission",` +
 		`"decision_endpoint":"https://ss.example/decision","event_endpoint":"https://ss.example/event"}`
 	metadata, err := supervision.DecodeMetadata([]byte(good), "https://ss.example")
@@ -218,8 +221,56 @@ func TestMetadataKeepsEndpointsOnTheIssuerOrigin(t *testing.T) {
 	if _, err := supervision.DecodeMetadata([]byte(good), "https://other.example"); err == nil {
 		t.Error("metadata for another issuer decoded")
 	}
-	elsewhere := strings.Replace(good, "https://ss.example/event", "https://collector.example/event", 1)
-	if _, err := supervision.DecodeMetadata([]byte(elsewhere), "https://ss.example"); err == nil {
-		t.Error("an endpoint on another origin was accepted")
+	plain := strings.Replace(good, "https://ss.example/event", "http://ss.example/event", 1)
+	if _, err := supervision.DecodeMetadata([]byte(plain), "https://ss.example"); err == nil {
+		t.Error("an http endpoint was accepted")
+	}
+}
+
+// TestForwardedMembersTravelAsTheAgentSentThem keeps members of the Agent's
+// body that a supervision request does not define, and refuses an agent
+// token that names another agent.
+func TestForwardedMembersTravelAsTheAgentSentThem(t *testing.T) {
+	agentBody := []byte(`{"resource":"https://calendar.example","capabilities":["interaction"],"login_hint":"p@example.com","sub":"spoofed"}`)
+	request := envelope(supervision.KindPersonToken)
+	request.AgentToken, request.Resource = testToken, "https://calendar.example"
+	request.Extra = supervision.ForwardedMembers(agentBody)
+	if len(request.Extra) != 2 || string(request.Extra["capabilities"]) != `["interaction"]` {
+		t.Fatalf("forwarded members = %v, want capabilities and login_hint only", request.Extra)
+	}
+	body, err := request.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := supervision.DecodeDecisionRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := decoded.Encode(); string(again) != string(body) {
+		t.Fatalf("re-encoded %s, want %s", again, body)
+	}
+	other := strings.Replace(string(body), `"agent":"`+testAgent+`"`, `"agent":"aauth:other@agent.example"`, 1)
+	if _, err := supervision.DecodeDecisionRequest([]byte(other)); err == nil {
+		t.Error("an agent token naming another agent decoded")
+	}
+}
+
+// TestSignedDecisionsCoverWhatThePersonServerAsks covers the components an
+// Accept-Signature names that the SS can produce, after the three it must.
+func TestSignedDecisionsCoverWhatThePersonServerAsks(t *testing.T) {
+	request, err := http.NewRequest(http.MethodPost, "https://ss.example/decision", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Digest", "sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:")
+	request.Header.Set("Accept-Signature", `sig=("@status" "content-type" "content-digest" "signature-key" "@method";req "@query";req "content-digest";req "content-type";req)`)
+	options := supervision.DecisionSignOptions(request)
+	if !slices.Equal(options.Components, []string{"content-type", "content-digest", "signature-key"}) ||
+		!slices.Equal(options.RequestComponents, []string{"@method", "content-digest"}) {
+		t.Fatalf("coverage = %v and %v under req", options.Components, options.RequestComponents)
+	}
+	request.Header.Del("Accept-Signature")
+	if options := supervision.DecisionSignOptions(request); !slices.Equal(options.RequestComponents, []string{"content-digest", "@authority", "@path"}) {
+		t.Fatalf("default coverage under req = %v", options.RequestComponents)
 	}
 }

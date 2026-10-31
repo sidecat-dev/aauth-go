@@ -379,15 +379,26 @@ func (report Report) Validate() error {
 		if len(report.Mission) == 0 || aauth.MissionS256(report.Mission) != report.MissionS256 {
 			return errors.New("supervision: approved s256 is not the digest of mission")
 		}
+		var blob struct {
+			Agent string `json:"agent"`
+		}
+		if json.Unmarshal(report.Mission, &blob) != nil || blob.Agent != report.Agent {
+			return errors.New("supervision: approved mission is not the agent's")
+		}
 		if report.Reason != "" {
 			return errors.New("supervision: an approved report carries no reason")
 		}
 	case ReportTerminated:
-		if report.Reason == "" {
+		if report.Reason == "" || len(report.Reason) > 256 {
 			return errors.New("supervision: a terminated report carries its reason")
 		}
-		if report.SDI != "" || report.Mission != nil {
-			return errors.New("supervision: a terminated report carries neither sdi nor mission")
+		if report.SDI != "" {
+			if err := validateIdentifier("sdi", report.SDI); err != nil {
+				return err
+			}
+		}
+		if report.Mission != nil {
+			return errors.New("supervision: a terminated report carries no mission")
 		}
 	default:
 		return errors.New("supervision: report action must be approved or terminated")
@@ -396,8 +407,9 @@ func (report Report) Validate() error {
 }
 
 // Encode returns the report body. An approved report carries s256 and the
-// base64url mission blob; a terminated report carries mission_s256 and its
-// reason.
+// base64url mission blob; a terminated report carries its reason, and the
+// sdi of the completion that ended it when a decision did. The mission is
+// the path; neither names it as mission_s256.
 func (report Report) Encode() ([]byte, error) {
 	if err := report.Validate(); err != nil {
 		return nil, err
@@ -413,7 +425,6 @@ func (report Report) Encode() ([]byte, error) {
 		object.add("s256", report.MissionS256)
 		object.add("mission", base64.RawURLEncoding.EncodeToString(report.Mission))
 	} else {
-		object.add("mission_s256", report.MissionS256)
 		object.add("reason", report.Reason)
 	}
 	return object.bytes()

@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/dunglas/httpsfv"
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -28,19 +31,94 @@ func AcceptSignature(hasBody bool) string {
 	return SignatureLabel + `=("@status" "content-type" "content-digest" "@authority";req "@path";req)`
 }
 
-// DecisionSignOptions is the coverage of a signed decision answering request:
-// @status, content-type and content-digest, bound to the request by its
+// DecisionSignOptions is the coverage of a signed decision answering request.
+// It always covers @status, content-type and content-digest. When request
+// carries Accept-Signature, it then covers each further component the
+// request names under SignatureLabel that the SS can produce, in the order
+// named: signature-key, and under req @method, @authority, @path, @query
+// when the request has a query, and request fields the request carries.
+// Without Accept-Signature, it binds the decision to request by its
 // content-digest when it has one, and by @authority and @path.
 func DecisionSignOptions(request *http.Request) signaturekey.ResponseSignOptions {
-	requestComponents := []string{"@authority", "@path"}
+	options := signaturekey.ResponseSignOptions{
+		Label:      SignatureLabel,
+		Components: []string{"content-type", "content-digest"},
+	}
+	if requested, ok := acceptedComponents(request); ok {
+		for _, component := range requested {
+			if !component.request {
+				if component.name == "signature-key" {
+					options.Components = append(options.Components, component.name)
+				}
+				continue
+			}
+			switch component.name {
+			case "@method", "@authority", "@path":
+			case "@query":
+				if request.URL.RawQuery == "" {
+					continue
+				}
+			default:
+				if strings.HasPrefix(component.name, "@") || len(request.Header.Values(component.name)) == 0 {
+					continue
+				}
+			}
+			if !slices.Contains(options.RequestComponents, component.name) {
+				options.RequestComponents = append(options.RequestComponents, component.name)
+			}
+		}
+		return options
+	}
+	options.RequestComponents = []string{"@authority", "@path"}
 	if request != nil && len(request.Header.Values("Content-Digest")) > 0 {
-		requestComponents = []string{"content-digest", "@authority", "@path"}
+		options.RequestComponents = []string{"content-digest", "@authority", "@path"}
 	}
-	return signaturekey.ResponseSignOptions{
-		Label:             SignatureLabel,
-		Components:        []string{"content-type", "content-digest"},
-		RequestComponents: requestComponents,
+	return options
+}
+
+type acceptedComponent struct {
+	name    string
+	request bool
+}
+
+// acceptedComponents reads the components request's Accept-Signature names
+// under SignatureLabel. It reports false when there is none it can read.
+func acceptedComponents(request *http.Request) ([]acceptedComponent, bool) {
+	if request == nil {
+		return nil, false
 	}
+	values := request.Header.Values("Accept-Signature")
+	if len(values) == 0 {
+		return nil, false
+	}
+	dictionary, err := httpsfv.UnmarshalDictionary(values)
+	if err != nil {
+		return nil, false
+	}
+	member, ok := dictionary.Get(SignatureLabel)
+	if !ok {
+		return nil, false
+	}
+	list, ok := member.(httpsfv.InnerList)
+	if !ok {
+		return nil, false
+	}
+	var components []acceptedComponent
+	for _, item := range list.Items {
+		name, ok := item.Value.(string)
+		if !ok || name == "" || name != strings.ToLower(name) {
+			return nil, false
+		}
+		component := acceptedComponent{name: name}
+		if value, present := item.Params.Get("req"); present {
+			if value != true {
+				return nil, false
+			}
+			component.request = true
+		}
+		components = append(components, component)
+	}
+	return components, true
 }
 
 // SignDecision signs a terminal decision response under the SS's jwks_uri
@@ -58,9 +136,10 @@ func SignDecision(header http.Header, status int, body []byte, request *http.Req
 // VerifyDecision verifies a signed decision: the signature must cover
 // @status, content-type and content-digest, verify under a key the
 // supervisor's metadata names, and name supervisor as its Signature-Key id
-// with DiscoveryDocument. window bounds how old the signature's created time
-// may be; a decision repeated for an sdi already answered keeps its first
-// signature, so a caller allows for the time since it first made the request.
+// with DiscoveryDocument. Any covered req component is checked against
+// request. A signature's created time has no lower bound: a repeated decision
+// keeps its first signature, and one reached later at a pending URL is signed
+// when polled. One more than the signature window ahead of clock is refused.
 func VerifyDecision(
 	ctx context.Context,
 	status int,
@@ -70,15 +149,17 @@ func VerifyDecision(
 	supervisor string,
 	resolver signaturekey.KeyResolver,
 	clock aauth.Clock,
-	window time.Duration,
 ) (signaturekey.VerifiedResponse, error) {
 	verified, err := signaturekey.VerifyResponse(ctx, status, header, body, request, resolver, clock, signaturekey.ResponseVerifyOptions{
 		Label:              SignatureLabel,
 		RequiredComponents: []string{"content-type", "content-digest"},
-		SignatureWindow:    window,
+		SignatureWindow:    unboundedSignatureAge,
 	})
 	if err != nil {
 		return signaturekey.VerifiedResponse{}, fmt.Errorf("supervision: decision signature: %w", err)
+	}
+	if verified.Created().After(clock.Now().Add(signaturekey.DefaultSignatureWindow)) {
+		return signaturekey.VerifiedResponse{}, errors.New("supervision: decision signature was created ahead of the signature window")
 	}
 	_, document, _, _ := verified.Credential().JWKSURI()
 	if verified.Signer() != supervisor || document != DiscoveryDocument {
@@ -86,6 +167,10 @@ func VerifyDecision(
 	}
 	return verified, nil
 }
+
+// unboundedSignatureAge admits a decision signature of any age; VerifyDecision
+// bounds only a created time ahead of the clock.
+const unboundedSignatureAge = 100 * 365 * 24 * time.Hour
 
 // RecordedRequest is a request as the Person Server signed and sent it.
 type RecordedRequest struct {
@@ -103,15 +188,13 @@ type RecordedResponse struct {
 }
 
 // Exchange is one request to an SS and the response to it, kept as the
-// Person Server's log entry for a decision. ActAt is the time of the act, the
-// request's iat; a poll carries no body, so it is recorded here. Response is
-// nil when no response arrived. Signed reports that the response carried a
-// signature that verified.
+// Person Server's log entry for a decision. Response is nil when no response
+// arrived. Signed reports that the response carried a signature that
+// verified.
 type Exchange struct {
 	Supervisor string
 	Request    RecordedRequest
 	Response   *RecordedResponse
-	ActAt      time.Time
 	SentAt     time.Time
 	ReceivedAt time.Time
 	Signed     bool
@@ -134,8 +217,7 @@ func (exchange Exchange) Clone() Exchange {
 // reads the log entry later and was not on the connection. The response
 // identifies its signer in itself, so the check needs only the record and a
 // key resolver; it does not depend on which SS was configured at the time.
-// Verification uses the recorded receipt time, and allows a signature as old
-// as the act, for a decision the SS repeated.
+// Verification uses the recorded receipt time.
 func VerifyExchange(ctx context.Context, exchange Exchange, resolver signaturekey.KeyResolver) (signaturekey.VerifiedResponse, error) {
 	if exchange.Response == nil {
 		return signaturekey.VerifiedResponse{}, errors.New("supervision: the exchange has no response")
@@ -148,15 +230,5 @@ func VerifyExchange(ctx context.Context, exchange Exchange, resolver signatureke
 	at := exchange.ReceivedAt
 	clock := aauth.ClockFunc(func() time.Time { return at })
 	return VerifyDecision(ctx, exchange.Response.Status, exchange.Response.Header, exchange.Response.Body,
-		request, exchange.Supervisor, resolver, clock, decisionWindow(exchange.ActAt, at))
-}
-
-// decisionWindow allows a signed decision created any time since the act,
-// plus the ordinary signature window.
-func decisionWindow(actAt, at time.Time) time.Duration {
-	window := signaturekey.DefaultSignatureWindow
-	if since := at.Sub(actAt); !actAt.IsZero() && since > 0 {
-		window += since
-	}
-	return window
+		request, exchange.Supervisor, resolver, clock)
 }

@@ -1076,10 +1076,12 @@ config.Supervision = &personserver.SupervisionConfig{
 	Store:      supervisionStore,
 	HTTPClient: httpClient,
 	Admit:      admit,
-	// Treat a supervisor that does not sign its decisions as unavailable.
-	RequireSignedDecisions: true,
 }
 ```
+
+By default the Person Server consults only a supervisor that signs its
+decisions, so every decision it acts on is one it can later show was the
+supervisor's; set `AllowUnsignedDecisions` to consult one that does not.
 
 Connect when the person registers a supervisor. `ConnectSupervisor` returns
 `SupervisorConnecting` with an `InteractionURL` and `InteractionCode` when the
@@ -1118,7 +1120,11 @@ your host, not by the Agent's polls: call `AdvanceSupervision` for each review
 in `SupervisedWaitingForSupervisor` once its next poll is due. Events and
 mission reports reach a supervisor in order, before the next request to it,
 after each host step, and when you call `DeliverSupervisionEvents`, for
-example when a supervisor that was offline is reachable again.
+example when a supervisor that was offline is reachable again. They include
+an Agent Provider's revocation of an Agent's token, when the Person Server
+also has `AgentTokenRevocations`. While supervision is configured the Person
+Server also records the missions and tokens of Agents no supervisor decides
+for, so that routing one later replays its active state.
 
 **Log entries.** Every exchange with a supervisor is recorded with
 `SupervisionStore.RecordSupervisionLog`: the request as signed and the
@@ -1132,7 +1138,9 @@ person at once, for instance for a tenant you govern, or asks the person to
 confirm at your page; show them `ConnectConfirmation.PersonServer`, its
 `PersonServerName` and the code before `ConfirmConnect`. `Decide` answers each
 request with a decision, a question for the Agent, or a deferral you resolve
-later with `ResolveDecision`. `Observe` sees every event, including
+later with `ResolveDecision`; it sees every member the Agent sent, in
+`Request.Extra` for those the request type does not name, and decides again
+when a Person Server relays an updated auth-token request. `Observe` sees every event, including
 `decision.resolved` with the reach the person gave their answer, which your
 policy then applies. With a `SigningKey` the server publishes `jwks_uri` and
 signs every decision. `testutil.NewSupervisorStore` and
