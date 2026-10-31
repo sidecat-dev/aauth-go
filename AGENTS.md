@@ -7,7 +7,7 @@ family. It does not claim official status.
 
 Read these files before changing protocol behavior:
 
-1. `README.md` — implemented behavior and current limits.
+1. `README.md` and `docs/` — what the library offers a user, and how to start.
 2. `ARCHITECTURE.md` — package boundaries and dependency direction.
 3. `SPECIFICATIONS.md` — exact source documents and revisions.
 4. `INTERPRETATIONS.md` — choices not settled by the source text.

@@ -15,8 +15,7 @@ mount on your application's HTTPS server:
 func agentResource(keys signaturekey.KeyResolver, clock aauth.Clock, app http.Handler) (http.Handler, error) {
 	server, err := resource.NewAgentIdentity(resource.AgentIdentityConfig{
 		Issuer: "https://resource.example", KeyResolver: keys, Clock: clock,
-		AdditionalSignatureComponents: []string{"content-digest"},
-		Protected:                     app,
+		Protected: app,
 	})
 	if err != nil {
 		return nil, err
@@ -24,6 +23,10 @@ func agentResource(keys signaturekey.KeyResolver, clock aauth.Clock, app http.Ha
 	return server.Handler(), nil
 }
 ```
+
+A request with a body must sign it; a request without one needs no digest.
+Leave `AdditionalSignatureComponents` unset unless you need more: see
+[Protect request bodies](#protect-request-bodies).
 
 Imports: `net/http`, `aauth "gitlab.com/sidecat-dev/aauth-go"`, and the
 module's `resource` and `signaturekey` packages. Set `Issuer` to your
@@ -46,9 +49,30 @@ func providerKeys(key jose.JWK) signaturekey.StaticKeyResolver {
 Here `key` is the AP public key you configured, represented as a JSON Web Key
 (`jose.JWK`). The map key is `(issuer, discovery document, key ID)`.
 `aauth.AgentDiscoveryDocument` is `"aauth-agent.json"`: the token's `dwk`
-claim selects that well-known document. For network discovery, use
-`signaturekey.NewHTTPKeyResolver` with your HTTP client, clock and `Admit`
-callback, which decides which endpoints may be contacted.
+claim selects that well-known document.
+
+For network discovery, use `signaturekey.NewHTTPKeyResolver`. `Client` is the
+HTTP client it fetches with and `Clock` the protocol time. `Admit` sees each
+metadata or JWKS URL before it is fetched and returns an error to refuse it:
+admit only the issuers you trust, because a token names its own issuer. The
+resolver also checks each connection itself. It resolves the host, refuses
+private, loopback and link-local addresses, connects only to the address it
+checked, and never follows a redirect. To do that it dials through a copy of
+your client's `*http.Transport`, so it refuses, at construction, a client
+whose transport is another type or has a proxy or a dialer other than
+`DialContext`. Two settings change this:
+
+- For issuers at private addresses on your own network, `AllowDestination`
+  admits the addresses it returns true for, and `LookupAddresses` resolves
+  hosts the system resolver does not know.
+- For a transport that applies its own destination controls or makes no
+  connection, such as an in-memory test transport or a client that reaches
+  only your own loopback listeners, set `TransportEnforcesEgress: true`. The
+  resolver then uses the client unchanged.
+
+[Fetch issuer keys](docs/roles/resource.md#fetch-issuer-keys) compares the
+cases, and [Get started](docs/getting-started.md) runs the last one over
+loopback TLS.
 
 Inside `app`, call `resource.AgentPrincipalFromContext(r.Context())` to get
 the verified Agent identity. Apply your own access policy there. Identity
@@ -65,8 +89,10 @@ Missing coverage returns `401` with `Signature-Error: invalid_input` and
 `required_input`; changed bytes or a mismatched digest return `401` with
 `Signature-Error: invalid_signature`.
 
-The handler above additionally requires `content-digest` on *every* request,
-including empty ones. Its caller supplies that unconditional component:
+The handler above uses this default. To require `content-digest` on *every*
+request, including empty ones, list it in `AdditionalSignatureComponents`, as
+the example's `digestEverywhereResource` does. Its caller supplies that
+unconditional component:
 
 ```go
 func signAgentRequest(request *http.Request, key jose.SigningKey, token string, clock aauth.Clock) error {
@@ -76,13 +102,17 @@ func signAgentRequest(request *http.Request, key jose.SigningKey, token string, 
 }
 ```
 
-The signer preserves the body for transport. To use only the nonempty-body
-default, omit `content-digest` from `AdditionalSignatureComponents` on the
-Resource and from `AdditionalComponents` on the signer. Empty requests then
-need no digest. Keep the explicit component if empty requests must also carry
-a signed digest: the signer computes the SHA-256 digest of zero bytes.
-This applies to empty GETs and POSTs alike; a missing required component is
-refused before your handler runs.
+The signer preserves the body for transport and computes the SHA-256 digest
+of zero bytes for an empty request. The requirement applies to empty GETs and
+POSTs alike; a missing required component is refused before your handler runs.
+
+The Resource lists such components in its metadata, and they apply to every
+request. `agent.Client.CallAsAgent` reads the metadata and covers them. An
+Agent that signs without reading the metadata is refused with `401` and
+`Signature-Error: invalid_input`, naming the component in `required_input`.
+aauth-rust's `Agent::sign`, for example, covers an extra component only when
+it is given the list with `with_additional_signature_components`. Use the
+default unless your service needs a digest on empty requests.
 
 If you set a positive `http.Request.ContentLength`, it must match the actual
 body size. Signing refuses a mismatch before attaching proof headers and
@@ -254,7 +284,7 @@ It does **not** verify possession of the Agent's private key on an HTTP request,
 consult a revocation store, or decide access to your operation. Use the Resource
 handler for request verification.
 
-All Go snippets execute in [the complete example](example/verifyagent/main.go).
+All Go snippets execute in [the complete example](example/verifyagent).
 From a checkout:
 
 ```sh
@@ -1689,12 +1719,30 @@ not preserved. It observes problems written by the role serializer, including
 
 ## Versions and local development
 
+Install the module at a commit on `main`; it has no release tags:
+
+```sh
+go get gitlab.com/sidecat-dev/aauth-go@0e2447b
+```
+
+`go get` records the commit in `go.mod` as the pseudo-version
+`v0.0.0-20261031210612-0e2447bc05b0`. Review and commit `go.mod` and `go.sum`;
+these editor drafts and APIs are still evolving. To move to a later commit,
+run `go get` again with its hash.
+
 For in-process development, use `https://resource.example` as in the runnable
 example; no DNS or listener is needed. With a local TLS listener, keep that
 logical request host and route its connection to loopback through your test
 transport. Changing `Issuer` alone does not make a request to
-`127.0.0.1:8080` match it. The [local walkthrough](walkthrough/local) shows
-separate TLS processes and certificates at its declared module pin.
+`127.0.0.1:8080` match it. A key resolver that fetches through such a
+transport needs `TransportEnforcesEgress: true`, because the transport, not
+the resolver, decides where connections go (see
+[Verify an Agent at your HTTP endpoint](#verify-an-agent-at-your-http-endpoint)).
+[Get started](docs/getting-started.md) runs an Agent and a Resource this way.
+The [local walkthrough](walkthrough/local) shows separate TLS processes and
+certificates at its declared module pin. That pin is from before the resolver
+checked destinations, so the walkthrough's resolver omits the setting; a copy
+of its client at a current commit needs it.
 
 **HTTP 421 behind a reverse proxy:** every request through
 `resource.Server.Handler` or `resource.ResourceManagedServer.Handler`, including
@@ -1713,13 +1761,10 @@ that target. [Authority tests](resource/authority_test.go) exercise the
 receiving-host and signed-request checks; [session tests](resource/session_authority_test.go)
 cover initial authorization, session use, discovery and pending routes.
 
-`go get gitlab.com/sidecat-dev/aauth-go` records a published version in your
-module. Review and commit `go.mod` and `go.sum`; these editor drafts and APIs
-are still evolving. The standalone `walkthrough/` modules deliberately pin
-published pseudo-versions. Their tests exercise those versions, not this
-checkout.
+The standalone `walkthrough/` modules deliberately pin older commits. Their
+tests exercise those commits, not this checkout.
 
-To try the current checkout in a separate module, start in the `aauth-go`
+To try an unmerged checkout in a separate module, start in the `aauth-go`
 repository root. Capture its absolute path before changing directories. This
 creates a temporary consumer and copies the complete sub-agent example into it:
 
@@ -1739,9 +1784,9 @@ go run .
 The `go list -m` output must show `=>` followed by your absolute checkout path.
 The run prints the issued child, successful `records.read` and `orders.read`
 calls, the approval wait and the final `person_token_denied` refusal. The
-placeholder `v0.0.0` is satisfied by the local replacement; it is not a published
-release. For an existing application, apply the same absolute replacement to
+placeholder `v0.0.0` is satisfied by the local replacement; no such version
+exists. For an existing application, apply the same absolute replacement to
 its module and run `go mod tidy` after adding imports. A replacement does not
 publish or pin the checkout's contents, so record the checkout commit when
-sharing results. Remove the replacement and select a published version before
-distributing a module intended to work without your local checkout.
+sharing results. Remove the replacement and `go get` a commit on `main`
+before distributing a module intended to work without your local checkout.
