@@ -2205,7 +2205,7 @@ header: it requires the jwks_uri `id` to be the Resource the caller asked and
 `dwk` to be `aauth-resource.json`, and it applies the request signature window
 to `created`. A response with a signature that does not verify is refused even
 when the caller does not require one; an unsigned response is reported as
-unsigned. See AAG-F150.
+unsigned. See AAG-F132.
 
 **Evidence:** `resource/usage_signature_test.go` and
 `signaturekey/response_external_test.go`.
@@ -2315,7 +2315,7 @@ four-party Resource accepts auth-token revocations only from its configured
 Access Server. A Person Server counts an Access Server it passed a person token
 to as `upstream_token` among those it presented the token to, so a revocation
 reaches it and it can answer `revoked_upstream_token`
-([AAG-F140](SPEC-FEEDBACK.md#aag-f140--no-revocation-reaches-an-access-server-that-received-a-person-token-as-upstream_token)). When a person token is revoked the Access Server revokes every
+([AAG-F128](SPEC-FEEDBACK.md#aag-f140--no-revocation-reaches-an-access-server-that-received-a-person-token-as-upstream_token)). When a person token is revoked the Access Server revokes every
 unexpired auth token issued against it and, on a step-up, against those auth
 tokens in turn, and records each as revoked itself so a later step-up presenting
 one is refused.
@@ -2390,7 +2390,7 @@ accepted only when the host opts in after checking
 correlated interaction: an unknown, used or rate-limited code produces an
 error and no redirect, so an interaction page cannot become an open
 redirector for an arbitrary link. Comparing the callback with the Agent's
-`callback_endpoint` is left to the host (`AAG-F131`). A callback whose `error`
+`callback_endpoint` is left to the host (`AAG-F125`). A callback whose `error`
 is unregistered, repeated or unreadable is read as `server_error`, never as
 completion.
 
@@ -2405,7 +2405,7 @@ Interaction, Interaction Callback Errors, and Polling Error Codes.
 
 The section has the Person Server issue the Auth token after its own consent,
 which describes three-party access; it does not say what a federated Person
-Server or an Access Server does with the claim (`AAG-F130`). A Resource puts
+Server or an Access Server does with the claim (`AAG-F124`). A Resource puts
 the claim only in Core Resource tokens it issues against a Person token, and
 retains only the code's digest, until the Resource token expires. A Person
 Server accepts the claim only with `ResourceInteractionConfig`, only on the
@@ -2418,7 +2418,7 @@ where the callback ends in a fresh 128-bit flow value; only its digest is
 retained, and a callback with any other value is refused. The interaction URL
 is checked for HTTPS and passed to the host's egress admission before the
 redirect, although the person's browser, not the Person Server, makes that
-request (`AAG-F133`). Consent cannot be approved until the Resource returned
+request (`AAG-F127`). Consent cannot be approved until the Resource returned
 the person without an error. An error callback ends the request in the mapped
 terminal state, which the next poll delivers once. When the Resource withdraws
 the Resource token, the person is not sent on, the Resource's callback is
@@ -2433,7 +2433,7 @@ refused, and the next poll ends the request with `revoked`.
 
 The section requires the intermediary to answer with its own code and
 `Location` and to complete the original request there, but does not say which
-credential the original Agent presents on that pending URL (`AAG-F132`). The
+credential the original Agent presents on that pending URL (`AAG-F126`). The
 Agent polls with the Auth token it made the call with, and the Resource
 answers only a poll whose verified key has the thumbprint retained when the
 interaction was chained and whose person matches; any other caller receives

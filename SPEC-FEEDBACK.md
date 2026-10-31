@@ -129,9 +129,9 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F118 | Usage as_of cannot name a lagging store's completeness time | Budgets | missing-requirement | P3 | open | 2026-10-26 | Not submitted | — |
 | AAG-F119 | A budget object with an unknown member is rejected | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
 | AAG-F120 | An offer above the metadata maximum is invalid_budget | Budgets | missing-requirement | P2 | open | 2026-10-26 | Not submitted | — |
-| AAG-F130 | Resource-initiated interaction does not say what happens in four-party access | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
-| AAG-F131 | An interaction host is not told how a callback relates to the Agent's `callback_endpoint` | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
-| AAG-F141 | The replay-cache tuple refuses a second, different request in the same second | Core | informative | P2 | open | 2026-10-30 | Not submitted | — |
+| AAG-F124 | Resource-initiated interaction does not say what happens in four-party access | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
+| AAG-F125 | An interaction host is not told how a callback relates to the Agent's `callback_endpoint` | Core | missing-requirement | P2 | open | 2026-10-30 | Not submitted | — |
+| AAG-F129 | The replay-cache tuple refuses a second, different request in the same second | Core | informative | P2 | open | 2026-10-30 | Not submitted | — |
 | AAG-F001 | Interop Surface 3 says resource metadata holds keys, while Core uses `jwks_uri` | Interop profile, Core, Signature-Key | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#253](https://github.com/dickhardt/AAuth/issues/253) |
 | AAG-F005 | R3 same-URI replacement can make an old content hash unverifiable | R3 | informative | P3 | submitted | 3afa429 (2026-08-28) | 2026-10-01, GitHub | New issue [#247](https://github.com/dickhardt/AAuth/issues/247) |
 | AAG-F030 | Resource-managed interaction is assigned both 202 and 401 | Core | informative | P3 | submitted | 0a5e37a (2026-08-30) | 2026-10-01, GitHub | New issue [#240](https://github.com/dickhardt/AAuth/issues/240) |
@@ -148,12 +148,12 @@ Findings AAG-F110 through AAG-F120 were read against AAuth Budgets `70d6737`, no
 | AAG-F121 | The jkt-jwt example `iss` is not the thumbprint of its header key | Signature-Key | informative | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F122 | `revoked_jwt` is reserved for unexpired JWTs, while a revoked token must not be reported as expired | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
 | AAG-F123 | A revocation hold that ends before a downstream answers has no defined outcome | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
-| AAG-F132 | Interaction chaining does not name the credential that polls the intermediary | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
-| AAG-F133 | Egress admission is required for a URL the Person Server never fetches | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
-| AAG-F140 | No revocation reaches an Access Server that received a person token as upstream_token | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
-| AAG-F142 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
-| AAG-F143 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
-| AAG-F150 | A signed usage response is not required to cover `signature-key` | Budgets, Signature-Key | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F126 | Interaction chaining does not name the credential that polls the intermediary | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F127 | Egress admission is required for a URL the Person Server never fetches | Core | MUST/SHALL/REQUIRED | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F128 | No revocation reaches an Access Server that received a person token as upstream_token | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F130 | A delayed verifier is not told when `expires` is judged | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F131 | A relative `aauth-resource` href is not addressed | Core | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
+| AAG-F132 | A signed usage response is not required to cover `signature-key` | Budgets, Signature-Key | missing-requirement | P3 | open | 2026-10-30 | Not submitted | — |
 
 An earlier plan of "umbrella only" meant raising the item only inside one combined
 issue of small editorial items. On 2026-10-01 each such item was posted as its own issue instead.
@@ -499,7 +499,7 @@ Our implementation falls back to the full signed grant when no interoperable bou
 
 **Venue:** New issue [#250](https://github.com/dickhardt/AAuth/issues/250), posted 2026-10-01. Earlier plan: New issue. A Budgets issue on ambiguous failures, with the full-grant fallback as implementation evidence.
 
-### AAG-F133 — Egress admission is required for a URL the Person Server never fetches
+### AAG-F127 — Egress admission is required for a URL the Person Server never fetches
 
 **Status:** open
 
@@ -1575,7 +1575,7 @@ A resource declares an optional maximum for a unit. The listed `invalid_budget` 
 
 **Question:** Is a signed offer above the resource's declared maximum `invalid_budget`, or must the resource never produce that offer?
 
-### AAG-F150 — A signed usage response is not required to cover `signature-key`
+### AAG-F132 — A signed usage response is not required to cover `signature-key`
 
 **Status:** open
 
@@ -1595,7 +1595,7 @@ The Signed Response says the usage-response signature MUST cover `@status`, `con
 
 **Question:** Must a signed usage response also cover `signature-key`, and should Signature-Key Integrity say whether it applies to response signatures?
 
-### AAG-F130 — Resource-initiated interaction does not say what happens in four-party access
+### AAG-F124 — Resource-initiated interaction does not say what happens in four-party access
 
 **Status:** open
 
@@ -1615,7 +1615,7 @@ Steps 1 to 6 have the Person Server resolve the Resource's interaction, run its 
 
 **Question:** Does a federated Person Server resolve the Resource's interaction before its PS-to-AS token request, and is the Access Server told that it did?
 
-### AAG-F131 — An interaction host is not told how a callback relates to the Agent's `callback_endpoint`
+### AAG-F125 — An interaction host is not told how a callback relates to the Agent's `callback_endpoint`
 
 **Status:** open
 
@@ -1635,7 +1635,7 @@ An Agent "MAY append a `callback` parameter, constructed from its `callback_endp
 
 **Question:** Must an interaction host check an Agent's callback against that Agent's `callback_endpoint` (and `localhost_callback_allowed`), and by what comparison?
 
-### AAG-F132 — Interaction chaining does not name the credential that polls the intermediary
+### AAG-F126 — Interaction chaining does not name the credential that polls the intermediary
 
 **Status:** open
 
@@ -2089,7 +2089,7 @@ A downstream revocation is terminal when it was recorded or ended `revocation_un
 
 **Question:** Should the draft say that a downstream still unanswered when the recipient's hold ends is pending, so the recipient answers `202`, and that `revocation_unavailable` is for a downstream whose own request failed or timed out?
 
-### AAG-F140 — No revocation reaches an Access Server that received a person token as upstream_token
+### AAG-F128 — No revocation reaches an Access Server that received a person token as upstream_token
 
 **Status:** open
 
@@ -2109,7 +2109,7 @@ Step 1 has the recipient of an `upstream_token`, the Access Server included, ans
 
 **Question:** Does "presented that person token to" include an Access Server the Person Server passed it to as `upstream_token`? If so, should the Records paragraph say that the Person Server records those Access Servers too?
 
-### AAG-F141 — The replay-cache tuple refuses a second, different request in the same second
+### AAG-F129 — The replay-cache tuple refuses a second, different request in the same second
 
 **Status:** open
 
@@ -2129,7 +2129,7 @@ The optional replay cache is keyed by `(signing-key-thumbprint, created, @method
 
 **Question:** Should the tuple be the signature (or the signature base), or include `@query` and `content-digest`, so that only a repeated signed request is refused?
 
-### AAG-F142 — A delayed verifier is not told when `expires` is judged
+### AAG-F130 — A delayed verifier is not told when `expires` is judged
 
 **Status:** open
 
@@ -2149,7 +2149,7 @@ Servers "MUST honor [`expires`] when present and MUST reject requests where `exp
 
 **Question:** Is `expires` a deadline for any verifier, delayed ones included, as the signer's way to refuse store-and-forward, or is it judged against the same anchor as the presented token?
 
-### AAG-F143 — A relative `aauth-resource` href is not addressed
+### AAG-F131 — A relative `aauth-resource` href is not addressed
 
 **Status:** open
 

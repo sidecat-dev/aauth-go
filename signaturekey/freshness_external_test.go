@@ -131,7 +131,7 @@ func TestDelayedVerifierAnchorsOnCreatedAndItsReplayCacheSpansTheDelay(t *testin
 
 	// The tuple the draft names leaves out the body and the signature, so a
 	// second, different request from the same key to the same path in the
-	// same second is refused too (SPEC-FEEDBACK.md AAG-F141).
+	// same second is refused too (SPEC-FEEDBACK.md AAG-F129).
 	bodies, err := signaturekey.NewReplayCache(signaturekey.ReplayCacheConfig{})
 	if err != nil {
 		t.Fatal(err)
