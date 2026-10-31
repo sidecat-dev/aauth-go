@@ -177,25 +177,29 @@ is `400`. The inbox store checks the subscribed Agent before it consumes a
 use, although Events lists that check after the use-count increment, so a
 refused delivery never spends the subscription.
 
-## Mission-bound Resource and federated Auth tokens inherit upstream expiry ceilings
+## Mission-bound Auth tokens take the mission's bound from the presented token
 
-**Source:** AAuth Core, `Mission Approval`, `Resource Token Structure`, and
-`Why presented_jti Exists`.
+**Source:** Protocol `70d6737`, Resource Token Structure (line 759), Mission
+Approval (`expires_at`, line 1425), Person Token Structure, Auth Token
+Structure and PS-to-AS Token Request.
 
-Core requires a mission-bound Resource token not to outlive the mission while
-keeping mission content private to the Person Server. A Resource therefore
-cannot read `expires_at` directly. This implementation caps the Resource token
-at the verified Person token's `exp`; the Person Server already capped that
-token at mission expiry.
+The pinned draft makes a Resource token's lifetime "independent of any
+mission it names: the PS verifies that the mission is active when it acts on
+the token", and says the Person Server caps the person tokens and auth tokens
+it issues at the mission's `expires_at`, "and the presented token carries that
+bound to an AS". An Access Server receives only `mission_s256`, so it caps a
+mission-bound Auth token at the presented token's `exp`, as it caps every
+Auth token, and not at the Resource token's. The Person Server checks the
+returned Auth token against the mission's expiry and commits it with the
+mission atomically before release. Neither the Person Server nor the Agent
+refuses a Resource token that outlives the mission. A Resource built with
+this library still issues a mission-bound Resource token no later than the
+person token it verified; that is shorter than the draft requires, not a
+refusal of anyone else's token.
 
-Core also requires an AS-issued mission-bound Auth token not to outlive the
-mission, but the AS likewise receives only `mission_s256` and the verified
-Resource token. This implementation's Access Server conservatively caps the
-Auth token at the Resource token's `exp`. The Person Server does not require an
-independent AS to use that stricter ceiling: it verifies the returned Auth
-token against the retained mission expiry, then atomically rechecks the
-complete active mission before release. A conforming returned Auth token may
-therefore outlive the Resource token, but never the mission.
+**Evidence:** `integration/mission_four_party_test.go`,
+`integration/call_chaining_hops_test.go:TestCallChainCarriesTheCallingAgentsMission`
+and `agent/mission_test.go:TestClientAcceptsResourceTokenThatOutlivesMissionBoundPersonToken`.
 
 ## Unknown mission references at the Person Token Endpoint use `invalid_request`
 
@@ -2499,6 +2503,15 @@ not name it, so the fault is in the upstream token. An intermediary that sends
 `mission_s256` with `upstream_token` is `invalid_request`. A chained record
 names the intermediary as its Agent, so a mission store's issuance commit
 accepts a chained record whose Agent differs from the mission's.
+
+A mission-bound request that waits for the Access Server, chained or not,
+loads its mission again on every poll and host advance. Polling Error Codes
+has no `mission_terminated`, but a terminated mission ends the wait with
+`403 mission_terminated` and its `termination_reason`, as it ends a new
+request for it, and the pending URL then answers `410`. The grant is
+committed with the mission when it is released. A wait also ends no later
+than its presented token, which the Person Server capped at the mission's
+expiry, so expiry ends it with `expired` at the same instant.
 
 **Evidence:** `integration/call_chaining_hops_test.go:TestCallChainCarriesTheCallingAgentsMission`
 and `personserver/mission_composition_test.go`.

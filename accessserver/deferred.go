@@ -21,9 +21,9 @@ import (
 // ErrPendingAuthorizationConflict reports a missing record or competing update.
 var ErrPendingAuthorizationConflict = errors.New("accessserver: pending authorization conflict")
 
-// DeferredConfig enables bounded approval, payment, and claims waits for
-// missionless Core requests, top-level or parent-mediated. It does not forward
-// interaction or clarification.
+// DeferredConfig enables bounded approval, payment, and claims waits for Core
+// requests, missionless or mission-bound, top-level, parent-mediated or
+// chained. It does not forward interaction or clarification.
 type DeferredConfig struct {
 	Store    DeferredAuthorizationStore
 	Lifetime time.Duration

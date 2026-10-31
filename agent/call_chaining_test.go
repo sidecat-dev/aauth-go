@@ -281,24 +281,60 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestCallChainingRejectsPendingPersonTokenInteractionWithTypedError(t *testing.T) {
+// A call-chaining person-token request that the Person Server defers is
+// polled at that Person Server, the one the upstream token names, with the
+// intermediary's own Agent token, and its result is checked as an immediate
+// chained person token is.
+func TestCallChainingPersonTokenPollsItsPersonServer(t *testing.T) {
 	t.Parallel()
 
 	protocol := newTestProtocol(t)
 	upstreamToken := callChainPendingUpstreamToken(t, protocol)
+	var polls int
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.String() == protocol.personTokenEndpoint {
+		switch {
+		case request.URL.String() == protocol.personTokenEndpoint:
 			return validPersonTokenPendingResponse(request, "0", "pending"), nil
+		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+interactionLocation:
+			polls++
+			verified := verifyProof(t, request, protocol.resolver, protocol.clock, aauth.AgentTokenType)
+			if claims, err := verified.AgentClaims(); err != nil || claims.Subject != protocol.agentID || request.ContentLength > 0 {
+				t.Fatalf("poll proof = %#v, %v", claims, err)
+			}
+			compact, err := aauth.MintPersonToken(protocol.personServerKey, aauth.PersonTokenClaims{
+				Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+				Audience: protocol.resourceID, Subject: "person-123",
+				Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
+				JTI:          "chained-person-token", IssuedAt: protocol.now.Unix(),
+				ExpiresAt: protocol.now.Add(30 * time.Second).Unix(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return jsonResponse(request, http.StatusOK, map[string]any{"person_token": compact, "expires_in": 30}), nil
 		}
 		return protocol.roundTrip(request)
 	})
 	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: transport})
-	_, err := client.PersonToken(context.Background(), agent.PersonTokenRequest{
+	result, err := client.PersonToken(context.Background(), agent.PersonTokenRequest{
 		Resource: protocol.resourceID, UpstreamToken: upstreamToken,
 	})
-	var unsupported *agent.CallChainingInteractionUnsupportedError
-	if !errors.As(err, &unsupported) || unsupported.Operation == "" {
-		t.Fatalf("error = %v, want typed unsupported call-chain interaction", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ordinary := result.Pending(); ordinary {
+		t.Fatal("a call-chaining person-token request returned an ordinary pending interaction")
+	}
+	pending, ok := result.ChainedPending()
+	if !ok || pending.Requirement() != aauth.RequirementInteraction || pending.InteractionCode() == "" {
+		t.Fatalf("chained person-token result = %#v", result)
+	}
+	polled, err := pending.Poll(context.Background(), agent.PollOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, done := polled.Value(); !done || token == "" || polls != 1 {
+		t.Fatalf("polled = %#v after %d polls", polled, polls)
 	}
 }
 

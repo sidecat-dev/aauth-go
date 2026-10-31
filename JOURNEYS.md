@@ -268,8 +268,8 @@ Pinned source: [AAuth Protocol editor source](https://github.com/dickhardt/AAuth
     `go run ./example/subagent` (the hosted sub-agent request through the AS
     wait), and `go run ./example/callchaining`. The shared
     harness's `authorization.subagent` slice measures the same native roles.
-  - Missing: recursive delegation, R3 or four-party Budget chaining, a
-    mission-bound chained wait, an interaction for a chained request,
+  - Missing: recursive delegation, R3 or four-party Budget chaining, an
+    interaction for a chained request,
     sub-agent call chaining, mission-bound parent mediation, and a cascade
     from a parent's Agent-token revocation to its children's credentials.
 

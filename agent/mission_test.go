@@ -268,7 +268,11 @@ func TestClientRequestsAndVerifiesMissionBoundPersonToken(t *testing.T) {
 	}
 }
 
-func TestClientRejectsResourceTokenThatOutlivesMissionBoundPersonToken(t *testing.T) {
+// Protocol 70d6737, Resource Token Structure: a resource token's lifetime is
+// independent of any mission it names, so one that outlives a mission-bound
+// person token is accepted; the Person Server checks the mission when it acts
+// on the token.
+func TestClientAcceptsResourceTokenThatOutlivesMissionBoundPersonToken(t *testing.T) {
 	t.Parallel()
 
 	protocol := newTestProtocol(t)
@@ -310,10 +314,9 @@ func TestClientRejectsResourceTokenThatOutlivesMissionBoundPersonToken(t *testin
 		}
 		return jsonResponse(request, http.StatusOK, map[string]string{"resource_token": resourceToken}), nil
 	})})
-	_, err = client.Authorize(context.Background(), agent.AuthorizeRequest{
+	if _, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
 		Resource: protocol.resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "outlives the mission-bound person token") {
+	}); err != nil {
 		t.Fatalf("Authorize error = %v", err)
 	}
 }

@@ -549,21 +549,29 @@ cannot be snapshotted. `Exchange` answers a `202` with an
 `*agent.PendingExchangeError` whose `Pending()` you poll with `PollExchange`.
 A pending mission proposal (`BeginMission`) reports the same requirements;
 answer its question with `AnswerMissionClarification` and withdraw it with
-`CancelMissionProposal`. A call-chained Person-token request still ends on a
-`202` with `CallChainingInteractionUnsupportedError`.
+`CancelMissionProposal`. A call-chaining exchange is pending in the same way,
+at the Person Server its upstream token names. A deferred call-chaining
+Person-token request returns `PersonTokenResult.ChainedPending()`, an
+`agent.Pending[string]` whose result is the verified downstream person token.
 
 ## Continue an AS approval or payment request
 
-For missionless Core, top-level or parent-mediated for a
-[sub-agent](#delegate-to-a-sub-agent), set `accessserver.Config.Deferred` with an
+For Core requests, missionless or mission-bound, top-level, chained, or
+parent-mediated for a [sub-agent](#delegate-to-a-sub-agent), set `accessserver.Config.Deferred` with an
 AS-owned `accessserver.DeferredAuthorizationStore`, and
 `personserver.FederatedAuthorizationConfig.Deferred` with a separate
 `personserver.FederatedAuthorizationStore`. An AS policy returns `Decision.Pending` while
 approval or payment is needed; a normal decision grants access.
 
-The limit applies to each request, not to the PS's overall configuration: a
-PS with Missions, R3 and Budget enabled can still defer a separate missionless
-Core request. A local refusal returns `500 server_error` with a safe explanation.
+A mission-bound wait loads its mission again on every Agent poll and host
+advance; once the mission is terminated the wait ends with
+`403 mission_terminated` and its `termination_reason`, and its pending URL
+then answers `410`. The grant is committed with the mission when it is
+released, so it is never delivered past the mission's end.
+
+The R3 and Budget limits apply to each request, not to the PS's overall
+configuration: a PS with R3 and Budget enabled can still defer a separate Core
+request. A local refusal returns `500 server_error` with a safe explanation.
 Use `errors.As` on the diagnostic cause to inspect
 `*personserver.DeferredCompositionError` and its `Reason()`; this is distinct
 from `502 as_unreachable` for an unavailable or unverifiable AS response.
@@ -928,8 +936,8 @@ does).
 
 **Waits.** With `Deferred`, a chained request can wait for Access Server
 approval, payment or claims like any missionless Core request. The
-intermediary calls `BeginExchange` and polls with `PollExchange`; `Exchange`
-returns `CallChainingInteractionUnsupportedError` for a wait. The Person Server
+intermediary calls `BeginExchange`, or takes the `PendingExchangeError` from
+`Exchange`, and polls with `PollExchange`. The Person Server
 lets the intermediary poll although its Agent token names its own Person
 Server, verifies the upstream token again on every poll, host advance and
 delivery, and ends the wait no later than the upstream token. A wait whose
@@ -938,7 +946,7 @@ revoked ends with `403 revoked` and a `detail`; its pending URL then answers
 `410`. The Access Server answers its own pending URL the same way.
 
 Limits: chained R3 and Budget requests are refused, a sub-agent cannot be an
-intermediary, and a mission-bound chained request cannot wait. Neither Person
+intermediary. Neither Person
 Server asks the person about a chained request: the four-party one does not
 forward an Access Server's `requirement=interaction` for any request, and the
 three-party one decides a chained request with `CallChaining.Authorize` alone.
@@ -1171,9 +1179,10 @@ The original Agent reads the `202` from `Do` with `ReadInteractionCall`, sends
 the person to the interaction, and polls with `PollInteractionCall` and the
 same Auth token. An intermediary whose own call-chaining exchange meets an
 interaction, or an Access Server wait, gets a pending exchange from
-`BeginExchange` and polls the Person Server its upstream token names; such a
-pending exchange cannot be snapshotted. A call-chained Person-token request that meets an interaction
-still returns `CallChainingInteractionUnsupportedError`. See
+`BeginExchange` (or from `Exchange`'s `PendingExchangeError`) and polls the
+Person Server its upstream token names; such a pending exchange cannot be
+snapshotted. A call-chaining Person-token request that meets one returns
+`ChainedPending()`, polled the same way. See
 [the end-to-end test](integration/interaction_chaining_test.go).
 
 ## Use in-memory stores in examples and tests

@@ -615,9 +615,8 @@ func (client *Client) validateResourceTokenContext(
 		(person.NotBefore != 0 && claims.IssuedAt < person.NotBefore) {
 		return errors.New("resource token was issued outside the person-token validity window")
 	}
-	if person.MissionS256 != "" && claims.ExpiresAt > person.ExpiresAt {
-		return errors.New("resource token outlives the mission-bound person token")
-	}
+	// A resource token's lifetime is independent of the mission it names; the
+	// Person Server checks the mission when it acts on the token.
 	return nil
 }
 

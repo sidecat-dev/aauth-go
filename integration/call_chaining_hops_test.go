@@ -603,9 +603,10 @@ func TestAgentTokenRevocationReachesEachPersonTokenAndItsChain(t *testing.T) {
 }
 
 // Protocol 70d6737, Call Chaining and Deferred Responses: a chained exchange
-// can wait for the Access Server like any other. The intermediary polls its
-// pending URL although its own Agent token names another Person Server, and
-// the grant is delivered with the chain's ceilings. Presenting a Revoked
+// can wait for the Access Server like any other, through Exchange or
+// BeginExchange. The intermediary polls its pending URL although its own Agent
+// token names another Person Server, and the grant is delivered with the
+// chain's ceilings. Presenting a Revoked
 // Token: a chained request whose upstream token is revoked while it waits ends
 // with revoked, detail saying so.
 func TestChainedExchangeWaitsForTheAccessServerUntilItsUpstreamIsRevoked(t *testing.T) {
@@ -619,18 +620,16 @@ func TestChainedExchangeWaitsForTheAccessServerUntilItsUpstreamIsRevoked(t *test
 	exchange := clientagent.ExchangeRequest{
 		ResourceToken: link.resourceToken, PresentedToken: link.person, UpstreamToken: caller.auth,
 	}
-	var unsupported *clientagent.CallChainingInteractionUnsupportedError
-	if _, err := fixture.ordersRelay.Exchange(ctx, exchange); !errors.As(err, &unsupported) {
+	// The immediate Exchange hands back the wait it met.
+	_, err := fixture.ordersRelay.Exchange(ctx, exchange)
+	var deferred *clientagent.PendingExchangeError
+	if !errors.As(err, &deferred) {
 		t.Fatalf("immediate chained exchange of a waiting request = %v", err)
 	}
-	begun, err := fixture.ordersRelay.BeginExchange(ctx, exchange)
-	if err != nil {
-		t.Fatal(err)
-	}
-	waiting, ok := begun.Pending()
-	if !ok || waiting.Requirement() != aauth.RequirementApproval || waiting.WaitReason() != "awaiting_approval" ||
+	waiting := deferred.Pending()
+	if waiting.Requirement() != aauth.RequirementApproval || waiting.WaitReason() != "awaiting_approval" ||
 		waiting.PersonServer() != hopPersonServer {
-		t.Fatalf("chained exchange = %#v", begun)
+		t.Fatalf("chained exchange = %#v", waiting)
 	}
 	polled, err := fixture.ordersRelay.PollExchange(ctx, waiting)
 	if err != nil {
@@ -664,7 +663,7 @@ func TestChainedExchangeWaitsForTheAccessServerUntilItsUpstreamIsRevoked(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	begun, err = fixture.ordersRelay.BeginExchange(ctx, clientagent.ExchangeRequest{
+	begun, err := fixture.ordersRelay.BeginExchange(ctx, clientagent.ExchangeRequest{
 		ResourceToken: second, PresentedToken: link.person, UpstreamToken: caller.auth,
 	})
 	if err != nil {
@@ -692,7 +691,10 @@ func TestChainedExchangeWaitsForTheAccessServerUntilItsUpstreamIsRevoked(t *test
 // Protocol 70d6737, Person Token Endpoint ("Which person") and Call Chaining:
 // an upstream token that carries mission_s256 has the chain evaluated against
 // that mission of the calling Agent, and the downstream person and auth tokens
-// carry it, so its termination reaches the chain.
+// carry it, so its termination reaches the chain. Mission Approval and
+// Deferred Responses: a mission-bound request, chained or not, can wait for
+// the Access Server, is delivered with its mission, and ends with
+// mission_terminated when the mission does.
 func TestCallChainCarriesTheCallingAgentsMission(t *testing.T) {
 	t.Parallel()
 	var missionExpiry time.Time
@@ -700,7 +702,7 @@ func TestCallChainCarriesTheCallingAgentsMission(t *testing.T) {
 	fixture := newHopFixture(t, hopOptions{missions: &personserver.MissionConfig{
 		Approve: func(_ context.Context, request personserver.MissionApprovalRequest) (personserver.MissionDecision, error) {
 			return personserver.MissionDecision{
-				Description: request.Proposal.Description, ApprovedResources: []string{hopOrders},
+				Description: request.Proposal.Description, ApprovedResources: []string{hopOrders, hopInventory},
 				ExpiresAt: &missionExpiry,
 			}, nil
 		},
@@ -714,7 +716,7 @@ func TestCallChainCarriesTheCallingAgentsMission(t *testing.T) {
 
 	result, err := fixture.caller.ProposeMission(ctx, clientagent.MissionRequest{
 		PersonServer: hopPersonServer,
-		Proposal:     aauth.MissionProposal{Description: "# Fulfil order 42", Resources: []string{hopOrders}},
+		Proposal:     aauth.MissionProposal{Description: "# Fulfil order 42", Resources: []string{hopOrders, hopInventory}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -750,14 +752,70 @@ func TestCallChainCarriesTheCallingAgentsMission(t *testing.T) {
 		t.Fatalf("intermediary mission_s256 = %v", err)
 	}
 
-	// Completing the mission terminates it, and the chain ends with it.
+	// The caller's own mission-bound request waits for the stock Access
+	// Server and is delivered with the mission.
+	fixture.setStockHold(true)
+	inventoryPerson, ok := result.PersonToken(hopInventory)
+	if !ok {
+		t.Fatal("mission approval omitted the inventory person token")
+	}
+	inventoryResource, err := fixture.caller.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: hopInventory, PersonToken: inventoryPerson, Scopes: []string{"inventory.reserve"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	begun, err := fixture.caller.BeginExchange(ctx, clientagent.ExchangeRequest{
+		PersonServer: hopPersonServer, ResourceToken: inventoryResource, PresentedToken: inventoryPerson,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting, ok := begun.Pending()
+	if !ok {
+		t.Fatalf("mission-bound exchange = %#v", begun)
+	}
+	fixture.setStockHold(false)
+	fixture.advance(2 * time.Second)
+	if err := fixture.people.AdvanceFederation(ctx, waiting.Location()[strings.LastIndex(waiting.Location(), "/")+1:]); err != nil {
+		t.Fatal(err)
+	}
+	delivered, err := fixture.caller.PollExchange(ctx, waiting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authToken, ok := delivered.Token(); !ok || tokenClaims(t, authToken)["mission_s256"] != mission.S256 ||
+		hopExpiry(t, authToken) > missionExpiry.Unix() {
+		t.Fatalf("delivered mission-bound grant = %#v", delivered)
+	}
+
+	// A chained mission-bound request waits too, and completing the mission
+	// terminates it: the wait and the chain end with it.
+	fixture.setStockHold(true)
 	pending := fixture.chainedLink(fixture.ordersRelay, hopInventory, "inventory.reserve", caller.auth)
+	begun, err = fixture.ordersRelay.BeginExchange(ctx, clientagent.ExchangeRequest{
+		ResourceToken: pending.resourceToken, PresentedToken: pending.person, UpstreamToken: caller.auth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting, ok = begun.Pending(); !ok {
+		t.Fatalf("chained mission-bound exchange = %#v", begun)
+	}
 	if err := fixture.caller.CompleteMission(ctx, clientagent.MissionCompletionRequest{
 		PersonServer: hopPersonServer, MissionS256: mission.S256, Summary: "Order 42 fulfilled",
 	}); err != nil || completed != 1 {
 		t.Fatalf("mission completion = %v, confirmations %d", err, completed)
 	}
 	var problem *aauth.ProblemError
+	_, err = fixture.ordersRelay.PollExchange(ctx, waiting)
+	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "mission_terminated" ||
+		problem.TerminationReason != "completed" {
+		t.Fatalf("chained wait after completion = %v", err)
+	}
+	if _, err = fixture.ordersRelay.PollExchange(ctx, waiting); !errors.As(err, &problem) || problem.Status != http.StatusGone {
+		t.Fatalf("poll after the mission ended the wait = %v", err)
+	}
 	_, err = fixture.ordersRelay.PersonToken(ctx, clientagent.PersonTokenRequest{Resource: hopInventory, UpstreamToken: caller.auth})
 	if !errors.As(err, &problem) || problem.Status != http.StatusForbidden || problem.Code != "mission_terminated" ||
 		problem.TerminationReason != "completed" {

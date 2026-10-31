@@ -1403,10 +1403,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 			return
 		}
-		if !loadedMission.ExpiresAt.IsZero() && resourceTokenExpiresAt.After(loadedMission.ExpiresAt) {
-			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token outlives the mission"))
-			return
-		}
 		missionContext, err = missionContextFromRecord(loadedMission)
 		if err != nil {
 			writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -1621,8 +1617,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			reason = "r3"
 		case budgetOffer != nil:
 			reason = "budget"
-		case missionRecord != nil:
-			reason = "mission"
 		}
 		if reason != "" {
 			writeFederatedContinuationProblem(response, &DeferredCompositionError{reason: reason})

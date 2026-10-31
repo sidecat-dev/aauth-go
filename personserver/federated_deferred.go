@@ -31,10 +31,10 @@ var ErrFederatedAuthorizationConflict = errors.New("personserver: federated auth
 // with a public explanation, not a federation reachability error.
 type DeferredCompositionError struct{ reason string }
 
-// Reason returns not_configured, r3, budget, mission, claims, clarification,
+// Reason returns not_configured, r3, budget, claims, clarification,
 // interaction or requirement (an unsupported extension). A mixed-capability
-// PS may still defer a missionless Core request, top-level, parent-mediated
-// or chained.
+// PS may still defer a Core request, missionless or mission-bound, top-level,
+// parent-mediated or chained.
 func (e *DeferredCompositionError) Reason() string {
 	if e == nil {
 		return ""
@@ -49,8 +49,6 @@ func (e *DeferredCompositionError) Error() string {
 		return "personserver: deferred AS authorization does not support R3 requests"
 	case "budget":
 		return "personserver: deferred AS authorization does not support Budget requests"
-	case "mission":
-		return "personserver: deferred AS authorization does not support mission-bound requests"
 	case "claims", "clarification", "interaction":
 		return "personserver: deferred AS authorization does not support " + e.Reason() + " requirements"
 	case "requirement":
@@ -63,11 +61,14 @@ func (e *DeferredCompositionError) Error() string {
 // ErrFederationNotReady means a poll is premature, already running, or terminal.
 var ErrFederationNotReady = errors.New("personserver: federation cannot be advanced")
 
-// FederatedDeferredConfig enables missionless Core AS approval, payment and
-// claims continuations: top-level, parent-mediated for a one-level sub-agent,
-// or chained by an intermediary. Hosts settle payment and cache billing
-// relationships per AS, then call AdvanceFederation explicitly. No payment is
-// made by the library. R3, Budget, missions, interaction and clarification are
+// FederatedDeferredConfig enables Core AS approval, payment and claims
+// continuations, missionless or mission-bound: top-level, parent-mediated for
+// a one-level sub-agent, or chained by an intermediary. Hosts settle payment
+// and cache billing relationships per AS, then call AdvanceFederation
+// explicitly. No payment is made by the library. A mission-bound wait loads
+// its mission again on every poll and host advance and ends with
+// mission_terminated once it is terminated; the grant is committed with the
+// mission when it is released. R3, Budget, interaction and clarification are
 // absent.
 type FederatedDeferredConfig struct {
 	Store    FederatedAuthorizationStore
@@ -430,6 +431,12 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		}
 		return
 	}
+	// A mission terminated while the request waits ends it here too.
+	if _, _, err := server.federatedMission(ctx, record, resource, upstream); err != nil {
+		out.local = true
+		server.writeFederatedMissionProblem(out, err, upstream != nil)
+		return
+	}
 	method := http.MethodGet
 	var reader io.Reader
 	if claimsBody != nil {
@@ -513,6 +520,51 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		return
 	}
 	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, upstream)
+}
+
+// federatedMission loads, at the current instant, the mission a retained
+// mission-bound request is evaluated against: the signing Agent's, or for a
+// chained request the calling Agent's behind its upstream token. It returns
+// nil for a missionless request.
+func (server *Server) federatedMission(
+	ctx context.Context,
+	record FederatedAuthorizationRecord,
+	resource aauth.ResourceTokenClaims,
+	upstream *verifiedUpstreamToken,
+) (*MissionRecord, *MissionContext, error) {
+	if resource.MissionS256 == "" {
+		return nil, nil, nil
+	}
+	owner := record.Agent
+	if upstream != nil {
+		owner = upstream.caller.owner()
+	}
+	loaded, err := server.loadActiveMission(ctx, resource.MissionS256, owner, server.clock.Now().UTC())
+	if err != nil {
+		return nil, nil, err
+	}
+	missionContext, err := missionContextFromRecord(loaded)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &loaded, missionContext, nil
+}
+
+// federatedMissionEnded reports whether err ends a mission-bound wait: its
+// mission is terminated or no longer held, rather than a store failure.
+func federatedMissionEnded(err error) bool {
+	var terminated *MissionTerminatedError
+	return errors.As(err, &terminated) || errors.Is(err, ErrMissionNotFound)
+}
+
+// writeFederatedMissionProblem answers a mission-bound wait whose mission
+// cannot be used, as a new request for it would be answered.
+func (server *Server) writeFederatedMissionProblem(w http.ResponseWriter, err error, chained bool) {
+	if chained {
+		server.writeUpstreamMissionProblem(w, err)
+		return
+	}
+	writeMissionReferenceProblem(w, err)
 }
 
 // revokedUpstreamDetail explains the polling error revoked for a chained
@@ -644,7 +696,8 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
-	if _, err := server.verifyFederatedUpstream(r.Context(), record, startingAgent); err != nil {
+	upstream, err := server.verifyFederatedUpstream(r.Context(), record, startingAgent)
+	if err != nil {
 		if !pendingRevoked(err) {
 			server.writeUpstreamTokenProblem(w, err)
 			return
@@ -653,6 +706,20 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 			writePendingRevocationProblem(w, err, http.StatusBadRequest, "revoked_presented_token")
 		}
 		return
+	}
+	// A poll observes a terminated mission even before a host advances the
+	// AS wait.
+	if resource, err := aauth.VerifyResourceToken(r.Context(), record.ResourceToken, server.keyResolver, server.clock); err == nil {
+		if _, _, err := server.federatedMission(r.Context(), record, resource, upstream); err != nil {
+			if !federatedMissionEnded(err) {
+				writeProblem(w, http.StatusInternalServerError, "server_error", err)
+				return
+			}
+			if server.endFederatedAuthorization(w, r, record) {
+				server.writeFederatedMissionProblem(w, err, upstream != nil)
+			}
+			return
+		}
 	}
 	if !record.Terminal {
 		server.writeFederatedWaiting(w, record)
@@ -785,8 +852,18 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 		}
 		return
 	}
+	// A mission-bound grant is committed with its mission, which must still be
+	// active, as it is released.
+	missionRecord, missionContext, err := server.federatedMission(r.Context(), record, resource, upstream)
+	if err != nil {
+		server.writeFederatedMissionProblem(w, err, upstream != nil)
+		return
+	}
 	response := &http.Response{StatusCode: 200, Header: record.Response.Header, Body: io.NopCloser(bytes.NewReader(record.Response.Body))}
-	server.deliverFederatedAuthorization(w, r, response, resource, agent, credential, presented, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, upstream)
+	server.deliverFederatedAuthorization(
+		w, r, response, resource, agent, credential, presented, scopes, nil, nil, nil, missionRecord,
+		AuthorizationRequest{Mission: missionContext}, record.CreatedAt, upstream,
+	)
 }
 
 // handleFederatedCancellation lets the Agent that started a federated wait

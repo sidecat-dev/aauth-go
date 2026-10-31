@@ -120,21 +120,6 @@ func (failure *PendingExchangeError) Pending() PendingExchange {
 	return failure.pending
 }
 
-// CallChainingInteractionUnsupportedError reports a call-chain request that
-// reached a deferred response where the operation returns no continuation:
-// chained person-token issuance, or the immediate Exchange. A chained
-// BeginExchange returns a pending exchange that PollExchange continues.
-type CallChainingInteractionUnsupportedError struct {
-	Operation string
-}
-
-func (failure *CallChainingInteractionUnsupportedError) Error() string {
-	if failure == nil || failure.Operation == "" {
-		return "aauth agent: call-chaining interaction is not supported"
-	}
-	return "aauth agent: call-chaining " + failure.Operation + " cannot continue a pending response"
-}
-
 // PersonTokenRequest names the Person Server and Resource for one directed
 // person token. A top-level parent sets SubagentToken to request a token bound
 // to that one-level sub-agent's key. A Resource acting as an Agent instead sets
@@ -624,8 +609,9 @@ func (client *Client) verifyAuthorizedResourceToken(
 
 // Exchange presents one resource token to its person server and verifies the
 // immediate auth token against that exact resource-token context. A 202 is a
-// *PendingExchangeError that carries the verified pending exchange, except for
-// a call-chaining request.
+// *PendingExchangeError that carries the verified pending exchange; for a
+// call-chaining request it is polled at the Person Server the upstream token
+// names.
 func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (string, error) {
 	const operation = "exchange"
 	if client == nil {
@@ -636,9 +622,6 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 		return "", fail(operation, err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusAccepted && input.UpstreamToken != "" {
-		return "", fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
-	}
 	if response.StatusCode == http.StatusAccepted {
 		result, err := client.initialPendingExchange(response, input, verifiedResource, credential)
 		if err != nil {
