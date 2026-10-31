@@ -314,7 +314,9 @@ type Clarification struct {
 	Options  []string
 }
 
-// Validate checks the question, timeout and options.
+// Validate checks the question, timeout and options. The wire carries the
+// timeout in whole seconds, so Timeout must be zero or a whole number of
+// seconds: a positive Timeout under one second is refused, never sent as 0.
 func (clarification Clarification) Validate() error {
 	if clarification.Question == "" {
 		return errors.New("supervision: clarification question is required")
