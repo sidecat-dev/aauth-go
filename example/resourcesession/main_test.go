@@ -36,17 +36,17 @@ func TestExampleStoreBoundsInvalidInteractionCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), resourceID, record.ID, [32]byte{2}, now,
+		context.Background(), resourceID, record.ID, resource.SessionCodePresentation{CodeSHA256: [32]byte{2}}, now,
 	); !errors.Is(err, resource.ErrSessionInteractionCodeInvalid) {
 		t.Fatalf("first invalid code error = %v", err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), resourceID, record.ID, [32]byte{3}, now,
+		context.Background(), resourceID, record.ID, resource.SessionCodePresentation{CodeSHA256: [32]byte{3}}, now,
 	); !errors.Is(err, resource.ErrPendingSessionGone) {
 		t.Fatalf("bounded invalid code error = %v", err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), resourceID, record.ID, record.CodeSHA256, now,
+		context.Background(), resourceID, record.ID, resource.SessionCodePresentation{CodeSHA256: record.CodeSHA256}, now,
 	); !errors.Is(err, resource.ErrPendingSessionGone) {
 		t.Fatalf("correct code after invalidation error = %v", err)
 	}
@@ -65,7 +65,7 @@ func TestExampleStorePreservesTerminalStateAgainstLateApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), resourceID, pending.ID, pending.CodeSHA256, now,
+		context.Background(), resourceID, pending.ID, resource.SessionCodePresentation{CodeSHA256: pending.CodeSHA256}, now,
 	); err != nil {
 		t.Fatal(err)
 	}

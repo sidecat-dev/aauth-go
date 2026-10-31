@@ -117,20 +117,32 @@ func runDeferredApproval(t *testing.T, contract DeferredSessionContract) {
 	}
 	wrongDigest := pristine.CodeSHA256
 	wrongDigest[0]++
-	if _, err := store.ConsumeInteractionCode(ctx, pristine.Resource, pristine.ID, wrongDigest, now); !errors.Is(err, resource.ErrSessionInteractionCodeInvalid) {
+	if _, err := store.ConsumeInteractionCode(ctx, pristine.Resource, pristine.ID, resource.SessionCodePresentation{
+		CodeSHA256: wrongDigest, Callback: "https://agent.example/wrong",
+	}, now); !errors.Is(err, resource.ErrSessionInteractionCodeInvalid) {
 		t.Fatalf("wrong interaction code = %v", err)
 	}
-	interacting, err := store.ConsumeInteractionCode(ctx, pristine.Resource, pristine.ID, pristine.CodeSHA256, now)
+	if snapshot := loadPending(t, store, pristine.ID); snapshot.Callback != "" {
+		t.Fatalf("a failed attempt retained callback %q", snapshot.Callback)
+	}
+	interacting, err := store.ConsumeInteractionCode(ctx, pristine.Resource, pristine.ID, resource.SessionCodePresentation{
+		CodeSHA256: pristine.CodeSHA256, Callback: "https://agent.example/callback",
+	}, now)
 	if err != nil || !reflect.DeepEqual(interacting, pristine) {
 		t.Fatalf("ConsumeInteractionCode = %#v, %v", interacting, err)
 	}
 	interacting.Request.RequiredScopes[0] = "mutated-interaction"
 	if snapshot := loadPending(t, store, pristine.ID); snapshot.State != resource.SessionPollInteracting ||
-		!reflect.DeepEqual(snapshot.Record, pristine) {
+		!reflect.DeepEqual(snapshot.Record, pristine) || snapshot.Callback != "https://agent.example/callback" {
 		t.Fatalf("interacting snapshot = %#v", snapshot)
 	}
-	if _, err := store.ConsumeInteractionCode(ctx, pristine.Resource, pristine.ID, pristine.CodeSHA256, now); !errors.Is(err, resource.ErrSessionInteractionCodeUsed) {
+	if _, err := store.ConsumeInteractionCode(ctx, pristine.Resource, pristine.ID, resource.SessionCodePresentation{
+		CodeSHA256: pristine.CodeSHA256, Callback: "https://agent.example/other",
+	}, now); !errors.Is(err, resource.ErrSessionInteractionCodeUsed) {
 		t.Fatalf("reused interaction code = %v", err)
+	}
+	if snapshot := loadPending(t, store, pristine.ID); snapshot.Callback != "https://agent.example/callback" {
+		t.Fatalf("a reused code replaced callback with %q", snapshot.Callback)
 	}
 
 	session := sessionRecord("person-approved", now)
@@ -198,7 +210,7 @@ func runDeferredDenial(t *testing.T, contract DeferredSessionContract) {
 	if err := store.CreatePending(ctx, denied); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ConsumeInteractionCode(ctx, denied.Resource, denied.ID, denied.CodeSHA256, now); err != nil {
+	if _, err := store.ConsumeInteractionCode(ctx, denied.Resource, denied.ID, resource.SessionCodePresentation{CodeSHA256: denied.CodeSHA256}, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Deny(ctx, denied.ID, now); err != nil {
@@ -244,7 +256,7 @@ func runDeferredExpiry(t *testing.T, contract DeferredSessionContract) {
 	if err := store.CreatePending(ctx, expired); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ConsumeInteractionCode(ctx, expired.Resource, expired.ID, expired.CodeSHA256, expired.ExpiresAt); !errors.Is(err, resource.ErrPendingSessionExpired) {
+	if _, err := store.ConsumeInteractionCode(ctx, expired.Resource, expired.ID, resource.SessionCodePresentation{CodeSHA256: expired.CodeSHA256}, expired.ExpiresAt); !errors.Is(err, resource.ErrPendingSessionExpired) {
 		t.Fatalf("ConsumeInteractionCode at expiry = %v", err)
 	}
 	result, err := store.Poll(ctx, expired.ID, sessionPollIdentity(expired), expired.ExpiresAt)
@@ -259,7 +271,7 @@ func runDeferredExpiry(t *testing.T, contract DeferredSessionContract) {
 	if err := store.CreatePending(ctx, lateApproval); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ConsumeInteractionCode(ctx, lateApproval.Resource, lateApproval.ID, lateApproval.CodeSHA256, now); err != nil {
+	if _, err := store.ConsumeInteractionCode(ctx, lateApproval.Resource, lateApproval.ID, resource.SessionCodePresentation{CodeSHA256: lateApproval.CodeSHA256}, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Approve(ctx, lateApproval.ID, sessionRecord("person-late", now), lateApproval.ExpiresAt); !errors.Is(err, resource.ErrPendingSessionExpired) {
@@ -279,15 +291,15 @@ func runDeferredAttemptBound(t *testing.T, contract DeferredSessionContract) {
 	if err := store.CreatePending(ctx, record); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ConsumeInteractionCode(ctx, "https://wrong.example", record.ID, record.CodeSHA256, now); !errors.Is(err, resource.ErrSessionInteractionCodeInvalid) {
+	if _, err := store.ConsumeInteractionCode(ctx, "https://wrong.example", record.ID, resource.SessionCodePresentation{CodeSHA256: record.CodeSHA256}, now); !errors.Is(err, resource.ErrSessionInteractionCodeInvalid) {
 		t.Fatalf("first invalid attempt = %v", err)
 	}
 	wrongDigest := record.CodeSHA256
 	wrongDigest[0]++
-	if _, err := store.ConsumeInteractionCode(ctx, record.Resource, record.ID, wrongDigest, now); !errors.Is(err, resource.ErrPendingSessionGone) {
+	if _, err := store.ConsumeInteractionCode(ctx, record.Resource, record.ID, resource.SessionCodePresentation{CodeSHA256: wrongDigest}, now); !errors.Is(err, resource.ErrPendingSessionGone) {
 		t.Fatalf("bounded invalid attempt = %v", err)
 	}
-	if _, err := store.ConsumeInteractionCode(ctx, record.Resource, record.ID, record.CodeSHA256, now); !errors.Is(err, resource.ErrPendingSessionGone) {
+	if _, err := store.ConsumeInteractionCode(ctx, record.Resource, record.ID, resource.SessionCodePresentation{CodeSHA256: record.CodeSHA256}, now); !errors.Is(err, resource.ErrPendingSessionGone) {
 		t.Fatalf("correct code after invalidation = %v", err)
 	}
 }

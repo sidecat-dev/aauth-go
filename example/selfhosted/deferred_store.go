@@ -22,6 +22,7 @@ type pendingPersonToken struct {
 	state          personserver.PersonTokenPollState
 	approval       personserver.PersonTokenApproval
 	failedAttempts int
+	callback       string
 }
 
 func newDeferredPersonTokenStore() *deferredPersonTokenStore {
@@ -103,6 +104,7 @@ func (store *deferredPersonTokenStore) ConsumePersonTokenInteractionCode(
 		return personserver.PendingPersonTokenRecord{}, personserver.ErrPendingPersonTokenExpired
 	}
 	pending.state = personserver.PersonTokenPollInteracting
+	pending.callback = presentation.Callback
 	return clonePendingPersonToken(pending.record), nil
 }
 
@@ -117,7 +119,7 @@ func (store *deferredPersonTokenStore) LoadPendingPersonToken(
 		return personserver.PendingPersonTokenSnapshot{}, personserver.ErrPendingPersonTokenNotFound
 	}
 	snapshot := personserver.PendingPersonTokenSnapshot{
-		Record: clonePendingPersonToken(pending.record), State: pending.state,
+		Record: clonePendingPersonToken(pending.record), State: pending.state, Callback: pending.callback,
 	}
 	if pending.state == personserver.PersonTokenPollApproved {
 		snapshot.ApprovedPerson = pending.approval.Person

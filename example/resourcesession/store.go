@@ -25,6 +25,7 @@ type pendingSession struct {
 	state    resource.SessionPollState
 	attempts int
 	approval resource.SessionApproval
+	callback string
 }
 
 func newMemorySessionStore() *memorySessionStore {
@@ -75,7 +76,7 @@ func (store *memorySessionStore) ConsumeInteractionCode(
 	_ context.Context,
 	issuer string,
 	reference string,
-	digest [32]byte,
+	presentation resource.SessionCodePresentation,
 	now time.Time,
 ) (resource.PendingSessionRecord, error) {
 	store.mu.Lock()
@@ -94,7 +95,7 @@ func (store *memorySessionStore) ConsumeInteractionCode(
 		pending.state = resource.SessionPollExpired
 		return resource.PendingSessionRecord{}, resource.ErrPendingSessionExpired
 	}
-	if pending.record.Resource != issuer || pending.record.CodeSHA256 != digest {
+	if pending.record.Resource != issuer || pending.record.CodeSHA256 != presentation.CodeSHA256 {
 		pending.attempts++
 		if pending.attempts >= pending.record.MaximumCodeAttempts {
 			pending.state = resource.SessionPollGone
@@ -103,6 +104,7 @@ func (store *memorySessionStore) ConsumeInteractionCode(
 		return resource.PendingSessionRecord{}, resource.ErrSessionInteractionCodeInvalid
 	}
 	pending.state = resource.SessionPollInteracting
+	pending.callback = presentation.Callback
 	return clonePendingRecord(pending.record), nil
 }
 
@@ -115,7 +117,7 @@ func (store *memorySessionStore) LoadPending(_ context.Context, reference string
 	}
 	return resource.PendingSessionSnapshot{
 		Record: clonePendingRecord(pending.record), State: pending.state,
-		Approval: cloneSessionApproval(pending.approval),
+		Approval: cloneSessionApproval(pending.approval), Callback: pending.callback,
 	}, nil
 }
 
