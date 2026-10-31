@@ -2453,3 +2453,87 @@ Person Server the upstream token names.
 
 **Evidence:** `integration/interaction_chaining_test.go` and
 `agent/call_chaining_test.go`.
+
+## A deferred Agent request is polled with the credential that started it
+
+**Source:** AAuth Core `70d6737`, Deferred Responses (Pending Response,
+Polling with GET, Deferred Response State Machine), Authorization Endpoint,
+Mission Update, Mission Completion, Audit Response, and Agent Response to
+Clarification.
+
+"Agents MUST handle `202` responses regardless of the nature of the original
+request." The section says the Agent switches to `GET` on the `Location` URL
+and never resends the body, but not which credential signs the poll
+(`AAG-F133`). Every Agent request that the library sends and a server may
+defer returns an `agent.Pending`, whose polls, clarification answers and
+cancellations are signed with the credential that signed the original
+request: the Agent token at a Person Server or Agent Provider, the person
+token at a Resource's authorization endpoint, the subscribe token at an event
+endpoint, and the durable `hwk` key or the `jkt-jwt` delegation for bootstrap.
+That is the identity a server already bound the pending request to.
+
+"The agent MUST respect `Retry-After` values": `Poll` refuses to send before
+the interval elapsed, measured on the Agent's clock from the answer that set
+it. The older per-flow poll methods leave scheduling to the caller, as their
+documentation says; their intervals are computed the same way. A `429` adds
+five seconds, or takes its own `Retry-After` when longer; a `503` takes its
+`Retry-After` or five seconds. `Prefer: wait` is sent on a poll only when the
+caller asks, rounded up to whole seconds; the requests that start these flows
+send none, as the Rust implementation's do. An unrecognized `status` counts as pending, and
+`interacting` once seen is kept. Approval, interaction and clarification are
+the requirements an Agent can act on here; any other is refused as
+unsupported. A `402` is not treated as pending on these requests, because none
+of them has a payment branch; it is a terminal failure.
+
+A non-`202` answer ends the request for every copy of the `Pending`, as does a
+`202` with a malformed body or a different `Location`, because the server can
+no longer be followed. A successful `DELETE` ends it too. A transport failure
+does not, because the server may or may not have answered; the next poll
+either delivers the result or reads `410`. A clarification answer is accepted
+on any `2xx` and the Agent polls for the outcome (`AAG-F094`). A mission
+completion the person does not accept has no terminal answer in the draft
+(`AAG-F134`); the Agent reports whatever terminal error the Person Server
+sends and the mission stays active. A `Pending` holds its signing credential
+and cannot be snapshotted; the pending exchange and mission proposal types
+keep their snapshots, except that an R3 or Budget pending exchange cannot be
+snapshotted, because its restoration would lose the companion context.
+
+**Evidence:** `agent/deferred_test.go`, `agent/r3_test.go`,
+`agent/mission_proposal_deferred_test.go` and
+`agent/mission_lifecycle_test.go`.
+
+## The library's own interaction pages keep the visit's callback
+
+**Source:** AAuth Core `70d6737`, User Interaction and Interaction Callback
+Errors.
+
+"When present, the server redirects the user's browser to the `callback` URL
+after the user completes the action", and "When an interaction cannot be
+completed, the server MUST redirect to the `callback` URL with an `error`
+query parameter." The Person Server's consent and person-token pages and a
+Resource-managed session page therefore retain the callback with the pending
+request when the visit's code is consumed. The code presentation carries it to
+the store, so the callback is recorded in the same transition that consumes
+the code, and a visit whose code does not correlate retains nothing. The
+library checks the callback's shape again, accepting a loopback callback,
+because whether one is allowed depends on the Agent Provider's metadata, which
+the host checked when it parsed the visit.
+
+After its own decision the host redirects with the interaction's
+`CompletionURL` or `FailureURL`, which need no store read. For a request that
+ended otherwise, such as by expiring, `AuthorizationCallbackURL`,
+`PersonTokenCallbackURL` and `SessionCallbackURL` map the retained state:
+approval to the bare callback, denial to `access_denied`, abandonment to
+`user_abandoned`, expiry to `interaction_expired`, and failure, cancellation
+and a request already gone to `server_error`. The stores keep no outcome once
+the Agent has collected it, so a request gone after an approval also reads as
+`server_error`; the host avoids this by redirecting right after its decision.
+The person-token and session stores do not materialize expiry when they load a
+record, so a record past its deadline reads as expired there.
+
+**Evidence:** `integration/deferred_ps_authorization_test.go`,
+`integration/person_token_interaction_test.go`,
+`integration/resource_managed_session_test.go`,
+`personserver/authorization_interaction_test.go`, `resource/session_test.go`,
+and the storetests `RunDeferredAuthorization`, `RunDeferredToken` and
+`resource/storetest` (deferred session).

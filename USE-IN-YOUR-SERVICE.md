@@ -441,6 +441,96 @@ requiring it; set `RequireSignature` to refuse it. Keep `ExactBody` and
 `signaturekey.SignResponse` and `signaturekey.VerifyResponse` sign and verify
 other server responses the same way.
 
+## Poll a deferred request
+
+Any AAuth endpoint may answer `202 Accepted` and finish the request later
+(Core, Deferred Responses). Each Agent request below has a `Begin` method that
+returns an `agent.Result[T]`: either the verified result (`Value()`) or an
+`agent.Pending[T]` to poll (`Pending()`).
+
+| Request | Begin method | `T` |
+| --- | --- | --- |
+| Mission update | `Client.BeginMissionUpdate` | `MissionUpdateResult` |
+| Mission completion | `Client.BeginMissionCompletion` | `MissionCompletionResult` |
+| Audit entry | `Client.BeginAudit` | `AuditResult` |
+| Authorization endpoint | `Client.BeginAuthorize` | `AuthorizationResult` |
+| Sub-agent token | `Client.BeginSubagentToken` | `string` |
+| Event subscription | `Client.BeginPublicSubscription`, `Client.BeginProtectedSubscription` | `EventSubscription` |
+| Enrollment | `BootstrapClient.BeginEnroll` | `EnrollmentResult` |
+| Agent-token refresh | `BootstrapClient.BeginRefresh`, `BootstrapClient.BeginRefreshSingleKey` | `RefreshAgentTokenResult` |
+
+```go
+result, err := client.BeginMissionCompletion(ctx, agent.MissionCompletionRequest{
+	PersonServer: personServer, MissionS256: missionS256, Summary: summary,
+})
+for err == nil {
+	if completed, ok := result.Value(); ok {
+		return completed, nil
+	}
+	pending, _ := result.Pending()
+	if question, ok := pending.Clarification(); ok {
+		// question.Question() is untrusted Markdown from the person.
+		if err := pending.AnswerClarification(ctx, answerFor(question)); err != nil {
+			return agent.MissionCompletionResult{}, err
+		}
+	}
+	select {
+	case <-ctx.Done():
+		_ = pending.Cancel(context.WithoutCancel(ctx)) // withdraw the review
+		return agent.MissionCompletionResult{}, ctx.Err()
+	case <-time.After(time.Until(pending.NextPollAt())):
+	}
+	result, err = pending.Poll(ctx, agent.PollOptions{Wait: 30 * time.Second})
+}
+return agent.MissionCompletionResult{}, err
+```
+
+The library never sleeps or loops; your code owns the timer and cancellation.
+Each `Poll` sends one `GET` to the pending URL, signed with the credential that
+signed the original request: the Agent token, the person token for
+`/authorize`, the subscribe token for an event subscription, or the `hwk` or
+`jkt-jwt` key for bootstrap. It never resends the original body.
+
+- **Interval.** `RetryAfter()` is the `202`'s `Retry-After`, or five seconds
+  without one. A `429` adds five seconds (or uses its own `Retry-After` when
+  longer) and a `503` uses its `Retry-After`. `Poll` refuses to send before
+  `NextPollAt()` and returns `*agent.PollTooEarlyError`.
+- **Waiting at the server.** `PollOptions.Wait` sends `Prefer: wait`, so the
+  server may hold the poll open instead of answering `202` at once.
+- **Requirements.** `Requirement()` is empty while the server works, `approval`
+  while someone else decides, `interaction` with `InteractionURL()` and
+  `InteractionCode()` to show the person (`Interacting()` once they arrived),
+  or `clarification` with `Clarification()` to answer before its deadline.
+  Any other requirement is `*agent.UnsupportedRequirementError`.
+- **Endings.** The terminal answer is checked exactly as an immediate answer
+  is. An AAuth error such as `denied` or `abandoned` (`403`), `expired`
+  (`408`) or `invalid_code` (`410`) is an `*aauth.ProblemError`. After a
+  terminal answer, a malformed or relocated `202`, or a successful `Cancel`
+  (a signed `DELETE`), every copy of the `Pending` returns
+  `agent.ErrPendingFinished` without sending anything. After a transport
+  failure the request stays pending, because the server may have answered.
+- **Immediate methods.** `UpdateMission`, `CompleteMission`, `SubmitAudit`,
+  `Authorize`, `RequestSubagentToken`, `RegisterPublicSubscription`,
+  `RegisterProtectedSubscription`, `Enroll`, `Refresh` and `RefreshSingleKey`
+  keep returning only a value. When the server defers, their error is an
+  `*agent.PendingError[T]` whose `Pending()` is the same pending request, so
+  nothing the server retained is lost.
+
+`BeginAuthorize` also accepts a Resource that handles authorization itself:
+`AuthorizationResult.ResourceToken()` is then empty, and `Scope()` and
+`Session()` return what it authorized and the `AAuth-Access` session it issued.
+Audit is fire-and-forget (Core, Audit Response): an Agent need not wait on a
+pending audit entry before it continues.
+
+Token exchange keeps its own types. `BeginExchange` and `PollExchange` handle a
+pending R3 or Budget exchange like any other; an R3 or Budget pending exchange
+cannot be snapshotted. `Exchange` answers a `202` with an
+`*agent.PendingExchangeError` whose `Pending()` you poll with `PollExchange`.
+A pending mission proposal (`BeginMission`) reports the same requirements;
+answer its question with `AnswerMissionClarification` and withdraw it with
+`CancelMissionProposal`. A call-chained Person-token request still ends on a
+`202` with `CallChainingInteractionUnsupportedError`.
+
 ## Continue an AS approval or payment request
 
 For missionless Core, top-level or parent-mediated for a
@@ -909,6 +999,28 @@ instead, so your page cannot be used as an open redirector. A callback must be
 an HTTPS URL without query or fragment. Set `AllowLoopbackCallback` only when
 you checked that the Agent's metadata sets `localhost_callback_allowed`.
 
+**Pages this library hosts.** The Person Server's consent and person-token
+pages, and a Resource-managed session page, retain the callback with the
+pending request. Correlate the visit with
+`ConsumeAuthorizationInteractionVisit`, `ConsumePersonTokenInteractionVisit` or
+`ConsumeSessionInteractionVisit` instead of the `...Code` methods; a callback
+that does not correlate is never retained. After your own decision, redirect to
+the interaction's `CompletionURL()`, or to `FailureURL(err)`: `access_denied`
+after a denial, `user_abandoned` after `AbandonAuthorizationInteraction`, and
+`server_error` after a failure or invalidation. When the request ended without
+your decision, for example by expiring while the person was away,
+`AuthorizationCallbackURL`, `PersonTokenCallbackURL` and `SessionCallbackURL`
+return the callback with the error for its state (`interaction_expired` for
+expiry). Once the Agent has collected the result the store reports the request
+as gone, which these read as `server_error`, so prefer the interaction's own
+URLs right after a decision. Each returns an empty string when the person came
+without a callback; show your own completion page then. A custom store keeps
+`Callback` from the code presentation that consumed the code
+(`AuthorizationCodePresentation`, `PersonTokenCodePresentation`,
+`resource.SessionCodePresentation`) and returns it in its snapshot;
+`RunDeferredAuthorization`, `RunDeferredToken` and the session storetest check
+it.
+
 **Agent.** To send the person yourself with a callback, build the link with
 `aauth.FormatInteractionVisitURL(pending.InteractionURL(), pending.InteractionCode(), callback)`.
 Publish the base of your callbacks with `agentprovider.Config.CallbackEndpoint`
@@ -941,9 +1053,10 @@ claim always gets a `202`; an Agent that did not declare `interaction` gets
 `403 user_unreachable`. The Agent uses `BeginExchange` and `PollExchange`;
 `Exchange` refuses such a Resource token. Your Person Server pages then:
 
-1. On the interaction page, call `ConsumeAuthorizationInteractionCode`,
+1. On the interaction page, call `ConsumeAuthorizationInteractionVisit`,
    show the interstitial saying the Resource needs additional permissions, and
-   redirect to `RedirectToResourceInteraction(ctx, interaction, visit.Callback)`.
+   redirect to `RedirectToResourceInteraction(ctx, interaction, "")`, which uses
+   the callback the visit carried.
    An interaction URL that is not HTTPS or that `Admit` refuses ends the
    request with `server_error` (`ErrResourceInteractionRefused`).
 2. On `{CallbackURL}/{reference}/{flow}`, call
