@@ -19,9 +19,10 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	authorizationRequest AuthorizationRequest,
 	verified *verifiedR3,
 	missionRecord *MissionRecord,
-	personTokenExpiresAt time.Time,
+	presented aauth.PresentedToken,
 	requestVerifiedAt time.Time,
 ) {
+	personTokenExpiresAt := presented.ExpiresAt
 	if server == nil || server.r3 == nil || server.r3.authorizeDocument == nil || server.r3.issuances == nil ||
 		verified == nil || verified.kind != r3.ArtifactDocument || len(verified.exactArtifact) == 0 {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: direct R3 issuance context is incomplete"))
@@ -111,7 +112,7 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	}
 	issuedRecord, err := issuedAuthTokenRecord(compact, claims)
 	if err == nil {
-		err = issuedRecord.bindRecipient(credentialAgent, nil)
+		err = issuedRecord.bindRecipient(credentialAgent, aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI}, nil)
 	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
@@ -24,6 +25,20 @@ type RevocationClientConfig struct {
 	Provider   *Server
 	HTTPClient *http.Client
 	Admit      signaturekey.EgressAdmitter
+}
+
+// RevocationPendingError reports that a Person Server recorded an Agent-token
+// revocation and answered 202 because its cascade, revoking what it issued to
+// that Agent, is not yet terminal. Repeat the same revocation after
+// RetryAfter: the Person Server records nothing new and continues its cascade.
+// Location is the pending URL it named.
+type RevocationPendingError struct {
+	Location   string
+	RetryAfter time.Duration
+}
+
+func (failure *RevocationPendingError) Error() string {
+	return "aauth: Agent-token revocation is recorded and its cascade is still pending"
 }
 
 // RevocationClient sends one signed Agent-token revocation request. It never
@@ -141,6 +156,14 @@ func (client *RevocationClient) revokeAgentToken(
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
 		return aauth.ReadRevocationResponse(response, maximumRevocationResponseBytes)
+	}
+	if response.StatusCode == http.StatusAccepted {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumRevocationResponseBytes))
+		retryAfter, ok := httpapi.ParseRetryAfter(response.Header.Values("Retry-After"), client.provider.clock.Now())
+		if !ok {
+			retryAfter = 5 * time.Second
+		}
+		return &RevocationPendingError{Location: response.Header.Get("Location"), RetryAfter: retryAfter}
 	}
 	if response.StatusCode == http.StatusUnauthorized && response.Header.Get("Signature-Error") != "" {
 		if failure, decodeErr := signaturekey.DecodeErrorResponse(response); decodeErr == nil {

@@ -29,8 +29,9 @@ type BootstrapConfig struct {
 }
 
 // BootstrapClient performs one enrollment or Agent-token refresh exchange.
-// It does not discover endpoints, retry, poll, or mutate an authenticated
-// Client.
+// It does not discover endpoints, retry, or mutate an authenticated Client.
+// The Begin methods return a Pending when the Agent Provider defers the
+// exchange; the caller polls it.
 type BootstrapClient struct {
 	agentProvider      string
 	enrollmentEndpoint string
@@ -132,153 +133,253 @@ func validateBootstrapEndpoint(endpoint, agentProvider string) error {
 	return nil
 }
 
-// Enroll performs one hwk-signed enrollment request.
+// Enroll performs one hwk-signed enrollment request. When the Agent Provider
+// defers enrollment, the error is a *PendingError[EnrollmentResult] that
+// carries the pending enrollment; BeginEnroll returns it as a Result.
 func (client *BootstrapClient) Enroll(ctx context.Context, evidence json.RawMessage) (EnrollmentResult, error) {
 	const operation = "bootstrap enrollment"
+	result, err := client.beginEnroll(ctx, evidence, operation)
+	if err != nil {
+		return EnrollmentResult{}, err
+	}
+	return completed(operation, result)
+}
+
+// BeginEnroll performs the same single enrollment request as Enroll and
+// returns the enrollment, or the pending enrollment when the Agent Provider
+// answers 202, for example while it reviews the evidence. Polls are signed
+// with the durable key under hwk, as the request was.
+func (client *BootstrapClient) BeginEnroll(ctx context.Context, evidence json.RawMessage) (Result[EnrollmentResult], error) {
+	return client.beginEnroll(ctx, evidence, "begin bootstrap enrollment")
+}
+
+func (client *BootstrapClient) beginEnroll(
+	ctx context.Context,
+	evidence json.RawMessage,
+	operation string,
+) (Result[EnrollmentResult], error) {
 	if client == nil {
-		return EnrollmentResult{}, fail(operation, errors.New("bootstrap client is required"))
+		return Result[EnrollmentResult]{}, fail(operation, errors.New("bootstrap client is required"))
 	}
 	if ctx == nil {
-		return EnrollmentResult{}, fail(operation, errors.New("context is required"))
+		return Result[EnrollmentResult]{}, fail(operation, errors.New("context is required"))
 	}
 	if !json.Valid(evidence) {
-		return EnrollmentResult{}, fail(operation, errors.New("enrollment evidence must be valid JSON"))
+		return Result[EnrollmentResult]{}, fail(operation, errors.New("enrollment evidence must be valid JSON"))
 	}
 	body, err := json.Marshal(struct {
 		Evidence json.RawMessage `json:"evidence"`
 	}{Evidence: evidence})
 	if err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return Result[EnrollmentResult]{}, fail(operation, err)
 	}
 	request, err := newJSONRequest(ctx, client.enrollmentEndpoint, body)
 	if err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return Result[EnrollmentResult]{}, fail(operation, err)
 	}
 	credential, err := signaturekey.NewHWKCredential(client.durableKey.PublicJWK())
 	if err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return Result[EnrollmentResult]{}, fail(operation, err)
 	}
 	if err := signaturekey.SignRequest(request, client.durableKey, credential, client.clock, signaturekey.SignOptions{
 		AdditionalComponents: []string{"content-type", "content-digest"},
 		MaxBodyBytes:         client.maxSignedBodyBytes,
 	}); err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return Result[EnrollmentResult]{}, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return Result[EnrollmentResult]{}, fail(operation, err)
 	}
-	defer response.Body.Close()
+	flow := newBootstrapPendingFlow(client, "enrollment", client.durableKey, credential, client.readEnrollment)
+	result, err := flow.begin(ctx, response)
+	if err != nil {
+		return Result[EnrollmentResult]{}, fail(operation, err)
+	}
+	return result, nil
+}
+
+func (client *BootstrapClient) readEnrollment(_ context.Context, response *http.Response) (EnrollmentResult, error) {
 	if response.StatusCode != http.StatusCreated {
-		return EnrollmentResult{}, fail(operation, responseFailure(response))
+		return EnrollmentResult{}, responseFailure(response)
 	}
 	if err := requireNoStore(response); err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return EnrollmentResult{}, err
 	}
 	var output struct {
 		Agent string `json:"agent"`
 	}
 	if err := decodeJSONResponse(response, &output); err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return EnrollmentResult{}, err
 	}
 	if err := validateBootstrapAgent(output.Agent, client.agentProvider); err != nil {
-		return EnrollmentResult{}, fail(operation, err)
+		return EnrollmentResult{}, err
 	}
 	return EnrollmentResult{Agent: output.Agent}, nil
 }
 
+// newBootstrapPendingFlow returns a flow whose polls are signed by key under
+// credential, the same Signature-Key scheme as the original request.
+func newBootstrapPendingFlow[T any](
+	client *BootstrapClient,
+	name string,
+	key jose.SigningKey,
+	credential signaturekey.Credential,
+	complete func(context.Context, *http.Response) (T, error),
+) *pendingFlow[T] {
+	return &pendingFlow[T]{
+		name: name, httpClient: client.httpClient, clock: client.clock,
+		sign: func(request *http.Request) error {
+			return signaturekey.SignRequest(request, key, credential, client.clock, signaturekey.SignOptions{
+				MaxBodyBytes: client.maxSignedBodyBytes,
+			})
+		},
+		complete: complete,
+	}
+}
+
 // Refresh performs one jkt-jwt-signed refresh request and verifies the exact
-// returned Agent token before exposing it.
+// returned Agent token before exposing it. When the Agent Provider defers the
+// refresh, the error is a *PendingError[RefreshAgentTokenResult] that carries
+// the pending refresh; BeginRefresh returns it as a Result.
 func (client *BootstrapClient) Refresh(
 	ctx context.Context,
 	input RefreshAgentTokenInput,
 ) (RefreshAgentTokenResult, error) {
 	const operation = "bootstrap refresh"
+	result, err := client.beginRefresh(ctx, input, operation)
+	if err != nil {
+		return RefreshAgentTokenResult{}, err
+	}
+	return completed(operation, result)
+}
+
+// BeginRefresh performs the same single refresh request as Refresh and
+// returns the verified Agent token, or the pending refresh when the Agent
+// Provider answers 202. Polls are signed with the delegated key under the same
+// jkt-jwt delegation, so they must finish before it expires.
+func (client *BootstrapClient) BeginRefresh(
+	ctx context.Context,
+	input RefreshAgentTokenInput,
+) (Result[RefreshAgentTokenResult], error) {
+	return client.beginRefresh(ctx, input, "begin bootstrap refresh")
+}
+
+func (client *BootstrapClient) beginRefresh(
+	ctx context.Context,
+	input RefreshAgentTokenInput,
+	operation string,
+) (Result[RefreshAgentTokenResult], error) {
 	if client == nil {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("bootstrap client is required"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("bootstrap client is required"))
 	}
 	if ctx == nil {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("context is required"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("context is required"))
 	}
 	if err := validateBootstrapAgent(input.Agent, client.agentProvider); err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	if input.PersonServer != "" {
 		if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {
-			return RefreshAgentTokenResult{}, fail(operation, fmt.Errorf("Person Server: %w", err))
+			return Result[RefreshAgentTokenResult]{}, fail(operation, fmt.Errorf("Person Server: %w", err))
 		}
 	}
 	if input.SigningKey.ID() == "" {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("delegated signing key is required"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("delegated signing key is required"))
 	}
 	if _, err := input.SigningKey.PublicJWK().PublicKey(); err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, fmt.Errorf("delegated signing key: %w", err))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, fmt.Errorf("delegated signing key: %w", err))
 	}
 	if input.SigningKey.PublicJWK().Equal(client.durableKey.PublicJWK()) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("delegated signing key must differ from durable key"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("delegated signing key must differ from durable key"))
 	}
 	if strings.TrimSpace(input.DelegationJTI) == "" || input.DelegationJTI != strings.TrimSpace(input.DelegationJTI) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("delegation JTI is required without surrounding whitespace"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("delegation JTI is required without surrounding whitespace"))
 	}
 	if !json.Valid(input.Evidence) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("refresh evidence must be valid JSON"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh evidence must be valid JSON"))
 	}
 	now := client.clock.Now().UTC()
 	if input.DelegationIssuedAt.IsZero() {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("delegation issued time is required"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("delegation issued time is required"))
 	}
 	issuedAt := input.DelegationIssuedAt.UTC().Truncate(time.Second)
 	expiresAt := input.DelegationExpiresAt.UTC().Truncate(time.Second)
 	if issuedAt.After(now) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("delegation issued time must not be in the future"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("delegation issued time must not be in the future"))
 	}
 	if !expiresAt.After(issuedAt) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("delegation expiry must be after its issued time"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("delegation expiry must be after its issued time"))
 	}
 	if !expiresAt.After(now) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("delegation has expired"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("delegation has expired"))
 	}
 	compact, err := signaturekey.MintJKTJWT(
 		client.durableKey, input.SigningKey.PublicJWK(), issuedAt,
 		expiresAt, input.DelegationJTI,
 	)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
-	return client.refreshAgentToken(ctx, input, compact)
+	return client.refreshAgentToken(ctx, input, compact, operation)
 }
 
 // RefreshSingleKey performs one hwk-signed refresh with the enrolled durable
 // key and verifies that the returned Agent token remains bound to that key.
+// A deferred refresh is a *PendingError[RefreshAgentTokenResult], as for
+// Refresh.
 func (client *BootstrapClient) RefreshSingleKey(
 	ctx context.Context,
 	input SingleKeyRefreshAgentTokenInput,
 ) (RefreshAgentTokenResult, error) {
 	const operation = "bootstrap single-key refresh"
+	result, err := client.beginRefreshSingleKey(ctx, input, operation)
+	if err != nil {
+		return RefreshAgentTokenResult{}, err
+	}
+	return completed(operation, result)
+}
+
+// BeginRefreshSingleKey performs the same single refresh request as
+// RefreshSingleKey and returns the verified Agent token, or the pending
+// refresh when the Agent Provider answers 202. Polls are signed with the
+// durable key under hwk.
+func (client *BootstrapClient) BeginRefreshSingleKey(
+	ctx context.Context,
+	input SingleKeyRefreshAgentTokenInput,
+) (Result[RefreshAgentTokenResult], error) {
+	return client.beginRefreshSingleKey(ctx, input, "begin bootstrap single-key refresh")
+}
+
+func (client *BootstrapClient) beginRefreshSingleKey(
+	ctx context.Context,
+	input SingleKeyRefreshAgentTokenInput,
+	operation string,
+) (Result[RefreshAgentTokenResult], error) {
 	if client == nil {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("bootstrap client is required"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("bootstrap client is required"))
 	}
 	if ctx == nil {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("context is required"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("context is required"))
 	}
 	if err := validateBootstrapAgent(input.Agent, client.agentProvider); err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	if input.PersonServer != "" {
 		if err := aauth.ValidateServerIdentifier(input.PersonServer); err != nil {
-			return RefreshAgentTokenResult{}, fail(operation, fmt.Errorf("Person Server: %w", err))
+			return Result[RefreshAgentTokenResult]{}, fail(operation, fmt.Errorf("Person Server: %w", err))
 		}
 	}
 	if !json.Valid(input.Evidence) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("refresh evidence must be valid JSON"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh evidence must be valid JSON"))
 	}
 	if strings.TrimSpace(input.RefreshJTI) == "" || input.RefreshJTI != strings.TrimSpace(input.RefreshJTI) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("refresh JTI is required without surrounding whitespace"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh JTI is required without surrounding whitespace"))
 	}
 	now := client.clock.Now().UTC().Truncate(time.Second)
 	expiresAt := input.RefreshExpiresAt.UTC().Truncate(time.Second)
 	if !expiresAt.After(now) || expiresAt.After(now.Add(24*time.Hour)) {
-		return RefreshAgentTokenResult{}, fail(operation, errors.New("refresh expiry must be within 24 hours"))
+		return Result[RefreshAgentTokenResult]{}, fail(operation, errors.New("refresh expiry must be within 24 hours"))
 	}
 	body, err := json.Marshal(struct {
 		PersonServer     string          `json:"ps,omitempty"`
@@ -292,35 +393,31 @@ func (client *BootstrapClient) RefreshSingleKey(
 		RefreshExpiresAt: expiresAt.Unix(),
 	})
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	request, err := newJSONRequest(ctx, client.refreshEndpoint, body)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	credential, err := signaturekey.NewHWKCredential(client.durableKey.PublicJWK())
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	if err := signaturekey.SignRequest(request, client.durableKey, credential, client.clock, signaturekey.SignOptions{
 		AdditionalComponents: []string{"content-type", "content-digest"},
 		MaxBodyBytes:         client.maxSignedBodyBytes,
 	}); err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
-	result, err := client.readRefreshAgentTokenResponse(
-		ctx,
-		response,
-		input.Agent,
-		input.PersonServer,
-		client.durableKey.PublicJWK(),
-	)
+	flow := newBootstrapPendingFlow(client, "Agent-token refresh", client.durableKey, credential,
+		client.refreshAgentTokenReader(input.Agent, input.PersonServer, client.durableKey.PublicJWK()))
+	result, err := flow.begin(ctx, response)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	return result, nil
 }
@@ -329,44 +426,52 @@ func (client *BootstrapClient) refreshAgentToken(
 	ctx context.Context,
 	input RefreshAgentTokenInput,
 	delegation string,
-) (RefreshAgentTokenResult, error) {
-	const operation = "bootstrap refresh"
+	operation string,
+) (Result[RefreshAgentTokenResult], error) {
 	body, err := json.Marshal(struct {
 		PersonServer string          `json:"ps,omitempty"`
 		Evidence     json.RawMessage `json:"evidence"`
 	}{PersonServer: input.PersonServer, Evidence: input.Evidence})
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	request, err := newJSONRequest(ctx, client.refreshEndpoint, body)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	credential, err := signaturekey.NewJKTJWTCredential(delegation)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	if err := signaturekey.SignRequest(request, input.SigningKey, credential, client.clock, signaturekey.SignOptions{
 		AdditionalComponents: []string{"content-type", "content-digest"},
 		MaxBodyBytes:         client.maxSignedBodyBytes,
 	}); err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
-	result, err := client.readRefreshAgentTokenResponse(
-		ctx,
-		response,
-		input.Agent,
-		input.PersonServer,
-		input.SigningKey.PublicJWK(),
-	)
+	flow := newBootstrapPendingFlow(client, "Agent-token refresh", input.SigningKey, credential,
+		client.refreshAgentTokenReader(input.Agent, input.PersonServer, input.SigningKey.PublicJWK()))
+	result, err := flow.begin(ctx, response)
 	if err != nil {
-		return RefreshAgentTokenResult{}, fail(operation, err)
+		return Result[RefreshAgentTokenResult]{}, fail(operation, err)
 	}
 	return result, nil
+}
+
+// refreshAgentTokenReader checks a refresh answer for agent, personServer and
+// the key the new Agent token must confirm.
+func (client *BootstrapClient) refreshAgentTokenReader(
+	agent string,
+	personServer string,
+	confirmation jose.JWK,
+) func(context.Context, *http.Response) (RefreshAgentTokenResult, error) {
+	return func(ctx context.Context, response *http.Response) (RefreshAgentTokenResult, error) {
+		return client.readRefreshAgentTokenResponse(ctx, response, agent, personServer, confirmation)
+	}
 }
 
 func (client *BootstrapClient) readRefreshAgentTokenResponse(
@@ -376,7 +481,6 @@ func (client *BootstrapClient) readRefreshAgentTokenResponse(
 	personServer string,
 	confirmation jose.JWK,
 ) (RefreshAgentTokenResult, error) {
-	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return RefreshAgentTokenResult{}, responseFailure(response)
 	}

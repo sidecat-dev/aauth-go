@@ -16,14 +16,17 @@ type personTokenResultKind uint8
 const (
 	personTokenResultToken personTokenResultKind = iota + 1
 	personTokenResultPending
+	personTokenResultChained
 )
 
-// PersonTokenResult is either one verified person token or one verified
-// pending interaction. A 202 response is a protocol result, not an error.
+// PersonTokenResult is either one verified person token, one verified pending
+// interaction, or, for a call-chaining request, one verified pending request.
+// A 202 response is a protocol result, not an error.
 type PersonTokenResult struct {
 	kind    personTokenResultKind
 	token   string
 	pending PendingPersonToken
+	chained Pending[string]
 }
 
 // Token returns the verified person token when issuance completed.
@@ -34,12 +37,24 @@ func (result PersonTokenResult) Token() (string, bool) {
 	return result.token, true
 }
 
-// Pending returns the verified interaction when issuance is pending.
+// Pending returns the verified interaction when issuance is pending. A
+// call-chaining request's pending answer is ChainedPending instead.
 func (result PersonTokenResult) Pending() (PendingPersonToken, bool) {
 	if result.kind != personTokenResultPending || result.pending.kind != pendingPersonTokenVerified {
 		return PendingPersonToken{}, false
 	}
 	return result.pending, true
+}
+
+// ChainedPending returns the pending request when the Person Server the
+// upstream token names deferred a call-chaining request. Poll it, signed with
+// this intermediary's Agent token; its result is the verified downstream
+// person token, checked as an immediate one is.
+func (result PersonTokenResult) ChainedPending() (Pending[string], bool) {
+	if result.kind != personTokenResultChained {
+		return Pending[string]{}, false
+	}
+	return result.chained, true
 }
 
 type pendingPersonTokenKind uint8
@@ -100,10 +115,14 @@ func (client *Client) personTokenResponse(
 	input PersonTokenRequest,
 	credential personServerCredential,
 ) (PersonTokenResult, error) {
-	if response.StatusCode == http.StatusAccepted {
-		if input.UpstreamToken != "" {
-			return PersonTokenResult{}, &CallChainingInteractionUnsupportedError{Operation: "person-token issuance"}
+	if response.StatusCode == http.StatusAccepted && input.UpstreamToken != "" {
+		pending, err := client.chainedPersonTokenPending(ctx, response, input, credential)
+		if err != nil {
+			return PersonTokenResult{}, err
 		}
+		return PersonTokenResult{kind: personTokenResultChained, chained: pending}, nil
+	}
+	if response.StatusCode == http.StatusAccepted {
 		pending, err := client.pendingPersonToken(response, input, PendingPersonToken{}, credential)
 		if err != nil {
 			return PersonTokenResult{}, err
@@ -113,13 +132,48 @@ func (client *Client) personTokenResponse(
 	if response.StatusCode != http.StatusOK {
 		return PersonTokenResult{}, responseFailure(response)
 	}
+	// A chained person token carries the upstream token's mission.
+	missionS256 := input.MissionS256
+	if input.UpstreamToken != "" {
+		missionS256 = credential.upstreamMission
+	}
 	token, err := client.verifiedPersonToken(
-		ctx, response, input.PersonServer, input.Resource, input.MissionS256, credential,
+		ctx, response, input.PersonServer, input.Resource, missionS256, credential,
 	)
 	if err != nil {
 		return PersonTokenResult{}, err
 	}
 	return PersonTokenResult{kind: personTokenResultToken, token: token}, nil
+}
+
+// chainedPersonTokenPending reads a Person Server's 202 to a call-chaining
+// person-token request into a Pending at that Person Server's pending URL. Its
+// terminal person token must carry the upstream token's mission and must not
+// outlive the upstream token, as an immediate one must not.
+func (client *Client) chainedPersonTokenPending(
+	ctx context.Context,
+	response *http.Response,
+	input PersonTokenRequest,
+	credential personServerCredential,
+) (Pending[string], error) {
+	flow := newPendingFlow(client, "call-chaining person token", client.agentToken,
+		func(ctx context.Context, response *http.Response) (string, error) {
+			if response.StatusCode != http.StatusOK {
+				return "", responseFailure(response)
+			}
+			return client.verifiedPersonToken(
+				ctx, response, input.PersonServer, input.Resource, credential.upstreamMission, credential,
+			)
+		})
+	result, err := flow.begin(ctx, response)
+	if err != nil {
+		return Pending[string]{}, err
+	}
+	pending, ok := result.Pending()
+	if !ok {
+		return Pending[string]{}, errors.New("pending person-token response is not pending")
+	}
+	return pending, nil
 }
 
 func (client *Client) pendingPersonToken(

@@ -22,48 +22,40 @@ import (
 // Protocol 28e8258, Error Response Format and Token Endpoint Error Codes:
 // a local unsupported composition is not an unreachable or invalid AS result.
 func TestDeferredCompositionRefusalHasLocalReason(t *testing.T) {
-	for _, configured := range []bool{false, true} {
-		t.Run(map[bool]string{false: "not configured", true: "mission"}[configured], func(t *testing.T) {
-			now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-			f := newMissionFederationFixture(t, missionFederationTimes{now: now, resourceExpiresAt: now.Add(time.Minute), missionExpiresAt: now.Add(5 * time.Minute), authExpiresAt: now.Add(time.Minute)})
-			if configured {
-				f.server.federatedDeferred = &FederatedDeferredConfig{}
-			}
-			f.server.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 402, Header: http.Header{"Location": {"https://access.example/pending/test"}, "Www-Authenticate": {`Payment secret="private-invoice"`}}, Body: io.NopCloser(strings.NewReader("private-invoice")), Request: r}, nil
-			})}
-			body := testTokenRequestBody(t, f.resourceToken, f.presentedToken)
-			request := httptest.NewRequest("POST", f.protocol.personServerID+"/token", bytes.NewReader(body))
-			request.Header.Set("Content-Type", "application/json")
-			if err := signPersonServerTestRequest(request, f.protocol.agentKey, f.protocol.agentToken, f.protocol.clock); err != nil {
-				t.Fatal(err)
-			}
-			var observed diagnostics.Problem
-			recorder := httptest.NewRecorder()
-			diagnostics.Handler(f.server.Handler(), func(_ context.Context, p diagnostics.Problem) { observed = p }).ServeHTTP(recorder, request)
-			problem, err := aauth.DecodeProblemResponse(recorder.Result())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if problem.Status != 500 || problem.Code != "server_error" {
-				t.Fatalf("local refusal = %v", problem)
-			}
-			var reason *DeferredCompositionError
-			if !errors.As(observed.Cause, &reason) {
-				t.Fatalf("untyped composition cause: %T %v", observed.Cause, observed.Cause)
-			}
-			want := "not_configured"
-			if configured {
-				want = "mission"
-			}
-			if reason.Reason() != want || !strings.Contains(problem.Detail, "deferred") || strings.Contains(problem.Detail, "private-invoice") {
-				t.Fatalf("reason=%q detail=%q", reason.Reason(), problem.Detail)
-			}
-			if attempts, _, _ := f.store.observation(); attempts != 0 {
-				t.Fatal("unsupported continuation retained a token")
-			}
-		})
-	}
+	t.Run("not configured", func(t *testing.T) {
+		now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+		f := newMissionFederationFixture(t, missionFederationTimes{now: now, resourceExpiresAt: now.Add(time.Minute), missionExpiresAt: now.Add(5 * time.Minute), authExpiresAt: now.Add(time.Minute)})
+		f.server.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 402, Header: http.Header{"Location": {"https://access.example/pending/test"}, "Www-Authenticate": {`Payment secret="private-invoice"`}}, Body: io.NopCloser(strings.NewReader("private-invoice")), Request: r}, nil
+		})}
+		body := testTokenRequestBody(t, f.resourceToken, f.presentedToken)
+		request := httptest.NewRequest("POST", f.protocol.personServerID+"/token", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		if err := signPersonServerTestRequest(request, f.protocol.agentKey, f.protocol.agentToken, f.protocol.clock); err != nil {
+			t.Fatal(err)
+		}
+		var observed diagnostics.Problem
+		recorder := httptest.NewRecorder()
+		diagnostics.Handler(f.server.Handler(), func(_ context.Context, p diagnostics.Problem) { observed = p }).ServeHTTP(recorder, request)
+		problem, err := aauth.DecodeProblemResponse(recorder.Result())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if problem.Status != 500 || problem.Code != "server_error" {
+			t.Fatalf("local refusal = %v", problem)
+		}
+		var reason *DeferredCompositionError
+		if !errors.As(observed.Cause, &reason) {
+			t.Fatalf("untyped composition cause: %T %v", observed.Cause, observed.Cause)
+		}
+		want := "not_configured"
+		if reason.Reason() != want || !strings.Contains(problem.Detail, "deferred") || strings.Contains(problem.Detail, "private-invoice") {
+			t.Fatalf("reason=%q detail=%q", reason.Reason(), problem.Detail)
+		}
+		if attempts, _, _ := f.store.observation(); attempts != 0 {
+			t.Fatal("unsupported continuation retained a token")
+		}
+	})
 }
 
 func TestPendingFederatedReferencesValidateStoreResults(t *testing.T) {

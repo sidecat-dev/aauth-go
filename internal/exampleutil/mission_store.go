@@ -58,6 +58,8 @@ var _ personserver.MissionPermissionStore = (*missionStore)(nil)
 var _ personserver.MissionProposalStore = (*missionStore)(nil)
 var _ personserver.MissionR3IssuanceStore = (*missionStore)(nil)
 var _ personserver.PersonTokenPresentationStore = (*missionStore)(nil)
+var _ personserver.ChainedPersonTokenStore = (*missionStore)(nil)
+var _ personserver.AgentPersonTokenStore = (*missionStore)(nil)
 
 // LoadAuthToken observes a retained Auth-token record for store contracts.
 func (store *missionStore) LoadAuthToken(reference aauth.TokenReference) (personserver.IssuedAuthTokenRecord, bool) {
@@ -290,6 +292,44 @@ func (store *missionStore) Load(_ context.Context, issuer, jti string) (personse
 	return record, nil
 }
 
+// LoadChainedPersonTokens returns the person tokens issued with upstream as
+// their upstream token.
+func (store *missionStore) LoadChainedPersonTokens(_ context.Context, upstream aauth.TokenReference) ([]personserver.PersonTokenRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var chained []personserver.PersonTokenRecord
+	for _, record := range store.tokens {
+		if record.UpstreamTokenReference == upstream {
+			chained = append(chained, record)
+		}
+	}
+	return chained, nil
+}
+
+// LoadAgentPersonTokens returns the person tokens issued to the Agent that
+// presented agentToken, under any of its Agent tokens.
+func (store *missionStore) LoadAgentPersonTokens(_ context.Context, agentToken aauth.TokenReference) ([]personserver.PersonTokenRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	agent := ""
+	for _, record := range store.tokens {
+		if record.AgentProvider == agentToken.Issuer && record.AgentTokenJTI == agentToken.JTI {
+			agent = record.Agent
+			break
+		}
+	}
+	if agent == "" {
+		return nil, nil
+	}
+	var issued []personserver.PersonTokenRecord
+	for _, record := range store.tokens {
+		if record.AgentProvider == agentToken.Issuer && record.Agent == agent {
+			issued = append(issued, record)
+		}
+	}
+	return issued, nil
+}
+
 // RecordPersonTokenPresentation retains one presentation per Access Server.
 func (store *missionStore) RecordPersonTokenPresentation(_ context.Context, presentation personserver.PersonTokenPresentation) error {
 	store.mu.Lock()
@@ -419,7 +459,10 @@ func (store *missionStore) CommitMissionPersonToken(
 	if err := store.requireActive(expected, at); err != nil {
 		return err
 	}
-	if token.MissionS256 != expected.S256 || token.Agent != expected.Agent {
+	// A chained record names the intermediary that obtained it; the mission
+	// belongs to the calling Agent behind its upstream token.
+	chained := token.UpstreamTokenReference != (aauth.TokenReference{})
+	if token.MissionS256 != expected.S256 || !chained && token.Agent != expected.Agent {
 		return personserver.ErrMissionConflict
 	}
 	key := token.PersonServer + "\x00" + token.JTI

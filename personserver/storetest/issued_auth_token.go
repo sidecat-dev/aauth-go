@@ -21,6 +21,9 @@ type IssuedAuthTokenContract struct {
 // RunIssuedAuthToken checks issuer/JTI namespacing, exact round-trip and
 // replay of a record with every field set, conflict refusal for a change to
 // any one field, retained-state preservation, and concurrent linearization.
+// For a store that also implements personserver.AuthTokenLineageStore it
+// checks that the records issued against one token are found by it, and only
+// those.
 func RunIssuedAuthToken(t *testing.T, contract IssuedAuthTokenContract) {
 	t.Helper()
 	if contract.New == nil {
@@ -66,6 +69,9 @@ func RunIssuedAuthToken(t *testing.T, contract IssuedAuthTokenContract) {
 			record.UpstreamTokenReference.JTI = "other-upstream-token"
 		}},
 		{"upstream digest", func(record *personserver.IssuedAuthTokenRecord) { record.UpstreamTokenSHA256[31] ^= 1 }},
+		{"presented token", func(record *personserver.IssuedAuthTokenRecord) {
+			record.PresentedTokenReference.JTI = "other-presented-token"
+		}},
 	} {
 		conflicting := record
 		conflict.change(&conflicting)
@@ -94,6 +100,42 @@ func RunIssuedAuthToken(t *testing.T, contract IssuedAuthTokenContract) {
 	}
 
 	runConcurrentIssuedAuthTokenCommit(t, contract)
+	if _, ok := store.(personserver.AuthTokenLineageStore); ok {
+		runIssuedAuthTokenLineage(t, contract)
+	}
+}
+
+func runIssuedAuthTokenLineage(t *testing.T, contract IssuedAuthTokenContract) {
+	t.Helper()
+	store := newIssuedAuthTokenStore(t, contract)
+	lineage := store.(personserver.AuthTokenLineageStore)
+	ctx := context.Background()
+	person := aauth.TokenReference{Issuer: "https://person.example", JTI: "presented-person-token"}
+	first := issuedAuthTokenRecord("https://access.example", "first-auth-token", "https://resource.example", 4)
+	first.PresentedTokenReference = person
+	stepUp := issuedAuthTokenRecord("https://access.example", "step-up-auth-token", "https://resource.example", 5)
+	stepUp.PresentedTokenReference = first.Reference
+	other := issuedAuthTokenRecord("https://person.example", "other-auth-token", "https://resource.example", 6)
+	other.PresentedTokenReference = aauth.TokenReference{Issuer: person.Issuer, JTI: "other-person-token"}
+	for _, record := range []personserver.IssuedAuthTokenRecord{first, stepUp, other} {
+		if err := store.CommitIssuedAuthToken(ctx, record); err != nil {
+			t.Fatalf("CommitIssuedAuthToken %s = %v", record.Reference.JTI, err)
+		}
+	}
+	for _, want := range []struct {
+		presented aauth.TokenReference
+		records   []personserver.IssuedAuthTokenRecord
+	}{
+		{person, []personserver.IssuedAuthTokenRecord{first}},
+		{first.Reference, []personserver.IssuedAuthTokenRecord{stepUp}},
+		{stepUp.Reference, nil},
+		{aauth.TokenReference{Issuer: "https://other.example", JTI: person.JTI}, nil},
+	} {
+		loaded, err := lineage.LoadAuthTokensIssuedAgainst(ctx, want.presented)
+		if err != nil || len(loaded) != len(want.records) || len(loaded) == 1 && !reflect.DeepEqual(loaded[0], want.records[0]) {
+			t.Fatalf("LoadAuthTokensIssuedAgainst(%#v) = %#v, %v; want %#v", want.presented, loaded, err, want.records)
+		}
+	}
 }
 
 func runConcurrentIssuedAuthTokenCommit(t *testing.T, contract IssuedAuthTokenContract) {
@@ -154,7 +196,8 @@ func issuedAuthTokenRecord(issuer, jti, resourceID string, marker byte) personse
 		AgentProvider: "https://agent.example", Agent: "aauth:assistant+lane@agent.example",
 		ParentAgent:   "aauth:assistant@agent.example",
 		AgentTokenJTI: "agent-token-" + jti, AgentJKT: "agent-key-thumbprint",
-		UpstreamTokenReference: aauth.TokenReference{Issuer: issuer, JTI: "upstream-" + jti},
-		UpstreamTokenSHA256:    [32]byte{marker, 1},
+		UpstreamTokenReference:  aauth.TokenReference{Issuer: issuer, JTI: "upstream-" + jti},
+		UpstreamTokenSHA256:     [32]byte{marker, 1},
+		PresentedTokenReference: aauth.TokenReference{Issuer: "https://person.example", JTI: "presented-" + jti},
 	}
 }

@@ -27,6 +27,7 @@ type memoryPendingAuthorization struct {
 	failedAttempts      int
 	cancelledAt         time.Time
 	resourceInteraction personserver.ResourceInteractionProgress
+	callback            string
 }
 
 // NewDeferredAuthorizationStore returns an empty, concurrency-safe consent and
@@ -98,6 +99,7 @@ func (store *deferredAuthorizationStore) ConsumeAuthorizationInteractionCode(
 		return personserver.PendingAuthorizationRecord{}, personserver.ErrAuthorizationInteractionCodeUsed
 	}
 	pending.state = personserver.AuthorizationPollInteracting
+	pending.callback = presentation.Callback
 	return clonePendingAuthorization(pending.record), nil
 }
 
@@ -118,6 +120,7 @@ func (store *deferredAuthorizationStore) LoadPendingAuthorization(
 		Clarifications:      cloneAuthorizationClarifications(pending.clarifications),
 		CancelledAt:         pending.cancelledAt,
 		ResourceInteraction: pending.resourceInteraction,
+		Callback:            pending.callback,
 	}
 	if pending.state == personserver.AuthorizationPollApproved {
 		snapshot.Approval = cloneAuthorizationApproval(pending.approval)

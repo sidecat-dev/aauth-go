@@ -115,7 +115,9 @@ type MissionContext struct {
 // The two issuance commits compare every field of expected with the current
 // mission, materialize expiry at the supplied commit time, require it to
 // remain active, and retain the token record in the same atomic operation.
-// Each token record must name expected.S256. They return
+// Each token record must name expected.S256. A person-token record names the
+// mission's Agent, except a chained one (UpstreamTokenReference set), which
+// names the intermediary that obtained it for that Agent. They return
 // *MissionTerminatedError for a terminal mission and ErrMissionConflict for
 // any other changed state. AppendMissionUpdate and CompleteMission apply the
 // same complete-record comparison: the former appends one exact accepted

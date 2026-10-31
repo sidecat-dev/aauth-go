@@ -135,6 +135,7 @@ func TestRevokedUpstreamPersonTokenIsRefusedAtTheAccessServer(t *testing.T) {
 		Consent: func(context.Context, personserver.AuthorizationRequest) error {
 			return errors.New("ordinary consent received a chained request")
 		},
+		IssuedTokens: testutil.NewIssuedAuthTokenStore(),
 		CallChaining: &personserver.FederatedCallChainingConfig{
 			BindPerson: func(context.Context, personserver.PersonTokenRequest) (personserver.Person, error) {
 				return personserver.Person{Subject: "person-at-inventory", Lifetime: time.Hour}, nil

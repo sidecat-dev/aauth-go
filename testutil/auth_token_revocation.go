@@ -14,10 +14,18 @@ type issuedAuthTokenStore struct {
 	records map[aauth.TokenReference]personserver.IssuedAuthTokenRecord
 }
 
+// IssuedAuthTokenStore is a Person Server store of issued auth tokens and
+// delivery receipts that also finds them by the token they were issued
+// against.
+type IssuedAuthTokenStore interface {
+	personserver.IssuedAuthTokenStore
+	personserver.AuthTokenLineageStore
+}
+
 // NewIssuedAuthTokenStore returns an empty, concurrency-safe Person Server
-// issuance store for targeted Auth-token revocation. Records are retained for
-// the store lifetime.
-func NewIssuedAuthTokenStore() personserver.IssuedAuthTokenStore {
+// issuance store for Auth-token revocation, call chaining and the revocation
+// of call chains. Records are retained for the store lifetime.
+func NewIssuedAuthTokenStore() IssuedAuthTokenStore {
 	return &issuedAuthTokenStore{records: make(map[aauth.TokenReference]personserver.IssuedAuthTokenRecord)}
 }
 
@@ -39,6 +47,18 @@ func (store *issuedAuthTokenStore) LoadIssuedAuthToken(_ context.Context, refere
 		return personserver.IssuedAuthTokenRecord{}, personserver.ErrIssuedAuthTokenNotFound
 	}
 	return record, nil
+}
+
+func (store *issuedAuthTokenStore) LoadAuthTokensIssuedAgainst(_ context.Context, presented aauth.TokenReference) ([]personserver.IssuedAuthTokenRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var issued []personserver.IssuedAuthTokenRecord
+	for _, record := range store.records {
+		if record.PresentedTokenReference == presented {
+			issued = append(issued, record)
+		}
+	}
+	return issued, nil
 }
 
 type authTokenStatusStore struct {

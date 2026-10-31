@@ -35,8 +35,18 @@ var ErrIssuedAuthTokenConflict = errors.New("personserver: issued auth token con
 // nonempty when Agent is a sub-agent whose parent mediated the issuance; that
 // parent's binding authorized the token.
 //
-// UpstreamTokenReference and UpstreamTokenSHA256 name the exact upstream auth
+// UpstreamTokenReference and UpstreamTokenSHA256 name the exact upstream
 // token of a chained issuance. They are both set or both empty.
+//
+// PresentedTokenReference names the token the auth token was issued against:
+// the person token, or on a step-up the auth token it replaces. Revocation
+// follows it from a revoked person token to the auth tokens obtained with it.
+// It is empty in records that predate it and for auth tokens issued after
+// PS-hosted consent.
+//
+// A four-party Person Server keeps the same record, a receipt, for each auth
+// token it delivers from an Access Server: Reference then names the Access
+// Server's token.
 type IssuedAuthTokenRecord struct {
 	Reference     aauth.TokenReference
 	Resource      string
@@ -53,9 +63,13 @@ type IssuedAuthTokenRecord struct {
 
 	UpstreamTokenReference aauth.TokenReference
 	UpstreamTokenSHA256    [32]byte
+
+	PresentedTokenReference aauth.TokenReference
 }
 
-// IssuedAuthTokenStore retains three-party auth-token issuance records.
+// IssuedAuthTokenStore retains auth-token issuance records: those of the auth
+// tokens a three-party Person Server issues, and the receipts of those a
+// four-party Person Server delivers.
 // CommitIssuedAuthToken must be idempotent for an identical record and return
 // ErrIssuedAuthTokenConflict for a changed record at the same reference. A
 // record must remain loadable through ExpiresAt; it may be removed afterward.
@@ -115,9 +129,13 @@ func issuedAuthTokenRecord(compact string, claims aauth.AuthTokenClaims) (Issued
 	return record, nil
 }
 
-// bindRecipient retains the Agent an auth token is issued to and the upstream
-// token of a chained issuance.
-func (record *IssuedAuthTokenRecord) bindRecipient(agent aauth.AgentTokenClaims, upstream *verifiedUpstreamToken) error {
+// bindRecipient retains the Agent an auth token is issued to, the token it is
+// issued against, and the upstream token of a chained issuance.
+func (record *IssuedAuthTokenRecord) bindRecipient(
+	agent aauth.AgentTokenClaims,
+	presented aauth.TokenReference,
+	upstream *verifiedUpstreamToken,
+) error {
 	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
 	if err != nil {
 		return fmt.Errorf("personserver: issued auth-token recipient key: %w", err)
@@ -127,6 +145,7 @@ func (record *IssuedAuthTokenRecord) bindRecipient(agent aauth.AgentTokenClaims,
 	record.ParentAgent = agent.ParentAgent
 	record.AgentTokenJTI = agent.JTI
 	record.AgentJKT = thumbprint
+	record.PresentedTokenReference = presented
 	if upstream != nil {
 		record.UpstreamTokenReference = upstream.reference
 		record.UpstreamTokenSHA256 = upstream.digest
@@ -356,6 +375,11 @@ func validateIssuedAuthTokenRecord(record IssuedAuthTokenRecord) error {
 	if !emptyReference {
 		if err := aauth.ValidateTokenReference(record.UpstreamTokenReference); err != nil {
 			return errors.New("personserver: issued auth-token upstream reference is invalid")
+		}
+	}
+	if record.PresentedTokenReference != (aauth.TokenReference{}) {
+		if err := aauth.ValidateTokenReference(record.PresentedTokenReference); err != nil {
+			return errors.New("personserver: issued auth-token presented reference is invalid")
 		}
 	}
 	return nil

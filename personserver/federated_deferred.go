@@ -31,9 +31,10 @@ var ErrFederatedAuthorizationConflict = errors.New("personserver: federated auth
 // with a public explanation, not a federation reachability error.
 type DeferredCompositionError struct{ reason string }
 
-// Reason returns not_configured, call_chaining, r3, budget, mission, claims,
-// clarification, interaction or requirement (an unsupported extension). A mixed-capability
-// PS may still defer a missionless Core request, top-level or parent-mediated.
+// Reason returns not_configured, r3, budget, claims, clarification,
+// interaction or requirement (an unsupported extension). A mixed-capability
+// PS may still defer a Core request, missionless or mission-bound, top-level,
+// parent-mediated or chained.
 func (e *DeferredCompositionError) Reason() string {
 	if e == nil {
 		return ""
@@ -48,10 +49,6 @@ func (e *DeferredCompositionError) Error() string {
 		return "personserver: deferred AS authorization does not support R3 requests"
 	case "budget":
 		return "personserver: deferred AS authorization does not support Budget requests"
-	case "mission":
-		return "personserver: deferred AS authorization does not support mission-bound requests"
-	case "call_chaining":
-		return "personserver: deferred AS authorization does not support call-chained requests"
 	case "claims", "clarification", "interaction":
 		return "personserver: deferred AS authorization does not support " + e.Reason() + " requirements"
 	case "requirement":
@@ -64,11 +61,15 @@ func (e *DeferredCompositionError) Error() string {
 // ErrFederationNotReady means a poll is premature, already running, or terminal.
 var ErrFederationNotReady = errors.New("personserver: federation cannot be advanced")
 
-// FederatedDeferredConfig enables missionless Core AS approval and payment
-// continuations, top-level or parent-mediated for a one-level sub-agent. Hosts
-// settle payment and cache billing relationships per AS, then call
-// AdvanceFederation explicitly. No payment is made by the library. R3, Budget,
-// missions, claims and clarification are absent.
+// FederatedDeferredConfig enables Core AS approval, payment and claims
+// continuations, missionless or mission-bound: top-level, parent-mediated for
+// a one-level sub-agent, or chained by an intermediary. Hosts settle payment
+// and cache billing relationships per AS, then call AdvanceFederation
+// explicitly. No payment is made by the library. A mission-bound wait loads
+// its mission again on every poll and host advance and ends with
+// mission_terminated once it is terminated; the grant is committed with the
+// mission when it is released. R3, Budget, interaction and clarification are
+// absent.
 type FederatedDeferredConfig struct {
 	Store    FederatedAuthorizationStore
 	Lifetime time.Duration
@@ -95,7 +96,10 @@ type FederatedResponse struct {
 // Terminal stores the verified result or local problem; Gone prevents replay.
 // AgentIssuer, Agent and AgentJKT name the Agent that signed the request and
 // alone may poll; for a parent-mediated request that is the parent, and
-// SubagentToken holds the exact sub-agent token the grant is bound to.
+// SubagentToken holds the exact sub-agent token the grant is bound to. For a
+// chained request the signer is the intermediary and UpstreamToken holds the
+// exact upstream_token, verified again on every poll, host advance and
+// delivery.
 type FederatedAuthorizationRecord struct {
 	ID             string
 	PersonServer   string
@@ -106,6 +110,7 @@ type FederatedAuthorizationRecord struct {
 	AgentJKT       string
 	PresentedToken string
 	SubagentToken  string
+	UpstreamToken  string
 	Location       string
 	CreatedAt      time.Time
 	ExpiresAt      time.Time
@@ -168,6 +173,7 @@ func (server *Server) FederatedAuthorization(ctx context.Context, reference stri
 // agent unless subagentToken is set.
 type federatedContinuationInput struct {
 	resourceToken, agentToken, presentedToken, subagentToken string
+	upstream                                                 *verifiedUpstreamToken
 	agent, credentialAgent                                   aauth.AgentTokenClaims
 	resource                                                 aauth.ResourceTokenClaims
 	presentedExpiresAt                                       time.Time
@@ -182,10 +188,18 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 	}
 	now := server.clock.Now().UTC()
 	deadline := input.createdAt.Add(server.federatedDeferred.Lifetime)
-	for _, t := range []time.Time{
+	ceilings := []time.Time{
 		time.Unix(input.resource.ExpiresAt, 0), time.Unix(input.agent.ExpiresAt, 0),
 		time.Unix(input.credentialAgent.ExpiresAt, 0), input.presentedExpiresAt,
-	} {
+	}
+	// A pending downstream request whose upstream token expires ends with
+	// expired; the intermediary starts over with a later upstream token.
+	upstreamToken := ""
+	if input.upstream != nil {
+		ceilings = append(ceilings, input.upstream.expiresAt())
+		upstreamToken = input.upstream.compact
+	}
+	for _, t := range ceilings {
 		if t.Before(deadline) {
 			deadline = t
 		}
@@ -209,7 +223,7 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 	record := FederatedAuthorizationRecord{
 		ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: server.issuer, ResourceToken: input.resourceToken,
 		AgentToken: input.agentToken, AgentIssuer: input.agent.Issuer, Agent: input.agent.Subject, AgentJKT: thumbprint,
-		PresentedToken: input.presentedToken, SubagentToken: input.subagentToken, Location: location,
+		PresentedToken: input.presentedToken, SubagentToken: input.subagentToken, UpstreamToken: upstreamToken, Location: location,
 		CreatedAt: input.createdAt, ExpiresAt: deadline, NextPollAt: now.Add(retry), RetryAfter: retry, Revision: 1, Response: state,
 	}
 	if err := server.federatedDeferred.Store.CreateFederatedAuthorization(r.Context(), record); err != nil {
@@ -403,6 +417,26 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writePendingRevocationProblem(out, err, http.StatusBadRequest, "revoked_presented_token")
 		return
 	}
+	upstream, err := server.verifyFederatedUpstream(ctx, record, agent)
+	if err != nil {
+		out.local = true
+		var storeFailure *upstreamStoreError
+		switch {
+		case pendingRevoked(err):
+			writePendingRevocationProblem(out, err, http.StatusBadRequest, "revoked_presented_token")
+		case errors.As(err, &storeFailure):
+			writeProblem(out, http.StatusInternalServerError, "server_error", err)
+		default:
+			writeProblem(out, 408, "expired", err)
+		}
+		return
+	}
+	// A mission terminated while the request waits ends it here too.
+	if _, _, err := server.federatedMission(ctx, record, resource, upstream); err != nil {
+		out.local = true
+		server.writeFederatedMissionProblem(out, err, upstream != nil)
+		return
+	}
 	method := http.MethodGet
 	var reader io.Reader
 	if claimsBody != nil {
@@ -485,7 +519,72 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writeAccessServerUnreachable(out, err)
 		return
 	}
-	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, nil)
+	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, upstream)
+}
+
+// federatedMission loads, at the current instant, the mission a retained
+// mission-bound request is evaluated against: the signing Agent's, or for a
+// chained request the calling Agent's behind its upstream token. It returns
+// nil for a missionless request.
+func (server *Server) federatedMission(
+	ctx context.Context,
+	record FederatedAuthorizationRecord,
+	resource aauth.ResourceTokenClaims,
+	upstream *verifiedUpstreamToken,
+) (*MissionRecord, *MissionContext, error) {
+	if resource.MissionS256 == "" {
+		return nil, nil, nil
+	}
+	owner := record.Agent
+	if upstream != nil {
+		owner = upstream.caller.owner()
+	}
+	loaded, err := server.loadActiveMission(ctx, resource.MissionS256, owner, server.clock.Now().UTC())
+	if err != nil {
+		return nil, nil, err
+	}
+	missionContext, err := missionContextFromRecord(loaded)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &loaded, missionContext, nil
+}
+
+// federatedMissionEnded reports whether err ends a mission-bound wait: its
+// mission is terminated or no longer held, rather than a store failure.
+func federatedMissionEnded(err error) bool {
+	var terminated *MissionTerminatedError
+	return errors.As(err, &terminated) || errors.Is(err, ErrMissionNotFound)
+}
+
+// writeFederatedMissionProblem answers a mission-bound wait whose mission
+// cannot be used, as a new request for it would be answered.
+func (server *Server) writeFederatedMissionProblem(w http.ResponseWriter, err error, chained bool) {
+	if chained {
+		server.writeUpstreamMissionProblem(w, err)
+		return
+	}
+	writeMissionReferenceProblem(w, err)
+}
+
+// revokedUpstreamDetail explains the polling error revoked for a chained
+// request. Step 4 of Upstream Token Verification refuses the chain for the
+// calling Agent's revoked Agent token or binding as for the token itself.
+const revokedUpstreamDetail = "The upstream token of this chained request, or its calling agent's agent token or binding, was revoked."
+
+// verifyFederatedUpstream verifies the upstream token of a retained chained
+// request again at the current instant, with the retained intermediary Agent
+// token, so that one revoked while the request waits ends it with the polling
+// error revoked. It returns nil for an unchained request.
+func (server *Server) verifyFederatedUpstream(ctx context.Context, record FederatedAuthorizationRecord, intermediary aauth.AgentTokenClaims) (*verifiedUpstreamToken, error) {
+	if record.UpstreamToken == "" {
+		return nil, nil
+	}
+	upstream, err := server.verifyUpstreamToken(ctx, record.UpstreamToken, intermediary, server.clock.Now(), nil)
+	if errors.Is(err, errUpstreamCallerRevoked) {
+		return nil, &revokedPendingTokenError{detail: revokedUpstreamDetail, reason: err}
+	}
+	return upstream, err
 }
 
 // verifyFederatedAgents reverifies the retained Agent tokens at the current
@@ -513,7 +612,13 @@ func (server *Server) checkFederatedRevocations(ctx context.Context, record Fede
 	if credential.ParentAgent != "" {
 		child = credential.JTI
 	}
-	if err := server.checkPendingRevocations(ctx, agent.Issuer, agent.Subject, agent.JTI, child, record.CreatedAt); err != nil {
+	// An intermediary is bound to no person. The binding behind a chained
+	// request is the calling Agent's, checked with its upstream token.
+	if record.UpstreamToken != "" {
+		if err := server.checkPendingAgentTokens(ctx, agent.Issuer, agent.JTI, child); err != nil {
+			return err
+		}
+	} else if err := server.checkPendingRevocations(ctx, agent.Issuer, agent.Subject, agent.JTI, child, record.CreatedAt); err != nil {
 		return err
 	}
 	if server.tokenRevocation == nil {
@@ -591,6 +696,31 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
+	upstream, err := server.verifyFederatedUpstream(r.Context(), record, startingAgent)
+	if err != nil {
+		if !pendingRevoked(err) {
+			server.writeUpstreamTokenProblem(w, err)
+			return
+		}
+		if server.endFederatedAuthorization(w, r, record) {
+			writePendingRevocationProblem(w, err, http.StatusBadRequest, "revoked_presented_token")
+		}
+		return
+	}
+	// A poll observes a terminated mission even before a host advances the
+	// AS wait.
+	if resource, err := aauth.VerifyResourceToken(r.Context(), record.ResourceToken, server.keyResolver, server.clock); err == nil {
+		if _, _, err := server.federatedMission(r.Context(), record, resource, upstream); err != nil {
+			if !federatedMissionEnded(err) {
+				writeProblem(w, http.StatusInternalServerError, "server_error", err)
+				return
+			}
+			if server.endFederatedAuthorization(w, r, record) {
+				server.writeFederatedMissionProblem(w, err, upstream != nil)
+			}
+			return
+		}
+	}
 	if !record.Terminal {
 		server.writeFederatedWaiting(w, record)
 		return
@@ -642,8 +772,11 @@ func (server *Server) loadFederatedForAgent(w http.ResponseWriter, r *http.Reque
 		}
 		return FederatedAuthorizationRecord{}, false
 	}
+	// An intermediary's own ps, if any, names its own Person Server, so it is
+	// compared only for an unchained request.
 	thumbprint, err := agent.Confirmation.JWK.Thumbprint()
-	if err != nil || agent.Issuer != record.AgentIssuer || agent.Subject != record.Agent || agent.PersonServer != server.issuer || thumbprint != record.AgentJKT {
+	if err != nil || agent.Issuer != record.AgentIssuer || agent.Subject != record.Agent ||
+		record.UpstreamToken == "" && agent.PersonServer != server.issuer || thumbprint != record.AgentJKT {
 		writeProblem(w, 403, "wrong_poller", errors.New("pending request belongs to another Agent or key"))
 		return FederatedAuthorizationRecord{}, false
 	}
@@ -710,8 +843,27 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 		writePendingRevocationProblem(w, err, http.StatusBadRequest, "revoked_presented_token")
 		return
 	}
+	upstream, err := server.verifyFederatedUpstream(r.Context(), record, agent)
+	if err != nil {
+		if pendingRevoked(err) {
+			writePendingRevocationProblem(w, err, http.StatusBadRequest, "revoked_presented_token")
+		} else {
+			writeAccessServerUnreachable(w, err)
+		}
+		return
+	}
+	// A mission-bound grant is committed with its mission, which must still be
+	// active, as it is released.
+	missionRecord, missionContext, err := server.federatedMission(r.Context(), record, resource, upstream)
+	if err != nil {
+		server.writeFederatedMissionProblem(w, err, upstream != nil)
+		return
+	}
 	response := &http.Response{StatusCode: 200, Header: record.Response.Header, Body: io.NopCloser(bytes.NewReader(record.Response.Body))}
-	server.deliverFederatedAuthorization(w, r, response, resource, agent, credential, presented.ExpiresAt, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, nil)
+	server.deliverFederatedAuthorization(
+		w, r, response, resource, agent, credential, presented, scopes, nil, nil, nil, missionRecord,
+		AuthorizationRequest{Mission: missionContext}, record.CreatedAt, upstream,
+	)
 }
 
 // handleFederatedCancellation lets the Agent that started a federated wait

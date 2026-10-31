@@ -329,18 +329,121 @@ func TestClientProposeMissionDoesNotHideUnsupportedDeferredRequirement(t *testin
 				"mission_endpoint":    protocol.personServerID + "/mission",
 			}), nil
 		}
-		response := jsonResponse(request, http.StatusAccepted, map[string]string{"status": "pending"})
+		response := jsonResponse(request, http.StatusAccepted, map[string]any{
+			"status": "pending", "required_claims": []string{"email"},
+		})
 		response.Header.Set("Location", "/mission/pending/proposal-1")
 		response.Header.Set("Retry-After", "0")
 		response.Header.Set("Cache-Control", "no-store")
-		response.Header.Set("AAuth-Requirement", "requirement=interaction")
+		response.Header.Set("AAuth-Requirement", "requirement=claims")
 		return response, nil
 	})})
 	_, err := client.BeginMission(context.Background(), agent.MissionRequest{
 		PersonServer: protocol.personServerID,
 		Proposal:     aauth.MissionProposal{Description: "Read records"},
 	})
-	assertMissionContinuationError(t, err, "interaction", "ProposeMission")
+	var unsupported *agent.UnsupportedRequirementError
+	if !errors.As(err, &unsupported) || unsupported.Requirement != aauth.RequirementClaims {
+		t.Fatalf("error = %v, want the unsupported claims requirement", err)
+	}
+}
+
+// Mission review may run a clarification chat with the Agent and send the
+// person to an interaction (Core, Mission Creation). The pending proposal
+// carries both; the Agent answers on the pending URL and may withdraw it.
+func TestClientMissionProposalCarriesClarificationAndInteraction(t *testing.T) {
+	t.Parallel()
+
+	protocol := newTestProtocol(t)
+	const pendingLocation = "https://ps.example/mission/pending/proposal-1"
+	var actions []string
+	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/.well-known/aauth-person.json":
+			return jsonResponse(request, http.StatusOK, map[string]any{
+				"issuer": protocol.personServerID, "person_token_endpoint": protocol.personTokenEndpoint,
+				"auth_token_endpoint": protocol.authTokenEndpoint,
+				"mission_endpoint":    protocol.personServerID + "/mission",
+			}), nil
+		case request.Method == http.MethodPost && request.URL.String() == protocol.personServerID+"/mission":
+			response := jsonResponse(request, http.StatusAccepted, map[string]any{
+				"status": "pending", "clarification": "Which dates?",
+			})
+			response.Header.Set("Location", pendingLocation)
+			response.Header.Set("Retry-After", "0")
+			response.Header.Set("Cache-Control", "no-store")
+			response.Header.Set("AAuth-Requirement", "requirement=clarification")
+			return response, nil
+		case request.URL.String() == pendingLocation:
+			actions = append(actions, request.Method)
+			switch request.Method {
+			case http.MethodPost:
+				verifyProofWithComponents(t, request, protocol.resolver, protocol.clock, aauth.AgentTokenType,
+					[]string{"content-type", "content-digest"})
+				var body struct {
+					Action                string `json:"action"`
+					ClarificationResponse string `json:"clarification_response"`
+				}
+				decodeRequest(t, request, &body)
+				if body.Action != "clarification_response" || body.ClarificationResponse != "7-14 May" {
+					t.Fatalf("answer = %#v", body)
+				}
+				return &http.Response{StatusCode: http.StatusNoContent, Request: request, Header: make(http.Header), Body: http.NoBody}, nil
+			case http.MethodGet:
+				verifyProof(t, request, protocol.resolver, protocol.clock, aauth.AgentTokenType)
+				requirement, err := aauth.FormatInteractionRequirement(aauth.InteractionRequirement{
+					URL: "https://ps.example/review", Code: "ABCD-EFGH",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := jsonResponse(request, http.StatusAccepted, map[string]string{"status": "pending"})
+				response.Header.Set("Location", pendingLocation)
+				response.Header.Set("Retry-After", "1")
+				response.Header.Set("Cache-Control", "no-store")
+				response.Header.Set("AAuth-Requirement", requirement)
+				return response, nil
+			case http.MethodDelete:
+				verifyProof(t, request, protocol.resolver, protocol.clock, aauth.AgentTokenType)
+				return &http.Response{StatusCode: http.StatusNoContent, Request: request, Header: make(http.Header), Body: http.NoBody}, nil
+			}
+		}
+		return nil, errors.New("unexpected mission request: " + request.Method + " " + request.URL.String())
+	})})
+	started, err := client.BeginMission(context.Background(), agent.MissionRequest{
+		PersonServer: protocol.personServerID,
+		Proposal:     aauth.MissionProposal{Description: "Plan the trip"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := started.Pending()
+	if question, ok := pending.Clarification(); !ok || question.Question() != "Which dates?" ||
+		pending.Requirement() != aauth.RequirementClarification {
+		t.Fatalf("pending proposal = %#v", pending)
+	}
+	if err := client.AnswerMissionClarification(context.Background(), pending, "7-14 May"); err != nil {
+		t.Fatal(err)
+	}
+	polled, err := client.PollMissionProposal(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, _ := polled.Pending()
+	if _, asked := next.Clarification(); asked || next.Requirement() != aauth.RequirementInteraction ||
+		next.InteractionURL() != "https://ps.example/review" || next.InteractionCode() != "ABCD-EFGH" ||
+		next.RetryAfter() != time.Second {
+		t.Fatalf("polled proposal = %#v", next)
+	}
+	if err := client.AnswerMissionClarification(context.Background(), next, "again"); err == nil {
+		t.Fatal("answered a proposal that asked no question")
+	}
+	if err := client.CancelMissionProposal(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(actions, ",") != "POST,GET,DELETE" {
+		t.Fatalf("pending URL requests = %v", actions)
+	}
 }
 
 func TestClientPollMissionProposalReturnsVerifiedApproval(t *testing.T) {

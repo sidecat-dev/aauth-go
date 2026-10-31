@@ -42,10 +42,12 @@ const MaximumPersonTokenCodeAttempts = 3
 // PersonTokenCodePresentation is one non-plaintext interaction-code attempt.
 // SyntacticallyValid is true only when CodeSHA256 contains the digest of a
 // successfully normalized Crockford presentation. A false value carries no
-// digest authority but still counts as a failed attempt.
+// digest authority but still counts as a failed attempt. Callback is the
+// callback the person arrived with, or empty (Core, User Interaction).
 type PersonTokenCodePresentation struct {
 	CodeSHA256         [32]byte
 	SyntacticallyValid bool
+	Callback           string
 }
 
 // PersonTokenInteractionPolicy requests one PS-hosted interaction before a
@@ -137,6 +139,9 @@ type PendingPersonTokenSnapshot struct {
 	Record         PendingPersonTokenRecord
 	State          PersonTokenPollState
 	ApprovedPerson Person
+	// Callback is the callback retained when the code was consumed, or empty
+	// when the visit carried none.
+	Callback string
 }
 
 // DeferredTokenStore adds only Person Token Endpoint interactions to
@@ -149,8 +154,9 @@ type PendingPersonTokenSnapshot struct {
 //     MaximumPersonTokenCodeAttempts the record changes to gone, and every
 //     later presentation returns ErrPendingPersonTokenGone. A matching digest
 //     gives terminal/used state precedence over expiry and changes one live
-//     unused code to interacting. Consume never returns a record for
-//     SyntacticallyValid=false.
+//     unused code to interacting, retaining the presentation's Callback for
+//     Load to return; no other presentation changes it. Consume never
+//     returns a record for SyntacticallyValid=false.
 //   - Load is read-only and returns the exact retained snapshot.
 //   - Approve atomically retains the exact token, token record, and Person
 //     before any of them become pollable.
@@ -214,6 +220,7 @@ type PersonTokenInteraction struct {
 	retryAfter                      time.Duration
 	agentAdditionalClaims           map[string]json.RawMessage
 	requestingAgentAdditionalClaims map[string]json.RawMessage
+	callback                        string
 }
 
 type personTokenInteractionKind uint8
@@ -453,8 +460,25 @@ func missionS256(record *MissionRecord) string {
 // deciding. Every failed code, malformed or wrong, counts against the
 // pending interaction; after MaximumPersonTokenCodeAttempts the interaction
 // is terminally failed, later presentations return ErrPendingPersonTokenGone,
-// and the Agent's poll answers invalid_code.
+// and the Agent's poll answers invalid_code. It is
+// ConsumePersonTokenInteractionVisit for a visit without a callback.
 func (server *Server) ConsumePersonTokenInteractionCode(ctx context.Context, reference, code string) (PersonTokenInteraction, error) {
+	return server.ConsumePersonTokenInteractionVisit(ctx, reference, aauth.InteractionVisit{Code: code})
+}
+
+// ConsumePersonTokenInteractionVisit correlates one visit to
+// {interaction URL}/{reference} and consumes its code, exactly as
+// ConsumePersonTokenInteractionCode does. visit comes from
+// aauth.ParseInteractionVisit. A callback in it is retained with the pending
+// request, so that the person is returned there however the request ends:
+// CompletionURL and FailureURL give the redirect after the host's own
+// decision, and PersonTokenCallbackURL after any terminal state. A visit
+// whose code does not correlate retains nothing.
+func (server *Server) ConsumePersonTokenInteractionVisit(
+	ctx context.Context,
+	reference string,
+	visit aauth.InteractionVisit,
+) (PersonTokenInteraction, error) {
 	if server == nil || server.deferredTokens == nil {
 		return PersonTokenInteraction{}, errors.New("personserver: person-token interactions are not configured")
 	}
@@ -464,8 +488,13 @@ func (server *Server) ConsumePersonTokenInteractionCode(ctx context.Context, ref
 	if reference == "" {
 		return PersonTokenInteraction{}, ErrInteractionCodeInvalid
 	}
-	presentation := PersonTokenCodePresentation{}
-	if digest, err := interaction.Digest(code); err == nil {
+	if visit.Callback != "" {
+		if err := aauth.ValidateInteractionCallback(visit.Callback, true); err != nil {
+			return PersonTokenInteraction{}, err
+		}
+	}
+	presentation := PersonTokenCodePresentation{Callback: visit.Callback}
+	if digest, err := interaction.Digest(visit.Code); err == nil {
 		presentation.CodeSHA256 = digest
 		presentation.SyntacticallyValid = true
 	}
@@ -484,7 +513,12 @@ func (server *Server) ConsumePersonTokenInteractionCode(ctx context.Context, ref
 	if record.ID != reference || record.PersonServer != server.issuer || record.CodeSHA256 != presentation.CodeSHA256 {
 		return PersonTokenInteraction{}, errors.New("personserver: interaction store returned a different pending request")
 	}
-	return server.personTokenInteractionFromRecord(ctx, record, server.clock.Now().UTC())
+	value, err := server.personTokenInteractionFromRecord(ctx, record, server.clock.Now().UTC())
+	if err != nil {
+		return PersonTokenInteraction{}, err
+	}
+	value.callback = visit.Callback
+	return value, nil
 }
 
 // ResumePersonTokenInteraction reconstructs the non-authoritative host handle
@@ -512,7 +546,12 @@ func (server *Server) ResumePersonTokenInteraction(ctx context.Context, referenc
 	}
 	switch snapshot.State {
 	case PersonTokenPollWaiting, PersonTokenPollInteracting, PersonTokenPollApproved, PersonTokenPollDenied:
-		return server.personTokenInteractionFromRecord(ctx, snapshot.Record, server.clock.Now().UTC())
+		value, err := server.personTokenInteractionFromRecord(ctx, snapshot.Record, server.clock.Now().UTC())
+		if err != nil {
+			return PersonTokenInteraction{}, err
+		}
+		value.callback = snapshot.Callback
+		return value, nil
 	case PersonTokenPollExpired:
 		return PersonTokenInteraction{}, ErrPendingPersonTokenExpired
 	case PersonTokenPollGone:
@@ -558,6 +597,72 @@ func (server *Server) personTokenInteractionFromRecord(
 	clone := cloneMissionRecordForTransition(mission)
 	interaction.missionRecord = &clone
 	return interaction, nil
+}
+
+// Callback returns the callback the person arrived with, or empty.
+func (interaction PersonTokenInteraction) Callback() string { return interaction.callback }
+
+// CompletionURL returns where to send the person after this server approved
+// the request: the callback they arrived with. It returns an empty string when
+// they arrived without one; show a completion page instead.
+func (interaction PersonTokenInteraction) CompletionURL() (string, error) {
+	return interactionCallbackURL(interaction.kind == personTokenInteractionCorrelated, interaction.callback, "")
+}
+
+// FailureURL returns where to send the person when the request cannot be
+// completed, such as after DenyPersonTokenInteraction (access_denied): the
+// callback with failure as its error (Core, Interaction Callback Errors). It
+// returns an empty string when they arrived without a callback.
+func (interaction PersonTokenInteraction) FailureURL(failure aauth.InteractionCallbackError) (string, error) {
+	return interactionCallbackURL(interaction.kind == personTokenInteractionCorrelated, interaction.callback, failure)
+}
+
+// PersonTokenCallbackURL returns where to send the person's browser when a
+// pending person-token request has ended: the callback retained by
+// ConsumePersonTokenInteractionVisit, with access_denied after a denial,
+// interaction_expired after expiry, and server_error once the request is gone,
+// or the callback alone after approval. It returns an empty string when there
+// is no callback. While the request can still complete it returns
+// ErrPendingPersonTokenConflict. Once the Agent has collected the result the
+// store reports the request as gone, so right after its own decision a host
+// uses the interaction's CompletionURL or FailureURL instead.
+func (server *Server) PersonTokenCallbackURL(ctx context.Context, reference string) (string, error) {
+	if server == nil || server.deferredTokens == nil {
+		return "", errors.New("personserver: person-token interactions are not configured")
+	}
+	if ctx == nil {
+		return "", errors.New("personserver: context is required")
+	}
+	snapshot, err := server.deferredTokens.LoadPendingPersonToken(ctx, reference)
+	if err != nil {
+		return "", err
+	}
+	if err := server.validatePendingPersonTokenSnapshot(snapshot); err != nil {
+		return "", err
+	}
+	if snapshot.Record.ID != reference {
+		return "", ErrPendingPersonTokenConflict
+	}
+	var failure aauth.InteractionCallbackError
+	switch snapshot.State {
+	case PersonTokenPollApproved:
+	case PersonTokenPollDenied:
+		failure = aauth.InteractionCallbackAccessDenied
+	case PersonTokenPollExpired:
+		failure = aauth.InteractionCallbackInteractionExpired
+	case PersonTokenPollGone:
+		failure = aauth.InteractionCallbackServerError
+	case PersonTokenPollWaiting, PersonTokenPollInteracting:
+		// Load does not materialize expiry; a request past its deadline has
+		// ended even before its next poll records it.
+		if server.clock.Now().Before(snapshot.Record.ExpiresAt) {
+			return "", ErrPendingPersonTokenConflict
+		}
+		failure = aauth.InteractionCallbackInteractionExpired
+	default:
+		return "", ErrPendingPersonTokenConflict
+	}
+	return interactionCallbackURL(true, snapshot.Callback, failure)
 }
 
 // ApprovePersonTokenInteraction records a host-authenticated approval. The
@@ -725,6 +830,9 @@ func (server *Server) validatePendingPersonTokenSnapshot(snapshot PendingPersonT
 	}
 	if snapshot.Record.PersonServer != server.issuer {
 		return errors.New("personserver: pending snapshot belongs to another Person Server")
+	}
+	if err := validateRetainedCallback(snapshot.Callback, snapshot.State == PersonTokenPollWaiting); err != nil {
+		return err
 	}
 	switch snapshot.State {
 	case PersonTokenPollWaiting, PersonTokenPollInteracting, PersonTokenPollDenied,

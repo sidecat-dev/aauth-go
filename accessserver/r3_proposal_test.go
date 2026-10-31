@@ -225,12 +225,14 @@ func TestR3MCPProposalUsesDistinctPolicyAndAuditsExactOneOperationToken(t *testi
 	if gotReference != reference || !accessServerOperationsEqual(t, gotOperation, operation) {
 		t.Fatalf("proposal token reference/operation = %#v/%#v", gotReference, gotOperation)
 	}
+	// The mission-bound grant is bounded by the presented token and the policy,
+	// not by the resource token (Protocol 70d6737, Resource Token Structure).
 	if claims.Issuer != "https://access.example" || claims.DWK != aauth.AccessDiscoveryDocument ||
 		claims.Audience != "https://resource.example" || claims.PersonServer != "https://person.example" ||
 		claims.Subject != "person-123" || claims.Tenant != "tenant-1" || claims.MissionS256 != missionS256 ||
 		claims.Account == nil || *claims.Account != account || !claims.Confirmation.JWK.Equal(agentKey.PublicJWK()) ||
 		claims.Scope != "records.read" || claims.IssuedAt != now.Unix() ||
-		claims.ExpiresAt != now.Add(5*time.Minute).Unix() || output.ExpiresIn != int64((5*time.Minute).Seconds()) {
+		claims.ExpiresAt != now.Add(30*time.Minute).Unix() || output.ExpiresIn != int64((30*time.Minute).Seconds()) {
 		t.Fatalf("proposal Auth token claims/output = %#v/%#v", claims, output)
 	}
 	parsed, err := jose.ParseCompact(output.AuthToken)

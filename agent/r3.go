@@ -63,9 +63,6 @@ func (client *Client) validateR3ResourceTokenContext(
 		(person.NotBefore != 0 && claims.IssuedAt < person.NotBefore) {
 		return aauth.ResourceTokenClaims{}, r3.Reference{}, errors.New("resource token was issued outside the person-token validity window")
 	}
-	if person.MissionS256 != "" && claims.ExpiresAt > person.ExpiresAt {
-		return aauth.ResourceTokenClaims{}, r3.Reference{}, errors.New("resource token outlives the mission-bound person token")
-	}
 	return claims, reference, nil
 }
 
@@ -142,7 +139,7 @@ func (client *Client) validateR3AuthTokenForCallClaims(
 	resource string,
 ) (aauth.AuthTokenClaims, error) {
 	if err := client.acceptIssuedPersonServer(
-		ctx, "", claims.PersonServer, time.Unix(claims.IssuedAt, 0),
+		ctx, "", claims.PersonServer, claims.MissionS256, time.Unix(claims.IssuedAt, 0),
 	); err != nil {
 		return aauth.AuthTokenClaims{}, err
 	}

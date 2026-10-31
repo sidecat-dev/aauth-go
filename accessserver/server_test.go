@@ -472,8 +472,12 @@ func TestServerIssuesCurrentAuthTokenForTrustedPersonServer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if claims.MissionS256 != missionS256 || claims.ExpiresAt != now.Add(5*time.Minute).Unix() ||
-			output.ExpiresIn != int64((5*time.Minute)/time.Second) {
+		// Protocol 70d6737, Resource Token Structure and Mission Approval: a
+		// resource token's lifetime is independent of the mission, whose bound
+		// the presented token carries. The grant keeps the policy's lifetime,
+		// not the five-minute resource token's.
+		if claims.MissionS256 != missionS256 || claims.ExpiresAt != now.Add(30*time.Minute).Unix() ||
+			output.ExpiresIn != int64((30*time.Minute)/time.Second) {
 			t.Fatalf("mission auth token = %#v; expires_in = %d", claims, output.ExpiresIn)
 		}
 		if evaluated.MissionS256 != missionS256 {

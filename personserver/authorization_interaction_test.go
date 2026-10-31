@@ -607,7 +607,17 @@ func TestDeferredAuthorizationExactDeadlineClassifiesEveryTransitionAsExpired(t 
 }
 
 func TestDeferredAuthorizationTerminalStateCommittedBeforeDeadlineHasPrecedence(t *testing.T) {
-	for _, terminal := range []string{"approved", "denied", "abandoned", "server error"} {
+	const callback = "https://agent.example/callback"
+	for _, test := range []struct {
+		terminal string
+		returnTo string
+	}{
+		{"approved", callback},
+		{"denied", callback + "?error=access_denied"},
+		{"abandoned", callback + "?error=user_abandoned"},
+		{"server error", callback + "?error=server_error"},
+	} {
+		terminal := test.terminal
 		t.Run(terminal, func(t *testing.T) {
 			protocol := newAuthorizationInteractionProtocol(t)
 			store := newMemoryDeferredAuthorizationStore()
@@ -615,7 +625,9 @@ func TestDeferredAuthorizationTerminalStateCommittedBeforeDeadlineHasPrecedence(
 			response := protocol.exchange(t, server, []string{"interaction"})
 			requirement, _ := aauth.ParseInteractionRequirement(response.Header().Values("AAuth-Requirement"))
 			reference := strings.TrimPrefix(requirement.URL, protocol.interactionURL+"/")
-			interaction, err := server.ConsumeAuthorizationInteractionCode(context.Background(), reference, requirement.Code)
+			interaction, err := server.ConsumeAuthorizationInteractionVisit(context.Background(), reference, aauth.InteractionVisit{
+				Code: requirement.Code, Callback: callback,
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -636,8 +648,11 @@ func TestDeferredAuthorizationTerminalStateCommittedBeforeDeadlineHasPrecedence(
 			}
 			protocol.now = store.onlyPending(t).ExpiresAt
 			resumed, resumeErr := server.ResumeAuthorizationInteraction(context.Background(), reference)
-			if resumeErr != nil || resumed.Reference() != reference {
+			if resumeErr != nil || resumed.Reference() != reference || resumed.Callback() != callback {
 				t.Fatalf("%s resume after deadline = %#v, %v", terminal, resumed, resumeErr)
+			}
+			if back, err := server.AuthorizationCallbackURL(context.Background(), reference); err != nil || back != test.returnTo {
+				t.Fatalf("%s callback = %q, %v, want %q", terminal, back, err, test.returnTo)
 			}
 			poll := protocol.poll(t, server, response.Header().Get("Location"), protocol.agentKey, protocol.agentToken)
 			switch terminal {
@@ -1323,6 +1338,7 @@ type memoryPendingAuthorization struct {
 	deniedAt           time.Time
 	failedCodeAttempts int
 	cancelledAt        time.Time
+	callback           string
 }
 
 func newMemoryDeferredAuthorizationStore() *memoryDeferredAuthorizationStore {
@@ -1377,6 +1393,7 @@ func (store *memoryDeferredAuthorizationStore) ConsumeAuthorizationInteractionCo
 		return PendingAuthorizationRecord{}, ErrAuthorizationInteractionCodeUsed
 	}
 	pending.state = AuthorizationPollInteracting
+	pending.callback = presentation.Callback
 	return clonePendingAuthorizationRecord(pending.record), nil
 }
 
@@ -1391,7 +1408,7 @@ func (store *memoryDeferredAuthorizationStore) LoadPendingAuthorization(_ contex
 	snapshot := PendingAuthorizationSnapshot{
 		Record: clonePendingAuthorizationRecord(pending.record), State: pending.state,
 		Clarifications: cloneAuthorizationClarifications(pending.clarifications),
-		CancelledAt:    pending.cancelledAt,
+		CancelledAt:    pending.cancelledAt, Callback: pending.callback,
 	}
 	if pending.state == AuthorizationPollApproved {
 		snapshot.Approval = cloneAuthorizationApproval(pending.approval)

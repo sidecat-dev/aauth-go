@@ -403,7 +403,7 @@ func (client *Client) verifyR3CallAuthContext(
 	if claims.DWK != aauth.AccessDiscoveryDocument {
 		return errors.New("class auth token must be issued under the Access Server role")
 	}
-	if err := client.acceptIssuedPersonServer(ctx, "", claims.PersonServer, time.Unix(claims.IssuedAt, 0)); err != nil {
+	if err := client.acceptIssuedPersonServer(ctx, "", claims.PersonServer, claims.MissionS256, time.Unix(claims.IssuedAt, 0)); err != nil {
 		return fmt.Errorf("auth-token person server: %w", err)
 	}
 	if claims.ExpiresAt > client.agentClaims.ExpiresAt {

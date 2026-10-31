@@ -268,7 +268,11 @@ func TestClientRequestsAndVerifiesMissionBoundPersonToken(t *testing.T) {
 	}
 }
 
-func TestClientRejectsResourceTokenThatOutlivesMissionBoundPersonToken(t *testing.T) {
+// Protocol 70d6737, Resource Token Structure: a resource token's lifetime is
+// independent of any mission it names, so one that outlives a mission-bound
+// person token is accepted; the Person Server checks the mission when it acts
+// on the token.
+func TestClientAcceptsResourceTokenThatOutlivesMissionBoundPersonToken(t *testing.T) {
 	t.Parallel()
 
 	protocol := newTestProtocol(t)
@@ -310,15 +314,14 @@ func TestClientRejectsResourceTokenThatOutlivesMissionBoundPersonToken(t *testin
 		}
 		return jsonResponse(request, http.StatusOK, map[string]string{"resource_token": resourceToken}), nil
 	})})
-	_, err = client.Authorize(context.Background(), agent.AuthorizeRequest{
+	if _, err := client.Authorize(context.Background(), agent.AuthorizeRequest{
 		Resource: protocol.resourceID, PersonToken: personToken, Scopes: []string{"records.read"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "outlives the mission-bound person token") {
+	}); err != nil {
 		t.Fatalf("Authorize error = %v", err)
 	}
 }
 
-func TestMissionExchangeContinuationReturnsTypedError(t *testing.T) {
+func TestMissionExchangeConvenienceReturnsThePendingExchange(t *testing.T) {
 	for _, operation := range []struct {
 		name string
 		call func(*agent.Client, agent.ExchangeRequest) error
@@ -347,7 +350,10 @@ func TestMissionExchangeContinuationReturnsTypedError(t *testing.T) {
 				PersonServer: harness.protocol.personServerID, ResourceToken: harness.resourceToken,
 				PresentedToken: harness.presentedToken,
 			})
-			assertMissionContinuationError(t, err, "auth-token exchange", operation.name)
+			var pending *agent.PendingExchangeError
+			if !errors.As(err, &pending) || pending.Pending().Location() != harness.protocol.personServerID+"/pending/mission" {
+				t.Fatalf("%s error = %v, want the pending exchange", operation.name, err)
+			}
 		})
 	}
 }
@@ -375,17 +381,6 @@ func TestMissionBeginExchangeReturnsVerifiedPending(t *testing.T) {
 	pending, ok := result.Pending()
 	if !ok || pending.Location() != harness.protocol.personServerID+"/pending/mission" {
 		t.Fatalf("mission pending = %#v, %t", pending, ok)
-	}
-}
-
-func assertMissionContinuationError(t *testing.T, err error, phase, operation string) {
-	t.Helper()
-	var unsupported *agent.MissionContinuationUnsupportedError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("error = %v, want *agent.MissionContinuationUnsupportedError", err)
-	}
-	if unsupported.Phase != phase || unsupported.Operation != operation {
-		t.Fatalf("mission continuation error = %#v, want phase %q operation %q", unsupported, phase, operation)
 	}
 }
 

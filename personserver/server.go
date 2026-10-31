@@ -107,8 +107,15 @@ type FederatedAuthorizationConfig struct {
 	// AgentBindingRevocations enables host-invoked RevokeAgentBinding and
 	// refuses issuance and pending delivery under a revoked binding.
 	AgentBindingRevocations AgentBindingRevocationStore
-	// CallChaining optionally serves Resources acting as Agents.
+	// CallChaining optionally serves Resources acting as Agents. It requires
+	// IssuedTokens.
 	CallChaining *FederatedCallChainingConfig
+	// IssuedTokens retains a receipt for each auth token this Person Server
+	// delivers from an Access Server, naming the Agent it went to and the token
+	// it was obtained with. The receipt identifies the calling Agent when the
+	// auth token is later presented as an upstream_token, and lets a person-token
+	// revocation reach the call chains built on it.
+	IssuedTokens IssuedAuthTokenStore
 	// TokenRevocation enables RevokePersonToken and resource-token
 	// revocations at the revocation endpoint.
 	TokenRevocation *TokenRevocationConfig
@@ -139,11 +146,11 @@ type PSAuthorizationConfig struct {
 	// R3 optionally enables immediate direct class-document authorization and
 	// exact issuance retention. Per-call proposals remain federated-only.
 	R3 *DirectR3Config
-	// CallChaining explicitly enables one immediate PS-authorized downstream
-	// hop. Existing policies never receive an upstream token unless this
-	// separate policy pair is configured. The upstream token is a person token
-	// or auth token this Person Server issued. It requires an issued auth-token
-	// store, which identifies the calling Agent of an upstream auth token; the
+	// CallChaining explicitly enables immediate PS-authorized downstream hops.
+	// Existing policies never receive an upstream token unless this separate
+	// policy pair is configured. The upstream token is a person token or auth
+	// token this Person Server issued. It requires an issued auth-token store,
+	// which identifies the calling Agent of an upstream auth token; the
 	// person-token record identifies the calling Agent of an upstream person
 	// token.
 	CallChaining *CallChainingConfig
@@ -208,8 +215,10 @@ type FederatedBudgetConfig struct {
 }
 
 // CallChainingConfig maps a verified upstream person to a new directed person
-// and applies the independent downstream authorization policy. It does not
-// enable deferred interaction. FederatedCallChainingConfig is the four-party
+// and applies the independent downstream authorization policy. When the
+// upstream token carries mission_s256, both callbacks receive that mission of
+// the calling Agent and the downstream tokens carry it. It does not enable
+// deferred interaction. FederatedCallChainingConfig is the four-party
 // counterpart.
 type CallChainingConfig struct {
 	BindPerson func(context.Context, PersonTokenRequest) (Person, error)
@@ -220,12 +229,17 @@ type CallChainingConfig struct {
 // Resource acting as an Agent. BindPerson maps the verified upstream person to
 // a new directed person for the downstream Resource. Consent decides the
 // downstream request before the Person Server passes it, with the exact
-// upstream_token, to the Access Server, which verifies that token itself. The
-// upstream token is a person token this Person Server issued: it keeps no
-// record of the auth tokens an Access Server issues, so it cannot identify the
-// calling Agent behind one. Neither callback is used for a request without
-// upstream_token, and a chained request cannot be continued after a 202 or
-// 402 from the Access Server.
+// upstream_token, to the Access Server, which verifies that token itself.
+//
+// The upstream token is a person token this Person Server issued, or an auth
+// token it delivered from an Access Server, whose receipt in
+// FederatedAuthorizationConfig.IssuedTokens identifies the calling Agent.
+// When it carries mission_s256 the request is evaluated against that mission
+// of the calling Agent, and the downstream person and auth tokens carry it.
+// With Deferred, a chained request can wait for the Access Server like any
+// other; the Person Server verifies the upstream token again on each poll and
+// host advance, and the wait ends no later than the upstream token. Neither
+// callback is used for a request without upstream_token.
 type FederatedCallChainingConfig struct {
 	BindPerson func(context.Context, PersonTokenRequest) (Person, error)
 	Consent    func(context.Context, AuthorizationRequest) error
@@ -252,11 +266,13 @@ type PersonTokenRequest struct {
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
 	// Mission is nonnil when the request names an active mission owned by the
-	// verified Agent. It includes the exact approved content policy evaluates.
+	// verified Agent, or, for call chaining, when the upstream token carries an
+	// active mission of the calling Agent behind it. It includes the exact
+	// approved content policy evaluates.
 	Mission *MissionContext
 	// Upstream is nonnil only for explicit call chaining on an upstream auth
-	// token. It is an independent copy of the verified PS-issued auth-token
-	// claims.
+	// token. It is an independent copy of the verified claims of an auth token
+	// this Person Server issued, or delivered from an Access Server.
 	Upstream *aauth.AuthTokenClaims
 	// UpstreamPerson is nonnil only for explicit call chaining on an upstream
 	// person token. It is an independent copy of the verified claims of a
@@ -301,7 +317,8 @@ type AuthorizationRequest struct {
 	AgentAdditionalClaims    map[string]json.RawMessage
 	SubagentAdditionalClaims map[string]json.RawMessage
 	// Mission is nonnil when the retained person-token lineage names an active
-	// mission owned by the verified Agent.
+	// mission owned by the verified Agent, or, for call chaining, by the calling
+	// Agent behind the upstream token.
 	Mission *MissionContext
 	// Upstream is nonnil only for explicit call chaining on an upstream auth
 	// token. It is an independent copy of the same verified authorization
@@ -330,9 +347,9 @@ type PersonTokenRecord struct {
 	ExpiresAt     time.Time
 	RetainUntil   time.Time
 	// UpstreamTokenReference and UpstreamTokenSHA256 bind a chained person
-	// token to the exact PS-issued upstream person or auth token presented at
-	// both Person Server calls. Direct and parent-mediated records leave both
-	// zero.
+	// token to the exact upstream person or auth token presented at both Person
+	// Server calls. Agent then names the intermediary. Direct and
+	// parent-mediated records leave both zero.
 	UpstreamTokenReference aauth.TokenReference
 	UpstreamTokenSHA256    [32]byte
 	// AgentTokenJTI is the jti of the Agent token of the credential recipient,
@@ -482,6 +499,9 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	if config.CallChaining != nil && (config.CallChaining.BindPerson == nil || config.CallChaining.Consent == nil) {
 		return nil, errors.New("personserver: call chaining requires person-binding and consent policies")
 	}
+	if config.CallChaining != nil && config.IssuedTokens == nil {
+		return nil, errors.New("personserver: call chaining requires an issued auth-token store")
+	}
 	server, err := newServer(serverConfig{
 		issuer: config.Issuer, signingKey: config.SigningKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, newID: config.NewID,
@@ -518,6 +538,7 @@ func NewFederatedAuthorization(config FederatedAuthorizationConfig) (*Server, er
 	}
 	server.accessServerEndpoint = config.AccessServerEndpoint
 	server.consent = config.Consent
+	server.issuedAuthTokens = config.IssuedTokens
 	if config.CallChaining != nil {
 		server.bindChainedPerson = config.CallChaining.BindPerson
 		server.consentChained = config.CallChaining.Consent
@@ -888,8 +909,12 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 	var missionRecord *MissionRecord
 	var missionContext *MissionContext
 	if input.MissionS256 != nil {
-		if input.SubagentToken != nil || input.UpstreamToken != nil {
-			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated or call-chain person-token issuance is not implemented"))
+		if input.UpstreamToken != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission_s256 is not sent with upstream_token, which carries the mission"))
+			return
+		}
+		if input.SubagentToken != nil {
+			writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated person-token issuance is not implemented"))
 			return
 		}
 		var s256 string
@@ -923,6 +948,24 @@ func (server *Server) handlePerson(response http.ResponseWriter, request *http.R
 			cause: errors.New("personserver: sub-agent and call-chain authorization cannot be combined"),
 		})
 		return
+	}
+	// The upstream token carries the calling Agent's mission. The request is
+	// evaluated against it, and the downstream person token carries it on, so
+	// the mission's expiry and termination reach the chain.
+	if upstream.missionS256() != "" {
+		loaded, err := server.loadActiveMission(
+			request.Context(), upstream.missionS256(), upstream.caller.owner(), server.clock.Now().UTC(),
+		)
+		if err != nil {
+			server.writeUpstreamMissionProblem(response, err)
+			return
+		}
+		missionRecord = &loaded
+		missionContext, err = missionContextFromRecord(loaded)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
 	}
 	if upstream == nil {
 		_, credentialAgent, delegated, err = server.verifyOptionalSubagentToken(
@@ -1152,8 +1195,14 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if !server.admitResourceInteractionClaim(response, resourceToken, upstream, r3Context != nil) {
 		return
 	}
-	if resourceToken.MissionS256 != "" && (input.SubagentToken != nil || input.UpstreamToken != nil) {
-		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated or call-chain authorization is not implemented"))
+	if resourceToken.MissionS256 != "" && input.SubagentToken != nil {
+		writeProblem(response, http.StatusBadRequest, "invalid_request", errors.New("personserver: mission-bound delegated authorization is not implemented"))
+		return
+	}
+	// The downstream person token carries the upstream token's mission, and the
+	// Resource copied it from there.
+	if upstream != nil && resourceToken.MissionS256 != upstream.missionS256() {
+		writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("personserver: resource token does not carry the upstream token's mission"))
 		return
 	}
 	if server.authorizationMode == authorizationModePersonServer && r3Context != nil {
@@ -1261,12 +1310,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 	}
 	// On step-up the presented token is an auth token this Person Server
-	// issued, and its issuance record carries the tie. A record that is no
-	// longer retained says nothing about the chain, so a request without an
-	// upstream token is then accepted on the verified token alone.
+	// issued, or delivered from an Access Server, and its issuance record or
+	// receipt carries the tie. A record that is no longer retained says nothing
+	// about the chain, so a request without an upstream token is then accepted
+	// on the verified token alone.
 	issuedTie := false
-	if !retained && presented.Auth != nil && presented.Issuer == server.issuer &&
-		server.authorizeChained != nil && server.issuedAuthTokens != nil {
+	if !retained && presented.Auth != nil && server.bindChainedPerson != nil && server.issuedAuthTokens != nil {
 		issued, err := server.issuedAuthTokens.LoadIssuedAuthToken(
 			request.Context(), aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI},
 		)
@@ -1337,15 +1386,21 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	var missionRecord *MissionRecord
 	var missionContext *MissionContext
 	if resourceToken.MissionS256 != "" {
+		// A chained request is evaluated against the mission of the calling
+		// Agent behind the upstream token.
+		owner := agent.Subject
+		if upstream != nil {
+			owner = upstream.caller.owner()
+		}
 		loadedMission, err := server.loadActiveMission(
-			request.Context(), resourceToken.MissionS256, agent.Subject, server.clock.Now().UTC(),
+			request.Context(), resourceToken.MissionS256, owner, server.clock.Now().UTC(),
 		)
 		if err != nil {
-			writeMissionReferenceProblem(response, err)
-			return
-		}
-		if !loadedMission.ExpiresAt.IsZero() && resourceTokenExpiresAt.After(loadedMission.ExpiresAt) {
-			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token outlives the mission"))
+			if upstream != nil {
+				server.writeUpstreamMissionProblem(response, err)
+			} else {
+				writeMissionReferenceProblem(response, err)
+			}
 			return
 		}
 		missionContext, err = missionContextFromRecord(loadedMission)
@@ -1386,7 +1441,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			}
 			server.issueDirectR3AuthorizationToken(
 				response, request, agent, credentialAgent, resourceToken,
-				authorizationRequest, r3Context, missionRecord, presented.ExpiresAt, proof.VerifiedAt(),
+				authorizationRequest, r3Context, missionRecord, presented, proof.VerifiedAt(),
 			)
 			return
 		}
@@ -1437,7 +1492,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 		server.issuePSAuthorizationToken(
 			response, request, agent, credentialAgent, resourceToken,
-			authorizationRequest, missionRecord, authorize, presented.ExpiresAt, upstream, proof.VerifiedAt(),
+			authorizationRequest, missionRecord, authorize, presented, upstream, proof.VerifiedAt(),
 		)
 		return
 	}
@@ -1558,14 +1613,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		switch {
 		case server.federatedDeferred == nil:
 			reason = "not_configured"
-		case upstream != nil:
-			reason = "call_chaining"
 		case r3Context != nil:
 			reason = "r3"
 		case budgetOffer != nil:
 			reason = "budget"
-		case missionRecord != nil:
-			reason = "mission"
 		}
 		if reason != "" {
 			writeFederatedContinuationProblem(response, &DeferredCompositionError{reason: reason})
@@ -1573,7 +1624,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		}
 		server.beginFederatedAuthorization(response, request, accessResponse, endpoint, federatedContinuationInput{
 			resourceToken: input.ResourceToken, agentToken: agentToken, presentedToken: input.PresentedToken,
-			subagentToken: subagentToken, agent: agent, credentialAgent: credentialAgent,
+			subagentToken: subagentToken, upstream: upstream, agent: agent, credentialAgent: credentialAgent,
 			resource: resourceToken, presentedExpiresAt: presented.ExpiresAt, createdAt: proof.VerifiedAt(),
 		})
 		return
@@ -1586,7 +1637,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeAccessServerUnreachable(response, errors.New("access server returned no well-formed terminal error"))
 		return
 	}
-	server.deliverFederatedAuthorization(response, request, accessResponse, resourceToken, agent, credentialAgent, presented.ExpiresAt, scopes, r3Context, budgetOffer, personBudgetCeiling, missionRecord, authorizationRequest, proof.VerifiedAt(), upstream)
+	server.deliverFederatedAuthorization(response, request, accessResponse, resourceToken, agent, credentialAgent, presented, scopes, r3Context, budgetOffer, personBudgetCeiling, missionRecord, authorizationRequest, proof.VerifiedAt(), upstream)
 
 }
 
@@ -1624,10 +1675,11 @@ func (server *Server) issuePSAuthorizationToken(
 	authorizationRequest AuthorizationRequest,
 	missionRecord *MissionRecord,
 	authorize func(context.Context, AuthorizationRequest) (AuthorizationDecision, error),
-	personTokenExpiresAt time.Time,
+	presented aauth.PresentedToken,
 	upstream *verifiedUpstreamToken,
 	requestVerifiedAt time.Time,
 ) {
+	personTokenExpiresAt := presented.ExpiresAt
 	policyRequest := cloneAuthorizationRequest(authorizationRequest)
 	decision, err := authorize(request.Context(), policyRequest)
 	if err != nil {
@@ -1709,7 +1761,7 @@ func (server *Server) issuePSAuthorizationToken(
 	}
 	issuedRecord, err := issuedAuthTokenRecord(compact, claims)
 	if err == nil {
-		err = issuedRecord.bindRecipient(credentialAgent, upstream)
+		err = issuedRecord.bindRecipient(credentialAgent, aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI}, upstream)
 	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -2344,10 +2396,11 @@ func writeProblem(response http.ResponseWriter, status int, code string, cause e
 }
 
 func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter, request *http.Request, accessResponse *http.Response,
-	resourceToken aauth.ResourceTokenClaims, agent, credentialAgent aauth.AgentTokenClaims, presentedExpiresAt time.Time,
+	resourceToken aauth.ResourceTokenClaims, agent, credentialAgent aauth.AgentTokenClaims, presented aauth.PresentedToken,
 	scopes []string, r3Context *verifiedR3, budgetOffer, personBudgetCeiling *budgets.Value,
 	missionRecord *MissionRecord, authorizationRequest AuthorizationRequest, requestVerifiedAt time.Time,
 	upstream *verifiedUpstreamToken) {
+	presentedExpiresAt := presented.ExpiresAt
 	accessBody, err := io.ReadAll(io.LimitReader(accessResponse.Body, maxRequestBytes+1))
 	if err != nil || len(accessBody) > maxRequestBytes {
 		writeAccessServerUnreachable(response, errors.New("access-server response is unavailable"))
@@ -2432,6 +2485,17 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
 		return
 	}
+	// The receipt names the Agent the auth token goes to and the token it was
+	// obtained with, so the token can later be verified as an upstream token
+	// and a revocation of that token reaches it.
+	receipt, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
+	if err == nil {
+		err = receipt.bindRecipient(credentialAgent, aauth.TokenReference{Issuer: presented.Issuer, JTI: presented.JTI}, upstream)
+	}
+	if err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
 	if missionRecord != nil {
 		if authorizationRequest.Mission == nil || authorizationRequest.Mission.S256 != missionRecord.S256 {
 			writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: mission record does not match federated authorization context"))
@@ -2441,14 +2505,9 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 			writeAccessServerUnreachable(response, errors.New("access-server auth token outlives the mission-bound authorization"))
 			return
 		}
-		issuedRecord, err := issuedAuthTokenRecord(accessOutput.AuthToken, authToken)
-		if err != nil {
-			writeProblem(response, http.StatusInternalServerError, "server_error", err)
-			return
-		}
 		commitAt := server.clock.Now().UTC()
 		if err := server.missions.CommitMissionAuthToken(
-			request.Context(), *missionRecord, commitAt, issuedRecord,
+			request.Context(), *missionRecord, commitAt, receipt,
 		); err != nil {
 			writeMissionReferenceProblem(response, err)
 			return
@@ -2464,6 +2523,10 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 			writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
 			return
 		}
+	}
+	if err := server.commitIssuedAuthToken(request.Context(), receipt); err != nil {
+		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
 	}
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`

@@ -74,6 +74,9 @@ type personServerCredential struct {
 	expiresAt      int64
 	expirySource   string
 	parentMediated bool
+	// upstreamMission is the mission_s256 of a call-chaining request's
+	// upstream token, which the downstream tokens carry.
+	upstreamMission string
 }
 
 // Error identifies the client operation that failed while preserving its
@@ -97,32 +100,24 @@ func (failure *Error) Unwrap() error {
 	return failure.Cause
 }
 
-// SubagentPendingExchangeRequiredError reports that the synchronous Exchange
-// convenience call reached a parent-mediated pending response. Callers that
-// support consent use BeginExchange, persist its handle, and call PollExchange.
-type SubagentPendingExchangeRequiredError struct {
-	Operation string
+// PendingExchangeError reports that the immediate-only Exchange reached a
+// pending Person Server answer. Pending returns the verified continuation, so
+// the request the Person Server retained is not lost; poll it with
+// PollExchange. Callers that expect consent use BeginExchange.
+type PendingExchangeError struct {
+	pending PendingExchange
 }
 
-func (failure *SubagentPendingExchangeRequiredError) Error() string {
-	if failure == nil || failure.Operation == "" {
-		return "aauth agent: synchronous parent-mediated exchange cannot return a pending interaction"
+func (failure *PendingExchangeError) Error() string {
+	return "aauth agent: exchange is pending; use BeginExchange and PollExchange"
+}
+
+// Pending returns the verified pending exchange.
+func (failure *PendingExchangeError) Pending() PendingExchange {
+	if failure == nil {
+		return PendingExchange{}
 	}
-	return "aauth agent: " + failure.Operation + " cannot return a pending parent-mediated interaction; use BeginExchange and PollExchange"
-}
-
-// CallChainingInteractionUnsupportedError reports a call-chain request that
-// reached a deferred response. The current call-chain path is immediate and
-// does not create or hide an interaction relay.
-type CallChainingInteractionUnsupportedError struct {
-	Operation string
-}
-
-func (failure *CallChainingInteractionUnsupportedError) Error() string {
-	if failure == nil || failure.Operation == "" {
-		return "aauth agent: call-chaining interaction is not supported"
-	}
-	return "aauth agent: call-chaining " + failure.Operation + " does not support interaction"
+	return failure.pending
 }
 
 // PersonTokenRequest names the Person Server and Resource for one directed
@@ -169,9 +164,11 @@ type AuthorizeRequest struct {
 // parent sets SubagentToken when the resource token is bound to that child. A
 // Resource acting as an Agent instead sets UpstreamToken; that verified token
 // selects the Person Server, so PersonServer may be empty or must name the same
-// server. Exchange remains immediate-only. BeginExchange exposes a verified
-// pending continuation for a top-level request and for one a parent mediates
-// for its sub-agent; a call-chained request remains immediate-only.
+// server. Exchange returns only an immediate auth token; a pending answer is a
+// PendingExchangeError. BeginExchange returns the verified pending
+// continuation as a result, for a top-level request, for one a parent
+// mediates for its sub-agent, for a call-chained request, and for R3, Budget
+// and mission-bound resource tokens.
 type ExchangeRequest struct {
 	PersonServer   string
 	ResourceToken  string
@@ -272,8 +269,11 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 		if err := aauth.ValidateMissionS256(input.MissionS256); err != nil {
 			return PersonTokenResult{}, fail(operation, err)
 		}
-		if input.SubagentToken != "" || input.UpstreamToken != "" {
-			return PersonTokenResult{}, fail(operation, errors.New("mission-bound delegated or call-chain person-token issuance is not supported"))
+		if input.UpstreamToken != "" {
+			return PersonTokenResult{}, fail(operation, errors.New("mission_s256 is not sent with upstream_token, which carries the mission"))
+		}
+		if input.SubagentToken != "" {
+			return PersonTokenResult{}, fail(operation, errors.New("mission-bound delegated person-token issuance is not supported"))
 		}
 	}
 	metadata, err := client.personServerMetadata(ctx, input.PersonServer)
@@ -320,66 +320,122 @@ func (client *Client) PersonToken(ctx context.Context, input PersonTokenRequest)
 	return result, nil
 }
 
-// Authorize requests and verifies one immediate resource token.
+// AuthorizationResult is a Resource's answer to an authorization request
+// (Core, Authorization Endpoint): either a verified resource token for the
+// Agent's Person Server, or, when the Resource handles authorization itself,
+// the scope it reports as authorized and any session it issued.
+type AuthorizationResult struct {
+	resourceToken string
+	scope         []string
+	session       ResourceSession
+}
+
+// ResourceToken returns the verified resource token, when the Resource issued
+// one.
+func (result AuthorizationResult) ResourceToken() (string, bool) {
+	return result.resourceToken, result.resourceToken != ""
+}
+
+// Scope returns the scope a Resource that handled authorization itself
+// reported as authorized. It is empty when the Resource issued a resource
+// token.
+func (result AuthorizationResult) Scope() []string {
+	return append([]string(nil), result.scope...)
+}
+
+// Session returns the session a Resource that handled authorization itself
+// issued in AAuth-Access, when it issued one.
+func (result AuthorizationResult) Session() (ResourceSession, bool) {
+	return result.session, result.session.kind == resourceSessionVerified
+}
+
+// Authorize requests and verifies one immediate resource token. When the
+// Resource defers authorization, the error is a
+// *PendingError[AuthorizationResult] that carries the pending request;
+// BeginAuthorize returns it as a Result. A Resource that answers without a
+// resource token is also served by BeginAuthorize.
 func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (string, error) {
 	const operation = "authorize"
+	result, err := client.authorize(ctx, input, operation)
+	if err != nil {
+		return "", err
+	}
+	authorization, err := completed(operation, result)
+	if err != nil {
+		return "", err
+	}
+	token, ok := authorization.ResourceToken()
+	if !ok {
+		return "", fail(operation, errors.New("response did not contain a resource token"))
+	}
+	return token, nil
+}
+
+// BeginAuthorize performs the same single authorization request as
+// Authorize. It returns the verified answer, or the pending request when the
+// Resource answers 202, as a Resource that runs its own interaction does
+// (Core, Response without Resource Token). Polls are signed with the same
+// person token, and their terminal answer is verified exactly as an
+// immediate one.
+func (client *Client) BeginAuthorize(ctx context.Context, input AuthorizeRequest) (Result[AuthorizationResult], error) {
+	return client.authorize(ctx, input, "begin authorize")
+}
+
+func (client *Client) authorize(ctx context.Context, input AuthorizeRequest, operation string) (Result[AuthorizationResult], error) {
 	if client == nil {
-		return "", fail(operation, errors.New("client is required"))
+		return Result[AuthorizationResult]{}, fail(operation, errors.New("client is required"))
 	}
 	if err := aauth.ValidateServerIdentifier(input.Resource); err != nil {
-		return "", fail(operation, fmt.Errorf("resource: %w", err))
+		return Result[AuthorizationResult]{}, fail(operation, fmt.Errorf("resource: %w", err))
 	}
 	if input.PersonToken == "" {
-		return "", fail(operation, errors.New("person token is required"))
+		return Result[AuthorizationResult]{}, fail(operation, errors.New("person token is required"))
 	}
 	if input.R3Operations != nil {
 		if client.r3 == nil {
-			return "", fail(operation, errors.New("R3 is not configured"))
+			return Result[AuthorizationResult]{}, fail(operation, errors.New("R3 is not configured"))
 		}
 		if err := client.r3.Registry.ValidateOperationSet(*input.R3Operations); err != nil {
-			return "", fail(operation, fmt.Errorf("R3 operations: %w", err))
+			return Result[AuthorizationResult]{}, fail(operation, fmt.Errorf("R3 operations: %w", err))
 		}
 	}
 	var scopes []string
 	if len(input.Scopes) > 0 {
 		validated, err := validateScopes(input.Scopes)
 		if err != nil {
-			return "", fail(operation, err)
+			return Result[AuthorizationResult]{}, fail(operation, err)
 		}
 		scopes = validated
 	} else if input.R3Operations == nil {
 		_, err := validateScopes(input.Scopes)
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
 	person, err := aauth.VerifyPersonToken(ctx, input.PersonToken, client.keyResolver, client.clock)
 	if err != nil {
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
 	if err := client.acceptIssuedPersonServer(
-		ctx, input.UpstreamToken, person.Issuer, time.Unix(person.IssuedAt, 0),
+		ctx, input.UpstreamToken, person.Issuer, person.MissionS256, time.Unix(person.IssuedAt, 0),
 	); err != nil {
-		return "", fail(operation, fmt.Errorf("person-token issuer: %w", err))
-	}
-	if person.MissionS256 != "" && input.UpstreamToken != "" {
-		return "", fail(operation, errors.New("mission-bound call-chain authorization is not supported"))
+		return Result[AuthorizationResult]{}, fail(operation, fmt.Errorf("person-token issuer: %w", err))
 	}
 	if err := aauth.ValidatePersonTokenContext(person, input.Resource, client.signingKey.PublicJWK()); err != nil {
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
 	metadata, err := client.resourceMetadata(ctx, input.Resource)
 	if err != nil {
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
 	if metadata.AuthorizationEndpoint == "" {
-		return "", fail(operation, errors.New("resource metadata authorization_endpoint is required"))
+		return Result[AuthorizationResult]{}, fail(operation, errors.New("resource metadata authorization_endpoint is required"))
 	}
 	if input.Budget != nil {
 		budgetUnits, err := parseBudgetUnitDeclarations(metadata.BudgetUnits)
 		if err != nil {
-			return "", fail(operation, fmt.Errorf("resource metadata budget_units: %w", err))
+			return Result[AuthorizationResult]{}, fail(operation, fmt.Errorf("resource metadata budget_units: %w", err))
 		}
 		if err := validateRequestedBudget(*input.Budget, budgetUnits); err != nil {
-			return "", fail(operation, err)
+			return Result[AuthorizationResult]{}, fail(operation, err)
 		}
 		metadata.parsedBudgetUnits = budgetUnits
 	}
@@ -387,14 +443,14 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		uri := input.R3Operations.Vocabulary()
 		vocabulary, ok := client.r3.Registry.Vocabulary(uri)
 		if !ok {
-			return "", fail(operation, fmt.Errorf("R3 vocabulary %q is not registered", uri))
+			return Result[AuthorizationResult]{}, fail(operation, fmt.Errorf("R3 vocabulary %q is not registered", uri))
 		}
 		endpoint, advertised := metadata.R3Vocabularies[string(uri)]
 		if !advertised {
-			return "", fail(operation, fmt.Errorf("resource metadata does not advertise R3 vocabulary %q", uri))
+			return Result[AuthorizationResult]{}, fail(operation, fmt.Errorf("resource metadata does not advertise R3 vocabulary %q", uri))
 		}
 		if err := vocabulary.ValidateDiscoveryEndpoint(endpoint); err != nil {
-			return "", fail(operation, fmt.Errorf("resource metadata R3 discovery endpoint: %w", err))
+			return Result[AuthorizationResult]{}, fail(operation, fmt.Errorf("resource metadata R3 discovery endpoint: %w", err))
 		}
 	}
 	body, err := json.Marshal(struct {
@@ -407,11 +463,11 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		R3Operations: input.R3Operations, Budget: input.Budget,
 	})
 	if err != nil {
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
 	request, err := newJSONRequest(ctx, metadata.AuthorizationEndpoint, body)
 	if err != nil {
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
 	for name, values := range input.Header {
 		for _, value := range values {
@@ -424,79 +480,138 @@ func (client *Client) Authorize(ctx context.Context, input AuthorizeRequest) (st
 		input.PersonToken,
 		authorizationSignatureComponents(metadata.AdditionalSignatureComponents),
 	); err != nil {
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return "", fail(operation, err)
+		return Result[AuthorizationResult]{}, fail(operation, err)
 	}
-	defer response.Body.Close()
+	flow := newPendingFlow(client, "authorization", input.PersonToken,
+		func(ctx context.Context, response *http.Response) (AuthorizationResult, error) {
+			return client.readAuthorization(ctx, response, input, person, scopes, metadata)
+		})
+	result, err := flow.begin(ctx, response)
+	if err != nil {
+		return Result[AuthorizationResult]{}, fail(operation, err)
+	}
+	return result, nil
+}
+
+// readAuthorization checks an authorization endpoint's answer: a resource
+// token verified against the person token and the request, or a Resource's
+// own grant, {"status":"authorized","scope":...}, with an optional
+// AAuth-Access session.
+func (client *Client) readAuthorization(
+	ctx context.Context,
+	response *http.Response,
+	input AuthorizeRequest,
+	person aauth.PersonTokenClaims,
+	scopes []string,
+	metadata resourceMetadata,
+) (AuthorizationResult, error) {
 	if response.StatusCode != http.StatusOK {
-		return "", fail(operation, responseFailure(response))
+		return AuthorizationResult{}, responseFailure(response)
 	}
 	var output struct {
 		ResourceToken string `json:"resource_token"`
+		Status        string `json:"status"`
+		Scope         string `json:"scope"`
 	}
 	if err := decodeJSONResponse(response, &output); err != nil {
-		return "", fail(operation, err)
+		return AuthorizationResult{}, err
 	}
 	if output.ResourceToken == "" {
-		return "", fail(operation, errors.New("response did not contain a resource token"))
+		if output.Status != "authorized" {
+			return AuthorizationResult{}, errors.New("response did not contain a resource token")
+		}
+		return client.resourceManagedAuthorization(response, input.Resource, output.Scope, scopes)
 	}
+	if err := client.verifyAuthorizedResourceToken(ctx, output.ResourceToken, input, person, scopes, metadata); err != nil {
+		return AuthorizationResult{}, err
+	}
+	return AuthorizationResult{resourceToken: output.ResourceToken}, nil
+}
+
+// resourceManagedAuthorization reads a Resource's own grant. Its scope must
+// be a duplicate-free subset of the scopes requested.
+func (client *Client) resourceManagedAuthorization(
+	response *http.Response,
+	resource string,
+	granted string,
+	requested []string,
+) (AuthorizationResult, error) {
+	scope := strings.Fields(granted)
+	if len(scope) > 0 && !scopeSubset(scope, requested) {
+		return AuthorizationResult{}, errors.New("authorized scope is duplicated or outside the request")
+	}
+	session, err := client.resourceSessionFromResponse(response, resource, ResourceSession{})
+	if err != nil {
+		return AuthorizationResult{}, err
+	}
+	return AuthorizationResult{scope: scope, session: session}, nil
+}
+
+func (client *Client) verifyAuthorizedResourceToken(
+	ctx context.Context,
+	resourceToken string,
+	input AuthorizeRequest,
+	person aauth.PersonTokenClaims,
+	scopes []string,
+	metadata resourceMetadata,
+) error {
 	if input.R3Operations != nil && input.Budget != nil {
 		claims, reference, offered, _, err := r3.VerifyBudgetResourceToken(
-			ctx, client.r3.Registry, output.ResourceToken, client.keyResolver, client.clock,
+			ctx, client.r3.Registry, resourceToken, client.keyResolver, client.clock,
 		)
 		if err != nil {
-			return "", fail(operation, err)
+			return err
 		}
 		if _, _, err := client.validateR3ResourceTokenContext(
 			claims, reference, input.Resource, person, scopes, input.Account,
 		); err != nil {
-			return "", fail(operation, err)
+			return err
 		}
 		if offered.Unit().Equal(input.Budget.Unit()) {
 			if err := budgets.ValidateNarrowing(*input.Budget, offered); err != nil {
-				return "", fail(operation, fmt.Errorf("resource-token Budget did not narrow the request: %w", err))
+				return fmt.Errorf("resource-token Budget did not narrow the request: %w", err)
 			}
 		}
-		if err := validateOfferedBudget(offered, metadata.parsedBudgetUnits); err != nil {
-			return "", fail(operation, err)
-		}
-	} else if input.R3Operations != nil {
-		if _, _, err := client.verifyR3ResourceTokenContext(
-			ctx, output.ResourceToken, input.Resource, person, scopes, input.Account,
-		); err != nil {
-			return "", fail(operation, err)
-		}
-	} else if input.Budget != nil {
+		return validateOfferedBudget(offered, metadata.parsedBudgetUnits)
+	}
+	if input.R3Operations != nil {
+		_, _, err := client.verifyR3ResourceTokenContext(
+			ctx, resourceToken, input.Resource, person, scopes, input.Account,
+		)
+		return err
+	}
+	if input.Budget != nil {
 		claims, offered, _, err := budgets.VerifyResourceToken(
-			ctx, output.ResourceToken, client.keyResolver, client.clock,
+			ctx, resourceToken, client.keyResolver, client.clock,
 		)
 		if err != nil {
-			return "", fail(operation, err)
+			return err
 		}
 		if err := client.validateResourceTokenContext(claims, input.Resource, person, scopes, input.Account); err != nil {
-			return "", fail(operation, err)
+			return err
 		}
 		if offered.Unit().Equal(input.Budget.Unit()) {
 			if err := budgets.ValidateNarrowing(*input.Budget, offered); err != nil {
-				return "", fail(operation, fmt.Errorf("resource-token Budget did not narrow the request: %w", err))
+				return fmt.Errorf("resource-token Budget did not narrow the request: %w", err)
 			}
 		}
-		if err := validateOfferedBudget(offered, metadata.parsedBudgetUnits); err != nil {
-			return "", fail(operation, err)
-		}
-	} else if _, err := client.verifyResourceTokenContext(
-		ctx, output.ResourceToken, input.Resource, person, scopes, input.Account,
-	); err != nil {
-		return "", fail(operation, err)
+		return validateOfferedBudget(offered, metadata.parsedBudgetUnits)
 	}
-	return output.ResourceToken, nil
+	_, err := client.verifyResourceTokenContext(
+		ctx, resourceToken, input.Resource, person, scopes, input.Account,
+	)
+	return err
 }
 
 // Exchange presents one resource token to its person server and verifies the
-// immediate auth token against that exact resource-token context.
+// immediate auth token against that exact resource-token context. A 202 is a
+// *PendingExchangeError that carries the verified pending exchange; for a
+// call-chaining request it is polled at the Person Server the upstream token
+// names.
 func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (string, error) {
 	const operation = "exchange"
 	if client == nil {
@@ -507,26 +622,13 @@ func (client *Client) Exchange(ctx context.Context, input ExchangeRequest) (stri
 		return "", fail(operation, err)
 	}
 	defer response.Body.Close()
-	resourceClaims := verifiedResource.claims
-	if response.StatusCode == http.StatusAccepted && verifiedResource.r3Reference != nil {
-		return "", fail(operation, errors.New("R3 exchange interaction is not implemented"))
-	}
-	if response.StatusCode == http.StatusAccepted && verifiedResource.budget != nil {
-		return "", fail(operation, errors.New("Budget exchange interaction is not implemented"))
-	}
-	if response.StatusCode == http.StatusAccepted && resourceClaims.MissionS256 != "" {
-		if err := validateUnsupportedMissionContinuation(response); err != nil {
+	if response.StatusCode == http.StatusAccepted {
+		result, err := client.initialPendingExchange(response, input, verifiedResource, credential)
+		if err != nil {
 			return "", fail(operation, err)
 		}
-		return "", fail(operation, &MissionContinuationUnsupportedError{
-			Phase: "auth-token exchange", Operation: "Exchange",
-		})
-	}
-	if response.StatusCode == http.StatusAccepted && input.SubagentToken != "" {
-		return "", fail(operation, &SubagentPendingExchangeRequiredError{Operation: "Exchange"})
-	}
-	if response.StatusCode == http.StatusAccepted && input.UpstreamToken != "" {
-		return "", fail(operation, &CallChainingInteractionUnsupportedError{Operation: "auth-token exchange"})
+		pending, _ := result.Pending()
+		return "", fail(operation, &PendingExchangeError{pending: pending})
 	}
 	if response.StatusCode != http.StatusOK {
 		return "", fail(operation, responseFailure(response))
@@ -568,7 +670,7 @@ func (client *Client) personServerRequestBinding(
 		return personServerCredential{}, ErrSubagentPersonServerCall
 	}
 	if upstreamToken != "" {
-		upstreamPersonServer, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
+		upstream, err := client.verifyCallChainUpstreamToken(ctx, upstreamToken)
 		if err != nil {
 			return personServerCredential{}, err
 		}
@@ -576,16 +678,21 @@ func (client *Client) personServerRequestBinding(
 			if err := aauth.ValidateServerIdentifier(personServer); err != nil {
 				return personServerCredential{}, fmt.Errorf("person server: %w", err)
 			}
-			if personServer != upstreamPersonServer {
+			if personServer != upstream.personServer {
 				return personServerCredential{}, errors.New("person server does not match upstream token")
 			}
 		}
-		return personServerCredential{
-			personServer: upstreamPersonServer,
+		// Downstream access does not outlive the upstream token.
+		credential := personServerCredential{
+			personServer: upstream.personServer,
 			requestKey:   client.signingKey.PublicJWK(),
 			expiresAt:    client.agentClaims.ExpiresAt,
-			expirySource: "agent token",
-		}, nil
+			expirySource: "agent token", upstreamMission: upstream.missionS256,
+		}
+		if upstream.expiresAt < credential.expiresAt {
+			credential.expiresAt, credential.expirySource = upstream.expiresAt, "upstream token"
+		}
+		return credential, nil
 	}
 	if err := client.requireDirectPersonServerCaller(); err != nil {
 		return personServerCredential{}, err
@@ -622,58 +729,63 @@ func (client *Client) personServerRequestBinding(
 	}, nil
 }
 
-func (client *Client) verifyCallChainUpstreamToken(ctx context.Context, compact string) (string, error) {
+// callChainUpstream is what an intermediary uses of a verified upstream
+// token: the Person Server it names, which downstream requests are routed to,
+// the mission it carries, and its expiry.
+type callChainUpstream struct {
+	personServer string
+	missionS256  string
+	expiresAt    int64
+}
+
+func (client *Client) verifyCallChainUpstreamToken(ctx context.Context, compact string) (callChainUpstream, error) {
 	return client.verifyCallChainUpstreamTokenAt(ctx, compact, client.clock.Now())
 }
 
 // verifyCallChainUpstreamTokenAt verifies the token the calling Agent
-// presented to this intermediary and returns the Person Server it names, which
-// downstream requests are routed to. It is a person token when the
-// intermediary served the call on the person's identity, or an auth token its
-// Person Server issued.
+// presented to this intermediary. It is a person token when the intermediary
+// served the call on the person's identity, or an auth token when it required
+// authorization: one its Person Server issued, or in four-party one an Access
+// Server issued. Routing follows the person token's iss or the auth token's
+// ps, never this intermediary's own Agent token.
 func (client *Client) verifyCallChainUpstreamTokenAt(
 	ctx context.Context,
 	compact string,
 	verifiedAt time.Time,
-) (string, error) {
+) (callChainUpstream, error) {
 	verificationClock := aauth.ClockFunc(func() time.Time { return verifiedAt })
 	header, err := jose.PeekHeader(compact)
 	if err != nil {
-		return "", fmt.Errorf("verify upstream token: %w", err)
+		return callChainUpstream{}, fmt.Errorf("verify upstream token: %w", err)
 	}
 	if header.Type == aauth.PersonTokenType {
 		claims, err := aauth.VerifyPersonToken(ctx, compact, client.keyResolver, verificationClock)
 		if err != nil {
-			return "", fmt.Errorf("verify upstream token: %w", err)
+			return callChainUpstream{}, fmt.Errorf("verify upstream token: %w", err)
 		}
 		if claims.Audience != client.agentClaims.Issuer {
-			return "", errors.New("upstream token audience does not match intermediary Resource")
+			return callChainUpstream{}, errors.New("upstream token audience does not match intermediary Resource")
 		}
-		if claims.MissionS256 != "" {
-			return "", errors.New("mission-bound call chaining is not supported")
-		}
-		return claims.Issuer, nil
+		return callChainUpstream{personServer: claims.Issuer, missionS256: claims.MissionS256, expiresAt: claims.ExpiresAt}, nil
 	}
 	claims, err := aauth.VerifyAuthToken(ctx, compact, client.keyResolver, verificationClock)
 	if err != nil {
-		return "", fmt.Errorf("verify upstream token: %w", err)
-	}
-	if claims.DWK != aauth.PersonDiscoveryDocument || claims.Issuer != claims.PersonServer {
-		return "", errors.New("upstream token was not issued by its Person Server")
+		return callChainUpstream{}, fmt.Errorf("verify upstream token: %w", err)
 	}
 	if claims.Audience != client.agentClaims.Issuer {
-		return "", errors.New("upstream token audience does not match intermediary Resource")
+		return callChainUpstream{}, errors.New("upstream token audience does not match intermediary Resource")
 	}
-	if claims.MissionS256 != "" || claims.Account != nil {
-		return "", errors.New("mission- or account-bound call chaining is not supported")
-	}
-	return claims.PersonServer, nil
+	return callChainUpstream{personServer: claims.PersonServer, missionS256: claims.MissionS256, expiresAt: claims.ExpiresAt}, nil
 }
 
+// acceptIssuedPersonServer checks the Person Server and mission a downstream
+// token names. Without an upstream token they are this client's own; with
+// one, the Person Server it names and the mission it carries.
 func (client *Client) acceptIssuedPersonServer(
 	ctx context.Context,
 	upstreamToken string,
 	personServer string,
+	missionS256 string,
 	issuedAt time.Time,
 ) error {
 	if upstreamToken == "" {
@@ -682,12 +794,15 @@ func (client *Client) acceptIssuedPersonServer(
 		}
 		return nil
 	}
-	upstreamPersonServer, err := client.verifyCallChainUpstreamTokenAt(ctx, upstreamToken, issuedAt)
+	upstream, err := client.verifyCallChainUpstreamTokenAt(ctx, upstreamToken, issuedAt)
 	if err != nil {
 		return err
 	}
-	if personServer != upstreamPersonServer {
+	if personServer != upstream.personServer {
 		return errors.New("does not match upstream token")
+	}
+	if missionS256 != upstream.missionS256 {
+		return errors.New("mission_s256 does not match the upstream token's mission")
 	}
 	return nil
 }

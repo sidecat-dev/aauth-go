@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -226,9 +227,22 @@ func TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition(t *testing.T) {
 	if attempts := authorizations.failedAttempts(t, reference); attempts != 1 {
 		t.Fatalf("failed interaction-code attempts = %d, want 1", attempts)
 	}
-	interaction, err := people.ConsumeAuthorizationInteractionCode(ctx, reference, strings.ToLower(pending.InteractionCode()))
+	// The person arrives with the Agent's callback, which is retained with the
+	// pending request.
+	const agentCallback = "https://agent.example/callback"
+	visit, err := aauth.ParseInteractionVisit(
+		"code="+strings.ToLower(pending.InteractionCode())+"&callback="+url.QueryEscape(agentCallback),
+		aauth.InteractionVisitOptions{},
+	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	interaction, err := people.ConsumeAuthorizationInteractionVisit(ctx, reference, visit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := people.AuthorizationCallbackURL(ctx, reference); !errors.Is(err, personserver.ErrPendingAuthorizationConflict) {
+		t.Fatalf("callback while the request can complete = %v", err)
 	}
 
 	// Recompose the Person Server over the retained store after the code is used.
@@ -251,6 +265,9 @@ func TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resumed.Callback() != agentCallback {
+		t.Fatalf("resumed callback = %q", resumed.Callback())
+	}
 	decision := personserver.AuthorizationDecision{Scopes: append([]string(nil), scope...), Lifetime: 10 * time.Minute}
 	beforeApprovalIDs := newIDCalls
 	if err := people.ApproveAuthorizationInteraction(ctx, resumed, decision); err != nil {
@@ -264,6 +281,11 @@ func TestCurrentCoreDeferredPSAuthorizationAcrossRecomposition(t *testing.T) {
 	}
 	if err := people.ApproveAuthorizationInteraction(ctx, resumed, decision); err != nil {
 		t.Fatalf("exact repeated approval: %v", err)
+	}
+	completion, completionErr := resumed.CompletionURL()
+	back, backErr := people.AuthorizationCallbackURL(ctx, reference)
+	if completion != agentCallback || completionErr != nil || back != agentCallback || backErr != nil {
+		t.Fatalf("approved callback = %q, %v; from state %q, %v", completion, completionErr, back, backErr)
 	}
 	noncanonicalProposal := cloneIntegrationAuthorizationApproval(approvedSnapshot.Approval)
 	noncanonicalProposal.Decision.Scopes = []string{"records.list", "records.read"}
@@ -356,6 +378,7 @@ type integrationPendingAuthorization struct {
 	deniedAt           time.Time
 	failedCodeAttempts int
 	cancelledAt        time.Time
+	callback           string
 }
 
 func newIntegrationDeferredAuthorizationStore() *integrationDeferredAuthorizationStore {
@@ -423,6 +446,7 @@ func (store *integrationDeferredAuthorizationStore) ConsumeAuthorizationInteract
 		return personserver.PendingAuthorizationRecord{}, personserver.ErrAuthorizationInteractionCodeUsed
 	}
 	pending.state = personserver.AuthorizationPollInteracting
+	pending.callback = presentation.Callback
 	return cloneIntegrationPendingAuthorization(pending.record), nil
 }
 
@@ -441,7 +465,7 @@ func (store *integrationDeferredAuthorizationStore) LoadPendingAuthorization(
 	snapshot := personserver.PendingAuthorizationSnapshot{
 		Record: cloneIntegrationPendingAuthorization(pending.record), State: pending.state,
 		Clarifications: cloneIntegrationAuthorizationClarifications(pending.clarifications),
-		CancelledAt:    pending.cancelledAt,
+		CancelledAt:    pending.cancelledAt, Callback: pending.callback,
 	}
 	if pending.state == personserver.AuthorizationPollApproved {
 		snapshot.Approval = cloneIntegrationAuthorizationApproval(pending.approval)

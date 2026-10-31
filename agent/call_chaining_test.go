@@ -108,7 +108,7 @@ func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {
 					Audience: protocol.resourceID, Subject: downstreamSubject,
 					Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
 					JTI:          "downstream-person-token", IssuedAt: protocol.now.Unix(),
-					ExpiresAt: protocol.now.Add(20 * time.Minute).Unix(),
+					ExpiresAt: protocol.now.Add(10 * time.Minute).Unix(),
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -126,7 +126,7 @@ func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {
 					Audience: protocol.resourceID, JTI: "downstream-auth-token",
 					PersonServer: protocol.personServerID, Subject: downstreamSubject,
 					Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
-					IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(30 * time.Minute).Unix(),
+					IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(12 * time.Minute).Unix(),
 					Scope: downstreamScope,
 				})
 				if err != nil {
@@ -188,10 +188,9 @@ func TestCallChainingRoutesFromUpstreamTokenAndCarriesItExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The upstream token had to be valid at both Person Server requests. The
-	// downstream authorization has its own lifetime and remains usable after
-	// that upstream token expires.
-	protocol.now = protocol.now.Add(16 * time.Minute)
+	// The upstream token had to be valid at both Person Server requests, and
+	// the downstream tokens expire no later than it.
+	protocol.now = protocol.now.Add(11 * time.Minute)
 	response, err := client.Do(context.Background(), agent.Call{
 		Request: request, AuthToken: authToken, UpstreamToken: upstreamToken,
 	})
@@ -248,36 +247,6 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrongRole, err := aauth.MintAuthToken(protocol.accessServerKey, aauth.AuthTokenClaims{
-		Issuer: protocol.accessServerID, DWK: aauth.AccessDiscoveryDocument,
-		Audience: protocol.agentProviderID, JTI: "wrong-role-upstream",
-		PersonServer: protocol.personServerID, Subject: "person-123",
-		Confirmation: aauth.Confirmation{JWK: otherKey.PublicJWK()},
-		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	missionClaims := aauth.AuthTokenClaims{
-		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
-		Audience: protocol.agentProviderID, JTI: "mission-upstream",
-		PersonServer: protocol.personServerID, Subject: "person-123",
-		Confirmation: aauth.Confirmation{JWK: otherKey.PublicJWK()},
-		IssuedAt:     protocol.now.Unix(), ExpiresAt: protocol.now.Add(time.Minute).Unix(),
-		MissionS256: strings.Repeat("A", 43),
-	}
-	missionBound, err := aauth.MintAuthToken(protocol.personServerKey, missionClaims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	accountClaims := missionClaims
-	accountClaims.JTI = "account-upstream"
-	accountClaims.MissionS256 = ""
-	accountClaims.Account = testStringPointer("account-17")
-	accountBound, err := aauth.MintAuthToken(protocol.personServerKey, accountClaims)
-	if err != nil {
-		t.Fatal(err)
-	}
 	expiredUpstream, err := aauth.MintAuthToken(protocol.personServerKey, aauth.AuthTokenClaims{
 		Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
 		Audience: protocol.agentProviderID, JTI: "expired-upstream",
@@ -296,9 +265,7 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	}{
 		{name: "malformed", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: "not-a-compact-token"}, want: "verify upstream token"},
 		{name: "wrong audience", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: wrongAudience}, want: "audience"},
-		{name: "wrong issuer role", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: wrongRole}, want: "not issued by its Person Server"},
-		{name: "mission bound", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: missionBound}, want: "mission- or account-bound"},
-		{name: "account bound", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: accountBound}, want: "mission- or account-bound"},
+		{name: "own mission", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: validUpstream, MissionS256: strings.Repeat("A", 43)}, want: "carries the mission"},
 		{name: "wrong explicit person server", request: agent.PersonTokenRequest{PersonServer: "https://other-ps.example", Resource: protocol.resourceID, UpstreamToken: validUpstream}, want: "does not match upstream token"},
 		{name: "sub-agent combination", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: validUpstream, SubagentToken: protocol.agentToken}, want: "mutually exclusive"},
 		{name: "expired", request: agent.PersonTokenRequest{Resource: protocol.resourceID, UpstreamToken: expiredUpstream}, want: "expired"},
@@ -314,24 +281,60 @@ func TestCallChainingRejectsInvalidContextBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestCallChainingRejectsPendingPersonTokenInteractionWithTypedError(t *testing.T) {
+// A call-chaining person-token request that the Person Server defers is
+// polled at that Person Server, the one the upstream token names, with the
+// intermediary's own Agent token, and its result is checked as an immediate
+// chained person token is.
+func TestCallChainingPersonTokenPollsItsPersonServer(t *testing.T) {
 	t.Parallel()
 
 	protocol := newTestProtocol(t)
 	upstreamToken := callChainPendingUpstreamToken(t, protocol)
+	var polls int
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.String() == protocol.personTokenEndpoint {
+		switch {
+		case request.URL.String() == protocol.personTokenEndpoint:
 			return validPersonTokenPendingResponse(request, "0", "pending"), nil
+		case request.Method == http.MethodGet && request.URL.String() == protocol.personServerID+interactionLocation:
+			polls++
+			verified := verifyProof(t, request, protocol.resolver, protocol.clock, aauth.AgentTokenType)
+			if claims, err := verified.AgentClaims(); err != nil || claims.Subject != protocol.agentID || request.ContentLength > 0 {
+				t.Fatalf("poll proof = %#v, %v", claims, err)
+			}
+			compact, err := aauth.MintPersonToken(protocol.personServerKey, aauth.PersonTokenClaims{
+				Issuer: protocol.personServerID, DWK: aauth.PersonDiscoveryDocument,
+				Audience: protocol.resourceID, Subject: "person-123",
+				Confirmation: aauth.Confirmation{JWK: protocol.agentKey.PublicJWK()},
+				JTI:          "chained-person-token", IssuedAt: protocol.now.Unix(),
+				ExpiresAt: protocol.now.Add(30 * time.Second).Unix(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return jsonResponse(request, http.StatusOK, map[string]any{"person_token": compact, "expires_in": 30}), nil
 		}
 		return protocol.roundTrip(request)
 	})
 	client := protocol.newClientWithHTTPClient(t, &http.Client{Transport: transport})
-	_, err := client.PersonToken(context.Background(), agent.PersonTokenRequest{
+	result, err := client.PersonToken(context.Background(), agent.PersonTokenRequest{
 		Resource: protocol.resourceID, UpstreamToken: upstreamToken,
 	})
-	var unsupported *agent.CallChainingInteractionUnsupportedError
-	if !errors.As(err, &unsupported) || unsupported.Operation == "" {
-		t.Fatalf("error = %v, want typed unsupported call-chain interaction", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ordinary := result.Pending(); ordinary {
+		t.Fatal("a call-chaining person-token request returned an ordinary pending interaction")
+	}
+	pending, ok := result.ChainedPending()
+	if !ok || pending.Requirement() != aauth.RequirementInteraction || pending.InteractionCode() == "" {
+		t.Fatalf("chained person-token result = %#v", result)
+	}
+	polled, err := pending.Poll(context.Background(), agent.PollOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, done := polled.Value(); !done || token == "" || polls != 1 {
+		t.Fatalf("polled = %#v after %d polls", polled, polls)
 	}
 }
 

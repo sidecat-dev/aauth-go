@@ -195,10 +195,12 @@ func (value AuthorizationInteraction) ResourceInteraction() (aauth.ResourceInter
 // RedirectToResourceInteraction checks the Resource's interaction URL and
 // returns the URL to send the person to:
 // {interaction.url}?code={interaction.code}&callback={CallbackURL}/{reference}/{flow}.
-// Call it after ConsumeAuthorizationInteractionCode, once the host has
-// authenticated the person and shown its interstitial. agentCallback is the
-// callback the person arrived with, from aauth.ParseInteractionVisit, or
-// empty; it is retained for AuthorizationCallbackURL.
+// Call it after ConsumeAuthorizationInteractionVisit or
+// ConsumeAuthorizationInteractionCode, once the host has authenticated the
+// person and shown its interstitial. agentCallback is the callback the person
+// arrived with, from aauth.ParseInteractionVisit, or empty to use the one
+// ConsumeAuthorizationInteractionVisit retained; it is kept for
+// AuthorizationCallbackURL.
 //
 // The interaction URL must be HTTPS and pass egress admission. When it does
 // not, the pending request ends with server_error and the error is
@@ -214,6 +216,9 @@ func (server *Server) RedirectToResourceInteraction(
 	target, ok := value.ResourceInteraction()
 	if !ok {
 		return "", errors.New("personserver: authorization carries no Resource interaction")
+	}
+	if agentCallback == "" {
+		agentCallback = value.callback
 	}
 	if agentCallback != "" {
 		if err := aauth.ValidateInteractionCallback(agentCallback, true); err != nil {
@@ -352,11 +357,15 @@ func (server *Server) ReceiveResourceInteractionCallback(
 }
 
 // AuthorizationCallbackURL returns where to send the person's browser when a
-// pending authorization that carried a Resource interaction has ended: the
-// callback the Agent sent, with an error unless the request was approved.
-// It returns an empty string when the Agent sent no callback; the host then
-// shows its own completion page. While the request can still complete it
-// returns ErrPendingAuthorizationConflict.
+// pending authorization has ended: the callback the person arrived with, as
+// retained by ConsumeAuthorizationInteractionVisit or
+// RedirectToResourceInteraction, with an error unless the request was
+// approved. It returns an empty string when there is no callback; the host
+// then shows its own completion page. While the request can still complete it
+// returns ErrPendingAuthorizationConflict. Once the Agent has collected the
+// result the store reports the request as gone, which reads as server_error
+// here, so right after its own decision a host uses the interaction's
+// CompletionURL or FailureURL instead.
 func (server *Server) AuthorizationCallbackURL(ctx context.Context, reference string) (string, error) {
 	if server == nil || server.authorizationInteractions == nil {
 		return "", errors.New("personserver: authorization interactions are not configured")
@@ -371,7 +380,10 @@ func (server *Server) AuthorizationCallbackURL(ctx context.Context, reference st
 	if snapshot.Record.ID != reference || snapshot.Record.PersonServer != server.issuer {
 		return "", ErrPendingAuthorizationConflict
 	}
-	callback := snapshot.ResourceInteraction.AgentCallback
+	callback := snapshot.Callback
+	if callback == "" {
+		callback = snapshot.ResourceInteraction.AgentCallback
+	}
 	var failure aauth.InteractionCallbackError
 	switch snapshot.State {
 	case AuthorizationPollApproved:

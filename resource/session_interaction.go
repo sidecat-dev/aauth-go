@@ -26,6 +26,7 @@ type SessionInteraction struct {
 	request   SessionAuthorizationRequest
 	createdAt time.Time
 	expiresAt time.Time
+	callback  string
 }
 
 // AgentPrincipal returns the independently copied Agent that started the
@@ -52,6 +53,38 @@ func (value SessionInteraction) RequiredScopes() []string {
 
 // ExpiresAt returns the pending interaction deadline.
 func (value SessionInteraction) ExpiresAt() time.Time { return value.expiresAt }
+
+// Callback returns the callback the person arrived with, or empty.
+func (value SessionInteraction) Callback() string { return value.callback }
+
+// CompletionURL returns where to send the person after this Resource approved
+// the session: the callback they arrived with. It returns an empty string when
+// they arrived without one; show a completion page instead.
+func (value SessionInteraction) CompletionURL() (string, error) {
+	return value.callbackURL("")
+}
+
+// FailureURL returns where to send the person when the session cannot be
+// granted, such as after DenySessionInteraction (access_denied) or
+// InvalidateSessionInteraction (server_error): the callback with failure as
+// its error (Core, Interaction Callback Errors). It returns an empty string
+// when they arrived without a callback.
+func (value SessionInteraction) FailureURL(failure aauth.InteractionCallbackError) (string, error) {
+	if !failure.Valid() {
+		return "", fmt.Errorf("resource: interaction callback error %q is not registered", string(failure))
+	}
+	return value.callbackURL(failure)
+}
+
+func (value SessionInteraction) callbackURL(failure aauth.InteractionCallbackError) (string, error) {
+	if value.kind != sessionInteractionCorrelated {
+		return "", errors.New("resource: correlated session interaction is required")
+	}
+	if value.callback == "" {
+		return "", nil
+	}
+	return aauth.InteractionCallbackURL(value.callback, failure)
+}
 
 func (server *ResourceManagedServer) beginSessionInteraction(
 	response http.ResponseWriter,
@@ -152,11 +185,28 @@ func appendSessionInteractionReference(base, reference string) (string, error) {
 }
 
 // ConsumeSessionInteractionCode correlates human-entered code with one
-// pending request. The host must authenticate the person separately.
+// pending request. The host must authenticate the person separately. It is
+// ConsumeSessionInteractionVisit for a visit without a callback.
 func (server *ResourceManagedServer) ConsumeSessionInteractionCode(
 	ctx context.Context,
 	reference string,
 	code string,
+) (SessionInteraction, error) {
+	return server.ConsumeSessionInteractionVisit(ctx, reference, aauth.InteractionVisit{Code: code})
+}
+
+// ConsumeSessionInteractionVisit correlates one visit to
+// {interaction URL}/{reference} and consumes its code. visit comes from
+// aauth.ParseInteractionVisit. A callback in it is retained with the pending
+// request, so that the person is returned there however the request ends:
+// CompletionURL and FailureURL give the redirect after the host's own
+// decision, and SessionCallbackURL after any terminal state. A visit whose
+// code does not correlate retains nothing. The host must authenticate the
+// person separately.
+func (server *ResourceManagedServer) ConsumeSessionInteractionVisit(
+	ctx context.Context,
+	reference string,
+	visit aauth.InteractionVisit,
 ) (SessionInteraction, error) {
 	if server == nil || server.deferredSessions == nil {
 		return SessionInteraction{}, errors.New("resource: session interactions are not configured")
@@ -167,11 +217,18 @@ func (server *ResourceManagedServer) ConsumeSessionInteractionCode(
 	if reference == "" {
 		return SessionInteraction{}, ErrSessionInteractionCodeInvalid
 	}
-	digest, err := interaction.Digest(code)
+	if visit.Callback != "" {
+		if err := aauth.ValidateInteractionCallback(visit.Callback, true); err != nil {
+			return SessionInteraction{}, err
+		}
+	}
+	digest, err := interaction.Digest(visit.Code)
 	if err != nil {
 		return SessionInteraction{}, ErrSessionInteractionCodeInvalid
 	}
-	record, err := server.deferredSessions.ConsumeInteractionCode(ctx, server.issuer, reference, digest, server.clock.Now().UTC())
+	record, err := server.deferredSessions.ConsumeInteractionCode(ctx, server.issuer, reference, SessionCodePresentation{
+		CodeSHA256: digest, Callback: visit.Callback,
+	}, server.clock.Now().UTC())
 	if err != nil {
 		return SessionInteraction{}, err
 	}
@@ -181,7 +238,9 @@ func (server *ResourceManagedServer) ConsumeSessionInteractionCode(
 	if err := server.validatePendingSessionRecord(record); err != nil {
 		return SessionInteraction{}, err
 	}
-	return sessionInteractionFromRecord(record), nil
+	value := sessionInteractionFromRecord(record)
+	value.callback = visit.Callback
+	return value, nil
 }
 
 // ResumeSessionInteraction reconstructs the host handle from retained state.
@@ -195,19 +254,15 @@ func (server *ResourceManagedServer) ResumeSessionInteraction(ctx context.Contex
 	if reference == "" {
 		return SessionInteraction{}, errors.New("resource: interaction reference is required")
 	}
-	snapshot, err := server.deferredSessions.LoadPending(ctx, reference)
+	snapshot, err := server.loadPendingSession(ctx, reference)
 	if err != nil {
-		return SessionInteraction{}, err
-	}
-	if snapshot.Record.ID != reference {
-		return SessionInteraction{}, ErrPendingSessionConflict
-	}
-	if err := server.validatePendingSessionRecord(snapshot.Record); err != nil {
 		return SessionInteraction{}, err
 	}
 	switch snapshot.State {
 	case SessionPollPending, SessionPollInteracting, SessionPollApproved, SessionPollDenied:
-		return sessionInteractionFromRecord(snapshot.Record), nil
+		value := sessionInteractionFromRecord(snapshot.Record)
+		value.callback = snapshot.Callback
+		return value, nil
 	case SessionPollExpired:
 		return SessionInteraction{}, ErrPendingSessionExpired
 	case SessionPollGone:
@@ -215,6 +270,70 @@ func (server *ResourceManagedServer) ResumeSessionInteraction(ctx context.Contex
 	default:
 		return SessionInteraction{}, ErrPendingSessionConflict
 	}
+}
+
+// SessionCallbackURL returns where to send the person's browser when a
+// pending session request has ended: the callback retained by
+// ConsumeSessionInteractionVisit, with access_denied after a denial,
+// interaction_expired after expiry, and server_error once the request is gone,
+// or the callback alone after approval. It returns an empty string when there
+// is no callback. While the request can still complete it returns
+// ErrPendingSessionConflict. Once the Agent has collected the result the store
+// reports the request as gone, so right after its own decision a host uses
+// the interaction's CompletionURL or FailureURL instead.
+func (server *ResourceManagedServer) SessionCallbackURL(ctx context.Context, reference string) (string, error) {
+	if server == nil || server.deferredSessions == nil {
+		return "", errors.New("resource: session interactions are not configured")
+	}
+	if ctx == nil {
+		return "", errors.New("resource: context is required")
+	}
+	snapshot, err := server.loadPendingSession(ctx, reference)
+	if err != nil {
+		return "", err
+	}
+	var failure aauth.InteractionCallbackError
+	switch snapshot.State {
+	case SessionPollApproved:
+	case SessionPollDenied:
+		failure = aauth.InteractionCallbackAccessDenied
+	case SessionPollExpired:
+		failure = aauth.InteractionCallbackInteractionExpired
+	case SessionPollGone:
+		failure = aauth.InteractionCallbackServerError
+	case SessionPollPending, SessionPollInteracting:
+		// LoadPending does not materialize expiry; a request past its
+		// deadline has ended even before its next poll records it.
+		if server.clock.Now().Before(snapshot.Record.ExpiresAt) {
+			return "", ErrPendingSessionConflict
+		}
+		failure = aauth.InteractionCallbackInteractionExpired
+	default:
+		return "", ErrPendingSessionConflict
+	}
+	if snapshot.Callback == "" {
+		return "", nil
+	}
+	return aauth.InteractionCallbackURL(snapshot.Callback, failure)
+}
+
+// loadPendingSession loads and checks one retained pending session.
+func (server *ResourceManagedServer) loadPendingSession(ctx context.Context, reference string) (PendingSessionSnapshot, error) {
+	snapshot, err := server.deferredSessions.LoadPending(ctx, reference)
+	if err != nil {
+		return PendingSessionSnapshot{}, err
+	}
+	if snapshot.Record.ID != reference {
+		return PendingSessionSnapshot{}, ErrPendingSessionConflict
+	}
+	if err := server.validatePendingSessionRecord(snapshot.Record); err != nil {
+		return PendingSessionSnapshot{}, err
+	}
+	if snapshot.Callback != "" &&
+		(snapshot.State == SessionPollPending || aauth.ValidateInteractionCallback(snapshot.Callback, true) != nil) {
+		return PendingSessionSnapshot{}, ErrPendingSessionConflict
+	}
+	return snapshot, nil
 }
 
 // ApproveSessionInteraction retains the Resource-local person and session

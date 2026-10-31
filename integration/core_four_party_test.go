@@ -769,7 +769,8 @@ func (store *memoryPersonTokenStore) CommitMissionPersonToken(
 	if err := store.requireActiveMissionLocked(expected, at); err != nil {
 		return err
 	}
-	if token.MissionS256 != expected.S256 || token.Agent != expected.Agent {
+	chained := token.UpstreamTokenReference != (aauth.TokenReference{})
+	if token.MissionS256 != expected.S256 || !chained && token.Agent != expected.Agent {
 		return personserver.ErrMissionConflict
 	}
 	key := token.PersonServer + "\x00" + token.JTI
@@ -865,6 +866,7 @@ type memoryPendingPersonToken struct {
 	approval       personserver.PersonTokenApproval
 	denied         bool
 	failedAttempts int
+	callback       string
 }
 
 func (store *memoryPersonTokenStore) Commit(_ context.Context, record personserver.PersonTokenRecord) error {
@@ -962,6 +964,7 @@ func (store *memoryPersonTokenStore) ConsumePersonTokenInteractionCode(_ context
 		return personserver.PendingPersonTokenRecord{}, personserver.ErrPendingPersonTokenExpired
 	}
 	pending.state = personserver.PersonTokenPollInteracting
+	pending.callback = presentation.Callback
 	return clonePendingPersonToken(pending.record), nil
 }
 
@@ -972,7 +975,9 @@ func (store *memoryPersonTokenStore) LoadPendingPersonToken(_ context.Context, i
 	if !ok {
 		return personserver.PendingPersonTokenSnapshot{}, personserver.ErrPendingPersonTokenNotFound
 	}
-	snapshot := personserver.PendingPersonTokenSnapshot{Record: clonePendingPersonToken(pending.record), State: pending.state}
+	snapshot := personserver.PendingPersonTokenSnapshot{
+		Record: clonePendingPersonToken(pending.record), State: pending.state, Callback: pending.callback,
+	}
 	if pending.state == personserver.PersonTokenPollApproved {
 		snapshot.ApprovedPerson = pending.approval.Person
 	}

@@ -174,7 +174,10 @@ func TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition(t *testing
 	// The code correlates the browser visit. It cannot authorize or create a
 	// session without the host's separate authenticated decision below.
 	reference := strings.TrimPrefix(pending.InteractionURL(), resourceID+"/interaction/")
-	interaction, err := currentResource.ConsumeSessionInteractionCode(ctx, reference, pending.InteractionCode())
+	const agentCallback = "https://agent.example/callback"
+	interaction, err := currentResource.ConsumeSessionInteractionVisit(ctx, reference, aauth.InteractionVisit{
+		Code: pending.InteractionCode(), Callback: agentCallback,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +200,9 @@ func TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	if interaction.Callback() != agentCallback {
+		t.Fatalf("resumed callback = %q", interaction.Callback())
+	}
 	grant := resource.SessionGrant{
 		Subject: "person-123", Scope: []string{"records.read"}, Lifetime: 30 * time.Minute,
 	}
@@ -211,6 +217,11 @@ func TestCurrentCoreResourceManagedSessionAcrossResourceRecomposition(t *testing
 	}
 	if err := approveAsHost(true); err != nil {
 		t.Fatal(err)
+	}
+	completion, completionErr := interaction.CompletionURL()
+	back, backErr := currentResource.SessionCallbackURL(ctx, reference)
+	if completion != agentCallback || completionErr != nil || back != agentCallback || backErr != nil {
+		t.Fatalf("approved callback = %q, %v; from state %q, %v", completion, completionErr, back, backErr)
 	}
 
 	approved, err := poll(reader, updatedPending, "resource-session-poll-approved")
@@ -405,7 +416,7 @@ func TestResourceManagedIntegrationStorePreservesTerminalStateAgainstLateApprova
 		t.Fatal(err)
 	}
 	if _, err := store.ConsumeInteractionCode(
-		context.Background(), pending.Resource, pending.ID, pending.CodeSHA256, now,
+		context.Background(), pending.Resource, pending.ID, resource.SessionCodePresentation{CodeSHA256: pending.CodeSHA256}, now,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -462,6 +473,7 @@ type integrationPendingSession struct {
 	record   resource.PendingSessionRecord
 	state    resource.SessionPollState
 	approval resource.SessionApproval
+	callback string
 }
 
 func newIntegrationSessionStore() *integrationSessionStore {
@@ -511,12 +523,12 @@ func (store *integrationSessionStore) CreatePending(_ context.Context, record re
 }
 
 func (store *integrationSessionStore) ConsumeInteractionCode(
-	_ context.Context, issuer, reference string, digest [32]byte, now time.Time,
+	_ context.Context, issuer, reference string, presentation resource.SessionCodePresentation, now time.Time,
 ) (resource.PendingSessionRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	pending, ok := store.pending[reference]
-	if !ok || pending.record.Resource != issuer || pending.record.CodeSHA256 != digest {
+	if !ok || pending.record.Resource != issuer || pending.record.CodeSHA256 != presentation.CodeSHA256 {
 		return resource.PendingSessionRecord{}, resource.ErrSessionInteractionCodeInvalid
 	}
 	if pending.state != resource.SessionPollPending {
@@ -527,6 +539,7 @@ func (store *integrationSessionStore) ConsumeInteractionCode(
 		return resource.PendingSessionRecord{}, resource.ErrPendingSessionExpired
 	}
 	pending.state = resource.SessionPollInteracting
+	pending.callback = presentation.Callback
 	return cloneIntegrationPendingRecord(pending.record), nil
 }
 
@@ -539,7 +552,7 @@ func (store *integrationSessionStore) LoadPending(_ context.Context, reference s
 	}
 	return resource.PendingSessionSnapshot{
 		Record: cloneIntegrationPendingRecord(pending.record), State: pending.state,
-		Approval: cloneIntegrationSessionApproval(pending.approval),
+		Approval: cloneIntegrationSessionApproval(pending.approval), Callback: pending.callback,
 	}, nil
 }
 

@@ -40,24 +40,34 @@ func (server *Server) checkPendingRevocations(
 	provider, agent, agentJTI, subagentJTI string,
 	createdAt time.Time,
 ) error {
-	if server.agentTokenRevocations != nil {
-		for _, token := range []struct{ jti, detail string }{
-			{agentJTI, "The Agent token that started this request was revoked."},
-			{subagentJTI, "The sub-agent token of this request was revoked."},
-		} {
-			if token.jti == "" {
-				continue
-			}
-			revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{Issuer: provider, JTI: token.jti})
-			if err != nil {
-				return &agentTokenRevocationStoreError{cause: err}
-			}
-			if revoked {
-				return &revokedPendingTokenError{detail: token.detail}
-			}
-		}
+	if err := server.checkPendingAgentTokens(ctx, provider, agentJTI, subagentJTI); err != nil {
+		return err
 	}
 	return server.checkAgentBinding(ctx, AgentBinding{AgentProvider: provider, Agent: agent}, createdAt)
+}
+
+// checkPendingAgentTokens applies the Agent Provider's revocations to the
+// Agent token that started a pending request and to its sub-agent token.
+func (server *Server) checkPendingAgentTokens(ctx context.Context, provider, agentJTI, subagentJTI string) error {
+	if server.agentTokenRevocations == nil {
+		return nil
+	}
+	for _, token := range []struct{ jti, detail string }{
+		{agentJTI, "The Agent token that started this request was revoked."},
+		{subagentJTI, "The sub-agent token of this request was revoked."},
+	} {
+		if token.jti == "" {
+			continue
+		}
+		revoked, err := server.agentTokenRevocations.IsRevoked(ctx, aauth.TokenReference{Issuer: provider, JTI: token.jti})
+		if err != nil {
+			return &agentTokenRevocationStoreError{cause: err}
+		}
+		if revoked {
+			return &revokedPendingTokenError{detail: token.detail}
+		}
+	}
+	return nil
 }
 
 // pendingRevoked reports whether err ends a pending request rather than

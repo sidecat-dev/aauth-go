@@ -463,8 +463,8 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 		return
 	}
 	if decision.Pending != nil {
-		if r3Context != nil || budgetOffer != nil || resourceClaims.MissionS256 != "" {
-			writeProblem(response, 500, "server_error", errors.New("accessserver: deferred authorization supports missionless Core requests only"))
+		if r3Context != nil || budgetOffer != nil {
+			writeProblem(response, 500, "server_error", errors.New("accessserver: deferred authorization supports Core requests without R3 or Budget only"))
 			return
 		}
 		server.deferAuthorization(response, request, personServer, encoded, resourceClaims, credentialExpiresAt, presented, decision, pending)
@@ -503,18 +503,12 @@ func (server *Server) authorizeToken(response http.ResponseWriter, request *http
 	if credentialExpiresAt.Before(expiresAt) {
 		expiresAt = credentialExpiresAt
 	}
+	// The Person Server owns mission validation and does not disclose mission
+	// content to the Access Server. It caps the person token at the mission's
+	// expires_at, so the presented token carries that bound here; a Resource
+	// token's lifetime is independent of the mission.
 	if presented.ExpiresAt.Before(expiresAt) {
 		expiresAt = presented.ExpiresAt
-	}
-	// The Person Server owns mission validation and does not disclose mission
-	// content or its accepted-update history to the Access Server. Core requires
-	// the Resource token to fit within the mission lifetime, so its expiry is the
-	// AS's verifiable ceiling for a mission-bound Auth token.
-	if resourceClaims.MissionS256 != "" {
-		resourceExpiresAt := time.Unix(resourceClaims.ExpiresAt, 0).UTC()
-		if resourceExpiresAt.Before(expiresAt) {
-			expiresAt = resourceExpiresAt
-		}
 	}
 	claims := aauth.AuthTokenClaims{
 		Issuer: server.issuer, DWK: aauth.AccessDiscoveryDocument,

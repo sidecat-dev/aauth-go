@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -299,6 +300,40 @@ func TestCallChainingChecksRevocationOfOriginalCallerAgentToken(t *testing.T) {
 			t.Fatalf("lookup fault reached policy %d times", protocol.chainBindCalls)
 		}
 	})
+}
+
+// Step 4 of Upstream Token Verification identifies the calling Agent through
+// the person token the upstream auth token was obtained with. Once this
+// Person Server revoked that person token, directly or behind a step-up, the
+// auth token is refused as upstream evidence even if no cascade reached it.
+func TestCallChainingRefusesAnUpstreamAuthTokenWhosePersonTokenWasRevoked(t *testing.T) {
+	for _, stepUp := range []bool{false, true} {
+		t.Run(fmt.Sprintf("step-up %t", stepUp), func(t *testing.T) {
+			protocol := newCallChainingProtocol(t)
+			person := aauth.TokenReference{Issuer: protocol.personServerID, JTI: "original-person-token"}
+			upstream := protocol.issuedRecord(t, aauth.TokenReference{Issuer: protocol.personServerID, JTI: protocol.upstreamClaims.JTI})
+			upstream.PresentedTokenReference = person
+			protocol.issued.mu.Lock()
+			if stepUp {
+				earlier := upstream
+				earlier.Reference.JTI = "earlier-auth-token"
+				earlier.CompactSHA256[0] ^= 1
+				protocol.issued.records[earlier.Reference] = earlier
+				upstream.PresentedTokenReference = earlier.Reference
+			}
+			protocol.issued.records[upstream.Reference] = upstream
+			protocol.issued.mu.Unlock()
+			revocations := newChainRevocationStore()
+			config := protocol.config()
+			config.TokenRevocation = &TokenRevocationConfig{Revocations: revocations}
+			server := protocol.newServer(t, config)
+			protocol.chainedAuthToken(t, server)
+
+			revocations.revoked[person] = true
+			response := protocol.personRequest(t, server, protocol.upstreamToken, "")
+			assertCallChainingProblem(t, response, http.StatusBadRequest, "revoked_upstream_token")
+		})
+	}
 }
 
 // An issued auth-token store is required only when call chaining is

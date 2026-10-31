@@ -155,7 +155,10 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	if interactionReference == pending.InteractionURL() || interactionReference == "" {
 		t.Fatalf("interaction URL = %q", pending.InteractionURL())
 	}
-	interaction, err := people.ConsumePersonTokenInteractionCode(ctx, interactionReference, pending.InteractionCode())
+	const agentCallback = "https://agent.example/callback"
+	interaction, err := people.ConsumePersonTokenInteractionVisit(ctx, interactionReference, aauth.InteractionVisit{
+		Code: pending.InteractionCode(), Callback: agentCallback,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,10 +177,21 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	if interaction.Callback() != agentCallback {
+		t.Fatalf("resumed callback = %q", interaction.Callback())
+	}
+	if _, err := people.PersonTokenCallbackURL(ctx, reference); !errors.Is(err, personserver.ErrPendingPersonTokenConflict) {
+		t.Fatalf("callback while the request can complete = %v", err)
+	}
 	if err := people.ApprovePersonTokenInteraction(ctx, interaction, personserver.Person{
 		Subject: "person-123", Lifetime: 20 * time.Minute,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	completion, completionErr := interaction.CompletionURL()
+	back, backErr := people.PersonTokenCallbackURL(ctx, reference)
+	if completion != agentCallback || completionErr != nil || back != agentCallback || backErr != nil {
+		t.Fatalf("approved callback = %q, %v; from state %q, %v", completion, completionErr, back, backErr)
 	}
 
 	people = newPeople()
@@ -337,5 +351,51 @@ func TestCurrentCorePersonTokenInteractionAcrossPersonServerRecomposition(t *tes
 	if err != nil || record.Agent != childID || record.ParentAgent != agentID ||
 		!record.Confirmation.Equal(childKey.PublicJWK()) {
 		t.Fatalf("retained sub-agent person token = %#v, %v", record, err)
+	}
+
+	// A request the person declines, and one that expires, return the person
+	// to the Agent's callback with the error.
+	for _, ending := range []struct {
+		name    string
+		end     func(personserver.PersonTokenInteraction) error
+		failure aauth.InteractionCallbackError
+	}{
+		{name: "denied", end: func(interaction personserver.PersonTokenInteraction) error {
+			return people.DenyPersonTokenInteraction(ctx, interaction)
+		}, failure: aauth.InteractionCallbackAccessDenied},
+		{name: "expired", end: func(personserver.PersonTokenInteraction) error {
+			now = now.Add(5 * time.Minute)
+			return nil
+		}, failure: aauth.InteractionCallbackInteractionExpired},
+	} {
+		result, err = reader.PersonToken(ctx, clientagent.PersonTokenRequest{
+			PersonServer: personServerID, Resource: resourceID, Capabilities: []string{"interaction"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending, ok = result.Pending()
+		if !ok {
+			t.Fatalf("%s interaction result = %#v", ending.name, result)
+		}
+		interactionReference = strings.TrimPrefix(pending.InteractionURL(), personServerID+"/interaction/")
+		interaction, err = people.ConsumePersonTokenInteractionVisit(ctx, interactionReference, aauth.InteractionVisit{
+			Code: pending.InteractionCode(), Callback: agentCallback,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ending.end(interaction); err != nil {
+			t.Fatal(err)
+		}
+		want := agentCallback + "?error=" + string(ending.failure)
+		if ending.name == "denied" {
+			if failed, err := interaction.FailureURL(ending.failure); err != nil || failed != want {
+				t.Fatalf("denied failure URL = %q, %v", failed, err)
+			}
+		}
+		if back, err := people.PersonTokenCallbackURL(ctx, interaction.Reference()); err != nil || back != want {
+			t.Fatalf("%s callback = %q, %v", ending.name, back, err)
+		}
 	}
 }

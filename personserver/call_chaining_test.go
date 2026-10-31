@@ -542,36 +542,29 @@ func TestCallChainingRefusesUnsupportedValidBranchesAndIsolatesOrdinaryInteracti
 		}
 	})
 
-	for _, test := range []struct {
-		name   string
-		change func(*aauth.AuthTokenClaims)
-	}{
-		{
-			name: "mission-bound upstream",
-			change: func(claims *aauth.AuthTokenClaims) {
-				claims.MissionS256 = "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
-			},
-		},
-		{
-			name: "account-bound upstream",
-			change: func(claims *aauth.AuthTokenClaims) {
-				claims.Account = testStringPointer("account-17")
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			protocol := newCallChainingProtocol(t)
-			claims := protocol.upstreamClaims
-			test.change(&claims)
-			upstream := mintCallChainingAuthToken(t, protocol.personServerKey, claims)
-			response := protocol.personRequest(t, protocol.newServer(t, protocol.config()), upstream, "")
-			assertCallChainingProblem(t, response, http.StatusInternalServerError, "server_error")
-			_, commits, loads := protocol.store.observation()
-			if protocol.chainBindCalls != 0 || protocol.chainAuthorizeCalls != 0 || commits != 0 || loads != 0 {
-				t.Fatalf("unsupported upstream mutated state: chain=%d/%d commits=%d loads=%d", protocol.chainBindCalls, protocol.chainAuthorizeCalls, commits, loads)
-			}
-		})
-	}
+	// An account belongs to the upstream Resource and goes no further: the
+	// downstream request is evaluated with the upstream token's claims, and
+	// the downstream tokens carry none of it.
+	t.Run("account-bound upstream", func(t *testing.T) {
+		protocol := newCallChainingProtocol(t)
+		claims := protocol.upstreamClaims
+		claims.JTI = "account-bound-upstream"
+		claims.Account = testStringPointer("account-17")
+		upstream := mintCallChainingAuthToken(t, protocol.personServerKey, claims)
+		protocol.identifyUpstream(t, upstream)
+		var bound PersonTokenRequest
+		protocol.chainBind = func(request PersonTokenRequest) (Person, error) {
+			bound = request
+			return Person{Subject: protocol.downstreamSubject, Lifetime: 10 * time.Minute}, nil
+		}
+		personClaims := decodeCallChainingPersonToken(
+			t, protocol, protocol.personRequest(t, protocol.newServer(t, protocol.config()), upstream, ""),
+		)
+		if bound.Upstream == nil || bound.Upstream.Account == nil || *bound.Upstream.Account != "account-17" ||
+			personClaims.Subject != protocol.downstreamSubject {
+			t.Fatalf("account-bound upstream policy = %#v, person = %#v", bound.Upstream, personClaims)
+		}
+	})
 
 	t.Run("subagent inside call chain", func(t *testing.T) {
 		protocol := newCallChainingProtocol(t)

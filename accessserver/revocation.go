@@ -331,6 +331,14 @@ func (server *Server) refuseRevokedParameter(
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	if pending {
+		// A waiting request ends with the polling error revoked, and detail
+		// says which token it depended on.
+		switch code {
+		case "revoked_resource_token":
+			detail = "The resource token this request was started for was revoked."
+		case "revoked_upstream_token":
+			detail = "The upstream token of this chained request was revoked."
+		}
 		httpapi.WriteProblem(response, http.StatusForbidden, "revoked", errors.New(detail), httpapi.ProblemFields{Detail: detail})
 		return true
 	}
