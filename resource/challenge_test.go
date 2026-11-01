@@ -196,6 +196,69 @@ func TestAuthTokenRequirementCarriesRouteBoundResourceToken(t *testing.T) {
 	}
 }
 
+// AAuth Core "Resource Token Structure": mission_s256 is REQUIRED in the
+// Resource token when the presented token carried one, copied unchanged.
+// Held delivery retains missionless requests only, so a Resource that holds
+// requests answers a mission-bound one with the ordinary challenge.
+func TestAuthTokenRequirementCopiesTheMissionOfAMissionBoundPersonToken(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 31, 12, 10, 0, 0, time.UTC)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	personKey := testSigningKey(t, "person-key", 37)
+	resourceKey := testSigningKey(t, "resource-key", 38)
+	agentKey := testSigningKey(t, "agent-key", 39)
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: personIssuer, DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: personKey.ID()}:       personKey.PublicJWK(),
+		{Issuer: resourceIssuer, DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: resourceKey.ID()}: resourceKey.PublicJWK(),
+	}
+	held := newHeldMemoryStore()
+	server, err := NewFederatedAuthorization(FederatedAuthorizationConfig{
+		Issuer:                       resourceIssuer,
+		AccessServer:                 accessIssuer,
+		SigningKey:                   resourceKey,
+		KeyResolver:                  resolver,
+		Clock:                        clock,
+		NewID:                        func() string { return "mission-resource-token" },
+		ScopeDescriptions:            map[string]string{"records.read": "Read records"},
+		RequiredScopes:               func(*http.Request) []string { return []string{"records.read"} },
+		ResolvePerson:                func(context.Context, PersonIdentity, PersonContext) error { return nil },
+		Protected:                    http.NotFoundHandler(),
+		HeldInvocations:              held,
+		MaxRetainedRequestBodyBytes:  1024,
+		MaxRetainedResponseBodyBytes: 1024,
+		MaxRetainedHeaderBytes:       1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mission := aauth.MissionS256([]byte("approved mission content"))
+	personToken, err := aauth.MintPersonToken(personKey, aauth.PersonTokenClaims{
+		Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument, Audience: resourceIssuer,
+		Subject: "person-1", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
+		JTI: "mission-person-token", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
+		MissionS256: mission,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := signedRequest(t, clock, agentKey, personToken, http.MethodGet, resourceIssuer+"/records/42", "")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	requirement := parseAuthTokenRequirement(t, response)
+	claims, err := aauth.VerifyResourceToken(context.Background(), requirement.ResourceToken, resolver, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.MissionS256 != mission || claims.PresentedJTI != "mission-person-token" || claims.Audience != accessIssuer {
+		t.Fatalf("resource-token claims = %#v", claims)
+	}
+	if held.state != "" {
+		t.Fatalf("mission-bound request was held: state %q", held.state)
+	}
+}
+
 func TestAuthTokenRequirementUsesActualRouteScopes(t *testing.T) {
 	t.Parallel()
 
@@ -595,15 +658,6 @@ func TestProtectedPersonTokenRefusesInvalidCredentialWithoutChallenge(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	missionBound, err := aauth.MintPersonToken(personKey, aauth.PersonTokenClaims{
-		Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument, Audience: resourceIssuer,
-		Subject: "person-1", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
-		JTI: "mission-person-token", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix(),
-		MissionS256: strings.Repeat("A", 43),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	unknownClaims := aauth.PersonTokenClaims{
 		Issuer: personIssuer, DWK: aauth.PersonDiscoveryDocument, Audience: resourceIssuer,
 		Subject: "person-1", Confirmation: aauth.Confirmation{JWK: agentKey.PublicJWK()},
@@ -630,7 +684,6 @@ func TestProtectedPersonTokenRefusesInvalidCredentialWithoutChallenge(t *testing
 		{name: "wrong proof key", token: valid, proofKey: otherAgentKey, signatureFailure: signaturekey.ErrorInvalidSignature},
 		{name: "wrong audience", token: wrongAudience, proofKey: agentKey, problemCode: "invalid_token"},
 		{name: "expired person token", token: expired, proofKey: agentKey, signatureFailure: signaturekey.ErrorExpiredJWT},
-		{name: "mission-bound person token", token: missionBound, proofKey: agentKey, problemCode: "invalid_token"},
 		{name: "unknown token type", token: unknownType, proofKey: agentKey, signatureFailure: signaturekey.ErrorInvalidJWT},
 	} {
 		scenario := scenario
