@@ -24,7 +24,7 @@ type Observation struct {
 
 func (server *Server) handleEvent(response http.ResponseWriter, request *http.Request) {
 	personServer, _, body, ok := server.authenticate(response, request, true)
-	if !ok {
+	if !ok || !server.admit(response, request, personServer) {
 		return
 	}
 	event, err := supervision.DecodeEvent(body)

@@ -641,6 +641,66 @@ func TestRefusedPersonServers(t *testing.T) {
 	requireProblem(t, supervise(t, f.ps, f.request(supervision.KindPermission, "d-refused", "")), 404, supervision.ErrorUnknownSub)
 }
 
+// Errors: an SS that will not take more from a Person Server for now answers
+// 429 rate_limited with its REQUIRED Retry-After, and handles nothing, so the
+// Person Server can send the request again unchanged. A wait the draft cannot
+// carry is a host defect, answered server_error.
+func TestRateLimitAnswersRateLimitedWithRetryAfter(t *testing.T) {
+	t.Parallel()
+	var wait time.Duration
+	var asked []string
+	var mu sync.Mutex
+	f := newFixture(t, func(config *supervisionserver.Config) {
+		config.RateLimit = func(_ context.Context, issuer string) (time.Duration, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			asked = append(asked, issuer)
+			return wait, nil
+		}
+	})
+	setWait := func(value time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		wait = value
+	}
+	f.connectSubject(t, f.ps, subject)
+
+	setWait(30 * time.Second)
+	request := f.request(supervision.KindPermission, "d-limited", "")
+	limited := supervise(t, f.ps, request)
+	requireProblem(t, limited, 429, supervision.ErrorRateLimited)
+	if limited.Problem.RetryAfter != 30*time.Second || limited.Exchange.Response.Header.Get("Retry-After") != "30" {
+		t.Fatalf("Retry-After = %v, header %q", limited.Problem.RetryAfter, limited.Exchange.Response.Header.Get("Retry-After"))
+	}
+	event := supervision.Event{
+		Name: supervision.EventAgentBound, ID: "e-limited", IssuedAt: f.clock.Now().Unix(), Subject: subject, Agent: agentID,
+		AgentIssuer: "https://agent.example", AgentSubject: agentID,
+	}
+	if outcome, err := f.ps.PostEvent(context.Background(), supervisor, event); err != nil {
+		t.Fatal(err)
+	} else {
+		requireProblem(t, outcome, 429, supervision.ErrorRateLimited)
+	}
+	if len(f.decisionRequests()) != 0 || len(f.observations()) != 0 {
+		t.Fatal("a rate-limited request reached host policy")
+	}
+
+	for _, invalid := range []time.Duration{-time.Second, 500 * time.Millisecond, 1500 * time.Millisecond, 2 * time.Hour} {
+		setWait(invalid)
+		requireProblem(t, supervise(t, f.ps, request), 500, supervision.ErrorServerError)
+	}
+
+	setWait(0)
+	requireVerdict(t, supervise(t, f.ps, request), supervision.VerdictAllow)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, issuer := range asked {
+		if issuer != personServer {
+			t.Fatalf("RateLimit asked about %q", issuer)
+		}
+	}
+}
+
 // Mission and Decision Endpoints: an immediate allow, deny or ask on each
 // act, signed, with the policy seeing the exact forwarded body.
 func TestImmediateDecisionsOnEveryEndpoint(t *testing.T) {
