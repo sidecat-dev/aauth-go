@@ -71,7 +71,9 @@ func (server *Server) verifySupervisedUpdate(
 		return false
 	}
 	if r3Context != nil || resourceToken.Interaction != nil && server.authorizationMode == authorizationModePersonServer {
-		// The same requests this Person Server does not put to a supervisor.
+		// A Resource interaction is never put to a supervisor. Replacing an
+		// R3 authorization's document while its supervisor decides is not
+		// built, so such an update is refused rather than relayed.
 		writeProblem(response, http.StatusBadRequest, "invalid_request",
 			errors.New("personserver: a supervised request cannot be replaced by an R3 authorization or a Resource interaction"))
 		return false
