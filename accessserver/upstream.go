@@ -9,6 +9,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/upstreamtoken"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -98,7 +99,7 @@ func verifyUpstreamToken(
 		upstream.person = &claims
 		audience, namedPersonServer = claims.Audience, claims.Issuer
 	case aauth.AuthTokenType:
-		claims, err := aauth.VerifyAuthToken(ctx, compact, resolver, verificationClock)
+		claims, err := upstreamtoken.VerifyAuthToken(ctx, compact, resolver, verificationClock)
 		if err != nil {
 			return nil, &upstreamTokenFailure{cause: err}
 		}

@@ -294,6 +294,51 @@ func TestJWKSURICredentialResolvesThroughTheGenericKeyContract(t *testing.T) {
 	}
 }
 
+// A jwks_uri key whose kty the verifier does not implement is refused as
+// unsupported_algorithm. Its signature has a length no accepted algorithm
+// produces, but the length is judged against the key, after the key and its
+// algorithm (Signature-Key "Algorithm Determination"; AAuth Core
+// "Verification (Server)" steps 5 to 7).
+func TestJWKSURIKeyOfAnUnimplementedTypeIsUnsupportedAlgorithm(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 5, 0, 0, time.UTC)
+	signingKey, err := jose.NewEd25519SigningKey(
+		"pq-key",
+		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x4c}, ed25519.SeedSize)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := signaturekey.NewJWKSURICredential("https://server.example", "service-configuration", signingKey.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://peer.example/federate", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signaturekey.SignRequest(request, signingKey, credential, fixedClock(now), signaturekey.SignOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// An ML-DSA-44 signature is 2,420 bytes.
+	request.Header.Set("Signature", "sig=:"+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x01}, 2420))+":")
+
+	prepared, err := signaturekey.PrepareRequest(
+		request,
+		fixedClock(now),
+		signaturekey.VerifyOptions{AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeJWKSURI}},
+	)
+	if err != nil {
+		t.Fatalf("PrepareRequest() = %v, want the key examined first", err)
+	}
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://server.example", DiscoveryDocument: "service-configuration", KeyID: signingKey.ID()}: {
+			Kty: "AKP", Alg: "ML-DSA-44", Kid: signingKey.ID(),
+		},
+	}
+	_, err = prepared.VerifyJWKSURI(context.Background(), resolver)
+	assertSignatureErrorCode(t, signaturekey.NormalizeError(err, signaturekey.ErrorInvalidSignature), signaturekey.ErrorUnsupportedAlgorithm)
+}
+
 func TestJWKSURICredentialRejectsAnExplicitEmptyFragment(t *testing.T) {
 	t.Parallel()
 
@@ -823,6 +868,43 @@ func TestPrepareRequestClassifiesMissingProofFieldsAsInvalidSignature(t *testing
 				t.Fatalf("error = %T %v, want invalid_signature Signature-Key error", err, err)
 			}
 		})
+	}
+}
+
+// A Signature-Key header with no member for the verified label is a missing
+// Signature-Key for that signature: invalid_signature, not invalid_key
+// (Signature-Key "Label Correlation" step 4 and "invalid_signature"; AAuth
+// Core "Verification (Server)" step 1).
+func TestPrepareRequestClassifiesAMissingLabelMemberAsInvalidSignature(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	key, err := jose.NewEd25519SigningKey(
+		"request-key",
+		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x4b}, ed25519.SeedSize)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := signaturekey.NewHWKCredential(key.PublicJWK())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://resource.example/items", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signaturekey.SignRequest(request, key, credential, fixedClock(now), signaturekey.SignOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Signature-Key", strings.Replace(request.Header.Get("Signature-Key"), "sig=", "other=", 1))
+
+	_, err = signaturekey.PrepareRequest(
+		request,
+		fixedClock(now),
+		signaturekey.VerifyOptions{AcceptedSchemes: []signaturekey.Scheme{signaturekey.SchemeHWK}},
+	)
+	var failure *signaturekey.Error
+	if !errors.As(err, &failure) || failure.Code != signaturekey.ErrorInvalidSignature {
+		t.Fatalf("error = %T %v, want invalid_signature Signature-Key error", err, err)
 	}
 }
 

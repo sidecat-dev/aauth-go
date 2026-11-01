@@ -252,9 +252,9 @@ func VerifyResponse(
 			return VerifiedResponse{}, newError(ErrorInvalidSignature, err)
 		}
 	}
-	signature, err := parseSignature(header.Values("Signature"), label, func(size int) bool {
-		return algorithmsAcceptSignatureSize(algorithms, size)
-	})
+	// As for a request, the length is judged against the resolved key, after
+	// its type and algorithm.
+	signature, err := parseSignature(header.Values("Signature"), label, func(size int) bool { return size > 0 })
 	if err != nil {
 		return VerifiedResponse{}, newError(ErrorInvalidSignature, err)
 	}

@@ -77,7 +77,11 @@ func ValidateHTTPSURL(value string) error {
 	return nil
 }
 
-// ValidateAgentIdentifier validates the AAuth URI identifier grammar.
+// ValidateAgentIdentifier validates the AAuth URI identifier grammar. A
+// local part without + names a top-level Agent; one with + is a parent's
+// local part, one +, and a non-empty discriminator, since + is reserved as
+// the delimiter and delegation is one level deep. Which form an Agent has is
+// decided by parent_agent (ValidateAgentRelationship), never by this shape.
 func ValidateAgentIdentifier(identifier string) error {
 	if !strings.HasPrefix(identifier, "aauth:") {
 		return errors.New("aauth: agent identifier must use the aauth scheme")
@@ -89,6 +93,10 @@ func ValidateAgentIdentifier(identifier string) error {
 	}
 	if len(local) > 255 || !agentLocalPattern.MatchString(local) {
 		return errors.New("aauth: agent identifier local part is invalid")
+	}
+	if parent, discriminator, delegated := strings.Cut(local, "+"); delegated &&
+		(parent == "" || discriminator == "" || strings.Contains(discriminator, "+")) {
+		return errors.New("aauth: agent identifier local part must be a parent local part, one +, and a non-empty discriminator")
 	}
 	if err := validateDomain(domain); err != nil {
 		return fmt.Errorf("aauth: agent identifier domain: %w", err)

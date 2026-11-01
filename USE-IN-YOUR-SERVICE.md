@@ -995,7 +995,9 @@ request. The Person Server sizes that hop's grant from its own offer, with
 the Access Server in four-party access, exactly as for an unchained request;
 nothing is drawn from the upstream token. The intermediary makes the metered
 call with `BeginBudgetCall`, passing the upstream token in
-`BudgetCall.UpstreamToken`.
+`BudgetCall.UpstreamToken`. A budgeted auth token can itself be the upstream
+token of the next hop: the Agent client, the Person Server and the Access
+Server verify its Budget claim and grant nothing from it.
 
 **Waits.** With `Deferred`, a chained request can wait for Access Server
 approval, payment, claims or interaction like any Core request. The
@@ -1206,7 +1208,10 @@ later with `ResolveDecision`; it sees every member the Agent sent, in
 when a Person Server relays an updated auth-token request. `Observe` sees every event, including
 `decision.resolved` with the reach the person gave their answer, which your
 policy then applies. With a `SigningKey` the server publishes `jwks_uri` and
-signs every decision. `testutil.NewSupervisorStore` and
+signs every decision. `RateLimit` turns a Person Server away for a while:
+return a wait of whole seconds and the server answers `429 rate_limited` with
+it as `Retry-After`, recording nothing, so the Person Server sends the request
+again later. `testutil.NewSupervisorStore` and
 `testutil.NewSupervisionStore` are in-memory stores for each side.
 
 The limits are in [CONFORMANCE.md](CONFORMANCE.md#companion-specifications):

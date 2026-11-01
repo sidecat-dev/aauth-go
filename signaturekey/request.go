@@ -522,6 +522,10 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	// scheme this endpoint does not accept always has the same defined answer.
 	member, segment, err := selectCredentialMember(credentialHeaders, label)
 	if err != nil {
+		var failure *Error
+		if errors.As(err, &failure) {
+			return prepared, failure
+		}
 		return prepared, &Error{Code: ErrorInvalidKey, Cause: err}
 	}
 	if scheme := Scheme(member.Value.(httpsfv.Token)); !containsScheme(accepted, scheme) {
@@ -541,7 +545,13 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		}
 		return prepared, &Error{Code: ErrorInvalidKey, Cause: err}
 	}
-	acceptsSignatureSize := func(size int) bool { return algorithmsAcceptSignatureSize(algorithms, size) }
+	// A signature's length is checked against its key only once the key and
+	// its algorithm are known (AAuth Core "Verification (Server)" steps 5 to
+	// 7). Every scheme but hwk and x509 resolves its key after preparation, so
+	// here any nonempty signature is admitted: a key of a type or algorithm
+	// the verifier does not implement is then refused as
+	// unsupported_algorithm, not as a malformed signature.
+	acceptsSignatureSize := func(size int) bool { return size > 0 }
 	switch credential.scheme {
 	case SchemeHWK:
 		inline, _ := credential.InlineJWK()
@@ -1022,28 +1032,6 @@ func acceptedAlgorithms(configured []string) ([]string, error) {
 
 func unsupportedAlgorithm(accepted []string, cause error) *Error {
 	return &Error{Code: ErrorUnsupportedAlgorithm, AcceptedAlgorithms: append([]string(nil), accepted...), Cause: cause}
-}
-
-// algorithmsAcceptSignatureSize reports whether any accepted algorithm
-// produces a signature of size bytes.
-func algorithmsAcceptSignatureSize(algorithms []string, size int) bool {
-	for _, algorithm := range algorithms {
-		switch algorithm {
-		case jose.Ed25519Algorithm, jose.ES256Algorithm:
-			if size == 64 {
-				return true
-			}
-		case jose.ES384Algorithm:
-			if size == 96 {
-				return true
-			}
-		case jose.RS256Algorithm, jose.PS256Algorithm:
-			if rsaSignatureSize(size) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // rsaSignatureSize reports whether size is the length of a 2048- to 8192-bit

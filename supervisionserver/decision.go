@@ -52,7 +52,7 @@ type Deferral struct {
 
 func (server *Server) handleMissionProposal(response http.ResponseWriter, request *http.Request) {
 	personServer, _, body, ok := server.authenticate(response, request, true)
-	if !ok {
+	if !ok || !server.admit(response, request, personServer) {
 		return
 	}
 	decoded, err := supervision.DecodeMissionProposal(body)
@@ -65,7 +65,7 @@ func (server *Server) handleMissionProposal(response http.ResponseWriter, reques
 
 func (server *Server) handleMissionAction(response http.ResponseWriter, request *http.Request) {
 	personServer, _, body, ok := server.authenticate(response, request, true)
-	if !ok {
+	if !ok || !server.admit(response, request, personServer) {
 		return
 	}
 	decoded, report, err := supervision.DecodeMissionAction(request.PathValue("s256"), body)
@@ -82,7 +82,7 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 
 func (server *Server) handleDecision(response http.ResponseWriter, request *http.Request) {
 	personServer, _, body, ok := server.authenticate(response, request, true)
-	if !ok {
+	if !ok || !server.admit(response, request, personServer) {
 		return
 	}
 	decoded, err := supervision.DecodeDecisionRequest(body)

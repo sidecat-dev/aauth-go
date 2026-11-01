@@ -27,6 +27,9 @@ type PersonTokenClaims struct {
 	Tenant       string       `json:"tenant,omitempty"`
 }
 
+// readsSingleAudience lets verification read aud in either RFC 7519 form.
+func (*PersonTokenClaims) readsSingleAudience() {}
+
 // MintPersonToken constructs a proof-bound, resource-directed person token.
 func MintPersonToken(key jose.SigningKey, claims PersonTokenClaims) (string, error) {
 	if err := validatePersonClaims(claims, time.Time{}); err != nil {

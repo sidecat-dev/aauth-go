@@ -696,19 +696,23 @@ func (server *Server) servePersonTokenChallenge(
 		writeProblem(response, http.StatusUnauthorized, "invalid_token", err)
 		return
 	}
-	if claims.MissionS256 != "" {
-		writeProblem(response, http.StatusUnauthorized, "invalid_token", errors.New("mission-bound person tokens require mission verification"))
-		return
-	}
 	scopes, err := server.requiredRouteScopes(request, false)
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	hold, err := server.shouldHoldAuthTokenRequest(request)
-	if err != nil {
-		writeProblem(response, http.StatusInternalServerError, "server_error", err)
-		return
+	// A mission-bound person token is answered with a Resource token carrying
+	// its mission_s256 unchanged (AAuth Core "Resource Token Structure"); the
+	// Person Server, not the Resource, checks that the mission is active.
+	// Held delivery retains missionless requests only, so a mission-bound
+	// request is challenged without being held.
+	hold := false
+	if claims.MissionS256 == "" {
+		hold, err = server.shouldHoldAuthTokenRequest(request)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
 	}
 	var budgetOffer *budgets.Value
 	if !hold && server.budget != nil {

@@ -70,6 +70,28 @@ func TestAgentIdentifierLocalPartAcceptsUppercaseAndComparesExactly(t *testing.T
 	}
 }
 
+// AAuth Core "Agent Identifiers": + is reserved as the sub-agent delimiter, so
+// a local part with + is a non-empty parent local part, one +, and a
+// non-empty discriminator.
+func TestAgentIdentifierPlacesTheSubAgentDelimiterBetweenTwoParts(t *testing.T) {
+	t.Parallel()
+
+	if err := auth.ValidateAgentIdentifier("aauth:planner.7f3c+search1@vendor.example"); err != nil {
+		t.Fatal(err)
+	}
+	for _, identifier := range []string{
+		"aauth:+worker@agent.example",
+		"aauth:assistant+@agent.example",
+		"aauth:+@agent.example",
+		"aauth:planner+child+grandchild@agent.example",
+		"aauth:planner++child@agent.example",
+	} {
+		if err := auth.ValidateAgentIdentifier(identifier); err == nil {
+			t.Errorf("ValidateAgentIdentifier(%q) succeeded", identifier)
+		}
+	}
+}
+
 func TestAgentIssuerBindsAgentDomainToProvider(t *testing.T) {
 	t.Parallel()
 

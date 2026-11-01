@@ -892,6 +892,56 @@ func TestFourPartyChainedBudgetIsSizedForTheDownstreamToken(t *testing.T) {
 	}
 }
 
+// Budgets with Protocol Call Chaining, Upstream Token Verification: an auth
+// token that carries a budget is an upstream token like any other. The
+// intermediary's Agent client, the Person Server and the Access Server each
+// verify it with its Budget claim, and the next hop is granted and served on
+// its own token, which carries no budget from it.
+func TestFourPartyBudgetedAuthTokenChainsAsAnUpstreamToken(t *testing.T) {
+	t.Parallel()
+	fixture := newHopFixture(t, hopOptions{budget: true})
+	ctx := fixture.ctx
+
+	caller := fixture.callerLink("")
+	result, err := fixture.ordersRelay.PersonToken(ctx, clientagent.PersonTokenRequest{Resource: hopInventory, UpstreamToken: caller.auth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	person, _ := result.Token()
+	requested := hopBudgetValue(t, 500)
+	resourceToken, err := fixture.ordersRelay.Authorize(ctx, clientagent.AuthorizeRequest{
+		Resource: hopInventory, PersonToken: person, UpstreamToken: caller.auth,
+		Scopes: []string{"inventory.reserve"}, Budget: &requested,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	budgeted, err := fixture.ordersRelay.Exchange(ctx, clientagent.ExchangeRequest{
+		ResourceToken: resourceToken, PresentedToken: person, UpstreamToken: caller.auth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tokenClaims(t, budgeted)["budget"]; !ok {
+		t.Fatal("the inventory auth token carries no budget")
+	}
+
+	fixture.advance(time.Minute)
+	next := fixture.chainedHop(fixture.inventoryRelay, hopWarehouse, "warehouse.pick", budgeted)
+	if _, ok := tokenClaims(t, next.auth)["budget"]; ok {
+		t.Fatal("the warehouse auth token carries a budget")
+	}
+	if hopExpiry(t, next.person) > hopExpiry(t, budgeted) || hopExpiry(t, next.auth) > hopExpiry(t, budgeted) {
+		t.Fatal("a warehouse token outlives its budgeted upstream token")
+	}
+	fixture.mu.Lock()
+	asked := fixture.accessRequests[len(fixture.accessRequests)-1]
+	fixture.mu.Unlock()
+	if asked.Resource != hopWarehouse || asked.Upstream == nil || asked.Upstream.JTI != tokenClaims(t, budgeted)["jti"] {
+		t.Fatalf("Access Server chained request = %s upstream %v", asked.Resource, asked.Upstream)
+	}
+}
+
 // Protocol 70d6737, Person Token Endpoint ("Which person") and Call Chaining:
 // an upstream token that carries mission_s256 has the chain evaluated against
 // that mission of the calling Agent, and the downstream person and auth tokens

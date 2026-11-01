@@ -90,15 +90,32 @@ func validateHeldRequestFeatures(request *http.Request) error {
 	if len(request.TransferEncoding) != 0 {
 		return errors.New("aauth: held request does not support transfer encoding")
 	}
-	if request.Close {
-		return errors.New("aauth: held request does not support connection close semantics")
-	}
-	for name := range request.Header {
+	for name, values := range request.Header {
+		if strings.EqualFold(name, "Connection") && onlyConnectionOptions(values) {
+			continue
+		}
 		if isHeldRequestHopByHopHeader(name) {
 			return fmt.Errorf("aauth: held request does not support hop-by-hop header %q", name)
 		}
 	}
 	return nil
+}
+
+// onlyConnectionOptions reports whether a Connection field carries only the
+// close and keep-alive options. They describe the connection the request
+// arrived on, not the request, so a retained request leaves them behind (RFC
+// 9110, Section 7.6.1), as it does request.Close. Any other option names a
+// further hop-by-hop field, which a retained request does not support.
+func onlyConnectionOptions(values []string) bool {
+	for _, value := range values {
+		for _, option := range strings.Split(value, ",") {
+			option = strings.TrimSpace(option)
+			if !strings.EqualFold(option, "close") && !strings.EqualFold(option, "keep-alive") {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func isHeldRequestHopByHopHeader(name string) bool {
@@ -153,10 +170,13 @@ func heldRequestTarget(escapedPath, rawQuery string, forceQuery bool) string {
 	return target
 }
 
+// heldApplicationHeaders returns the fields a retained request carries to
+// the application: every field but the request proof and Connection.
 func heldApplicationHeaders(header http.Header) http.Header {
 	cloned := header.Clone()
 	for name := range cloned {
-		if strings.EqualFold(name, "Signature-Key") || strings.EqualFold(name, "Signature-Input") || strings.EqualFold(name, "Signature") {
+		if strings.EqualFold(name, "Signature-Key") || strings.EqualFold(name, "Signature-Input") || strings.EqualFold(name, "Signature") ||
+			strings.EqualFold(name, "Connection") {
 			delete(cloned, name)
 		}
 	}

@@ -134,6 +134,9 @@ func (claims *AuthTokenClaims) setTokenMembers(members map[string]json.RawMessag
 	claims.AdditionalClaims = additionalTokenClaims(members, authTokenClaimNames)
 }
 
+// readsSingleAudience lets verification read aud in either RFC 7519 form.
+func (*AuthTokenClaims) readsSingleAudience() {}
+
 func validateAuthClaims(claims AuthTokenClaims, now time.Time) error {
 	if err := ValidateServerIdentifier(claims.Issuer); err != nil {
 		return fmt.Errorf("aauth: auth-token issuer: %w", err)

@@ -102,3 +102,40 @@ func TestResponseSignatureBindsStatusFieldsAndRequest(t *testing.T) {
 		t.Error("a response signature that does not bind the request verified")
 	}
 }
+
+// A response signature's key is resolved before its length is judged, so a
+// key whose kty the verifier does not implement is unsupported_algorithm, as
+// for a request (Signature-Key "Algorithm Determination").
+func TestResponseKeyOfAnUnimplementedTypeIsUnsupportedAlgorithm(t *testing.T) {
+	t.Parallel()
+
+	key, err := jose.NewEd25519SigningKey("pq", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x32}, ed25519.SeedSize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1754620001, 0)
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	credential, err := signaturekey.NewJWKSURICredential("https://inference.example", "aauth-resource.json", "pq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, "https://inference.example/usage", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := http.Header{}
+	if err := signaturekey.SignResponse(header, http.StatusOK, nil, request, key, credential, clock, signaturekey.ResponseSignOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// An ML-DSA-44 signature is 2,420 bytes.
+	header.Set("Signature", "sig=:"+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x01}, 2420))+":")
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://inference.example", DiscoveryDocument: "aauth-resource.json", KeyID: "pq"}: {
+			Kty: "AKP", Alg: "ML-DSA-44", Kid: "pq",
+		},
+	}
+	_, err = signaturekey.VerifyResponse(
+		context.Background(), http.StatusOK, header, nil, request, resolver, clock, signaturekey.ResponseVerifyOptions{},
+	)
+	assertSignatureErrorCode(t, signaturekey.NormalizeError(err, signaturekey.ErrorInvalidSignature), signaturekey.ErrorUnsupportedAlgorithm)
+}

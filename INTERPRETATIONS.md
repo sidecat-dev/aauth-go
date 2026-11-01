@@ -28,6 +28,24 @@ authorization flow. When both are present, the accepting role validates and
 enforces both; neither is projected into or treated as a substitute for the
 other.
 
+## `aud` names one audience, written as a string or an array of one
+
+**Source:** Protocol `70d6737`, Resource Token Structure (line 742), Person
+Token Structure (line 867), Auth Token Structure (line 1778) and Common JWT
+Verification (line 2313).
+
+Each of these tokens names one audience URL, and Common JWT Verification
+verifies "per RFC 7515 and RFC 7519". RFC 7519, Section 4.1.3, lets a single
+audience be written as a string or as an array of one string, and the drafts
+do not exclude the array; some implementations write it. Person, Resource and
+auth tokens are read in either form. An empty array, or one of two or more
+members, is refused as a malformed token, since it does not name the one
+audience the drafts require. Tokens are minted with the string. Only the
+decoded claims are affected: the signed bytes and the members a host sees
+stay as presented. Agent tokens carry no `aud`.
+
+**Evidence:** `core_token_api_external_test.go:TestCoreTokenVerificationReadsAudAsAStringOrAnArrayOfOne`.
+
 ## R3 documents use immutable URIs and exact requested operation sets
 
 **Source:** R3, `Authorization Endpoint Extensions`, `Operations Spanning
@@ -200,6 +218,24 @@ refusal of anyone else's token.
 **Evidence:** `integration/mission_four_party_test.go`,
 `integration/call_chaining_hops_test.go:TestCallChainCarriesTheCallingAgentsMission`
 and `agent/mission_test.go:TestClientAcceptsResourceTokenThatOutlivesMissionBoundPersonToken`.
+
+## A mission-bound person token is challenged with its mission
+
+**Source:** Protocol `70d6737`, the Resource's auth-token challenge (line
+704), Resource Token Structure (`mission_s256`, line 755; lifetime, line 759)
+and Deferred Delivery (line 645).
+
+A Resource that requires an auth token answers a mission-bound person token
+as it answers any other: with a Resource token whose `mission_s256` is copied
+unchanged, REQUIRED "when the presented token carried one". The Resource does
+not check the mission; "the PS verifies that the mission is active when it
+acts on the token". Held delivery retains missionless requests only, so a
+Resource configured with `HeldInvocations` answers a mission-bound request
+with the ordinary `401` challenge rather than holding it; the draft lets a
+Resource choose either form. Before, the Resource refused a mission-bound
+person token with `401 invalid_token`.
+
+**Evidence:** `resource/challenge_test.go:TestAuthTokenRequirementCopiesTheMissionOfAMissionBoundPersonToken`.
 
 ## Unknown mission references at the Person Token Endpoint use `invalid_request`
 
@@ -1035,6 +1071,25 @@ record. The replay rule is treated as the specific exception to the general
 **Executable example:**
 `resource/held_test.go:TestHeldAuthTokenInvocationCompletesOnceAndReplays` and
 `resource/r3_per_call_test.go:TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge`.
+
+## A retained request leaves its connection options behind
+
+**Source:** Protocol `70d6737`, Deferred Delivery (line 659); R3 `70d6737`,
+Per-Call Proposals, enforced completion (line 677); RFC 9110, Section 7.6.1.
+
+A Resource that holds a request, or runs an approved per-call retry, executes
+a copy of the request apart from the exchange that carried it. The `close`
+and `keep-alive` options of `Connection` describe that connection, not the
+request, and RFC 9110 does not let them travel past it. A retained request
+leaves the `Connection` field and `http.Request.Close` behind, and the
+application sees neither. Before, a per-call retry sent with
+`Connection: close` was refused with `400 invalid_request` before it ran, and
+a held request with `500`. A `Connection` field naming any other option names
+a further hop-by-hop field, which a retained request still refuses, as it
+refuses trailers, transfer codings and the other hop-by-hop fields.
+
+**Evidence:** `resource/held_request_test.go:TestHeldRequestSnapshotLeavesConnectionOptionsBehind`
+and `resource/r3_per_call_test.go:TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge`.
 
 ## A lost held or per-call execution is never reclaimed automatically
 
@@ -2078,6 +2133,25 @@ another token for the same sub-agent key, which only that key's holder can use.
 **Evidence:** `agentprovider/subagent_test.go` and
 `agentprovider/subagent_http_test.go`.
 
+## An Agent identifier's `+` separates two non-empty parts
+
+**Source:** Protocol `70d6737`, Agent Identifiers (lines 488 and 490) and
+Sub-Agents (line 1915).
+
+`+` is reserved as the sub-agent delimiter. A top-level Agent's local part
+has none; a sub-agent's is its parent's local part, `+`, and a non-empty
+discriminator; and delegation is one level deep, so a parent's local part has
+no `+`. `ValidateAgentIdentifier` checks an identifier on its own, without the
+token that carries it: it accepts a local part with no `+`, or with one `+`
+between two non-empty parts, and refuses `+worker`, `assistant+` and
+`a+b+c`. The draft does not say whether a discriminator may contain `+`;
+refusing it follows from the reservation. Whether an Agent is a sub-agent is
+still decided by `parent_agent` (`ValidateAgentRelationship`), never by this
+shape: line 490 forbids parsing the local part for protocol decisions, and
+this check refuses only identifiers no Agent Provider may assign.
+
+**Evidence:** `identity_test.go:TestAgentIdentifierPlacesTheSubAgentDelimiterBetweenTwoParts`.
+
 ## Request-key algorithms are an endpoint choice
 
 **Source:** Signature-Key `69f5ba2`, Algorithm Determination, Header Web Key
@@ -2099,6 +2173,49 @@ than 2^31-1. `PS256` uses a salt as long as the hash. An `hwk` member refuses
 
 **Evidence:** `signaturekey/hwk_algorithms_external_test.go` and
 `jose/signature_algorithms_external_test.go`.
+
+## A Signature-Key header without the label's member is a missing Signature-Key
+
+**Source:** Signature-Key `69f5ba2`, Label Correlation step 4 (line 179),
+Label Consistency (line 187), `invalid_signature` (line 1018) and
+`invalid_key` (line 1046); Protocol `70d6737`, Verification (Server) steps 1
+and 5 (lines 2244 and 2248).
+
+When Signature-Key is present but has no member for the label being verified,
+verification "MUST fail"; neither draft names the code. `invalid_signature`
+covers a missing `Signature-Key` header, and `invalid_key` a key that is
+present but cannot be parsed. A missing member is the missing header for that
+one signature, so request preparation, `ParseCredentialForLabel` and response
+verification answer `invalid_signature`, as aauth-rust does. A member that is
+present but malformed (not an Item, or a scheme that is not a token), and a
+header that is not a Dictionary, stay `invalid_key`, following step 5's "cannot
+be parsed", although the `invalid_signature` text also says "malformed".
+
+**Evidence:** `signaturekey/request_external_test.go:TestPrepareRequestClassifiesAMissingLabelMemberAsInvalidSignature`.
+
+## A signature's length is judged against its key
+
+**Source:** Signature-Key `69f5ba2`, Algorithm Determination (lines 225 and
+233); Protocol `70d6737`, Verification (Server) steps 5 to 7 (lines 2248 to
+2250).
+
+The verifier obtains the key, then determines its algorithm, refusing an
+`alg` or key type it does not implement with `unsupported_algorithm`, and only
+then verifies the signature. A request whose key is resolved after
+preparation (`jwt`, `jkt-jwt`, `self-jwt`, `jwks`, `jwks_uri` and `cached`) is
+therefore prepared with any nonempty signature, and its length is compared
+with what the resolved key produces. A key of a type the verifier does not
+implement, such as ML-DSA's `AKP`, is `unsupported_algorithm` whatever the
+signature's length; a wrong length for a key it implements is
+`invalid_signature`, and for a `jwks_uri` key it lets a `KeyRefresher` check
+the key once more, as any other `invalid_signature` does. An `hwk` key is in
+the header, so its algorithm and length are checked while preparing, in the
+same order. An `x509` proof admits every length a supported certificate key
+can produce until the certificate is checked. `VerifyResponse` follows the
+same order for a `jwks_uri` response signature, as aauth-rust does.
+
+**Evidence:** `signaturekey/request_external_test.go:TestJWKSURIKeyOfAnUnimplementedTypeIsUnsupportedAlgorithm`
+and `signaturekey/response_external_test.go:TestResponseKeyOfAnUnimplementedTypeIsUnsupportedAlgorithm`.
 
 ## An x509 proof needs a host-supplied chain, anchors and CRLs
 
@@ -2664,6 +2781,26 @@ expiry, so expiry ends it with `expired` at the same instant.
 **Evidence:** `integration/call_chaining_hops_test.go:TestCallChainCarriesTheCallingAgentsMission`
 and `personserver/mission_composition_test.go`.
 
+## A budgeted auth token chains like any other upstream token
+
+**Source:** Protocol `70d6737`, Upstream Token Verification steps 1 and 2
+(lines 1832 and 1833) and Call Chaining (line 1848); Budgets `70d6737`,
+Delegation (line 923).
+
+An auth token presented as `upstream_token` is verified "per Auth Token
+Verification", and an auth token may carry a Budget grant. The intermediary's
+Agent client, the Person Server and the Access Server verify a budgeted
+upstream token with the complete Budget companion and then set its grant
+aside: the upstream token "grants nothing by itself", and "a budget is not
+delegable", so each downstream hop is sized from its own Resource token's
+offer and nothing is drawn from the upstream grant. An upstream token without
+Budget claims is verified as a Core auth token, as before. One that carries
+R3 claims is still refused, because verifying them needs the R3 document,
+which a chained request does not carry. aauth-rust's core verifier keeps
+companion claims without checking them, so it accepts both.
+
+**Evidence:** `integration/call_chaining_hops_test.go:TestFourPartyBudgetedAuthTokenChainsAsAnUpstreamToken`.
+
 ## A revoked upstream token ends a waiting chained request with revoked
 
 **Source:** Protocol `70d6737`, Call Chaining, Presenting a Revoked Token,
@@ -3033,3 +3170,24 @@ the Person Server may not have received the first. A repeat under an `sdi`
 whose request differs is `invalid_request`.
 
 **Evidence:** `supervisionserver/server_test.go`.
+
+## A supervision server sheds load with `rate_limited` through a host hook
+
+**Source:** Supervision `70d6737`, Errors (line 636) and Unavailable
+Supervisor (line 609).
+
+The draft gives the supervision server `429 rate_limited`, with `Retry-After`
+REQUIRED, for "will not take more from this PS for now", and leaves when to
+the server. `Config.RateLimit` is that decision. The host is asked once a
+connect, mission, decision or event request's signature verifies, before its
+body is decoded, and a wait answers `rate_limited` with that wait as
+`Retry-After`. Nothing is recorded, so the Person Server's later resend is
+handled as a first request. The wait is whole seconds from one second to an
+hour, the bound the server applies to a deferral's `Retry-After`; anything
+else is a host defect, answered `server_error`. Polls, clarification answers
+and cancellations of a pending URL are not limited by the hook: polling uses
+the Core polling codes, in which `429` is `slow_down`. aauth-rust exports a
+`rate_limited` response for its host to send; the two answer the same on the
+wire.
+
+**Evidence:** `supervisionserver/server_test.go:TestRateLimitAnswersRateLimitedWithRetryAfter`.

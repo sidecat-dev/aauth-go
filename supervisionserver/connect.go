@@ -100,7 +100,7 @@ func (server *Server) personServerName(ctx context.Context, personServer string)
 
 func (server *Server) handleConnect(response http.ResponseWriter, request *http.Request) {
 	personServer, _, body, ok := server.authenticate(response, request, true)
-	if !ok {
+	if !ok || !server.admit(response, request, personServer) {
 		return
 	}
 	connect, err := supervision.DecodeConnectRequest(body)

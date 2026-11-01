@@ -106,6 +106,15 @@ type Config struct {
 	// than the longest token lifetime the Person Server issues; a decision
 	// that bounds exp is kept at least until that exp.
 	DecisionRetention time.Duration
+	// RateLimit optionally sheds load from a Person Server. It is asked once
+	// a connect, mission, decision or event request's signature verifies,
+	// before its body is decoded, and returns how long that Person Server
+	// should wait. Zero takes the request. A wait of whole seconds, from one
+	// second to an hour, answers 429 rate_limited with it as Retry-After and
+	// records nothing, so the Person Server sends the request again later.
+	// Any other wait, or an error, answers server_error. Polls, clarification
+	// answers and cancellations of pending URLs are not limited here.
+	RateLimit func(ctx context.Context, personServer string) (time.Duration, error)
 }
 
 // Server is a supervision server.
@@ -121,6 +130,7 @@ type Server struct {
 	decide            func(context.Context, DecisionRequest) (DecisionResult, error)
 	observe           func(context.Context, Observation) error
 	retention         time.Duration
+	rateLimit         func(context.Context, string) (time.Duration, error)
 }
 
 // New validates config and returns a Server.
@@ -163,6 +173,7 @@ func New(config Config) (*Server, error) {
 		keyResolver: config.KeyResolver, clock: config.Clock, store: config.Store,
 		trustPersonServer: config.TrustPersonServer, connect: config.Connect,
 		decide: config.Decide, observe: config.Observe, retention: retention,
+		rateLimit: config.RateLimit,
 	}, nil
 }
 
@@ -274,6 +285,29 @@ func (server *Server) authenticate(response http.ResponseWriter, request *http.R
 		return "", signaturekey.VerifiedRequest{}, nil, false
 	}
 	return personServer, proof, body, true
+}
+
+// admit asks Config.RateLimit whether to take a supervision request from
+// personServer. When it is not taken, the response is written: rate_limited
+// with its REQUIRED Retry-After (Supervision "Errors").
+func (server *Server) admit(response http.ResponseWriter, request *http.Request, personServer string) bool {
+	if server.rateLimit == nil {
+		return true
+	}
+	wait, err := server.rateLimit(request.Context(), personServer)
+	if err == nil && wait != 0 && (wait < time.Second || !validWholeSeconds(wait, maximumRetryAfter)) {
+		err = fmt.Errorf("supervisionserver: rate-limit wait %v is not whole seconds from 1s to %v", wait, maximumRetryAfter)
+	}
+	if err != nil {
+		writeProblem(response, supervision.ErrorServerError, err)
+		return false
+	}
+	if wait == 0 {
+		return true
+	}
+	response.Header().Set("Retry-After", retryAfterValue(wait))
+	writeProblem(response, supervision.ErrorRateLimited, errors.New("supervisionserver: the person server is rate limited"))
+	return false
 }
 
 // requireConnection answers unknown_sub unless (personServer, subject) is
