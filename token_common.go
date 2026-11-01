@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -167,7 +168,13 @@ func verifyCoreToken[T any](
 			return zero, err
 		}
 	}
-	if err := json.Unmarshal(payload, claims); err != nil {
+	decoded := payload
+	if _, ok := any(claims).(interface{ readsSingleAudience() }); ok {
+		if decoded, err = singleAudiencePayload(payload, members); err != nil {
+			return zero, fmt.Errorf("aauth: decode %s claims: %w", expectedType, err)
+		}
+	}
+	if err := json.Unmarshal(decoded, claims); err != nil {
 		return zero, fmt.Errorf("aauth: decode %s claims: %w", expectedType, err)
 	}
 	if receiver, ok := any(claims).(interface {
@@ -187,6 +194,30 @@ func verifyCoreToken[T any](
 		return zero, err
 	}
 	return *claims, nil
+}
+
+// singleAudiencePayload returns payload for decoding, with an aud written in
+// RFC 7519's array form replaced by its one string. Person, Resource and auth
+// tokens name exactly one audience, which RFC 7519 lets an issuer write either
+// way; tokens are minted with the string. An array of any other length is
+// refused. Only the decoded copy changes: the signed bytes and members stay
+// as presented.
+func singleAudiencePayload(payload []byte, members map[string]json.RawMessage) ([]byte, error) {
+	raw, present := members["aud"]
+	if !present || !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+		return payload, nil
+	}
+	var audiences []string
+	if err := json.Unmarshal(raw, &audiences); err != nil || len(audiences) != 1 {
+		return nil, errors.New("aud must name one audience, as a string or an array of one string")
+	}
+	single, err := json.Marshal(audiences[0])
+	if err != nil {
+		return nil, err
+	}
+	rewritten := maps.Clone(members)
+	rewritten["aud"] = single
+	return json.Marshal(rewritten)
 }
 
 func rejectClaims(tokenType string, members map[string]json.RawMessage, reason string, names ...string) error {

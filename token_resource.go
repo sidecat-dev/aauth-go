@@ -154,6 +154,9 @@ func (claims *ResourceTokenClaims) setTokenMembers(members map[string]json.RawMe
 	claims.AdditionalClaims = additionalTokenClaims(members, resourceTokenClaimNames)
 }
 
+// readsSingleAudience lets verification read aud in either RFC 7519 form.
+func (*ResourceTokenClaims) readsSingleAudience() {}
+
 func validateResourceClaims(claims ResourceTokenClaims, now time.Time) error {
 	if claims.Scope == "" {
 		return errors.New("aauth: resource-token scope is required without a companion authorization claim")

@@ -640,6 +640,92 @@ func TestCoreTokenVerificationRejectsUnhandledAuthorizationClaims(t *testing.T) 
 	}
 }
 
+// RFC 7519 lets a single audience be written as a string or as an array of
+// one string; other implementations write the array. Person, Resource and
+// auth tokens are read in either form and still name exactly one audience.
+func TestCoreTokenVerificationReadsAudAsAStringOrAnArrayOfOne(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 31, 12, 15, 0, 0, time.UTC)
+	key := coreTokenKey(t, "issuer-key")
+	clock := aauth.ClockFunc(func() time.Time { return now })
+	resolver := signaturekey.StaticKeyResolver{
+		{Issuer: "https://person.example", DiscoveryDocument: aauth.PersonDiscoveryDocument, KeyID: key.ID()}:     key.PublicJWK(),
+		{Issuer: "https://resource.example", DiscoveryDocument: aauth.ResourceDiscoveryDocument, KeyID: key.ID()}: key.PublicJWK(),
+		{Issuer: "https://access.example", DiscoveryDocument: aauth.AccessDiscoveryDocument, KeyID: key.ID()}:     key.PublicJWK(),
+	}
+	for _, token := range []struct {
+		name      string
+		tokenType string
+		audience  string
+		base      map[string]any
+		verify    func(string) (string, error)
+	}{
+		{
+			name: "person", tokenType: aauth.PersonTokenType, audience: "https://resource.example",
+			base: map[string]any{
+				"iss": "https://person.example", "dwk": aauth.PersonDiscoveryDocument, "sub": "person-123",
+				"cnf": map[string]any{"jwk": key.PublicJWK()}, "jti": "person-token-1",
+				"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+			},
+			verify: func(compact string) (string, error) {
+				claims, err := aauth.VerifyPersonToken(context.Background(), compact, resolver, clock)
+				return claims.Audience, err
+			},
+		},
+		{
+			name: "resource", tokenType: aauth.ResourceTokenType, audience: "https://access.example",
+			base: map[string]any{
+				"iss": "https://resource.example", "dwk": aauth.ResourceDiscoveryDocument, "jti": "resource-token-1",
+				"ps": "https://person.example", "sub": "person-123", "presented_jti": "person-token-1",
+				"agent_jkt": coreTokenS256("agent-key"), "scope": "records.read",
+				"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
+			},
+			verify: func(compact string) (string, error) {
+				claims, err := aauth.VerifyResourceToken(context.Background(), compact, resolver, clock)
+				return claims.Audience, err
+			},
+		},
+		{
+			name: "auth", tokenType: aauth.AuthTokenType, audience: "https://resource.example",
+			base: map[string]any{
+				"iss": "https://access.example", "dwk": aauth.AccessDiscoveryDocument, "jti": "auth-token-1",
+				"ps": "https://person.example", "sub": "person-123",
+				"cnf": map[string]any{"jwk": key.PublicJWK()}, "scope": "records.read",
+				"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+			},
+			verify: func(compact string) (string, error) {
+				claims, err := aauth.VerifyAuthToken(context.Background(), compact, resolver, clock)
+				return claims.Audience, err
+			},
+		},
+	} {
+		for _, form := range []struct {
+			name     string
+			audience any
+			accepted bool
+		}{
+			{name: "string", audience: token.audience, accepted: true},
+			{name: "array of one", audience: []string{token.audience}, accepted: true},
+			{name: "empty array", audience: []string{}},
+			{name: "array of two", audience: []string{token.audience, "https://other.example"}},
+			{name: "array of a number", audience: []any{7}},
+		} {
+			t.Run(token.name+"/"+form.name, func(t *testing.T) {
+				members := cloneCoreTokenMembers(token.base)
+				members["aud"] = form.audience
+				audience, err := token.verify(signCoreTokenPayload(t, key, token.tokenType, members))
+				if form.accepted && (err != nil || audience != token.audience) {
+					t.Fatalf("verify = %q, %v; want %q", audience, err, token.audience)
+				}
+				if !form.accepted && err == nil {
+					t.Fatalf("aud %v was accepted", form.audience)
+				}
+			})
+		}
+	}
+}
+
 func TestCoreTokenVerificationRejectsObsoleteClaims(t *testing.T) {
 	t.Parallel()
 
