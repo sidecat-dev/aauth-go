@@ -10,6 +10,7 @@ import (
 	"time"
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
+	"gitlab.com/sidecat-dev/aauth-go/internal/upstreamtoken"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 )
@@ -161,7 +162,7 @@ func (server *Server) verifyUpstreamToken(
 		upstream.person = &claims
 		upstream.reference = aauth.TokenReference{Issuer: claims.Issuer, JTI: claims.JTI}
 	case aauth.AuthTokenType:
-		claims, err := aauth.VerifyAuthToken(ctx, compact, server.keyResolver, verificationClock)
+		claims, err := upstreamtoken.VerifyAuthToken(ctx, compact, server.keyResolver, verificationClock)
 		if err == nil {
 			err = withinSignature(claims.IssuedAt)
 		}

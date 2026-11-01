@@ -21,6 +21,7 @@ import (
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/budgets"
 	"gitlab.com/sidecat-dev/aauth-go/internal/jsonstrict"
+	"gitlab.com/sidecat-dev/aauth-go/internal/upstreamtoken"
 	"gitlab.com/sidecat-dev/aauth-go/jose"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
@@ -768,7 +769,7 @@ func (client *Client) verifyCallChainUpstreamTokenAt(
 		}
 		return callChainUpstream{personServer: claims.Issuer, missionS256: claims.MissionS256, expiresAt: claims.ExpiresAt}, nil
 	}
-	claims, err := aauth.VerifyAuthToken(ctx, compact, client.keyResolver, verificationClock)
+	claims, err := upstreamtoken.VerifyAuthToken(ctx, compact, client.keyResolver, verificationClock)
 	if err != nil {
 		return callChainUpstream{}, fmt.Errorf("verify upstream token: %w", err)
 	}
