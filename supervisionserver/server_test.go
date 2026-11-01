@@ -847,7 +847,7 @@ func TestPendingURLsAnswerOnlyTheRequester(t *testing.T) {
 	for name, send := range map[string]func() (supervision.Outcome, error){
 		"poll": func() (supervision.Outcome, error) { return f.other.Poll(ctx, supervisor, request, location) },
 		"answer": func() (supervision.Outcome, error) {
-			return f.other.AnswerClarification(ctx, supervisor, request, location, "yes")
+			return f.other.AnswerClarification(ctx, supervisor, request, location, supervision.ClarificationResponse{Answer: "yes"})
 		},
 		"cancel": func() (supervision.Outcome, error) { return f.other.Cancel(ctx, supervisor, location) },
 		"unknown url": func() (supervision.Outcome, error) {
@@ -892,7 +892,7 @@ func TestClarificationRoundTripAndCancellation(t *testing.T) {
 	if repeated.Pending == nil || repeated.Pending.Location != location || repeated.Pending.Clarification == nil {
 		t.Fatalf("repeat while clarifying = %#v", repeated)
 	}
-	answered, err := f.ps.AnswerClarification(ctx, supervisor, request, location, "Yes, until 48 hours before departure.")
+	answered, err := f.ps.AnswerClarification(ctx, supervisor, request, location, supervision.ClarificationResponse{Answer: "Yes, until 48 hours before departure."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -903,7 +903,7 @@ func TestClarificationRoundTripAndCancellation(t *testing.T) {
 		t.Fatalf("policy saw %#v", requests)
 	}
 	// A retried answer whose response was lost gets the same bytes.
-	retried, err := f.ps.AnswerClarification(ctx, supervisor, request, location, "Yes, until 48 hours before departure.")
+	retried, err := f.ps.AnswerClarification(ctx, supervisor, request, location, supervision.ClarificationResponse{Answer: "Yes, until 48 hours before departure."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -919,7 +919,7 @@ func TestClarificationRoundTripAndCancellation(t *testing.T) {
 	for name, send := range map[string]func() (supervision.Outcome, error){
 		"poll": func() (supervision.Outcome, error) { return f.ps.Poll(ctx, supervisor, cancelled, location) },
 		"answer": func() (supervision.Outcome, error) {
-			return f.ps.AnswerClarification(ctx, supervisor, cancelled, location, "no")
+			return f.ps.AnswerClarification(ctx, supervisor, cancelled, location, supervision.ClarificationResponse{Answer: "no"})
 		},
 		"cancel": func() (supervision.Outcome, error) { return f.ps.Cancel(ctx, supervisor, location) },
 	} {

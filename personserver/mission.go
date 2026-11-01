@@ -299,7 +299,7 @@ func (server *Server) handleMission(response http.ResponseWriter, request *http.
 		return
 	}
 	if verdict != nil && !verdict.allowed() {
-		writeMissionPolicyProblem(response, "mission_denied", verdict.denial(ErrMissionDenied))
+		writeMissionDenial(response, "mission_denied", verdict)
 		return
 	}
 	if verdict != nil {
@@ -618,7 +618,7 @@ func (server *Server) handleMissionAction(response http.ResponseWriter, request 
 		return
 	}
 	if verdict != nil && !verdict.allowed() {
-		writeMissionPolicyProblem(response, denialCode, verdict.denial(ErrMissionDenied))
+		writeMissionDenial(response, denialCode, verdict)
 		return
 	}
 	if verdict != nil {

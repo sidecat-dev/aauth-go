@@ -288,4 +288,5 @@ type Store interface {
 	MissionStore
 	DecisionStore
 	DeliveryStore
+	ReachStore
 }

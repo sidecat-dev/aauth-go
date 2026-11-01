@@ -371,14 +371,11 @@ func decided(decision supervision.Decision) supervisionserver.DecisionResult {
 // person's Agent through a whole mission with a supervisor that applies
 // standing policy and asks the person only for an exception. The Person
 // Server's own policies are never called for the Agent, the person's answer
-// reaches the supervisor with the reach they gave it, and the supervisor then
-// applies that reach without asking again.
+// reaches the supervisor with the reach they gave it, and the supervision
+// server then applies that reach itself, without asking its policy again.
 func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.T) {
 	t.Parallel()
 	world := newSupervisionWorld(t, supervisionWorldOptions{})
-	var reachMu sync.Mutex
-	asksByActionSDI := map[string]string{}
-	reach := map[string]string{}
 	home := world.addSupervisor(homeSupervisorID, true, func(request supervisionserver.DecisionRequest) supervisionserver.DecisionResult {
 		switch request.Request.Kind {
 		case supervision.KindMissionProposal:
@@ -389,12 +386,9 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 		case supervision.KindAuthToken:
 			return decided(supervision.Decision{Verdict: supervision.VerdictAllow, Scope: "records.read"})
 		case supervision.KindPermission:
-			reachMu.Lock()
-			defer reachMu.Unlock()
-			if request.Request.Action != "payments.send" || reach[request.Request.MissionS256+" "+request.Request.Action] == supervision.ApplyMission {
+			if request.Request.Action != "payments.send" {
 				return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
 			}
-			asksByActionSDI[request.Request.SDI] = request.Request.Action
 			return decided(supervision.Decision{
 				Verdict: supervision.VerdictAsk, Summary: "The agent wants to send a payment.",
 				Recommendation: supervision.VerdictDeny,
@@ -407,16 +401,6 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 			return decided(supervision.Decision{Verdict: supervision.VerdictAllow})
 		}
 	})
-	// The supervisor's standing policy learns the reach of each answer.
-	learn := func() {
-		for _, event := range home.events(supervision.EventDecisionResolved) {
-			reachMu.Lock()
-			if action, ok := asksByActionSDI[event.SDI]; ok && event.Answer == supervision.AnswerAllow {
-				reach[event.MissionS256+" "+action] = event.Apply
-			}
-			reachMu.Unlock()
-		}
-	}
 	assistant, assistantID := world.newAgent("assistant")
 	world.route(assistantID, personserver.Supervisor{Issuer: homeSupervisorID, Subject: "home-person-1"})
 	ctx := world.ctx
@@ -508,7 +492,6 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 		resolved[0].Recommendation != supervision.VerdictDeny || resolved[0].Supervisor != "" {
 		t.Fatalf("decision.resolved = %#v, want the person's allow with reach mission and the supervisor's recommendation", resolved)
 	}
-	learn()
 
 	again, err := assistant.RequestPermission(ctx, clientagent.PermissionRequest{
 		PersonServer: supervisedPersonID, MissionS256: mission.S256, Action: "payments.send",
@@ -548,10 +531,11 @@ func TestSupervisorDecidesForSupervisedAgentAndAsksOnlyForExceptions(t *testing.
 			}
 		}
 	}
+	// The second payment was decided by the person's answer for the
+	// mission, so the policy was not asked about it.
 	wantKinds := []supervision.Kind{
 		supervision.KindMissionProposal, supervision.KindAuthToken, supervision.KindPermission,
-		supervision.KindPermission, supervision.KindPermission, supervision.KindMissionUpdate,
-		supervision.KindMissionCompletion,
+		supervision.KindPermission, supervision.KindMissionUpdate, supervision.KindMissionCompletion,
 	}
 	if !slices.Equal(kinds, wantKinds) {
 		t.Fatalf("the supervisor was asked %v, want %v", kinds, wantKinds)
