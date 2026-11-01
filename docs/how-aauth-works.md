@@ -69,7 +69,9 @@ thumbprint instead, in `agent_jkt`.
 A **scope** is a name for a kind of access, such as `records.read`, that the
 Resource defines and describes in its metadata.
 
-In this library, AAuth tokens and the keys they name are Ed25519.
+In this library, AAuth tokens and the keys they name are Ed25519 or ES256.
+Ed25519 is what the examples use; ES256 suits a key held in hardware that
+offers only ECDSA P-256.
 
 ## Challenges and waiting
 

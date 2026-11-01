@@ -371,14 +371,15 @@ source-area table in [CONFORMANCE.md](CONFORMANCE.md) is the supported-behavior
 summary; it names evidence and exclusions for each path rather than inferring
 support from exported types.
 
-Core requires fully specified JOSE algorithm identifiers and requires support
-for `Ed25519`. This implementation uses `Ed25519`; it does not accept the
-polymorphic `EdDSA` identifier as an equivalent spelling.
+Core requires fully specified JOSE algorithm identifiers, requires support
+for `Ed25519` and recommends `ES256`. This implementation uses `Ed25519` by
+default and signs and verifies `ES256` tokens and keys too; it does not accept
+the polymorphic `EdDSA` identifier as an equivalent spelling.
 
 ### HTTP Signature Keys
 
-The current role paths use `jwt`, `jwks_uri`, `hwk`, and the Ed25519
-`jkt-s256+jwt` subset of `jkt-jwt`, plus a bounded set of shared
+The current role paths use `jwt`, `jwks_uri`, `hwk`, and the Ed25519 and
+ES256 `jkt-s256+jwt` subset of `jkt-jwt`, plus a bounded set of shared
 message-signature behavior. Other schemes, complete negotiation, and generic
 replay enforcement remain explicit gaps in [CONFORMANCE.md](CONFORMANCE.md).
 
