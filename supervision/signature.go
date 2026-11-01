@@ -123,14 +123,17 @@ func acceptedComponents(request *http.Request) ([]acceptedComponent, bool) {
 
 // SignDecision signs a terminal decision response under the SS's jwks_uri
 // key, naming issuer and DiscoveryDocument in Signature-Key, and sets the
-// signature and Content-Digest fields in header. body is the exact response
-// body and request the request it answers.
+// signature and Content-Digest fields in header. Signature-Input carries
+// created and the key's kid as keyid, as the draft's example does. body is
+// the exact response body and request the request it answers.
 func SignDecision(header http.Header, status int, body []byte, request *http.Request, key jose.SigningKey, issuer string, clock aauth.Clock) error {
 	credential, err := signaturekey.NewJWKSURICredential(issuer, DiscoveryDocument, key.ID())
 	if err != nil {
 		return fmt.Errorf("supervision: decision signing credential: %w", err)
 	}
-	return signaturekey.SignResponse(header, status, body, request, key, credential, clock, DecisionSignOptions(request))
+	options := DecisionSignOptions(request)
+	options.KeyID = key.ID()
+	return signaturekey.SignResponse(header, status, body, request, key, credential, clock, options)
 }
 
 // VerifyDecision verifies a signed decision: the signature must cover

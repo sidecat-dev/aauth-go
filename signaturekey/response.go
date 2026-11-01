@@ -32,10 +32,15 @@ type ResponseSignOptions struct {
 	// the req parameter: @method, @authority, @path, @query, or a request
 	// field name.
 	RequestComponents []string
+	// KeyID, when set, is written as the keyid signature parameter after
+	// created. It must be the kid the Signature-Key member names, so both
+	// identify the same key (Signature-Key, Relationship to
+	// Accept-Signature); a verifier takes the key from Signature-Key.
+	KeyID string
 }
 
 // ResponseVerifyOptions states what a response signature must cover.
-// @status is always required. AcceptedAlgorithms defaults to Ed25519 and
+// @status is always required. AcceptedAlgorithms defaults to Ed25519 and ES256
 // SignatureWindow to DefaultSignatureWindow.
 type ResponseVerifyOptions struct {
 	// Label selects one signature. Empty requires exactly one.
@@ -138,6 +143,14 @@ func SignResponse(
 	if err != nil {
 		return err
 	}
+	if options.KeyID != "" {
+		if _, _, keyID, _ := credential.JWKSURI(); options.KeyID != keyID {
+			return errors.New("aauth: response keyid must be the kid Signature-Key names")
+		}
+		if err := validateStructuredFieldString(options.KeyID); err != nil {
+			return fmt.Errorf("aauth: response keyid: %w", err)
+		}
+	}
 	candidate := header.Clone()
 	candidate.Set("Signature-Key", label+"="+credential.member)
 	for _, component := range components {
@@ -146,7 +159,7 @@ func SignResponse(
 			candidate.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
 		}
 	}
-	params := responseSignatureParams(components, clock.Now().Unix())
+	params := responseSignatureParams(components, clock.Now().Unix(), options.KeyID)
 	base, err := responseSignatureBase(status, candidate, request, components, params)
 	if err != nil {
 		return err
@@ -355,12 +368,16 @@ func containsResponseComponent(components []responseComponent, wanted responseCo
 	return false
 }
 
-func responseSignatureParams(components []responseComponent, created int64) string {
+func responseSignatureParams(components []responseComponent, created int64, keyID string) string {
 	identifiers := make([]string, len(components))
 	for index, component := range components {
 		identifiers[index] = component.identifier()
 	}
-	return "(" + strings.Join(identifiers, " ") + ");created=" + strconv.FormatInt(created, 10)
+	params := "(" + strings.Join(identifiers, " ") + ");created=" + strconv.FormatInt(created, 10)
+	if keyID != "" {
+		params += ";keyid=" + strconv.Quote(keyID)
+	}
+	return params
 }
 
 func responseSignatureBase(

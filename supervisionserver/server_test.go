@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -294,6 +295,12 @@ func requireSameResponse(t *testing.T, first, second supervision.Outcome) {
 		if left.Header.Get(name) == "" || left.Header.Get(name) != right.Header.Get(name) {
 			t.Fatalf("%s differs: %q and %q", name, left.Header.Get(name), right.Header.Get(name))
 		}
+	}
+	// The decision names its key in keyid as Signature-Key does, as the
+	// draft's example writes it.
+	keyID := regexp.MustCompile(`kid="([^"]+)"`).FindStringSubmatch(left.Header.Get("Signature-Key"))
+	if keyID == nil || !strings.Contains(left.Header.Get("Signature-Input"), `;keyid="`+keyID[1]+`"`) {
+		t.Fatalf("signed decision Signature-Input = %q, want the Signature-Key kid as keyid", left.Header.Get("Signature-Input"))
 	}
 }
 
