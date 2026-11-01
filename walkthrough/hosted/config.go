@@ -96,6 +96,12 @@ func newHostedHTTPClient(stateDir string, config agentConfig) (*http.Client, err
 	return &http.Client{Transport: transport, Timeout: 10 * time.Second}, nil
 }
 
+// transportEnforcesEgress reports whether newHostedHTTPClient's transport
+// decides every connection itself. With a service address it connects only to
+// that address and refuses other hosts, so a key resolver must use it unchanged
+// rather than resolve the hosted names through DNS.
+func (config agentConfig) transportEnforcesEgress() bool { return config.ServiceAddress != "" }
+
 func hostedPersonOrigin(base string) string   { return hostedRoleOrigin(base, "person") }
 func hostedResourceOrigin(base string) string { return hostedRoleOrigin(base, "resource") }
 

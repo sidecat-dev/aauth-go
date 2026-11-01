@@ -187,6 +187,59 @@ func (store *hostedProtocolStore) CommitMissionR3AuthToken(_ context.Context, ex
 	return store.save(state)
 }
 
+func (store *hostedProtocolStore) TerminateMission(_ context.Context, agent, digest string, terminatedAt time.Time, reason string) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if terminatedAt.IsZero() || reason == "" {
+		return personserver.MissionRecord{}, errors.New("mission termination time and reason are required")
+	}
+	state, err := store.load()
+	if err != nil {
+		return personserver.MissionRecord{}, err
+	}
+	key := missionKey(agent, digest)
+	current, ok := state.Missions[key]
+	if !ok {
+		return personserver.MissionRecord{}, personserver.ErrMissionNotFound
+	}
+	if current.State != personserver.MissionActive {
+		return current, nil
+	}
+	current.State = personserver.MissionTerminated
+	current.TerminationReason = reason
+	if !current.ExpiresAt.IsZero() && !terminatedAt.Before(current.ExpiresAt) {
+		current.TerminationReason = "expired"
+	}
+	state.Missions[key] = current
+	if err := store.save(state); err != nil {
+		return personserver.MissionRecord{}, err
+	}
+	return current, nil
+}
+
+func (store *hostedProtocolStore) LoadMissionTokens(_ context.Context, digest string) (personserver.MissionTokens, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	state, err := store.load()
+	if err != nil {
+		return personserver.MissionTokens{}, err
+	}
+	issued := personserver.MissionTokens{
+		PersonTokens: []personserver.PersonTokenRecord{}, AuthTokens: []personserver.IssuedAuthTokenRecord{},
+	}
+	for _, record := range state.PersonTokens {
+		if record.MissionS256 == digest {
+			issued.PersonTokens = append(issued.PersonTokens, record)
+		}
+	}
+	for _, record := range state.AuthTokens {
+		if record.MissionS256 == digest {
+			issued.AuthTokens = append(issued.AuthTokens, record)
+		}
+	}
+	return issued, nil
+}
+
 func (store *hostedProtocolStore) activeMission(expected personserver.MissionRecord, at time.Time) (hostedProtocolState, personserver.MissionRecord, error) {
 	state, err := store.load()
 	if err != nil {
