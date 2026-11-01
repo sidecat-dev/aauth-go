@@ -26,12 +26,14 @@ type hostedRoles struct {
 func composeHostedRoles(stateDir string, config hostConfig, accounts *accountFileStore, protocol *hostedProtocolStore, clock aauth.Clock) (hostedRoles, error) {
 	personOrigin := hostedPersonOrigin(config.Origin)
 	resourceOrigin := hostedResourceOrigin(config.Origin)
-	httpClient, err := newHostedHTTPClient(stateDir, agentConfig{ServiceOrigin: config.Origin, ServiceAddress: config.Listen, EnrollmentCode: config.EnrollmentCode, ControlToken: config.ControlToken})
+	clientConfig := agentConfig{ServiceOrigin: config.Origin, ServiceAddress: config.Listen, EnrollmentCode: config.EnrollmentCode, ControlToken: config.ControlToken}
+	httpClient, err := newHostedHTTPClient(stateDir, clientConfig)
 	if err != nil {
 		return hostedRoles{}, err
 	}
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: httpClient, Clock: clock, Admit: admitHostedRoles(config.Origin),
+		TransportEnforcesEgress: clientConfig.transportEnforcesEgress(),
 	})
 	if err != nil {
 		return hostedRoles{}, err

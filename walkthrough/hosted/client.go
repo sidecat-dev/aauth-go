@@ -303,6 +303,7 @@ func connectAgent(stateDir string, config agentConfig, httpClient *http.Client) 
 	clock := aauth.ClockFunc(func() time.Time { return time.Now().UTC() })
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: httpClient, Clock: clock, Admit: admitHostedOrigin(config.ServiceOrigin),
+		TransportEnforcesEgress: config.transportEnforcesEgress(),
 	})
 	if err != nil {
 		return err

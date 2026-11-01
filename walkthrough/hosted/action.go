@@ -150,6 +150,7 @@ func newHostedAgentClient(stateDir string, config agentConfig, httpClient *http.
 	clock := aauth.ClockFunc(func() time.Time { return time.Now().UTC() })
 	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{
 		Client: httpClient, Clock: clock, Admit: admitHostedRoles(config.ServiceOrigin),
+		TransportEnforcesEgress: config.transportEnforcesEgress(),
 	})
 	if err != nil {
 		return nil, r3.OperationSet{}, budgets.Value{}, err
