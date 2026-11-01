@@ -1034,28 +1034,6 @@ func unsupportedAlgorithm(accepted []string, cause error) *Error {
 	return &Error{Code: ErrorUnsupportedAlgorithm, AcceptedAlgorithms: append([]string(nil), accepted...), Cause: cause}
 }
 
-// algorithmsAcceptSignatureSize reports whether any accepted algorithm
-// produces a signature of size bytes.
-func algorithmsAcceptSignatureSize(algorithms []string, size int) bool {
-	for _, algorithm := range algorithms {
-		switch algorithm {
-		case jose.Ed25519Algorithm, jose.ES256Algorithm:
-			if size == 64 {
-				return true
-			}
-		case jose.ES384Algorithm:
-			if size == 96 {
-				return true
-			}
-		case jose.RS256Algorithm, jose.PS256Algorithm:
-			if rsaSignatureSize(size) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // rsaSignatureSize reports whether size is the length of a 2048- to 8192-bit
 // RSA modulus.
 func rsaSignatureSize(size int) bool {

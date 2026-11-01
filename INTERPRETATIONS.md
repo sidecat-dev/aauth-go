@@ -2193,7 +2193,7 @@ be parsed", although the `invalid_signature` text also says "malformed".
 
 **Evidence:** `signaturekey/request_external_test.go:TestPrepareRequestClassifiesAMissingLabelMemberAsInvalidSignature`.
 
-## A request signature's length is judged against its key
+## A signature's length is judged against its key
 
 **Source:** Signature-Key `69f5ba2`, Algorithm Determination (lines 225 and
 233); Protocol `70d6737`, Verification (Server) steps 5 to 7 (lines 2248 to
@@ -2211,9 +2211,11 @@ signature's length; a wrong length for a key it implements is
 the key once more, as any other `invalid_signature` does. An `hwk` key is in
 the header, so its algorithm and length are checked while preparing, in the
 same order. An `x509` proof admits every length a supported certificate key
-can produce until the certificate is checked.
+can produce until the certificate is checked. `VerifyResponse` follows the
+same order for a `jwks_uri` response signature, as aauth-rust does.
 
-**Evidence:** `signaturekey/request_external_test.go:TestJWKSURIKeyOfAnUnimplementedTypeIsUnsupportedAlgorithm`.
+**Evidence:** `signaturekey/request_external_test.go:TestJWKSURIKeyOfAnUnimplementedTypeIsUnsupportedAlgorithm`
+and `signaturekey/response_external_test.go:TestResponseKeyOfAnUnimplementedTypeIsUnsupportedAlgorithm`.
 
 ## An x509 proof needs a host-supplied chain, anchors and CRLs
 
