@@ -120,7 +120,7 @@ func TestServiceVerificationRequiresExplicitDigestOnEmptyRequests(t *testing.T) 
 			}
 			t.Run(name, func(t *testing.T) {
 				calls := 0
-				handler, err := agentResource(providerKeys(providerKey.PublicJWK()), clock,
+				handler, err := digestEverywhereResource(providerKeys(providerKey.PublicJWK()), clock,
 					http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						calls++
 						w.WriteHeader(http.StatusNoContent)
