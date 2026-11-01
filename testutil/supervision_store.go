@@ -295,6 +295,12 @@ func cloneSupervised(request personserver.SupervisedRequest) personserver.Superv
 	request.Request = append([]byte(nil), request.Request...)
 	request.AgentRequest.Header = http.Header(request.AgentRequest.Header).Clone()
 	request.AgentRequest.Body = append([]byte(nil), request.AgentRequest.Body...)
+	if request.Update != nil {
+		update := *request.Update
+		update.Header = http.Header(update.Header).Clone()
+		update.Body = append([]byte(nil), update.Body...)
+		request.Update = &update
+	}
 	if request.Question != nil {
 		question := *request.Question
 		question.Clarification.Options = append([]string(nil), question.Clarification.Options...)

@@ -17,7 +17,8 @@ const maxProblemResponseBytes = 1 << 20
 type ErrorCode string
 
 // ProblemError is an AAuth RFC 9457 error response. Code is the required
-// AAuth "error" extension member.
+// AAuth "error" extension member. Reason is the Markdown reason a supervisor
+// or the person gave for refusing a mission request, untrusted for display.
 type ProblemError struct {
 	Type              string
 	Title             string
@@ -27,6 +28,7 @@ type ProblemError struct {
 	Instance          string
 	MissionStatus     string
 	TerminationReason string
+	Reason            string
 }
 
 func (problem *ProblemError) Error() string {
@@ -71,6 +73,7 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 		Instance          string    `json:"instance"`
 		MissionStatus     string    `json:"mission_status"`
 		TerminationReason string    `json:"termination_reason"`
+		Reason            string    `json:"reason"`
 	}
 	if err := jsonstrict.RejectCaseVariants(body, &wire); err != nil {
 		return nil, fmt.Errorf("aauth: decode problem response: %w", err)
@@ -90,7 +93,7 @@ func DecodeProblemResponse(response *http.Response) (*ProblemError, error) {
 	return &ProblemError{
 		Type: wire.Type, Title: wire.Title, Status: wire.Status,
 		Code: wire.Code, Detail: wire.Detail, Instance: wire.Instance,
-		MissionStatus: wire.MissionStatus, TerminationReason: wire.TerminationReason,
+		MissionStatus: wire.MissionStatus, TerminationReason: wire.TerminationReason, Reason: wire.Reason,
 	}, nil
 }
 

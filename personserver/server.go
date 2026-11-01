@@ -1207,12 +1207,20 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
-	verificationClock := aauth.ClockFunc(func() time.Time { return proof.VerifiedAt() })
+	// The request's tokens are verified as of the request that presented
+	// them: a supervised request the Agent updated while answering its
+	// supervisor completes with the tokens of its updated_request.
+	tokenProof := proof
+	if completion := supervisionCompletionFrom(request.Context()); completion != nil && completion.update != nil {
+		input.ResourceToken, input.PresentedToken = completion.update.resourceToken, completion.update.presentedToken
+		tokenProof = completion.update.proof
+	}
+	verificationClock := aauth.ClockFunc(func() time.Time { return tokenProof.VerifiedAt() })
 	resourceToken, r3Context, budgetOffer, budgetConsumed, err := server.verifyResourceTokenForAuthorization(
 		request.Context(), input.ResourceToken, verificationClock,
 	)
 	if err == nil {
-		err = proof.CheckIssuedAt(time.Unix(resourceToken.IssuedAt, 0))
+		err = tokenProof.CheckIssuedAt(time.Unix(resourceToken.IssuedAt, 0))
 	}
 	if err != nil {
 		if server.refuseRevokedParameter(response, request.Context(), input.ResourceToken, nil, err, "revoked_resource_token") {
@@ -1302,7 +1310,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		request.Context(), input.PresentedToken, resourceToken, server.keyResolver, verificationClock,
 	)
 	if err == nil {
-		err = proof.CheckIssuedAt(presentedTokenIssuedAt(presented))
+		err = tokenProof.CheckIssuedAt(presentedTokenIssuedAt(presented))
 	}
 	if err != nil {
 		if server.refuseRevokedParameter(response, request.Context(), input.PresentedToken, nil, err, "revoked_presented_token") {
@@ -1343,7 +1351,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 			record.ParentAgent != credentialAgent.ParentAgent ||
 			!record.Confirmation.Equal(credentialAgent.Confirmation.JWK) ||
 			resourceTokenExpiresAt.After(record.RetainUntil) ||
-			!record.RetainUntil.After(proof.VerifiedAt()) {
+			!record.RetainUntil.After(tokenProof.VerifiedAt()) {
 			writeProblem(response, http.StatusBadRequest, "invalid_resource_token", errors.New("resource token does not match the retained person token"))
 			return
 		}
