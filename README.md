@@ -23,7 +23,7 @@ You need [Go](https://go.dev/dl/) 1.25 or later. In a new directory:
 
 ```sh
 go mod init example.com/hello-aauth
-go get gitlab.com/sidecat-dev/aauth-go@0e2447b
+go get gitlab.com/sidecat-dev/aauth-go@1e0b03e
 ```
 
 Then save [the getting-started program](example/gettingstarted/main.go) as
@@ -45,11 +45,11 @@ The module has no release tags: you build against a commit on `main`, named by
 its hash.
 
 ```sh
-go get gitlab.com/sidecat-dev/aauth-go@0e2447b
+go get gitlab.com/sidecat-dev/aauth-go@1e0b03e
 ```
 
 `go get` records the commit in `go.mod` as a pseudo-version,
-`v0.0.0-20261031210612-0e2447bc05b0`. Commit `go.mod` and `go.sum` with your
+`v0.0.0-20261101230727-1e0b03e4069f`. Commit `go.mod` and `go.sum` with your
 code, so that every build uses the same commit. To move to a later commit, run
 `go get` again with its hash.
 

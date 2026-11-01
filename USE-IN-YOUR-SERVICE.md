@@ -1762,11 +1762,11 @@ not preserved. It observes problems written by the role serializer, including
 Install the module at a commit on `main`; it has no release tags:
 
 ```sh
-go get gitlab.com/sidecat-dev/aauth-go@0e2447b
+go get gitlab.com/sidecat-dev/aauth-go@1e0b03e
 ```
 
 `go get` records the commit in `go.mod` as the pseudo-version
-`v0.0.0-20261031210612-0e2447bc05b0`. Review and commit `go.mod` and `go.sum`;
+`v0.0.0-20261101230727-1e0b03e4069f`. Review and commit `go.mod` and `go.sum`;
 these editor drafts and APIs are still evolving. To move to a later commit,
 run `go get` again with its hash.
 
