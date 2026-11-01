@@ -403,7 +403,10 @@ func parseCredentialForLabel(values []string, label string) (Credential, error) 
 
 // selectCredentialMember returns the Signature-Key member for label and its
 // exact field text. Only its scheme token is checked, so a caller can apply
-// scheme acceptance before any scheme-specific parsing.
+// scheme acceptance before any scheme-specific parsing. A header with no
+// member for label is a missing Signature-Key for that signature, so it is
+// invalid_signature (Signature-Key "Label Correlation" and
+// "invalid_signature"); every other failure is a malformed key.
 func selectCredentialMember(values []string, label string) (httpsfv.Item, string, error) {
 	dictionary, members, err := parseDictionaryMembers(values, "Signature-Key")
 	if err != nil {
@@ -411,7 +414,10 @@ func selectCredentialMember(values []string, label string) (httpsfv.Item, string
 	}
 	member, ok := dictionary.Get(label)
 	if !ok {
-		return httpsfv.Item{}, "", fmt.Errorf("aauth: Signature-Key has no member for signature label %q", label)
+		return httpsfv.Item{}, "", newError(
+			ErrorInvalidSignature,
+			fmt.Errorf("aauth: Signature-Key has no member for signature label %q", label),
+		)
 	}
 	item, ok := member.(httpsfv.Item)
 	if !ok {

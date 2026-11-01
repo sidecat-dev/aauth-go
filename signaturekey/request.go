@@ -522,6 +522,10 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 	// scheme this endpoint does not accept always has the same defined answer.
 	member, segment, err := selectCredentialMember(credentialHeaders, label)
 	if err != nil {
+		var failure *Error
+		if errors.As(err, &failure) {
+			return prepared, failure
+		}
 		return prepared, &Error{Code: ErrorInvalidKey, Cause: err}
 	}
 	if scheme := Scheme(member.Value.(httpsfv.Token)); !containsScheme(accepted, scheme) {
@@ -541,7 +545,13 @@ func PrepareRequest(request *http.Request, clock Clock, options VerifyOptions) (
 		}
 		return prepared, &Error{Code: ErrorInvalidKey, Cause: err}
 	}
-	acceptsSignatureSize := func(size int) bool { return algorithmsAcceptSignatureSize(algorithms, size) }
+	// A signature's length is checked against its key only once the key and
+	// its algorithm are known (AAuth Core "Verification (Server)" steps 5 to
+	// 7). Every scheme but hwk and x509 resolves its key after preparation, so
+	// here any nonempty signature is admitted: a key of a type or algorithm
+	// the verifier does not implement is then refused as
+	// unsupported_algorithm, not as a malformed signature.
+	acceptsSignatureSize := func(size int) bool { return size > 0 }
 	switch credential.scheme {
 	case SchemeHWK:
 		inline, _ := credential.InlineJWK()
