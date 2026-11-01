@@ -577,6 +577,9 @@ func TestMCPR3PerCallClassOperationCommitsProposalAndRetryBeforeChallenge(t *tes
 		t.Fatalf("expired proposal audit fetch = %d %s", auditResponse.Code, auditResponse.Body.String())
 	}
 	firstRequest := signedRequest(t, clock, agentKey, perCallAuthToken, http.MethodDelete, resourceIssuer+"/records/7", "")
+	// Connection: close belongs to the connection, not the retry, which runs.
+	firstRequest.Header.Set("Connection", "close")
+	firstRequest.Close = true
 	firstContext, cancelFirstTransport := context.WithCancel(firstRequest.Context())
 	firstRequest = firstRequest.WithContext(firstContext)
 	retries.beforeClaim = cancelFirstTransport

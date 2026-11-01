@@ -434,7 +434,7 @@ func TestHeldRequestSnapshotRejectsUnsupportedHTTPFeaturesWithoutTakingBody(t *t
 		{name: "Transfer-Encoding header", change: func(request *http.Request) { request.Header.Set("Transfer-Encoding", "chunked") }},
 		{name: "Upgrade", change: func(request *http.Request) { request.Header.Set("Upgrade", "websocket") }},
 		{name: "transfer encoding state", change: func(request *http.Request) { request.TransferEncoding = []string{"chunked"} }},
-		{name: "close", change: func(request *http.Request) { request.Close = true }},
+		{name: "Connection naming a field", change: func(request *http.Request) { request.Header.Set("Connection", "close, X-Hop") }},
 		{name: "invalid raw path", change: func(request *http.Request) { request.URL.RawPath = "/records/%zz" }},
 	}
 	for _, test := range tests {
@@ -450,6 +450,35 @@ func TestHeldRequestSnapshotRejectsUnsupportedHTTPFeaturesWithoutTakingBody(t *t
 			}
 			if request.Body != body || request.GetBody != nil || body.read != 0 || body.closed {
 				t.Fatalf("body ownership changed: read=%d closed=%v", body.read, body.closed)
+			}
+		})
+	}
+}
+
+// The close and keep-alive options describe the connection a request
+// arrived on. A retained request leaves them behind (RFC 9110, Section
+// 7.6.1) and is replayed without them.
+func TestHeldRequestSnapshotLeavesConnectionOptionsBehind(t *testing.T) {
+	t.Parallel()
+
+	for _, options := range [][]string{{"close"}, {"keep-alive"}, {"Keep-Alive, close"}} {
+		t.Run(strings.Join(options, ";"), func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "https://resource.example/records", strings.NewReader("body"))
+			request.Header["Connection"] = options
+			request.Close = true
+			snapshot, err := snapshotHeldRequest(request, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replayed, err := snapshot.request(context.Background(), AuthPrincipal{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replayed.Close || replayed.Header.Get("Connection") != "" {
+				t.Fatalf("replayed request keeps connection state: Close=%t Connection=%q", replayed.Close, replayed.Header.Get("Connection"))
+			}
+			if body, err := io.ReadAll(replayed.Body); err != nil || string(body) != "body" {
+				t.Fatalf("replayed body = %q, %v", body, err)
 			}
 		})
 	}
