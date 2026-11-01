@@ -1476,7 +1476,7 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	}
 	verdict, handled := server.superviseAuthorization(
 		response, request, agentToken, agent, proof, input.ResourceToken, input.PresentedToken, subagentToken,
-		input.Justification, resourceToken, presented, credentialAgent, upstream, missionRecord, scopes, r3Context,
+		input.Justification, resourceToken, presented, credentialAgent, upstream, missionRecord, scopes,
 	)
 	if handled {
 		return
@@ -1612,6 +1612,10 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 	if upstream != nil {
 		upstreamToken = upstream.compact
 	}
+	// A supervisor's narrowing goes to the Access Server, which applies it
+	// where it accepts these members; delivery refuses a token that is
+	// broader all the same.
+	narrowedScope, narrowedExpiresAt := federatedNarrowing(verdict, scopes)
 	accessInput, err := json.Marshal(struct {
 		ResourceToken  string         `json:"resource_token"`
 		PresentedToken string         `json:"presented_token"`
@@ -1619,9 +1623,12 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		SubagentToken  string         `json:"subagent_token,omitempty"`
 		UpstreamToken  string         `json:"upstream_token,omitempty"`
 		Budget         *budgets.Value `json:"budget,omitempty"`
+		Scope          string         `json:"scope,omitempty"`
+		ExpiresAt      int64          `json:"exp,omitempty"`
 	}{
 		ResourceToken: input.ResourceToken, PresentedToken: input.PresentedToken, AgentToken: agentToken,
 		SubagentToken: subagentToken, UpstreamToken: upstreamToken, Budget: personBudgetCeiling,
+		Scope: narrowedScope, ExpiresAt: narrowedExpiresAt,
 	})
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
@@ -1679,10 +1686,6 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		switch {
 		case server.federatedDeferred == nil:
 			reason = "not_configured"
-		case supervisionCompletionFrom(request.Context()) != nil:
-			// A request that already waited for its supervisor cannot then
-			// wait for the Access Server: the Agent polls one pending URL.
-			reason = "supervision"
 		case r3Context != nil:
 			reason = "r3"
 		case budgetOffer != nil:
@@ -1708,8 +1711,23 @@ func (server *Server) handleToken(response http.ResponseWriter, request *http.Re
 		writeAccessServerUnreachable(response, errors.New("access server returned no well-formed terminal error"))
 		return
 	}
-	server.deliverFederatedAuthorization(response, request, accessResponse, resourceToken, agent, credentialAgent, presented, scopes, r3Context, budgetOffer, personBudgetCeiling, missionRecord, authorizationRequest, proof.VerifiedAt(), upstream)
+	server.deliverFederatedAuthorization(response, request, accessResponse, resourceToken, agent, credentialAgent, presented, scopes, r3Context, budgetOffer, personBudgetCeiling, missionRecord, authorizationRequest, proof.VerifiedAt(), upstream, true)
+}
 
+// federatedNarrowing returns the PS-to-AS members that carry a supervisor's
+// allow to the Access Server: scope when the allow narrowed the scope the
+// resource token requested, and exp when it bounded the token's lifetime.
+// Both are empty when the request is not supervised or the allow narrowed
+// nothing, so an Access Server that does not know them never sees them.
+func federatedNarrowing(verdict *supervisionVerdict, requested []string) (string, int64) {
+	if verdict == nil {
+		return "", 0
+	}
+	scope := ""
+	if allowed, err := supervision.ParseScope(verdict.decision.Scope); err == nil && len(allowed) > 0 && len(allowed) < len(requested) {
+		scope = strings.Join(allowed, " ")
+	}
+	return scope, verdict.decision.ExpiresAt
 }
 
 func equalStringPointers(first, second *string) bool {
@@ -2473,7 +2491,7 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 	resourceToken aauth.ResourceTokenClaims, agent, credentialAgent aauth.AgentTokenClaims, presented aauth.PresentedToken,
 	scopes []string, r3Context *verifiedR3, budgetOffer, personBudgetCeiling *budgets.Value,
 	missionRecord *MissionRecord, authorizationRequest AuthorizationRequest, requestVerifiedAt time.Time,
-	upstream *verifiedUpstreamToken) {
+	upstream *verifiedUpstreamToken, release bool) {
 	presentedExpiresAt := presented.ExpiresAt
 	accessBody, err := io.ReadAll(io.LimitReader(accessResponse.Body, maxRequestBytes+1))
 	if err != nil || len(accessBody) > maxRequestBytes {
@@ -2559,8 +2577,8 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		writeAccessServerUnreachable(response, errors.New("access-server auth token grants an unrequested scope"))
 		return
 	}
-	// The PS-to-AS request carries no narrowing, so the Person Server enforces
-	// a supervisor's scope and exp on what the Access Server issued.
+	// An Access Server may ignore the narrowing the request carried, so the
+	// Person Server enforces a supervisor's scope and exp on what it issued.
 	if verdict := supervisionVerdictFrom(request.Context()); verdict != nil {
 		allowed, _ := supervision.ParseScope(verdict.decision.Scope)
 		if len(allowed) > 0 && !scopeSubset(grantedScopes, allowed) ||
@@ -2613,10 +2631,14 @@ func (server *Server) deliverFederatedAuthorization(response http.ResponseWriter
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
-	server.reportIssued(request.Context(), agent.Subject, supervision.Event{
-		Name: supervision.EventAuthTokenIssued, MissionS256: authToken.MissionS256, JTI: authToken.JTI,
-		Audience: authToken.Audience, Scope: authToken.Scope, ExpiresAt: authToken.ExpiresAt, Issuer: authToken.Issuer,
-	})
+	// A deferred grant is checked when the Access Server answers and again
+	// when it is released to the Agent; it is reported once, on release.
+	if release {
+		server.reportIssued(request.Context(), agent.Subject, supervision.Event{
+			Name: supervision.EventAuthTokenIssued, MissionS256: authToken.MissionS256, JTI: authToken.JTI,
+			Audience: authToken.Audience, Scope: authToken.Scope, ExpiresAt: authToken.ExpiresAt, Issuer: authToken.Issuer,
+		})
+	}
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`

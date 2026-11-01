@@ -42,15 +42,18 @@ var ErrSupervisionNotReady = errors.New("personserver: supervised request is not
 // own: it puts every mission proposal, update and completion, and every
 // person-token, auth-token and permission request, to that supervisor and
 // relays, records and enforces the answer. The host policies that decide for
-// other Agents (Authorize, Consent, Missions, Permission and the interaction
-// selectors) are not called for a supervised Agent. BindPerson still resolves
-// the person's directed identity for a Resource; it must not decide consent.
+// other Agents (Authorize, Consent, the R3 policies, Missions, Permission and
+// the interaction selectors) are not called for a supervised Agent.
+// BindPerson still resolves the person's directed identity for a Resource; it
+// must not decide consent.
 //
 // An ask, and an act the supervisor could not be reached for, goes to the
 // person: the Agent receives a pending response and the host, after
 // authenticating the person, answers with ResolveSupervision. A supervisor
 // that defers is polled by the host with AdvanceSupervision; the Agent's own
-// polls only observe retained state.
+// polls only observe retained state. A four-party request allowed after that
+// wait may then wait for the Access Server under the same reference, which
+// the host advances with AdvanceFederation.
 type SupervisionConfig struct {
 	// Route names the Agent's deciding supervisor and the person's directed
 	// identifier for it, or reports false when the person supervises the
@@ -471,12 +474,22 @@ func (server *Server) queueReport(ctx context.Context, supervisor Supervisor, re
 
 // notifyAgent queues an event about an Agent that is not part of a supervised
 // act, such as an audit record or a relayed interaction, for the Agent's
-// deciding supervisor. It does nothing for an Agent without one. A failure is
-// returned for the caller to report; it does not change the Agent's answer.
+// deciding supervisor. For an Agent without one, an event that belongs to a
+// mission is recorded for history only: it is one of the mission's log
+// entries, replayed with the mission to a supervisor the Agent is routed to
+// later. A failure is returned for the caller to report; it does not change
+// the Agent's answer.
 func (server *Server) notifyAgent(ctx context.Context, agent aauth.AgentTokenClaims, event supervision.Event) error {
 	supervisor, routed, err := server.routeAgent(ctx, agent)
-	if err != nil || !routed {
+	if err != nil {
 		return err
+	}
+	if !routed {
+		if server.supervision == nil || event.MissionS256 == "" {
+			return nil
+		}
+		event.Agent = agent.Subject
+		return server.queueEvent(ctx, Supervisor{}, event)
 	}
 	if err := server.followRoute(ctx, agent, supervisor); err != nil {
 		return err

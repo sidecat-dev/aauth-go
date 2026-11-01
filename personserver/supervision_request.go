@@ -48,6 +48,11 @@ const (
 	// SupervisedGone means the Agent received the terminal response or
 	// cancelled the request.
 	SupervisedGone
+	// SupervisedWithAccessServer means the allowed request waits for the
+	// Access Server. The wait has the request's Reference, and the host
+	// advances it with AdvanceFederation; the Agent keeps polling its pending
+	// URL.
+	SupervisedWithAccessServer
 )
 
 // SupervisionQuestion is a question that waits for the Agent's answer. From
@@ -601,6 +606,10 @@ func (server *Server) handleSupervisedPending(response http.ResponseWriter, requ
 	}
 	if err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
+		return
+	}
+	if record.State == SupervisedWithAccessServer {
+		server.relaySupervisedFederation(response, request, agent, record)
 		return
 	}
 	switch request.Method {
@@ -1174,6 +1183,10 @@ func (server *Server) decideSupervised(ctx context.Context, claimed SupervisedRe
 	decided := cloneDecision(decision)
 	after.Decision = &decided
 	after.Response = &retained
+	if server.awaitsAccessServer(ctx, claimed, retained) {
+		after.State = SupervisedWithAccessServer
+		after.Response = nil
+	}
 	after.Question = nil
 	after.SupervisorLocation = ""
 	after.ClaimedAt = time.Time{}

@@ -20,6 +20,7 @@ import (
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
 	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 // ErrFederatedAuthorizationConflict reports a missing record or competing update.
@@ -31,11 +32,10 @@ var ErrFederatedAuthorizationConflict = errors.New("personserver: federated auth
 // with a public explanation, not a federation reachability error.
 type DeferredCompositionError struct{ reason string }
 
-// Reason returns not_configured, r3, budget, claims, clarification,
-// requirement (an unsupported extension) or supervision (a supervised request
-// completed after its decision was deferred). A mixed-capability PS may still
+// Reason returns not_configured, r3, budget, claims, clarification or
+// requirement (an unsupported extension). A mixed-capability PS may still
 // defer a Core request, missionless or mission-bound, top-level,
-// parent-mediated or chained.
+// parent-mediated, chained or supervised.
 func (e *DeferredCompositionError) Reason() string {
 	if e == nil {
 		return ""
@@ -54,8 +54,6 @@ func (e *DeferredCompositionError) Error() string {
 		return "personserver: deferred AS authorization does not support " + e.Reason() + " requirements"
 	case "requirement":
 		return "personserver: deferred AS authorization supports only approval, payment, claims and interaction requirements"
-	case "supervision":
-		return "personserver: a request that waited for its supervisor cannot also wait for the Access Server"
 	default:
 		return "personserver: unsupported deferred AS authorization composition"
 	}
@@ -75,7 +73,10 @@ var ErrFederationNotReady = errors.New("personserver: federation cannot be advan
 // person interacts at the AS. A mission-bound wait loads its mission again on
 // every poll and host advance and ends with mission_terminated once it is
 // terminated; the grant is committed with the mission when it is released.
-// R3, Budget and clarification are absent.
+// A supervised request waits for the Access Server like any other, after its
+// supervisor or the person allowed it; one that already waited for them keeps
+// the Agent's pending URL and its reference. R3, Budget and clarification are
+// absent.
 type FederatedDeferredConfig struct {
 	Store    FederatedAuthorizationStore
 	Lifetime time.Duration
@@ -108,7 +109,9 @@ type FederatedResponse struct {
 // exact upstream_token, verified again on every poll, host advance and
 // delivery. InteractionCapable records that the request declared the
 // interaction capability, so an AS interaction requirement is relayed to the
-// Agent rather than ending the wait with user_unreachable.
+// Agent rather than ending the wait with user_unreachable. Supervision is the
+// supervisor's allow the request proceeds under, for an Agent routed to a
+// supervisor, and is immutable too.
 type FederatedAuthorizationRecord struct {
 	ID                 string
 	PersonServer       string
@@ -121,6 +124,7 @@ type FederatedAuthorizationRecord struct {
 	SubagentToken      string
 	UpstreamToken      string
 	InteractionCapable bool
+	Supervision        FederatedSupervision
 	Location           string
 	CreatedAt          time.Time
 	ExpiresAt          time.Time
@@ -131,6 +135,38 @@ type FederatedAuthorizationRecord struct {
 	Terminal           bool
 	Gone               bool
 	Response           FederatedResponse
+}
+
+// FederatedSupervision is the allow a supervised request waits for the
+// Access Server under: the supervisor that decided, the sdi the grant is
+// reported under, and the scope and exp the allow narrowed the request to,
+// which the grant is checked against on delivery. SDI is empty for a request
+// no supervisor decided.
+type FederatedSupervision struct {
+	Supervisor Supervisor
+	SDI        string
+	Scope      string
+	ExpiresAt  int64
+}
+
+// verdict is the supervision decision a retained request proceeds under, or
+// nil for one no supervisor decided.
+func (retained FederatedSupervision) verdict(agent string) *supervisionVerdict {
+	if retained.SDI == "" {
+		return nil
+	}
+	return &supervisionVerdict{supervisor: retained.Supervisor, agent: agent, sdi: retained.SDI, decision: supervision.Decision{
+		SDI: retained.SDI, Verdict: supervision.VerdictAllow, Scope: retained.Scope, ExpiresAt: retained.ExpiresAt,
+	}}
+}
+
+// withFederatedSupervision marks a request that continues a retained wait
+// with the supervision decision it proceeds under.
+func withFederatedSupervision(request *http.Request, record FederatedAuthorizationRecord) *http.Request {
+	if verdict := record.Supervision.verdict(record.Agent); verdict != nil {
+		return withSupervisionVerdict(request, verdict)
+	}
+	return request
 }
 
 // FederatedAuthorizationStore owns only PS-to-AS continuation state. Create
@@ -233,16 +269,29 @@ func (server *Server) beginFederatedAuthorization(w http.ResponseWriter, r *http
 		writeProblem(w, 500, "server_error", err)
 		return
 	}
+	reference := base64.RawURLEncoding.EncodeToString(id)
+	// A request completed after its supervisor or the person decided keeps
+	// the pending URL the Agent already polls, so the wait takes its
+	// reference.
+	if completion := supervisionCompletionFrom(r.Context()); completion != nil {
+		reference = completion.reference
+	}
+	var supervised FederatedSupervision
+	if verdict := supervisionVerdictFrom(r.Context()); verdict != nil {
+		supervised = FederatedSupervision{
+			Supervisor: verdict.supervisor, SDI: verdict.sdi, Scope: verdict.decision.Scope, ExpiresAt: verdict.decision.ExpiresAt,
+		}
+	}
 	thumbprint, err := input.agent.Confirmation.JWK.Thumbprint()
 	if err != nil {
 		writeProblem(w, 500, "server_error", err)
 		return
 	}
 	record := FederatedAuthorizationRecord{
-		ID: base64.RawURLEncoding.EncodeToString(id), PersonServer: server.issuer, ResourceToken: input.resourceToken,
+		ID: reference, PersonServer: server.issuer, ResourceToken: input.resourceToken,
 		AgentToken: input.agentToken, AgentIssuer: input.agent.Issuer, Agent: input.agent.Subject, AgentJKT: thumbprint,
 		PresentedToken: input.presentedToken, SubagentToken: input.subagentToken, UpstreamToken: upstreamToken,
-		InteractionCapable: input.interactionCapable, Location: location,
+		InteractionCapable: input.interactionCapable, Supervision: supervised, Location: location,
 		CreatedAt: input.createdAt, ExpiresAt: deadline, NextPollAt: now.Add(retry), RetryAfter: retry, Revision: 1, Response: state,
 	}
 	if err := server.federatedDeferred.Store.CreateFederatedAuthorization(r.Context(), record); err != nil {
@@ -547,7 +596,7 @@ func (server *Server) advanceFederatedRequest(ctx context.Context, record Federa
 		writeAccessServerUnreachable(out, err)
 		return
 	}
-	server.deliverFederatedAuthorization(out, request, response, resource, agent, credential, presented, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, upstream)
+	server.deliverFederatedAuthorization(out, withFederatedSupervision(request, record), response, resource, agent, credential, presented, scopes, nil, nil, nil, nil, AuthorizationRequest{}, record.CreatedAt, upstream, false)
 }
 
 // federatedMission loads, at the current instant, the mission a retained
@@ -727,7 +776,13 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 		writeProblem(w, 400, "invalid_request", errors.New("poll must be bodyless"))
 		return
 	}
-	record, ok := server.loadFederatedForAgent(w, r, agent)
+	server.pollFederatedAuthorization(w, r, agent, r.PathValue("id"))
+}
+
+// pollFederatedAuthorization answers the verified Agent's bodyless poll of
+// the wait under reference.
+func (server *Server) pollFederatedAuthorization(w http.ResponseWriter, r *http.Request, agent aauth.AgentTokenClaims, reference string) {
+	record, ok := server.loadFederatedForAgent(w, r, agent, reference)
 	if !ok {
 		return
 	}
@@ -825,8 +880,8 @@ func (server *Server) handleFederatedPending(w http.ResponseWriter, r *http.Requ
 
 // loadFederatedForAgent loads a wait for the Agent that started it, answering
 // an unknown reference 410 and another Agent or key 403 wrong_poller.
-func (server *Server) loadFederatedForAgent(w http.ResponseWriter, r *http.Request, agent aauth.AgentTokenClaims) (FederatedAuthorizationRecord, bool) {
-	record, err := server.FederatedAuthorization(r.Context(), r.PathValue("id"))
+func (server *Server) loadFederatedForAgent(w http.ResponseWriter, r *http.Request, agent aauth.AgentTokenClaims, reference string) (FederatedAuthorizationRecord, bool) {
+	record, err := server.FederatedAuthorization(r.Context(), reference)
 	if err != nil {
 		if errors.Is(err, ErrFederatedAuthorizationConflict) {
 			writeProblem(w, 410, "unknown_request", err)
@@ -880,8 +935,10 @@ func (server *Server) endFederatedAuthorization(w http.ResponseWriter, r *http.R
 }
 
 // An AS grant may expire or cease to verify between the host's AS poll and
-// Agent delivery. Reuse the immediate delivery checks at the actual release.
+// Agent delivery. Reuse the immediate delivery checks at the actual release,
+// under the supervision decision the request proceeds under.
 func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Request, record FederatedAuthorizationRecord) {
+	r = withFederatedSupervision(r, record)
 	agent, credential, err := server.verifyFederatedAgents(r.Context(), record)
 	if err != nil {
 		writeAccessServerUnreachable(w, err)
@@ -925,7 +982,7 @@ func (server *Server) recheckFederatedDelivery(w http.ResponseWriter, r *http.Re
 	response := &http.Response{StatusCode: 200, Header: record.Response.Header, Body: io.NopCloser(bytes.NewReader(record.Response.Body))}
 	server.deliverFederatedAuthorization(
 		w, r, response, resource, agent, credential, presented, scopes, nil, nil, nil, missionRecord,
-		AuthorizationRequest{Mission: missionContext}, record.CreatedAt, upstream,
+		AuthorizationRequest{Mission: missionContext}, record.CreatedAt, upstream, true,
 	)
 }
 
@@ -945,7 +1002,13 @@ func (server *Server) handleFederatedCancellation(w http.ResponseWriter, r *http
 		writeProblem(w, 400, "invalid_request", errors.New("cancellation must be bodyless"))
 		return
 	}
-	record, ok := server.loadFederatedForAgent(w, r, agent)
+	server.cancelFederatedAuthorization(w, r, agent, r.PathValue("id"))
+}
+
+// cancelFederatedAuthorization withdraws the wait under reference for the
+// verified Agent that started it.
+func (server *Server) cancelFederatedAuthorization(w http.ResponseWriter, r *http.Request, agent aauth.AgentTokenClaims, reference string) {
+	record, ok := server.loadFederatedForAgent(w, r, agent, reference)
 	if !ok {
 		return
 	}

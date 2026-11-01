@@ -8,6 +8,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/r3"
+	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
 
 func (server *Server) issueDirectR3AuthorizationToken(
@@ -37,13 +38,26 @@ func (server *Server) issueDirectR3AuthorizationToken(
 			return
 		}
 	}
-	decision, err := server.r3.authorizeDocument(
-		request.Context(), cloneAuthorizationRequest(authorizationRequest),
-		verified.reference, verified.document,
-	)
-	if err != nil {
-		writeAccessPolicyProblem(response, err)
-		return
+	// A supervisor's allow is the decision for a supervised Agent; the Person
+	// Server's own policy is not consulted.
+	verdict := supervisionVerdictFrom(request.Context())
+	var decision DirectR3Decision
+	var err error
+	if verdict != nil {
+		decision, err = server.supervisedR3Decision(request.Context(), verdict, authorizationRequest, verified.document)
+		if err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return
+		}
+	} else {
+		decision, err = server.r3.authorizeDocument(
+			request.Context(), cloneAuthorizationRequest(authorizationRequest),
+			verified.reference, verified.document,
+		)
+		if err != nil {
+			writeAccessPolicyProblem(response, err)
+			return
+		}
 	}
 	if err := server.checkAgentBinding(request.Context(), agentBinding(requestingAgent), requestVerifiedAt); err != nil {
 		writeAgentBindingProblem(response, err, http.StatusBadRequest, "revoked_presented_token")
@@ -81,6 +95,11 @@ func (server *Server) issueDirectR3AuthorizationToken(
 	}
 	if missionRecord != nil && !missionRecord.ExpiresAt.IsZero() && missionRecord.ExpiresAt.Before(expiresAt) {
 		expiresAt = missionRecord.ExpiresAt
+	}
+	if verdict != nil && verdict.decision.ExpiresAt != 0 {
+		if bound := time.Unix(verdict.decision.ExpiresAt, 0); bound.Before(expiresAt) {
+			expiresAt = bound
+		}
 	}
 	if !expiresAt.After(issuedAt) {
 		writeProblem(response, http.StatusInternalServerError, "server_error", errors.New("personserver: direct R3 decision has no usable lifetime"))
@@ -136,6 +155,10 @@ func (server *Server) issueDirectR3AuthorizationToken(
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return
 	}
+	server.reportIssued(request.Context(), requestingAgent.Subject, supervision.Event{
+		Name: supervision.EventAuthTokenIssued, MissionS256: claims.MissionS256, JTI: claims.JTI,
+		Audience: claims.Audience, Scope: claims.Scope, ExpiresAt: claims.ExpiresAt, Issuer: claims.Issuer,
+	})
 	writePrivateJSON(response, http.StatusOK, struct {
 		AuthToken string `json:"auth_token"`
 		ExpiresIn int64  `json:"expires_in"`
