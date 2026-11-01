@@ -7,10 +7,12 @@
 // Person Server request as a jwks_uri HTTP Message Signature, accepts only
 // connected (iss, sub) pairs, and hands each act to host policy, which allows,
 // denies or asks the person, asks the Agent a clarifying question, or defers
-// the decision for the host to resolve later. Events and mission reports are
-// recorded once per (iss, id) and shown to an optional host observer. With a
-// signing key the Server publishes jwks_uri and signs every terminal answer to
-// a supervision request, and repeats it byte for byte.
+// the decision for the host to resolve later. The person's answers given with
+// the mission or always reach are remembered and applied before the policy.
+// Events and mission reports are recorded once per (iss, id) and shown to an
+// optional host observer. With a signing key the Server publishes jwks_uri
+// and signs every terminal answer to a supervision request, and repeats it
+// byte for byte.
 //
 // The supervision package owns every body this package reads or writes. Hosts
 // authenticate people and operators; this package records what they decide.
@@ -94,12 +96,18 @@ type Config struct {
 	// Connect decides a connect for a pair not yet connected.
 	Connect func(ctx context.Context, request ConnectRequest) (ConnectResult, error)
 	// Decide answers each supervision request, and again after each
-	// clarification answer.
+	// clarification answer. It is not asked about an act a standing answer
+	// of the person's decides.
 	Decide func(ctx context.Context, request DecisionRequest) (DecisionResult, error)
+	// Kind optionally names what "this kind" of act is, for the mission and
+	// always reaches the person gives their answers; nil uses DefaultKind.
+	Kind func(request supervision.Request) string
 	// Observe optionally sees each event and mission report before the SS
-	// acknowledges it. An error answers server_error and records nothing, so
-	// the Person Server delivers it again; Observe may therefore see one
-	// delivery more than once, and never misses one the SS acknowledged.
+	// acknowledges it, after the SS has recorded the reach of a
+	// decision.resolved answer. An error answers server_error and records
+	// nothing, so the Person Server delivers it again; Observe may therefore
+	// see one delivery more than once, and never misses one the SS
+	// acknowledged.
 	Observe func(ctx context.Context, observation Observation) error
 	// DecisionRetention is the least time a decision is kept after it is
 	// given. Zero selects DefaultDecisionRetention. It should be no shorter
@@ -128,6 +136,7 @@ type Server struct {
 	trustPersonServer func(context.Context, string) error
 	connect           func(context.Context, ConnectRequest) (ConnectResult, error)
 	decide            func(context.Context, DecisionRequest) (DecisionResult, error)
+	kindOf            func(supervision.Request) string
 	observe           func(context.Context, Observation) error
 	retention         time.Duration
 	rateLimit         func(context.Context, string) (time.Duration, error)
@@ -172,9 +181,17 @@ func New(config Config) (*Server, error) {
 		issuer: config.Issuer, name: config.Name, signingKey: signingKey,
 		keyResolver: config.KeyResolver, clock: config.Clock, store: config.Store,
 		trustPersonServer: config.TrustPersonServer, connect: config.Connect,
-		decide: config.Decide, observe: config.Observe, retention: retention,
+		decide: config.Decide, kindOf: config.Kind, observe: config.Observe, retention: retention,
 		rateLimit: config.RateLimit,
 	}, nil
+}
+
+// kind names the kind of request for the person's standing answers.
+func (server *Server) kind(request supervision.Request) string {
+	if server.kindOf != nil {
+		return server.kindOf(request)
+	}
+	return DefaultKind(request)
 }
 
 // Metadata returns the metadata document the Server publishes.

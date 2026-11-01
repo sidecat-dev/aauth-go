@@ -19,6 +19,7 @@ func NewSupervisorStore() supervisionserver.Store {
 		decisions:       make(map[supervisionPair]supervisionserver.DecisionRecord),
 		pending:         make(map[string]supervisionPair),
 		deliveries:      make(map[supervisionPair]supervisionserver.Delivery),
+		standing:        make(map[supervisionAgentKey][]supervisionserver.StandingAnswer),
 	}
 }
 
@@ -28,6 +29,8 @@ type supervisionPair struct{ personServer, value string }
 
 type supervisionMissionKey struct{ personServer, subject, s256 string }
 
+type supervisionAgentKey struct{ personServer, subject, agent string }
+
 type supervisionStore struct {
 	mu              sync.Mutex
 	connections     map[supervisionPair]supervisionserver.Connection
@@ -36,6 +39,7 @@ type supervisionStore struct {
 	decisions       map[supervisionPair]supervisionserver.DecisionRecord
 	pending         map[string]supervisionPair
 	deliveries      map[supervisionPair]supervisionserver.Delivery
+	standing        map[supervisionAgentKey][]supervisionserver.StandingAnswer
 }
 
 func (store *supervisionStore) LoadConnection(ctx context.Context, personServer, subject string) (supervisionserver.Connection, error) {
@@ -275,5 +279,52 @@ func (store *supervisionStore) RecordDelivery(ctx context.Context, delivery supe
 	}
 	delivery.Body = append([]byte(nil), delivery.Body...)
 	store.deliveries[key] = delivery
+	return nil
+}
+
+func (store *supervisionStore) PutStandingAnswer(ctx context.Context, answer supervisionserver.StandingAnswer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := supervisionAgentKey{answer.PersonServer, answer.Subject, answer.Agent}
+	kept := make([]supervisionserver.StandingAnswer, 0, len(store.standing[key])+1)
+	for _, held := range store.standing[key] {
+		if held.Kind != answer.Kind || held.MissionS256 != answer.MissionS256 {
+			kept = append(kept, held)
+		}
+	}
+	store.standing[key] = append(kept, answer)
+	return nil
+}
+
+func (store *supervisionStore) StandingAnswers(ctx context.Context, personServer, subject, agent string) ([]supervisionserver.StandingAnswer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return append([]supervisionserver.StandingAnswer(nil), store.standing[supervisionAgentKey{personServer, subject, agent}]...), nil
+}
+
+func (store *supervisionStore) ForgetMissionAnswers(ctx context.Context, personServer, subject, s256 string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for key, answers := range store.standing {
+		if key.personServer != personServer || key.subject != subject {
+			continue
+		}
+		kept := answers[:0:0]
+		for _, answer := range answers {
+			if answer.MissionS256 != s256 {
+				kept = append(kept, answer)
+			}
+		}
+		store.standing[key] = kept
+	}
 	return nil
 }
