@@ -74,17 +74,18 @@ type AgentPersonTokenStore interface {
 	LoadAgentPersonTokens(ctx context.Context, agentToken aauth.TokenReference) ([]PersonTokenRecord, error)
 }
 
-// TokenRevocationConfig enables RevokePersonToken and the resource-token half
-// of the revocation endpoint. A revoked person token is refused as a
-// presented_token and never presented to an Access Server; a resource token
-// its Resource withdrew is refused with revoked_resource_token and ends a
-// request waiting on it with revoked.
+// TokenRevocationConfig enables RevokePersonToken, the revocations
+// TerminateMission makes, and the resource-token half of the revocation
+// endpoint. A revoked person token is refused as a presented_token and never
+// presented to an Access Server; a resource token its Resource withdrew is
+// refused with revoked_resource_token and ends a request waiting on it with
+// revoked.
 type TokenRevocationConfig struct {
 	Revocations TokenRevocationStore
-	// HTTPClient and Admit carry RevokePersonToken to Resources and Access
-	// Servers. Leave both nil when this Person Server only receives
-	// resource-token revocations. The server uses a copy of HTTPClient that
-	// follows no redirects and sends no cookies.
+	// HTTPClient and Admit carry RevokePersonToken and TerminateMission to
+	// Resources and Access Servers. Leave both nil when this Person Server
+	// only receives resource-token revocations. The server uses a copy of
+	// HTTPClient that follows no redirects and sends no cookies.
 	HTTPClient *http.Client
 	// Admit decides whether each metadata, revocation and pending URL may be
 	// contacted.
@@ -92,8 +93,9 @@ type TokenRevocationConfig struct {
 	// Limits bounds what one caller may send the revocation endpoint. Zero
 	// members select defaults.
 	Limits aauth.RevocationLimits
-	// Hold bounds how long RevokePersonToken waits for its recipients before
-	// it reports them pending. Zero selects 20 seconds.
+	// Hold bounds how long RevokePersonToken and TerminateMission wait for
+	// their recipients before they report them pending. Zero selects 20
+	// seconds.
 	Hold time.Duration
 }
 
