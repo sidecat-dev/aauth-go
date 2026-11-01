@@ -49,6 +49,11 @@ func RunMissionR3Issuance(t *testing.T, contract MissionR3IssuanceContract) {
 		}
 		*issuance.Account = "mutated-after-commit"
 		assertMissionR3Pair(t, fixture, token, wantIssuance)
+		// Terminating the mission reaches an R3 auth token too.
+		listed, err := fixture.Store.LoadMissionTokens(context.Background(), mission.S256)
+		if err != nil || !reflect.DeepEqual(listed.AuthTokens, []personserver.IssuedAuthTokenRecord{token}) {
+			t.Fatalf("mission tokens after R3 issuance = %#v, %v", listed, err)
+		}
 	})
 
 	t.Run("every cross-record mismatch leaves neither record", func(t *testing.T) {

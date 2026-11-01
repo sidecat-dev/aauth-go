@@ -170,6 +170,16 @@ type supervisedAct struct {
 	// unsupported refuses the act for a supervised Agent before anything is
 	// put to its supervisor.
 	unsupported *SupervisionCompositionError
+	// revocable names the resource token an auth-token act carries, so that
+	// the Resource's revocation of it reaches the supervisor.
+	revocable *revocableToken
+}
+
+// revocableToken is a token an Agent presented in an act, indexed to the
+// Agent until it expires.
+type revocableToken struct {
+	reference aauth.TokenReference
+	expiresAt time.Time
 }
 
 // supervisionVerdict is a terminal decision a handler acts on: an allow with
@@ -311,6 +321,12 @@ func (server *Server) supervise(response http.ResponseWriter, request *http.Requ
 	if err := server.followRoute(ctx, act.agent, supervisor); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "server_error", err)
 		return nil, true
+	}
+	if act.revocable != nil {
+		if err := server.supervision.store.RecordTokenAgent(ctx, act.revocable.reference, act.agent.Subject, act.revocable.expiresAt); err != nil {
+			writeProblem(response, http.StatusInternalServerError, "server_error", err)
+			return nil, true
+		}
 	}
 	sdi, err := mintSupervisionID("d-")
 	if err != nil {

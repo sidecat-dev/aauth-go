@@ -178,9 +178,10 @@ type SupervisionNotice struct {
 // delivered and is idempotent. SupervisionHistory returns every notice about
 // an Agent, for any supervisor, in the order appended.
 //
-// RecordTokenAgent records which Agent presented an Agent token, until
-// expiresAt; LoadTokenAgent returns it, or ErrSupervisionNotFound, so an
-// Agent Provider's revocation of the token reaches that Agent's supervisor.
+// RecordTokenAgent records which Agent presented an Agent token or a resource
+// token, keyed by the token's (iss, jti), until expiresAt; LoadTokenAgent
+// returns it, or ErrSupervisionNotFound, so the revocation of the token by
+// its Agent Provider or Resource reaches that Agent's supervisor.
 //
 // CreateSupervisedRequest rejects a duplicate Reference with
 // ErrSupervisionConflict. ReplaceSupervisedRequest atomically compares the
@@ -676,10 +677,11 @@ func (server *Server) reportMissionEnded(ctx context.Context, mission MissionRec
 	})
 }
 
-// reportAgentTokenRevocation tells the supervisor deciding for the Agent an
-// Agent Provider revoked a token of that the Person Server received the
-// revocation. The supervisor has no part in the cascade.
-func (server *Server) reportAgentTokenRevocation(ctx context.Context, revocation aauth.RevocationRequest) {
+// reportTokenRevocation tells the supervisor deciding for an Agent that the
+// Person Server received a revocation of a token the Agent presented: an
+// agent_token from its Agent Provider, or a resource_token from the Resource
+// that issued it. The supervisor has no part in the cascade.
+func (server *Server) reportTokenRevocation(ctx context.Context, tokenType string, revocation aauth.RevocationRequest) {
 	if server.supervision == nil {
 		return
 	}
@@ -693,7 +695,7 @@ func (server *Server) reportAgentTokenRevocation(ctx context.Context, revocation
 		return
 	}
 	_ = server.queueEvent(ctx, supervisor, supervision.Event{
-		Name: supervision.EventRevocationReceived, Agent: agent, TokenType: "agent_token",
+		Name: supervision.EventRevocationReceived, Agent: agent, TokenType: tokenType,
 		TokenIssuer: revocation.Reference.Issuer, JTI: revocation.Reference.JTI,
 		ExpiresAt: revocation.ExpiresAt.Unix(),
 	})

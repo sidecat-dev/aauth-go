@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -29,8 +30,9 @@ type MissionFixture struct {
 
 // RunMission checks mission creation, owner-scoped lookup, copy isolation,
 // lifecycle transitions, exact-state comparisons, conflict-safe token
-// retention, and concurrent completion. Backend restart and injected-failure
-// tests remain the application's responsibility.
+// retention, concurrent completion, host termination, and the list of tokens
+// retained under a mission that termination revokes. Backend restart and
+// injected-failure tests remain the application's responsibility.
 func RunMission(t *testing.T, contract MissionContract) {
 	t.Helper()
 	if contract.New == nil {
@@ -307,6 +309,121 @@ func RunMission(t *testing.T, contract MissionContract) {
 		}
 		if _, ok := fixture.LoadAuthToken(staleAuth.Reference); ok {
 			t.Fatal("stale mission retained Auth token")
+		}
+	})
+
+	t.Run("termination is owner-scoped, keeps its first reason and ends issuance", func(t *testing.T) {
+		fixture, mission := committedMissionFixture(t, contract, "mission-terminate")
+		at := mission.ApprovedAt.Add(time.Minute)
+		if _, err := fixture.Store.TerminateMission(
+			context.Background(), "aauth:other@provider.example", mission.S256, at, "revoked",
+		); !errors.Is(err, personserver.ErrMissionNotFound) {
+			t.Fatalf("wrong-owner termination = %v", err)
+		}
+		if retained, err := fixture.Store.LoadMissionForAgent(context.Background(), mission.Agent, mission.S256, at); err != nil || !retained.Equal(mission) {
+			t.Fatalf("wrong-owner termination changed the mission = %#v, %v", retained, err)
+		}
+		want := cloneMission(mission)
+		want.State = personserver.MissionTerminated
+		want.TerminationReason = "revoked"
+		terminated, err := fixture.Store.TerminateMission(context.Background(), mission.Agent, mission.S256, at, "revoked")
+		if err != nil || !terminated.Equal(want) {
+			t.Fatalf("terminated mission = %#v, %v; want %#v", terminated, err, want)
+		}
+		terminated.ExactJSON[0] = '['
+		terminated.Capabilities[0] = "mutated"
+		again, err := fixture.Store.TerminateMission(context.Background(), mission.Agent, mission.S256, at.Add(time.Minute), "superseded")
+		if err != nil || !again.Equal(want) {
+			t.Fatalf("repeated termination = %#v, %v; want the first reason kept", again, err)
+		}
+		reloaded, err := fixture.Store.LoadMissionForAgent(context.Background(), mission.Agent, mission.S256, at)
+		if err != nil || !reloaded.Equal(want) {
+			t.Fatalf("terminated mission reloaded = %#v, %v", reloaded, err)
+		}
+		later := at.Add(2 * time.Minute)
+		assertMissionTerminated(t, fixture.Store.CommitMissionPersonToken(
+			context.Background(), cloneMission(mission), later, missionPersonToken(mission, "https://person.example", "after-termination"),
+		), "revoked")
+		assertMissionTerminated(t, fixture.Store.CommitMissionAuthToken(
+			context.Background(), cloneMission(mission), later, missionAuthToken(mission, "after-termination", 3),
+		), "revoked")
+		_, err = fixture.Store.AppendMissionUpdate(context.Background(), cloneMission(mission), later, missionUpdate(t, "too late"))
+		assertMissionTerminated(t, err, "revoked")
+		_, err = fixture.Store.CompleteMission(context.Background(), cloneMission(mission), later, missionCompletion(t, "too late"))
+		assertMissionTerminated(t, err, "revoked")
+	})
+
+	t.Run("termination materializes expiry and keeps a completion", func(t *testing.T) {
+		fixture, expiring := committedMissionFixture(t, contract, "mission-terminate-expired")
+		expired, err := fixture.Store.TerminateMission(
+			context.Background(), expiring.Agent, expiring.S256, expiring.ExpiresAt, "revoked",
+		)
+		if err != nil || expired.State != personserver.MissionTerminated || expired.TerminationReason != "expired" {
+			t.Fatalf("termination at expiry = %#v, %v; want expired", expired, err)
+		}
+		completedFixture, mission := committedMissionFixture(t, contract, "mission-terminate-completed")
+		acceptedAt := mission.ApprovedAt.Add(time.Minute)
+		completed, err := completedFixture.Store.CompleteMission(
+			context.Background(), cloneMission(mission), acceptedAt, missionCompletion(t, "Done."),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		terminated, err := completedFixture.Store.TerminateMission(
+			context.Background(), mission.Agent, mission.S256, acceptedAt.Add(time.Minute), "administrative",
+		)
+		if err != nil || !terminated.Equal(completed) {
+			t.Fatalf("termination after completion = %#v, %v; want the completion kept", terminated, err)
+		}
+	})
+
+	t.Run("mission tokens are every token retained under the mission", func(t *testing.T) {
+		fixture := newMissionFixture(t, contract)
+		mission := missionRecord(t, "mission-token-list")
+		other := missionRecord(t, "mission-token-list-other")
+		approved := missionPersonToken(mission, "https://person.example", "approved-person-token")
+		if err := fixture.Store.CommitMission(context.Background(), mission, []personserver.PersonTokenRecord{approved}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.Store.CommitMission(context.Background(), other, []personserver.PersonTokenRecord{
+			missionPersonToken(other, "https://person.example", "other-mission-person-token"),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		missionless := missionPersonToken(mission, "https://person.example", "missionless-person-token")
+		missionless.MissionS256 = ""
+		if err := fixture.Store.Commit(context.Background(), missionless); err != nil {
+			t.Fatal(err)
+		}
+		at := mission.ApprovedAt.Add(time.Minute)
+		issued := missionPersonToken(mission, "https://person.example", "issued-person-token")
+		if err := fixture.Store.CommitMissionPersonToken(context.Background(), cloneMission(mission), at, issued); err != nil {
+			t.Fatal(err)
+		}
+		authToken := missionAuthToken(mission, "mission-auth-token", 4)
+		if err := fixture.Store.CommitMissionAuthToken(context.Background(), cloneMission(mission), at, authToken); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.Store.CommitMissionAuthToken(context.Background(), cloneMission(other), at, missionAuthToken(other, "other-mission-auth-token", 5)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.Store.TerminateMission(context.Background(), mission.Agent, mission.S256, at.Add(time.Minute), "revoked"); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := fixture.Store.LoadMissionTokens(context.Background(), mission.S256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Slice(listed.PersonTokens, func(left, right int) bool {
+			return listed.PersonTokens[left].JTI < listed.PersonTokens[right].JTI
+		})
+		if !reflect.DeepEqual(listed.PersonTokens, []personserver.PersonTokenRecord{approved, issued}) ||
+			!reflect.DeepEqual(listed.AuthTokens, []personserver.IssuedAuthTokenRecord{authToken}) {
+			t.Fatalf("mission tokens = %#v; want the approval's and the issued person tokens and the auth token", listed)
+		}
+		none, err := fixture.Store.LoadMissionTokens(context.Background(), missionRecord(t, "mission-token-list-unknown").S256)
+		if err != nil || len(none.PersonTokens) != 0 || len(none.AuthTokens) != 0 {
+			t.Fatalf("tokens of a mission never committed = %#v, %v", none, err)
 		}
 	})
 

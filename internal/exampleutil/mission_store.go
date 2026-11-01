@@ -448,6 +448,52 @@ func (store *missionStore) CompleteMission(
 	return cloneMissionRecord(current), nil
 }
 
+func (store *missionStore) TerminateMission(
+	_ context.Context,
+	agent, s256 string,
+	terminatedAt time.Time,
+	reason string,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if terminatedAt.IsZero() || reason == "" {
+		return personserver.MissionRecord{}, errors.New("example mission store: termination time and reason are required")
+	}
+	key := agent + "\x00" + s256
+	current, ok := store.missions[key]
+	if !ok {
+		return personserver.MissionRecord{}, personserver.ErrMissionNotFound
+	}
+	if current.State == personserver.MissionActive {
+		current.State = personserver.MissionTerminated
+		current.TerminationReason = reason
+		if !current.ExpiresAt.IsZero() && !terminatedAt.Before(current.ExpiresAt) {
+			current.TerminationReason = "expired"
+		}
+		store.missions[key] = cloneMissionRecord(current)
+	}
+	return cloneMissionRecord(current), nil
+}
+
+func (store *missionStore) LoadMissionTokens(_ context.Context, s256 string) (personserver.MissionTokens, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	issued := personserver.MissionTokens{
+		PersonTokens: []personserver.PersonTokenRecord{}, AuthTokens: []personserver.IssuedAuthTokenRecord{},
+	}
+	for _, record := range store.tokens {
+		if record.MissionS256 == s256 {
+			issued.PersonTokens = append(issued.PersonTokens, record)
+		}
+	}
+	for _, record := range store.auth {
+		if record.MissionS256 == s256 {
+			issued.AuthTokens = append(issued.AuthTokens, record)
+		}
+	}
+	return issued, nil
+}
+
 func (store *missionStore) CommitMissionPersonToken(
 	_ context.Context,
 	expected personserver.MissionRecord,

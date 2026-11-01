@@ -10,6 +10,7 @@ import (
 
 	aauth "gitlab.com/sidecat-dev/aauth-go"
 	"gitlab.com/sidecat-dev/aauth-go/internal/httpapi"
+	"gitlab.com/sidecat-dev/aauth-go/internal/revocation"
 	"gitlab.com/sidecat-dev/aauth-go/signaturekey"
 	"gitlab.com/sidecat-dev/aauth-go/supervision"
 )
@@ -76,6 +77,10 @@ func (server *Server) superviseAuthorization(
 		agent: agent, proof: proof,
 		expiresAt: []time.Time{
 			time.Unix(credentialAgent.ExpiresAt, 0), time.Unix(resourceToken.ExpiresAt, 0), presented.ExpiresAt,
+		},
+		revocable: &revocableToken{
+			reference: aauth.TokenReference{Issuer: resourceToken.Issuer, JTI: resourceToken.JTI},
+			expiresAt: time.Unix(resourceToken.ExpiresAt, 0).UTC().Add(revocation.Skew),
 		},
 		validate: func(decision supervision.Decision) error {
 			granted, err := supervision.ParseScope(decision.Scope)

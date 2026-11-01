@@ -802,6 +802,43 @@ func (store *memoryPersonTokenStore) CommitMissionAuthToken(
 	return nil
 }
 
+func (store *memoryPersonTokenStore) TerminateMission(
+	_ context.Context, agent, s256 string, at time.Time, reason string,
+) (personserver.MissionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := agent + "\x00" + s256
+	current, exists := store.missions[key]
+	if !exists {
+		return personserver.MissionRecord{}, personserver.ErrMissionNotFound
+	}
+	if current.State == personserver.MissionActive {
+		current.State, current.TerminationReason = personserver.MissionTerminated, reason
+		if !current.ExpiresAt.IsZero() && !at.Before(current.ExpiresAt) {
+			current.TerminationReason = "expired"
+		}
+		store.missions[key] = cloneIntegrationMissionRecord(current)
+	}
+	return cloneIntegrationMissionRecord(current), nil
+}
+
+func (store *memoryPersonTokenStore) LoadMissionTokens(_ context.Context, s256 string) (personserver.MissionTokens, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var issued personserver.MissionTokens
+	for _, record := range store.records {
+		if record.MissionS256 == s256 {
+			issued.PersonTokens = append(issued.PersonTokens, record)
+		}
+	}
+	for _, record := range store.auth {
+		if record.MissionS256 == s256 {
+			issued.AuthTokens = append(issued.AuthTokens, record)
+		}
+	}
+	return issued, nil
+}
+
 func (store *memoryPersonTokenStore) terminateMission(agent, s256, reason string) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
