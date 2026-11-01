@@ -1,8 +1,9 @@
 // Package jose implements the bounded JOSE profile used by AAuth.
 //
-// Compact JWS uses the fully specified Ed25519 algorithm only. Public JWKs
-// additionally cover the ES256, ES384, RS256, and PS256 keys that HTTP
-// Signature-Key request proofs may use.
+// Compact JWS uses the fully specified Ed25519 or ES256 algorithm, the two
+// AAuth names for its tokens and keys (TokenAlgorithms). Public JWKs
+// additionally cover the ES384, RS256, and PS256 keys that HTTP Signature-Key
+// request proofs may use.
 package jose
 
 import (
@@ -48,6 +49,21 @@ func SignatureAlgorithms() []string {
 	return []string{Ed25519Algorithm, ES256Algorithm, ES384Algorithm, RS256Algorithm, PS256Algorithm}
 }
 
+// TokenAlgorithms returns, in preference order, the algorithms of the AAuth
+// token profile: Ed25519, which every party must support, and ES256, which
+// every party should support and which suits ECDSA P-256 keys held in
+// hardware (AAuth Protocol, Signature Algorithms). Compact JWS, the keys that
+// sign tokens and assertions, and the confirmation keys tokens carry use
+// these. PublicKey accepts exactly these.
+func TokenAlgorithms() []string {
+	return []string{Ed25519Algorithm, ES256Algorithm}
+}
+
+// IsTokenAlgorithm reports whether algorithm is one of TokenAlgorithms.
+func IsTokenAlgorithm(algorithm string) bool {
+	return algorithm == Ed25519Algorithm || algorithm == ES256Algorithm
+}
+
 // signatureKeyTypes maps each supported algorithm to the only key type that
 // can carry it.
 var signatureKeyTypes = map[string]string{
@@ -86,7 +102,8 @@ func (err *unsupportedJWKAlgorithmError) UnsupportedAlgorithm() string {
 
 // JWK is the public JSON Web Key representation used by AAuth confirmation
 // claims, key sets, and Signature-Key members. Ed25519 is the mandatory
-// implementation profile; Y, N, and E carry EC and RSA public keys.
+// implementation profile and ES256 the recommended second; Y, N, and E carry
+// EC and RSA public keys.
 type JWK struct {
 	Kty string `json:"kty"`
 	Crv string `json:"crv,omitempty"`
@@ -139,11 +156,13 @@ func IsPrivateJWKMember(name string) bool {
 	return false
 }
 
-// PublicKey validates and decodes the JWK under the mandatory Ed25519
-// profile used by AAuth tokens and confirmation keys. Any other algorithm is
-// unsupported here; SignaturePublicKey accepts the wider Signature-Key set.
+// PublicKey validates and decodes the JWK under the AAuth token profile used
+// by token-signing and confirmation keys: an ed25519.PublicKey for Ed25519 or
+// an *ecdsa.PublicKey on P-256 for ES256 (TokenAlgorithms). Any other
+// algorithm is unsupported here; SignaturePublicKey accepts the wider
+// Signature-Key set.
 func (key JWK) PublicKey() (crypto.PublicKey, error) {
-	if key.Alg != Ed25519Algorithm {
+	if !IsTokenAlgorithm(key.Alg) {
 		return nil, &unsupportedJWKAlgorithmError{algorithm: key.Alg}
 	}
 	return key.SignaturePublicKey()

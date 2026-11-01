@@ -20,6 +20,15 @@ import (
 
 func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 	t.Parallel()
+	for _, keys := range keyProfiles {
+		t.Run(keys.name, func(t *testing.T) {
+			t.Parallel()
+			testCurrentCoreImmediatePSAuthorization(t, keys)
+		})
+	}
+}
+
+func testCurrentCoreImmediatePSAuthorization(t *testing.T, keys keyProfile) {
 
 	ctx := context.Background()
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
@@ -33,10 +42,10 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 	)
 	scope := []string{"records.read"}
 	account := "primary"
-	agentProviderKey := newSigningKey(t, "three-party-ap")
-	agentKey := newSigningKey(t, "three-party-agent")
-	personServerKey := newSigningKey(t, "three-party-ps")
-	resourceKey := newSigningKey(t, "three-party-resource")
+	agentProviderKey := newAlgorithmSigningKey(t, "three-party-ap", keys.agentProvider)
+	agentKey := newAlgorithmSigningKey(t, "three-party-agent", keys.agent)
+	personServerKey := newAlgorithmSigningKey(t, "three-party-ps", keys.personServer)
+	resourceKey := newAlgorithmSigningKey(t, "three-party-resource", keys.resource)
 
 	network := newLogicalTransport()
 	httpClient := &http.Client{Transport: network}
@@ -178,6 +187,10 @@ func TestCurrentCoreImmediatePSAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requireTokenAlgorithm(t, "agent token", agentToken, keys.agentProvider)
+	requireTokenAlgorithm(t, "person token", personToken, keys.personServer)
+	requireTokenAlgorithm(t, "resource token", resourceToken, keys.resource)
+	requireTokenAlgorithm(t, "auth token", authToken, keys.personServer)
 	if authClaims.Issuer != personServerID || authClaims.DWK != aauth.PersonDiscoveryDocument ||
 		authClaims.Audience != resourceID || authClaims.PersonServer != personServerID ||
 		authClaims.Subject != "person-123" || authClaims.Account == nil || *authClaims.Account != account ||

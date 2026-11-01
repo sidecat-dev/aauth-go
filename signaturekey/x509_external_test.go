@@ -255,10 +255,10 @@ func TestX509KeySelectsExactlyOneAcceptedAlgorithm(t *testing.T) {
 	err := verify(rsaKey, jose.SignatureAlgorithms())
 	assertSignatureErrorCode(t, err, signaturekey.ErrorUnsupportedAlgorithm)
 
-	err = verify(newTestAlgorithmKey(t, "client-key", jose.ES256Algorithm), nil)
+	err = verify(newTestAlgorithmKey(t, "client-key", jose.ES384Algorithm), nil)
 	assertSignatureErrorCode(t, err, signaturekey.ErrorUnsupportedAlgorithm)
 	var failure *signaturekey.Error
-	if errors.As(err, &failure); !reflect.DeepEqual(failure.AcceptedAlgorithms, []string{jose.Ed25519Algorithm}) {
+	if errors.As(err, &failure); !reflect.DeepEqual(failure.AcceptedAlgorithms, jose.TokenAlgorithms()) {
 		t.Fatalf("accepted algorithms = %v, want the endpoint default", failure.AcceptedAlgorithms)
 	}
 }

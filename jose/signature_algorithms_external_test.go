@@ -75,8 +75,8 @@ func TestSigningKeysSignAndVerifyUnderEachSignatureAlgorithm(t *testing.T) {
 				t.Fatalf("Thumbprint() = %v", err)
 			}
 			_, err = public.PublicKey()
-			if supported := err == nil; supported != (algorithm == jose.Ed25519Algorithm) {
-				t.Fatalf("PublicKey() error = %v; the AAuth token profile accepts only Ed25519", err)
+			if supported := err == nil; supported != jose.IsTokenAlgorithm(algorithm) {
+				t.Fatalf("PublicKey() error = %v; the AAuth token profile accepts Ed25519 and ES256 only", err)
 			}
 		})
 	}
@@ -151,13 +151,50 @@ func TestThumbprintCoversEveryKeyType(t *testing.T) {
 	}
 }
 
-func TestCompactJWSRequiresAnEd25519SigningKey(t *testing.T) {
+// AAuth Protocol, Signature Algorithms: tokens are signed with Ed25519 or
+// ES256, and a key is used only under the algorithm its alg names.
+func TestCompactJWSUsesTheKeysOwnAlgorithm(t *testing.T) {
 	t.Parallel()
+
+	payload := []byte(`{"sub":"example"}`)
+	for _, algorithm := range jose.TokenAlgorithms() {
+		t.Run(algorithm, func(t *testing.T) {
+			key := newAlgorithmSigningKey(t, algorithm)
+			compact, err := jose.SignCompact(key, jose.Header{Algorithm: algorithm, Type: "example+jwt", KeyID: key.ID()}, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := jose.ParseCompact(compact)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verified, err := parsed.Verify(key.PublicJWK())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := verified.Payload(); string(got) != string(payload) {
+				t.Fatalf("payload = %s", got)
+			}
+			other := jose.ES256Algorithm
+			if algorithm == jose.ES256Algorithm {
+				other = jose.Ed25519Algorithm
+			}
+			otherKey := newAlgorithmSigningKey(t, other).PublicJWK()
+			otherKey.Kid = key.ID()
+			if _, err := parsed.Verify(otherKey); err == nil {
+				t.Fatalf("an %s token verified with an %s key", algorithm, other)
+			}
+		})
+	}
 
 	key := newAlgorithmSigningKey(t, jose.ES256Algorithm)
 	protected := []byte(`{"alg":"Ed25519","typ":"example+jwt","kid":"ES256-key"}`)
 	if _, err := jose.SignCompactProtected(key, protected, []byte(`{}`)); err == nil {
 		t.Fatal("SignCompactProtected() signed an Ed25519 header with an ES256 key")
+	}
+	es384 := newAlgorithmSigningKey(t, jose.ES384Algorithm)
+	if _, err := jose.SignCompact(es384, jose.Header{Algorithm: jose.ES384Algorithm, Type: "example+jwt", KeyID: es384.ID()}, payload); err == nil {
+		t.Fatal("SignCompact() signed with ES384, outside the token profile")
 	}
 	if _, err := jose.NewSigningKeyForAlgorithm("rsa-key", jose.ES256Algorithm, mustRSAKey(t)); err == nil {
 		t.Fatal("NewSigningKeyForAlgorithm() accepted an RSA signer for ES256")

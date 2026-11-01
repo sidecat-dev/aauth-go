@@ -78,7 +78,8 @@ func NewEd25519SigningKey(id string, privateKey ed25519.PrivateKey) (SigningKey,
 // because the key alone names neither padding nor hash.
 //
 // AAuth tokens and the jkt-jwt and self-jwt assertions are signed with
-// Ed25519 only. Other algorithms sign HTTP requests, such as hwk proofs.
+// Ed25519 or ES256 (TokenAlgorithms). The other algorithms sign HTTP
+// requests only, such as hwk proofs.
 func NewSigningKeyForAlgorithm(id, algorithm string, signer crypto.Signer) (SigningKey, error) {
 	if algorithm == Ed25519Algorithm {
 		return NewSigningKey(id, signer)

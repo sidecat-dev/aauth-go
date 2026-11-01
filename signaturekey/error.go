@@ -83,7 +83,7 @@ func NormalizeError(err error, fallback ErrorCode) *Error {
 		}
 		normalized := NewError(code, err)
 		if code == ErrorUnsupportedAlgorithm {
-			normalized.AcceptedAlgorithms = []string{jose.Ed25519Algorithm}
+			normalized.AcceptedAlgorithms = jose.TokenAlgorithms()
 		}
 		return normalized
 	}

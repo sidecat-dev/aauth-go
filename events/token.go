@@ -245,10 +245,10 @@ func ValidateEventTokenProfile(compact string, at time.Time) error {
 	if header.Type != EventTokenType {
 		return fmt.Errorf("aauth events: event-token typ is %q, want %q", header.Type, EventTokenType)
 	}
-	if header.Algorithm != jose.Ed25519Algorithm {
+	if !jose.IsTokenAlgorithm(header.Algorithm) {
 		return &aauth.TokenValidationError{
 			Code:  aauth.TokenValidationUnsupportedAlgorithm,
-			Cause: fmt.Errorf("aauth events: event-token algorithm is %q, want %q", header.Algorithm, jose.Ed25519Algorithm),
+			Cause: fmt.Errorf("aauth events: event-token algorithm is %q, want one of %v", header.Algorithm, jose.TokenAlgorithms()),
 		}
 	}
 	if header.KeyID == "" {
@@ -325,7 +325,7 @@ func signToken(key jose.SigningKey, tokenType string, claims any) (string, error
 		return "", fmt.Errorf("aauth events: marshal %s claims: %w", tokenType, err)
 	}
 	return jose.SignCompact(key, jose.Header{
-		Algorithm: jose.Ed25519Algorithm,
+		Algorithm: key.Algorithm(),
 		Type:      tokenType,
 		KeyID:     key.ID(),
 	}, payload)
@@ -357,7 +357,7 @@ func verifyToken(
 	if header.Type != expectedType {
 		return nil, fmt.Errorf("aauth events: token typ is %q, want %q", header.Type, expectedType)
 	}
-	if header.Algorithm != jose.Ed25519Algorithm {
+	if !jose.IsTokenAlgorithm(header.Algorithm) {
 		return nil, &aauth.TokenValidationError{
 			Code:  aauth.TokenValidationUnsupportedAlgorithm,
 			Cause: fmt.Errorf("aauth events: unsupported token algorithm %q", header.Algorithm),

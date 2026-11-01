@@ -44,10 +44,11 @@ type SignOptions struct {
 //
 // AcceptedAlgorithms lists the fully specified algorithms, from
 // jose.SignatureAlgorithms, that a request key may use. It defaults to
-// Ed25519. A key whose alg is not listed is refused with
+// jose.TokenAlgorithms, Ed25519 and ES256, the two every AAuth party must and
+// should support. A key whose alg is not listed is refused with
 // unsupported_algorithm, and that error names exactly this list for
-// Accept-Signature-Alg. ES256, ES384, RS256, and PS256 apply to hwk and x509
-// keys; JWT-carried and discovered keys use the Ed25519 profile.
+// Accept-Signature-Alg. ES384, RS256, and PS256 apply to hwk and x509 keys
+// only; JWT-carried and discovered keys use the token profile.
 //
 // MaxDelay makes the verifier a delayed one, such as a batch pipeline or a
 // store-and-forward hop that first sees a signed request after it was made.
@@ -1013,10 +1014,10 @@ func parseSignature(values []string, expectedLabel string, acceptsSize func(int)
 }
 
 // acceptedAlgorithms returns an endpoint's accepted request-key algorithms,
-// defaulting to Ed25519.
+// defaulting to the token profile, Ed25519 and ES256.
 func acceptedAlgorithms(configured []string) ([]string, error) {
 	if len(configured) == 0 {
-		return []string{jose.Ed25519Algorithm}, nil
+		return jose.TokenAlgorithms(), nil
 	}
 	supported := jose.SignatureAlgorithms()
 	for index, algorithm := range configured {

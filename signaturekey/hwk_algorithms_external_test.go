@@ -128,7 +128,7 @@ func TestEndpointAcceptsOnlyItsListedAlgorithms(t *testing.T) {
 		accepted  []string
 		want      []string
 	}{
-		{name: "default endpoint", algorithm: jose.ES256Algorithm, want: []string{jose.Ed25519Algorithm}},
+		{name: "default endpoint", algorithm: jose.ES384Algorithm, want: jose.TokenAlgorithms()},
 		{name: "RSA-only endpoint", algorithm: jose.Ed25519Algorithm, accepted: []string{jose.PS256Algorithm}, want: []string{jose.PS256Algorithm}},
 		{name: "PKCS #1 is not PSS", algorithm: jose.RS256Algorithm, accepted: []string{jose.PS256Algorithm, jose.ES256Algorithm}, want: []string{jose.PS256Algorithm, jose.ES256Algorithm}},
 	}

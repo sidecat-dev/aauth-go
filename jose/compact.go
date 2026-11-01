@@ -1,7 +1,6 @@
 package jose
 
 import (
-	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -54,8 +53,8 @@ func (parsed ParsedCompact) Compact() string {
 }
 
 // ParseCompact structurally parses one three-part, raw-base64url compact JWS.
-// It validates unambiguous JSON and, for Ed25519, signature length, but does
-// not establish trust.
+// It validates unambiguous JSON and, for Ed25519 and ES256, signature length,
+// but does not establish trust.
 func ParseCompact(compact string) (ParsedCompact, error) {
 	var parsed ParsedCompact
 	parts := strings.Split(compact, ".")
@@ -81,8 +80,8 @@ func ParseCompact(compact string) (ParsedCompact, error) {
 	if err != nil {
 		return parsed, fmt.Errorf("aauth: decode token signature: %w", err)
 	}
-	if header.Algorithm == Ed25519Algorithm && len(signature) != ed25519.SignatureSize {
-		return parsed, fmt.Errorf("aauth: Ed25519 token signature has %d bytes", len(signature))
+	if IsTokenAlgorithm(header.Algorithm) && len(signature) != tokenSignatureSize {
+		return parsed, fmt.Errorf("aauth: %s token signature has %d bytes", header.Algorithm, len(signature))
 	}
 	parsed = ParsedCompact{
 		header:       header,
@@ -108,8 +107,13 @@ func PeekHeader(compact string) (Header, error) {
 	return parsed.Header(), nil
 }
 
+// tokenSignatureSize is the length of an Ed25519 signature and of an ES256
+// signature in its JWS form, R || S.
+const tokenSignatureSize = ed25519.SignatureSize
+
 // SignCompact signs the exact caller-supplied JSON payload bytes under the
-// bounded Ed25519 profile. It does not interpret typ or marshal claims.
+// token profile. header.Algorithm must be the key's algorithm. It does not
+// interpret typ or marshal claims.
 func SignCompact(key SigningKey, header Header, payload []byte) (string, error) {
 	if header.KeyID == "" {
 		return "", errors.New("aauth: token kid is required")
@@ -125,15 +129,16 @@ func SignCompact(key SigningKey, header Header, payload []byte) (string, error) 
 }
 
 // SignCompactProtected signs exact caller-supplied protected-header and
-// payload JSON bytes. The bounded profile requires fully specified Ed25519 and
-// exactly one matching key reference: either kid or an embedded public JWK.
-// It does not interpret typ or protocol claims.
+// payload JSON bytes. The token profile requires a fully specified Ed25519 or
+// ES256 key, a header alg equal to the key's, and exactly one matching key
+// reference: either kid or an embedded public JWK. It does not interpret typ
+// or protocol claims.
 func SignCompactProtected(key SigningKey, protected, payload []byte) (string, error) {
 	if key.ID() == "" {
 		return "", errors.New("aauth: signing key is not initialized")
 	}
-	if key.Algorithm() != Ed25519Algorithm {
-		return "", fmt.Errorf("aauth: compact JWS requires an Ed25519 signing key, not %q", key.Algorithm())
+	if !IsTokenAlgorithm(key.Algorithm()) {
+		return "", fmt.Errorf("aauth: compact JWS requires an Ed25519 or ES256 signing key, not %q", key.Algorithm())
 	}
 	header, embeddedJWK, hasKeyID, err := decodeProtectedHeader(protected)
 	if err != nil {
@@ -142,8 +147,11 @@ func SignCompactProtected(key SigningKey, protected, payload []byte) (string, er
 	if header.Algorithm == "none" {
 		return "", errors.New("aauth: alg none is forbidden")
 	}
-	if header.Algorithm != Ed25519Algorithm {
+	if !IsTokenAlgorithm(header.Algorithm) {
 		return "", fmt.Errorf("aauth: unsupported token algorithm %q", header.Algorithm)
+	}
+	if header.Algorithm != key.Algorithm() {
+		return "", fmt.Errorf("aauth: token algorithm %q does not match the %s signing key", header.Algorithm, key.Algorithm())
 	}
 	if hasKeyID == (embeddedJWK != nil) {
 		return "", errors.New("aauth: protected header must name exactly one signing key")
@@ -161,7 +169,7 @@ func SignCompactProtected(key SigningKey, protected, payload []byte) (string, er
 		return "", fmt.Errorf("aauth: parse token payload: %w", err)
 	}
 	signingInput := rawURL.EncodeToString(protected) + "." + rawURL.EncodeToString(payload)
-	signature, err := key.Sign(rand.Reader, []byte(signingInput), crypto.Hash(0))
+	signature, err := key.SignMessage(rand.Reader, []byte(signingInput))
 	if err != nil {
 		return "", err
 	}
@@ -229,12 +237,14 @@ func decodeProtectedHeader(value []byte) (Header, *JWK, bool, error) {
 	return header, embeddedJWK, false, nil
 }
 
-// Verify verifies the compact JWS with the supplied Ed25519 JWK.
+// Verify verifies the compact JWS with the supplied Ed25519 or ES256 JWK. The
+// protected alg must be the key's alg, so a key is used only under the
+// algorithm it names.
 func (parsed ParsedCompact) Verify(key JWK) (VerifiedCompact, error) {
 	if parsed.header.Algorithm == "none" {
 		return VerifiedCompact{}, errors.New("aauth: alg none is forbidden")
 	}
-	if parsed.header.Algorithm != Ed25519Algorithm {
+	if !IsTokenAlgorithm(parsed.header.Algorithm) {
 		return VerifiedCompact{}, fmt.Errorf("aauth: unsupported token algorithm %q", parsed.header.Algorithm)
 	}
 	if parsed.header.KeyID != "" && key.Kid != "" && parsed.header.KeyID != key.Kid {
@@ -243,15 +253,13 @@ func (parsed ParsedCompact) Verify(key JWK) (VerifiedCompact, error) {
 	if parsed.hasEmbedded && !parsed.embeddedJWK.Equal(key) {
 		return VerifiedCompact{}, errors.New("aauth: protected JWK does not match verification key")
 	}
-	publicKey, err := key.PublicKey()
-	if err != nil {
+	if _, err := key.PublicKey(); err != nil {
 		return VerifiedCompact{}, err
 	}
-	ed25519Key, ok := publicKey.(ed25519.PublicKey)
-	if !ok {
-		return VerifiedCompact{}, errors.New("aauth: resolved token key is not Ed25519")
+	if key.Alg != parsed.header.Algorithm {
+		return VerifiedCompact{}, fmt.Errorf("aauth: token algorithm %q does not match the %s verification key", parsed.header.Algorithm, key.Alg)
 	}
-	if !ed25519.Verify(ed25519Key, []byte(parsed.signingInput), parsed.signature) {
+	if err := key.VerifySignature([]byte(parsed.signingInput), parsed.signature); err != nil {
 		return VerifiedCompact{}, errors.New("aauth: token signature is invalid")
 	}
 	verified := VerifiedCompact{
