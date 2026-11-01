@@ -287,3 +287,49 @@ func TestPublicDestination(t *testing.T) {
 		}
 	}
 }
+
+// The zero configuration is a safe default discovery client: it admits any
+// HTTPS endpoint, and connects only to public addresses. NewEgressClient
+// applies the same connection checks to a server's other outbound calls.
+func TestDefaultDiscoveryAndEgressClientsReachPublicAddressesOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	private := func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("10.0.0.7")}, nil
+	}
+	resolver, err := signaturekey.NewHTTPKeyResolver(signaturekey.HTTPKeyResolverConfig{LookupAddresses: private})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolver.ResolveKey(ctx, "https://issuer.example", "aauth-agent.json", "issuer-key")
+	var denied *signaturekey.ResolutionError
+	if !errors.As(err, &denied) || denied.Code != signaturekey.ResolutionDenied {
+		t.Fatalf("ResolveKey error = %T %v, want a denied resolution", err, err)
+	}
+
+	if err := signaturekey.AdmitHTTPS(ctx, "https://issuer.example/.well-known/aauth-agent.json"); err != nil {
+		t.Fatalf("AdmitHTTPS refused an HTTPS endpoint: %v", err)
+	}
+	for _, endpoint := range []string{"http://issuer.example/x", "https://user@issuer.example/x", "https://issuer.example/x#part", "/x"} {
+		if signaturekey.AdmitHTTPS(ctx, endpoint) == nil {
+			t.Errorf("AdmitHTTPS admitted %q", endpoint)
+		}
+	}
+
+	client, err := signaturekey.NewEgressClient(signaturekey.EgressClientConfig{LookupAddresses: private})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get("https://issuer.example/")
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("the egress client reached a private address")
+	}
+	if !errors.As(err, &denied) || denied.Code != signaturekey.ResolutionDenied {
+		t.Fatalf("egress client error = %T %v, want a denied destination", err, err)
+	}
+	if client.Jar != nil || client.CheckRedirect == nil || client.Timeout <= 0 {
+		t.Fatalf("egress client = %+v, want no cookies, no redirects and a timeout", client)
+	}
+}

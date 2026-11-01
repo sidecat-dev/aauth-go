@@ -81,6 +81,52 @@ func lookupSystemAddresses(ctx context.Context, host string) ([]netip.Addr, erro
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
+// EgressClientConfig selects the destination policy of NewEgressClient.
+type EgressClientConfig struct {
+	// Client is copied; nil starts from a direct default client. Its
+	// transport, if any, must be an *http.Transport without a proxy or a
+	// custom dialer other than DialContext.
+	Client *http.Client
+	// AllowDestination admits a non-public destination address that
+	// deployment configuration explicitly allows. Nil admits none.
+	AllowDestination func(netip.Addr) bool
+	// LookupAddresses resolves a host. Nil uses the system resolver.
+	LookupAddresses func(context.Context, string) ([]netip.Addr, error)
+	// Timeout bounds each request. Zero selects 10 seconds.
+	Timeout time.Duration
+}
+
+// NewEgressClient returns an HTTP client for a server's own outbound calls,
+// such as revocations, supervision requests and event deliveries to
+// endpoints that metadata named. It applies HTTPKeyResolver's connection
+// checks: it resolves each host once, refuses the destination when any
+// address is not public and AllowDestination does not admit it, and connects
+// to the exact address it checked. It never follows a redirect, sends no
+// cookies, and gives up after Timeout. Pair it with AdmitHTTPS, or with an
+// admitter that names the endpoints you trust.
+func NewEgressClient(config EgressClientConfig) (*http.Client, error) {
+	if config.Timeout < 0 {
+		return nil, errors.New("aauth: egress client timeout must not be negative")
+	}
+	base := config.Client
+	if base == nil {
+		base = &http.Client{}
+	}
+	client, err := discoveryHTTPClient(HTTPKeyResolverConfig{
+		Client: base, AllowDestination: config.AllowDestination, LookupAddresses: config.LookupAddresses,
+	})
+	if err != nil {
+		return nil, err
+	}
+	client.Jar = nil
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client.Timeout = config.Timeout
+	if client.Timeout == 0 {
+		client.Timeout = defaultDiscoveryTimeout
+	}
+	return client, nil
+}
+
 // discoveryHTTPClient returns the client discovery fetches through. Unless the
 // configuration states that the transport enforces egress itself, discovery
 // connects only through an egressDialer installed in a clone of the caller's

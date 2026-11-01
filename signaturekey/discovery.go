@@ -32,16 +32,30 @@ const (
 // EgressAdmitter decides whether a discovery endpoint may be contacted.
 type EgressAdmitter func(ctx context.Context, endpoint string) error
 
+// AdmitHTTPS is an EgressAdmitter that admits every absolute https URL with a
+// host and no userinfo or fragment, and so names no trusted issuer. It is
+// safe only over a client that checks each connection's destination, as
+// HTTPKeyResolver and NewEgressClient do: together they reach public
+// addresses alone. A host that contacts only issuers it trusts supplies its
+// own admitter.
+func AdmitHTTPS(_ context.Context, endpoint string) error {
+	return validateDiscoveryURL(endpoint)
+}
+
 // HTTPKeyResolverConfig supplies network, time, egress, and capacity policy.
+// The zero value is a safe default discovery client: the system clock, a
+// direct HTTP client, and AdmitHTTPS, so the resolver fetches the metadata and
+// keys of any issuer at a public HTTPS address, never follows a redirect, and
+// gives up after Timeout.
 //
 // Admit decides, before each fetch, whether a metadata or JWKS URL may be
-// contacted. The resolver also checks every connection itself: it dials
-// through a clone of Client's *http.Transport (or of a direct default
-// transport when Client has none), resolves the host once, refuses the
-// destination when any resolved address is not public (PublicDestination) and
-// AllowDestination does not admit it, and connects to the exact address it
-// checked, so DNS rebinding cannot move the connection. Redirects are never
-// followed.
+// contacted; nil selects AdmitHTTPS. The resolver also checks every
+// connection itself: it dials through a clone of Client's *http.Transport (or
+// of a direct default transport when Client is nil or has none), resolves the
+// host once, refuses the destination when any resolved address is not public
+// (PublicDestination) and AllowDestination does not admit it, and connects to
+// the exact address it checked, so DNS rebinding cannot move the connection.
+// Redirects are never followed. Clock nil selects the system clock.
 type HTTPKeyResolverConfig struct {
 	Client  *http.Client
 	Clock   Clock
@@ -115,10 +129,21 @@ type discoveryCachePolicy struct {
 	storable  bool
 }
 
-// NewHTTPKeyResolver constructs a bounded metadata and JWKS resolver.
+// NewHTTPKeyResolver constructs a bounded metadata and JWKS resolver. Zero
+// Client, Clock and Admit select the safe defaults HTTPKeyResolverConfig
+// describes.
 func NewHTTPKeyResolver(config HTTPKeyResolverConfig) (*HTTPKeyResolver, error) {
-	if config.Client == nil || config.Clock == nil || config.Admit == nil {
-		return nil, errors.New("aauth: HTTP key resolver requires client, clock, and egress admitter")
+	if config.Client == nil {
+		if config.TransportEnforcesEgress {
+			return nil, errors.New("aauth: HTTP key resolver TransportEnforcesEgress needs the client whose transport enforces it")
+		}
+		config.Client = &http.Client{}
+	}
+	if config.Clock == nil {
+		config.Clock = systemClock{}
+	}
+	if config.Admit == nil {
+		config.Admit = AdmitHTTPS
 	}
 	limits, err := normalizeHTTPKeyResolverLimits(config.Limits)
 	if err != nil {
